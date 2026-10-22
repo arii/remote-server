@@ -1,0 +1,153 @@
+# remote-server — TRIGKEY S5 home server
+#
+# Public ingress (Ari's EXISTING dynamic DDNS + certbot, no new certs/DNS):
+#   https://${TERMINAL_DOMAIN}:${TERMINAL_PORT}
+#     -> oauth2-proxy (terminates TLS with the existing LE certs,
+#        GitHub OAuth gate, single-user allowlist)
+#     -> terminal (ttyd + zellij, session persists across reconnects)
+#
+# Tailscale = VPN mesh for admin access to everything else (SSH, future
+# services). The terminal does NOT require Tailscale.
+#
+# Agent services (ollama / openclaw / actions-runner) are ON HOLD — decision
+# deferred 2026-10-22. See the commented profiles block at the bottom.
+#
+# All secrets via environment (.env, never committed). See README.md + docs/.
+
+name: remote
+
+services:
+  # TLS edge + GitHub OAuth gate. Terminates TLS itself with Ari's existing
+  # Let's Encrypt certs (mounted read-only from the host certbot dir).
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.9.0 # pin; verify flags at deploy
+    command:
+      - --config=/etc/oauth2-proxy.cfg
+      - --http-address= # disable the plain-HTTP listener entirely
+      - --https-address=0.0.0.0:${TERMINAL_PORT}
+      - --tls-cert-file=/certs/live/${TERMINAL_DOMAIN}/fullchain.pem
+      - --tls-key-file=/certs/live/${TERMINAL_DOMAIN}/privkey.pem
+      - --upstream=http://terminal:7681
+    user: "0:0" # must read the LE privkey (root-owned); the key never leaves the host
+    volumes:
+      - ./config/oauth2-proxy.cfg:/etc/oauth2-proxy.cfg:ro
+      # Whole certbot dir (not individual files): live/ holds symlinks that
+      # certbot re-points on every renewal — file mounts would go stale.
+      - ${LE_DIR:-/etc/letsencrypt}:/certs:ro
+    environment:
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_GITHUB_USER: ${GITHUB_USER}
+      OAUTH2_PROXY_REDIRECT_URL: ${OAUTH2_PROXY_REDIRECT_URL}
+    ports:
+      - "${TERMINAL_PORT}:${TERMINAL_PORT}" # public: DDNS + router forward land here
+    depends_on:
+      - terminal
+    restart: unless-stopped
+
+  # Browser terminal: ttyd (xterm.js) running zellij (phone-friendly multiplexer).
+  # Closing the browser tab "detaches"; reopening re-attaches to the live session.
+  terminal:
+    build:
+      context: ./terminal
+      args:
+        TTYD_VERSION: ${TTYD_VERSION:-1.7.7}
+        ZELLIJ_VERSION: ${ZELLIJ_VERSION:-0.45.1}
+    image: ${TERMINAL_IMAGE:-remote-terminal:1.0} # override in .env to use the CI-built GHCR image instead of building locally
+    command:
+      - --port=7681
+      - --interface=0.0.0.0
+      - --writable # ttyd >= 1.7.5 is READ-ONLY by default; without this the shell is view-only
+      - --max-clients=1
+      - --ping-interval=30 # keep the websocket alive on flaky mobile networks
+      - -t
+      - fontSize=15
+      - zellij
+      - attach
+      - --create
+      - main
+    volumes:
+      - .:/srv/remote-server # repo (compose, docs, .env) editable from the phone
+      # Docker socket: manage this stack from the phone (docker compose ps/up/...).
+      # This is root-equivalent — the GitHub OAuth single-user gate is the boundary.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TERM: xterm-256color
+    expose:
+      - "7681" # compose network only; the only ingress is via oauth2-proxy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7681/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # VPN mesh for admin access (SSH, future services). Outbound only.
+  # Terminal access does NOT go through Tailscale — it uses the public DDNS URL.
+  tailscale:
+    image: tailscale/tailscale:stable # pin to a tested tag at deploy
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./scripts/tailscale-entrypoint.sh:/usr/local/bin/tailscale-entrypoint.sh:ro
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY} # reusable auth key from Tailscale admin console
+      TS_HOSTNAME: ${TS_HOSTNAME:-s5}
+    entrypoint: ["/usr/local/bin/tailscale-entrypoint.sh"]
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+
+# ---------------------------------------------------------------------------
+# ON HOLD — agent harness decision deferred (2026-10-22).
+# Uncomment this block to bring the agent profile up alongside the server:
+#   docker compose --profile agents up -d
+# See docs/agent-harness.md (banner at top) for the deferred evaluation.
+# ---------------------------------------------------------------------------
+#  ollama:
+#    image: ollama/ollama:latest # pin tag at deploy
+#    profiles: ["agents"]
+#    environment:
+#      OLLAMA_HOST: 0.0.0.0:11434
+#      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+#      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+#    ports:
+#      - "127.0.0.1:11434:11434"
+#    volumes:
+#      - ollama-data:/root/.ollama
+#    restart: unless-stopped
+#
+#  openclaw:
+#    image: openclaw/openclaw:2026.10.4 # VERIFY tag exists at deploy; pin current stable
+#    profiles: ["agents"]
+#    volumes:
+#      - ./openclaw-data:/root/.openclaw
+#      - ./config/openclaw.json:/root/.openclaw/openclaw.json:ro
+#    depends_on:
+#      - ollama
+#    restart: unless-stopped
+#
+#  actions-runner:
+#    image: myoung34/github-runner:ubuntu-noble # pin digest at deploy
+#    profiles: ["agents"]
+#    environment:
+#      REPO_URL: ${REPO_URL}
+#      RUNNER_TOKEN: ${RUNNER_TOKEN} # ephemeral registration token; re-issue per deploy
+#      RUNNER_NAME: ${RUNNER_NAME:-s5}
+#      LABELS: ${RUNNER_LABELS:-self-hosted,linux,local-llm}
+#    volumes:
+#      - runner-data:/home/runner/_work
+#    depends_on:
+#      - ollama
+#    restart: unless-stopped
+#
+# volumes:
+#   ollama-data:
+#   runner-data:
