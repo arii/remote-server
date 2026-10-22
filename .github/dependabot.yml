@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Dockerfile base image + GitHub Actions used by CI.
+  # NOTE: ttyd/zellij pins are build ARGs, not image tags — dependabot can't
+  # bump those; update TTYD_VERSION/ZELLIJ_VERSION in .env.example manually
+  # (the Dockerfile defaults must match).
+  - package-ecosystem: "docker"
+    directory: "/terminal"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
