@@ -1,0 +1,34 @@
+{
+  // OpenClaw gateway config (JSON5). Mounted read-only into the container.
+  // Critical: baseUrl has NO /v1 suffix — Ollama's OpenAI-compat streaming
+  // path drops tool-call deltas; use the native /api/chat provider instead.
+  // See docs/agent-harness.md §2 (OpenClaw) for the full story.
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://ollama:11434",
+        "api": "ollama",
+        "apiKey": "ollama-local",
+        "models": [
+          {
+            "id": "qwen3:14b",
+            "name": "qwen3:14b (local)",
+            "contextWindow": 32768
+          },
+          {
+            "id": "qwen3:8b",
+            "name": "qwen3:8b (local, fast)",
+            "contextWindow": 32768
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/qwen3:14b"
+      }
+    }
+  }
+}
