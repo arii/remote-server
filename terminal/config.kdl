@@ -1,0 +1,8 @@
+// zellij config — tuned for phone browsers via ttyd (xterm.js).
+// Single source of truth: terminal/config.kdl, baked into the image.
+// Rebuild after editing: docker compose build terminal && docker compose up -d terminal
+
+simplified_ui true   // plain glyphs; no nerd-font needed on the phone
+mouse_mode true      // tap-to-focus panes, touch scrolling — no prefix key required
+pane_frames false    // every row counts on a small screen
+default_shell "bash"
