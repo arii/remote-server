@@ -1,0 +1,98 @@
+name: CI
+
+# Builds the terminal image on every push/PR, validates the compose file,
+# lints the shell scripts, and scans for leaked secrets.
+#
+# Docker workflow replicates arii/BoomTick's pattern:
+# .github/actions/setup-docker-buildx (ghcr.io login + buildx),
+# docker/metadata-action tags, build-push-action with GHA layer cache.
+#
+# CI needs ZERO secrets: image pushes use the automatic GITHUB_TOKEN.
+# Runtime secrets live only in .env on the box (git-ignored) — never here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write # push terminal image to GHCR on main
+
+env:
+  TERMINAL_IMAGE: ghcr.io/arii/remote-server-terminal
+
+jobs:
+  shell:
+    name: lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: bash syntax check
+        run: bash -n scripts/*.sh
+      - name: shellcheck
+        run: shellcheck -S warning scripts/*.sh
+
+  compose:
+    name: validate compose file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: dummy env from example (deleted afterwards)
+        run: cp .env.example .env.ci
+      - name: docker compose config
+        run: docker compose --env-file .env.ci config --quiet
+      - name: cleanup
+        run: rm -f .env.ci
+        if: always()
+
+  terminal-image:
+    name: build (+push) terminal image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx and Registry Login
+        uses: ./.github/actions/setup-docker-buildx
+
+      - name: "read version pins (single source of truth — .env.example)"
+        id: pins
+        run: |
+          echo "ttyd=$(grep -E '^TTYD_VERSION=' .env.example | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "zellij=$(grep -E '^ZELLIJ_VERSION=' .env.example | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.TERMINAL_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./terminal
+          build-args: |
+            TTYD_VERSION=${{ steps.pins.outputs.ttyd }}
+            ZELLIJ_VERSION=${{ steps.pins.outputs.zellij }}
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  secret-scan:
+    name: scan for leaked secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified
