@@ -1,0 +1,15 @@
+# secrets — never commit (covers .env, .env.ci, .env.local, ...)
+.env*
+
+# docker / runtime state
+data/
+volumes/
+
+# OS / editor noise
+.DS_Store
+*.swp
+*~
+
+# restic / backup scratch
+*.snapshot
+/restore-test/
