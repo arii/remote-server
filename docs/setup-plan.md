@@ -1,5 +1,10 @@
 # Setup plan — TRIGKEY S5 home server (Ubuntu 24.04 LTS + Docker)
 
+> Start here if you haven't installed yet:
+> `docs/usb-install-and-network.md` covers the bootable USB (exact ISO +
+> flash commands), S5 install notes, Nest Wifi DHCP reservation + port
+> forward, No-IP DUC, and certbot. This plan picks up at first boot.
+
 Target: repeatable, documented bring-up of the S5 as a 24/7 home server.
 Revised 2026-10-22: the agent-harness decision is **deferred** (services live
 in a commented `profiles: ["agents"]` block; bring-up is the remote server

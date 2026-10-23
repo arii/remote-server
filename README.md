@@ -89,6 +89,10 @@ See `docs/remote-access.md` for the threat model.
 - `docs/setup-plan.md` — phased Ubuntu install, hardening, Docker,
   DDNS/certbot wiring, VPN, backups, repeatability. Every phase has a
   verification step.
+- `docs/usb-install-and-network.md` — bootable USB from your Linux box
+  (exact ISO link + `dd`/Disks/Etcher), S5 install notes, Nest Wifi DHCP
+  reservation + port forward (Google Home app path), No-IP DUC install,
+  certbot.
 
 ## Repo layout
 
