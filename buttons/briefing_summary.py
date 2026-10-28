@@ -24,17 +24,17 @@ Modes:
 
 Data (all stdlib, all defensive — an unknown field shape degrades
 one section, never the whole briefing):
-  td gh search-prs --state open --json
+  td --json gh search-prs --state open
       PRSummary: number, title, author, headRefName, baseRefName,
       isDraft, mergeStateStatus, updatedAt, url. NOTE: no CI state,
       no reviews, no changed files — that is why gh enrichment exists.
   gh pr view N --json ...statusCheckRollup,reviewDecision,mergeable...
       CI from statusCheckRollup (failing / pending / passing /
       no checks), reviewDecision, mergeable.
-  td gh status-board --json   work board (branch / issue / status)
-  td gh detect-conflicts --all --json   conflict scan (shape varies;
+  td --json gh status-board   work board (branch / issue / status)
+  td --json gh detect-conflicts --all   conflict scan (shape varies;
       parsed defensively, see _conflicted_prs)
-  td repo workflow-runs --json   recent runs; failures only shown.
+  td --json repo workflow-runs   recent runs; failures only shown.
 
 Attention ranking (first match wins per PR, in this order):
   conflicted > CI failing > changes requested > stale (>30 days).
@@ -95,13 +95,19 @@ def ci_summary(rollup):
 
 def _conflicted_prs(node, out, in_conf=False):
     """Collect {number: files} from a detect-conflicts payload of
-    unknown shape. A dict counts when it pairs a PR number with a
-    truthy conflict indicator (a files list, hasConflicts) or when it
-    sits inside a conflicts list — e.g. {"conflicts": [{"pr": 4814,
-    "files": [...]}]}. Unknown shapes yield nothing rather than a
-    guessed conflict — mergeStateStatus still covers it."""
+    unknown shape. A dict counts when it pairs a PR number (or a
+    'prs' list of PR numbers, as td gh detect-conflicts --all emits)
+    with a truthy conflict indicator (a files list, hasConflicts) or
+    when it sits inside a conflicts list — e.g. {"conflicts": [{"prs":
+    [4814, 4826], "files": ["package.json"]}]}. Unknown shapes yield
+    nothing rather than a guessed conflict — mergeStateStatus still
+    covers it."""
     if isinstance(node, dict):
         num = getf(node, "pr", "prNumber", "pr_number", "number")
+        nums = [num] if isinstance(num, int) else []
+        prs_val = node.get("prs")
+        if isinstance(prs_val, list):
+            nums.extend(n for n in prs_val if isinstance(n, int))
         files = []
         for key in ("conflicts", "conflictedFiles", "conflicted_files",
                     "files"):
@@ -111,8 +117,12 @@ def _conflicted_prs(node, out, in_conf=False):
             elif isinstance(val, str) and val:
                 files = [val]
         flag = node.get("hasConflicts", node.get("has_conflicts"))
-        if isinstance(num, int) and (files or flag is True or in_conf):
-            out[num] = files
+        if nums and (files or flag is True or in_conf):
+            for n in nums:
+                existing = out.setdefault(n, [])
+                for f in files:
+                    if f not in existing:
+                        existing.append(f)
         for key, val in node.items():
             _conflicted_prs(val, out,
                             in_conf or key in ("conflicts", "conflictedFiles",
@@ -126,13 +136,13 @@ def fetch():
     """Gather everything; each source degrades independently."""
     data = {}
     data["prs"], data["prs_raw"], data["prs_err"] = run_json(
-        ["td", "gh", "search-prs", "--state", "open", "--json"], 60)
+        ["td", "--json", "gh", "search-prs", "--state", "open"], 60)
     data["board"], data["board_raw"], data["board_err"] = run_json(
-        ["td", "gh", "status-board", "--json"], 60)
+        ["td", "--json", "gh", "status-board"], 60)
     data["conf"], data["conf_raw"], data["conf_err"] = run_json(
-        ["td", "gh", "detect-conflicts", "--all", "--json"], 120)
+        ["td", "--json", "gh", "detect-conflicts", "--all"], 120)
     data["runs"], data["runs_raw"], data["runs_err"] = run_json(
-        ["td", "repo", "workflow-runs", "--json"], 60)
+        ["td", "--json", "repo", "workflow-runs"], 60)
     prs = getf(data["prs"], "prs", default=[]) if data["prs"] else []
     data["pr_list"] = prs if isinstance(prs, list) else []
     # gh enrichment, one call per open PR (counts here are small).
@@ -267,10 +277,10 @@ def build(data):
                 name = getf(run, "name", "workflow", "workflowName",
                             default="?")
                 lines.append(f"- failing: {name} on "
-                             f"{getf(run, 'branch', 'headBranch', default='?')} "
+                             f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
                              f"({getf(run, 'event', default='?')})"
-                             + (f" — {getf(run, 'url', 'htmlUrl', 'html_url')}"
-                                if getf(run, "url", "htmlUrl", "html_url") else ""))
+                             + (f" — {getf(run, 'htmlUrl', 'html_url', 'url')}"
+                                if getf(run, "htmlUrl", "html_url", "url") else ""))
         else:
             lines.append("No failing runs in the recent list.")
     lines.append("")
