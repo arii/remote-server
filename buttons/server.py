@@ -320,7 +320,7 @@ def run_action(run_id, action):
             active_id = None
 
 
-HTML = """<!DOCTYPE html>
+HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
