@@ -92,6 +92,43 @@ def _verify_signature(secret, body, header):
     return hmac.compare_digest(expect, header)
 
 
+def _webhook_warm(old_head, new_head):
+    """Best-effort post-pull warming for tech-dancer. Runs in the
+    terminal container (same transport as the briefing buttons):
+    pnpm install only when package.json/pnpm-lock.yaml changed
+    across the pull, context-warm always (no --force: it rewrites
+    only when stale or missing). .agent-context.json is gitignored,
+    so warming never dirties the checkout. Any failure is logged,
+    never surfaced as a pull failure."""
+    try:
+        changed = set()
+        if old_head and new_head and old_head != new_head:
+            diff = subprocess.run(
+                ["git", "-c", "safe.directory="
+                 + WEBHOOK_REPOS["arii/tech-dancer"], "-C",
+                 WEBHOOK_REPOS["arii/tech-dancer"],
+                 "diff", "--name-only", old_head, new_head],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=60, text=True)
+            changed = set((diff.stdout or "").split())
+        if changed & {"package.json", "pnpm-lock.yaml"}:
+            subprocess.run(
+                EXEC + ["cd /srv/repos/tech-dancer && "
+                        "pnpm install --frozen-lockfile"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=300, text=True)
+            print("webhook warm: pnpm install done", flush=True)
+    except Exception as exc:
+        print(f"webhook warm: pnpm install skipped: {exc}", flush=True)
+    try:
+        subprocess.run(EXEC + [TD + "td context-warm"],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=300, text=True)
+        print("webhook warm: context-warm done", flush=True)
+    except Exception as exc:
+        print(f"webhook warm: context-warm skipped: {exc}", flush=True)
+
+
 def _webhook_worker(repo, path):
     # Serialized: two pushes racing the same checkout must not run
     # fetch+merge concurrently. State/pending updates are separate
@@ -99,6 +136,15 @@ def _webhook_worker(repo, path):
     with webhook_pull_lock:
         git = ["git", "-c", f"safe.directory={path}", "-C", path,
                "-c", "core.hooksPath=/dev/null"]
+        old_head = None
+        new_head = None
+        try:
+            old_head = subprocess.run(
+                git + ["rev-parse", "HEAD"], stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=30, text=True,
+                env=dict(os.environ)).stdout.strip() or None
+        except Exception:
+            pass
         try:
             # Inherit the container environment: ssh resolves its
             # key via the passwd home (/root), where the read-only
@@ -124,6 +170,13 @@ def _webhook_worker(repo, path):
                     if merge.stderr.strip() else "merge failed")
             out = (merge.stdout or "").strip().splitlines()
             ok, detail = True, (out[-1] if out else "up to date")[:200]
+            try:
+                new_head = subprocess.run(
+                    git + ["rev-parse", "HEAD"], stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, timeout=30, text=True,
+                    env=env).stdout.strip() or None
+            except Exception:
+                pass
         except Exception as exc:
             ok, detail = False, str(exc)[:200]
     with webhook_state_lock:
@@ -132,6 +185,12 @@ def _webhook_worker(repo, path):
         webhook_pending.discard(repo)
     print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
           flush=True)
+    # Warming runs AFTER the pull record lands, in its own thread:
+    # it must never hold the pull lock (a slow pnpm install would
+    # serialize later pushes) and never fail the pull record.
+    if ok and repo == "arii/tech-dancer":
+        threading.Thread(target=_webhook_warm,
+                         args=(old_head, new_head), daemon=True).start()
 # Steps run under a PTY (see _run_step): commands then emit the
 # ANSI colours they would show in the terminal, and the page renders
 # them. A TTY stdout also makes some tools page their output (git
@@ -142,106 +201,6 @@ RUN_ENV = {**ENV, "TERM": "xterm-256color",
 MAX_OUTPUT = 200_000  # keep the tail; model pulls are verbose
 
 GIT = ["git", "-c", f"safe.directory={STACK}", "-C", STACK]
-
-# Plans view: tech-dancer briefing plans live in the TERMINAL
-# container (the buttons container has no /srv/repos mount), so list
-# and toggle run through `compose exec terminal python3 -`, the same
-# transport the briefing buttons use. The script below is fixed code:
-# the only caller-supplied values are a validated plan filename and
-# a line number, and a toggle flips exactly one checkbox character
-# on a line that is still a checkbox — never free text, never a
-# shell command. Toggle state therefore lives in the plan file
-# itself (untracked in tech-dancer until committed) and matches
-# what the terminal shows.
-PLANS_PATH = "/srv/repos/tech-dancer/.agents/plans"
-PLAN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md")
-PLANS_SCRIPT = r'''
-import sys, json, os, re, glob
-path = __PLANS_PATH__
-pat = re.compile(r"^(\s*[-*] \[)([ xX])(\].*)$")
-def parse(text):
-    items = []
-    for i, line in enumerate(text.splitlines()):
-        m = pat.match(line)
-        if m:
-            items.append({"line": i, "checked": m.group(2).lower() == "x",
-                          "text": m.group(3)[1:].strip()})
-    return items
-def excerpt(text):
-    # The briefing itself, not just the checklist: the first
-    # non-blank, non-heading, non-checkbox lines of the plan file
-    # (td status-board / PR / conflict output), truncated. Without
-    # this the Plans view shows only generic checklist items and
-    # hides everything that made the briefing worth reading.
-    out = []
-    for line in text.splitlines():
-        s = line.strip()
-        # The plan file's raw appendix is an audit trail, not reading
-        # material: stop the excerpt there, or it bleeds JSON into
-        # the page after the readable sections run out.
-        if s == "## Raw output":
-            break
-        if not s or s.startswith("#") or pat.match(line):
-            continue
-        out.append(line.rstrip())
-        if sum(len(x) for x in out) > 800:
-            break
-    return "\n".join(out)[:800]
-def plan(name):
-    fp = os.path.join(path, name)
-    with open(fp, encoding="utf-8", errors="replace") as f:
-        text = f.read()
-    items = parse(text)
-    return {"name": name, "total": len(items),
-            "done": sum(1 for it in items if it["checked"]), "items": items,
-            "mtime": int(os.path.getmtime(fp)), "excerpt": excerpt(text)}
-# Payload is embedded by the caller (python3 - reads the script
-# itself from stdin, so stdin cannot also carry the payload).
-payload = __PAYLOAD__
-cmd = payload.get("cmd")
-if cmd == "list":
-    names = sorted((os.path.basename(p) for p in glob.glob(os.path.join(path, "*.md"))),
-                   reverse=True) if os.path.isdir(path) else []
-    print(json.dumps({"plans": [plan(n) for n in names]}))
-elif cmd == "toggle":
-    name = payload.get("name", "")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", name):
-        print(json.dumps({"error": "bad plan name"})); sys.exit(1)
-    fp = os.path.join(path, name)
-    if not os.path.isfile(fp):
-        print(json.dumps({"error": "unknown plan"})); sys.exit(1)
-    with open(fp, encoding="utf-8", errors="replace") as f:
-        text = f.read()
-    lines = text.splitlines()
-    line_no = payload.get("line")
-    if not isinstance(line_no, int) or not 0 <= line_no < len(lines):
-        print(json.dumps({"error": "bad line"})); sys.exit(1)
-    m = pat.match(lines[line_no])
-    if not m:
-        print(json.dumps({"error": "line is no longer a checkbox"})); sys.exit(1)
-    lines[line_no] = m.group(1) + (" " if m.group(2).lower() == "x" else "x") + m.group(3)
-    with open(fp, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + ("\n" if text.endswith("\n") else ""))
-    print(json.dumps({"plan": plan(name)}))
-else:
-    print(json.dumps({"error": "unknown plans command"})); sys.exit(1)
-'''
-
-
-def _run_plans(payload):
-    script = PLANS_SCRIPT.replace("__PLANS_PATH__", json.dumps(PLANS_PATH)) \
-                         .replace("__PAYLOAD__", json.dumps(payload))
-    proc = subprocess.run(
-        COMPOSE + ["exec", "-T", "terminal", "python3", "-"],
-        input=script.encode(), stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, timeout=30, cwd=STACK, env=ENV)
-    if proc.returncode != 0:
-        try:
-            msg = json.loads(proc.stdout.decode()).get("error", "plans failed")
-        except Exception:
-            msg = (proc.stderr.decode() or "plans failed").strip()[-200:]
-        raise ValueError(msg)
-    return json.loads(proc.stdout.decode())
 
 ACTIONS = {
     "status": {
@@ -290,22 +249,22 @@ ACTIONS = {
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
         ],
     },
-    "pull-models": {
-        "label": "Pull models",
-        "group": "Server",
-        "sub": "Download the Ollama models in .env — slow, gigabytes",
-        "confirm": True,
-        "steps": [
-            ["bash", f"{STACK}/scripts/pull-models.sh"],
-        ],
-    },
     "logs": {
         "label": "Logs",
         "group": "Server",
-        "sub": "Last 100 lines from terminal + Ollama",
+        # Container logs alone do not audit the agent: they show
+        # the terminal process, not what Pi did. The second step
+        # renders Pi's own transcript (pi-data volume at /root/.pi
+        # in the terminal container) readably — newest sessions,
+        # then the latest session's prompts, replies and tool
+        # calls. The full JSONL stays on disk; pi_logs.py never
+        # fails the run, so a missing sessions dir degrades to a
+        # note instead of turning Logs red.
+        "sub": "Last 100 lines from terminal + Ollama, plus Pi session audit (latest session, readable)",
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
+            EXEC + ["python3 /srv/remote-server/buttons/pi_logs.py"],
         ],
     },
     # Deterministic briefing: the summarizer script (read-only)
@@ -328,42 +287,43 @@ ACTIONS = {
             EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
         ],
     },
-    # Agent-written briefing: Pi print mode (-p: one-shot reply and
-    # exit, no TUI) with the agent brief as context. Slow on the local
-    # 8b model (minutes). MCP tools in print mode are unverified on
-    # the S5 — the prompt falls back to td/gh CLI if they are absent.
-    "briefing-agent": {
-        "label": "Repo briefing (agent, slow)",
+    # Sync & nudge: first list active Jules sessions (td's agent
+    # sync is the list-sessions command, not a verb called sync),
+    # then run the one-shot feedback check that posts CI failure
+    # and review feedback to stalled sessions. Confirm first: the
+    # second step writes to live agent sessions.
+    "sync-nudge": {
+        "label": "Sync & nudge agents",
         "group": "Briefing",
-        "sub": "Same briefing, written by Pi — slow (minutes on the local model)",
+        "sub": "List active Jules sessions, then post CI/review feedback to stalled ones",
         "confirm": True,
         "steps": [
-            EXEC + [TD + 'pi -p "Read /root/.pi/agent/agent-brief.md '
-                     '(fallback: /srv/remote-server/terminal/pi-config/agent-brief.md) '
-                     'and follow it. Give me the repo briefing for tech-dancer: '
-                     'open PRs with CI state, merge conflicts, failing checks, '
-                     'unresolved review comments, stale PRs. End with the single '
-                     'most important action. Use boomtick MCP tools if available, '
-                     'otherwise td and gh CLI."'],
+            EXEC + [TD + "td --json agent list-sessions"],
+            EXEC + [TD + "td --json agent run-feedback-check"],
         ],
     },
-    # Plan file from the deterministic briefing. Written into the
-    # tech-dancer checkout (untracked until committed) at
-    # .agents/plans/<date>-briefing-plan.md, next to the repo's other
-    # agent workflows. The summarizer writes the readable briefing,
-    # then a Next-actions checklist DERIVED from the findings (one
-    # checkbox per attention item), then the raw td JSON as an
-    # appendix. A failing source degrades its section instead of
-    # losing the whole plan — the file landing is what exit 0 means
-    # here, not "every source passed"; check the file's contents.
-    "create-plan": {
-        "label": "Create plan from briefing",
+    # Warm context: regenerate .agent-context.json only if stale
+    # or missing (context-warm without --force), so td/agy/pi start
+    # with a fresh index. The file is gitignored (untracked), so
+    # warming never dirties the checkout or blocks a fast-forward.
+    "warm-context": {
+        "label": "Warm repo context",
         "group": "Briefing",
-        "sub": "Save today's briefing as a plan file in tech-dancer/.agents/plans/",
-        "confirm": True,
+        "sub": "Regenerate tech-dancer .agent-context.json if stale",
+        "confirm": False,
         "steps": [
-            EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --plan-dir .agents/plans "
-                     "&& git status --short .agents/plans/"],
+            EXEC + [TD + "td context-warm"],
+        ],
+    },
+    # Preflight: doctor + typecheck + lint + overlap detection +
+    # merge simulation, in one deterministic run.
+    "preflight": {
+        "label": "Preflight check",
+        "group": "Briefing",
+        "sub": "doctor + typecheck + lint + overlap + merge simulation for tech-dancer",
+        "confirm": False,
+        "steps": [
+            EXEC + [TD + "td --json preflight"],
         ],
     },
 }
@@ -372,12 +332,12 @@ ACTIONS = {
 # by JavaScript. Lesson from 2026-10-28: when the buttons were
 # JS-generated, any failure in the page script (parse or early
 # runtime) left the page with NO action buttons at all, while the
-# static parts (Clear output, Plans heading) still rendered — so
-# the page looked half-alive and gave no clue what broke. Now the
-# buttons exist in the raw HTML whether or not any script runs;
-# JavaScript only attaches handlers to them. A second, separate
-# script block holds the Plans code, so a Plans failure cannot
-# take the core buttons down with it.
+# static parts (Clear output, Briefing heading) still rendered —
+# so the page looked half-alive and gave no clue what broke. Now
+# the buttons exist in the raw HTML whether or not any script
+# runs; JavaScript only attaches handlers to them. A second,
+# separate script block holds the Briefing code, so a Briefing
+# failure cannot take the core buttons down with it.
 # Buttons are grouped (Server / Briefing) with a one-line subtitle
 # under each label, so the page itself says what a button does and
 # when to use it — the docs are not where anyone looks mid-task.
@@ -394,18 +354,29 @@ GROUP_TITLES = {
 
 
 def _buttons_html():
+    # Server is a closed <details> drawer: the phone screen belongs
+    # to repo work, and Status/Logs/Recreate are escape hatches,
+    # one tap away. Briefing stays open.
     parts = []
     for group in ("Server", "Briefing"):
-        parts.append(f'<div class="grouphead">{GROUP_TITLES[group]}</div>')
+        btns = []
         for name, spec in ACTIONS.items():
             if spec["group"] != group:
                 continue
-            parts.append(
+            btns.append(
                 f'<button data-action="{escape(name)}" '
                 f'data-confirm="{"1" if spec["confirm"] else "0"}" '
                 f'data-label="{escape(spec["label"])}">'
                 f'<span class="blabel">{escape(spec["label"])}</span>'
                 f'<span class="bsub">{escape(spec["sub"])}</span></button>')
+        if group == "Server":
+            parts.append(
+                f'<details><summary class="grouphead">'
+                f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
+        else:
+            parts.append(
+                f'<div class="grouphead">{GROUP_TITLES[group]}</div>'
+                f'{"".join(btns)}')
     return "".join(parts)
 
 
@@ -531,6 +502,7 @@ button:disabled { opacity: 0.4; }
 .bsub { display: block; font-size: 0.85em; opacity: 0.7; font-weight: normal;
   margin-top: 0.25em; }
 .grouphead { font-weight: bold; margin: 1em 0 0.2em; color: #bbb; }
+summary.grouphead { cursor: pointer; }
 .repo { border: 1px solid #555; border-radius: 8px; padding: 0.5em;
   margin: 0.5em 0; }
 .reponame { font-weight: bold; }
@@ -561,13 +533,12 @@ pre.ok { border-color: #2e7d32; }
 pre.fail { border-color: #a33; }
 pre.running { border-color: #8a6d1b; }
 h2 { font-size: 1.1em; margin-top: 1.5em; }
-.plan { border: 1px solid #555; border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
-.planhead { cursor: pointer; font-weight: bold; }
-.planbar { background: #222; border-radius: 4px; height: 8px; margin: 0.4em 0; }
-.planbar > div { background: #4caf50; height: 8px; border-radius: 4px; }
-.planitems label { display: block; margin: 0.4em 0; font-weight: normal; }
-.planitems input { margin-right: 0.5em; }
-#plansErr { color: #ff8a8a; }
+.prcard { border: 1px solid #555; border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
+.prcard .prtitle { font-weight: bold; }
+.prcard .prmeta { font-size: 0.9em; color: #bbb; }
+.prcard .prresult { font-size: 0.9em; margin-top: 0.4em; }
+.practions { margin-top: 0.4em; }
+#briefingErr { color: #ff8a8a; }
 a { color: #8bf; }
 </style>
 </head>
@@ -576,7 +547,7 @@ a { color: #8bf; }
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
 <div id="repos">
 <div class="repo"><div class="reponame"><a href="https://github.com/arii/remote-server">arii/remote-server</a></div><div class="reposcope">This stack — terminal, buttons, oauth2-proxy. The Server buttons below act here.</div><div class="repostatus" data-repo-status="arii/remote-server">Auto-pull: not yet</div></div>
-<div class="repo"><div class="reponame"><a href="https://github.com/arii/tech-dancer">arii/tech-dancer</a></div><div class="reposcope">Repo work — briefings, plans, agent sessions. The Briefing buttons below read this repo only.</div><div class="repostatus" data-repo-status="arii/tech-dancer">Auto-pull: not yet</div></div>
+<div class="repo"><div class="reponame"><a href="https://github.com/arii/tech-dancer">arii/tech-dancer</a></div><div class="reposcope">Repo work — briefings, agent sessions. The Briefing buttons below read this repo only.</div><div class="repostatus" data-repo-status="arii/tech-dancer">Auto-pull: not yet</div></div>
 </div>
 <div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
@@ -586,12 +557,12 @@ below are still visible, but they need JavaScript to start a run.</div>
 <button id="clearBtn">Clear output</button>
 <div id="state"></div>
 <pre id="out"></pre>
-<h2>Plans</h2>
-<p>Briefing plans from tech-dancer <code>.agents/plans/</code>. Tapping a
-checkbox flips that line in the plan file itself.</p>
-<div id="plans"></div>
-<button id="refreshPlans">Refresh plans</button>
-<div id="plansErr"></div>
+<h2>Briefing</h2>
+<p>Live briefing for tech-dancer — open PRs, CI, conflicts, reviews,
+Jules sessions. Runs on load; Refresh re-fetches.</p>
+<div id="briefing"></div>
+<button id="refreshBriefing">Refresh briefing</button>
+<div id="briefingErr"></div>
 <script>
 // Core script (script block 1). The buttons above are rendered
 // server-side; this only attaches handlers to them, so a failure
@@ -603,8 +574,6 @@ const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
 let timer = null;
 
-// startRun is shared with the Plans block: its per-plan action
-// buttons start the same allowlisted runs (briefing, new plan).
 async function startRun(name, label, confirmFlag) {
   if (confirmFlag && !window.confirm(label + " — run it?")) return;
   const r = await fetch("/buttons/api/run", {method: "POST",
@@ -791,8 +760,6 @@ async function poll(id) {
     if (run.done) {
       clearInterval(timer);
       setBusy(false);
-      if (run.action === "create-plan" && run.exit_code === 0 &&
-          typeof refreshPlans === "function") refreshPlans();
     }
   }, 2000);
 }
@@ -824,119 +791,143 @@ document.getElementById("clearBtn").onclick = async () => {
 
 </script>
 <script>
-// Plans script (script block 2, separate from the core block above).
-// If this block fails, the core action buttons above still work;
-// only the Plans section stays empty.
-// Plans: list + toggle. A toggle sends only a validated plan name
-// and a line number; the server flips one checkbox character in
-// that file and returns the updated counts. No free text anywhere.
-const plansEl = document.getElementById("plans");
-const plansErrEl = document.getElementById("plansErr");
-
-function renderPlans(plans) {
-  plansEl.textContent = "";
-  plansErrEl.textContent = "";
-  if (!plans.length) {
-    plansEl.textContent = "No plans yet — press Create plan from briefing.";
-    return;
+// Briefing view (script block 2, separate from the core block
+// above, so a Briefing failure cannot take the core buttons down).
+// Renders the structured briefing from /buttons/api/briefing as
+// PR cards — the live view that replaces the old Plans file
+// checkboxes. Auto-runs on load; Refresh re-fetches.
+const briefingEl = document.getElementById("briefing");
+const briefingErrEl = document.getElementById("briefingErr");
+// Per-PR actions: one tap per card, gated both client-side
+// (which buttons render) and server-side (fresh state re-checked
+// at tap time — the card may be minutes old). Merge is squash +
+// delete-branch; Update is the GitHub update-branch API, BEHIND
+// only; Fix CI dispatches a Jules session, it is not instant.
+function prActionButton(pr, action, label, confirmText) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.onclick = async () => {
+    if (!window.confirm(confirmText)) return;
+    b.disabled = true;
+    const card = b.closest(".prcard");
+    const res = card ? card.querySelector(".prresult") : null;
+    try {
+      const r = await fetch("/buttons/api/pr-action", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({pr_number: pr.number, action: action})});
+      const data = await r.json();
+      if (!r.ok) { if (res) res.textContent = "Failed: " + data.error; b.disabled = false; return; }
+      if (res) res.textContent = "Done. Refresh the briefing to see the new state.";
+    } catch (e) {
+      if (res) res.textContent = "Failed: " + e;
+      b.disabled = false;
+    }
+  };
+  return b;
+}
+function renderBriefing(b) {
+  briefingErrEl.textContent = "";
+  briefingEl.textContent = "";
+  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
+  const att = document.createElement("div");
+  const attHead = document.createElement("b");
+  attHead.textContent = "Needs attention";
+  att.appendChild(attHead);
+  if (b.attention && b.attention.length) {
+    const ul = document.createElement("ul");
+    b.attention.forEach(a => { const li = document.createElement("li"); li.textContent = a; ul.appendChild(li); });
+    att.appendChild(ul);
+  } else {
+    const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
   }
-  plans.forEach((plan, planIndex) => {
-    const div = document.createElement("div");
-    div.className = "plan";
-    const head = document.createElement("div");
-    head.className = "planhead";
-    const bar = document.createElement("div");
-    bar.className = "planbar";
-    const fill = document.createElement("div");
-    bar.appendChild(fill);
-    const itemsDiv = document.createElement("div");
-    itemsDiv.className = "planitems";
-    // Newest plan (first in the list) starts expanded; the rest
-    // stay collapsed so the section stays scannable on a phone.
-    itemsDiv.style.display = planIndex === 0 ? "block" : "none";
-    function updateHead(p) {
-      head.textContent = p.name + " — " + p.done + "/" + p.total +
-        (p.mtime ? " — " + new Date(p.mtime * 1000).toLocaleDateString() : "");
-      fill.style.width = p.total ? (100 * p.done / p.total) + "%" : "0%";
+  briefingEl.appendChild(att);
+  (b.prs || []).forEach(pr => {
+    const card = document.createElement("div");
+    card.className = "prcard";
+    const title = document.createElement("div");
+    title.className = "prtitle";
+    if (pr.url) {
+      const link = document.createElement("a");
+      link.href = pr.url; link.textContent = "#" + pr.number + " " + pr.title;
+      title.appendChild(link);
+    } else {
+      title.textContent = "#" + pr.number + " " + pr.title;
     }
-    updateHead(plan);
-    head.onclick = () => {
-      itemsDiv.style.display = itemsDiv.style.display === "none" ? "block" : "none";
-    };
-    // The briefing itself, not just its checklist: the plan file's
-    // td output (PRs, CI, conflicts) as a short excerpt, so an
-    // expanded plan is actually informative on this page.
-    if (plan.excerpt) {
-      const pre = document.createElement("pre");
-      pre.className = "planexcerpt";
-      pre.textContent = plan.excerpt;
-      itemsDiv.appendChild(pre);
+    const meta = document.createElement("div");
+    meta.className = "prmeta";
+    meta.textContent = pr.branch + " — CI: " + pr.ci +
+      (pr.failing.length ? " (" + pr.failing.join(", ") + ")" : "") +
+      " — merge: " + pr.merge +
+      (pr.conflicted ? " — CONFLICTED" : "") +
+      (pr.stale ? " — stale" : "") +
+      (pr.draft ? " — draft" : "") + " — updated " + pr.updated;
+    card.appendChild(title);
+    card.appendChild(meta);
+    if (pr.verdicts && pr.verdicts.length) {
+      const rev = document.createElement("div"); rev.className = "prmeta";
+      rev.textContent = "Reviews: " + pr.verdicts.map(v => "@" + v.user + " " + v.state).join("; ");
+      card.appendChild(rev);
     }
-    // Actions you can take from a plan, using the same allowlisted
-    // runs as the main buttons — a plan used to be a dead end:
-    // checkboxes and nothing else. These run into the output pane
-    // above (create-plan refreshes this list when it finishes).
-    const act = document.createElement("div");
-    act.className = "planact";
-    const rb = document.createElement("button");
-    rb.textContent = "Re-run briefing (td, fast)";
-    rb.onclick = () => { if (typeof startRun === "function")
-      startRun("briefing-td", "Repo briefing (td, fast)", false); };
-    const np = document.createElement("button");
-    np.textContent = "Create a new plan";
-    np.onclick = () => { if (typeof startRun === "function")
-      startRun("create-plan", "Create plan from briefing", true); };
-    const tl = document.createElement("a");
-    tl.href = "/";
-    tl.textContent = "Terminal";
-    act.appendChild(rb);
-    act.appendChild(np);
-    act.appendChild(tl);
-    itemsDiv.appendChild(act);
-    for (const item of plan.items) {
-      const label = document.createElement("label");
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = item.checked;
-      box.onchange = async () => {
-        box.disabled = true;
-        const r = await fetch("/buttons/api/plans/toggle", {method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({name: plan.name, line: item.line})});
-        if (!r.ok) {
-          box.checked = item.checked;
-          plansErrEl.textContent = "toggle failed: " + (await r.json()).error;
-        } else {
-          const updated = (await r.json()).plan;
-          item.checked = box.checked;
-          plan.done = updated.done;
-          plan.total = updated.total;
-          updateHead(plan);
-        }
-        box.disabled = false;
-      };
-      label.appendChild(box);
-      label.appendChild(document.createTextNode(item.text));
-      itemsDiv.appendChild(label);
-    }
-    div.appendChild(head);
-    div.appendChild(bar);
-    div.appendChild(itemsDiv);
-    plansEl.appendChild(div);
+    (pr.reviews_picked || []).forEach(r => {
+      const ex = document.createElement("div"); ex.className = "prmeta";
+      ex.textContent = "@" + r.user + " " + r.state + (r.body ? " — '" + r.body + "'" : "");
+      card.appendChild(ex);
+    });
+    const actions = document.createElement("div");
+    actions.className = "practions";
+    actions.setAttribute("data-pr", pr.number);
+    if (pr.ci === "passing" && pr.merge === "clean" && !pr.draft)
+      actions.appendChild(prActionButton(pr, "merge", "Merge (squash)",
+        "Merge PR #" + pr.number + " (squash, delete branch)?"));
+    if (pr.merge === "behind" && !pr.draft)
+      actions.appendChild(prActionButton(pr, "update", "Update branch",
+        "Update PR #" + pr.number + " branch to the base branch?"));
+    if (pr.ci === "failing" && !pr.draft)
+      actions.appendChild(prActionButton(pr, "fix-ci", "Fix CI with Jules",
+        "Dispatch a Jules session to fix CI on PR #" + pr.number + "? This creates an agent session, it is not instant."));
+    card.appendChild(actions);
+    const result = document.createElement("div");
+    result.className = "prresult";
+    card.appendChild(result);
+    briefingEl.appendChild(card);
   });
-}
-
-async function refreshPlans() {
-  const r = await fetch("/buttons/api/plans");
-  if (!r.ok) {
-    plansErrEl.textContent = "plans unavailable: " + (await r.json()).error;
-    return;
+  if (b.failing_runs && b.failing_runs.length) {
+    const w = document.createElement("div");
+    const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
+    b.failing_runs.forEach(run => {
+      const p = document.createElement("p");
+      p.textContent = run.name + " on " + run.branch + " (" + run.event + ")" +
+        (run.failed.length ? " — failed: " + run.failed.map(f => f.job + (f.steps.length ? " (" + f.steps.join(", ") + ")" : "")).join("; ") : "");
+      w.appendChild(p);
+    });
+    briefingEl.appendChild(w);
   }
-  renderPlans((await r.json()).plans);
+  const j = b.jules || {};
+  const js = document.createElement("div");
+  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
+  if (j.unavailable) {
+    const p = document.createElement("p"); p.textContent = "Jules sessions unavailable: " + j.unavailable; js.appendChild(p);
+  } else if (j.items && j.items.length) {
+    j.items.forEach(t => { const p = document.createElement("p"); p.textContent = t.replace(/^- /, ""); js.appendChild(p); });
+  } else {
+    const p = document.createElement("p"); p.textContent = "No active Jules sessions for tech-dancer."; js.appendChild(p);
+  }
+  if (j.other) { const p = document.createElement("p"); p.textContent = "(" + j.other + " active session(s) for other repos, not listed.)"; js.appendChild(p); }
+  briefingEl.appendChild(js);
 }
-
-document.getElementById("refreshPlans").onclick = refreshPlans;
-refreshPlans();
+async function refreshBriefing() {
+  briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
+  try {
+    const r = await fetch("/buttons/api/briefing");
+    if (!r.ok) { briefingEl.textContent = ""; briefingErrEl.textContent = "briefing unavailable: " + (await r.json()).error; return; }
+    renderBriefing(await r.json());
+  } catch (e) {
+    briefingEl.textContent = "";
+    briefingErrEl.textContent = "briefing unavailable: " + e;
+  }
+}
+document.getElementById("refreshBriefing").onclick = refreshBriefing;
+refreshBriefing();
 
 // Live updates: re-fetch status every 10s (skipped while the tab
 // is hidden) so webhook auto-pulls show up without a reload. The
@@ -990,6 +981,78 @@ setInterval(refreshStatus, 10000);
 """
 
 HTML = HTML.replace("<!--BUTTONS-->", BUTTONS_HTML)
+
+
+def _td_run(cmd, timeout=120):
+    """Run one td/gh command in the terminal container; return
+    stdout. Raises RuntimeError with the last stderr line on
+    failure. The command is a fixed string built from a validated
+    integer only — never from free text."""
+    proc = subprocess.run(EXEC + [TD + cmd], stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, timeout=timeout,
+                          text=True)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or "").strip().splitlines()[-1]
+                           if proc.stderr.strip() else "command failed")
+    return proc.stdout
+
+
+def _ci_label(rollup):
+    """CI label from a gh statusCheckRollup list. Mirrors
+    briefing_summary.ci_summary (kept local: server.py cannot
+    import the summarizer script)."""
+    if rollup is None:
+        return "unknown"
+    if not rollup:
+        return "no checks"
+    failing = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
+    for check in rollup:
+        if isinstance(check, dict) and check.get("conclusion") in failing:
+            return "failing"
+    for check in rollup:
+        if isinstance(check, dict) and check.get("status") != "COMPLETED":
+            return "pending"
+    return "passing"
+
+
+def _pr_view(pr_number):
+    """Fresh (CI label, merge state) for gating, at tap time."""
+    view = json.loads(_td_run(
+        f"gh pr view {pr_number} --json statusCheckRollup,mergeStateStatus",
+        timeout=60))
+    return (_ci_label(view.get("statusCheckRollup")),
+            str(view.get("mergeStateStatus") or "?").lower())
+
+
+def _pr_action(pr_number, action):
+    """Per-PR actions from the Briefing view. Every action re-checks
+    fresh state at tap time — the card may be minutes old. Merge is
+    gated on CI passing + merge clean; update only on BEHIND (a
+    DIRTY branch needs conflict resolution in the terminal, not a
+    one-tap button — td's resolve-conflicts resolves in a worktree
+    without pushing, so it cannot update the PR branch from here);
+    fix-ci requires CI failing and dispatches a Jules session via
+    `fix-ci --execute` (fix-ci defaults to dry-run, so the flag is
+    load-bearing). ValueError = gate refused (400)."""
+    if action == "merge":
+        ci, merge = _pr_view(pr_number)
+        if ci != "passing" or merge != "clean":
+            raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
+        out = _td_run(f"gh pr merge {pr_number} --squash --delete-branch")
+        return {"ok": True, "output": out[-2000:]}
+    if action == "update":
+        _ci, merge = _pr_view(pr_number)
+        if merge != "behind":
+            raise ValueError(f"cannot update: merge state is {merge} "
+                             "(only behind branches update this way)")
+        out = _td_run(f"gh api repos/arii/tech-dancer/pulls/{pr_number}/"
+                      "update-branch --method PUT")
+        return {"ok": True, "output": out[-2000:]}
+    ci, _merge = _pr_view(pr_number)
+    if ci != "failing":
+        raise ValueError(f"CI is {ci}, not failing — nothing to fix")
+    out = _td_run(f"td --json agent fix-ci --pr {pr_number} --execute")
+    return {"ok": True, "output": out[-2000:]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1075,11 +1138,25 @@ class Handler(BaseHTTPRequestHandler):
                 pending = sorted(webhook_pending)
             self._json({"active": active_id, "runs": recent,
                         "webhooks": hooks, "webhooks_pending": pending})
-        elif path == "/buttons/api/plans":
+        elif path == "/buttons/api/briefing":
+            # Structured briefing for the live Briefing view: the
+            # summarizer runs in the terminal container (same
+            # transport as the briefing button) and its JSON is
+            # passed through. Slow (td + gh calls), so the page
+            # shows a spinner while it loads.
             try:
-                self._json(_run_plans({"cmd": "list"}))
+                proc = subprocess.run(
+                    EXEC + [TD + "python3 /srv/remote-server/buttons/"
+                            "briefing_summary.py --briefing-json"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=180, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "briefing failed")
+                self._json(json.loads(proc.stdout))
             except Exception as exc:
-                self._json({"error": str(exc)}, 500)
+                self._json({"error": str(exc)[:500]}, 500)
         elif path.startswith("/buttons/api/run/"):
             run_id = path.rsplit("/", 1)[-1]
             with runs_lock:
@@ -1118,20 +1195,27 @@ class Handler(BaseHTTPRequestHandler):
                     run["last_output_at"] = time.time()
                     self._json({"ok": True, "id": run["id"]})
             return
-        if path == "/buttons/api/plans/toggle":
+        if path == "/buttons/api/pr-action":
+            # Strict validation: integer PR number only (bools are
+            # ints in Python, so exclude them), allowlisted action.
+            # The number is then safe to interpolate: it cannot
+            # carry shell text.
             try:
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            name, line_no = data.get("name"), data.get("line")
-            if not isinstance(name, str) or not PLAN_NAME_RE.fullmatch(name) \
-                    or not isinstance(line_no, int) or isinstance(line_no, bool):
-                self._json({"error": "bad plan name or line"}, 400)
+            pr_number, action = data.get("pr_number"), data.get("action")
+            if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
+                    or pr_number <= 0 \
+                    or action not in ("merge", "update", "fix-ci"):
+                self._json({"error": "bad pr_number or action"}, 400)
                 return
             try:
-                self._json(_run_plans({"cmd": "toggle", "name": name, "line": line_no}))
-            except Exception as exc:
+                self._json(_pr_action(pr_number, action))
+            except ValueError as exc:
                 self._json({"error": str(exc)}, 400)
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
             return
         if path != "/buttons/api/run":
             self._json({"error": "not found"}, 404)

@@ -14,6 +14,8 @@ sourced, so `td` and `gh` (authed in the terminal container) work.
 
 Modes:
   --briefing          print the readable briefing to stdout
+  --briefing-json     print analyze() as JSON (the live Briefing
+                      view on the buttons page renders this)
   --plan-dir DIR      write DIR/<date>-briefing-plan.md: the briefing,
                       then a Next-actions checklist DERIVED from the
                       findings (one checkbox per attention item, not
@@ -351,17 +353,20 @@ def fetch():
     return data
 
 
-def build(data):
-    """Return (briefing text, attention items, raw appendix text)."""
+def analyze(data):
+    """Structured briefing. build() renders text from this and
+    --briefing-json prints it, so the page cards and the text
+    briefing can never disagree about a PR. Section bodies are
+    pre-rendered as line lists with the exact v2 wording, so the
+    text output is unchanged by the refactor."""
     prs = data["pr_list"]
     gh = data["gh"]
     conflicted = {}
     if data["conf"]:
         _conflicted_prs(data["conf"], conflicted)
 
-    lines = [f"# Briefing {date.today().isoformat()}", ""]
+    pr_infos = []
     attention = []
-    pr_lines = []
     for pr in prs:
         num = getf(pr, "number")
         title = getf(pr, "title", default="?")
@@ -379,8 +384,6 @@ def build(data):
         is_conflict = (isinstance(num, int) and num in conflicted) \
             or merge == "dirty"
         review = getf(view, "reviewDecision", "review_decision")
-        # Review substance (v2): latest verdict per state, so the
-        # attention item can quote what was asked for.
         pr_reviews = data["reviews"].get(num, []) \
             if isinstance(num, int) else []
         latest_by_state = {}
@@ -407,7 +410,31 @@ def build(data):
         detail += review_suffix
         if draft:
             detail += " — draft"
-        pr_lines.append(f"- {label} {detail}")
+        # At most two excerpts per PR: the latest
+        # changes-requested, then the latest approval, then the
+        # latest comment with text.
+        picked = []
+        for want in ("CHANGES_REQUESTED", "APPROVED", "COMMENTED"):
+            for user, state, body, _s in pr_reviews:
+                if state == want:
+                    picked.append({"user": user, "state": state,
+                                   "body": body})
+                    break
+            if len(picked) >= 2:
+                break
+        pr_infos.append({
+            "number": num, "title": title, "branch": branch,
+            "draft": draft, "updated": updated_day, "ci": ci,
+            "failing": failing, "merge": merge,
+            "conflicted": bool(is_conflict), "stale": stale,
+            "review": review, "line": f"- {label} {detail}",
+            "verdicts": [{"state": s, "user": u}
+                         for s, (u, _b) in sorted(latest_by_state.items())],
+            "requested": ({"user": requested[0], "body": requested[1]}
+                          if requested else None),
+            "reviews_picked": picked, "reviews_total": len(pr_reviews),
+            "url": getf(view, "url") or getf(pr, "url"),
+        })
         if draft:
             continue
         if is_conflict:
@@ -429,23 +456,7 @@ def build(data):
     # reviews before stale, regardless of which PR came first.
     attention = [text for _, text in sorted(attention)]
 
-    lines.append("## Needs attention")
-    if attention:
-        lines.extend(f"- {a}" for a in attention)
-    else:
-        lines.append("Nothing needs attention.")
-    lines.append("")
-
-    lines.append(f"## Open PRs ({len(prs)})")
-    if data["prs_err"]:
-        lines.append(f"Open PR list unavailable: {data['prs_err']}")
-    elif pr_lines:
-        lines.extend(pr_lines)
-    else:
-        lines.append("No open PRs.")
-    lines.append("")
-
-    lines.append("## Reviews")
+    reviews_lines = []
     reviews = data["reviews"]
     reviews_err = data["reviews_err"]
     if reviews:
@@ -458,9 +469,6 @@ def build(data):
             if not items:
                 continue
             shown_any = True
-            # At most two excerpts per PR: the latest
-            # changes-requested, then the latest approval, then the
-            # latest comment with text.
             picked = []
             for want in ("CHANGES_REQUESTED", "APPROVED", "COMMENTED"):
                 for user, state, body, _s in items:
@@ -473,91 +481,109 @@ def build(data):
                 line = f"- #{num}: @{user} {state}"
                 if body:
                     line += f" — '{body}'"
-                lines.append(line)
+                reviews_lines.append(line)
             states = sorted({state for _u, state, _b, _s in items})
-            lines.append(f"  ({len(items)} review(s): "
-                         f"{', '.join(states).lower() or 'none'})")
+            reviews_lines.append(f"  ({len(items)} review(s): "
+                                 f"{', '.join(states).lower() or 'none'})")
         if not shown_any:
-            lines.append("No reviews on open PRs.")
+            reviews_lines.append("No reviews on open PRs.")
     elif reviews_err:
         first_err = next(iter(reviews_err.values()), "")
-        lines.append(f"Reviews unavailable: {first_err}")
+        reviews_lines.append(f"Reviews unavailable: {first_err}")
     else:
-        lines.append("No reviews fetched (no open PRs).")
+        reviews_lines.append("No reviews fetched (no open PRs).")
     if reviews_err:
         for num, err in sorted(reviews_err.items()):
-            lines.append(f"Reviews unavailable for #{num}: {err}")
-    lines.append("")
+            reviews_lines.append(f"Reviews unavailable for #{num}: {err}")
 
     board = getf(data["board"], "work", default=[]) if data["board"] else []
-    lines.append("## Work board")
+    board_items = []
+    board_lines = []
     if data["board_err"]:
-        lines.append(f"Work board unavailable: {data['board_err']}")
+        board_lines.append(f"Work board unavailable: {data['board_err']}")
     elif isinstance(board, list) and board:
         for item in board:
-            lines.append(f"- {getf(item, 'branch', default='?')} "
-                         f"— issue {getf(item, 'issue', default='?')} "
-                         f"— {getf(item, 'status', default='?')}")
+            board_items.append({
+                "branch": getf(item, "branch", default="?"),
+                "issue": getf(item, "issue", default="?"),
+                "status": getf(item, "status", default="?"),
+            })
+            board_lines.append(f"- {getf(item, 'branch', default='?')} "
+                               f"— issue {getf(item, 'issue', default='?')} "
+                               f"— {getf(item, 'status', default='?')}")
     else:
-        lines.append("No work-board items.")
-    lines.append("")
+        board_lines.append("No work-board items.")
 
-    lines.append("## Conflicts")
+    conflicts_list = [{"number": num, "files": files}
+                      for num, files in sorted(conflicted.items())]
+    conflicts_lines = []
     if data["conf_err"]:
-        lines.append(f"Conflict scan unavailable: {data['conf_err']}")
+        conflicts_lines.append(
+            f"Conflict scan unavailable: {data['conf_err']}")
     elif conflicted:
         for num, files in sorted(conflicted.items()):
-            lines.append(f"- PR #{num}"
-                         + (f": {', '.join(files)}" if files else ""))
+            conflicts_lines.append(f"- PR #{num}"
+                                   + (f": {', '.join(files)}" if files else ""))
     else:
-        lines.append("None detected.")
-    lines.append("")
+        conflicts_lines.append("None detected.")
 
     runs = getf(data["runs"], "workflow_runs", "workflowRuns",
                 default=[]) if data["runs"] else []
-    lines.append("## Workflow health")
+    failing_runs = []
+    workflow_lines = []
     if data["runs_err"]:
-        lines.append(f"Workflow run list unavailable: {data['runs_err']}")
+        workflow_lines.append(
+            f"Workflow run list unavailable: {data['runs_err']}")
     else:
-        failing_runs = []
+        raw_failing = []
         if isinstance(runs, list):
             for run in runs:
                 concl = getf(run, "conclusion")
                 status = getf(run, "status")
                 if concl == "failure" or (concl is None and status == "failure"):
-                    failing_runs.append(run)
-        if failing_runs:
-            for run in failing_runs[:5]:
-                name = getf(run, "name", "workflow", "workflowName",
-                            default="?")
-                line = (f"- failing: {name} on "
-                        f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
-                        f"({getf(run, 'event', default='?')})")
-                run_id = getf(run, "id")
-                failed_jobs = data["jobs"].get(str(run_id), []) \
-                    if run_id is not None else []
-                if failed_jobs:
-                    causes = []
-                    for job_name, steps in failed_jobs:
-                        cause = job_name
-                        if steps:
-                            cause += f" (steps: {', '.join(steps)})"
-                        causes.append(cause)
-                    line += f" — failed: {'; '.join(causes)}"
-                url = getf(run, "htmlUrl", "html_url", "url")
-                if url:
-                    line += f" — {url}"
-                lines.append(line)
-        else:
-            lines.append("No failing runs in the recent list.")
-    lines.append("")
+                    raw_failing.append(run)
+        for run in raw_failing[:5]:
+            name = getf(run, "name", "workflow", "workflowName",
+                        default="?")
+            line = (f"- failing: {name} on "
+                    f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
+                    f"({getf(run, 'event', default='?')})")
+            run_id = getf(run, "id")
+            failed_jobs = data["jobs"].get(str(run_id), []) \
+                if run_id is not None else []
+            failed_struct = [{"job": j, "steps": s}
+                             for j, s in failed_jobs]
+            if failed_jobs:
+                causes = []
+                for job_name, steps in failed_jobs:
+                    cause = job_name
+                    if steps:
+                        cause += f" (steps: {', '.join(steps)})"
+                    causes.append(cause)
+                line += f" — failed: {'; '.join(causes)}"
+            url = getf(run, "htmlUrl", "html_url", "url")
+            if url:
+                line += f" — {url}"
+            workflow_lines.append(line)
+            failing_runs.append({
+                "name": name,
+                "branch": getf(run, "branch", "headBranch", "head_branch",
+                               default="?"),
+                "event": getf(run, "event", default="?"),
+                "url": url, "failed": failed_struct,
+            })
+        if not raw_failing:
+            workflow_lines.append("No failing runs in the recent list.")
 
-    lines.append("## Agent sessions (Jules)")
     sessions = data["jules"]
+    jules_items = []
+    jules_other = 0
+    jules_unscoped = 0
+    jules_lines = []
     if sessions is None:
-        lines.append(f"Jules sessions unavailable: {data['jules_err']}")
+        jules_lines.append(f"Jules sessions unavailable: {data['jules_err']}")
     else:
-        matched, other, unscoped = [], 0, 0
+        matched = []
         for session in sessions:
             if not isinstance(session, dict):
                 continue
@@ -574,20 +600,72 @@ def build(data):
             if repo == "arii/tech-dancer":
                 matched.append(item)
             elif repo is not None:
-                other += 1
+                jules_other += 1
             else:
-                unscoped += 1
+                jules_unscoped += 1
                 matched.append(item + " (repo unscoped)")
         if matched:
-            lines.extend(matched)
+            jules_lines.extend(matched)
         else:
-            lines.append("No active Jules sessions for tech-dancer.")
-        if other:
-            lines.append(f"({other} active session(s) for other repos, "
-                         "not listed.)")
-        if unscoped:
-            lines.append(f"({unscoped} active session(s) above carry no "
-                         "repo info — listed unscoped, not claimed.)")
+            jules_lines.append("No active Jules sessions for tech-dancer.")
+        if jules_other:
+            jules_lines.append(f"({jules_other} active session(s) for other "
+                               "repos, not listed.)")
+        if jules_unscoped:
+            jules_lines.append(f"({jules_unscoped} active session(s) above "
+                               "carry no repo info — listed unscoped, not "
+                               "claimed.)")
+        jules_items = matched
+
+    return {
+        "attention": attention, "prs": pr_infos,
+        "prs_err": data["prs_err"], "reviews_lines": reviews_lines,
+        "reviews_err": {str(k): v for k, v in reviews_err.items()},
+        "board": board_items, "board_lines": board_lines,
+        "board_err": data["board_err"],
+        "conflicts": conflicts_list, "conflicts_lines": conflicts_lines,
+        "conf_err": data["conf_err"],
+        "failing_runs": failing_runs, "workflow_lines": workflow_lines,
+        "runs_err": data["runs_err"],
+        "jules": {"items": jules_items, "other": jules_other,
+                  "unscoped": jules_unscoped,
+                  "unavailable": data["jules_err"] if sessions is None else None},
+        "jules_lines": jules_lines,
+    }
+
+
+def build(data):
+    """Return (briefing text, attention items, raw appendix text)."""
+    a = analyze(data)
+    lines = [f"# Briefing {date.today().isoformat()}", ""]
+    lines.append("## Needs attention")
+    if a["attention"]:
+        lines.extend(f"- {x}" for x in a["attention"])
+    else:
+        lines.append("Nothing needs attention.")
+    lines.append("")
+    lines.append(f"## Open PRs ({len(data['pr_list'])})")
+    if a["prs_err"]:
+        lines.append(f"Open PR list unavailable: {a['prs_err']}")
+    elif a["prs"]:
+        lines.extend(p["line"] for p in a["prs"])
+    else:
+        lines.append("No open PRs.")
+    lines.append("")
+    lines.append("## Reviews")
+    lines.extend(a["reviews_lines"])
+    lines.append("")
+    lines.append("## Work board")
+    lines.extend(a["board_lines"])
+    lines.append("")
+    lines.append("## Conflicts")
+    lines.extend(a["conflicts_lines"])
+    lines.append("")
+    lines.append("## Workflow health")
+    lines.extend(a["workflow_lines"])
+    lines.append("")
+    lines.append("## Agent sessions (Jules)")
+    lines.extend(a["jules_lines"])
     lines.append("")
 
     raw_parts = []
@@ -603,19 +681,23 @@ def build(data):
     if data["jules_raw"]:
         raw_parts.append(f"### agent list-sessions\n{data['jules_raw'][:RAW_CAP]}")
     raw_text = "\n\n".join(raw_parts)
-    return "\n".join(lines), attention, raw_text
-
+    return "\n".join(lines), a["attention"], raw_text
 
 def main(argv):
     briefing = "--briefing" in argv
+    briefing_json = "--briefing-json" in argv
     plan_dir = None
     if "--plan-dir" in argv:
         plan_dir = argv[argv.index("--plan-dir") + 1]
-    if not briefing and not plan_dir:
-        print("usage: briefing_summary.py --briefing | --plan-dir DIR",
-              file=sys.stderr)
+    if not briefing and not briefing_json and not plan_dir:
+        print("usage: briefing_summary.py --briefing | --briefing-json | "
+              "--plan-dir DIR", file=sys.stderr)
         return 2
     data = fetch()
+    if briefing_json:
+        print(json.dumps(analyze(data)))
+        # Same exit rule as --briefing: 0 if a main source worked.
+        return 0 if (data["pr_list"] or data["board"]) else 1
     text, attention, raw_text = build(data)
     if briefing:
         print(text)

@@ -16,15 +16,17 @@ label, so you do not have to remember the docs to use the page.
 | Status | `git status` + `git log -3` in the checkout, `docker compose ps`, terminal image tags |
 | Deploy buttons (rebuild this page) | `git pull --ff-only`, `docker compose up -d --build buttons` — rebuilds the buttons container itself from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
-| Pull models | `scripts/pull-models.sh` (slow, GBs — runs in the background, output streams to the page) |
-| Logs | `docker compose logs --tail=100 terminal ollama` |
+| Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
 | Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container (tech-dancer): parses td JSON plus `gh` enrichment into a readable briefing — see below |
-| Repo briefing (agent, slow) | Pi print mode (`pi -p`) with the agent brief: open PRs, conflicts, failing checks, review comments, stale PRs, one top action. Slow on the local 8b model (minutes) |
-| Create plan from briefing | `buttons/briefing_summary.py --plan-dir .agents/plans` — saves the readable briefing plus a derived checklist to `tech-dancer/.agents/plans/<date>-briefing-plan.md` (untracked until committed) |
+| Sync & nudge agents | `td agent list-sessions`, then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones |
+| Warm repo context | `td context-warm` — regenerate tech-dancer `.agent-context.json` if stale |
+| Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for tech-dancer |
 
-Deploy buttons, Recreate, Pull models, Repo briefing
-(agent), and Create plan ask for a browser confirm first. Status,
-Logs, and Repo briefing (td) do not. One run at a time: starting a
+Deploy buttons, Recreate, and Sync & nudge agents ask for a
+browser confirm first, as do the per-PR action buttons on the
+Briefing cards (their own confirm dialogs). Status, Logs, Repo
+briefing (td), Warm repo context, and Preflight check do not.
+One run at a time: starting a
 second run while one is active returns an error until the first
 finishes. Output streams to the page (polled every 2s); reloading
 mid-run re-attaches to it. Recreating the terminal kills any running
@@ -89,11 +91,7 @@ mid-run.
   Every run ends with an
   explicit trailer line in the output: `finished: exit 0`, or
   `step failed with exit code N; aborting` on the failing step
-  (later steps never run). One exception to read carefully:
-  Create plan deliberately exits 0 even if a `td` step inside it
-  fails, because the error lands in the plan file instead of losing
-  the plan — green there means "plan file written", not "every td
-  step passed"; check the file's contents.
+  (later steps never run).
 
 ## Buttons are server-rendered, not JS-generated
 
@@ -103,11 +101,12 @@ attaches handlers to them. This is deliberate, after a
 2026-10-28 incident where the page rendered with no action
 buttons at all: the buttons had been JS-generated, so any
 failure in the page script left the static parts (Clear output,
-Plans heading) visible but zero buttons and no clue why. Now
+Briefing heading) visible but zero buttons and no clue why. Now
 the buttons exist in the raw HTML whether or not any script
 runs. The page script is also split in two: the core block
-(handlers, polling, progress, Clear) and the Plans block, so a
-Plans failure cannot take the core buttons down. A diagnostic
+(handlers, polling, progress, Clear) and the Briefing block, so
+a Briefing failure cannot take the core buttons down. A
+diagnostic
 line at the top of the page ("JavaScript is not running…")
 is hidden by the core script on load — if it stays visible,
 the core script never ran: hard-refresh and check the browser
@@ -123,55 +122,71 @@ actual root cause of the empty-buttons page; the server-rendered
 buttons are what made the page survive it anyway. If the template
 ever stops being raw, the jsdiag line will tell you first.
 
-## Plans
+## Live Briefing view
 
-Below the output pane, a Plans section lists the briefing plans in
-`tech-dancer/.agents/plans/*.md` (newest first), each with a
-completed/total count, a progress bar, and its last-modified
-date. The newest plan starts expanded; the rest start collapsed.
-Tap a plan to expand its checklist, parsed from `- [ ]` / `- [x]`
-lines (also `*` bullets and capital `X`) anywhere in the file —
-not just the Next actions section. An expanded plan also shows a
-short excerpt of the briefing itself — the plan file's td output
-(PRs, CI state, conflicts), not just the checklist — because a
-plan that only shows four generic checkboxes says nothing about
-what the briefing actually found. And each expanded plan has
-action buttons of its own: Re-run briefing (td, fast), Create a
-new plan, and a Terminal link, so a plan is a starting point for
-action rather than a dead end. Those run through the same
-allowlisted actions as the main buttons and their output appears
-in the output pane above.
+Below the output pane, a Briefing section renders the same
+briefing the fast button prints — but as cards, not a markdown
+dump. It runs on page load (with a spinner while the td/gh
+calls complete) and re-fetches on Refresh; it does not
+auto-refresh, so a card you are reading does not shift under
+you. The data comes from `GET /buttons/api/briefing`, which
+runs `buttons/briefing_summary.py --briefing-json` in the
+terminal container and passes its JSON through. The JSON and
+the text briefing come from one `analyze()` function, so the
+cards and the text output cannot disagree about a PR.
 
-Tapping a checkbox flips that one character in the plan file
-itself, so the state is the file: it shows up in `git status` in
-the tech-dancer checkout, survives a container recreate, and
-commits with the plan. The toggle sends only a validated plan
-filename and a line number to the server; the server re-checks
-that the line is still a checkbox before flipping it, so a
-stale tap after the file changed fails instead of editing the
-wrong line. There is no free-text input: items can only be
-ticked, never added or reworded from this page — add items from
-the terminal if a plan needs new ones.
+Each open PR renders as a card: number + title (linked to
+GitHub), branch, CI state with failing checks, merge state,
+conflict/stale/draft flags, review verdicts, and up to two
+review excerpts. Below the cards come failing runs (with failed
+jobs and steps) and active Jules sessions. The section degrades
+per source like the text briefing: a failed source shows as a
+note, not a blank section.
 
-Create plan writes the readable briefing first, then a
-`## Next actions` checklist DERIVED from the findings — one
-checkbox per attention item, in attention order, plus "Re-run the
-briefing after acting". No generic items: if nothing needs
-attention the checklist says so. After the checklist comes a
-`## Raw output` appendix with the raw td JSON (audit trail). The
-Plans excerpt stops at that appendix, so the page shows the
-briefing, never the JSON. Older plans show only the checkbox
-lines they already contain.
+Each card also carries action buttons — the point of the view
+is clearing the queue from the phone, not just reading it:
 
-Implementation note: the buttons container has no `/srv/repos`
-mount, so Plans list/toggle run a fixed Python script inside the
-terminal container via `docker compose exec terminal python3 -`
-(the same transport as the briefing buttons), with the plan
-payload embedded in the script — `python3 -` reads the script
-from stdin, so stdin cannot also carry the payload. If the
-terminal container is down, the Plans section reports
-"plans unavailable" instead of a list; the action buttons are
-unaffected except for the ones that also exec into terminal.
+| Card button | Runs | When it renders |
+|---|---|---|
+| Merge (squash) | `gh pr merge N --squash --delete-branch` | CI passing, merge clean, not a draft |
+| Update branch | GitHub update-branch API for the PR | Merge state behind, not a draft |
+| Fix CI with Jules | `td agent fix-ci --pr N --execute` (dispatches a Jules session — not instant) | CI failing, not a draft |
+
+Every button asks for a browser confirm first, and the server
+re-checks fresh state at tap time before running anything — a
+card rendered minutes ago may be stale, so the server gates
+Merge on CI passing + merge clean, Update on behind only, and
+Fix CI on CI failing, and refuses with a reason otherwise. A
+DIRTY (conflicted) branch gets no Update button: td's
+resolve-conflicts resolves in a separate worktree without
+pushing, so it cannot update the PR branch from here — resolve
+conflicts in the terminal. The PR number is validated as an
+integer server-side before it is ever interpolated into a
+command; there is no free-text input on this page.
+
+The old Plans section (plan files in
+`tech-dancer/.agents/plans/` with tickable checkboxes) is gone:
+ticking a checkbox only edited an untracked file nothing read,
+and the briefing cards plus their action buttons replace both
+the plan file and its checkboxes. `briefing_summary.py
+--plan-dir` still exists as a CLI for writing a plan file from
+the terminal, but no button calls it.
+
+## Pi session audit
+
+The Logs button now shows more than container logs. Container
+logs show the terminal process, not what the agent did — so
+after `docker compose logs --tail=100 terminal ollama`, Logs
+also runs `buttons/pi_logs.py` in the terminal container, which
+reads Pi's own transcripts from the pi-data volume
+(`/root/.pi/agent/sessions/--<cwd>--/<timestamp>_<uuid>.jsonl`)
+and renders them readably: the newest session files, then the
+latest session's header (id, cwd, start) and its prompts,
+replies, tool calls by name, and truncated tool results. The
+full JSONL stays on disk as the archive; this is the readable
+audit view. The script never fails the Logs run: no sessions,
+an unreadable file, or an unknown entry shape all degrade to a
+plain note.
 
 ## The readable briefing (`briefing_summary.py`)
 
@@ -326,12 +341,27 @@ spinner shows while a refresh is in flight or a pull is pending,
 per-repo pull results land on the repo cards as they arrive, and
 a timestamp shows when the page last refreshed. A pull that is
 still running shows as "pulling <repo>…" with the spinner, from
-the status API's `webhooks_pending` field. Plans are deliberately
-not auto-refreshed — re-rendering the list would collapse
-whatever the reader has expanded. Note also that GitHub's ping
+the status API's `webhooks_pending` field. The Briefing view
+re-fetches only on load or Refresh, for the same reason: a card
+you are reading should not shift under you. Note also that
+GitHub's ping
 (sent when a webhook is created) does more than answer pong: for
 an allowlisted repo it queues an auto-pull, so creating the
 webhook immediately syncs the checkout.
+
+### Post-pull warming (tech-dancer)
+
+After a successful tech-dancer auto-pull, the buttons server
+spawns a background warming thread (never holding the pull
+lock, never failing the pull record): `pnpm install
+--frozen-lockfile` in the terminal container, but only when
+`package.json` or `pnpm-lock.yaml` changed across that pull,
+and `td context-warm` always (without `--force`, so it rewrites
+only when stale or missing). `.agent-context.json` is gitignored
+in tech-dancer, so warming never dirties the checkout or blocks
+a later fast-forward. Warming applies to webhook pulls only in
+the sense that host pulls already trigger the tracked
+post-merge hook, which runs `pnpm install` itself.
 
 ## Tracked git hooks + setup script
 
@@ -387,7 +417,8 @@ commands, so bring-up and clean-up stop being lengthy shell lines:
 | `update:buttons` | `git pull --ff-only && docker compose up -d --build buttons` (the Deploy buttons action, from a shell) |
 | `hooks:install` / `hooks:check` | `scripts/setup-hooks.sh` / with `--check` |
 | `webhooks:setup` / `webhooks:check` | `scripts/setup-webhooks.sh` via the terminal container / with `--check` |
-| `check` | `python3 -m py_compile buttons/server.py buttons/briefing_summary.py` |
+| `models:pull` | `bash scripts/pull-models.sh` (the old Pull models button, as a shell command) |
+| `check` | `python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py` |
 
 Run with `npm run <script>` from the checkout. It needs node/npm
 where you run it, plus docker compose and git on PATH.

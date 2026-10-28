@@ -1,1 +1,27 @@
-{"description":"S5 home AI server: scripts-only package (no dependencies). Short names for the docker compose / git commands the buttons page also runs, so bring-up, clean-up, and rebuilds stop being lengthy shell commands. Requires docker compose and git on PATH, plus node/npm only as the script runner.","name":"remote-server","private":true,"scripts":{"buttons:logs":"docker compose logs --tail=100 buttons","buttons:rebuild":"docker compose up -d --build buttons","check":"python3 -m py_compile buttons/server.py buttons/briefing_summary.py","clean":"docker compose down --remove-orphans","down":"docker compose down","hooks:check":"bash scripts/setup-hooks.sh --check","hooks:install":"bash scripts/setup-hooks.sh","logs":"docker compose logs --tail=100","ps":"docker compose ps","pull":"git pull --ff-only","restart":"docker compose restart","status":"git status --short --branch && docker compose ps","terminal:logs":"docker compose logs --tail=100 terminal ollama","terminal:recreate":"docker compose up -d --force-recreate terminal","up":"docker compose up -d","update:buttons":"git pull --ff-only && docker compose up -d --build buttons","webhooks:check":"docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh --check","webhooks:setup":"docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh"},"version":"0.1.0"}
+{
+  "description": "S5 home AI server: scripts-only package (no dependencies). Short names for the docker compose / git commands the buttons page also runs, so bring-up, clean-up, and rebuilds stop being lengthy shell commands. Requires docker compose and git on PATH, plus node/npm only as the script runner.",
+  "name": "remote-server",
+  "private": true,
+  "scripts": {
+    "buttons:logs": "docker compose logs --tail=100 buttons",
+    "buttons:rebuild": "docker compose up -d --build buttons",
+    "check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py",
+    "clean": "docker compose down --remove-orphans",
+    "down": "docker compose down",
+    "hooks:check": "bash scripts/setup-hooks.sh --check",
+    "hooks:install": "bash scripts/setup-hooks.sh",
+    "logs": "docker compose logs --tail=100",
+    "ps": "docker compose ps",
+    "pull": "git pull --ff-only",
+    "restart": "docker compose restart",
+    "status": "git status --short --branch && docker compose ps",
+    "terminal:logs": "docker compose logs --tail=100 terminal ollama",
+    "terminal:recreate": "docker compose up -d --force-recreate terminal",
+    "up": "docker compose up -d",
+    "update:buttons": "git pull --ff-only && docker compose up -d --build buttons",
+    "webhooks:check": "docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh --check",
+    "webhooks:setup": "docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh",
+    "models:pull": "bash scripts/pull-models.sh"
+  },
+  "version": "0.1.0"
+}
