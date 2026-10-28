@@ -99,10 +99,16 @@ services:
     environment:
       TERM: xterm-256color
       PATH: /root/.local/bin:/opt/venvs/td/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-      # Fine-grained GitHub PAT (repo scope) from .env, for boomtick-mcp
-      # and gh. Empty/unset = public read-only GitHub ops only.
+      # Fine-grained GitHub PAT (repo scope) + GitHub App credentials from .env,
+      # for boomtick-mcp, td, and gh. Empty/unset = public read-only GitHub ops only.
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
+      APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:

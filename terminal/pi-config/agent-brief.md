@@ -8,12 +8,14 @@ flags exist for this: stay read-only unless he says otherwise).
 
 ## Standing checks (every session, before other work)
 
-1. MCP health: `boomtick` must show as connected (`/mcp`). If not,
-   diagnose in order and report exactly which link is broken:
-   `td` on PATH in this container; repo cloned at
-   `/srv/repos/tech-dancer`; `GITHUB_TOKEN` set in the container
-   environment; `mcp.json` present at `/root/.pi/agent/mcp.json`.
-   Fix what you can, report what you cannot.
+1. MCP health: `boomtick` tools (`mcp__boomtick__boomtick_health`,
+   `mcp__boomtick__github_search_open_prs`, etc.) are declared directly
+   to you when connected. Call `mcp__boomtick__boomtick_health` first
+   (do not stop on optional `td doctor` warnings like `GEMINI_API_KEY`
+   as long as `"status": "success"`). If MCP tools are unavailable,
+   diagnose in order and report which link is broken: `td` on PATH;
+   repo cloned at `/srv/repos/tech-dancer`; `GITHUB_TOKEN` set in the
+   container environment; `mcp.json` at `/root/.pi/agent/mcp.json`.
 2. Repos you watch: `tech-dancer` (via boomtick-mcp) first. Others
    (grasping-2026, remote-server, muse) only once they have their
    own MCP entries — the server is single-repo-scoped per entry, so

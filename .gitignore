@@ -1,5 +1,7 @@
-# secrets — never commit (covers .env, .env.ci, .env.local, ...)
+# secrets — never commit (covers .env, .env.ci, .env.local, private keys, ...)
 .env*
+*.pem
+*.key
 
 # docker / runtime state
 data/

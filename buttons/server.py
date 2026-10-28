@@ -30,7 +30,7 @@ STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
 # Run a command inside the terminal container (where td and Pi live).
 EXEC = COMPOSE + ["exec", "-T", "terminal", "bash", "-c"]
-TD = "cd /srv/repos/tech-dancer && "
+TD = "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set +a && cd /srv/repos/tech-dancer && "
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
