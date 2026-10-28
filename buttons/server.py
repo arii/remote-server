@@ -86,6 +86,11 @@ def excerpt(text):
     out = []
     for line in text.splitlines():
         s = line.strip()
+        # The plan file's raw appendix is an audit trail, not reading
+        # material: stop the excerpt there, or it bleeds JSON into
+        # the page after the readable sections run out.
+        if s == "## Raw output":
+            break
         if not s or s.startswith("#") or pat.match(line):
             continue
         out.append(line.rstrip())
@@ -220,19 +225,24 @@ ACTIONS = {
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
         ],
     },
-    # Deterministic briefing: td commands (read-only) inside the
-    # terminal container. tech-dancer has project_config.json, so td
-    # passes config validation there. Needs gh auth or GITHUB_TOKEN
-    # in the terminal container; auth errors show in the output.
+    # Deterministic briefing: the summarizer script (read-only)
+    # inside the terminal container. It parses td's JSON plus gh
+    # enrichment into a readable briefing — raw td output is NOT
+    # shown here, because td defaults to JSON and its human mode
+    # drops per-PR detail. The script lives in the checkout, which
+    # the terminal container sees at /srv/remote-server (the same
+    # mount the TD prefix uses for .env), so a git pull updates it
+    # with no container rebuild. tech-dancer has project_config.json,
+    # so td passes config validation there. gh is authed in the
+    # terminal container; if a gh call fails, that PR's CI reads
+    # "unknown" instead of failing the whole briefing.
     "briefing-td": {
         "label": "Repo briefing (td, fast)",
         "group": "Briefing",
         "sub": "Open PRs, CI state, conflicts — fast, from td",
         "confirm": False,
         "steps": [
-            EXEC + [TD + "td gh status-board"],
-            EXEC + [TD + "td gh search-prs --state open"],
-            EXEC + [TD + "td gh detect-conflicts --all"],
+            EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
         ],
     },
     # Agent-written briefing: Pi print mode (-p: one-shot reply and
@@ -257,25 +267,20 @@ ACTIONS = {
     # Plan file from the deterministic briefing. Written into the
     # tech-dancer checkout (untracked until committed) at
     # .agents/plans/<date>-briefing-plan.md, next to the repo's other
-    # agent workflows. No set -e: a failing td step still lands in
-    # the file (with its error) instead of losing the whole plan.
+    # agent workflows. The summarizer writes the readable briefing,
+    # then a Next-actions checklist DERIVED from the findings (one
+    # checkbox per attention item), then the raw td JSON as an
+    # appendix. A failing source degrades its section instead of
+    # losing the whole plan — the file landing is what exit 0 means
+    # here, not "every source passed"; check the file's contents.
     "create-plan": {
         "label": "Create plan from briefing",
         "group": "Briefing",
         "sub": "Save today's briefing as a plan file in tech-dancer/.agents/plans/",
         "confirm": True,
         "steps": [
-            EXEC + [TD + 'mkdir -p .agents/plans && { echo "# Briefing plan $(date +%F)"; '
-                     'echo; td gh status-board; echo; td gh search-prs --state open; '
-                     'echo; td gh detect-conflicts --all; '
-                     'echo; echo "## Next actions"; '
-                     'echo "- [ ] Review open PRs and CI state above"; '
-                     'echo "- [ ] Resolve merge conflicts above, if any"; '
-                     'echo "- [ ] Triage failing checks and unresolved review comments"; '
-                     'echo "- [ ] Do the single most important action, then re-run the briefing"; } '
-                     '> .agents/plans/$(date +%F)-briefing-plan.md 2>&1; '
-                     'echo "wrote .agents/plans/$(date +%F)-briefing-plan.md"; '
-                     'git status --short .agents/plans/'],
+            EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --plan-dir .agents/plans "
+                     "&& git status --short .agents/plans/"],
         ],
     },
 }

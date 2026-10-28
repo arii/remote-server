@@ -19,9 +19,9 @@ label, so you do not have to remember the docs to use the page.
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Pull models | `scripts/pull-models.sh` (slow, GBs — runs in the background, output streams to the page) |
 | Logs | `docker compose logs --tail=100 terminal ollama` |
-| Repo briefing (td, fast) | `td gh status-board` + `td gh search-prs --state open` + `td gh detect-conflicts --all` inside the terminal container (tech-dancer) |
+| Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container (tech-dancer): parses td JSON plus `gh` enrichment into a readable briefing — see below |
 | Repo briefing (agent, slow) | Pi print mode (`pi -p`) with the agent brief: open PRs, conflicts, failing checks, review comments, stale PRs, one top action. Slow on the local 8b model (minutes) |
-| Create plan from briefing | Saves the deterministic briefing to `tech-dancer/.agents/plans/<date>-briefing-plan.md` (untracked until committed) |
+| Create plan from briefing | `buttons/briefing_summary.py --plan-dir .agents/plans` — saves the readable briefing plus a derived checklist to `tech-dancer/.agents/plans/<date>-briefing-plan.md` (untracked until committed) |
 
 Deploy, Deploy buttons, Recreate, Pull models, Repo briefing
 (agent), and Create plan ask for a browser confirm first. Status,
@@ -155,11 +155,15 @@ wrong line. There is no free-text input: items can only be
 ticked, never added or reworded from this page — add items from
 the terminal if a plan needs new ones.
 
-Create plan now appends a `## Next actions` checklist to every
-new plan (review PRs/CI, resolve conflicts, triage failing
-checks/comments, do the single most important action), so new
-plans always have something to tick. Older plans show only the
-checkbox lines they already contain.
+Create plan writes the readable briefing first, then a
+`## Next actions` checklist DERIVED from the findings — one
+checkbox per attention item, in attention order, plus "Re-run the
+briefing after acting". No generic items: if nothing needs
+attention the checklist says so. After the checklist comes a
+`## Raw output` appendix with the raw td JSON (audit trail). The
+Plans excerpt stops at that appendix, so the page shows the
+briefing, never the JSON. Older plans show only the checkbox
+lines they already contain.
 
 Implementation note: the buttons container has no `/srv/repos`
 mount, so Plans list/toggle run a fixed Python script inside the
@@ -171,12 +175,42 @@ terminal container is down, the Plans section reports
 "plans unavailable" instead of a list; the action buttons are
 unaffected except for the ones that also exec into terminal.
 
-Briefing notes: the td briefing needs GitHub auth in the terminal
-container (`gh` auth or `GITHUB_TOKEN`); auth errors show in the
-output instead of a briefing. The agent briefing's MCP tools in Pi
-print mode are unverified on the S5 — its prompt falls back to
-`td`/`gh` CLI if MCP tools are absent there. The plan file lands
-untracked in the tech-dancer checkout; commit or delete it from the
+## The readable briefing (`briefing_summary.py`)
+
+The fast briefing is a summarizer, not a td dump — and that is
+deliberate. td defaults to JSON output, and its human mode for
+search-prs only prints "Found N PRs", so neither td mode gives a
+briefing a person can act on. The summarizer (`buttons/
+briefing_summary.py`, stdlib only, run with cwd = the tech-dancer
+checkout) parses `td gh search-prs --state open --json`,
+`td gh status-board --json`, `td gh detect-conflicts --all --json`,
+and `td repo workflow-runs --json`, then enriches each open PR
+with `gh pr view` (CI from `statusCheckRollup`, review decision,
+merge state) — td's PR data carries no CI state, so this step is
+what makes "CI: failing" a real claim. `gh` is authed in the
+terminal container; if a `gh` call fails, that PR's CI reads
+"unknown" instead of failing the whole briefing, and any source
+that fails degrades only its own section.
+
+Format, in order: Needs attention, Open PRs (one line each: number,
+title, branch, CI, merge state, updated date, draft marker),
+Work board, Conflicts, Workflow health (failing runs only).
+Attention ranking: conflicted, then CI failing, then changes
+requested, then stale (updated over 30 days ago). REVIEW_REQUIRED
+is deliberately not attention — in a solo repo most open PRs sit
+there, so flagging them would make every briefing shout. Drafts
+are listed, never attention items.
+
+The script lives in the checkout, which the terminal container
+sees at `/srv/remote-server` (the same mount the TD prefix uses
+for `.env`), so a git pull updates it with no container rebuild —
+but the button definitions in `server.py` that call it still need
+`up -d --build buttons` after a `server.py` change.
+
+Briefing notes: the agent briefing's MCP tools in Pi print mode
+are unverified on the S5 — its prompt falls back to `td`/`gh`
+CLI if MCP tools are absent there. The plan file lands untracked
+in the tech-dancer checkout; commit or delete it from the
 terminal as usual.
 
 ## Architecture
