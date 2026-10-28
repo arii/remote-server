@@ -177,7 +177,6 @@ services:
       # No trust expansion: the socket already gives this container
       # root-equivalent host access.
       - ${HOME}/.ssh:/root/.ssh:ro
-      - ./terminal/gitconfig:/etc/gitconfig:ro
     environment:
       HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
     expose:
