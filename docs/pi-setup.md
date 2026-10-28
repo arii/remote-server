@@ -10,10 +10,10 @@ infrastructure: Pi runs inside the phone terminal, Ollama serves the model.
   loopback-published (`127.0.0.1:11434`). Models live in the `ollama-data`
   volume; `OLLAMA_KEEP_ALIVE=24h` so the interactive model stays warm.
 - **`terminal`** (compose service): ttyd + zellij image now also carries
-  Node 22 + Pi 1.4.0 (pinned in `terminal/Dockerfile` via build args,
-  smoke-tested with `--version` at build time). Pi's config is baked into
-  the image (`terminal/pi-config/`); sessions persist in the `pi-data`
-  volume (image content seeds it on first use).
+  Node 24.16.0 + Pi 1.4.0 (pinned in `terminal/Dockerfile` via build args,
+  smoke-tested with `--version` at build time). Pi's config (`terminal/pi-config/`)
+  is baked into the image and bind-mounted directly into `/root/.pi/agent/` so
+  edits apply across recreates without losing sessions in `pi-data`.
 - **Models** (`OLLAMA_MODELS` in `.env`): `qwen3:8b` (default — snappier
   on the phone, ~6–12 tok/s) and `qwen3:14b` (stronger, ~3–6 tok/s).
   Switch mid-session with `/model`.
@@ -69,8 +69,12 @@ should be replaced with the real number.
 ## BoomTick MCP tools (active 2026-10-27)
 
 Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
-0.6.1 in `terminal/pi-config/mcp.json`), run via `npx` inside the
-terminal container. It adds structured tools Pi's built-ins don't have:
+0.6.2 in `terminal/pi-config/mcp.json` and globally installed in the
+terminal image), configured with `"exposure": "direct"` and
+`"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
+declared directly to the model without duplicate dot-alias collisions or
+QuickJS `codemode` indirection. It adds structured tools Pi's built-ins
+don't have:
 
 - **GitHub ops:** search PRs, get diffs, detect merge conflicts, open
   replacement PRs, triage comments.
@@ -102,7 +106,12 @@ server entry with its own `GITHUB_REPO` / `BOOMTICK_REPO_PATH`.
   check; if `td` isn't resolvable, startup fails with
   `spawnSync td ENOENT` and the connection closes. `td` is baked
   into the terminal image (venv `/opt/venvs/td`, `boomtick-cli`
-  0.14.0 pinned, on `PATH`) — no manual install.
+  `cli-v0.14.2` installed over `0.14.0` deps for Python 3.11
+  compatibility, on `PATH`) — no manual install.
+- **Git safe.directory:** `terminal/gitconfig` (`safe.directory = *` +
+  user identity) is baked into `/etc/gitconfig` and bind-mounted by
+  compose so bind-mounted host checkouts pass `td doctor` and git
+  ownership checks across container recreates.
 - **GitHub auth:** `BOOMTICK_GITHUB_TOKEN` in `.env` (fine-grained PAT,
   repo scope) → `GITHUB_TOKEN` / `GH_TOKEN` inside the container. The
   server requires `gh` authenticated in `PATH` — `gh` is installed in
@@ -178,10 +187,11 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (pinned, CI smoke-tested):
-  Node 22 + npm, pnpm 10.28.2, Python 3 + venv/pip, `td`
-  (`boomtick-cli` 0.14.0 in venv `/opt/venvs/td`, on `PATH`), `gh`,
-  `git`, Docker CLI. This covers the interpreters and package
-  managers every repo needs before its own setup can run.
+  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.6.2,
+  Python 3 + venv/pip, `td` (`boomtick-cli` `cli-v0.14.2` in venv
+  `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
+  `safe.directory = *`), Docker CLI. This covers the interpreters and
+  package managers every repo needs before its own setup can run.
 - **Installed per checkout** (persists in the bind mount):
   - JS repos (e.g. tech-dancer): `pnpm install` in the checkout;
     `node_modules` persists the same way. The boomtick-mcp

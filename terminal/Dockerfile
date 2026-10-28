@@ -14,14 +14,16 @@ FROM debian:${DEBIAN_RELEASE}
 
 ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
-ARG NODE_VERSION=22.23.3
+ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
+ARG BOOMTICK_MCP_VERSION=0.6.2
+ARG BOOMTICK_CLI_REF=cli-v0.14.2
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
     HOME=/root \
     TERM=xterm-256color \
-    PATH="/opt/venvs/td/bin:${PATH}"
+    PATH="/root/.local/bin:/opt/venvs/td/bin:${PATH}"
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -48,18 +50,22 @@ RUN apt-get update \
  && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version \
  && gh --version \
- && npm install -g "pnpm@10.28.2" \
+ && npm install -g "pnpm@10.28.2" "@arii/boomtick-mcp@${BOOMTICK_MCP_VERSION}" \
  && pnpm --version \
+ && test -x /usr/local/bin/boomtick-mcp \
  && python3 --version \
  && python3 -m venv /tmp/venv-smoke \
  && /tmp/venv-smoke/bin/python --version \
  && rm -rf /tmp/venv-smoke \
  && python3 -m venv /opt/venvs/td \
- && /opt/venvs/td/bin/pip install "boomtick-cli==0.14.0" \
- && test -x /opt/venvs/td/bin/td \
+ && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
+ && /opt/venvs/td/bin/td --help > /dev/null \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
+
+# System gitconfig: safe.directory = * for bind-mounted host checkouts (/srv/remote-server, /srv/repos/*).
+COPY gitconfig /etc/gitconfig
 
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal

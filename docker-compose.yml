@@ -76,8 +76,19 @@ services:
       # Docker socket: manage this stack from the phone (docker compose ps/up/...).
       # This is root-equivalent — the GitHub OAuth single-user gate is the boundary.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Pi sessions + config persist here; image content seeds it on first use.
+      # System gitconfig (safe.directory = * + user identity) so bind-mounted
+      # checkouts work out of the box across container recreates.
+      - ./terminal/gitconfig:/etc/gitconfig:ro
+      # Pi sessions + auth persist in pi-data; tracked config files are
+      # bind-mounted directly so updates in git apply on container recreate
+      # without manual docker cp or losing session history.
       - pi-data:/root/.pi
+      - ./terminal/pi-config/models.json:/root/.pi/agent/models.json
+      - ./terminal/pi-config/mcp.json:/root/.pi/agent/mcp.json
+      - ./terminal/pi-config/agent-brief.md:/root/.pi/agent/agent-brief.md
+      # Persist Antigravity CLI (agy) binary, state, auth, and chat history across container recreates.
+      - gemini-data:/root/.gemini
+      - local-data:/root/.local
       # Other checkouts, cloned on the host (see docs/pi-setup.md § repos).
       # ${HOME} interpolates from your shell environment at compose time.
       - ${HOME}/repos:/srv/repos
@@ -87,6 +98,7 @@ services:
       - ${HOME}/.ssh:/root/.ssh:ro
     environment:
       TERM: xterm-256color
+      PATH: /root/.local/bin:/opt/venvs/td/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       # Fine-grained GitHub PAT (repo scope) from .env, for boomtick-mcp
       # and gh. Empty/unset = public read-only GitHub ops only.
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
@@ -159,6 +171,7 @@ services:
       # No trust expansion: the socket already gives this container
       # root-equivalent host access.
       - ${HOME}/.ssh:/root/.ssh:ro
+      - ./terminal/gitconfig:/etc/gitconfig:ro
     environment:
       HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
     expose:
@@ -182,6 +195,8 @@ volumes:
   tailscale-state:
   ollama-data:
   pi-data:
+  gemini-data:
+  local-data:
 
 # ---------------------------------------------------------------------------
 # ON HOLD — remaining agent harness decisions deferred (2026-10-22).
