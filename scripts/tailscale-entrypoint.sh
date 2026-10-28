@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Entrypoint for the tailscale container: start tailscaled and join the tailnet
 # as a VPN for admin access (SSH, future services). Outbound only.
 #
