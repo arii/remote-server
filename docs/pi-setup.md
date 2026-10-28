@@ -130,6 +130,25 @@ read-only ask, e.g. "use boomtick to search tech-dancer PRs needing
 rescue." First run downloads the npm package via `npx` (needs network;
 Node 22 satisfies the server's stated Node >= 22).
 
+## Agent brief
+
+Pi's standing instructions live in `terminal/pi-config/agent-brief.md`
+(baked into the terminal image; same volume rule as `mcp.json` — an
+existing `pi-data` volume needs
+`docker cp terminal/pi-config/agent-brief.md remote-terminal-1:/root/.pi/agent/agent-brief.md`).
+The brief covers: MCP health checks first every session, repos
+watched (tech-dancer only to start — MCP is single-repo-scoped per
+entry), the briefing list (open PRs + CI, conflicts, failing checks,
+unresolved review comments, stale PRs, one top action), and the
+read-only boundary (no merge/push/post without explicit approval).
+
+Interactive use: start Pi and ask it to read
+`/root/.pi/agent/agent-brief.md` and follow it. The buttons page can
+also trigger briefings without opening Pi: "Repo briefing (td, fast)"
+runs td commands, "Repo briefing (agent, slow)" runs `pi -p` with the
+brief (print mode: one-shot reply, no TUI), "Create plan" saves a
+dated plan to tech-dancer's `.agents/plans/`. See docs/buttons.md.
+
 ## Repos in the terminal (active 2026-10-27)
 
 The terminal container mounts the host's `~/repos` at `/srv/repos` and

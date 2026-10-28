@@ -28,6 +28,9 @@ from urllib.parse import urlparse
 
 STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
+# Run a command inside the terminal container (where td and Pi live).
+EXEC = COMPOSE + ["exec", "-T", "terminal", "bash", "-c"]
+TD = "cd /srv/repos/tech-dancer && "
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
@@ -76,6 +79,53 @@ ACTIONS = {
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
+        ],
+    },
+    # Deterministic briefing: td commands (read-only) inside the
+    # terminal container. tech-dancer has project_config.json, so td
+    # passes config validation there. Needs gh auth or GITHUB_TOKEN
+    # in the terminal container; auth errors show in the output.
+    "briefing-td": {
+        "label": "Repo briefing (td, fast)",
+        "confirm": False,
+        "steps": [
+            EXEC + [TD + "td gh status-board"],
+            EXEC + [TD + "td gh search-prs --state open"],
+            EXEC + [TD + "td gh detect-conflicts --all"],
+        ],
+    },
+    # Agent-written briefing: Pi print mode (-p: one-shot reply and
+    # exit, no TUI) with the agent brief as context. Slow on the local
+    # 8b model (minutes). MCP tools in print mode are unverified on
+    # the S5 — the prompt falls back to td/gh CLI if they are absent.
+    "briefing-agent": {
+        "label": "Repo briefing (agent, slow)",
+        "confirm": True,
+        "steps": [
+            EXEC + [TD + 'pi -p "Read /root/.pi/agent/agent-brief.md '
+                     '(fallback: /srv/remote-server/terminal/pi-config/agent-brief.md) '
+                     'and follow it. Give me the repo briefing for tech-dancer: '
+                     'open PRs with CI state, merge conflicts, failing checks, '
+                     'unresolved review comments, stale PRs. End with the single '
+                     'most important action. Use boomtick MCP tools if available, '
+                     'otherwise td and gh CLI."'],
+        ],
+    },
+    # Plan file from the deterministic briefing. Written into the
+    # tech-dancer checkout (untracked until committed) at
+    # .agents/plans/<date>-briefing-plan.md, next to the repo's other
+    # agent workflows. No set -e: a failing td step still lands in
+    # the file (with its error) instead of losing the whole plan.
+    "create-plan": {
+        "label": "Create plan from briefing",
+        "confirm": True,
+        "steps": [
+            EXEC + [TD + 'mkdir -p .agents/plans && { echo "# Briefing plan $(date +%F)"; '
+                     'echo; td gh status-board; echo; td gh search-prs --state open; '
+                     'echo; td gh detect-conflicts --all; } '
+                     '> .agents/plans/$(date +%F)-briefing-plan.md 2>&1; '
+                     'echo "wrote .agents/plans/$(date +%F)-briefing-plan.md"; '
+                     'git status --short .agents/plans/'],
         ],
     },
 }
@@ -157,6 +207,9 @@ const ACTIONS = [
   ["recreate", "Recreate terminal (applies .env changes)", true],
   ["pull-models", "Pull models (slow, GBs)", true],
   ["logs", "Logs (terminal + ollama, tail 100)", false],
+  ["briefing-td", "Repo briefing (td, fast)", false],
+  ["briefing-agent", "Repo briefing (agent, slow)", true],
+  ["create-plan", "Create plan from briefing", true],
 ];
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");

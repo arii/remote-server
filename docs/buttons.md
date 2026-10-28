@@ -14,13 +14,25 @@ command input anywhere: every button runs one fixed command list.
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Pull models | `scripts/pull-models.sh` (slow, GBs — runs in the background, output streams to the page) |
 | Logs | `docker compose logs --tail=100 terminal ollama` |
+| Repo briefing (td, fast) | `td gh status-board` + `td gh search-prs --state open` + `td gh detect-conflicts --all` inside the terminal container (tech-dancer) |
+| Repo briefing (agent, slow) | Pi print mode (`pi -p`) with the agent brief: open PRs, conflicts, failing checks, review comments, stale PRs, one top action. Slow on the local 8b model (minutes) |
+| Create plan from briefing | Saves the deterministic briefing to `tech-dancer/.agents/plans/<date>-briefing-plan.md` (untracked until committed) |
 
-Deploy, Recreate, and Pull models ask for a browser confirm first.
-Status and Logs do not. One run at a time: starting a second run while
+Deploy, Recreate, Pull models, Repo briefing (agent), and Create
+plan ask for a browser confirm first. Status, Logs, and Repo
+briefing (td) do not. One run at a time: starting a second run while
 one is active returns an error until the first finishes. Output streams
 to the page (polled every 2s); reloading mid-run re-attaches to it.
 Recreating the terminal kills any running Pi session in it — that is
 the point of Recreate, but do not press it mid-conversation.
+
+Briefing notes: the td briefing needs GitHub auth in the terminal
+container (`gh` auth or `GITHUB_TOKEN`); auth errors show in the
+output instead of a briefing. The agent briefing's MCP tools in Pi
+print mode are unverified on the S5 — its prompt falls back to
+`td`/`gh` CLI if MCP tools are absent there. The plan file lands
+untracked in the tech-dancer checkout; commit or delete it from the
+terminal as usual.
 
 ## Architecture
 
