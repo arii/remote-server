@@ -962,18 +962,29 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "bad signature"}, 401)
             return
         event = self.headers.get("X-GitHub-Event", "")
+        try:
+            payload = json.loads(body) if body else {}
+        except Exception:
+            if event == "ping":
+                payload = {}
+            else:
+                self._json({"error": "bad JSON"}, 400)
+                return
+        repo = (payload.get("repository") or {}).get("full_name")
         if event == "ping":
+            print(f"webhook ping {repo or '?'}: pong", flush=True)
+            if repo in WEBHOOK_REPOS:
+                with webhook_state_lock:
+                    if repo not in webhook_pending:
+                        webhook_pending.add(repo)
+                        threading.Thread(target=_webhook_worker,
+                                         args=(repo, WEBHOOK_REPOS[repo]),
+                                         daemon=True).start()
             self._json({"ok": True, "msg": "pong"})
             return
         if event != "push":
             self._json({"ignored": event})
             return
-        try:
-            payload = json.loads(body) if body else {}
-        except Exception:
-            self._json({"error": "bad JSON"}, 400)
-            return
-        repo = (payload.get("repository") or {}).get("full_name")
         if repo not in WEBHOOK_REPOS:
             self._json({"ignored": repo})
             return

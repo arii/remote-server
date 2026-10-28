@@ -110,9 +110,9 @@ print("  (secret is never returned by GitHub; re-apply to sync it)")
   hook_id="$(printf '%s' "$hooks_json" | matching_hook_id)"
   if [ -n "$hook_id" ]; then
     if gh api --method PATCH "repos/$repo/hooks/$hook_id" \
-        -f active=true -F "events[]=push" \
-        -F "config[url]=$URL" -F "config[content_type]=json" \
-        -F "config[secret]=$WEBHOOK_SECRET" -F "config[insecure_ssl]=0" \
+        -F active=true -f "events[]=push" \
+        -f "config[url]=$URL" -f "config[content_type]=json" \
+        -f "config[secret]=$WEBHOOK_SECRET" -f "config[insecure_ssl]=0" \
         >/dev/null 2>"$GH_ERR"; then
       echo "updated hook $hook_id (push only, url + secret synced)"
     else
@@ -122,9 +122,9 @@ print("  (secret is never returned by GitHub; re-apply to sync it)")
     fi
   else
     if new_id="$(gh api --method POST "repos/$repo/hooks" \
-        -f name=web -f active=true -F "events[]=push" \
-        -F "config[url]=$URL" -F "config[content_type]=json" \
-        -F "config[secret]=$WEBHOOK_SECRET" -F "config[insecure_ssl]=0" \
+        -f name=web -F active=true -f "events[]=push" \
+        -f "config[url]=$URL" -f "config[content_type]=json" \
+        -f "config[secret]=$WEBHOOK_SECRET" -f "config[insecure_ssl]=0" \
         2>"$GH_ERR" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("id", ""))')"; then
       echo "created hook $new_id (creation triggers a GitHub ping — expect a pong in the buttons logs)"
     else
