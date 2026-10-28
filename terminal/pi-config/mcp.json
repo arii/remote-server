@@ -1,0 +1,1 @@
+{"mcpServers":{"boomtick":{"args":["-y","@arii/boomtick-mcp@0.6.1"],"command":"npx","env":{"BOOMTICK_REPO_PATH":"/srv/repos/tech-dancer","GITHUB_OWNER":"arii","GITHUB_REPO":"tech-dancer","GITHUB_TOKEN":"${GITHUB_TOKEN}"}}}}

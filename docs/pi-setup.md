@@ -27,7 +27,7 @@ git pull
 docker compose pull terminal   # CI-built image (or: docker compose build terminal)
 docker compose up -d ollama terminal
 ./scripts/pull-models.sh       # pulls OLLAMA_MODELS, skips present ones
-docker exec ollama ollama list # confirm both tags are there
+docker compose exec ollama ollama list # confirm both tags are there
 ```
 
 ## Use it from the phone
@@ -65,6 +65,82 @@ time docker exec ollama ollama run qwen3:8b "say hello in one sentence"
 
 Record the tok/s — the 6–12 / 3–6 estimates above are unmeasured and
 should be replaced with the real number.
+
+## BoomTick MCP tools (active 2026-10-27)
+
+Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
+0.6.1 in `terminal/pi-config/mcp.json`), run via `npx` inside the
+terminal container. It adds structured tools Pi's built-ins don't have:
+
+- **GitHub ops:** search PRs, get diffs, detect merge conflicts, open
+  replacement PRs, triage comments.
+- **Repo ops:** inspect changed files, extract package scripts, map app
+  routes, read CI logs.
+- **Validation:** isolated repair-branch creation, verification suites
+  (tests, Lighthouse, Playwright).
+- **Jules ops:** create, monitor, and interact with macro-agent Jules
+  sessions. Plus MCP resources (`repo://diff/{pr}`, `repo://ci/{pr}` …)
+  and prompts (`prompt://repair-agent`, `prompt://pr-writer` …).
+
+### Single-repo scoping — read this before use
+
+One server entry targets **one** repo: the baked entry points at
+`arii/tech-dancer` checked out at `/srv/repos/tech-dancer` (the repo the
+server was built for). To retarget, edit `/root/.pi/agent/mcp.json`
+inside the volume and `/reload` in Pi; for a second repo, add a second
+server entry with its own `GITHUB_REPO` / `BOOMTICK_REPO_PATH`.
+
+### What the server needs (all wired in compose already)
+
+- **The checkout:** `~/repos/tech-dancer` on the host, mounted at
+  `/srv/repos` (see § repos below). Clone it over SSH so pushes use
+  your key.
+- **GitHub auth:** `BOOMTICK_GITHUB_TOKEN` in `.env` (fine-grained PAT,
+  repo scope) → `GITHUB_TOKEN` / `GH_TOKEN` inside the container. The
+  server requires `gh` authenticated in `PATH` — `gh` is installed in
+  the terminal image and reads the same token. Without the token, only
+  public read-only ops work.
+- **Write guards:** mutating operations (commits, branch creation, PR
+  opening) require explicit `writeMode: true` / `pushMode: true` flags —
+  Pi won't mutate a repo unless you tell it to pass those.
+
+### S5 setup (after `git pull` + CI green on this change)
+
+```bash
+mkdir -p ~/repos
+grep -q github.com ~/.ssh/known_hosts || ssh-keyscan github.com >> ~/.ssh/known_hosts
+cd ~/repos && git clone git@github.com:arii/tech-dancer.git
+# add BOOMTICK_GITHUB_TOKEN=<fine-grained PAT, repo scope> to .env
+docker compose pull terminal && docker compose up -d terminal
+# The pi-data volume predates mcp.json, so copy it in (image re-seed
+# only happens on volume creation):
+docker cp terminal/pi-config/mcp.json remote-terminal-1:/root/.pi/agent/mcp.json
+```
+
+Then in Pi: `/mcp` should list `boomtick` as connected. Verify with a
+read-only ask, e.g. "use boomtick to search tech-dancer PRs needing
+rescue." First run downloads the npm package via `npx` (needs network;
+Node 22 satisfies the server's stated Node >= 22).
+
+## Repos in the terminal (active 2026-10-27)
+
+The terminal container mounts the host's `~/repos` at `/srv/repos` and
+your `~/.ssh` read-only at `/root/.ssh`, so Pi can work on any checkout
+and push over SSH as you:
+
+```bash
+cd ~/repos && git clone git@github.com:arii/<repo>.git   # host side
+# inside Pi/the container:
+cd /srv/repos/<repo> && pi
+```
+
+Prerequisites: `github.com` in the host `~/.ssh/known_hosts` (command
+above — a read-only mount can't add it on first connect). Note files Pi
+creates under `/srv/repos` are root-owned on the host (the container
+runs as root); `chown` if that bothers you. Trust note: the container
+already holds the Docker socket (root-equivalent), so the SSH mount
+doesn't widen the real boundary — the single-user GitHub OAuth gate is
+it.
 
 ## Config changes
 

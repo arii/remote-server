@@ -56,7 +56,6 @@ services:
         TTYD_VERSION: ${TTYD_VERSION:-1.7.7}
         ZELLIJ_VERSION: ${ZELLIJ_VERSION:-0.45.1}
     image: ${TERMINAL_IMAGE:-ghcr.io/arii/remote-server-terminal:latest} # default: CI-built GHCR image (public, no login needed to pull); override in .env to pin a tag or build locally
-    entrypoint: ["ttyd"]
     command:
       - --port=7681
       - --interface=0.0.0.0
@@ -76,8 +75,19 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Pi sessions + config persist here; image content seeds it on first use.
       - pi-data:/root/.pi
+      # Other checkouts, cloned on the host (see docs/pi-setup.md § repos).
+      # ${HOME} interpolates from your shell environment at compose time.
+      - ${HOME}/repos:/srv/repos
+      # Host SSH key, read-only: lets Pi (and git inside the container) push
+      # over SSH as you. Requires github.com in the host ~/.ssh/known_hosts
+      # (see the doc) — a read-only mount cannot add it on first connect.
+      - ${HOME}/.ssh:/root/.ssh:ro
     environment:
       TERM: xterm-256color
+      # Fine-grained GitHub PAT (repo scope) from .env, for boomtick-mcp
+      # and gh. Empty/unset = public read-only GitHub ops only.
+      GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
+      GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:

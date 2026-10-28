@@ -24,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git gnupg htop less nano openssh-client procps xz-utils \
+      bash ca-certificates curl gh git gnupg htop less nano openssh-client procps xz-utils \
  && install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
@@ -46,6 +46,7 @@ RUN apt-get update \
  && node --version \
  && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version \
+ && gh --version \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
@@ -60,6 +61,10 @@ COPY config.kdl /root/.config/zellij/config.kdl
 # edit inside the volume or recreate it (recreating loses sessions).
 COPY pi-config/models.json /root/.pi/agent/models.json
 COPY pi-config/settings.json /root/.pi/agent/settings.json
+# BoomTick MCP server entry (see docs/pi-setup.md § BoomTick MCP tools).
+# Same volume-seeding caveat as above: an existing pi-data volume does
+# NOT pick this up — copy it in with docker cp (see the doc).
+COPY pi-config/mcp.json /root/.pi/agent/mcp.json
 
 WORKDIR /srv/remote-server
 EXPOSE 7681
