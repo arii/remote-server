@@ -4,7 +4,9 @@
 #   https://${TERMINAL_DOMAIN}:${TERMINAL_PORT}
 #     -> oauth2-proxy (terminates TLS with the existing LE certs,
 #        GitHub OAuth gate, single-user allowlist)
+#     -> caddy (internal router: / -> terminal, /buttons -> buttons)
 #     -> terminal (ttyd + zellij, session persists across reconnects)
+#     -> buttons (allowlisted action runner, see docs/buttons.md)
 #
 # Tailscale = VPN mesh for admin access to everything else (SSH, future
 # services). The terminal does NOT require Tailscale.
@@ -28,7 +30,7 @@ services:
       - --https-address=0.0.0.0:${TERMINAL_PORT}
       - --tls-cert-file=/certs/live/${TERMINAL_DOMAIN}/fullchain.pem
       - --tls-key-file=/certs/live/${TERMINAL_DOMAIN}/privkey.pem
-      - --upstream=http://terminal:7681
+      - --upstream=http://caddy:8080
     user: "0:0" # must read the LE privkey (root-owned); the key never leaves the host
     volumes:
       - ./config/oauth2-proxy.cfg:/etc/oauth2-proxy.cfg:ro
@@ -44,7 +46,7 @@ services:
     ports:
       - "${TERMINAL_PORT}:${TERMINAL_PORT}" # public: DDNS + router forward land here
     depends_on:
-      - terminal
+      - caddy
     restart: unless-stopped
 
   # Browser terminal: ttyd (xterm.js) running zellij (phone-friendly multiplexer).
@@ -131,6 +133,39 @@ services:
       TS_AUTHKEY: ${TS_AUTHKEY} # reusable auth key from Tailscale admin console
       TS_HOSTNAME: ${TS_HOSTNAME:-s5}
     entrypoint: ["/usr/local/bin/tailscale-entrypoint.sh"]
+    restart: unless-stopped
+
+  # Phone UI: fixed action buttons (status, deploy, recreate, pull
+  # models, logs). No free-text input anywhere; see buttons/server.py
+  # and docs/buttons.md. Built locally on the S5 (no GHCR image).
+  # The checkout mount MUST use the host-identical path
+  # (/home/ari/remote-server): this container runs docker compose
+  # against the host daemon, and compose resolves relative paths
+  # against the project directory as seen by the CLI.
+  buttons:
+    build:
+      context: ./buttons
+    image: remote-buttons:local
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/remote-server:/home/ari/remote-server
+    environment:
+      HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
+    expose:
+      - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
+    restart: unless-stopped
+
+  # Internal router: oauth2-proxy -> caddy -> terminal (/) / buttons (/buttons).
+  caddy:
+    image: caddy:2-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    expose:
+      - "8080" # compose network only; ingress is via oauth2-proxy
+    depends_on:
+      - terminal
+      - buttons
     restart: unless-stopped
 
 volumes:
