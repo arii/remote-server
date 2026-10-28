@@ -146,6 +146,10 @@ services:
     build:
       context: ./buttons
     image: remote-buttons:local
+    # Locally built only: bare `docker compose pull` would otherwise try
+    # Docker Hub for remote-buttons:local and warn/fail. This skips it
+    # from pull; build it with `docker compose up -d --build buttons`.
+    pull_policy: build
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/remote-server:/home/ari/remote-server
