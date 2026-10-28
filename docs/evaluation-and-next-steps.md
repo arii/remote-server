@@ -1,53 +1,88 @@
-# Evaluation and Next Steps — 2026-10-28
+# Evaluation, Button Audit, and Next Steps — 2026-10-28
 
-## 1. Summary of Recent Changes (`4207693..b395171`)
+## 1. Summary of Recent Changes & Current State (`4207693..5f70072`)
 
-Three commits landed on `main` after the JS raw-string template fix (`4207693`):
+1. **Buttons UI, PTY ANSI output, and Briefing Summarizer (`7aa4770..b9be1e3`):**
+   - Grouped buttons under **Server** and **Briefing** with subtitles, PTY-backed ANSI colour output (`_run_step`), and plan excerpts.
+   - Added `buttons/briefing_summary.py` combining `td --json` (`search-prs`, `status-board`, `detect-conflicts --all`, `workflow-runs`) with per-PR `gh pr view` enrichment (`statusCheckRollup`, `reviewDecision`, `mergeable`, `mergeStateStatus`).
+   - Fixed root `td --json` flag placement, `"prs"` list conflict parsing (`{"prs": [4814, 4826], "files": ["package.json"]}`), and `head_branch`/`html_url` workflow run fields in `buttons/briefing_summary.py` (`b9be1e3`).
+2. **GitHub Webhook Auto-Pull & Tracked Git Hooks (`ca0c21b..5f70072`):**
+   - Installed tracked `post-merge` hooks into both `/srv/remote-server/.git/hooks/post-merge` and `/srv/repos/tech-dancer/.git/hooks/post-merge` via `npm run hooks:install`.
+   - Configured `WEBHOOK_SECRET` in `.env`, upgraded `oauth2-proxy` to `v7.15.2` with `--skip-auth-route=POST=^/buttons/api/webhook$`, and rebuilt `buttons` with the `/home/ari/repos` bind mount.
+   - Fixed `gh api` boolean field syntax (`-F active=true`) in `scripts/setup-webhooks.sh` and registered push webhooks on both `arii/remote-server` (`704473987`) and `arii/tech-dancer` (`704473991`), verified end-to-end via GitHub ping and push deliveries (`5f70072`).
 
-1. **`7aa4770` — Buttons UI & PTY output:**
-   - Grouped buttons under **Server** and **Briefing** headings with one-line subtitles explaining when to use each action.
-   - Switched step execution in `buttons/server.py` (`_run_step`) to run under a pseudo-terminal (`pty.openpty()`) with `GIT_PAGER=cat` and `PAGER=cat`, and added an SGR ANSI-to-HTML renderer in the client script so terminal colours render in the output pane while border/status colour continues to reflect only the exit code.
-   - Added briefing excerpts (`plan.excerpt`, capped at 800 chars before `## Raw output`) and inline action buttons (**Re-run briefing (td, fast)**, **Create a new plan**, **Terminal** link) inside expanded plan cards.
-2. **`b604ca9` — Readable briefing summarizer & derived plan checklists:**
-   - Added `buttons/briefing_summary.py` to combine `td` JSON output (`search-prs`, `status-board`, `detect-conflicts`, `workflow-runs`) with per-PR `gh pr view` enrichment (`statusCheckRollup`, `reviewDecision`, `mergeable`, `mergeStateStatus`).
-   - Ranked attention items (`conflicted > CI failing > changes requested > stale`) and derived the `## Next actions` checklist in `.agents/plans/<date>-briefing-plan.md` directly from those findings, storing raw JSON in a trailing `## Raw output` appendix.
-3. **`b395171` — Remove `Deploy latest` button:**
-   - Removed the `deploy` action from `buttons/server.py` now that the stack is in a stable state (`git pull` is covered by **Deploy buttons**, container restart after `.env` edits by **Recreate terminal**, and terminal image updates from the host shell).
+---
 
-## 2. Evaluation Findings
+## 2. Audit of Current Buttons: What Hooks Replace vs. What Is Useful
 
-### A. `buttons` Service & Client Scripts
-- **JS syntax verification:** Both `<script>` blocks in `buttons/server.py` (`HTML`) pass `node --check`.
-- **Container drift:** `remote-buttons-1` was still running the pre-`7aa4770` `/app/server.py` image and needed a rebuild/restart so the grouped UI, PTY ANSI output, and updated action list are live.
+With **GitHub webhook auto-pull** (every push to `main` automatically fast-forwards `/home/ari/remote-server` and `/home/ari/repos/tech-dancer`) and **tracked `post-merge` hooks** (interactive pulls automatically rebuild `buttons` or run `pnpm install --frozen-lockfile`), several buttons on `/buttons` are now redundant or low-value clutter.
 
-### B. `buttons/briefing_summary.py` Against Live `tech-dancer`
-Running `buttons/briefing_summary.py` inside the `terminal` container against `/srv/repos/tech-dancer` surfaced three issues:
+### A. Buttons That Are Unnecessary or Redundant Now
 
-1. **`td` `--json` CLI flag placement:**
-   - In `td`, `--json` is a top-level group flag (`td --json <subcommand>`), and only `td gh search-prs` also accepts `--json` on the subcommand.
-   - Invoking `td gh status-board --json`, `td gh detect-conflicts --all --json`, and `td repo workflow-runs --json` failed with `Error: No such option '--json'`, causing **Work board**, **Conflicts**, and **Workflow health** to degrade to `unavailable`.
-   - **Fix:** Pass `--json` at the root level (`td --json ...`) for all four `td` calls.
-2. **`td gh detect-conflicts --all` JSON shape (`prs` list vs single `pr`):**
-   - `td --json gh detect-conflicts --all` emits `{"status": "success", "conflicts": [{"prs": [4814, 4826], "files": ["package.json"]}]}` (a `"prs"` array of open PR numbers touching the same file), whereas `_conflicted_prs()` only checked scalar keys (`pr`, `prNumber`, `pr_number`, `number`).
-   - **Fix:** Teach `_conflicted_prs()` to extract PR numbers from `"prs"` lists as well and merge file lists per PR.
-3. **Workflow run field names:**
-   - `td --json repo workflow-runs` returns GitHub REST API keys (`head_branch` and `html_url`).
-   - **Fix:** Include `head_branch` in branch lookup and prefer `html_url` over the API `url` when formatting failing workflow runs.
+| Current Button | Why It Is No Longer Necessary | Recommendation |
+|---|---|---|
+| **Pull models** (`pull-models`) | Models (`qwen3:8b`, `qwen3:14b`) live in the persistent `ollama-data` volume and are only pulled on initial bring-up or when `.env` changes `OLLAMA_MODELS`. Keeping a permanent full-width phone button for a multi-GB one-off script adds clutter and accidental-tap risk. | **Remove from `/buttons`** (keep `scripts/pull-models.sh` as an `npm` script / shell command). |
+| **Repo briefing (agent, slow)** (`briefing-agent`) | Runs `pi -p` against the local CPU-only 8b model, taking minutes to paraphrase the exact same data that `briefing_summary.py` (`Repo briefing (td, fast)`) computes deterministically in ~7 seconds. It takes no action and often hits tool/latency limits on CPU. | **Remove from `/buttons`**. |
+| **Create plan from briefing** (`create-plan`) + **Plans checkboxes** | Duplicates `Repo briefing (td, fast)` by saving its output to `.agents/plans/<date>-briefing-plan.md` with static checkboxes. Ticking a checkbox on the phone only flips `[ ]` to `[x]` in an untracked file — nothing reads or executes those checkboxes. Meanwhile, the expanded plan card has two more buttons (`Re-run briefing`, `Create a new plan`) that duplicate the main buttons right above it. | **Replace or fold into a single live Briefing + Action view** (see Section 3). |
+| `git pull` inside **Deploy buttons** (`deploy-buttons`) | Pushes to `main` on `arii/remote-server` are now auto-pulled within seconds by the webhook, and interactive host pulls already trigger `hooks/post-merge` to rebuild `buttons`. The only thing the webhook intentionally does *not* do is rebuild the `buttons` container (so it doesn't kill itself mid-pull). | **Keep only as a compact Server utility** (`Rebuild buttons`) for applying webhook-pulled changes to `buttons/server.py`, or trigger container recreation via a host-side watcher/systemd path unit so even that button disappears. |
 
-### C. Current `tech-dancer` Repository State
-With `briefing_summary.py` fixed, the live briefing for `tech-dancer` reports:
-- **Open PRs (3):**
-  - **#4827** (`chore/update-config-for-td`): CI passing, merge `clean`.
-  - **#4826** (`dependabot/npm_and_yarn/npm_and_yarn-669bbe1aba`): CI passing, merge `clean`, overlaps with #4814 on `package.json`.
-  - **#4814** (`release-please--branches--main--components--tech-dancer`): CI passing, merge `clean`, overlaps with #4826 on `package.json`.
-- **Workflow health:** No failing runs in the recent list.
+### B. Buttons That Are Genuinely Useful in General (Ops & Escape Hatches)
 
-## 3. Next Steps Plan
+Only three server actions earn their keep on a phone screen as **infrastructure escape hatches** — specifically for moments when you don't want to type in the terminal or when the terminal itself is the thing that needs restarting:
 
-- [x] Fix `td --json` flag placement, `"prs"` list conflict parsing, and `head_branch` / `html_url` lookups in `buttons/briefing_summary.py`.
-- [x] Rebuild `remote-buttons:local` and restart `remote-buttons-1` so `/buttons` serves commit `b395171`.
-- [x] Regenerate `/srv/repos/tech-dancer/.agents/plans/2026-10-28-briefing-plan.md` via `briefing_summary.py --plan-dir .agents/plans` so the Plans view on `/buttons` reflects the complete briefing and derived checklist.
-- [ ] Triage and merge the ready `tech-dancer` PRs in order:
-  1. Merge **PR #4827** (`chore/update-config-for-td`, CI passing, clean).
-  2. Merge **PR #4826** (Dependabot bump touching `package.json`), then let `release-please` regenerate **PR #4814** so the `package.json` overlap between #4826 and #4814 resolves cleanly before cutting release `0.10.0`.
-  3. Re-run **Repo briefing (td, fast)** from `/buttons` to confirm a clean board.
+1. **Status (`status`)**: Fast (<1s) glance at `git status`, recent commits, `docker compose ps`, and the active terminal image.
+2. **Logs (`logs`)**: Quick tail of `terminal`, `ollama`, and `buttons` logs without opening a zellij pane.
+3. **Recreate terminal (`recreate`)**: Essential escape hatch when `.env` is updated or if `ttyd`/`zellij` inside `terminal` ever hangs (since you cannot use a wedged terminal to recreate itself).
+
+---
+
+## 3. Why the Current Page Doesn't Help Agentic Work (and What Would)
+
+### The Core Problem: Read-Only Observation Disguised as Workflow
+
+Right now, `/buttons` does two things:
+1. **Server plumbing** (rebuilding/restarting containers), most of which is now automated by webhooks and hooks.
+2. **Passive reporting** (`Repo briefing (td, fast)` + `Plans` checkboxes).
+
+When you are on your phone, **reading a static markdown dump is not the bottleneck** — the GitHub mobile app already shows open PRs. The actual bottleneck on a phone is **triggering and unblocking agentic work without typing long CLI commands in a tiny terminal**:
+- Seeing that PR #4827 is green and clean, and **merging it** with one tap.
+- Seeing that PR #4826 and PR #4814 conflict on `package.json`, and **merging #4826 then rebasing/regenerating #4814** (or dispatching `td gh resolve-conflicts`).
+- Seeing that a CI run or Jules session is stuck or failed, and **running the automated feedback/repair loop** (`td agent run-feedback-check`, `td agent fix-ci`, `td agent sync`).
+- Keeping `.agent-context.json` warm in `tech-dancer` after webhook auto-pulls so interactive agents (`agy`, `pi`, `td`) start with fresh repo context.
+
+### Proposed Redesign: From Static Checkboxes to Agentic Actions
+
+#### 1. Automate Context Warming on Webhook Auto-Pull
+When the `buttons` webhook auto-pulls `arii/tech-dancer` on `main`, it can optionally trigger a non-blocking `td context-warm` (or `pnpm install --frozen-lockfile` when `pnpm-lock.yaml` changes) inside `terminal` so the checkout is always warm for agents, not just `git fetch`ed.
+
+#### 2. Replace the Static `Briefing` + `Plans` Section with `td` Agentic Workflows
+Instead of three briefing/plan buttons that only write markdown files, expose the actual deterministic `td` agent operations that exist in `tech-dancer`:
+
+| Proposed Button | Underlying Command (Allowlisted) | Why It Helps Agentic Work |
+|---|---|---|
+| **Triage & Briefing** (auto-runs on load or 1 tap) | `briefing_summary.py --briefing` + `td --json agent list-sessions` | Shows open PRs, CI/conflict status, **and active Jules sessions** in one view without needing a separate "Plans" file. |
+| **Sync & Nudge Agents (Jules / CI feedback)** | `td agent sync && td agent run-feedback-check` | One-tap phone action to sync active Jules sessions and automatically post CI failure / review feedback to unblock stalled agent PRs. |
+| **Warm Repo Context** | `td context-warm` | Pre-warms `.agent-context.json` in `tech-dancer` so `td`, `agy`, and `pi` have an up-to-date index after recent merges. |
+| **Preflight Check (`tech-dancer`)** | `td preflight` (or `td doctor`) | Verifies full-stack runtime, credentials, typecheck, and baseline health in `tech-dancer`. |
+
+#### 3. Per-PR Action Buttons (Instead of Inert Checkboxes)
+Instead of rendering markdown checkboxes (`- [ ] #4827 ...`) that only edit a text file, each open PR returned by `/buttons/api/briefing` can render with allowlisted, parameterized action buttons (validated strictly by integer `pr_number`, just like `plans/toggle` validates `line_no`):
+- **Merge PR** (`gh pr merge <N> --squash --delete-branch`) — enabled only when `CI == passing` and `merge == clean`.
+- **Update / Rebase Branch** (`gh pr update-branch <N> --rebase` or `td gh resolve-conflicts --pr <N>`) — when `mergeStateStatus` is `BEHIND` or `DIRTY`.
+- **Fix CI with Agent** (`td agent fix-ci --pr <N>` or `td agent trigger-feedback`) — when `CI == failing`.
+
+---
+
+## 4. Prioritized Next Steps
+
+1. **Immediate `tech-dancer` PR Queue (Ready Now):**
+   - [ ] Merge **PR #4827** (`chore/update-config-for-td` — CI passing, merge clean).
+   - [ ] Merge **PR #4826** (`dependabot/npm_and_yarn` — CI passing, merge clean), which will let `release-please` automatically rebase and update **PR #4814** (`0.10.0` release) and clear the `package.json` conflict.
+   - [ ] Inspect and close out the failing `main` push workflow run (`40739159188`) if not already superseded by PR #4827.
+2. **Trim Redundant Buttons on `/buttons`:**
+   - [ ] Remove **Pull models** and **Repo briefing (agent, slow)** from `ACTIONS` in `buttons/server.py` (move `pull-models` to `package.json` as `npm run models:pull`).
+   - [ ] Collapse the redundant **Create plan from briefing** + static **Plans** file-checkbox UI in favor of rendering the live briefing directly.
+   - [ ] Collapse the **Server** group into a compact row or `<details>` drawer (`Status`, `Logs`, `Recreate terminal`, `Rebuild buttons`) so the top of the phone screen is dedicated to repo & agent work, not server maintenance.
+3. **Add Real Agentic Controls to `/buttons`:**
+   - [ ] Add **Sync & Nudge Agents** (`td agent sync` + `td agent run-feedback-check`) and **Warm Context** (`td context-warm`).
+   - [ ] Add strict integer-validated per-PR actions (**Merge**, **Update branch**, **Trigger CI feedback / Fix CI**) directly on open PR cards so you can actually clear the PR queue from your phone.
