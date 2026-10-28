@@ -23,11 +23,20 @@ services:
   # TLS edge + GitHub OAuth gate. Terminates TLS itself with Ari's existing
   # Let's Encrypt certs (mounted read-only from the host certbot dir).
   oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:v7.9.0 # pin; verify flags at deploy
+    # Pinned to v7.15.2, not the old v7.9.0: CVE-2026-41059 lets
+    # 7.5.0-7.15.1 with --reverse-proxy + skip-auth rules be bypassed
+    # via a spoofed X-Forwarded-Uri header, and the webhook below
+    # needs a skip-auth rule. Verify the tag pulls at deploy.
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2
     command:
       - --config=/etc/oauth2-proxy.cfg
       - --http-address= # disable the plain-HTTP listener entirely
       - --https-address=0.0.0.0:${TERMINAL_PORT}
+      # Webhook ingress: GitHub cannot pass the OAuth gate, so this
+      # ONE exact route (POST only, full path, no wildcards) skips
+      # auth. The buttons handler still verifies the HMAC signature,
+      # so a skip-auth bypass alone cannot trigger a pull.
+      - --skip-auth-route=POST=^/buttons/api/webhook$
       - --tls-cert-file=/certs/live/${TERMINAL_DOMAIN}/fullchain.pem
       - --tls-key-file=/certs/live/${TERMINAL_DOMAIN}/privkey.pem
       - --upstream=http://caddy:8080
@@ -171,6 +180,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/remote-server:/home/ari/remote-server
+      # Host-identical repos mount, same trick as above: the webhook
+      # auto-pull needs the tech-dancer checkout at the same path
+      # inside this container as on the host.
+      - ${HOME}/repos:/home/ari/repos
       # Host SSH key, read-only: Deploy runs `git pull` over SSH as
       # root inside this container, and git needs both the key and
       # github.com in known_hosts. Mirrors the terminal container.
@@ -179,6 +192,9 @@ services:
       - ${HOME}/.ssh:/root/.ssh:ro
     environment:
       HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
+      # GitHub webhook HMAC secret (see .env.example). Empty/unset =
+      # webhook endpoint refuses everything (fail closed).
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
     restart: unless-stopped

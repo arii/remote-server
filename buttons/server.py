@@ -19,6 +19,8 @@ the terminal container would come up with an empty /srv/remote-server.
 """
 
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 import pty
@@ -42,6 +44,94 @@ TD = "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
 ENV = {**os.environ, "HOME": "/home/ari"}
+
+# GitHub webhook auto-pull (pull-only, never rebuild, never hooks).
+# This is the ONE endpoint that is not behind the OAuth gate: GitHub
+# cannot pass GitHub OAuth, so oauth2-proxy skips auth for exactly
+# POST /buttons/api/webhook (see docker-compose.yml) and this handler
+# is gated only by the HMAC signature below. That is why the rules
+# are tight: exact path, POST only (enforced by the skip-auth rule),
+# HMAC-SHA256 over the raw body with WEBHOOK_SECRET, allowlisted
+# repos, main branch only, fast-forward merges only, async execution
+# (the webhook answers 202 immediately; the pull runs in a thread).
+# No rebuild, no dependency install, no post-merge hook runs here:
+# automated pulls pass -c core.hooksPath=/dev/null, so the tracked
+# hooks in hooks/ only ever run for interactive host pulls (see
+# scripts/setup-hooks.sh). A failed pull (diverged checkout, local
+# modifications, missing key) is recorded in webhook_state and the
+# page's status — it never forces anything, and the fix is on the
+# host shell. If WEBHOOK_SECRET is unset, the endpoint refuses
+# everything (503): fail closed, never accept unsigned webhooks.
+# Ingress note (verified 2026-10-28): oauth2-proxy is pinned to
+# v7.15.2 because CVE-2026-41059 lets 7.5.0-7.15.1 with
+# --reverse-proxy + skip-auth rules be bypassed via a spoofed
+# X-Forwarded-Uri header. The skip rule is additionally exact
+# (method + full path, no wildcards), and even a bypassed skip rule
+# still faces the HMAC check here.
+WEBHOOK_PATH = "/buttons/api/webhook"
+WEBHOOK_REPOS = {
+    "arii/remote-server": "/home/ari/remote-server",
+    "arii/tech-dancer": "/home/ari/repos/tech-dancer",
+}
+WEBHOOK_MAX_BODY = 10_000_000
+webhook_state = {}  # repo -> {"at": epoch, "ok": bool, "detail": str}
+webhook_state_lock = threading.Lock()
+webhook_pull_lock = threading.Lock()  # serializes pulls, not status reads
+webhook_pending = set()
+
+
+def _webhook_secret():
+    return os.environ.get("WEBHOOK_SECRET", "")
+
+
+def _verify_signature(secret, body, header):
+    if not header or not header.startswith("sha256="):
+        return False
+    expect = "sha256=" + hmac.new(secret.encode(), body,
+                                  hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expect, header)
+
+
+def _webhook_worker(repo, path):
+    # Serialized: two pushes racing the same checkout must not run
+    # fetch+merge concurrently. State/pending updates are separate
+    # and brief, so status reads never block on a pull.
+    with webhook_pull_lock:
+        git = ["git", "-c", f"safe.directory={path}", "-C", path,
+               "-c", "core.hooksPath=/dev/null"]
+        try:
+            # Inherit the container environment: ssh resolves its
+            # key via the passwd home (/root), where the read-only
+            # .ssh mount lives — not via $HOME, which the button
+            # steps override to /home/ari for compose interpolation.
+            env = dict(os.environ)
+            fetch = subprocess.run(git + ["fetch", "origin"],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, timeout=120,
+                                   text=True, env=env)
+            if fetch.returncode != 0:
+                raise RuntimeError(
+                    (fetch.stderr or "").strip().splitlines()[-1]
+                    if fetch.stderr.strip() else "fetch failed")
+            merge = subprocess.run(git + ["merge", "--ff-only",
+                                          "origin/main"],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, timeout=120,
+                                   text=True, env=env)
+            if merge.returncode != 0:
+                raise RuntimeError(
+                    (merge.stderr or "").strip().splitlines()[-1]
+                    if merge.stderr.strip() else "merge failed")
+            out = (merge.stdout or "").strip().splitlines()
+            ok, detail = True, (out[-1] if out else "up to date")[:200]
+        except Exception as exc:
+            ok, detail = False, str(exc)[:200]
+    with webhook_state_lock:
+        webhook_state[repo] = {"at": time.time(), "ok": ok,
+                               "detail": detail}
+        webhook_pending.discard(repo)
+    print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
+          flush=True)
 # Steps run under a PTY (see _run_step): commands then emit the
 # ANSI colours they would show in the terminal, and the page renders
 # them. A TTY stdout also makes some tools page their output (git
@@ -438,6 +528,7 @@ button:disabled { opacity: 0.4; }
 #clearBtn { padding: 0.5em; font-size: 0.9em; }
 #jsdiag { color: #ffd75e; border: 1px solid #8a6d1b; background: #3a2f0a;
   padding: 0.5em; border-radius: 8px; margin: 0.5em 0; }
+#webhookStatus { font-size: 0.9em; color: #bbb; margin: 0.5em 0; }
 #state { margin: 0.5em 0; font-weight: bold; padding: 0.5em; border-radius: 8px;
   white-space: pre-line; border: 1px solid #555; }
 #state.ok { color: #7ed07e; background: #12351a; border-color: #2e7d32; }
@@ -462,6 +553,7 @@ a { color: #8bf; }
 <body>
 <h1>S5 buttons</h1>
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
+<div id="webhookStatus"></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -821,9 +913,20 @@ async function refreshPlans() {
 document.getElementById("refreshPlans").onclick = refreshPlans;
 refreshPlans();
 
-// Re-attach to a run still going after a page reload.
+// Re-attach to a run still going after a page reload, and show
+// the last webhook auto-pull per repo (or that none has happened).
 fetch("/buttons/api/status").then(r => r.json()).then(s => {
   if (s.active) poll(s.active);
+  const el = document.getElementById("webhookStatus");
+  if (!el) return;
+  const w = s.webhooks || {};
+  const parts = Object.keys(w).map(repo => {
+    const st = w[repo];
+    return repo + ": " + (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
+      new Date(st.at * 1000).toLocaleString();
+  });
+  el.textContent = parts.length ? "Auto-pull: " + parts.join(" · ")
+    : "Auto-pull: no webhook pulls yet";
 });
 </script>
 </body>
@@ -845,6 +948,48 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_webhook(self, body):
+        secret = _webhook_secret()
+        if not secret:
+            self._json({"error": "webhook not configured "
+                                 "(WEBHOOK_SECRET unset)"}, 503)
+            return
+        if len(body) > WEBHOOK_MAX_BODY:
+            self._json({"error": "payload too large"}, 413)
+            return
+        sig = self.headers.get("X-Hub-Signature-256", "")
+        if not _verify_signature(secret, body, sig):
+            self._json({"error": "bad signature"}, 401)
+            return
+        event = self.headers.get("X-GitHub-Event", "")
+        if event == "ping":
+            self._json({"ok": True, "msg": "pong"})
+            return
+        if event != "push":
+            self._json({"ignored": event})
+            return
+        try:
+            payload = json.loads(body) if body else {}
+        except Exception:
+            self._json({"error": "bad JSON"}, 400)
+            return
+        repo = (payload.get("repository") or {}).get("full_name")
+        if repo not in WEBHOOK_REPOS:
+            self._json({"ignored": repo})
+            return
+        if payload.get("ref") != "refs/heads/main":
+            self._json({"skipped": "not main"})
+            return
+        with webhook_state_lock:
+            if repo in webhook_pending:
+                self._json({"queued": True, "coalesced": True})
+                return
+            webhook_pending.add(repo)
+        threading.Thread(target=_webhook_worker,
+                         args=(repo, WEBHOOK_REPOS[repo]),
+                         daemon=True).start()
+        self._json({"queued": True, "repo": repo}, 202)
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ("/buttons", "/buttons/"):
@@ -858,7 +1003,10 @@ class Handler(BaseHTTPRequestHandler):
             with runs_lock:
                 recent = [{k: v for k, v in _public(r).items() if k != "output"}
                           for r in sorted(runs.values(), key=lambda r: r["seq"])[-10:]]
-                self._json({"active": active_id, "runs": recent})
+            with webhook_state_lock:
+                hooks = dict(webhook_state)
+            self._json({"active": active_id, "runs": recent,
+                        "webhooks": hooks})
         elif path == "/buttons/api/plans":
             try:
                 self._json(_run_plans({"cmd": "list"}))
@@ -880,6 +1028,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length else b""
+        if path == WEBHOOK_PATH:
+            self._handle_webhook(body)
+            return
         if path == "/buttons/api/clear":
             # Clears stored output only — no command runs, no run is
             # cancelled. With no id, clears the active or newest run.

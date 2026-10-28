@@ -211,6 +211,121 @@ CLI if MCP tools are absent there. The plan file lands untracked
 in the tech-dancer checkout; commit or delete it from the
 terminal as usual.
 
+## GitHub webhook auto-pull
+
+Pushes to `main` on `arii/remote-server` or `arii/tech-dancer`
+can auto-pull the matching S5 checkout — pull only, never rebuild,
+never dependency install. The endpoint is `POST /buttons/api/webhook`
+in the buttons service (same port, so caddy's existing `/buttons*`
+route covers it), and it answers 202 immediately while the pull
+runs in a background thread.
+
+Setup, in order:
+
+1. Add `WEBHOOK_SECRET` to the S5 `.env` (generate with
+   `openssl rand -hex 32`). Empty/unset means the endpoint refuses
+   everything — fail closed, never accept unsigned webhooks.
+2. Recreate oauth2-proxy and buttons so the compose changes take
+   effect: `docker compose up -d oauth2-proxy buttons` (buttons
+   needs a rebuild for the handler itself:
+   `docker compose up -d --build buttons`).
+3. In each repo (remote-server, tech-dancer): Settings -> Webhooks
+   -> Add webhook. Payload URL:
+   `https://<domain>:<port>/buttons/api/webhook`, content type
+   `application/json`, secret = the same `WEBHOOK_SECRET`, trigger
+   "Just the `push` event".
+
+Why the ingress is shaped this way: GitHub cannot pass the GitHub
+OAuth gate, so oauth2-proxy skips auth for exactly one route,
+`--skip-auth-route=POST=^/buttons/api/webhook$` (POST only, full
+path, no wildcards). That flag is also why oauth2-proxy is pinned
+to v7.15.2: CVE-2026-41059 lets 7.5.0–7.15.1 with `--reverse-proxy`
++ skip-auth rules be bypassed via a spoofed `X-Forwarded-Uri`
+header. Even if the skip rule were bypassed, the handler still
+verifies the HMAC-SHA256 signature (`X-Hub-Signature-256`) over
+the raw body before doing anything, and it ignores cookies
+entirely.
+
+Rules the handler enforces: signature valid, event is `push`
+(`ping` answers pong, anything else is ignored), repository is
+allowlisted (`arii/remote-server` -> `/home/ari/remote-server`,
+`arii/tech-dancer` -> `/home/ari/repos/tech-dancer` — the buttons
+container mounts `${HOME}/repos` at the host-identical path for
+this), ref is `refs/heads/main`, merge is `--ff-only`. Duplicate
+pushes while a pull is running coalesce instead of racing. The
+last pull per repo (time, ok/failed, detail) shows under the page
+header and in `/buttons/api/status` (`webhooks` field); failures
+also land in the buttons container logs.
+
+Troubleshooting: 503 = `WEBHOOK_SECRET` unset in the buttons
+container; 401 = wrong secret or missing signature header; 200
+with `ignored`/`skipped` = wrong repo, wrong event, or a non-main
+push (all intentional); a recorded pull failure almost always
+means a diverged checkout or local modifications — fix it on the
+host shell (`git status`, resolve, pull), never force from the
+webhook. A pull updates the checkout only: buttons code changes
+still need `up -d --build buttons`, `.env` changes still need
+Recreate terminal, and a terminal image update is still a
+host-shell job.
+
+## Tracked git hooks + setup script
+
+Git never tracks `.git/hooks`, so hooks live in `hooks/` (revision
+controlled) and `scripts/setup-hooks.sh` copies them into place:
+
+```bash
+npm run hooks:install   # or: bash scripts/setup-hooks.sh
+npm run hooks:check     # or: bash scripts/setup-hooks.sh --check
+```
+
+It installs `hooks/post-merge` into the remote-server checkout and
+`hooks/post-merge-tech-dancer` into `~/repos/tech-dancer`
+(override with `TECH_DANCER_DIR`). Re-run after any fresh clone
+and whenever `hooks/` changes; `--check` reports missing,
+non-executable, or outdated installs. (Repo file modes may arrive
+as 644 via connector pushes — the installer `chmod +x`s, so the
+tracked mode does not matter.)
+
+What the hooks do, and their guards:
+
+- remote-server `post-merge`: if the merge touched `buttons/`,
+  `docker-compose.yml`, or `caddy/Caddyfile`, it rebuilds ONLY the
+  buttons container — never the terminal, which would kill live Pi
+  sessions. It refuses to rebuild from inside the buttons container
+  itself (`/app/server.py` present), because that would kill the
+  pulling process. An oauth2-proxy config change only prints a
+  restart reminder; restarting the auth edge stays a human call.
+- tech-dancer `post-merge`: if `package.json` or `pnpm-lock.yaml`
+  changed and `pnpm` exists, it runs `pnpm install
+  --frozen-lockfile`; otherwise it prints a notice. Nothing else.
+- Both hooks exit 0 no matter what: a failed hook must not make a
+  good merge look bad.
+
+Design split, stated plainly: automated pulls (webhook, Deploy
+buttons) pass `-c core.hooksPath=/dev/null` and skip hooks
+entirely. Hooks run only for interactive host pulls. That is what
+keeps the webhook pull-only and the buttons rebuild race-free.
+
+## package.json scripts
+
+A root `package.json` (private, no dependencies — node/npm are
+only the script runner) gives short names to the recurring
+commands, so bring-up and clean-up stop being lengthy shell lines:
+
+| Script | Runs |
+|---|---|
+| `up` / `down` / `restart` / `ps` / `logs` | `docker compose up -d` / `down` / `restart` / `ps` / `logs --tail=100` |
+| `clean` | `docker compose down --remove-orphans` (containers only — volumes, and therefore Pi/Ollama/agy state, are preserved) |
+| `pull` / `status` | `git pull --ff-only` / `git status` + `docker compose ps` |
+| `buttons:rebuild` / `buttons:logs` | `docker compose up -d --build buttons` / logs for buttons |
+| `terminal:recreate` / `terminal:logs` | `up -d --force-recreate terminal` / logs for terminal + ollama |
+| `update:buttons` | `git pull --ff-only && docker compose up -d --build buttons` (the Deploy buttons action, from a shell) |
+| `hooks:install` / `hooks:check` | `scripts/setup-hooks.sh` / with `--check` |
+| `check` | `python3 -m py_compile buttons/server.py buttons/briefing_summary.py` |
+
+Run with `npm run <script>` from the checkout. It needs node/npm
+where you run it, plus docker compose and git on PATH.
+
 ## Architecture
 
 ```
@@ -238,6 +353,15 @@ browser -> oauth2-proxy (TLS + GitHub OAuth, same gate as the terminal)
   a validated filename and line number).
 - **Same gate as the terminal.** No separate login, no separate port.
   If oauth2-proxy is down, the buttons page is down too.
+- **Webhook exception, tightly scoped.** The one path that skips
+  OAuth (`POST /buttons/api/webhook`, exact match) is gated by HMAC
+  signature, an allowlist of two repos, main branch only, and
+  fast-forward merges only — and it can only pull checkouts, never
+  run a button action, rebuild a container, or install anything.
+  oauth2-proxy is pinned to v7.15.2 for CVE-2026-41059 (see the
+  webhook section). If the secret ever leaks, rotate it in `.env`
+  and in both repos' webhook settings; the old value stops working
+  immediately.
 - **Docker socket = root-equivalent.** The buttons container mounts
   `/var/run/docker.sock`, same as the terminal container. This is the
   same trust level as the terminal itself — the OAuth single-user gate

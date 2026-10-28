@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# post-merge hook for the remote-server checkout — TRACKED copy.
+# Installed by scripts/setup-hooks.sh into .git/hooks/post-merge.
+# (Git never tracks .git/hooks itself, so this file is the source of
+# truth; re-run the setup script after a fresh clone.)
+#
+# What it does, and what it deliberately does NOT do:
+# - If the merge touched buttons code, the compose file, or the
+#   caddy config, it rebuilds ONLY the buttons container — never the
+#   terminal (a terminal rebuild would kill live Pi sessions) and
+#   never on top of an automated pull.
+# - It refuses to rebuild from inside the buttons container itself
+#   (/app/server.py exists there): rebuilding the container that is
+#   running the pull would kill the pulling process mid-flight.
+#   Automated pulls (webhook, Deploy buttons) skip hooks entirely
+#   (-c core.hooksPath=/dev/null), so this refusal is defense in
+#   depth, not the main guard.
+# - An oauth2-proxy config change only prints a restart reminder:
+#   restarting the auth edge is a brief terminal outage and stays a
+#   human decision.
+# - Exit code never blocks the merge: every failure prints and the
+#   hook exits 0. A failed hook must not make a good merge look bad.
+set -u
+cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" || exit 0
+
+changed="$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null \
+  || git diff --name-only 'HEAD@{1}' HEAD 2>/dev/null || true)"
+[ -z "$changed" ] && exit 0
+
+if printf '%s\n' "$changed" | grep -Eq '^(buttons/|docker-compose\.yml|caddy/Caddyfile)'; then
+  if [ -f /app/server.py ]; then
+    echo "[post-merge] buttons changed, but refusing to rebuild from inside the buttons container — press Deploy buttons or run: docker compose up -d --build buttons"
+  elif command -v docker >/dev/null 2>&1; then
+    echo "[post-merge] buttons changed — rebuilding buttons container..."
+    docker compose up -d --build buttons \
+      || echo "[post-merge] buttons rebuild failed (page may be stale)"
+  else
+    echo "[post-merge] buttons changed — docker not found; rebuild manually: docker compose up -d --build buttons"
+  fi
+fi
+
+if printf '%s\n' "$changed" | grep -Eq '^config/oauth2-proxy\.cfg'; then
+  echo "[post-merge] oauth2-proxy config changed — restart it: docker compose up -d oauth2-proxy"
+fi
+
+exit 0
