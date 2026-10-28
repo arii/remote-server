@@ -14,6 +14,8 @@ FROM debian:${DEBIAN_RELEASE}
 
 ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
+ARG NODE_VERSION=22.23.3
+ARG PI_VERSION=1.4.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -39,6 +41,11 @@ RUN apt-get update \
       | tar -xz -C /usr/local/bin zellij \
  && chmod +x /usr/local/bin/zellij \
  && /usr/local/bin/zellij --version \
+ && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      | tar -xJ -C /usr/local --strip-components=1 \
+ && node --version \
+ && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+ && pi --version \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
@@ -46,6 +53,13 @@ RUN apt-get update \
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
 COPY config.kdl /root/.config/zellij/config.kdl
+
+# Pi config (Ollama provider, see docs/pi-setup.md). A named volume
+# (pi-data, see docker-compose.yml) persists sessions; the image content
+# below seeds that volume on first use. To pick up config changes later,
+# edit inside the volume or recreate it (recreating loses sessions).
+COPY pi-config/models.json /root/.pi/agent/models.json
+COPY pi-config/settings.json /root/.pi/agent/settings.json
 
 WORKDIR /srv/remote-server
 EXPOSE 7681

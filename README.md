@@ -4,8 +4,8 @@ Repeatable bring-up of a 24/7 home server on a TRIGKEY S5 Mini PC
 (Ryzen 7 PRO 5850U, 32 GB RAM, 500 GB SSD): browser-based terminal access
 with GitHub OAuth (no SSH client needed), reusing Ari's **existing dynamic
 DDNS + certbot** for the terminal's TLS. Tailscale provides the VPN mesh for
-admin access. Agent harnesses are **on hold** (decision deferred — see
-`docs/agent-harness.md`).
+admin access. Pi + local Ollama are **active** (see `docs/pi-setup.md`); the
+rest of the agent harnesses stay on hold (see `docs/agent-harness.md`).
 
 ## Architecture
 
@@ -83,9 +83,13 @@ See `docs/remote-access.md` for the threat model.
 - `docs/remote-access.md` — investigation: browser terminal without SSH,
   GitHub OAuth. Recommends oauth2-proxy (TLS with existing LE certs) +
   ttyd + zellij; Tailscale as VPN; DDNS/certbot reuse mechanism; threat model.
-- `docs/agent-harness.md` — ⏸️ **ON HOLD** (decision deferred 2026-10-22).
-  Preserved evaluation ("pi", LangChain, OpenClaw, OpenHands, Aider, Goose,
+- `docs/agent-harness.md` — ⏸️ **PARTLY ON HOLD** (Pi activated
+  2026-10-27; OpenClaw / Copilot / Gemini still deferred). Preserved
+  evaluation ("pi", LangChain, OpenClaw, OpenHands, Aider, Goose,
   PR-Agent) + three model routes (local Ollama / Copilot Pro / Gemini API).
+- `docs/pi-setup.md` — Pi 1.4.0 + Node 22 in the terminal image against
+  local Ollama (`qwen3:8b` default, `qwen3:14b` stronger): deploy, use
+  from the phone, read-only review mode, measurement step.
 - `docs/setup-plan.md` — phased Ubuntu install, hardening, Docker,
   DDNS/certbot wiring, VPN, backups, repeatability. Every phase has a
   verification step.
@@ -98,11 +102,13 @@ See `docs/remote-access.md` for the threat model.
 
 ```
 docker-compose.yml        services: oauth2-proxy (TLS+OAuth, public port),
-                          terminal (ttyd+zellij, built from terminal/),
-                          tailscale (VPN). Agent services commented out
+                          terminal (ttyd+zellij+Node+Pi, built from terminal/),
+                          tailscale (VPN), ollama (local LLM, CPU-only).
+                          openclaw / actions-runner commented out
                           under profiles: ["agents"] (decision deferred).
-terminal/                 Dockerfile (pinned ttyd + zellij + docker CLI),
-                          config.kdl (phone-tuned zellij config)
+terminal/                 Dockerfile (pinned ttyd + zellij + Node 22 + Pi
+                          + docker CLI), config.kdl (phone-tuned zellij
+                          config), pi-config/ (Pi Ollama provider + defaults)
 config/                   oauth2-proxy.cfg (no secrets)
 scripts/                  bootstrap.sh, install-docker.sh,
                           tailscale-entrypoint.sh,

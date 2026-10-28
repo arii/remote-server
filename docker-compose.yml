@@ -9,8 +9,9 @@
 # Tailscale = VPN mesh for admin access to everything else (SSH, future
 # services). The terminal does NOT require Tailscale.
 #
-# Agent services (ollama / openclaw / actions-runner) are ON HOLD — decision
-# deferred 2026-10-22. See the commented profiles block at the bottom.
+# Pi + Ollama are ACTIVE (2026-10-27, see docs/pi-setup.md).
+# openclaw / actions-runner stay ON HOLD — decision deferred 2026-10-22.
+# See the commented profiles block at the bottom.
 #
 # All secrets via environment (.env, never committed). See README.md + docs/.
 
@@ -72,15 +73,33 @@ services:
       # Docker socket: manage this stack from the phone (docker compose ps/up/...).
       # This is root-equivalent — the GitHub OAuth single-user gate is the boundary.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Pi sessions + config persist here; image content seeds it on first use.
+      - pi-data:/root/.pi
     environment:
       TERM: xterm-256color
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
+    depends_on:
+      - ollama
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7681/ > /dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
+
+  # Local LLM inference, CPU-only. Loopback-published only.
+  # Active since 2026-10-27 for Pi (see docs/pi-setup.md).
+  ollama:
+    image: ollama/ollama:latest # pin tag at deploy
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
     restart: unless-stopped
 
   # VPN mesh for admin access (SSH, future services). Outbound only.
@@ -104,26 +123,16 @@ services:
 
 volumes:
   tailscale-state:
+  ollama-data:
+  pi-data:
 
 # ---------------------------------------------------------------------------
-# ON HOLD — agent harness decision deferred (2026-10-22).
-# Uncomment this block to bring the agent profile up alongside the server:
+# ON HOLD — remaining agent harness decisions deferred (2026-10-22).
+# Pi + Ollama are ACTIVE (2026-10-27, see docs/pi-setup.md); only
+# openclaw / actions-runner stay parked here. Uncomment to revisit:
 #   docker compose --profile agents up -d
 # See docs/agent-harness.md (banner at top) for the deferred evaluation.
 # ---------------------------------------------------------------------------
-#  ollama:
-#    image: ollama/ollama:latest # pin tag at deploy
-#    profiles: ["agents"]
-#    environment:
-#      OLLAMA_HOST: 0.0.0.0:11434
-#      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
-#      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
-#    ports:
-#      - "127.0.0.1:11434:11434"
-#    volumes:
-#      - ollama-data:/root/.ollama
-#    restart: unless-stopped
-#
 #  openclaw:
 #    image: openclaw/openclaw:2026.10.4 # VERIFY tag exists at deploy; pin current stable
 #    profiles: ["agents"]
@@ -149,5 +158,4 @@ volumes:
 #    restart: unless-stopped
 #
 # volumes:
-#   ollama-data:
 #   runner-data:

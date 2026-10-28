@@ -1,12 +1,10 @@
-> ## ⏸️ ON HOLD — decision deferred (2026-10-22)
+> ## ⏸️ PARTLY ON HOLD — Pi activated 2026-10-27
 >
-> Ari deferred the agent-harness decisions (OpenClaw / Pi / Copilot / Gemini).
-> The evaluation below is preserved for reference; **nothing in it is being
-> deployed**. In `docker-compose.yml` the agent services (`ollama`,
-> `openclaw`, `actions-runner`) are commented out under a
-> `profiles: ["agents"]` block — bring-up is the remote server only.
-> To revisit: uncomment that block and run
-> `docker compose --profile agents up -d`.
+> Ari activated **Pi + local Ollama** on 2026-10-27 (see
+> `docs/pi-setup.md`); the rest of this evaluation (OpenClaw, Copilot
+> automation, Gemini route) stays deferred. In `docker-compose.yml` the
+> `ollama` service is active and `openclaw` / `actions-runner` remain
+> commented out under a `profiles: ["agents"]` block.
 >
 > ---
 
