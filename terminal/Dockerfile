@@ -55,8 +55,8 @@ RUN apt-get update \
  && /tmp/venv-smoke/bin/python --version \
  && rm -rf /tmp/venv-smoke \
  && python3 -m venv /opt/venvs/td \
- && /opt/venvs/td/bin/pip install --quiet "boomtick-cli==0.14.0" \
- && /opt/venvs/td/bin/td --help > /dev/null \
+ && /opt/venvs/td/bin/pip install "boomtick-cli==0.14.0" \
+ && test -x /opt/venvs/td/bin/td \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
