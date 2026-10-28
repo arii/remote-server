@@ -31,6 +31,56 @@ ROOT = os.environ.get("PI_CODING_AGENT_SESSION_DIR",
 SHOW_SESSIONS = 10
 SHOW_ENTRIES = 80
 TEXT_CAP = 300
+LIST_JSON_CAP = 20
+
+
+def _list_files():
+    """Session files newest-first; [] on any failure."""
+    try:
+        files = glob.glob(os.path.join(ROOT, "**", "*.jsonl"),
+                          recursive=True)
+    except Exception:
+        return []
+    try:
+        files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    except Exception:
+        pass
+    return files
+
+
+def _render_file(path, header=None):
+    """Render one session file readably. Never raises. The
+    default header names the file; the default Logs mode passes
+    its own "Latest session" header so that output is unchanged."""
+    print(header if header is not None else f"=== Session: {path} ===")
+    rendered = deque(maxlen=SHOW_ENTRIES)
+    total = 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict) and obj.get("type") == "session":
+                    print(f"Session {obj.get('id', '?')} — "
+                          f"cwd {obj.get('cwd', '?')} — "
+                          f"started {obj.get('timestamp', '?')}")
+                    continue
+                text = _render_entry(obj)
+                if text:
+                    rendered.append(text)
+    except Exception as exc:
+        print(f"Could not read session: {exc}")
+        return
+    print(f"({total} entries in file; showing last {len(rendered)} "
+          "rendered messages; full JSONL stays on disk.)")
+    for line in rendered:
+        print(line)
 
 
 def _clean(text):
@@ -77,18 +127,50 @@ def _render_entry(obj):
     return None
 
 
-def main():
-    print("=== Pi sessions ===")
-    try:
-        files = glob.glob(os.path.join(ROOT, "**", "*.jsonl"),
-                          recursive=True)
-    except Exception as exc:
-        print(f"Pi sessions unavailable: {exc}")
+def main(argv):
+    # --list-json: machine-readable session list for the buttons
+    # Pi session browser (newest first, basenames only — the
+    # browser passes a basename back to --session, so no path
+    # separator ever crosses the API). --session QUERY renders
+    # the single file whose basename contains QUERY; ambiguous
+    # or missing queries print a note and list, never fail.
+    # Both exit 0 even on an empty or missing directory, same
+    # contract as the default mode.
+    if argv == ["--list-json"]:
+        files = _list_files()
+        sessions = []
+        for path in files[:LIST_JSON_CAP]:
+            try:
+                mtime = os.path.getmtime(path)
+            except Exception:
+                mtime = 0
+            sessions.append({"file": os.path.basename(path),
+                             "mtime": mtime})
+        print(json.dumps({"sessions": sessions}))
         return 0
+    if len(argv) == 2 and argv[0] == "--session":
+        query = argv[1]
+        files = _list_files()
+        matches = [f for f in files
+                   if query in os.path.basename(f)]
+        if not matches:
+            print(f"No session matching '{query}' under {ROOT}")
+            return 0
+        if len(matches) > 1:
+            print(f"Multiple sessions match '{query}':")
+            for path in matches:
+                print(f"- {os.path.basename(path)}")
+            return 0
+        _render_file(matches[0])
+        return 0
+    if argv:
+        print("usage: pi_logs.py [--list-json | --session QUERY]")
+        return 0
+    print("=== Pi sessions ===")
+    files = _list_files()
     if not files:
         print(f"No Pi sessions found under {ROOT}")
         return 0
-    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
     print(f"{len(files)} session file(s) under {ROOT}")
     for path in files[:SHOW_SESSIONS]:
         mtime = os.path.getmtime(path)
@@ -98,37 +180,9 @@ def main():
         print(f"- {when} {os.path.basename(os.path.dirname(path))}/"
               f"{os.path.basename(path)}")
     latest = files[0]
-    print(f"\n=== Latest session: {latest} ===")
-    rendered = deque(maxlen=SHOW_ENTRIES)
-    total = 0
-    try:
-        with open(latest, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                total += 1
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(obj, dict) and obj.get("type") == "session":
-                    print(f"Session {obj.get('id', '?')} — "
-                          f"cwd {obj.get('cwd', '?')} — "
-                          f"started {obj.get('timestamp', '?')}")
-                    continue
-                text = _render_entry(obj)
-                if text:
-                    rendered.append(text)
-    except Exception as exc:
-        print(f"Could not read latest session: {exc}")
-        return 0
-    print(f"({total} entries in file; showing last {len(rendered)} "
-          "rendered messages; full JSONL stays on disk.)")
-    for line in rendered:
-        print(line)
+    _render_file(latest, header=f"\n=== Latest session: {latest} ===")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

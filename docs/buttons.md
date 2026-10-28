@@ -205,6 +205,67 @@ audit view. The script never fails the Logs run: no sessions,
 an unreadable file, or an unknown entry shape all degrade to a
 plain note.
 
+## Ledger (durable audit log)
+
+Run records used to live only in server memory: a container
+restart wiped them, and webhook pulls and PR-action taps were
+never stored at all. The ledger fixes that. `server.py` appends
+one JSON line per action to `/var/lib/buttons/ledger.jsonl`,
+which is a named volume (`buttons-data`) — never a checkout,
+so pulls and rebuilds cannot dirty or erase it:
+
+- `run`: `{action, repo, exit, output}` — output is the last
+  2000 chars, appended when the run completes.
+- `webhook`: `{repo, ok, detail, advanced}` — appended when
+  the pull record lands.
+- `pr-action`: `{repo, pr, action, ok, output|error}` — success
+  and refusal both logged; a refused tap is audit-worthy too.
+- `system`: `{event}` — currently just `buttons started`, so a
+  rebuild is visible as a fresh start line.
+
+What is NOT logged, deliberately: briefing reads (reads are
+not actions — logging them would bury the actions), and Deploy
+buttons completion (the container restarts mid-run, so the old
+process never gets to log it; the new container's `buttons
+started` line is the deploy evidence instead).
+
+The page's Ledger section reads it via
+`GET /buttons/api/ledger?kind=&limit=` (kind allowlisted:
+`all`, `run`, `webhook`, `pr-action`, `system`; limit clamped
+1–200, default 50), newest first, with a kind picker and
+Refresh. It refreshes on load, on kind change, after any run
+completes, and after a successful PR action. Entry data renders
+via textContent, never innerHTML, so a log line cannot inject
+markup. A ledger append never fails the action it records: any
+failure prints to the container log and the action proceeds.
+Growth is bounded: past 2,000,000 bytes the file is rewritten
+keeping the last 2000 lines before the next append.
+
+## Pi sessions (browser)
+
+The Logs button renders only the latest session. The Pi
+sessions block under Ledger browses all of them: List sessions
+fetches `GET /buttons/api/pi-sessions`, which runs
+`pi_logs.py --list-json` in the terminal container (no TD
+prefix — it reads `/root/.pi` directly) and returns
+`{sessions: [{file, mtime}]}` newest first, capped at 20.
+Tapping a session fetches
+`GET /buttons/api/pi-session?session=<file>`, which runs
+`pi_logs.py --session <file>` and returns the readable render.
+The query is validated server-side against
+`^[A-Za-z0-9._-]+$` before it is interpolated into the
+`bash -c` string — session filenames are
+`<timestamp>_<uuid>.jsonl`, which that pattern covers, and
+anything else is rejected with 400 rather than quoted and
+hoped. `--session` matches by filename substring: no match
+prints a note, multiple matches list the candidates, and an
+empty or missing session directory still exits 0. Job bundles
+(briefing + follow-up actions + transcripts under one id) are
+the later step: the ledger records the actions, the browser
+lists the transcripts, and linking a run to the sessions it
+produced is what a bundle adds — the ledger does not duplicate
+transcripts.
+
 ## The readable briefing (`briefing_summary.py`)
 
 The fast briefing is a summarizer, not a td dump — and that is

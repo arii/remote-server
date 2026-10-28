@@ -190,6 +190,9 @@ services:
       # No trust expansion: the socket already gives this container
       # root-equivalent host access.
       - ${HOME}/.ssh:/root/.ssh:ro
+      # Ledger volume: the audit log lives here, never in a
+      # checkout, so pulls and rebuilds cannot dirty or erase it.
+      - buttons-data:/var/lib/buttons
     environment:
       HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
       # GitHub webhook HMAC secret (see .env.example). Empty/unset =
@@ -218,6 +221,7 @@ volumes:
   pi-data:
   gemini-data:
   local-data:
+  buttons-data:
 
 # ---------------------------------------------------------------------------
 # ON HOLD — remaining agent harness decisions deferred (2026-10-22).

@@ -214,6 +214,8 @@ def _webhook_worker(repo, path):
         webhook_state[repo] = {"at": time.time(), "ok": ok,
                                "detail": detail, "advanced": advanced}
         webhook_pending.discard(repo)
+    _ledger_append({"kind": "webhook", "repo": repo, "ok": ok,
+                    "detail": detail, "advanced": advanced})
     print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
           flush=True)
     # Warming runs AFTER the pull record lands, in its own thread:
@@ -418,6 +420,61 @@ runs_lock = threading.Lock()
 active_id = None
 
 
+# --- Audit ledger (durable, append-only JSONL) --------------------
+# The ledger lives on a named volume (buttons-data:/var/lib/buttons),
+# never in a checkout, so pulls and rebuilds cannot dirty or erase
+# it. One line per action: run completions, webhook pulls,
+# pr-action taps (including refused ones), and process starts.
+# Briefing reads are NOT logged: reads are not actions, and
+# logging them would bury the actions. A failed append never
+# fails the action it records — the ledger is audit, not gate.
+LEDGER_PATH = os.environ.get("BUTTONS_LEDGER_PATH",
+                             "/var/lib/buttons/ledger.jsonl")
+LEDGER_MAX_BYTES = 2_000_000
+LEDGER_PRUNE_LINES = 2000
+ledger_lock = threading.Lock()
+LEDGER_KINDS = ("run", "webhook", "pr-action", "system")
+
+
+def _ledger_append(entry):
+    """Append one JSON line to the ledger. Never raises."""
+    try:
+        line = json.dumps({"ts": time.time(), **entry},
+                          sort_keys=True) + "\n"
+        with ledger_lock:
+            d = os.path.dirname(LEDGER_PATH)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            if os.path.exists(LEDGER_PATH) \
+                    and os.path.getsize(LEDGER_PATH) > LEDGER_MAX_BYTES:
+                with open(LEDGER_PATH) as f:
+                    lines = f.readlines()
+                with open(LEDGER_PATH, "w") as f:
+                    f.writelines(lines[-LEDGER_PRUNE_LINES:])
+            with open(LEDGER_PATH, "a") as f:
+                f.write(line)
+    except Exception as exc:  # ledger failure must not fail actions
+        print(f"ledger append failed: {exc}", flush=True)
+
+
+def _ledger_read(kind="all", limit=50):
+    """Newest-first entries, kind-filtered. [] on any failure."""
+    try:
+        with open(LEDGER_PATH) as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+    entries = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue  # skip unparseable lines, keep the rest
+        if isinstance(e, dict) and (kind == "all" or e.get("kind") == kind):
+            entries.append(e)
+    return entries[-limit:][::-1]
+
+
 def _append(run, text):
     run["output"] += text
     run["last_output_at"] = time.time()
@@ -532,6 +589,9 @@ def run_action(run_id, action, repo="tech-dancer"):
             run["done"] = True
             run["finished_at"] = time.time()
     print(f"run {run_id} ({action}) finished: exit={run['exit_code']}", flush=True)
+    _ledger_append({"kind": "run", "action": action, "repo": repo,
+                    "exit": run["exit_code"],
+                    "output": run["output"][-2000:]})
     with runs_lock:
         if active_id == run_id:
             active_id = None
@@ -623,6 +683,28 @@ buttons above (briefing, warm context, preflight).</p>
 <div id="briefing"></div>
 <button id="refreshBriefing">Refresh briefing</button>
 <div id="briefingErr"></div>
+<h2>Ledger</h2>
+<p>Durable audit log — every run, webhook pull, and PR-action tap,
+newest first. Survives container restarts (named volume, not the
+checkout). Briefing reads are not logged: reads are not actions.</p>
+<label>Kind: <select id="ledgerKind">
+<option value="all">All</option>
+<option value="run">Runs</option>
+<option value="webhook">Webhooks</option>
+<option value="pr-action">PR actions</option>
+<option value="system">System</option>
+</select></label>
+<div id="ledger"></div>
+<button id="refreshLedger">Refresh ledger</button>
+<div id="ledgerErr"></div>
+<h2>Pi sessions</h2>
+<p>Browse Pi transcripts on disk (pi-data volume). List shows the
+newest sessions; tap one to render it readably. The full JSONL
+stays on disk — this is the readable view, not the archive.</p>
+<button id="listPiSessions">List sessions</button>
+<div id="piSessionList"></div>
+<pre id="piSessionOut"></pre>
+<div id="piSessionErr"></div>
 <script>
 // Core script (script block 1). The buttons above are rendered
 // server-side; this only attaches handlers to them, so a failure
@@ -843,6 +925,8 @@ async function poll(id) {
       // instead of leaving the reader to guess where output went.
       if (run.action === "briefing-td" &&
           typeof refreshBriefing === "function") refreshBriefing();
+      // Any finished run is a new ledger line.
+      if (typeof refreshLedger === "function") refreshLedger();
     }
   }, 2000);
 }
@@ -904,6 +988,7 @@ function prActionButton(pr, action, label, confirmText) {
       const data = await r.json();
       if (!r.ok) { if (res) res.textContent = "Failed: " + data.error; b.disabled = false; return; }
       if (res) res.textContent = "Done. Refresh the briefing to see the new state.";
+      if (typeof refreshLedger === "function") refreshLedger();
     } catch (e) {
       if (res) res.textContent = "Failed: " + e;
       b.disabled = false;
@@ -1018,6 +1103,98 @@ document.getElementById("refreshBriefing").onclick = refreshBriefing;
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
+
+// Ledger view. Entry data is rendered with textContent only —
+// never innerHTML — so a log line can never inject markup.
+// Output tails hide in <details> so the list stays scannable.
+const ledgerEl = document.getElementById("ledger");
+const ledgerErrEl = document.getElementById("ledgerErr");
+const ledgerKindEl = document.getElementById("ledgerKind");
+function ledgerSummary(e) {
+  if (e.kind === "run") return "run " + e.action + (e.repo ? " (" + e.repo + ")" : "") + " — exit " + e.exit;
+  if (e.kind === "webhook") return "webhook " + e.repo + " — " + (e.ok ? "pulled" : "FAILED") + (e.advanced ? " (advanced)" : "") + ": " + (e.detail || "");
+  if (e.kind === "pr-action") return "pr-action " + e.action + " #" + e.pr + (e.repo ? " (" + e.repo + ")" : "") + " — " + (e.ok ? "ok" : "refused/failed");
+  if (e.kind === "system") return "system: " + (e.event || "");
+  return "unknown entry";
+}
+async function refreshLedger() {
+  if (!ledgerEl) return;
+  const kind = ledgerKindEl ? ledgerKindEl.value : "all";
+  ledgerEl.textContent = "Loading ledger…";
+  try {
+    const r = await fetch("/buttons/api/ledger?kind=" + encodeURIComponent(kind) + "&limit=50");
+    if (!r.ok) { ledgerEl.textContent = ""; ledgerErrEl.textContent = "ledger unavailable: " + (await r.json()).error; return; }
+    const data = await r.json();
+    ledgerErrEl.textContent = "";
+    ledgerEl.textContent = "";
+    if (!data.entries.length) { ledgerEl.textContent = "No ledger entries yet."; return; }
+    data.entries.forEach(e => {
+      const row = document.createElement("div");
+      const head = document.createElement("div");
+      head.textContent = new Date(e.ts * 1000).toLocaleString() + " — " + ledgerSummary(e);
+      row.appendChild(head);
+      const tail = e.output || e.error || "";
+      if (tail) {
+        const det = document.createElement("details");
+        const sum = document.createElement("summary");
+        sum.textContent = e.error ? "error" : "output tail";
+        det.appendChild(sum);
+        const pre = document.createElement("pre");
+        pre.textContent = tail;
+        det.appendChild(pre);
+        row.appendChild(det);
+      }
+      ledgerEl.appendChild(row);
+    });
+  } catch (e) {
+    ledgerEl.textContent = "";
+    ledgerErrEl.textContent = "ledger unavailable: " + e;
+  }
+}
+const refreshLedgerBtn = document.getElementById("refreshLedger");
+if (refreshLedgerBtn) refreshLedgerBtn.onclick = refreshLedger;
+if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
+refreshLedger();
+
+// Pi session browser. List renders each session file as a
+// button; tapping one renders that session readably below.
+const piSessionListEl = document.getElementById("piSessionList");
+const piSessionOutEl = document.getElementById("piSessionOut");
+const piSessionErrEl = document.getElementById("piSessionErr");
+async function showSession(file) {
+  piSessionOutEl.textContent = "Loading session…";
+  try {
+    const r = await fetch("/buttons/api/pi-session?session=" + encodeURIComponent(file));
+    const data = await r.json();
+    if (!r.ok) { piSessionOutEl.textContent = ""; piSessionErrEl.textContent = "session unavailable: " + data.error; return; }
+    piSessionErrEl.textContent = "";
+    piSessionOutEl.textContent = data.output;
+  } catch (e) {
+    piSessionOutEl.textContent = "";
+    piSessionErrEl.textContent = "session unavailable: " + e;
+  }
+}
+const listPiSessionsBtn = document.getElementById("listPiSessions");
+if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
+  piSessionListEl.textContent = "Loading sessions…";
+  try {
+    const r = await fetch("/buttons/api/pi-sessions");
+    const data = await r.json();
+    if (!r.ok) { piSessionListEl.textContent = ""; piSessionErrEl.textContent = "sessions unavailable: " + data.error; return; }
+    piSessionErrEl.textContent = "";
+    piSessionListEl.textContent = "";
+    if (!data.sessions.length) { piSessionListEl.textContent = "No Pi sessions found."; return; }
+    data.sessions.forEach(s => {
+      const b = document.createElement("button");
+      b.textContent = s.file;
+      b.onclick = () => showSession(s.file);
+      piSessionListEl.appendChild(b);
+    });
+  } catch (e) {
+    piSessionListEl.textContent = "";
+    piSessionErrEl.textContent = "sessions unavailable: " + e;
+  }
+};
 
 // Live updates: re-fetch status every 10s (skipped while the tab
 // is hidden) so webhook auto-pulls show up without a reload. The
@@ -1275,6 +1452,61 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(json.loads(proc.stdout))
             except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
+        elif path == "/buttons/api/ledger":
+            # Durable audit log: newest-first, kind-filtered.
+            # kind is allowlisted (plus "all"); limit is clamped.
+            qs = parse_qs(urlparse(self.path).query)
+            kind = qs.get("kind", ["all"])[0]
+            if kind != "all" and kind not in LEDGER_KINDS:
+                self._json({"error": "unknown kind"}, 400)
+                return
+            try:
+                limit = int(qs.get("limit", ["50"])[0])
+            except ValueError:
+                limit = 50
+            limit = max(1, min(200, limit))
+            self._json({"entries": _ledger_read(kind, limit)})
+        elif path == "/buttons/api/pi-sessions":
+            # List Pi session files (newest first) as JSON. No TD
+            # prefix: pi_logs reads /root/.pi directly, it needs
+            # no repo cwd and no .env.
+            try:
+                proc = subprocess.run(
+                    EXEC + ["python3 /srv/remote-server/buttons/"
+                            "pi_logs.py --list-json"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=60, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "pi sessions failed")
+                self._json(json.loads(proc.stdout))
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+        elif path == "/buttons/api/pi-session":
+            # Render one Pi session by filename query. The query is
+            # interpolated into a bash -c string, so it must match
+            # a strict allowlist — anything else is rejected, never
+            # quoted-and-hoped. Session filenames are
+            # <timestamp>_<uuid>.jsonl, which this pattern covers.
+            qs = parse_qs(urlparse(self.path).query)
+            query = qs.get("session", [""])[0]
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", query):
+                self._json({"error": "bad session query"}, 400)
+                return
+            try:
+                proc = subprocess.run(
+                    EXEC + ["python3 /srv/remote-server/buttons/"
+                            f"pi_logs.py --session {query}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=60, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "pi session failed")
+                self._json({"output": proc.stdout})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
         elif path.startswith("/buttons/api/run/"):
             run_id = path.rsplit("/", 1)[-1]
             with runs_lock:
@@ -1331,10 +1563,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "bad pr_number, action or repo"}, 400)
                 return
             try:
-                self._json(_pr_action(pr_number, action, repo))
+                result = _pr_action(pr_number, action, repo)
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "pr": pr_number, "action": action,
+                                "ok": True,
+                                "output": result["output"][-2000:]})
+                self._json(result)
             except ValueError as exc:
+                # A refused tap is audit-worthy too: the gate fired.
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "pr": pr_number, "action": action,
+                                "ok": False, "error": str(exc)[:500]})
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "pr": pr_number, "action": action,
+                                "ok": False, "error": str(exc)[:500]})
                 self._json({"error": str(exc)[:500]}, 500)
             return
         if path != "/buttons/api/run":
@@ -1373,4 +1617,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("BUTTONS_PORT", "8000"))
+    _ledger_append({"kind": "system", "event": "buttons started"})
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
