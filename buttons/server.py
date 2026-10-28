@@ -322,7 +322,7 @@ ACTIONS = {
     "briefing-td": {
         "label": "Repo briefing (td, fast)",
         "group": "Briefing",
-        "sub": "Open PRs, CI state, conflicts — fast, from td",
+        "sub": "Open PRs, CI state, conflicts for tech-dancer — fast, from td",
         "confirm": False,
         "steps": [
             EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
@@ -383,10 +383,20 @@ ACTIONS = {
 # when to use it — the docs are not where anyone looks mid-task.
 # data-label carries the bare label for the confirm dialog; the
 # button's textContent now includes the subtitle too.
+# Group headings carry the repo each group acts on, because the
+# page covers two repos and the old bare headings left that
+# ambiguous: Server = the remote-server stack, Briefing = the
+# tech-dancer repo (briefings read tech-dancer only).
+GROUP_TITLES = {
+    "Server": "Server · arii/remote-server",
+    "Briefing": "Briefing · arii/tech-dancer",
+}
+
+
 def _buttons_html():
     parts = []
     for group in ("Server", "Briefing"):
-        parts.append(f'<div class="grouphead">{group}</div>')
+        parts.append(f'<div class="grouphead">{GROUP_TITLES[group]}</div>')
         for name, spec in ACTIONS.items():
             if spec["group"] != group:
                 continue
@@ -521,6 +531,12 @@ button:disabled { opacity: 0.4; }
 .bsub { display: block; font-size: 0.85em; opacity: 0.7; font-weight: normal;
   margin-top: 0.25em; }
 .grouphead { font-weight: bold; margin: 1em 0 0.2em; color: #bbb; }
+.repo { border: 1px solid #555; border-radius: 8px; padding: 0.5em;
+  margin: 0.5em 0; }
+.reponame { font-weight: bold; }
+.reponame a { color: inherit; text-decoration: underline; }
+.reposcope { font-size: 0.9em; color: #bbb; }
+.repostatus { font-size: 0.9em; color: #bbb; }
 .planexcerpt { max-height: 30vh; }
 .planact button { display: inline-block; width: auto; margin: 0.5em 0.5em 0.5em 0;
   padding: 0.5em 0.8em; font-size: 0.9em; }
@@ -558,7 +574,11 @@ a { color: #8bf; }
 <body>
 <h1>S5 buttons</h1>
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
-<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="webhookStatus"></span><span id="liveUpdated"></span></div>
+<div id="repos">
+<div class="repo"><div class="reponame"><a href="https://github.com/arii/remote-server">arii/remote-server</a></div><div class="reposcope">This stack — terminal, buttons, oauth2-proxy. The Server buttons below act here.</div><div class="repostatus" data-repo-status="arii/remote-server">Auto-pull: not yet</div></div>
+<div class="repo"><div class="reponame"><a href="https://github.com/arii/tech-dancer">arii/tech-dancer</a></div><div class="reposcope">Repo work — briefings, plans, agent sessions. The Briefing buttons below read this repo only.</div><div class="repostatus" data-repo-status="arii/tech-dancer">Auto-pull: not yet</div></div>
+</div>
+<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -936,19 +956,26 @@ async function refreshStatus() {
       liveAttachedRun = s.active;
       poll(s.active);
     }
-    const el = document.getElementById("webhookStatus");
     const upd = document.getElementById("liveUpdated");
+    const pend = document.getElementById("livePending");
     const w = s.webhooks || {};
-    const parts = Object.keys(w).map(repo => {
-      const st = w[repo];
-      return repo + ": " + (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
-        new Date(st.at * 1000).toLocaleString();
-    });
     const pending = s.webhooks_pending || [];
-    if (pending.length) parts.push("pulling " + pending.join(", ") + "…");
-    if (el) el.textContent = parts.length ? "Auto-pull: " + parts.join(" · ")
-      : "Auto-pull: no webhook pulls yet";
-    if (upd) upd.textContent = " · Updated " + new Date().toLocaleTimeString();
+    // Per-repo pull state lives on the repo cards, so the page
+    // always shows which repo each result belongs to.
+    document.querySelectorAll("[data-repo-status]").forEach(card => {
+      const repo = card.getAttribute("data-repo-status");
+      if (pending.includes(repo)) {
+        card.textContent = "Auto-pull: pulling…";
+      } else if (w[repo]) {
+        const st = w[repo];
+        card.textContent = "Auto-pull: " +
+          (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
+          new Date(st.at * 1000).toLocaleString();
+      }
+    });
+    if (upd) upd.textContent = "Updated " + new Date().toLocaleTimeString();
+    if (pend) pend.textContent = pending.length
+      ? " · Pulling " + pending.join(", ") + "…" : "";
     if (spinner) spinner.style.display = pending.length ? "inline-block" : "none";
   } catch (e) {
     if (spinner) spinner.style.display = "none";

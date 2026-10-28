@@ -306,21 +306,32 @@ still need `up -d --build buttons`, `.env` changes still need
 Recreate terminal, and a terminal image update is still a
 host-shell job.
 
+### The two repos on the page
+
+The page covers two repos and says so at the top: one card per
+repo with its scope and its last auto-pull result.
+`arii/remote-server` is the stack itself — the Server buttons
+act there. `arii/tech-dancer` is the repo work — the Briefing
+buttons read that repo only, and plans live in its
+`.agents/plans/`. Group headings repeat the repo name for the
+same reason, so no button is ambiguous about which repo it
+touches.
+
 ### Live updates on the page
 
 The page does not wait for a reload to show webhook activity. It
 re-fetches `/buttons/api/status` every 10 seconds (skipped while
 the tab is hidden) and updates the live bar under the header: a
 spinner shows while a refresh is in flight or a pull is pending,
-per-repo pull results show as they land, and a timestamp shows
-when the page last refreshed. A pull that is still running shows
-as "pulling <repo>…" with the spinner, from the status API's
-`webhooks_pending` field. Plans are deliberately not auto-refreshed
-— re-rendering the list would collapse whatever the reader has
-expanded. Note also that GitHub's ping (sent when a webhook is
-created) does more than answer pong: for an allowlisted repo it
-queues an auto-pull, so creating the webhook immediately syncs
-the checkout.
+per-repo pull results land on the repo cards as they arrive, and
+a timestamp shows when the page last refreshed. A pull that is
+still running shows as "pulling <repo>…" with the spinner, from
+the status API's `webhooks_pending` field. Plans are deliberately
+not auto-refreshed — re-rendering the list would collapse
+whatever the reader has expanded. Note also that GitHub's ping
+(sent when a webhook is created) does more than answer pong: for
+an allowlisted repo it queues an auto-pull, so creating the
+webhook immediately syncs the checkout.
 
 ## Tracked git hooks + setup script
 
