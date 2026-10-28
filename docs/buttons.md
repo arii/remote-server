@@ -229,11 +229,28 @@ Setup, in order:
    effect: `docker compose up -d oauth2-proxy buttons` (buttons
    needs a rebuild for the handler itself:
    `docker compose up -d --build buttons`).
-3. In each repo (remote-server, tech-dancer): Settings -> Webhooks
-   -> Add webhook. Payload URL:
+3. Create the GitHub-side webhooks from repo code, not the GitHub
+   UI — `scripts/setup-webhooks.sh` reads the payload URL and the
+   secret from the same `.env`, lists each repo's hooks, PATCHes
+   the one matching the URL or POSTs it if absent, push events
+   only, so re-running never duplicates anything:
+
+   ```bash
+   npm run webhooks:check   # list hooks, no changes
+   npm run webhooks:setup   # create-or-update both repos
+   ```
+
+   These route through the terminal container, where `gh` auth is
+   verified; the script also runs directly (`bash
+   scripts/setup-webhooks.sh`) wherever `gh` is authenticated. The
+   token `gh` uses needs Administration: read and write
+   (`admin:repo_hook`) on both repos — a 403/404 from `gh api`
+   means that permission, and the script says so. Manual fallback
+   if `gh` cannot do it: in each repo, Settings -> Webhooks ->
+   Add webhook, payload URL
    `https://<domain>:<port>/buttons/api/webhook`, content type
-   `application/json`, secret = the same `WEBHOOK_SECRET`, trigger
-   "Just the `push` event".
+   `application/json`, secret = the same `WEBHOOK_SECRET`,
+   trigger "Just the `push` event".
 
 Why the ingress is shaped this way: GitHub cannot pass the GitHub
 OAuth gate, so oauth2-proxy skips auth for exactly one route,
@@ -321,6 +338,7 @@ commands, so bring-up and clean-up stop being lengthy shell lines:
 | `terminal:recreate` / `terminal:logs` | `up -d --force-recreate terminal` / logs for terminal + ollama |
 | `update:buttons` | `git pull --ff-only && docker compose up -d --build buttons` (the Deploy buttons action, from a shell) |
 | `hooks:install` / `hooks:check` | `scripts/setup-hooks.sh` / with `--check` |
+| `webhooks:setup` / `webhooks:check` | `scripts/setup-webhooks.sh` via the terminal container / with `--check` |
 | `check` | `python3 -m py_compile buttons/server.py buttons/briefing_summary.py` |
 
 Run with `npm run <script>` from the checkout. It needs node/npm
