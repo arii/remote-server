@@ -24,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl gh git gnupg htop less nano openssh-client procps xz-utils \
+      bash ca-certificates curl gh git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv xz-utils \
  && install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
@@ -47,6 +47,12 @@ RUN apt-get update \
  && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version \
  && gh --version \
+ && npm install -g "pnpm@10.28.2" \
+ && pnpm --version \
+ && python3 --version \
+ && python3 -m venv /tmp/venv-smoke \
+ && /tmp/venv-smoke/bin/python --version \
+ && rm -rf /tmp/venv-smoke \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*

@@ -142,6 +142,35 @@ already holds the Docker socket (root-equivalent), so the SSH mount
 doesn't widen the real boundary — the single-user GitHub OAuth gate is
 it.
 
+## Terminal runtimes: what lives where
+
+The rule that makes this durable: **system runtimes bake into the
+image; repo dependencies install into the checkout.** Anything
+installed with `apt` inside the running container vanishes on the next
+recreate; anything installed into `/srv/repos` (a host bind mount)
+persists.
+
+- **Baked into the terminal image** (pinned, CI smoke-tested):
+  Node 22 + npm, pnpm 10.28.2, Python 3 + venv/pip, `gh`, `git`,
+  Docker CLI. This covers the interpreters and package managers every
+  repo needs before its own setup can run.
+- **Installed per checkout** (persists in the bind mount):
+  - `td` (Python CLI, `boomtick-cli`): clone BoomTick, then
+    `python3 -m venv .venv && .venv/bin/pip install -e cli/` — the
+    venv lives in the checkout, so it survives container recreates.
+  - JS repos (e.g. tech-dancer): `pnpm install` in the checkout;
+    `node_modules` persists the same way. The boomtick-mcp
+    validation tools (tests, Lighthouse, Playwright) run against
+    these installed deps.
+- **Heavy/isolated jobs stay in the repo's own container** via the
+  Docker socket (the grasping-2026 demo already works this way) —
+  don't install browsers or CUDA-style toolchains into the terminal
+  image.
+
+After a CI rebuild, verify the base layer on the S5 with:
+`python3 --version`, `pnpm --version`, `gh --version`, `td --help`
+(after the checkout install above).
+
 ## Config changes
 
 Pi's provider config lives in `terminal/pi-config/` (baked into the
