@@ -26,6 +26,74 @@ to the page (polled every 2s); reloading mid-run re-attaches to it.
 Recreating the terminal kills any running Pi session in it — that is
 the point of Recreate, but do not press it mid-conversation.
 
+## Progress, Clear output, pass/fail colour
+
+- **Progress line:** while a run is active the status line shows
+  `running: <action> — step N/M — <elapsed> elapsed, last output
+  <age> ago`, plus the current step's command (truncated). The
+  elapsed / last-output ages tick every second between polls, so a
+  long silent step (model pull, Pi briefing) reads as "3m12s
+  elapsed, last output 45s ago" instead of looking dead. A step that
+  is still producing lines keeps "last output" near zero; one that
+  has gone quiet for minutes is genuinely stuck or waiting, not
+  just slow.
+- **Clear output:** the button below the action buttons clears the
+  stored output server-side (`POST /buttons/api/clear`), so the next
+  poll does not refill the pane with old lines. A running run keeps
+  its progress line and only new lines appear after the clear; a
+  finished run keeps its done/failed status with an empty pane.
+  Clear cancels nothing and runs no command.
+- **Green / red:** the status line and the output pane's border go
+  green on exit 0, red on any other exit code, amber while running.
+  Colour comes **only from the exit code**, never from parsing the
+  output — and that is the correct source here. Steps run via
+  `subprocess` with stdout/stderr merged and no PTY, so commands
+  do not emit terminal colours at all (that is why the page never
+  showed red/green from the output itself). Every run ends with an
+  explicit trailer line in the output: `finished: exit 0`, or
+  `step failed with exit code N; aborting` on the failing step
+  (later steps never run). One exception to read carefully:
+  Create plan deliberately exits 0 even if a `td` step inside it
+  fails, because the error lands in the plan file instead of losing
+  the plan — green there means "plan file written", not "every td
+  step passed"; check the file's contents.
+
+## Plans
+
+Below the output pane, a Plans section lists the briefing plans in
+`tech-dancer/.agents/plans/*.md` (newest first), each with a
+completed/total count and a progress bar. Tap a plan to expand its
+checklist, parsed from `- [ ]` / `- [x]` lines (also `*` bullets
+and capital `X`) anywhere in the file — not just the Next actions
+section.
+
+Tapping a checkbox flips that one character in the plan file
+itself, so the state is the file: it shows up in `git status` in
+the tech-dancer checkout, survives a container recreate, and
+commits with the plan. The toggle sends only a validated plan
+filename and a line number to the server; the server re-checks
+that the line is still a checkbox before flipping it, so a
+stale tap after the file changed fails instead of editing the
+wrong line. There is no free-text input: items can only be
+ticked, never added or reworded from this page — add items from
+the terminal if a plan needs new ones.
+
+Create plan now appends a `## Next actions` checklist to every
+new plan (review PRs/CI, resolve conflicts, triage failing
+checks/comments, do the single most important action), so new
+plans always have something to tick. Older plans show only the
+checkbox lines they already contain.
+
+Implementation note: the buttons container has no `/srv/repos`
+mount, so Plans list/toggle run a fixed Python script inside the
+terminal container via `docker compose exec terminal python3 -`
+(the same transport as the briefing buttons), with the plan
+payload embedded in the script — `python3 -` reads the script
+from stdin, so stdin cannot also carry the payload. If the
+terminal container is down, the Plans section reports
+"plans unavailable" instead of a list; the action buttons are
+unaffected except for the ones that also exec into terminal.
+
 Briefing notes: the td briefing needs GitHub auth in the terminal
 container (`gh` auth or `GITHUB_TOKEN`); auth errors show in the
 output instead of a briefing. The agent briefing's MCP tools in Pi
