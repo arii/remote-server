@@ -344,7 +344,13 @@ still running shows as "pulling <repo>…" with the spinner, from
 the status API's `webhooks_pending` field. The Briefing view
 re-fetches only on load or Refresh, for the same reason: a card
 you are reading should not shift under you. Note also that
-GitHub's ping
+When a remote-server pull actually advances the checkout after
+the buttons container started, the page also shows a rebuild
+banner and highlights the Deploy buttons button — the pull
+alone never rebuilds, and the banner is how the page says so. A
+redundant delivery (already up to date) does not light it, and
+rebuilding clears it, because the rebuild restarts the
+container. GitHub's ping
 (sent when a webhook is created) does more than answer pong: for
 an allowlisted repo it queues an auto-pull, so creating the
 webhook immediately syncs the checkout.

@@ -79,6 +79,16 @@ webhook_state_lock = threading.Lock()
 webhook_pull_lock = threading.Lock()  # serializes pulls, not status reads
 webhook_pending = set()
 
+# Process start: the buttons container serves server.py from its
+# image, not the checkout, so a webhook pull that ADVANCES the
+# checkout after this process started means the served page is
+# older than the checkout — the stale flag the page highlights.
+# A redundant pull ("Already up to date") does not set it. A
+# rebuild restarts the process, which clears the flag (and the
+# in-memory pull record with it); a restart without a rebuild
+# loses the record, so the flag is fail-silent, never fail-loud.
+STARTED_AT = time.time()
+
 
 def _webhook_secret():
     return os.environ.get("WEBHOOK_SECRET", "")
@@ -138,6 +148,7 @@ def _webhook_worker(repo, path):
                "-c", "core.hooksPath=/dev/null"]
         old_head = None
         new_head = None
+        advanced = False
         try:
             old_head = subprocess.run(
                 git + ["rev-parse", "HEAD"], stdout=subprocess.PIPE,
@@ -177,11 +188,16 @@ def _webhook_worker(repo, path):
                     env=env).stdout.strip() or None
             except Exception:
                 pass
+            # The stale flag must mean the checkout actually moved:
+            # a redundant delivery ("Already up to date") changes
+            # nothing, so it must not light the rebuild banner.
+            advanced = bool(old_head and new_head
+                            and old_head != new_head)
         except Exception as exc:
             ok, detail = False, str(exc)[:200]
     with webhook_state_lock:
         webhook_state[repo] = {"at": time.time(), "ok": ok,
-                               "detail": detail}
+                               "detail": detail, "advanced": advanced}
         webhook_pending.discard(repo)
     print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
           flush=True)
@@ -538,6 +554,8 @@ h2 { font-size: 1.1em; margin-top: 1.5em; }
 .prcard .prmeta { font-size: 0.9em; color: #bbb; }
 .prcard .prresult { font-size: 0.9em; margin-top: 0.4em; }
 .practions { margin-top: 0.4em; }
+#staleBar { border: 1px solid #e6a817; border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
+button.needs-update { border-color: #e6a817; box-shadow: 0 0 0 2px rgba(230,168,23,0.4); }
 #briefingErr { color: #ff8a8a; }
 a { color: #8bf; }
 </style>
@@ -550,6 +568,7 @@ a { color: #8bf; }
 <div class="repo"><div class="reponame"><a href="https://github.com/arii/tech-dancer">arii/tech-dancer</a></div><div class="reposcope">Repo work — briefings, agent sessions. The Briefing buttons below read this repo only.</div><div class="repostatus" data-repo-status="arii/tech-dancer">Auto-pull: not yet</div></div>
 </div>
 <div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span></div>
+<div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -573,8 +592,15 @@ const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
 let timer = null;
+// True only for a run this page-load started (not a re-attached
+// run from a reload): its completion scrolls the output into
+// view, because on a phone the output pane sits below the
+// buttons and "finished: exit 0" in the state line alone looks
+// like no output.
+let userStartedRun = false;
 
 async function startRun(name, label, confirmFlag) {
+  userStartedRun = true;
   if (confirmFlag && !window.confirm(label + " — run it?")) return;
   const r = await fetch("/buttons/api/run", {method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -760,6 +786,15 @@ async function poll(id) {
     if (run.done) {
       clearInterval(timer);
       setBusy(false);
+      if (userStartedRun) {
+        userStartedRun = false;
+        outEl.scrollIntoView();
+      }
+      // A finished briefing-td run means the cards are stale:
+      // refresh them so "ran briefing" visibly updates the view
+      // instead of leaving the reader to guess where output went.
+      if (run.action === "briefing-td" &&
+          typeof refreshBriefing === "function") refreshBriefing();
     }
   }, 2000);
 }
@@ -964,6 +999,20 @@ async function refreshStatus() {
           new Date(st.at * 1000).toLocaleString();
       }
     });
+    // Stale page: a remote-server pull landed after this container
+    // started, so the served page predates the checkout. Show the
+    // banner and highlight the rebuild button — the pull alone
+    // never rebuilds, and without this the page silently looks
+    // current while serving old code.
+    const staleBar = document.getElementById("staleBar");
+    const depBtn = btnDiv.querySelector('button[data-action="deploy-buttons"]');
+    if (s.stale_buttons) {
+      if (staleBar) staleBar.style.display = "block";
+      if (depBtn) depBtn.classList.add("needs-update");
+    } else {
+      if (staleBar) staleBar.style.display = "none";
+      if (depBtn) depBtn.classList.remove("needs-update");
+    }
     if (upd) upd.textContent = "Updated " + new Date().toLocaleTimeString();
     if (pend) pend.textContent = pending.length
       ? " · Pulling " + pending.join(", ") + "…" : "";
@@ -1136,8 +1185,12 @@ class Handler(BaseHTTPRequestHandler):
             with webhook_state_lock:
                 hooks = dict(webhook_state)
                 pending = sorted(webhook_pending)
+            rs = hooks.get("arii/remote-server", {})
+            stale = bool(rs.get("ok") and rs.get("advanced")
+                         and rs.get("at", 0) > STARTED_AT)
             self._json({"active": active_id, "runs": recent,
-                        "webhooks": hooks, "webhooks_pending": pending})
+                        "webhooks": hooks, "webhooks_pending": pending,
+                        "stale_buttons": stale})
         elif path == "/buttons/api/briefing":
             # Structured briefing for the live Briefing view: the
             # summarizer runs in the terminal container (same
