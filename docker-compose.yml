@@ -149,6 +149,12 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/remote-server:/home/ari/remote-server
+      # Host SSH key, read-only: Deploy runs `git pull` over SSH as
+      # root inside this container, and git needs both the key and
+      # github.com in known_hosts. Mirrors the terminal container.
+      # No trust expansion: the socket already gives this container
+      # root-equivalent host access.
+      - ${HOME}/.ssh:/root/.ssh:ro
     environment:
       HOME: /home/ari # ${HOME} in the compose file must interpolate to host paths
     expose:

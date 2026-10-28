@@ -53,6 +53,12 @@ browser -> oauth2-proxy (TLS + GitHub OAuth, same gate as the terminal)
   same trust level as the terminal itself — the OAuth single-user gate
   is the boundary for both. Do not publish the buttons port or bypass
   oauth2-proxy for it.
+- **SSH key mount (read-only).** Deploy runs `git pull` over SSH, so
+  the container mounts `${HOME}/.ssh:/root/.ssh:ro` (same as the
+  terminal container) for the key and `github.com` in `known_hosts`.
+  Without it, pull fails with "Host key verification failed". This
+  adds no trust: the socket above already gives the container
+  root-equivalent host access.
 
 ## The path-identity trick (load-bearing)
 
