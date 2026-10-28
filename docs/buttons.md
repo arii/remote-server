@@ -241,6 +241,15 @@ failure prints to the container log and the action proceeds.
 Growth is bounded: past 2,000,000 bytes the file is rewritten
 keeping the last 2000 lines before the next append.
 
+Clearing: the Ledger section's Clear ledger button (confirm
+dialog) posts `POST /buttons/api/ledger/clear`, which truncates
+the file and then appends one tombstone entry
+(`{kind: "system", event: "ledger cleared"}`) — so the clear
+itself stays on the record, and a cleared ledger never looks
+like an untouched empty one. The output pane's Clear output
+button is separate and older: it clears only the displayed run
+output, not the ledger.
+
 ## Pi sessions (browser)
 
 The Logs button renders only the latest session. The Pi
@@ -259,7 +268,14 @@ The query is validated server-side against
 anything else is rejected with 400 rather than quoted and
 hoped. `--session` matches by filename substring: no match
 prints a note, multiple matches list the candidates, and an
-empty or missing session directory still exits 0. Job bundles
+empty or missing session directory still exits 0. Clear Pi
+sessions (confirm dialog) posts
+`POST /buttons/api/pi-sessions/clear`, which runs
+`pi_logs.py --clear` in the terminal container: it deletes
+every session file `_list_files` finds (files only, never
+directories, no argument, so nothing from the request steers
+which files go) and reports the count; clearing an empty set
+exits 0. Job bundles
 (briefing + follow-up actions + transcripts under one id) are
 the later step: the ledger records the actions, the browser
 lists the transcripts, and linking a run to the sessions it

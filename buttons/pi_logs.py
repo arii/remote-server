@@ -148,6 +148,24 @@ def main(argv):
                              "mtime": mtime})
         print(json.dumps({"sessions": sessions}))
         return 0
+    if argv == ["--clear"]:
+        # Bulk-delete session transcripts. Files only, never
+        # directories; the file set comes from _list_files, and
+        # the mode takes no argument, so nothing from a request
+        # can steer which files are removed. Exit 0 even when
+        # there is nothing to delete — clearing an empty set is
+        # not a failure.
+        files = _list_files()
+        deleted = 0
+        for path in files:
+            try:
+                os.remove(path)
+                deleted += 1
+            except Exception as exc:
+                print(f"Could not delete "
+                      f"{os.path.basename(path)}: {exc}")
+        print(f"Deleted {deleted} Pi session(s).")
+        return 0
     if len(argv) == 2 and argv[0] == "--session":
         query = argv[1]
         files = _list_files()
@@ -164,7 +182,8 @@ def main(argv):
         _render_file(matches[0])
         return 0
     if argv:
-        print("usage: pi_logs.py [--list-json | --session QUERY]")
+        print("usage: pi_logs.py [--list-json | --session QUERY | "
+              "--clear]")
         return 0
     print("=== Pi sessions ===")
     files = _list_files()

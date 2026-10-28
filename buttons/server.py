@@ -475,6 +475,26 @@ def _ledger_read(kind="all", limit=50):
     return entries[-limit:][::-1]
 
 
+def _ledger_clear():
+    """Truncate the ledger, then leave a tombstone entry so the
+    clear itself stays on the record. Without the tombstone,
+    clearing would erase evidence of its own act. The append
+    runs outside the truncate lock: _ledger_append takes the
+    same lock, and holding it across the call would deadlock.
+    Returns True on success."""
+    try:
+        with ledger_lock:
+            d = os.path.dirname(LEDGER_PATH)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            open(LEDGER_PATH, "w").close()
+    except Exception as exc:
+        print(f"ledger clear failed: {exc}", flush=True)
+        return False
+    _ledger_append({"kind": "system", "event": "ledger cleared"})
+    return True
+
+
 def _append(run, text):
     run["output"] += text
     run["last_output_at"] = time.time()
@@ -686,7 +706,9 @@ buttons above (briefing, warm context, preflight).</p>
 <h2>Ledger</h2>
 <p>Durable audit log — every run, webhook pull, and PR-action tap,
 newest first. Survives container restarts (named volume, not the
-checkout). Briefing reads are not logged: reads are not actions.</p>
+checkout). Briefing reads are not logged: reads are not actions.
+Clear ledger deletes all entries but leaves a 'ledger cleared'
+record behind, so the clear itself stays on the record.</p>
 <label>Kind: <select id="ledgerKind">
 <option value="all">All</option>
 <option value="run">Runs</option>
@@ -696,12 +718,15 @@ checkout). Briefing reads are not logged: reads are not actions.</p>
 </select></label>
 <div id="ledger"></div>
 <button id="refreshLedger">Refresh ledger</button>
+<button id="clearLedger">Clear ledger</button>
 <div id="ledgerErr"></div>
 <h2>Pi sessions</h2>
 <p>Browse Pi transcripts on disk (pi-data volume). List shows the
 newest sessions; tap one to render it readably. The full JSONL
-stays on disk — this is the readable view, not the archive.</p>
+stays on disk — this is the readable view, not the archive.
+Clear Pi sessions deletes all transcripts.</p>
 <button id="listPiSessions">List sessions</button>
+<button id="clearPiSessions">Clear Pi sessions</button>
 <div id="piSessionList"></div>
 <pre id="piSessionOut"></pre>
 <div id="piSessionErr"></div>
@@ -1153,6 +1178,14 @@ async function refreshLedger() {
 }
 const refreshLedgerBtn = document.getElementById("refreshLedger");
 if (refreshLedgerBtn) refreshLedgerBtn.onclick = refreshLedger;
+const clearLedgerBtn = document.getElementById("clearLedger");
+if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
+  if (!window.confirm("Clear the ledger? All entries will be deleted except a 'ledger cleared' record. This cannot be undone.")) return;
+  const r = await fetch("/buttons/api/ledger/clear", {method: "POST"});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { ledgerErrEl.textContent = "ledger clear failed: " + (data.error || r.status); return; }
+  refreshLedger();
+};
 if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
 refreshLedger();
 
@@ -1174,6 +1207,16 @@ async function showSession(file) {
     piSessionErrEl.textContent = "session unavailable: " + e;
   }
 }
+const clearPiSessionsBtn = document.getElementById("clearPiSessions");
+if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
+  if (!window.confirm("Clear all Pi sessions? This deletes the transcripts and cannot be undone.")) return;
+  const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { piSessionErrEl.textContent = "clear failed: " + (data.error || r.status); return; }
+  piSessionListEl.textContent = "";
+  piSessionOutEl.textContent = "";
+  piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
+};
 const listPiSessionsBtn = document.getElementById("listPiSessions");
 if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   piSessionListEl.textContent = "Loading sessions…";
@@ -1544,6 +1587,35 @@ class Handler(BaseHTTPRequestHandler):
                     run["output"] = ""
                     run["last_output_at"] = time.time()
                     self._json({"ok": True, "id": run["id"]})
+            return
+        if path == "/buttons/api/ledger/clear":
+            # Destructive and deliberate: truncates the audit log.
+            # The tombstone entry (see _ledger_clear) is the record
+            # that a clear happened.
+            if _ledger_clear():
+                self._json({"ok": True})
+            else:
+                self._json({"error": "ledger clear failed"}, 500)
+            return
+        if path == "/buttons/api/pi-sessions/clear":
+            # Bulk-delete Pi session transcripts in the terminal
+            # container. File discovery lives in pi_logs.py (the
+            # same _list_files as the browser), never in the page,
+            # and --clear takes no argument, so nothing from the
+            # request reaches a shell string.
+            try:
+                proc = subprocess.run(
+                    EXEC + ["python3 /srv/remote-server/buttons/"
+                            "pi_logs.py --clear"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=120, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "pi clear failed")
+                self._json({"ok": True, "output": proc.stdout[-2000:]})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/pr-action":
             # Strict validation: integer PR number only (bools are
