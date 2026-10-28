@@ -94,7 +94,15 @@ server entry with its own `GITHUB_REPO` / `BOOMTICK_REPO_PATH`.
 
 - **The checkout:** `~/repos/tech-dancer` on the host, mounted at
   `/srv/repos` (see § repos below). Clone it over SSH so pushes use
-  your key.
+  your key. The server runs `td config view` at startup with cwd set
+  to this checkout — if the directory doesn't exist, Node reports it
+  misleadingly as `spawnSync /bin/sh ENOENT` (a nonexistent cwd
+  surfaces that way).
+- **`td` on PATH:** the server runs `td doctor` as a pre-flight
+  check; if `td` isn't resolvable, startup fails with
+  `spawnSync td ENOENT` and the connection closes. `td` is baked
+  into the terminal image (venv `/opt/venvs/td`, `boomtick-cli`
+  0.14.0 pinned, on `PATH`) — no manual install.
 - **GitHub auth:** `BOOMTICK_GITHUB_TOKEN` in `.env` (fine-grained PAT,
   repo scope) → `GITHUB_TOKEN` / `GH_TOKEN` inside the container. The
   server requires `gh` authenticated in `PATH` — `gh` is installed in
@@ -151,17 +159,17 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (pinned, CI smoke-tested):
-  Node 22 + npm, pnpm 10.28.2, Python 3 + venv/pip, `gh`, `git`,
-  Docker CLI. This covers the interpreters and package managers every
-  repo needs before its own setup can run.
+  Node 22 + npm, pnpm 10.28.2, Python 3 + venv/pip, `td`
+  (`boomtick-cli` 0.14.0 in venv `/opt/venvs/td`, on `PATH`), `gh`,
+  `git`, Docker CLI. This covers the interpreters and package
+  managers every repo needs before its own setup can run.
 - **Installed per checkout** (persists in the bind mount):
-  - `td` (Python CLI, `boomtick-cli`): clone BoomTick, then
-    `python3 -m venv .venv && .venv/bin/pip install -e cli/` — the
-    venv lives in the checkout, so it survives container recreates.
   - JS repos (e.g. tech-dancer): `pnpm install` in the checkout;
     `node_modules` persists the same way. The boomtick-mcp
     validation tools (tests, Lighthouse, Playwright) run against
     these installed deps.
+  - Other Python CLIs: same pattern as `td` used to need — a venv
+    inside the checkout (bind mount, so it survives recreates).
 - **Heavy/isolated jobs stay in the repo's own container** via the
   Docker socket (the grasping-2026 demo already works this way) —
   don't install browsers or CUDA-style toolchains into the terminal
@@ -169,7 +177,7 @@ persists.
 
 After a CI rebuild, verify the base layer on the S5 with:
 `python3 --version`, `pnpm --version`, `gh --version`, `td --help`
-(after the checkout install above).
+(`td` needs no checkout install — it's baked in).
 
 ## Config changes
 

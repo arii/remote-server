@@ -20,7 +20,8 @@ ARG PI_VERSION=1.4.0
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
     HOME=/root \
-    TERM=xterm-256color
+    TERM=xterm-256color \
+    PATH="/opt/venvs/td/bin:${PATH}"
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -53,6 +54,9 @@ RUN apt-get update \
  && python3 -m venv /tmp/venv-smoke \
  && /tmp/venv-smoke/bin/python --version \
  && rm -rf /tmp/venv-smoke \
+ && python3 -m venv /opt/venvs/td \
+ && /opt/venvs/td/bin/pip install --quiet "boomtick-cli==0.14.0" \
+ && /opt/venvs/td/bin/td --help > /dev/null \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
