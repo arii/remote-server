@@ -18,7 +18,7 @@ label, so you do not have to remember the docs to use the page.
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
 | Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the Briefing picker |
-| Sync & nudge agents | `td agent list-sessions`, then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped) |
+| Sync & nudge agents | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses), then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped). The fallback covers a group-name difference only, not a missing JULES_API_KEY — both spellings fail that way, and the failure note below says so |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
 | Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for the picked repo |
 
@@ -55,6 +55,20 @@ works — fix from there and run `docker compose up -d --build
 buttons` from the host shell. The same connection-lost message
 covers any other case where the buttons server goes away
 mid-run.
+
+## Failed runs show their cause
+
+Run steps stream through a PTY, so stdout and stderr both reach
+the output pane as they arrive. The remaining failure trap was
+a step that exits non-zero without printing anything: the pane
+showed the command and then a blank gap, which reads like a
+rendering bug. `run_action` now detects that case (no step
+output at all, excluding the handler's own error line) and
+appends an explicit note — the step printed nothing before
+failing, re-run the command in the terminal, check
+JULES_API_KEY and the td agent/jules group names first — ahead
+of the `step failed` line. A step that printed anything keeps
+the old behavior (its own output is the cause).
 
 ## Progress, Clear output, pass/fail colour
 
@@ -257,7 +271,14 @@ sessions block under Ledger browses all of them: List sessions
 fetches `GET /buttons/api/pi-sessions`, which runs
 `pi_logs.py --list-json` in the terminal container (no TD
 prefix — it reads `/root/.pi` directly) and returns
-`{sessions: [{file, mtime}]}` newest first, capped at 20.
+`{sessions: [{file, mtime, cwd, title}]}` newest first, capped at 20.
+`cwd` comes from the session header line and `title` is the first
+user prompt (whitespace-collapsed, capped at 80 chars, from the
+head of the file only — a title must not cost a full read of a
+long transcript); either is empty when absent. The page's list
+buttons show date, repo (last segment of cwd), and title, with
+the filename as hover text, falling back to the filename when
+there is no title.
 Tapping a session fetches
 `GET /buttons/api/pi-session?session=<file>`, which runs
 `pi_logs.py --session <file>` and returns the readable render.

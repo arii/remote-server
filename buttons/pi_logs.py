@@ -32,6 +32,8 @@ SHOW_SESSIONS = 10
 SHOW_ENTRIES = 80
 TEXT_CAP = 300
 LIST_JSON_CAP = 20
+TITLE_CAP = 80
+TITLE_SCAN_LINES = 300
 
 
 def _list_files():
@@ -46,6 +48,59 @@ def _list_files():
     except Exception:
         pass
     return files
+
+
+def _first_text(obj):
+    """First user-prompt text of a JSONL entry, or None."""
+    if not isinstance(obj, dict):
+        return None
+    msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+    if (msg.get("role") or obj.get("role")) != "user":
+        return None
+    content = msg.get("content")
+    if isinstance(content, str):
+        text = _clean(content)
+        return text[:TITLE_CAP] if text else None
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("text"):
+                parts.append(_clean(block["text"]))
+        text = " ".join(parts)
+        return text[:TITLE_CAP] if text else None
+    return None
+
+
+def _session_meta(path):
+    """(cwd, first-user-prompt title) for one session file.
+    "" for either when absent; never raises. Scans only the
+    head of the file: the header and the first prompt both
+    live near the top, and a title must not cost a full read
+    of a long transcript."""
+    cwd, title = "", ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f):
+                if n >= TITLE_SCAN_LINES:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("type") == "session" and not cwd:
+                    cwd = obj.get("cwd") or ""
+                if not title:
+                    title = _first_text(obj) or ""
+                if cwd and title:
+                    break
+    except Exception:
+        pass
+    return cwd, title
 
 
 def _render_file(path, header=None):
@@ -144,8 +199,10 @@ def main(argv):
                 mtime = os.path.getmtime(path)
             except Exception:
                 mtime = 0
+            cwd, title = _session_meta(path)
             sessions.append({"file": os.path.basename(path),
-                             "mtime": mtime})
+                             "mtime": mtime, "cwd": cwd,
+                             "title": title})
         print(json.dumps({"sessions": sessions}))
         return 0
     if argv == ["--clear"]:

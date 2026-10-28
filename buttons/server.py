@@ -324,14 +324,20 @@ ACTIONS = {
     # sync is the list-sessions command, not a verb called sync),
     # then run the one-shot feedback check that posts CI failure
     # and review feedback to stalled sessions. Confirm first: the
-    # second step writes to live agent sessions.
+    # second step writes to live agent sessions. The list step
+    # falls back to the jules group (same fallback the briefing's
+    # Jules section uses): a group-name difference must not make
+    # the whole button fail silently. It does NOT cover a missing
+    # JULES_API_KEY — both spellings fail that way, and the
+    # failure note below says so.
     "sync-nudge": {
         "label": "Sync & nudge agents",
         "group": "Briefing",
         "sub": "List active Jules sessions, then post CI/review feedback to stalled ones",
         "confirm": True,
         "steps": [
-            EXEC + [TD + "td --json agent list-sessions"],
+            EXEC + [TD + "td --json agent list-sessions || "
+                    "td --json jules list-sessions"],
             EXEC + [TD + "td --json agent run-feedback-check"],
         ],
     },
@@ -584,8 +590,10 @@ def run_action(run_id, action, repo="tech-dancer"):
             run["step_total"] = len(steps)
             run["current_step"] = " ".join(step)
             _append(run, "$ " + " ".join(step) + "\n")
+        chunks = []
 
-        def _cb(text, run=run):
+        def _cb(text, run=run, chunks=chunks):
+            chunks.append(text)
             with runs_lock:
                 _append(run, text)
 
@@ -594,9 +602,28 @@ def run_action(run_id, action, repo="tech-dancer"):
         except Exception as exc:  # e.g. docker binary missing
             with runs_lock:
                 _append(run, f"error: {exc}\n")
+            # The error line IS diagnosable output, so it must
+            # suppress the no-output note below (chunks only
+            # tracks step output, not this handler's line).
+            chunks.append("error")
             code = 1
         if code != 0:
             with runs_lock:
+                # A step that fails without printing anything is
+                # the hardest failure to diagnose from a phone:
+                # the pane shows the command and then nothing.
+                # Say so explicitly, with the re-run hint, instead
+                # of leaving a blank gap that reads like a
+                # rendering bug. (stderr is already merged into
+                # the PTY stream, so empty output means the tool
+                # itself exited silently — e.g. a missing key or
+                # a group name neither spelling covers.)
+                if not "".join(chunks).strip():
+                    _append(run, "note: the step printed nothing "
+                            "before failing — re-run this command "
+                            "in the terminal to see the error "
+                            "(check JULES_API_KEY and the td "
+                            "agent/jules group names first)\n")
                 _append(run, f"step failed with exit code {code}; aborting\n")
                 run["exit_code"] = code
                 run["done"] = True
@@ -722,9 +749,10 @@ record behind, so the clear itself stays on the record.</p>
 <div id="ledgerErr"></div>
 <h2>Pi sessions</h2>
 <p>Browse Pi transcripts on disk (pi-data volume). List shows the
-newest sessions; tap one to render it readably. The full JSONL
-stays on disk — this is the readable view, not the archive.
-Clear Pi sessions deletes all transcripts.</p>
+newest sessions with date, repo, and first prompt — tap one to
+render it readably (the filename is the hover text). The full
+JSONL stays on disk — this is the readable view, not the
+archive. Clear Pi sessions deletes all transcripts.</p>
 <button id="listPiSessions">List sessions</button>
 <button id="clearPiSessions">Clear Pi sessions</button>
 <div id="piSessionList"></div>
@@ -1229,7 +1257,10 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     if (!data.sessions.length) { piSessionListEl.textContent = "No Pi sessions found."; return; }
     data.sessions.forEach(s => {
       const b = document.createElement("button");
-      b.textContent = s.file;
+      const when = s.mtime ? new Date(s.mtime * 1000).toLocaleString() : "";
+      const repo = s.cwd ? s.cwd.split("/").filter(Boolean).pop() : "";
+      b.textContent = s.title ? [when, repo, s.title].filter(Boolean).join(" · ") : s.file;
+      b.title = s.file;
       b.onclick = () => showSession(s.file);
       piSessionListEl.appendChild(b);
     });
