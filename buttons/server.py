@@ -18,10 +18,14 @@ host path, `up` would hand the daemon a nonexistent bind source and
 the terminal container would come up with an empty /srv/remote-server.
 """
 
+import fcntl
 import json
 import os
+import pty
 import re
+import struct
 import subprocess
+import termios
 from html import escape
 import threading
 import time
@@ -38,6 +42,13 @@ TD = "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
 ENV = {**os.environ, "HOME": "/home/ari"}
+# Steps run under a PTY (see _run_step): commands then emit the
+# ANSI colours they would show in the terminal, and the page renders
+# them. A TTY stdout also makes some tools page their output (git
+# log -> less), which would hang a run waiting for input nobody can
+# send — so pagers are forced off here, not in each command.
+RUN_ENV = {**ENV, "TERM": "xterm-256color",
+           "GIT_PAGER": "cat", "PAGER": "cat"}
 MAX_OUTPUT = 200_000  # keep the tail; model pulls are verbose
 
 GIT = ["git", "-c", f"safe.directory={STACK}", "-C", STACK]
@@ -66,6 +77,21 @@ def parse(text):
             items.append({"line": i, "checked": m.group(2).lower() == "x",
                           "text": m.group(3)[1:].strip()})
     return items
+def excerpt(text):
+    # The briefing itself, not just the checklist: the first
+    # non-blank, non-heading, non-checkbox lines of the plan file
+    # (td status-board / PR / conflict output), truncated. Without
+    # this the Plans view shows only generic checklist items and
+    # hides everything that made the briefing worth reading.
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or pat.match(line):
+            continue
+        out.append(line.rstrip())
+        if sum(len(x) for x in out) > 800:
+            break
+    return "\n".join(out)[:800]
 def plan(name):
     fp = os.path.join(path, name)
     with open(fp, encoding="utf-8", errors="replace") as f:
@@ -73,7 +99,7 @@ def plan(name):
     items = parse(text)
     return {"name": name, "total": len(items),
             "done": sum(1 for it in items if it["checked"]), "items": items,
-            "mtime": int(os.path.getmtime(fp))}
+            "mtime": int(os.path.getmtime(fp)), "excerpt": excerpt(text)}
 # Payload is embedded by the caller (python3 - reads the script
 # itself from stdin, so stdin cannot also carry the payload).
 payload = __PAYLOAD__
@@ -125,6 +151,8 @@ def _run_plans(payload):
 ACTIONS = {
     "status": {
         "label": "Status",
+        "group": "Server",
+        "sub": "What's running, what's changed, which terminal image is in use",
         "confirm": False,
         "steps": [
             GIT + ["status", "--short", "--branch"],
@@ -136,6 +164,8 @@ ACTIONS = {
     },
     "deploy": {
         "label": "Deploy latest",
+        "group": "Server",
+        "sub": "Git pull, pull the terminal image, restart terminal — updates code and image",
         "confirm": True,
         "steps": [
             GIT + ["pull", "--ff-only"],
@@ -150,6 +180,8 @@ ACTIONS = {
     # so a failed build is recoverable from there. Confirm first.
     "deploy-buttons": {
         "label": "Deploy buttons (rebuild this page)",
+        "group": "Server",
+        "sub": "Git pull, rebuild this page's container — page drops for ~30s, terminal stays up",
         "confirm": True,
         "steps": [
             GIT + ["pull", "--ff-only"],
@@ -158,6 +190,13 @@ ACTIONS = {
     },
     "recreate": {
         "label": "Recreate terminal",
+        "group": "Server",
+        # Deploy restarts only if the image or config changed; a
+        # plain `up` leaves an unchanged container alone, so .env
+        # edits alone never take effect. Recreate forces the
+        # restart with the CURRENT image and .env — no pull, no
+        # code update. That is the whole difference from Deploy.
+        "sub": "Restart terminal with the current image and .env — no code or image update. Use after editing .env",
         "confirm": True,
         "steps": [
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
@@ -165,6 +204,8 @@ ACTIONS = {
     },
     "pull-models": {
         "label": "Pull models",
+        "group": "Server",
+        "sub": "Download the Ollama models in .env — slow, gigabytes",
         "confirm": True,
         "steps": [
             ["bash", f"{STACK}/scripts/pull-models.sh"],
@@ -172,6 +213,8 @@ ACTIONS = {
     },
     "logs": {
         "label": "Logs",
+        "group": "Server",
+        "sub": "Last 100 lines from terminal + Ollama",
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
@@ -183,6 +226,8 @@ ACTIONS = {
     # in the terminal container; auth errors show in the output.
     "briefing-td": {
         "label": "Repo briefing (td, fast)",
+        "group": "Briefing",
+        "sub": "Open PRs, CI state, conflicts — fast, from td",
         "confirm": False,
         "steps": [
             EXEC + [TD + "td gh status-board"],
@@ -196,6 +241,8 @@ ACTIONS = {
     # the S5 — the prompt falls back to td/gh CLI if they are absent.
     "briefing-agent": {
         "label": "Repo briefing (agent, slow)",
+        "group": "Briefing",
+        "sub": "Same briefing, written by Pi — slow (minutes on the local model)",
         "confirm": True,
         "steps": [
             EXEC + [TD + 'pi -p "Read /root/.pi/agent/agent-brief.md '
@@ -214,6 +261,8 @@ ACTIONS = {
     # the file (with its error) instead of losing the whole plan.
     "create-plan": {
         "label": "Create plan from briefing",
+        "group": "Briefing",
+        "sub": "Save today's briefing as a plan file in tech-dancer/.agents/plans/",
         "confirm": True,
         "steps": [
             EXEC + [TD + 'mkdir -p .agents/plans && { echo "# Briefing plan $(date +%F)"; '
@@ -241,11 +290,28 @@ ACTIONS = {
 # JavaScript only attaches handlers to them. A second, separate
 # script block holds the Plans code, so a Plans failure cannot
 # take the core buttons down with it.
-BUTTONS_HTML = "".join(
-    f'<button data-action="{escape(name)}" '
-    f'data-confirm="{"1" if spec["confirm"] else "0"}">'
-    f'{escape(spec["label"])}</button>'
-    for name, spec in ACTIONS.items())
+# Buttons are grouped (Server / Briefing) with a one-line subtitle
+# under each label, so the page itself says what a button does and
+# when to use it — the docs are not where anyone looks mid-task.
+# data-label carries the bare label for the confirm dialog; the
+# button's textContent now includes the subtitle too.
+def _buttons_html():
+    parts = []
+    for group in ("Server", "Briefing"):
+        parts.append(f'<div class="grouphead">{group}</div>')
+        for name, spec in ACTIONS.items():
+            if spec["group"] != group:
+                continue
+            parts.append(
+                f'<button data-action="{escape(name)}" '
+                f'data-confirm="{"1" if spec["confirm"] else "0"}" '
+                f'data-label="{escape(spec["label"])}">'
+                f'<span class="blabel">{escape(spec["label"])}</span>'
+                f'<span class="bsub">{escape(spec["sub"])}</span></button>')
+    return "".join(parts)
+
+
+BUTTONS_HTML = _buttons_html()
 
 runs = {}
 runs_lock = threading.Lock()
@@ -278,6 +344,39 @@ def _public(run):
     }
 
 
+def _run_step(step, append):
+    """Run one step under a PTY so its output carries the ANSI
+    colours a terminal would show (git status, compose logs, td).
+    append(chunk) is called with decoded text as it arrives, so the
+    page streams. Returns the exit code. stdin is /dev/null: nothing
+    here can answer a prompt, and a prompt must fail fast, not hang
+    the run. The parent closes its slave fd right after spawn so
+    EOF on the master means the child (and anything it spawned
+    holding the slave) is gone."""
+    master, slave = pty.openpty()
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", 40, 120, 0, 0))
+    except Exception:
+        pass
+    proc = subprocess.Popen(step, stdin=subprocess.DEVNULL,
+                            stdout=slave, stderr=slave,
+                            cwd=STACK, env=RUN_ENV)
+    os.close(slave)
+    try:
+        while True:
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            append(chunk.decode("utf-8", "replace"))
+    finally:
+        os.close(master)
+    return proc.wait()
+
+
 def run_action(run_id, action):
     global active_id
     run = runs[run_id]
@@ -288,15 +387,13 @@ def run_action(run_id, action):
             run["step_total"] = len(steps)
             run["current_step"] = " ".join(step)
             _append(run, "$ " + " ".join(step) + "\n")
+
+        def _cb(text, run=run):
+            with runs_lock:
+                _append(run, text)
+
         try:
-            proc = subprocess.Popen(
-                step, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, cwd=STACK, env=ENV,
-            )
-            for line in proc.stdout:
-                with runs_lock:
-                    _append(run, line)
-            code = proc.wait()
+            code = _run_step(step, _cb)
         except Exception as exc:  # e.g. docker binary missing
             with runs_lock:
                 _append(run, f"error: {exc}\n")
@@ -332,6 +429,14 @@ h1 { font-size: 1.2em; }
 button { display: block; width: 100%; margin: 0.5em 0; padding: 1em; font-size: 1.1em;
   background: #2a2a2a; color: #eee; border: 1px solid #555; border-radius: 8px; }
 button:disabled { opacity: 0.4; }
+.blabel { display: block; }
+.bsub { display: block; font-size: 0.85em; opacity: 0.7; font-weight: normal;
+  margin-top: 0.25em; }
+.grouphead { font-weight: bold; margin: 1em 0 0.2em; color: #bbb; }
+.planexcerpt { max-height: 30vh; }
+.planact button { display: inline-block; width: auto; margin: 0.5em 0.5em 0.5em 0;
+  padding: 0.5em 0.8em; font-size: 0.9em; }
+.planact a { margin-left: 0.5em; }
 #clearBtn { padding: 0.5em; font-size: 0.9em; }
 #jsdiag { color: #ffd75e; border: 1px solid #8a6d1b; background: #3a2f0a;
   padding: 0.5em; border-radius: 8px; margin: 0.5em 0; }
@@ -383,18 +488,20 @@ const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
 let timer = null;
 
+// startRun is shared with the Plans block: its per-plan action
+// buttons start the same allowlisted runs (briefing, new plan).
+async function startRun(name, label, confirmFlag) {
+  if (confirmFlag && !window.confirm(label + " — run it?")) return;
+  const r = await fetch("/buttons/api/run", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action: name})});
+  if (!r.ok) { stateEl.textContent = "error: " + (await r.json()).error; return; }
+  poll((await r.json()).id);
+}
+
 btnDiv.querySelectorAll("button").forEach(b => {
-  const name = b.dataset.action;
-  const confirmFlag = b.dataset.confirm === "1";
-  const label = b.textContent;
-  b.onclick = async () => {
-    if (confirmFlag && !window.confirm(label + " — run it?")) return;
-    const r = await fetch("/buttons/api/run", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({action: name})});
-    if (!r.ok) { stateEl.textContent = "error: " + (await r.json()).error; return; }
-    poll((await r.json()).id);
-  };
+  b.onclick = () => startRun(b.dataset.action, b.dataset.label,
+    b.dataset.confirm === "1");
 });
 
 function setBusy(busy) {
@@ -405,6 +512,90 @@ function fmt(s) {
   s = Math.max(0, Math.floor(s));
   return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s";
 }
+
+// ANSI colour rendering for the output pane. Steps run under a
+// PTY, so their output carries SGR colour codes; without this the
+// pane would show raw escape sequences. Pass/fail colour (the pane
+// border) still comes only from the exit code — this only renders
+// the command's own colours.
+const ANSI_FG = ["#888", "#ff8a8a", "#7ed07e", "#ffd75e", "#8bf", "#e0a0ff", "#7ee0e0", "#eee"];
+const ANSI_FG_BRIGHT = ["#aaa", "#ffb0b0", "#a5e8a5", "#ffe88a", "#b0d0ff", "#f0c0ff", "#a5f0f0", "#fff"];
+function ansi256(n) {
+  if (n < 8) return ANSI_FG[n];
+  if (n < 16) return ANSI_FG_BRIGHT[n - 8];
+  if (n < 232) {
+    n -= 16;
+    const v = x => x === 0 ? 0 : 55 + 40 * x;
+    return "rgb(" + v(Math.floor(n / 36)) + "," + v(Math.floor(n % 36 / 6)) + "," + v(n % 6) + ")";
+  }
+  const g = 8 + 10 * (n - 232);
+  return "rgb(" + g + "," + g + "," + g + ")";
+}
+function escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function ansiLineToHtml(line) {
+  // Strip non-SGR escapes (cursor moves, titles, charsets), then
+  // split on SGR sequences and rebuild as styled spans.
+  line = line.replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, m => m.endsWith("m") ? m : "")
+    .replace(/\x1b\([A-Za-z0-9]/g, "").replace(/\x07/g, "");
+  const parts = line.split(/(\x1b\[[0-9;]*m)/g);
+  let bold = false, fg = null, bg = null;
+  let out = "", buf = "";
+  function flush() {
+    if (!buf) return;
+    let style = "";
+    if (fg) style += "color:" + fg + ";";
+    if (bg) style += "background-color:" + bg + ";";
+    if (bold) style += "font-weight:bold;";
+    out += style ? '<span style="' + style + '">' + escHtml(buf) + "</span>" : escHtml(buf);
+    buf = "";
+  }
+  for (const part of parts) {
+    const m = part.match(/^\x1b\[([0-9;]*)m$/);
+    if (!m) { buf += part; continue; }
+    flush();
+    const codes = m[1] === "" ? [0] : m[1].split(";").map(x => parseInt(x, 10) || 0);
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) { bold = false; fg = null; bg = null; }
+      else if (c === 1) bold = true;
+      else if (c === 22) bold = false;
+      else if (c >= 30 && c <= 37) fg = ANSI_FG[c - 30];
+      else if (c === 39) fg = null;
+      else if (c >= 40 && c <= 47) bg = ANSI_FG[c - 40];
+      else if (c === 49) bg = null;
+      else if (c >= 90 && c <= 97) fg = ANSI_FG_BRIGHT[c - 90];
+      else if (c >= 100 && c <= 107) bg = ANSI_FG_BRIGHT[c - 100];
+      else if ((c === 38 || c === 48) && codes[i + 1] === 5) {
+        const col = ansi256(codes[i + 2] || 0);
+        if (c === 38) fg = col; else bg = col;
+        i += 2;
+      } else if ((c === 38 || c === 48) && codes[i + 1] === 2) {
+        const col = "rgb(" + (codes[i + 2] || 0) + "," + (codes[i + 3] || 0) + "," + (codes[i + 4] || 0) + ")";
+        if (c === 38) fg = col; else bg = col;
+        i += 4;
+      }
+    }
+  }
+  flush();
+  return out;
+}
+function ansiToHtml(text) {
+  // \r overwrites the current line (progress output), so a line
+  // built with \r shows only its final state, not every redraw.
+  const lines = [];
+  let cur = "";
+  for (const ch of text) {
+    if (ch === "\n") { lines.push(cur); cur = ""; }
+    else if (ch === "\r") { cur = ""; }
+    else cur += ch;
+  }
+  lines.push(cur);
+  return lines.map(ansiLineToHtml).join("\n");
+}
+let lastRenderedOutput = null;
 
 // Status colour comes from the exit code only, never from output
 // text: steps run without a PTY, so there is no terminal colour to
@@ -439,7 +630,8 @@ let lastRun = null;
 
 async function poll(id) {
   currentId = id;
-  outEl.textContent = "";
+  outEl.innerHTML = "";
+  lastRenderedOutput = null;
   stateEl.textContent = "";
   stateEl.className = "";
   outEl.className = "";
@@ -473,7 +665,12 @@ async function poll(id) {
     failures = 0;
     const run = await r.json();
     lastRun = run;
-    outEl.textContent = run.output;
+    // Re-render only on change: re-parsing a 200KB tail every poll
+    // would churn on a phone for no visible difference.
+    if (run.output !== lastRenderedOutput) {
+      outEl.innerHTML = ansiToHtml(run.output);
+      lastRenderedOutput = run.output;
+    }
     outEl.scrollTop = outEl.scrollHeight;
     renderState(run);
     if (run.done) {
@@ -501,7 +698,8 @@ document.getElementById("clearBtn").onclick = async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({id: id})});
   }
-  outEl.textContent = "";
+  outEl.innerHTML = "";
+  lastRenderedOutput = null;
   if (!lastRun || lastRun.done) {
     stateEl.textContent = "output cleared";
     stateEl.className = "";
@@ -550,6 +748,36 @@ function renderPlans(plans) {
     head.onclick = () => {
       itemsDiv.style.display = itemsDiv.style.display === "none" ? "block" : "none";
     };
+    // The briefing itself, not just its checklist: the plan file's
+    // td output (PRs, CI, conflicts) as a short excerpt, so an
+    // expanded plan is actually informative on this page.
+    if (plan.excerpt) {
+      const pre = document.createElement("pre");
+      pre.className = "planexcerpt";
+      pre.textContent = plan.excerpt;
+      itemsDiv.appendChild(pre);
+    }
+    // Actions you can take from a plan, using the same allowlisted
+    // runs as the main buttons — a plan used to be a dead end:
+    // checkboxes and nothing else. These run into the output pane
+    // above (create-plan refreshes this list when it finishes).
+    const act = document.createElement("div");
+    act.className = "planact";
+    const rb = document.createElement("button");
+    rb.textContent = "Re-run briefing (td, fast)";
+    rb.onclick = () => { if (typeof startRun === "function")
+      startRun("briefing-td", "Repo briefing (td, fast)", false); };
+    const np = document.createElement("button");
+    np.textContent = "Create a new plan";
+    np.onclick = () => { if (typeof startRun === "function")
+      startRun("create-plan", "Create plan from briefing", true); };
+    const tl = document.createElement("a");
+    tl.href = "/";
+    tl.textContent = "Terminal";
+    act.appendChild(rb);
+    act.appendChild(np);
+    act.appendChild(tl);
+    itemsDiv.appendChild(act);
     for (const item of plan.items) {
       const label = document.createElement("label");
       const box = document.createElement("input");

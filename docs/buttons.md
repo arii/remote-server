@@ -7,6 +7,10 @@ command input anywhere: every button runs one fixed command list.
 
 ## Buttons
 
+The page itself says what each button does: buttons are grouped
+(Server / Briefing) and each carries a one-line subtitle under its
+label, so you do not have to remember the docs to use the page.
+
 | Button | Runs |
 |---|---|
 | Status | `git status` + `git log -3` in the checkout, `docker compose ps`, terminal image tags |
@@ -27,6 +31,19 @@ finishes. Output streams to the page (polled every 2s); reloading
 mid-run re-attaches to it. Recreating the terminal kills any running
 Pi session in it — that is the point of Recreate, but do not press
 it mid-conversation.
+
+Deploy latest vs Recreate terminal, since they look redundant:
+they are not. Deploy updates — it pulls the latest code *and* the
+terminal image, then restarts. Recreate only restarts, with the
+current image and `.env` — no pull, no code update. A plain `up`
+leaves an unchanged container alone, so `.env` edits by themselves
+never take effect; that is the case Recreate exists for. Use
+Deploy when you want the newest thing, Recreate when you changed
+`.env` (or want a clean restart) and deliberately do *not* want a
+new image. Note Deploy pulls whatever image compose is configured
+for (default `:latest`, or a pinned tag if `TERMINAL_IMAGE` is
+set) — the button name says "latest", the pull step says "whatever
+compose resolves".
 
 Deploy buttons is special: it recreates the very container serving
 the page, so the run's connection drops mid-run. The page treats
@@ -58,11 +75,20 @@ mid-run.
   Clear cancels nothing and runs no command.
 - **Green / red:** the status line and the output pane's border go
   green on exit 0, red on any other exit code, amber while running.
-  Colour comes **only from the exit code**, never from parsing the
-  output — and that is the correct source here. Steps run via
-  `subprocess` with stdout/stderr merged and no PTY, so commands
-  do not emit terminal colours at all (that is why the page never
-  showed red/green from the output itself). Every run ends with an
+  Border colour comes **only from the exit code**, never from
+  parsing the output. The output text itself *does* now show the
+  command's own terminal colours: steps run under a PTY
+  (`_run_step` in `server.py`, `TERM=xterm-256color`), so git,
+  compose, and td emit the ANSI colours they would show in the
+  terminal, and the page converts SGR codes to styled spans
+  (`ansiToHtml` — basic + bright + 256-colour + truecolour, `\r`
+  progress redraws collapsed to their final line, non-SGR escapes
+  stripped, output HTML-escaped first). That PTY detail has one
+  guard attached: a TTY stdout makes some tools page their output
+  (git log into less would hang a run), so the run environment
+  forces `GIT_PAGER=cat` and `PAGER=cat`, and step stdin is
+  `/dev/null` so a prompt fails fast instead of hanging.
+  Every run ends with an
   explicit trailer line in the output: `finished: exit 0`, or
   `step failed with exit code N; aborting` on the failing step
   (later steps never run). One exception to read carefully:
@@ -90,6 +116,15 @@ the core script never ran: hard-refresh and check the browser
 console. Without JavaScript the buttons are visible but cannot
 start a run; there is no no-JS form fallback yet.
 
+A second lesson from the same incident, fixed by a separate commit:
+the HTML template in `server.py` is a **raw string** (`r"""..."""`).
+It was not, and Python ate the JS `\n` escapes inside it — turning
+them into literal newlines inside JS string literals, which is a
+browser SyntaxError, which killed the whole script. That was the
+actual root cause of the empty-buttons page; the server-rendered
+buttons are what made the page survive it anyway. If the template
+ever stops being raw, the jsdiag line will tell you first.
+
 ## Plans
 
 Below the output pane, a Plans section lists the briefing plans in
@@ -98,7 +133,16 @@ completed/total count, a progress bar, and its last-modified
 date. The newest plan starts expanded; the rest start collapsed.
 Tap a plan to expand its checklist, parsed from `- [ ]` / `- [x]`
 lines (also `*` bullets and capital `X`) anywhere in the file —
-not just the Next actions section.
+not just the Next actions section. An expanded plan also shows a
+short excerpt of the briefing itself — the plan file's td output
+(PRs, CI state, conflicts), not just the checklist — because a
+plan that only shows four generic checkboxes says nothing about
+what the briefing actually found. And each expanded plan has
+action buttons of its own: Re-run briefing (td, fast), Create a
+new plan, and a Terminal link, so a plan is a starting point for
+action rather than a dead end. Those run through the same
+allowlisted actions as the main buttons and their output appears
+in the output pane above.
 
 Tapping a checkbox flips that one character in the plan file
 itself, so the state is the file: it shows up in `git status` in
@@ -155,10 +199,11 @@ browser -> oauth2-proxy (TLS + GitHub OAuth, same gate as the terminal)
 
 ## Security properties
 
-- **Allowlist, not a shell.** The server maps five button names to
+- **Allowlist, not a shell.** The server maps nine button names to
   fixed argv lists. There is no input field, no query parameter, and
   no interpolation of user input into any command. A reached page can
-  only run those five things.
+  only run those nine things (plus plan-list/toggle, which take only
+  a validated filename and line number).
 - **Same gate as the terminal.** No separate login, no separate port.
   If oauth2-proxy is down, the buttons page is down too.
 - **Docker socket = root-equivalent.** The buttons container mounts
