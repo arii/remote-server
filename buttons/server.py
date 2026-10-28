@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+from html import escape
 import threading
 import time
 import uuid
@@ -66,11 +67,13 @@ def parse(text):
                           "text": m.group(3)[1:].strip()})
     return items
 def plan(name):
-    with open(os.path.join(path, name), encoding="utf-8", errors="replace") as f:
+    fp = os.path.join(path, name)
+    with open(fp, encoding="utf-8", errors="replace") as f:
         text = f.read()
     items = parse(text)
     return {"name": name, "total": len(items),
-            "done": sum(1 for it in items if it["checked"]), "items": items}
+            "done": sum(1 for it in items if it["checked"]), "items": items,
+            "mtime": int(os.path.getmtime(fp))}
 # Payload is embedded by the caller (python3 - reads the script
 # itself from stdin, so stdin cannot also carry the payload).
 payload = __PAYLOAD__
@@ -138,6 +141,19 @@ ACTIONS = {
             GIT + ["pull", "--ff-only"],
             COMPOSE + ["pull", "terminal"],
             COMPOSE + ["up", "-d", "terminal"],
+        ],
+    },
+    # Rebuilds THIS service from the checked-out code. It recreates
+    # its own container mid-run, so the run's connection drops and
+    # the client must treat connection loss as "refresh in ~30s",
+    # not as a failure to report. The terminal stays up throughout,
+    # so a failed build is recoverable from there. Confirm first.
+    "deploy-buttons": {
+        "label": "Deploy buttons (rebuild this page)",
+        "confirm": True,
+        "steps": [
+            GIT + ["pull", "--ff-only"],
+            COMPOSE + ["up", "-d", "--build", "buttons"],
         ],
     },
     "recreate": {
@@ -214,6 +230,22 @@ ACTIONS = {
         ],
     },
 }
+
+# Action buttons are rendered into the HTML server-side, not built
+# by JavaScript. Lesson from 2026-10-28: when the buttons were
+# JS-generated, any failure in the page script (parse or early
+# runtime) left the page with NO action buttons at all, while the
+# static parts (Clear output, Plans heading) still rendered — so
+# the page looked half-alive and gave no clue what broke. Now the
+# buttons exist in the raw HTML whether or not any script runs;
+# JavaScript only attaches handlers to them. A second, separate
+# script block holds the Plans code, so a Plans failure cannot
+# take the core buttons down with it.
+BUTTONS_HTML = "".join(
+    f'<button data-action="{escape(name)}" '
+    f'data-confirm="{"1" if spec["confirm"] else "0"}">'
+    f'{escape(spec["label"])}</button>'
+    for name, spec in ACTIONS.items())
 
 runs = {}
 runs_lock = threading.Lock()
@@ -301,6 +333,8 @@ button { display: block; width: 100%; margin: 0.5em 0; padding: 1em; font-size: 
   background: #2a2a2a; color: #eee; border: 1px solid #555; border-radius: 8px; }
 button:disabled { opacity: 0.4; }
 #clearBtn { padding: 0.5em; font-size: 0.9em; }
+#jsdiag { color: #ffd75e; border: 1px solid #8a6d1b; background: #3a2f0a;
+  padding: 0.5em; border-radius: 8px; margin: 0.5em 0; }
 #state { margin: 0.5em 0; font-weight: bold; padding: 0.5em; border-radius: 8px;
   white-space: pre-line; border: 1px solid #555; }
 #state.ok { color: #7ed07e; background: #12351a; border-color: #2e7d32; }
@@ -325,7 +359,10 @@ a { color: #8bf; }
 <body>
 <h1>S5 buttons</h1>
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
-<div id="buttons"></div>
+<div id="jsdiag">JavaScript is not running on this page — if this line stays
+visible, hard-refresh and check the browser console. The buttons
+below are still visible, but they need JavaScript to start a run.</div>
+<div id="buttons"><!--BUTTONS--></div>
 <button id="clearBtn">Clear output</button>
 <div id="state"></div>
 <pre id="out"></pre>
@@ -336,34 +373,29 @@ checkbox flips that line in the plan file itself.</p>
 <button id="refreshPlans">Refresh plans</button>
 <div id="plansErr"></div>
 <script>
-const ACTIONS = [
-  ["status", "Status", false],
-  ["deploy", "Deploy latest (git pull + pull + up)", true],
-  ["recreate", "Recreate terminal (applies .env changes)", true],
-  ["pull-models", "Pull models (slow, GBs)", true],
-  ["logs", "Logs (terminal + ollama, tail 100)", false],
-  ["briefing-td", "Repo briefing (td, fast)", false],
-  ["briefing-agent", "Repo briefing (agent, slow)", true],
-  ["create-plan", "Create plan from briefing", true],
-];
+// Core script (script block 1). The buttons above are rendered
+// server-side; this only attaches handlers to them, so a failure
+// here cannot make the buttons vanish — and the diagnostic line
+// above stays visible if this block never runs at all.
+document.getElementById("jsdiag").style.display = "none";
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
 let timer = null;
 
-for (const [name, label, confirm] of ACTIONS) {
-  const b = document.createElement("button");
-  b.textContent = label;
+btnDiv.querySelectorAll("button").forEach(b => {
+  const name = b.dataset.action;
+  const confirmFlag = b.dataset.confirm === "1";
+  const label = b.textContent;
   b.onclick = async () => {
-    if (confirm && !window.confirm(label + " — run it?")) return;
+    if (confirmFlag && !window.confirm(label + " — run it?")) return;
     const r = await fetch("/buttons/api/run", {method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({action: name})});
     if (!r.ok) { stateEl.textContent = "error: " + (await r.json()).error; return; }
     poll((await r.json()).id);
   };
-  btnDiv.appendChild(b);
-}
+});
 
 function setBusy(busy) {
   btnDiv.querySelectorAll("button").forEach(b => b.disabled = busy);
@@ -413,9 +445,32 @@ async function poll(id) {
   outEl.className = "";
   setBusy(true);
   clearInterval(timer);
+  let failures = 0;
   timer = setInterval(async () => {
-    const r = await fetch("/buttons/api/run/" + id);
-    if (!r.ok) return;
+    let r;
+    try {
+      r = await fetch("/buttons/api/run/" + id);
+    } catch (e) {
+      r = null;
+    }
+    if (!r || !r.ok) {
+      // The buttons server itself is unreachable — most notably
+      // when Deploy buttons recreates its own container mid-run.
+      // That is expected there, not a run failure: say so and
+      // stop polling instead of spinning forever with disabled
+      // buttons and a stale "running" line.
+      failures++;
+      if (failures >= 5) {
+        clearInterval(timer);
+        stateEl.textContent = "connection lost — the buttons server may " +
+          "be rebuilding itself; refresh this page in ~30s";
+        stateEl.className = "fail";
+        outEl.className = "fail";
+        setBusy(false);
+      }
+      return;
+    }
+    failures = 0;
     const run = await r.json();
     lastRun = run;
     outEl.textContent = run.output;
@@ -424,7 +479,8 @@ async function poll(id) {
     if (run.done) {
       clearInterval(timer);
       setBusy(false);
-      if (run.action === "create-plan" && run.exit_code === 0) refreshPlans();
+      if (run.action === "create-plan" && run.exit_code === 0 &&
+          typeof refreshPlans === "function") refreshPlans();
     }
   }, 2000);
 }
@@ -453,6 +509,11 @@ document.getElementById("clearBtn").onclick = async () => {
   }
 };
 
+</script>
+<script>
+// Plans script (script block 2, separate from the core block above).
+// If this block fails, the core action buttons above still work;
+// only the Plans section stays empty.
 // Plans: list + toggle. A toggle sends only a validated plan name
 // and a line number; the server flips one checkbox character in
 // that file and returns the updated counts. No free text anywhere.
@@ -466,7 +527,7 @@ function renderPlans(plans) {
     plansEl.textContent = "No plans yet — press Create plan from briefing.";
     return;
   }
-  for (const plan of plans) {
+  plans.forEach((plan, planIndex) => {
     const div = document.createElement("div");
     div.className = "plan";
     const head = document.createElement("div");
@@ -477,9 +538,12 @@ function renderPlans(plans) {
     bar.appendChild(fill);
     const itemsDiv = document.createElement("div");
     itemsDiv.className = "planitems";
-    itemsDiv.style.display = "none";
+    // Newest plan (first in the list) starts expanded; the rest
+    // stay collapsed so the section stays scannable on a phone.
+    itemsDiv.style.display = planIndex === 0 ? "block" : "none";
     function updateHead(p) {
-      head.textContent = p.name + " — " + p.done + "/" + p.total;
+      head.textContent = p.name + " — " + p.done + "/" + p.total +
+        (p.mtime ? " — " + new Date(p.mtime * 1000).toLocaleDateString() : "");
       fill.style.width = p.total ? (100 * p.done / p.total) + "%" : "0%";
     }
     updateHead(plan);
@@ -516,7 +580,7 @@ function renderPlans(plans) {
     div.appendChild(bar);
     div.appendChild(itemsDiv);
     plansEl.appendChild(div);
-  }
+  });
 }
 
 async function refreshPlans() {
@@ -539,6 +603,8 @@ fetch("/buttons/api/status").then(r => r.json()).then(s => {
 </body>
 </html>
 """
+
+HTML = HTML.replace("<!--BUTTONS-->", BUTTONS_HTML)
 
 
 class Handler(BaseHTTPRequestHandler):

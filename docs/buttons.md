@@ -11,6 +11,7 @@ command input anywhere: every button runs one fixed command list.
 |---|---|
 | Status | `git status` + `git log -3` in the checkout, `docker compose ps`, terminal image tags |
 | Deploy latest | `git pull --ff-only`, `docker compose pull terminal`, `docker compose up -d terminal` |
+| Deploy buttons (rebuild this page) | `git pull --ff-only`, `docker compose up -d --build buttons` — rebuilds the buttons container itself from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Pull models | `scripts/pull-models.sh` (slow, GBs — runs in the background, output streams to the page) |
 | Logs | `docker compose logs --tail=100 terminal ollama` |
@@ -18,13 +19,25 @@ command input anywhere: every button runs one fixed command list.
 | Repo briefing (agent, slow) | Pi print mode (`pi -p`) with the agent brief: open PRs, conflicts, failing checks, review comments, stale PRs, one top action. Slow on the local 8b model (minutes) |
 | Create plan from briefing | Saves the deterministic briefing to `tech-dancer/.agents/plans/<date>-briefing-plan.md` (untracked until committed) |
 
-Deploy, Recreate, Pull models, Repo briefing (agent), and Create
-plan ask for a browser confirm first. Status, Logs, and Repo
-briefing (td) do not. One run at a time: starting a second run while
-one is active returns an error until the first finishes. Output streams
-to the page (polled every 2s); reloading mid-run re-attaches to it.
-Recreating the terminal kills any running Pi session in it — that is
-the point of Recreate, but do not press it mid-conversation.
+Deploy, Deploy buttons, Recreate, Pull models, Repo briefing
+(agent), and Create plan ask for a browser confirm first. Status,
+Logs, and Repo briefing (td) do not. One run at a time: starting a
+second run while one is active returns an error until the first
+finishes. Output streams to the page (polled every 2s); reloading
+mid-run re-attaches to it. Recreating the terminal kills any running
+Pi session in it — that is the point of Recreate, but do not press
+it mid-conversation.
+
+Deploy buttons is special: it recreates the very container serving
+the page, so the run's connection drops mid-run. The page treats
+5 consecutive failed polls as "connection lost — refresh in ~30s"
+and re-enables the buttons instead of spinning forever; that is
+the expected outcome for this button, not a failure. If the build
+itself fails, the old container is gone but the terminal still
+works — fix from there and run `docker compose up -d --build
+buttons` from the host shell. The same connection-lost message
+covers any other case where the buttons server goes away
+mid-run.
 
 ## Progress, Clear output, pass/fail colour
 
@@ -58,14 +71,34 @@ the point of Recreate, but do not press it mid-conversation.
   the plan — green there means "plan file written", not "every td
   step passed"; check the file's contents.
 
+## Buttons are server-rendered, not JS-generated
+
+The action buttons are rendered into the HTML by the server
+(`BUTTONS_HTML` in `buttons/server.py`), and JavaScript only
+attaches handlers to them. This is deliberate, after a
+2026-10-28 incident where the page rendered with no action
+buttons at all: the buttons had been JS-generated, so any
+failure in the page script left the static parts (Clear output,
+Plans heading) visible but zero buttons and no clue why. Now
+the buttons exist in the raw HTML whether or not any script
+runs. The page script is also split in two: the core block
+(handlers, polling, progress, Clear) and the Plans block, so a
+Plans failure cannot take the core buttons down. A diagnostic
+line at the top of the page ("JavaScript is not running…")
+is hidden by the core script on load — if it stays visible,
+the core script never ran: hard-refresh and check the browser
+console. Without JavaScript the buttons are visible but cannot
+start a run; there is no no-JS form fallback yet.
+
 ## Plans
 
 Below the output pane, a Plans section lists the briefing plans in
 `tech-dancer/.agents/plans/*.md` (newest first), each with a
-completed/total count and a progress bar. Tap a plan to expand its
-checklist, parsed from `- [ ]` / `- [x]` lines (also `*` bullets
-and capital `X`) anywhere in the file — not just the Next actions
-section.
+completed/total count, a progress bar, and its last-modified
+date. The newest plan starts expanded; the rest start collapsed.
+Tap a plan to expand its checklist, parsed from `- [ ]` / `- [x]`
+lines (also `*` bullets and capital `X`) anywhere in the file —
+not just the Next actions section.
 
 Tapping a checkbox flips that one character in the plan file
 itself, so the state is the file: it shows up in `git status` in
