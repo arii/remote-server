@@ -75,8 +75,10 @@ See `docs/remote-access.md` for the threat model.
    CI-driven deploys later, that's when repo Actions secrets would enter
    the picture — not needed for build/validate/scan.
 4. To run the CI-built image on the box instead of building locally:
-   uncomment `TERMINAL_IMAGE` in `.env`, then
-   `docker login ghcr.io && docker compose pull terminal && docker compose up -d`.
+   nothing to do — it's the default (`TERMINAL_IMAGE` in compose
+   defaults to `ghcr.io/arii/remote-server-terminal:latest`, public, so
+   `docker compose pull terminal` needs no login). To pin a tag or build
+   locally, see the `TERMINAL_IMAGE` comment in `.env.example`.
 
 ## Docs
 

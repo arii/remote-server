@@ -55,7 +55,7 @@ services:
       args:
         TTYD_VERSION: ${TTYD_VERSION:-1.7.7}
         ZELLIJ_VERSION: ${ZELLIJ_VERSION:-0.45.1}
-    image: ${TERMINAL_IMAGE:-remote-terminal:1.0} # override in .env to use the CI-built GHCR image instead of building locally
+    image: ${TERMINAL_IMAGE:-ghcr.io/arii/remote-server-terminal:latest} # default: CI-built GHCR image (public, no login needed to pull); override in .env to pin a tag or build locally
     command:
       - --port=7681
       - --interface=0.0.0.0
