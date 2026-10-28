@@ -528,7 +528,12 @@ button:disabled { opacity: 0.4; }
 #clearBtn { padding: 0.5em; font-size: 0.9em; }
 #jsdiag { color: #ffd75e; border: 1px solid #8a6d1b; background: #3a2f0a;
   padding: 0.5em; border-radius: 8px; margin: 0.5em 0; }
-#webhookStatus { font-size: 0.9em; color: #bbb; margin: 0.5em 0; }
+#liveBar { font-size: 0.9em; color: #bbb; margin: 0.5em 0; }
+.spinner { display: inline-block; width: 12px; height: 12px;
+  margin-right: 0.4em; vertical-align: -2px; border: 2px solid #555;
+  border-top-color: #eee; border-radius: 50%;
+  animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 #state { margin: 0.5em 0; font-weight: bold; padding: 0.5em; border-radius: 8px;
   white-space: pre-line; border: 1px solid #555; }
 #state.ok { color: #7ed07e; background: #12351a; border-color: #2e7d32; }
@@ -553,7 +558,7 @@ a { color: #8bf; }
 <body>
 <h1>S5 buttons</h1>
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
-<div id="webhookStatus"></div>
+<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="webhookStatus"></span><span id="liveUpdated"></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -913,21 +918,45 @@ async function refreshPlans() {
 document.getElementById("refreshPlans").onclick = refreshPlans;
 refreshPlans();
 
-// Re-attach to a run still going after a page reload, and show
-// the last webhook auto-pull per repo (or that none has happened).
-fetch("/buttons/api/status").then(r => r.json()).then(s => {
-  if (s.active) poll(s.active);
-  const el = document.getElementById("webhookStatus");
-  if (!el) return;
-  const w = s.webhooks || {};
-  const parts = Object.keys(w).map(repo => {
-    const st = w[repo];
-    return repo + ": " + (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
-      new Date(st.at * 1000).toLocaleString();
-  });
-  el.textContent = parts.length ? "Auto-pull: " + parts.join(" · ")
-    : "Auto-pull: no webhook pulls yet";
-});
+// Live updates: re-fetch status every 10s (skipped while the tab
+// is hidden) so webhook auto-pulls show up without a reload. The
+// spinner shows while a refresh is in flight or a pull is pending;
+// the timestamp shows when the page last refreshed. Run
+// re-attachment still happens only once, on load.
+let liveFetching = false;
+let liveAttachedRun = null;
+async function refreshStatus() {
+  if (liveFetching || document.hidden) return;
+  liveFetching = true;
+  const spinner = document.getElementById("liveSpinner");
+  if (spinner) spinner.style.display = "inline-block";
+  try {
+    const s = await (await fetch("/buttons/api/status")).json();
+    if (s.active && liveAttachedRun !== s.active) {
+      liveAttachedRun = s.active;
+      poll(s.active);
+    }
+    const el = document.getElementById("webhookStatus");
+    const upd = document.getElementById("liveUpdated");
+    const w = s.webhooks || {};
+    const parts = Object.keys(w).map(repo => {
+      const st = w[repo];
+      return repo + ": " + (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
+        new Date(st.at * 1000).toLocaleString();
+    });
+    const pending = s.webhooks_pending || [];
+    if (pending.length) parts.push("pulling " + pending.join(", ") + "…");
+    if (el) el.textContent = parts.length ? "Auto-pull: " + parts.join(" · ")
+      : "Auto-pull: no webhook pulls yet";
+    if (upd) upd.textContent = " · Updated " + new Date().toLocaleTimeString();
+    if (spinner) spinner.style.display = pending.length ? "inline-block" : "none";
+  } catch (e) {
+    if (spinner) spinner.style.display = "none";
+  }
+  liveFetching = false;
+}
+refreshStatus();
+setInterval(refreshStatus, 10000);
 </script>
 </body>
 </html>
@@ -1016,8 +1045,9 @@ class Handler(BaseHTTPRequestHandler):
                           for r in sorted(runs.values(), key=lambda r: r["seq"])[-10:]]
             with webhook_state_lock:
                 hooks = dict(webhook_state)
+                pending = sorted(webhook_pending)
             self._json({"active": active_id, "runs": recent,
-                        "webhooks": hooks})
+                        "webhooks": hooks, "webhooks_pending": pending})
         elif path == "/buttons/api/plans":
             try:
                 self._json(_run_plans({"cmd": "list"}))

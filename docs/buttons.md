@@ -180,24 +180,45 @@ deliberate. td defaults to JSON output, and its human mode for
 search-prs only prints "Found N PRs", so neither td mode gives a
 briefing a person can act on. The summarizer (`buttons/
 briefing_summary.py`, stdlib only, run with cwd = the tech-dancer
-checkout) parses `td gh search-prs --state open --json`,
-`td gh status-board --json`, `td gh detect-conflicts --all --json`,
-and `td repo workflow-runs --json`, then enriches each open PR
-with `gh pr view` (CI from `statusCheckRollup`, review decision,
-merge state) — td's PR data carries no CI state, so this step is
-what makes "CI: failing" a real claim. `gh` is authed in the
-terminal container; if a `gh` call fails, that PR's CI reads
-"unknown" instead of failing the whole briefing, and any source
-that fails degrades only its own section.
+checkout) parses `td --json gh search-prs --state open`,
+`td --json gh status-board`, `td --json gh detect-conflicts --all`,
+and `td --json repo workflow-runs` (`--json` is a top-level td
+flag — per-subcommand `--json` fails on real td for all but
+search-prs), then enriches each open PR with `gh pr view` (CI
+from `statusCheckRollup`, review decision, merge state) — td's
+PR data carries no CI state, so this step is what makes
+"CI: failing" a real claim. `gh` is authed in the terminal
+container; if a `gh` call fails, that PR's CI reads "unknown"
+instead of failing the whole briefing, and any source that fails
+degrades only its own section.
 
 Format, in order: Needs attention, Open PRs (one line each: number,
-title, branch, CI, merge state, updated date, draft marker),
-Work board, Conflicts, Workflow health (failing runs only).
-Attention ranking: conflicted, then CI failing, then changes
-requested, then stale (updated over 30 days ago). REVIEW_REQUIRED
-is deliberately not attention — in a solo repo most open PRs sit
+title, branch, CI, merge state, updated date, draft marker, review
+verdicts), Reviews, Work board, Conflicts, Workflow health
+(failing runs only, each with its failed jobs and steps where
+`gh api` can fetch them), Agent sessions (Jules). Attention
+ranking: conflicted, then CI failing, then changes requested,
+then stale (updated over 30 days ago). REVIEW_REQUIRED is
+deliberately not attention — in a solo repo most open PRs sit
 there, so flagging them would make every briefing shout. Drafts
 are listed, never attention items.
+
+The v2 rule behind the Reviews and Agent sessions sections: the
+local agent reads existing expert work, it does not redo it.
+Reviews come from `td --json gh read-pr-reviews --pr N` (top-level
+review objects: reviewer, verdict, body), so a changes-requested
+attention item quotes what was asked for instead of just naming
+the objector. Failing runs gain their failed job and step names
+from `gh api .../actions/runs/<id>/jobs` — the likely cause,
+not just the run name. Jules sessions come from
+`td --json agent list-sessions` (falling back to
+`td --json jules list-sessions`, since td registers the group
+under either name); only sessions whose source context names
+tech-dancer are listed as such, other repos' active sessions are
+counted, and sessions with no repo info are listed as unscoped
+rather than claimed. If Jules is unavailable (no
+`JULES_API_KEY`, no agent group), that section degrades to a
+note and the briefing still exits 0.
 
 The script lives in the checkout, which the terminal container
 sees at `/srv/remote-server` (the same mount the TD prefix uses
@@ -284,6 +305,22 @@ webhook. A pull updates the checkout only: buttons code changes
 still need `up -d --build buttons`, `.env` changes still need
 Recreate terminal, and a terminal image update is still a
 host-shell job.
+
+### Live updates on the page
+
+The page does not wait for a reload to show webhook activity. It
+re-fetches `/buttons/api/status` every 10 seconds (skipped while
+the tab is hidden) and updates the live bar under the header: a
+spinner shows while a refresh is in flight or a pull is pending,
+per-repo pull results show as they land, and a timestamp shows
+when the page last refreshed. A pull that is still running shows
+as "pulling <repo>…" with the spinner, from the status API's
+`webhooks_pending` field. Plans are deliberately not auto-refreshed
+— re-rendering the list would collapse whatever the reader has
+expanded. Note also that GitHub's ping (sent when a webhook is
+created) does more than answer pong: for an allowlisted repo it
+queues an auto-pull, so creating the webhook immediately syncs
+the checkout.
 
 ## Tracked git hooks + setup script
 

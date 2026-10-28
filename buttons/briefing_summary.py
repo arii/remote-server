@@ -35,9 +35,26 @@ one section, never the whole briefing):
   td --json gh detect-conflicts --all   conflict scan (shape varies;
       parsed defensively, see _conflicted_prs)
   td --json repo workflow-runs   recent runs; failures only shown.
+  td --json gh read-pr-reviews --pr N   per-PR review substance
+      (GitHub review objects: user.login, state, body). The v1
+      briefing used only reviewDecision (the verdict); v2 shows what
+      reviewers actually said, because the local agent's job is to
+      read existing expert work, not redo it.
+  gh api repos/arii/tech-dancer/actions/runs/ID/jobs   failing
+      job + step names for each failing run (the likely cause).
+  td --json agent list-sessions   Jules sessions (falls back to
+      `jules list-sessions` if the group name differs; both are
+      tried because td registers the group under either name in
+      different versions). Needs JULES_API_KEY in the terminal
+      environment; any failure degrades to an unavailable note.
+      Sessions are repo-scoped defensively: only sessions whose
+      source context names tech-dancer are listed as such; others
+      are counted, never claimed.
 
 Attention ranking (first match wins per PR, in this order):
   conflicted > CI failing > changes requested > stale (>30 days).
+  A changes-requested item now quotes the review excerpt, so the
+  action names what to address instead of just who objected.
 REVIEW_REQUIRED is deliberately NOT attention: in a solo repo most
 open PRs sit at REVIEW_REQUIRED, so flagging them would make every
 briefing shout. Drafts are listed, never attention items.
@@ -91,6 +108,100 @@ def ci_summary(rollup):
     if any(getf(c, "status") != "COMPLETED" for c in rollup):
         return "pending", []
     return "passing", []
+
+
+def _deep_list(node, key, depth=0):
+    """First list found under `key` in a nested payload (td wraps
+    data in envelopes that vary by command/version)."""
+    if depth > 6:
+        return None
+    if isinstance(node, dict):
+        val = node.get(key)
+        if isinstance(val, list):
+            return val
+        for sub in node.values():
+            found = _deep_list(sub, key, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _deep_list(item, key, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _excerpt(body, limit=200):
+    """One line of review text, whitespace-collapsed, truncated."""
+    text = " ".join(str(body or "").split())
+    if len(text) > limit:
+        return text[:limit].rstrip() + "…"
+    return text
+
+
+def _normalize_review(raw):
+    """(user, state, body, submitted) from a GitHub review object."""
+    if not isinstance(raw, dict):
+        return None
+    user = raw.get("user")
+    user = user.get("login") if isinstance(user, dict) else user
+    state = str(getf(raw, "state", default="") or "").upper()
+    return (str(user or "?"),
+            state,
+            _excerpt(getf(raw, "body", default="")),
+            str(getf(raw, "submitted_at", "submittedAt",
+                     default="") or ""))
+
+
+def _session_repo(session):
+    """'arii/tech-dancer', another 'owner/repo', or None, from a
+    Jules session object — checked across the field spellings the
+    Jules API and td's client use."""
+    if not isinstance(session, dict):
+        return None
+    candidates = []
+    ctx = session.get("sourceContext") or session.get("source_context") or {}
+    if isinstance(ctx, dict):
+        repo_ctx = ctx.get("githubRepoContext") or ctx.get("github_repo_context") or {}
+        if isinstance(repo_ctx, dict):
+            candidates.append(repo_ctx)
+        candidates.append(ctx)
+    src = session.get("source") or {}
+    if isinstance(src, dict):
+        candidates.append(src.get("githubRepo") or src.get("github_repo") or {})
+        candidates.append(src)
+    candidates.append(session)
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        owner = cand.get("owner")
+        repo = cand.get("repo")
+        if owner and repo:
+            return f"{owner}/{repo}"
+        full = cand.get("full_name") or cand.get("fullName")
+        if isinstance(full, str) and "/" in full:
+            return full
+        name = cand.get("displayName") or cand.get("display_name") or ""
+        if isinstance(name, str) and "tech-dancer" in name:
+            return "arii/tech-dancer"
+    return None
+
+
+def _session_title(session):
+    title = getf(session, "title", default="") or ""
+    if title:
+        return _excerpt(title, 100)
+    prompt = getf(session, "prompt", default="") or ""
+    if prompt:
+        first = str(prompt).strip().splitlines()
+        if first:
+            return _excerpt(first[0], 100)
+    name = str(getf(session, "name", default="") or "")
+    return name.split("/")[-1] if name else "Jules session"
+
+
+TERMINAL_SESSION_STATES = {"SUCCEEDED", "COMPLETED", "FAILED",
+                           "CANCELLED", "TERMINATED"}
 
 
 def _conflicted_prs(node, out, in_conf=False):
@@ -158,6 +269,85 @@ def fetch():
         ], 30)
         if view:
             data["gh"][num] = view
+    # Review substance, one td call per open PR (capped: review
+    # calls are the slowest part and PR counts here are small).
+    data["reviews"] = {}
+    data["reviews_err"] = {}
+    data["reviews_raw_parts"] = []
+    for pr in data["pr_list"][:10]:
+        num = getf(pr, "number")
+        if not isinstance(num, int):
+            continue
+        payload, raw, err = run_json(
+            ["td", "--json", "gh", "read-pr-reviews", "--pr", str(num)],
+            30)
+        if raw:
+            data["reviews_raw_parts"].append(raw[:4000])
+        if payload is None:
+            data["reviews_err"][num] = err
+            continue
+        found = _deep_list(payload, "reviews")
+        reviews = []
+        if isinstance(found, list):
+            for item in found:
+                norm = _normalize_review(item)
+                if norm:
+                    reviews.append(norm)
+        # Latest first; unparseable dates sort last.
+        reviews.sort(key=lambda r: r[3], reverse=True)
+        data["reviews"][num] = reviews
+    # Failing-job cause for each failing run (gh api, per run).
+    data["jobs"] = {}
+    runs_list = []
+    if data["runs"]:
+        runs_list = getf(data["runs"], "workflow_runs", "workflowRuns",
+                         default=[]) or []
+    if not isinstance(runs_list, list):
+        runs_list = []
+    for run in runs_list:
+        if not isinstance(run, dict):
+            continue
+        concl = getf(run, "conclusion")
+        status = getf(run, "status")
+        if not (concl == "failure" or (concl is None and status == "failure")):
+            continue
+        run_id = getf(run, "id")
+        if run_id is None:
+            continue
+        jobs_payload, _, _ = run_json(
+            ["gh", "api",
+             f"repos/arii/tech-dancer/actions/runs/{run_id}/jobs"], 30)
+        jobs = _deep_list(jobs_payload, "jobs") if jobs_payload else None
+        failed = []
+        if isinstance(jobs, list):
+            for job in jobs:
+                if not isinstance(job, dict):
+                    continue
+                if getf(job, "conclusion") != "failure":
+                    continue
+                steps = [getf(s, "name", default="?")
+                         for s in (job.get("steps") or [])
+                         if isinstance(s, dict)
+                         and getf(s, "conclusion") == "failure"]
+                failed.append((getf(job, "name", default="?"), steps[:3]))
+        data["jobs"][str(run_id)] = failed[:3]
+    # Jules sessions (background agent work). The group name varies
+    # by td version, so try both; any failure degrades the section.
+    data["jules"] = None
+    data["jules_err"] = ""
+    data["jules_raw"] = ""
+    for group in ("agent", "jules"):
+        payload, raw, err = run_json(
+            ["td", "--json", group, "list-sessions"], 60)
+        if payload is not None:
+            found = _deep_list(payload, "sessions")
+            if isinstance(found, list):
+                data["jules"] = found
+                data["jules_raw"] = raw
+                break
+            data["jules_err"] = "list-sessions returned no sessions list"
+        else:
+            data["jules_err"] = err
     return data
 
 
@@ -189,6 +379,19 @@ def build(data):
         is_conflict = (isinstance(num, int) and num in conflicted) \
             or merge == "dirty"
         review = getf(view, "reviewDecision", "review_decision")
+        # Review substance (v2): latest verdict per state, so the
+        # attention item can quote what was asked for.
+        pr_reviews = data["reviews"].get(num, []) \
+            if isinstance(num, int) else []
+        latest_by_state = {}
+        for user, state, body, _submitted in pr_reviews:
+            latest_by_state.setdefault(state, (user, body))
+        review_suffix = ""
+        if latest_by_state:
+            review_suffix = " — reviews: " + "; ".join(
+                f"@{user} {state}" for state, (user, _body)
+                in sorted(latest_by_state.items()))
+        requested = latest_by_state.get("CHANGES_REQUESTED")
         # Stale: updated more than STALE_DAYS ago (unparseable = not stale).
         stale = False
         try:
@@ -201,6 +404,7 @@ def build(data):
         if failing:
             detail += f" ({', '.join(failing[:3])})"
         detail += f" — merge: {merge} — updated {updated_day}"
+        detail += review_suffix
         if draft:
             detail += " — draft"
         pr_lines.append(f"- {label} {detail}")
@@ -212,7 +416,13 @@ def build(data):
             attention.append((1, f"{label} — CI failing"
                              + (f": {', '.join(failing[:3])}" if failing else "")))
         elif review == "CHANGES_REQUESTED":
-            attention.append((2, f"{label} — changes requested"))
+            item = f"{label} — changes requested"
+            if requested:
+                user, body = requested
+                item += f" by @{user}"
+                if body:
+                    item += f": '{body}'"
+            attention.append((2, item))
         elif stale:
             attention.append((3, f"{label} — stale (updated {updated_day})"))
     # Rank order, not PR-list order: conflicts before CI before
@@ -233,6 +443,50 @@ def build(data):
         lines.extend(pr_lines)
     else:
         lines.append("No open PRs.")
+    lines.append("")
+
+    lines.append("## Reviews")
+    reviews = data["reviews"]
+    reviews_err = data["reviews_err"]
+    if reviews:
+        shown_any = False
+        for pr in prs:
+            num = getf(pr, "number")
+            if not isinstance(num, int) or num not in reviews:
+                continue
+            items = reviews[num]
+            if not items:
+                continue
+            shown_any = True
+            # At most two excerpts per PR: the latest
+            # changes-requested, then the latest approval, then the
+            # latest comment with text.
+            picked = []
+            for want in ("CHANGES_REQUESTED", "APPROVED", "COMMENTED"):
+                for user, state, body, _s in items:
+                    if state == want:
+                        picked.append((user, state, body))
+                        break
+                if len(picked) >= 2:
+                    break
+            for user, state, body in picked:
+                line = f"- #{num}: @{user} {state}"
+                if body:
+                    line += f" — '{body}'"
+                lines.append(line)
+            states = sorted({state for _u, state, _b, _s in items})
+            lines.append(f"  ({len(items)} review(s): "
+                         f"{', '.join(states).lower() or 'none'})")
+        if not shown_any:
+            lines.append("No reviews on open PRs.")
+    elif reviews_err:
+        first_err = next(iter(reviews_err.values()), "")
+        lines.append(f"Reviews unavailable: {first_err}")
+    else:
+        lines.append("No reviews fetched (no open PRs).")
+    if reviews_err:
+        for num, err in sorted(reviews_err.items()):
+            lines.append(f"Reviews unavailable for #{num}: {err}")
     lines.append("")
 
     board = getf(data["board"], "work", default=[]) if data["board"] else []
@@ -276,13 +530,64 @@ def build(data):
             for run in failing_runs[:5]:
                 name = getf(run, "name", "workflow", "workflowName",
                             default="?")
-                lines.append(f"- failing: {name} on "
-                             f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
-                             f"({getf(run, 'event', default='?')})"
-                             + (f" — {getf(run, 'htmlUrl', 'html_url', 'url')}"
-                                if getf(run, "htmlUrl", "html_url", "url") else ""))
+                line = (f"- failing: {name} on "
+                        f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
+                        f"({getf(run, 'event', default='?')})")
+                run_id = getf(run, "id")
+                failed_jobs = data["jobs"].get(str(run_id), []) \
+                    if run_id is not None else []
+                if failed_jobs:
+                    causes = []
+                    for job_name, steps in failed_jobs:
+                        cause = job_name
+                        if steps:
+                            cause += f" (steps: {', '.join(steps)})"
+                        causes.append(cause)
+                    line += f" — failed: {'; '.join(causes)}"
+                url = getf(run, "htmlUrl", "html_url", "url")
+                if url:
+                    line += f" — {url}"
+                lines.append(line)
         else:
             lines.append("No failing runs in the recent list.")
+    lines.append("")
+
+    lines.append("## Agent sessions (Jules)")
+    sessions = data["jules"]
+    if sessions is None:
+        lines.append(f"Jules sessions unavailable: {data['jules_err']}")
+    else:
+        matched, other, unscoped = [], 0, 0
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            state = str(getf(session, "state", default="") or "").upper()
+            if state in TERMINAL_SESSION_STATES:
+                continue
+            repo = _session_repo(session)
+            title = _session_title(session)
+            created = str(getf(session, "createTime", "create_time",
+                               default="") or "")[:10]
+            item = f"- {title} — {state.lower()}"
+            if created:
+                item += f" — {created}"
+            if repo == "arii/tech-dancer":
+                matched.append(item)
+            elif repo is not None:
+                other += 1
+            else:
+                unscoped += 1
+                matched.append(item + " (repo unscoped)")
+        if matched:
+            lines.extend(matched)
+        else:
+            lines.append("No active Jules sessions for tech-dancer.")
+        if other:
+            lines.append(f"({other} active session(s) for other repos, "
+                         "not listed.)")
+        if unscoped:
+            lines.append(f"({unscoped} active session(s) above carry no "
+                         "repo info — listed unscoped, not claimed.)")
     lines.append("")
 
     raw_parts = []
@@ -292,6 +597,11 @@ def build(data):
         raw = data[key]
         if raw:
             raw_parts.append(f"### {name}\n{raw[:RAW_CAP]}")
+    if data["reviews_raw_parts"]:
+        raw_parts.append("### read-pr-reviews\n"
+                         + "\n".join(data["reviews_raw_parts"])[:RAW_CAP])
+    if data["jules_raw"]:
+        raw_parts.append(f"### agent list-sessions\n{data['jules_raw'][:RAW_CAP]}")
     raw_text = "\n\n".join(raw_parts)
     return "\n".join(lines), attention, raw_text
 
