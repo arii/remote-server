@@ -16,6 +16,10 @@ Modes:
   --briefing          print the readable briefing to stdout
   --briefing-json     print analyze() as JSON (the live Briefing
                       view on the buttons page renders this)
+  --repo KEY          repo to brief: tech-dancer (default) or
+                      remote-server. td runs with cwd = that
+                      repo's checkout, so it picks up that repo's
+                      project_config.json; gh api paths follow.
   --plan-dir DIR      write DIR/<date>-briefing-plan.md: the briefing,
                       then a Next-actions checklist DERIVED from the
                       findings (one checkbox per attention item, not
@@ -42,7 +46,7 @@ one section, never the whole briefing):
       briefing used only reviewDecision (the verdict); v2 shows what
       reviewers actually said, because the local agent's job is to
       read existing expert work, not redo it.
-  gh api repos/arii/tech-dancer/actions/runs/ID/jobs   failing
+  gh api repos/<repo>/actions/runs/ID/jobs   failing
       job + step names for each failing run (the likely cause).
   td --json agent list-sessions   Jules sessions (falls back to
       `jules list-sessions` if the group name differs; both are
@@ -69,6 +73,16 @@ from datetime import date, datetime, timezone
 
 STALE_DAYS = 30
 RAW_CAP = 20_000  # raw appendix cap, chars
+
+# Repos the briefing can cover. Keys are the short names the page
+# and --repo use; values are the GitHub owner/repo paths. The td
+# commands run with cwd = the repo checkout (the server's TD
+# prefix cds there), so td picks up that repo's project config;
+# the gh api paths here must name the same repo.
+REPOS = {"tech-dancer": "arii/tech-dancer",
+         "remote-server": "arii/remote-server"}
+REPO_KEY = "tech-dancer"
+REPO_GH = REPOS[REPO_KEY]
 FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 
 
@@ -156,9 +170,10 @@ def _normalize_review(raw):
 
 
 def _session_repo(session):
-    """'arii/tech-dancer', another 'owner/repo', or None, from a
-    Jules session object — checked across the field spellings the
-    Jules API and td's client use."""
+    """An 'owner/repo', or None, from a Jules session object —
+    checked across the field spellings the Jules API and td's
+    client use. A display name mentioning a known repo key maps
+    to that repo."""
     if not isinstance(session, dict):
         return None
     candidates = []
@@ -184,8 +199,10 @@ def _session_repo(session):
         if isinstance(full, str) and "/" in full:
             return full
         name = cand.get("displayName") or cand.get("display_name") or ""
-        if isinstance(name, str) and "tech-dancer" in name:
-            return "arii/tech-dancer"
+        if isinstance(name, str):
+            for key, gh in REPOS.items():
+                if key in name:
+                    return gh
     return None
 
 
@@ -318,7 +335,7 @@ def fetch():
             continue
         jobs_payload, _, _ = run_json(
             ["gh", "api",
-             f"repos/arii/tech-dancer/actions/runs/{run_id}/jobs"], 30)
+             f"repos/{REPO_GH}/actions/runs/{run_id}/jobs"], 30)
         jobs = _deep_list(jobs_payload, "jobs") if jobs_payload else None
         failed = []
         if isinstance(jobs, list):
@@ -597,7 +614,7 @@ def analyze(data):
             item = f"- {title} — {state.lower()}"
             if created:
                 item += f" — {created}"
-            if repo == "arii/tech-dancer":
+            if repo == REPO_GH:
                 matched.append(item)
             elif repo is not None:
                 jules_other += 1
@@ -607,7 +624,8 @@ def analyze(data):
         if matched:
             jules_lines.extend(matched)
         else:
-            jules_lines.append("No active Jules sessions for tech-dancer.")
+            jules_lines.append(
+                f"No active Jules sessions for {REPO_KEY}.")
         if jules_other:
             jules_lines.append(f"({jules_other} active session(s) for other "
                                "repos, not listed.)")
@@ -618,6 +636,7 @@ def analyze(data):
         jules_items = matched
 
     return {
+        "repo": REPO_KEY,
         "attention": attention, "prs": pr_infos,
         "prs_err": data["prs_err"], "reviews_lines": reviews_lines,
         "reviews_err": {str(k): v for k, v in reviews_err.items()},
@@ -637,7 +656,7 @@ def analyze(data):
 def build(data):
     """Return (briefing text, attention items, raw appendix text)."""
     a = analyze(data)
-    lines = [f"# Briefing {date.today().isoformat()}", ""]
+    lines = [f"# Briefing {REPO_GH} {date.today().isoformat()}", ""]
     lines.append("## Needs attention")
     if a["attention"]:
         lines.extend(f"- {x}" for x in a["attention"])
@@ -684,14 +703,23 @@ def build(data):
     return "\n".join(lines), a["attention"], raw_text
 
 def main(argv):
+    global REPO_KEY, REPO_GH
     briefing = "--briefing" in argv
     briefing_json = "--briefing-json" in argv
     plan_dir = None
     if "--plan-dir" in argv:
         plan_dir = argv[argv.index("--plan-dir") + 1]
+    if "--repo" in argv:
+        key = argv[argv.index("--repo") + 1]
+        if key not in REPOS:
+            print(f"unknown repo: {key} (known: {', '.join(REPOS)})",
+                  file=sys.stderr)
+            return 2
+        REPO_KEY, REPO_GH = key, REPOS[key]
     if not briefing and not briefing_json and not plan_dir:
         print("usage: briefing_summary.py --briefing | --briefing-json | "
-              "--plan-dir DIR", file=sys.stderr)
+              "--plan-dir DIR [--repo tech-dancer|remote-server]",
+              file=sys.stderr)
         return 2
     data = fetch()
     if briefing_json:

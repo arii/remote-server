@@ -15,3 +15,7 @@ volumes/
 # restic / backup scratch
 *.snapshot
 /restore-test/
+
+# Dynamic Agent Context (Untracked) — td context-warm output,
+# like tech-dancer: warming must never dirty the checkout
+.agent-context.json

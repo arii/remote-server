@@ -33,13 +33,28 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
 # Run a command inside the terminal container (where td and Pi live).
 EXEC = COMPOSE + ["exec", "-T", "terminal", "bash", "-c"]
 TD = "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set +a && cd /srv/repos/tech-dancer && "
+
+# Repos the page's repo-work UI can cover. Keys are the short
+# names the picker and --repo use; the TD prefix cds into that
+# repo's checkout in the terminal container, where td picks up
+# its project config. Keep in sync with briefing_summary.REPOS.
+# Only the actions listed as scoped honour a repo: the rest are
+# stack-wide (Server group) or global (Sync & nudge lists Jules
+# sessions across repos), so a repo for them is ignored.
+REPO_TD = {
+    "tech-dancer": TD,
+    "remote-server": "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set +a && cd /srv/remote-server && ",
+}
+REPO_GH = {"tech-dancer": "arii/tech-dancer",
+           "remote-server": "arii/remote-server"}
+REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight"}
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
@@ -297,7 +312,7 @@ ACTIONS = {
     "briefing-td": {
         "label": "Repo briefing (td, fast)",
         "group": "Briefing",
-        "sub": "Open PRs, CI state, conflicts for tech-dancer — fast, from td",
+        "sub": "Open PRs, CI state, conflicts — fast, from td (repo follows the Briefing picker below)",
         "confirm": False,
         "steps": [
             EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
@@ -325,7 +340,7 @@ ACTIONS = {
     "warm-context": {
         "label": "Warm repo context",
         "group": "Briefing",
-        "sub": "Regenerate tech-dancer .agent-context.json if stale",
+        "sub": "Regenerate the picked repo's .agent-context.json if stale",
         "confirm": False,
         "steps": [
             EXEC + [TD + "td context-warm"],
@@ -336,7 +351,7 @@ ACTIONS = {
     "preflight": {
         "label": "Preflight check",
         "group": "Briefing",
-        "sub": "doctor + typecheck + lint + overlap + merge simulation for tech-dancer",
+        "sub": "doctor + typecheck + lint + overlap + merge simulation for the picked repo",
         "confirm": False,
         "steps": [
             EXEC + [TD + "td --json preflight"],
@@ -462,10 +477,30 @@ def _run_step(step, append):
     return proc.wait()
 
 
-def run_action(run_id, action):
+def run_action(run_id, action, repo="tech-dancer"):
     global active_id
     run = runs[run_id]
     steps = ACTIONS[action]["steps"]
+    if repo in REPO_TD and action in REPO_SCOPED_ACTIONS \
+            and repo != "tech-dancer":
+        # Repo-scoped steps run td in the repo checkout: rewrite
+        # the TD prefix (the step's last element) to that repo.
+        # The step shape is fixed (EXEC + [TD + cmd]), so the
+        # rewrite is exact, never string surgery on free text.
+        prefix = REPO_TD[repo]
+        rewritten = []
+        for step in steps:
+            if len(step) == len(EXEC) + 1 and step[:len(EXEC)] == EXEC \
+                    and step[-1].startswith(TD):
+                cmd = step[-1][len(TD):]
+                if action == "briefing-td":
+                    # The cwd alone does not pick the repo: the
+                    # summarizer's gh api paths need --repo too.
+                    cmd += f" --repo {repo}"
+                rewritten.append(EXEC + [prefix + cmd])
+            else:
+                rewritten.append(step)
+        steps = rewritten
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
@@ -577,8 +612,14 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="state"></div>
 <pre id="out"></pre>
 <h2>Briefing</h2>
-<p>Live briefing for tech-dancer — open PRs, CI, conflicts, reviews,
-Jules sessions. Runs on load; Refresh re-fetches.</p>
+<p>Live briefing — open PRs, CI, conflicts, reviews, Jules
+sessions. Runs on load; Refresh re-fetches. The picker sets the
+repo for the cards, their action buttons, and the repo-scoped
+buttons above (briefing, warm context, preflight).</p>
+<label>Repo: <select id="briefingRepo">
+<option value="tech-dancer">tech-dancer</option>
+<option value="remote-server">remote-server</option>
+</select></label>
 <div id="briefing"></div>
 <button id="refreshBriefing">Refresh briefing</button>
 <div id="briefingErr"></div>
@@ -602,9 +643,16 @@ let userStartedRun = false;
 async function startRun(name, label, confirmFlag) {
   userStartedRun = true;
   if (confirmFlag && !window.confirm(label + " — run it?")) return;
+  // Repo-scoped buttons follow the Briefing picker; the rest are
+  // stack-wide or global and ignore it.
+  const body = {action: name};
+  if (name === "briefing-td" || name === "warm-context" || name === "preflight") {
+    const picker = document.getElementById("briefingRepo");
+    if (picker) body.repo = picker.value;
+  }
   const r = await fetch("/buttons/api/run", {method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({action: name})});
+    body: JSON.stringify(body)});
   if (!r.ok) { stateEl.textContent = "error: " + (await r.json()).error; return; }
   poll((await r.json()).id);
 }
@@ -847,9 +895,12 @@ function prActionButton(pr, action, label, confirmText) {
     const card = b.closest(".prcard");
     const res = card ? card.querySelector(".prresult") : null;
     try {
+      const picker = document.getElementById("briefingRepo");
+      const body = {pr_number: pr.number, action: action,
+        repo: picker ? picker.value : "tech-dancer"};
       const r = await fetch("/buttons/api/pr-action", {method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({pr_number: pr.number, action: action})});
+        body: JSON.stringify(body)});
       const data = await r.json();
       if (!r.ok) { if (res) res.textContent = "Failed: " + data.error; b.disabled = false; return; }
       if (res) res.textContent = "Done. Refresh the briefing to see the new state.";
@@ -951,9 +1002,11 @@ function renderBriefing(b) {
   briefingEl.appendChild(js);
 }
 async function refreshBriefing() {
+  const picker = document.getElementById("briefingRepo");
+  const repo = picker ? picker.value : "tech-dancer";
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
   try {
-    const r = await fetch("/buttons/api/briefing");
+    const r = await fetch("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
     if (!r.ok) { briefingEl.textContent = ""; briefingErrEl.textContent = "briefing unavailable: " + (await r.json()).error; return; }
     renderBriefing(await r.json());
   } catch (e) {
@@ -962,6 +1015,8 @@ async function refreshBriefing() {
   }
 }
 document.getElementById("refreshBriefing").onclick = refreshBriefing;
+const briefingRepoPicker = document.getElementById("briefingRepo");
+if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
 
 // Live updates: re-fetch status every 10s (skipped while the tab
@@ -1032,12 +1087,13 @@ setInterval(refreshStatus, 10000);
 HTML = HTML.replace("<!--BUTTONS-->", BUTTONS_HTML)
 
 
-def _td_run(cmd, timeout=120):
+def _td_run(cmd, timeout=120, prefix=None):
     """Run one td/gh command in the terminal container; return
     stdout. Raises RuntimeError with the last stderr line on
-    failure. The command is a fixed string built from a validated
-    integer only — never from free text."""
-    proc = subprocess.run(EXEC + [TD + cmd], stdout=subprocess.PIPE,
+    failure. The command is a fixed string built from validated
+    values only — never from free text."""
+    proc = subprocess.run(EXEC + [(prefix or TD) + cmd],
+                          stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=timeout,
                           text=True)
     if proc.returncode != 0:
@@ -1064,16 +1120,16 @@ def _ci_label(rollup):
     return "passing"
 
 
-def _pr_view(pr_number):
+def _pr_view(pr_number, repo):
     """Fresh (CI label, merge state) for gating, at tap time."""
     view = json.loads(_td_run(
         f"gh pr view {pr_number} --json statusCheckRollup,mergeStateStatus",
-        timeout=60))
+        timeout=60, prefix=REPO_TD[repo]))
     return (_ci_label(view.get("statusCheckRollup")),
             str(view.get("mergeStateStatus") or "?").lower())
 
 
-def _pr_action(pr_number, action):
+def _pr_action(pr_number, action, repo):
     """Per-PR actions from the Briefing view. Every action re-checks
     fresh state at tap time — the card may be minutes old. Merge is
     gated on CI passing + merge clean; update only on BEHIND (a
@@ -1083,24 +1139,27 @@ def _pr_action(pr_number, action):
     fix-ci requires CI failing and dispatches a Jules session via
     `fix-ci --execute` (fix-ci defaults to dry-run, so the flag is
     load-bearing). ValueError = gate refused (400)."""
+    prefix = REPO_TD[repo]
     if action == "merge":
-        ci, merge = _pr_view(pr_number)
+        ci, merge = _pr_view(pr_number, repo)
         if ci != "passing" or merge != "clean":
             raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
-        out = _td_run(f"gh pr merge {pr_number} --squash --delete-branch")
+        out = _td_run(f"gh pr merge {pr_number} --squash --delete-branch",
+                      prefix=prefix)
         return {"ok": True, "output": out[-2000:]}
     if action == "update":
-        _ci, merge = _pr_view(pr_number)
+        _ci, merge = _pr_view(pr_number, repo)
         if merge != "behind":
             raise ValueError(f"cannot update: merge state is {merge} "
                              "(only behind branches update this way)")
-        out = _td_run(f"gh api repos/arii/tech-dancer/pulls/{pr_number}/"
-                      "update-branch --method PUT")
+        out = _td_run(f"gh api repos/{REPO_GH[repo]}/pulls/{pr_number}/"
+                      "update-branch --method PUT", prefix=prefix)
         return {"ok": True, "output": out[-2000:]}
-    ci, _merge = _pr_view(pr_number)
+    ci, _merge = _pr_view(pr_number, repo)
     if ci != "failing":
         raise ValueError(f"CI is {ci}, not failing — nothing to fix")
-    out = _td_run(f"td --json agent fix-ci --pr {pr_number} --execute")
+    out = _td_run(f"td --json agent fix-ci --pr {pr_number} --execute",
+                  prefix=prefix)
     return {"ok": True, "output": out[-2000:]}
 
 
@@ -1196,11 +1255,17 @@ class Handler(BaseHTTPRequestHandler):
             # summarizer runs in the terminal container (same
             # transport as the briefing button) and its JSON is
             # passed through. Slow (td + gh calls), so the page
-            # shows a spinner while it loads.
+            # shows a spinner while it loads. ?repo= picks the
+            # repo (allowlisted; default tech-dancer).
+            repo = parse_qs(urlparse(self.path).query).get(
+                "repo", ["tech-dancer"])[0]
+            if repo not in REPO_TD:
+                self._json({"error": "unknown repo"}, 400)
+                return
             try:
                 proc = subprocess.run(
-                    EXEC + [TD + "python3 /srv/remote-server/buttons/"
-                            "briefing_summary.py --briefing-json"],
+                    EXEC + [REPO_TD[repo] + "python3 /srv/remote-server/buttons/"
+                            f"briefing_summary.py --briefing-json --repo {repo}"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=180, text=True)
                 if proc.returncode != 0:
@@ -1258,13 +1323,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
             pr_number, action = data.get("pr_number"), data.get("action")
+            repo = data.get("repo", "tech-dancer")
             if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
                     or pr_number <= 0 \
-                    or action not in ("merge", "update", "fix-ci"):
-                self._json({"error": "bad pr_number or action"}, 400)
+                    or action not in ("merge", "update", "fix-ci") \
+                    or repo not in REPO_TD:
+                self._json({"error": "bad pr_number, action or repo"}, 400)
                 return
             try:
-                self._json(_pr_action(pr_number, action))
+                self._json(_pr_action(pr_number, action, repo))
             except ValueError as exc:
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:
@@ -1274,11 +1341,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
             return
         try:
-            action = json.loads(body).get("action") if body else None
+            data = json.loads(body) if body else {}
         except Exception:
-            action = None
+            data = {}
+        action = data.get("action")
+        repo = data.get("repo", "tech-dancer")
         if action not in ACTIONS:
             self._json({"error": "unknown action"}, 400)
+            return
+        if repo not in REPO_TD:
+            self._json({"error": "unknown repo"}, 400)
             return
         with runs_lock:
             if active_id is not None:
@@ -1294,7 +1366,7 @@ class Handler(BaseHTTPRequestHandler):
                             "current_step": ""}
             active_id = run_id
         print(f"run {run_id} ({action}) started", flush=True)
-        threading.Thread(target=run_action, args=(run_id, action),
+        threading.Thread(target=run_action, args=(run_id, action, repo),
                          daemon=True).start()
         self._json({"id": run_id})
 

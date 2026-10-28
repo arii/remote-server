@@ -17,10 +17,10 @@ label, so you do not have to remember the docs to use the page.
 | Deploy buttons (rebuild this page) | `git pull --ff-only`, `docker compose up -d --build buttons` — rebuilds the buttons container itself from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
-| Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container (tech-dancer): parses td JSON plus `gh` enrichment into a readable briefing — see below |
-| Sync & nudge agents | `td agent list-sessions`, then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones |
-| Warm repo context | `td context-warm` — regenerate tech-dancer `.agent-context.json` if stale |
-| Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for tech-dancer |
+| Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the Briefing picker |
+| Sync & nudge agents | `td agent list-sessions`, then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped) |
+| Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
+| Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for the picked repo |
 
 Deploy buttons, Recreate, and Sync & nudge agents ask for a
 browser confirm first, as do the per-PR action buttons on the
@@ -134,6 +134,23 @@ runs `buttons/briefing_summary.py --briefing-json` in the
 terminal container and passes its JSON through. The JSON and
 the text briefing come from one `analyze()` function, so the
 cards and the text output cannot disagree about a PR.
+
+The section is repo-general, not tech-dancer-only: a picker
+above the cards selects the repo, and it sets the repo for the
+cards, their action buttons, and the repo-scoped buttons
+(briefing, warm context, preflight) — the server validates the
+repo against an allowlist (`tech-dancer`, `remote-server`) on
+every endpoint, and the summarizer takes `--repo` for its gh
+api paths. The td commands run with cwd = that repo's checkout
+in the terminal container, so td picks up that repo's
+`project_config.json` — which is why this batch adds one to
+remote-server (`github_repo` + `packageName`, mirroring
+tech-dancer's shape) and ignores `.agent-context.json` there,
+so warming it cannot dirty the checkout. A repo without a td
+project config degrades per source like any other td failure;
+it does not silently brief the wrong repo. Sync & nudge stays
+global: Jules sessions span repos, so it lists and nudges
+across all of them regardless of the picker.
 
 Each open PR renders as a card: number + title (linked to
 GitHub), branch, CI state with failing checks, merge state,
