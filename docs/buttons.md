@@ -14,7 +14,6 @@ label, so you do not have to remember the docs to use the page.
 | Button | Runs |
 |---|---|
 | Status | `git status` + `git log -3` in the checkout, `docker compose ps`, terminal image tags |
-| Deploy latest | `git pull --ff-only`, `docker compose pull terminal`, `docker compose up -d terminal` |
 | Deploy buttons (rebuild this page) | `git pull --ff-only`, `docker compose up -d --build buttons` — rebuilds the buttons container itself from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Pull models | `scripts/pull-models.sh` (slow, GBs — runs in the background, output streams to the page) |
@@ -23,7 +22,7 @@ label, so you do not have to remember the docs to use the page.
 | Repo briefing (agent, slow) | Pi print mode (`pi -p`) with the agent brief: open PRs, conflicts, failing checks, review comments, stale PRs, one top action. Slow on the local 8b model (minutes) |
 | Create plan from briefing | `buttons/briefing_summary.py --plan-dir .agents/plans` — saves the readable briefing plus a derived checklist to `tech-dancer/.agents/plans/<date>-briefing-plan.md` (untracked until committed) |
 
-Deploy, Deploy buttons, Recreate, Pull models, Repo briefing
+Deploy buttons, Recreate, Pull models, Repo briefing
 (agent), and Create plan ask for a browser confirm first. Status,
 Logs, and Repo briefing (td) do not. One run at a time: starting a
 second run while one is active returns an error until the first
@@ -32,18 +31,17 @@ mid-run re-attaches to it. Recreating the terminal kills any running
 Pi session in it — that is the point of Recreate, but do not press
 it mid-conversation.
 
-Deploy latest vs Recreate terminal, since they look redundant:
-they are not. Deploy updates — it pulls the latest code *and* the
-terminal image, then restarts. Recreate only restarts, with the
-current image and `.env` — no pull, no code update. A plain `up`
-leaves an unchanged container alone, so `.env` edits by themselves
-never take effect; that is the case Recreate exists for. Use
-Deploy when you want the newest thing, Recreate when you changed
-`.env` (or want a clean restart) and deliberately do *not* want a
-new image. Note Deploy pulls whatever image compose is configured
-for (default `:latest`, or a pinned tag if `TERMINAL_IMAGE` is
-set) — the button name says "latest", the pull step says "whatever
-compose resolves".
+There is deliberately no Deploy-latest-for-terminal button anymore.
+It was cut once the stack reached a stable state: its pull step
+(pull the terminal image) is not something a stable setup does
+from the phone, its git pull is already covered by Deploy buttons,
+and its restart is covered by Recreate terminal. Recreate only
+restarts, with the current image and `.env` — no pull, no code
+update. A plain `up` leaves an unchanged container alone, so
+`.env` edits by themselves never take effect; that is the case
+Recreate exists for. When a terminal image update is genuinely
+needed, it is a host-shell job, not a phone button:
+`docker compose pull terminal && docker compose up -d terminal`.
 
 Deploy buttons is special: it recreates the very container serving
 the page, so the run's connection drops mid-run. The page treats
@@ -245,7 +243,7 @@ browser -> oauth2-proxy (TLS + GitHub OAuth, same gate as the terminal)
   same trust level as the terminal itself — the OAuth single-user gate
   is the boundary for both. Do not publish the buttons port or bypass
   oauth2-proxy for it.
-- **SSH key mount (read-only).** Deploy runs `git pull` over SSH, so
+- **SSH key mount (read-only).** Deploy buttons runs `git pull` over SSH, so
   the container mounts `${HOME}/.ssh:/root/.ssh:ro` (same as the
   terminal container) for the key and `github.com` in `known_hosts`.
   Without it, pull fails with "Host key verification failed". This
@@ -271,10 +269,10 @@ Two smaller details in the same vein:
 - `git pull` runs with `-c safe.directory=...`: the container runs as
   root while the checkout is owned by `ari`, and git refuses to run
   otherwise ("detected dubious ownership").
-- Deploy chains with abort-on-first-failure: if `git pull` fails
+- Deploy buttons chains with abort-on-first-failure: if `git pull` fails
   (e.g. local modifications in the checkout, as in the 2026-10-27
-  stub incident), the pull/up steps never run. Fix the checkout from
-  the host shell, then press Deploy again.
+  stub incident), the build step never runs. Fix the checkout from
+  the host shell, then press Deploy buttons again.
 
 ## Deploy
 

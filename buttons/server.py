@@ -167,17 +167,6 @@ ACTIONS = {
              "--format", "{{.Repository}}:{{.Tag}}  {{.Size}}  {{.CreatedSince}}"],
         ],
     },
-    "deploy": {
-        "label": "Deploy latest",
-        "group": "Server",
-        "sub": "Git pull, pull the terminal image, restart terminal — updates code and image",
-        "confirm": True,
-        "steps": [
-            GIT + ["pull", "--ff-only"],
-            COMPOSE + ["pull", "terminal"],
-            COMPOSE + ["up", "-d", "terminal"],
-        ],
-    },
     # Rebuilds THIS service from the checked-out code. It recreates
     # its own container mid-run, so the run's connection drops and
     # the client must treat connection loss as "refresh in ~30s",
@@ -196,11 +185,15 @@ ACTIONS = {
     "recreate": {
         "label": "Recreate terminal",
         "group": "Server",
-        # Deploy restarts only if the image or config changed; a
-        # plain `up` leaves an unchanged container alone, so .env
+        # A plain `up` leaves an unchanged container alone, so .env
         # edits alone never take effect. Recreate forces the
         # restart with the CURRENT image and .env — no pull, no
-        # code update. That is the whole difference from Deploy.
+        # code update. (There used to be a Deploy latest button that
+        # pulled the terminal image too; it was cut in the stable
+        # state — its git pull is covered by Deploy buttons and its
+        # restart by this button, and a terminal image update, when
+        # one is ever needed, is a host-shell job: compose pull
+        # terminal && compose up -d terminal.)
         "sub": "Restart terminal with the current image and .env — no code or image update. Use after editing .env",
         "confirm": True,
         "steps": [
