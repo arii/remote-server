@@ -21,8 +21,10 @@ drawer at the bottom of the screen, reachable from every tab: it
 opens when a run starts, holds the status line above the output
 pane, and carries Clear output and Close in its header.
 
-The Actions tab is status-first: a **Needs attention** section on
-top shows failing runs and attention items from the latest
+The Actions tab is status-first: a read-only **System Health** card
+on top shows disk usage, memory usage, and per-service container states
+(`docker compose ps` read-only status), followed by a **Needs attention**
+section showing failing runs and attention items from the latest
 briefing, plus the stale-rebuild banner when the served page
 predates the checkout. Action buttons are grouped in collapsible
 sections (Server stays closed; the repo-action group stays open).
