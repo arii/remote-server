@@ -69,7 +69,7 @@ should be replaced with the real number.
 ## BoomTick MCP tools (active 2026-10-27)
 
 Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
-0.6.2 in `terminal/pi-config/mcp.json` and globally installed in the
+0.7.1 in `terminal/pi-config/mcp.json` and globally installed in the
 terminal image), configured with `"exposure": "direct"` and
 `"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
 declared directly to the model without duplicate dot-alias collisions or
@@ -83,7 +83,7 @@ don't have:
 - **Validation:** isolated repair-branch creation, verification suites
   (tests, Lighthouse, Playwright).
 - **Jules ops:** create, monitor, and interact with macro-agent Jules
-  sessions. Plus MCP resources (`repo://diff/{pr}`, `repo://ci/{pr}` …)
+  sessions. Plus MCP resources (`mcp://workspace/agent-contract`, `repo://diff/{pr}`, `repo://ci/{pr}` … accessed via server `boomtick`)
   and prompts (`prompt://repair-agent`, `prompt://pr-writer` …).
 
 ### Single-repo scoping — read this before use
@@ -194,7 +194,7 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (CI smoke-tested; versions pinned except `td`, which tracks BoomTick main):
-  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.6.2,
+  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.7.1,
   Python 3 + venv/pip, `td` (`boomtick-cli` from the BoomTick repo main branch in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
   `safe.directory = *`), Docker CLI. This covers the interpreters and

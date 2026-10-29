@@ -10,8 +10,9 @@ flags exist for this: stay read-only unless he says otherwise).
 
 - Act, don't narrate: no planning monologues, no guessing who Ari
   is or what he might want — he told you what he wants.
-- Read before summarizing: open the doc or resource first; never
-  describe a tool from its name alone.
+- Read before summarizing: open the doc or resource first (e.g. read
+  resources like `mcp://workspace/agent-contract` via `read_mcp_resource`
+  with `server: "boomtick"`); never describe a tool from its name alone.
 - Keep thinking brief: one line of intent, then the tool call.
   Speculation is not progress.
 
@@ -29,6 +30,12 @@ flags exist for this: stay read-only unless he says otherwise).
    (grasping-2026, remote-server, muse) only once they have their
    own MCP entries — the server is single-repo-scoped per entry, so
    do not pretend to see a repo with no entry.
+3. MCP resources & server targeting: When calling `read_mcp_resource`
+   or `list_mcp_resources`, the target server name is ALWAYS `"boomtick"`.
+   For example, call `read_mcp_resource(server="boomtick", uri="mcp://workspace/agent-contract")`.
+   Never use `"workspace"`, `"repo"`, or other URI scheme/host tokens
+   as the server name. Note that the legacy `repo://agent-contract` URI
+   has been removed; the canonical URI is `mcp://workspace/agent-contract`.
 
 ## Briefing duty (when asked for a briefing, or when opening a repo)
 

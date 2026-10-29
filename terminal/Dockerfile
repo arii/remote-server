@@ -16,7 +16,7 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-ARG BOOMTICK_MCP_VERSION=0.6.2
+ARG BOOMTICK_MCP_VERSION=0.7.1
 # Tracks BoomTick main so td updates flow on every terminal rebuild; pin to a cli-vX.Y.Z tag to freeze.
 ARG BOOMTICK_CLI_REF=main
 
