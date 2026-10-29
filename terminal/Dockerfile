@@ -61,6 +61,8 @@ RUN apt-get update \
  && python3 -m venv /opt/venvs/td \
  && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
  && /opt/venvs/td/bin/td --help > /dev/null \
+ && ln -sf /root/.local/bin/agy /usr/local/bin/agy \
+ && mkdir -p /home/ari && ln -sfn /srv/remote-server /home/ari/remote-server \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
