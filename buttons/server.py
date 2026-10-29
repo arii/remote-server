@@ -930,6 +930,251 @@ runs_lock = threading.Lock()
 active_id = None
 
 
+# --- Proactive Notifications & State Tracking --------------------
+# Dispatches push notifications via ntfy (HTTP push) and/or generic Webhooks.
+# Tracks state transitions across polls to notify on CI failures, completed/failed
+# Jules sessions, and new merge conflicts, plus scheduled briefing digests.
+import urllib.request
+import urllib.parse
+
+NOTIFIER_STATE_PATH = os.environ.get("BUTTONS_NOTIFIER_STATE_PATH",
+                                     "/var/lib/buttons/notifier_state.json")
+notifier_lock = threading.Lock()
+
+
+def _load_notifier_state():
+    try:
+        if os.path.exists(NOTIFIER_STATE_PATH):
+            with open(NOTIFIER_STATE_PATH, "r") as f:
+                return json.load(f)
+    except Exception as exc:
+        print(f"notifier state load failed: {exc}", flush=True)
+    return {"ci": {}, "jules": {}, "conflicts": {}, "last_digest": 0}
+
+
+def _save_notifier_state(state):
+    try:
+        d = os.path.dirname(NOTIFIER_STATE_PATH)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = NOTIFIER_STATE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, NOTIFIER_STATE_PATH)
+    except Exception as exc:
+        print(f"notifier state save failed: {exc}", flush=True)
+
+
+def send_notification(title, message, priority="default", tags=None, click_url=None, event_type="info"):
+    """Dispatches a notification via ntfy and/or generic Webhook if configured."""
+    results = {}
+    ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
+    ntfy_url = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
+    ntfy_token = os.environ.get("NTFY_TOKEN", "").strip()
+    webhook_url = os.environ.get("NOTIFICATION_WEBHOOK_URL", "").strip()
+
+    if ntfy_topic:
+        try:
+            target = f"{ntfy_url}/{ntfy_topic}"
+            req = urllib.request.Request(target, data=message.encode("utf-8"), method="POST")
+            req.add_header("Title", title)
+            if priority:
+                req.add_header("Priority", priority)
+            if tags:
+                req.add_header("Tags", ",".join(tags) if isinstance(tags, list) else str(tags))
+            if click_url:
+                req.add_header("Click", click_url)
+            if ntfy_token:
+                req.add_header("Authorization", f"Bearer {ntfy_token}")
+
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                results["ntfy"] = {"ok": True, "status": resp.status}
+        except Exception as exc:
+            print(f"ntfy push failed: {exc}", flush=True)
+            results["ntfy"] = {"ok": False, "error": str(exc)}
+
+    if webhook_url:
+        try:
+            payload = json.dumps({
+                "event": event_type,
+                "title": title,
+                "message": message,
+                "url": click_url,
+                "timestamp": time.time()
+            }).encode("utf-8")
+            req = urllib.request.Request(webhook_url, data=payload, method="POST")
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                results["webhook"] = {"ok": True, "status": resp.status}
+        except Exception as exc:
+            print(f"webhook notification failed: {exc}", flush=True)
+            results["webhook"] = {"ok": False, "error": str(exc)}
+
+    return results
+
+
+def _build_digest_text(repos=None):
+    """Compiles a brief multi-repo digest summary for push notifications."""
+    if repos is None:
+        repos = _discover_repos()
+    summary_lines = []
+    total_prs = 0
+    failing_runs = 0
+    conflicts = 0
+
+    for name, info in repos.items():
+        try:
+            proc = subprocess.run(
+                EXEC + [_td_prefix(info["td_cwd"])
+                        + "python3 /srv/remote-server/buttons/"
+                        "briefing_summary.py --briefing-json "
+                        f"--repo {name} --gh {info['gh']}"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=180, text=True)
+            if proc.returncode == 0:
+                b = json.loads(proc.stdout)
+                prs = len(b.get("prs") or [])
+                fr = len(b.get("failing_runs") or [])
+                cf = sum(1 for p in (b.get("prs") or []) if isinstance(p, dict) and p.get("conflicted"))
+                total_prs += prs
+                failing_runs += fr
+                conflicts += cf
+                if prs or fr or cf:
+                    summary_lines.append(f"{name}: {prs} PRs, {fr} failing CI, {cf} conflicts")
+        except Exception as exc:
+            print(f"digest build failed for {name}: {exc}", flush=True)
+
+    if not summary_lines:
+        return f"All {len(repos)} repos clear — 0 open PRs, 0 failing runs."
+    return f"Summary across {len(repos)} repos ({total_prs} PRs, {failing_runs} failing CI):\n" + "\n".join(summary_lines)
+
+
+def _check_notifications_and_digest():
+    """Polls for state changes and sends notifications / scheduled digest."""
+    with notifier_lock:
+        state = _load_notifier_state()
+        now = time.time()
+        repos = _discover_repos()
+
+        # Check enabled events
+        notify_events = os.environ.get("NOTIFY_EVENTS", "ci_fail,jules,conflict").split(",")
+        notify_events = [e.strip() for e in notify_events if e.strip()]
+
+        for repo_name, info in repos.items():
+            try:
+                proc = subprocess.run(
+                    EXEC + [_td_prefix(info["td_cwd"])
+                            + "python3 /srv/remote-server/buttons/"
+                            "briefing_summary.py --briefing-json "
+                            f"--repo {repo_name} --gh {info['gh']}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=180, text=True)
+                if proc.returncode != 0:
+                    continue
+                brief = json.loads(proc.stdout)
+
+                # 1. CI Failures on Main
+                if "ci_fail" in notify_events:
+                    frs = brief.get("failing_runs") or []
+                    current_failing = {
+                        f"{r.get('name')}:{r.get('branch')}": r.get("failed")
+                        for r in frs if isinstance(r, dict)
+                    }
+                    prev_failing = state.get("ci", {}).get(repo_name, {})
+                    for run_key, failed_details in current_failing.items():
+                        if run_key not in prev_failing:
+                            send_notification(
+                                title=f"CI Failed on {repo_name}",
+                                message=f"Run {run_key} failed.\nDetails: {failed_details or 'check logs'}",
+                                priority="high",
+                                tags=["warning", "ci"],
+                                event_type="ci_fail"
+                            )
+                    state.setdefault("ci", {})[repo_name] = current_failing
+
+                # 2. Conflicts
+                if "conflict" in notify_events:
+                    prs = brief.get("prs") or []
+                    current_conflicts = {
+                        str(p.get("number")): p.get("title")
+                        for p in prs if isinstance(p, dict) and p.get("conflicted")
+                    }
+                    prev_conflicts = state.get("conflicts", {}).get(repo_name, {})
+                    for pr_num, pr_title in current_conflicts.items():
+                        if pr_num not in prev_conflicts:
+                            send_notification(
+                                title=f"Merge Conflict on {repo_name} #{pr_num}",
+                                message=f"PR #{pr_num} ({pr_title}) has new merge conflicts.",
+                                priority="default",
+                                tags=["warning", "git"],
+                                event_type="conflict"
+                            )
+                    state.setdefault("conflicts", {})[repo_name] = current_conflicts
+
+                # 3. Jules Sessions
+                if "jules" in notify_events:
+                    jules_data = brief.get("jules") or {}
+                    items = jules_data.get("items") or []
+                    current_jules = {}
+                    for item in items:
+                        # item format: "- title (state)"
+                        current_jules[item] = "active"
+                    prev_jules = state.get("jules", {}).get(repo_name, {})
+                    # Detect finished sessions from previous active
+                    for prev_item in prev_jules:
+                        if prev_item not in current_jules:
+                            send_notification(
+                                title=f"Jules Session Update on {repo_name}",
+                                message=f"Jules session updated or completed:\n{prev_item}",
+                                priority="default",
+                                tags=["robot", "jules"],
+                                event_type="jules"
+                            )
+                    state.setdefault("jules", {})[repo_name] = current_jules
+
+            except Exception as exc:
+                print(f"notifier check failed for {repo_name}: {exc}", flush=True)
+
+        # Scheduled Briefing Digest
+        try:
+            interval_hours = float(os.environ.get("DIGEST_INTERVAL_HOURS", "12"))
+        except ValueError:
+            interval_hours = 12.0
+
+        if interval_hours > 0:
+            last_digest = state.get("last_digest", 0)
+            if (now - last_digest) >= (interval_hours * 3600):
+                digest_msg = _build_digest_text(repos)
+                send_notification(
+                    title="Scheduled Briefing Digest",
+                    message=digest_msg,
+                    priority="low",
+                    tags=["clipboard", "digest"],
+                    event_type="digest"
+                )
+                state["last_digest"] = now
+
+        _save_notifier_state(state)
+
+
+def _notifier_loop():
+    """Background loop checking state changes and digests every NOTIFIER_INTERVAL_SECONDS."""
+    try:
+        interval = float(os.environ.get("NOTIFIER_INTERVAL_SECONDS", "300"))
+    except ValueError:
+        interval = 300.0
+
+    print("proactive notifier loop started", flush=True)
+    # Wait 30s after startup before first check
+    time.sleep(30)
+    while True:
+        try:
+            _check_notifications_and_digest()
+        except Exception as exc:
+            print(f"error in notifier loop: {exc}", flush=True)
+        time.sleep(interval)
+
+
 # --- Audit ledger (durable, append-only JSONL) --------------------
 # The ledger lives on a named volume (buttons-data:/var/lib/buttons),
 # never in a checkout, so pulls and rebuilds cannot dirty or erase
@@ -1560,7 +1805,7 @@ summary.grouphead { cursor: pointer; }
 .planact a { margin-left: 0.5em; }
 #jsdiag { color: #ffd75e; border: 1px solid #8a6d1b; background: #3a2f0a;
   padding: 0.5em; border-radius: 8px; margin: 0.5em 0; }
-#liveBar { font-size: 0.9em; color: var(--text-muted); margin: 0.5em 0; }
+#liveBar { font-size: 0.9em; color: var(--text-muted); margin: 0.5em 0; display: flex; align-items: center; flex-wrap: wrap; gap: 0.5em; }
 .spinner { display: inline-block; width: 12px; height: 12px;
   margin-right: 0.4em; vertical-align: -2px; border: 2px solid #555;
   border-top-color: #eee; border-radius: 50%;
@@ -1687,7 +1932,7 @@ Tap a repo card above to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
 </div>
-<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span></div>
+<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Proactive Notifications">Notifications: off</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -3454,6 +3699,19 @@ async function refreshStatus() {
     if (pend) pend.textContent = pending.length
       ? " · Pulling " + pending.join(", ") + "…" : "";
     if (spinner) spinner.style.display = pending.length ? "inline-block" : "none";
+    if (s.notifications) {
+      const n = s.notifications;
+      const badge = document.getElementById("notifyBadge");
+      if (badge) {
+        if (n.ntfy || n.webhook) {
+          badge.textContent = "Notifications: " + (n.ntfy ? "ntfy(" + (n.topic || "active") + ")" : "webhook");
+          badge.style.color = "#7ed07e";
+        } else {
+          badge.textContent = "Notifications: off";
+          badge.style.color = "var(--text-muted)";
+        }
+      }
+    }
   } catch (e) {
     if (spinner) spinner.style.display = "none";
     const dot = document.getElementById("serverDot");
@@ -3463,6 +3721,30 @@ async function refreshStatus() {
 }
 refreshStatus();
 setInterval(refreshStatus, 10000);
+
+const testNotifyBtn = document.getElementById("testNotifyBtn");
+if (testNotifyBtn) testNotifyBtn.onclick = async () => {
+  testNotifyBtn.disabled = true;
+  const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
+  testNotifyBtn.disabled = false;
+  if (!res.ok) {
+    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
+  } else {
+    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+  }
+};
+
+const digestNotifyBtn = document.getElementById("digestNotifyBtn");
+if (digestNotifyBtn) digestNotifyBtn.onclick = async () => {
+  digestNotifyBtn.disabled = true;
+  const res = await fetchJson("/buttons/api/notifications/trigger-digest", {method: "POST"});
+  digestNotifyBtn.disabled = false;
+  if (!res.ok) {
+    if (typeof confirmDialog === "function") await confirmDialog("Briefing Digest", "Failed: " + (res.data.error || res.status), false);
+  } else {
+    if (typeof confirmDialog === "function") await confirmDialog("Briefing Digest Sent", "Digest sent:\n\n" + (res.data.digest || "ok"), false);
+  }
+};
 </script>
 </body>
 </html>
@@ -3675,9 +3957,35 @@ class Handler(BaseHTTPRequestHandler):
             rs = hooks.get(STACK_GH, {})
             stale = bool(rs.get("ok") and rs.get("advanced")
                          and rs.get("at", 0) > STARTED_AT)
+            ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
+            webhook_url = os.environ.get("NOTIFICATION_WEBHOOK_URL", "").strip()
+            state = _load_notifier_state()
             self._json({"active": active_id, "runs": recent,
                         "webhooks": hooks, "webhooks_pending": pending,
-                        "stale_buttons": stale})
+                        "stale_buttons": stale,
+                        "notifications": {
+                            "ntfy": bool(ntfy_topic),
+                            "webhook": bool(webhook_url),
+                            "topic": ntfy_topic,
+                            "last_digest": state.get("last_digest", 0)
+                        }})
+        elif path == "/buttons/api/notifications/status":
+            ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
+            webhook_url = os.environ.get("NOTIFICATION_WEBHOOK_URL", "").strip()
+            try:
+                dig_hours = float(os.environ.get("DIGEST_INTERVAL_HOURS", "12"))
+            except ValueError:
+                dig_hours = 12.0
+            events = [e.strip() for e in os.environ.get("NOTIFY_EVENTS", "ci_fail,jules,conflict").split(",") if e.strip()]
+            state = _load_notifier_state()
+            self._json({
+                "ntfy_configured": bool(ntfy_topic),
+                "topic": ntfy_topic,
+                "webhook_configured": bool(webhook_url),
+                "digest_interval_hours": dig_hours,
+                "last_digest": state.get("last_digest", 0),
+                "enabled_events": events
+            })
         elif path == "/buttons/api/briefing":
             # Structured briefing for the live Briefing view: the
             # summarizer runs in the terminal container (same
@@ -3791,6 +4099,22 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         if path == WEBHOOK_PATH:
             self._handle_webhook(body)
+            return
+        if path == "/buttons/api/notifications/test":
+            res = send_notification("Test Notification", "Test push from S5 Buttons server.", priority="default", tags=["test"], event_type="test")
+            _ledger_append({"kind": "system", "event": "test notification sent", "result": res})
+            self._json({"ok": True, "results": res})
+            return
+        if path == "/buttons/api/notifications/trigger-digest":
+            repos = _discover_repos()
+            digest_msg = _build_digest_text(repos)
+            res = send_notification("Manual Briefing Digest", digest_msg, priority="low", tags=["clipboard", "digest"], event_type="digest")
+            with notifier_lock:
+                state = _load_notifier_state()
+                state["last_digest"] = time.time()
+                _save_notifier_state(state)
+            _ledger_append({"kind": "system", "event": "manual digest sent", "result": res})
+            self._json({"ok": True, "results": res, "digest": digest_msg})
             return
         if path == "/buttons/api/clear":
             # Clears stored output only — no command runs, no run is
@@ -4439,4 +4763,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("BUTTONS_PORT", "8000"))
     _ledger_append({"kind": "system", "event": "buttons started"})
     _jobs_load()
+    threading.Thread(target=_notifier_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
