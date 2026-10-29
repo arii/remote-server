@@ -10,7 +10,7 @@ command path (see Ask Pi below).
 
 ## Layout
 
-Four tabs share one sticky header: **Actions** (stack buttons),
+Five tabs share one sticky header: **Actions** (stack buttons),
 **Briefing** (briefing + PR cards), **Pi agent** (suggestions + Ask Pi
 + Pi sessions), **Jobs** (multi-step tasks, see below), **Ledger**
 (audit log). The header holds the repo picker
@@ -26,9 +26,6 @@ top shows failing runs and attention items from the latest
 briefing, plus the stale-rebuild banner when the served page
 predates the checkout. Action buttons are grouped in collapsible
 sections (Server stays closed; the repo-action group stays open).
-A **Settings** section persists three preferences to the buttons
-volume: briefing auto-refresh (off / 1 min / 5 min), compact
-buttons (hide subtitles), and which repos appear in the picker.
 
 The theme is dark navy (`--bg-app: #0b1120`, `--bg-card: #131d31`,
 `--primary: #3b82f6`, `--danger: #ef4444`, `--warning: #f59e0b`,
@@ -387,25 +384,26 @@ minutes not seconds.
 ## Jobs (multi-step tasks with approval gates)
 
 The Jobs tab turns repeated multi-step work into named jobs with
-a visible plan. A job = goal + plan checklist + per-step
-Approve/Decline gates + audit. Jobs only run the same allowlisted
-actions the buttons already offer — they add orchestration, not
-capability. v1 is local-only and deterministic; Pi judgment stays
-in the Suggestions / Ask Pi flows.
+a visible plan. A job = goal + plan checklist + audit. Jobs only
+run the same allowlisted actions the buttons already offer — they
+add orchestration, not capability. v1 is local-only and
+deterministic; Pi judgment stays in the Suggestions / Ask Pi flows.
+
+The approval gate guards writes, not reads: read-only steps run on
+their own as soon as the previous step finishes — tapping "Start
+job" is the approval for the plan itself. Only steps that act
+outside the box (dispatching a Jules session) wait for your
+**Approve**/**Decline** tap. Steps run in order — later steps unlock
+only when earlier ones are done. A second concurrent run still
+409s; the step stays pending and you retry.
 
 Templates (fixed, no free text):
 
-| Template | Goal | Plan |
+| Template | Plan | Taps needed |
 |---|---|---|
-| Triage | Triage `{repo}` | Refresh briefing → Warm repo context → Preflight check |
-| Pre-merge check | Pre-merge check on `{repo}` | Preflight check → Refresh briefing |
-| Fix CI | Fix CI on PR `#{pr}` (`{repo}`) via Jules | Dispatch Jules fix-ci (pr-action) |
-
-Each plan step waits for your tap: **Approve** runs it (buttons
-actions stream to the drawer like normal runs; pr-actions run
-synchronously), **Decline** ends the job. Steps run in order —
-later steps unlock only when earlier ones are done. A second
-concurrent run still 409s; the step stays pending and you retry.
+| Triage | Refresh briefing → Warm repo context → Preflight check | None — runs on its own |
+| Pre-merge check | Preflight check → Refresh briefing | None — runs on its own |
+| Fix CI | Dispatch Jules fix-ci on PR `#{pr}` | One Approve (dispatches an agent) |
 
 Every terminal job (done / failed / declined) writes an audit:
 a JSON file on the buttons volume (`job-audits/audit-<id>.json`

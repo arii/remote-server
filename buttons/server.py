@@ -919,13 +919,17 @@ def _ledger_clear():
 # A job = goal + plan checklist + approvals + audit. Jobs only run
 # the same allowlisted actions the buttons already offer (ACTIONS
 # entries and pr-actions); they add orchestration, not capability.
-# Every plan step waits for an explicit Approve/Decline tap — the
-# gate that makes multi-step tasks safe from the phone. v1 is
-# local-only and deterministic: no model calls inside jobs (Pi
-# judgment stays in the Suggestions flow). On terminal state
-# (done/failed/declined) the job writes an audit JSON file plus a
-# ledger entry: goal, plan, every approval with timestamp, run ids,
-# outcome.
+# Every plan step either runs itself or waits for an explicit
+# Approve/Decline tap — the gate that makes multi-step tasks safe
+# from the phone. The gate guards WRITES, not reads: a step marked
+# "write" acts outside the box (dispatches an agent, spends money)
+# and waits for a tap; read-only steps run on their own as soon as
+# the previous step finishes. Tapping "Start job" is the approval
+# for the plan itself. v1 is local-only and deterministic: no model
+# calls inside jobs (Pi judgment stays in the Suggestions flow).
+# On terminal state (done/failed/declined) the job writes an audit
+# JSON file plus a ledger entry: goal, plan, every approval with
+# timestamp, run ids, outcome.
 JOBS_PATH = os.environ.get("BUTTONS_JOBS_PATH",
                            "/var/lib/buttons/jobs.json")
 JOBS_AUDIT_DIR = os.environ.get("BUTTONS_JOBS_AUDIT_DIR",
@@ -938,20 +942,20 @@ JOB_TEMPLATES = {
         "goal": "Triage {repo}: refresh briefing, warm context, preflight",
         "steps": [
             {"label": "Refresh briefing", "kind": "action",
-             "action": "briefing-td"},
+             "action": "briefing-td", "write": False},
             {"label": "Warm repo context", "kind": "action",
-             "action": "warm-context"},
+             "action": "warm-context", "write": False},
             {"label": "Preflight check", "kind": "action",
-             "action": "preflight"},
+             "action": "preflight", "write": False},
         ],
     },
     "pre-merge": {
         "goal": "Pre-merge check on {repo}",
         "steps": [
             {"label": "Preflight check", "kind": "action",
-             "action": "preflight"},
+             "action": "preflight", "write": False},
             {"label": "Refresh briefing", "kind": "action",
-             "action": "briefing-td"},
+             "action": "briefing-td", "write": False},
         ],
     },
     "fix-ci": {
@@ -959,7 +963,7 @@ JOB_TEMPLATES = {
         "needs_pr": True,
         "steps": [
             {"label": "Dispatch Jules fix-ci on PR #{pr}",
-             "kind": "pr-action", "action": "fix-ci"},
+             "kind": "pr-action", "action": "fix-ci", "write": True},
         ],
     },
 }
@@ -1044,6 +1048,63 @@ def _job_after_step(job):
         _job_end(job, "failed")
 
 
+def _job_advance(job):
+    """Run the next pending read-only step, if any. Write steps wait
+    for an explicit Approve tap. jobs_lock NOT held on entry."""
+    while True:
+        with jobs_lock:
+            if job["state"] != "active":
+                return
+            idx = next((i for i, s in enumerate(job["plan"])
+                        if s["state"] == "pending"), None)
+            if idx is None:
+                return
+            if any(s["state"] != "done" for s in job["plan"][:idx]):
+                return
+            st = job["plan"][idx]
+            if st.get("write"):
+                return  # approval gate: waits for a tap
+            st["state"] = "running"
+            st["auto"] = True
+            kind, action = st["kind"], st["action"]
+        if kind == "pr-action":
+            # Synchronous: runs inline, then advance to the next step.
+            try:
+                _pr_action(job["pr"], action, job["repo"],
+                           _discover_repos())
+                ok, err = True, None
+            except ValueError as exc:
+                ok, err = False, str(exc)
+            except Exception as exc:
+                ok, err = False, str(exc)[:500]
+            with jobs_lock:
+                st["state"] = "done" if ok else "failed"
+                st["finished_at"] = time.time()
+                st["exit_code"] = 0 if ok else 1
+                st["note"] = None if ok else err
+                _job_after_step(job)
+                _jobs_save()
+            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                            "event": "step auto-" + ("done" if ok else "failed"),
+                            "ok": ok})
+        else:
+            # Async action: start the run; the client polls it and
+            # reports step-done, which advances the plan again.
+            run_id, err = _start_run(action, job["repo"])
+            with jobs_lock:
+                if err:
+                    st["state"] = "pending"
+                    st["auto"] = False
+                    st["note"] = err
+                    _jobs_save()
+                    return
+                st["run_id"] = run_id
+                _jobs_save()
+            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                            "event": "step auto-started", "run": run_id})
+            return
+
+
 def _job_create(template, repo, pr=None):
     """Create a job from a template. Returns (job, error)."""
     spec = JOB_TEMPLATES.get(template)
@@ -1063,7 +1124,8 @@ def _job_create(template, repo, pr=None):
         plan.append({
             "label": s["label"].format(repo=repo, pr=pr),
             "kind": s["kind"], "action": s["action"],
-            "state": "pending", "approved_at": None,
+            "write": bool(s.get("write", False)),
+            "state": "pending", "approved_at": None, "auto": False,
             "run_id": None, "finished_at": None,
             "exit_code": None, "note": None,
         })
@@ -1078,6 +1140,7 @@ def _job_create(template, repo, pr=None):
         _jobs_save()
     _ledger_append({"kind": "job", "job": jid, "template": template,
                     "repo": repo, "event": "created"})
+    _job_advance(job)  # read-only steps start on their own
     return job, None
 
 
@@ -1087,7 +1150,8 @@ def _job_public(job):
             "goal": job["goal"], "repo": job["repo"],
             "state": job["state"], "outcome": job.get("outcome"),
             "created_at": job["created_at"],
-            "steps": [{"label": s["label"], "state": s["state"]}
+            "steps": [{"label": s["label"], "state": s["state"],
+                       "run_id": s.get("run_id")}
                       for s in job["plan"]]}
 
 
@@ -1521,13 +1585,14 @@ deletes all transcripts.</p>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
 <h2>Jobs</h2>
-<p>Multi-step tasks with a visible plan: each step waits for your
-Approve or Decline tap. Approving runs the step (output streams to
-the drawer); declining ends the job. Every job writes an audit
-record — goal, plan, approvals with timestamps, run ids, outcome —
-to the Ledger tab and a JSON file on the buttons volume. Jobs only
-run the same allowlisted actions the buttons already offer; nothing
-new becomes writable.</p>
+<p>Multi-step tasks with a visible plan. Read-only steps run on
+their own once the job starts; only steps that act outside the box
+wait for your Approve or Decline tap. Output streams to the drawer;
+declining ends the job. Every job writes an audit record — goal,
+plan, approvals with timestamps, run ids, outcome — to the Ledger
+tab and a JSON file on the buttons volume. Jobs only run the same
+allowlisted actions the buttons already offer; nothing new becomes
+writable.</p>
 <div id="jobNew"></div>
 <div id="jobErr"></div>
 <h2>Active and past jobs</h2>
@@ -2177,13 +2242,14 @@ function renderAttention(b) {
   el.appendChild(ul);
 }
 
-// Agent jobs: multi-step tasks with per-step Approve/Decline gates.
-// Approving runs the step through the existing run machinery
-// (output in the drawer); declining ends the job. Every terminal
-// job writes an audit record.
+// Agent jobs: multi-step tasks with a visible plan. Read-only
+// steps run on their own; only write steps wait for an Approve /
+// Decline tap. Approving a write step runs it through the existing
+// run machinery (output in the drawer); declining ends the job.
+// Every terminal job writes an audit record.
 const JOB_TEMPLATES = {
   "triage": {label: "Triage repo",
-    desc: "Briefing → warm context → preflight, one approval per step."},
+    desc: "Briefing → warm context → preflight. Runs on its own."},
   "pre-merge": {label: "Pre-merge check",
     desc: "Preflight → briefing before you merge."},
   "fix-ci": {label: "Fix CI on a PR",
@@ -2255,6 +2321,23 @@ async function refreshJobs() {
     return;
   }
   jobs.forEach(j => listEl.appendChild(renderJobCard(j)));
+  // Read-only steps start on the server without a tap. If one is
+  // running and we aren't polling its run yet, pick it up so its
+  // output streams to the drawer and step-done gets reported.
+  if (!pendingJobStep) {
+    outer:
+    for (const j of jobs) {
+      for (let i = 0; i < j.steps.length; i++) {
+        const s = j.steps[i];
+        if (s.state === "running" && s.run_id) {
+          pendingJobStep = {job: j.id, step: i, runId: s.run_id};
+          openDrawer();
+          if (typeof poll === "function") poll(s.run_id, "job-step");
+          break outer;
+        }
+      }
+    }
+  }
 }
 function renderJobCard(j) {
   const card = document.createElement("div");
@@ -3385,6 +3468,7 @@ class Handler(BaseHTTPRequestHandler):
                     state = st["state"]
                 _ledger_append({"kind": "job", "job": jid, "step": step,
                                 "event": "step " + state, "run": run_id})
+                _job_advance(job)  # read-only next steps start on their own
                 self._json({"ok": True, "state": state})
                 return
             self._json({"error": "not found"}, 404)
