@@ -176,15 +176,17 @@ the old behavior (its own output is the cause).
   (git log into less would hang a run), so the run environment
   forces `GIT_PAGER=cat` and `PAGER=cat`, and step stdin is
   `/dev/null` so a prompt fails fast instead of hanging.
-- **Report bug:** when a run fails, a Report bug button appears in
-  the drawer header. It files the failure as a GitHub issue in the
-  run's repo: the title/body are built from the run record
-  (`[buttons] <action> failed on <repo> (exit N)` plus the
-  extracted error line and output tail), shown in a confirm dialog
-  first, then created through the same validated
+- **Report bug:** a persistent Report bug button sits in the Actions
+  tab footer so users can file an issue at any time, and when a run
+  fails, an enabled Report bug button also appears in the drawer
+  header. When a failed run exists, it files the failure details as
+  a GitHub issue in the run's repo (`[buttons] <action> failed on
+  <repo> (exit N)` plus error line and output tail); when no failed
+  run exists, it opens a general bug report confirmation for the selected
+  repo. Issues are created through the same validated
   `/buttons/api/create-issue` endpoint as Ask Pi proposals
   (length-capped, shlex-quoted, ledgered as `pr-action` /
-  `create-issue`). One tap from a red banner to a filed issue.
+  `create-issue`).
 
 - **Safe fetch:** every page `fetch` goes through `fetchJson()`,
   which never throws on an empty or non-JSON body — it returns
