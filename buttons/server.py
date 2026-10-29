@@ -61,7 +61,8 @@ REPOS_DIR = os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos")
 STACK_GH = "arii/remote-server"
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight"}
+REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight",
+                       "create-plan"}
 
 
 def _td_prefix(cwd):
@@ -273,7 +274,23 @@ def _suggest_context(brief):
         lines.append("Failing runs:")
         for r in fr[:5]:
             if isinstance(r, dict):
-                lines.append(f"- {r.get('name')} on {r.get('branch')}")
+                line = f"- {r.get('name')} on {r.get('branch')}"
+                # The failed jobs/steps are what make a failing run
+                # actionable: without them Pi sees "CI on main" and
+                # has nothing to map to a command.
+                failed = r.get("failed") or []
+                if failed:
+                    parts = []
+                    for f in failed:
+                        if isinstance(f, dict):
+                            s = str(f.get("job") or "?")
+                            steps = f.get("steps") or []
+                            if steps:
+                                s += f" (steps: {', '.join(str(x) for x in steps[:3])})"
+                            parts.append(s)
+                    if parts:
+                        line += f" — failed: {'; '.join(parts[:3])}"
+                lines.append(line)
     j = brief.get("jules") or {}
     if isinstance(j, dict):
         lines.append("Active Jules sessions for this repo: "
@@ -301,8 +318,14 @@ def _suggest_prompt(repo, context):
         "td --json agent list-sessions\n"
         "td --json jules list-sessions\n"
         "td --json agent run-feedback-check\n"
-        "If nothing needs doing, output exactly one line: "
-        "SUGGEST: none :: <reason>\n"
+        "If the context shows a problem (failing CI, conflicts, "
+        "stale PRs) but no allowed command fits it directly, read "
+        "the repo checkout (git log, .github/workflows) to pin "
+        "down the cause, then suggest the closest diagnostic "
+        "command — do not conclude 'none' while problems remain "
+        "visible.\n"
+        "If genuinely nothing needs doing, output exactly one "
+        "line: SUGGEST: none :: <reason>\n"
         "Context:\n" + context)
 
 
@@ -761,6 +784,26 @@ ACTIONS = {
         "steps": [
             EXEC + [TD + "set -o pipefail; td --json preflight | "
                     "python3 /srv/remote-server/buttons/preflight_digest.py"],
+        ],
+    },
+    # Restored 2026-10-29: requested Oct 27 (ad85c046), lost in a
+    # refactor. Saves the deterministic briefing as a date-stamped
+    # plan file in the repo checkout (.agents/plans/), untracked
+    # until committed. Modernized: the old td status-board /
+    # search-prs / detect-conflicts chain is gone; the briefing
+    # summarizer is the source now.
+    "create-plan": {
+        "label": "Create plan from briefing",
+        "group": "Briefing",
+        "sub": "Save briefing to .agents/plans/<date>-briefing-plan.md (repo from picker)",
+        "confirm": True,
+        "steps": [
+            EXEC + [TD + "mkdir -p .agents/plans && "
+                    "python3 /srv/remote-server/buttons/briefing_summary.py "
+                    "--briefing > .agents/plans/$(date +%F)-briefing-plan.md "
+                    "2>&1; "
+                    "echo \"wrote .agents/plans/$(date +%F)-briefing-plan.md\"; "
+                    "git status --short .agents/plans/"],
         ],
     },
     # Hidden: no button renders for this (see _buttons_html).
@@ -1271,12 +1314,16 @@ def run_action(run_id, action, repo="tech-dancer"):
             if len(step) == len(EXEC) + 1 and step[:len(EXEC)] == EXEC \
                     and step[-1].startswith(TD):
                 cmd = step[-1][len(TD):]
-                if action == "briefing-td":
+                if action in ("briefing-td", "create-plan"):
                     # The cwd alone does not pick the repo: the
                     # summarizer's gh api paths need --repo and
                     # --gh (it no longer carries a repo table).
-                    cmd += (f" --repo {repo}"
-                            f" --gh {repos[repo]['gh']}")
+                    # Insert into the python invocation (not the
+                    # end: create-plan's command continues after it).
+                    cmd = cmd.replace(
+                        "briefing_summary.py --briefing",
+                        f"briefing_summary.py --briefing --repo {repo} "
+                        f"--gh {repos[repo]['gh']}", 1)
                 rewritten.append(EXEC + [prefix + cmd])
             else:
                 rewritten.append(step)
