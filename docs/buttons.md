@@ -55,11 +55,12 @@ recreate containers, unlike the read-only actions.
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
 | Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
-| Sync & nudge agents | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses), then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped). A missing JULES_API_KEY is not a failure: both steps print a notice and exit 0, so the run stays green instead of turning the banner red for config you haven't done |
+| Sync agent sessions | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses) — list active Jules sessions, read-only (global across repos, not picker-scoped). Nudging moved to the Nudge agents job: the session list is the preview, and the feedback post waits for an Approve tap. A missing JULES_API_KEY is not a failure: the step prints a notice and exits 0, so the run stays green instead of turning the banner red for config you haven't done |
+| System health | `df -h`, `free -m`, `docker compose ps` — disk, memory, container states, read-only |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
 | Preflight check | `td --json preflight` piped through `buttons/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code. Note: td's preflight currently hardcodes the BoomTick repo's checks — on other repos the pnpm/audit checks fail spuriously (tracked in `docs/boomtick-issues.md`, patch ready); the digest surfaces the first stderr line as the failure detail |
 
-Deploy buttons, Recreate, and Sync & nudge agents ask for
+Deploy buttons and Recreate ask for
 confirmation first, as do the per-PR action buttons on the
 Briefing cards and the destructive Clear buttons (ledger, Pi
 sessions). The confirm is a custom in-page modal, not
@@ -451,6 +452,8 @@ Templates (fixed, no free text):
 |---|---|---|
 | Triage | Refresh briefing → Warm repo context → Preflight check | None — runs on its own |
 | Fix CI | Dispatch Jules fix-ci on PR `#{pr}` | One Approve (dispatches an agent) |
+| Fix issues | For each picked issue: label it `jules` (starts a Jules session via the GitHub integration), sequential | One Approve per issue |
+| Nudge agents | List Jules sessions (the nudge preview) → post feedback to stalled ones | One Approve for the write step |
 
 Every terminal job (done / failed / declined) writes an audit:
 a JSON file on the buttons volume (`job-audits/audit-<id>.json`

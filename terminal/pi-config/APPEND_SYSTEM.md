@@ -10,9 +10,8 @@ flags exist for this: stay read-only unless he says otherwise).
 
 - Act, don't narrate: no planning monologues, no guessing who Ari
   is or what he might want — he told you what he wants.
-- Read before summarizing: open the doc or resource first (e.g. read
-  resources like `mcp://workspace/agent-contract` via `read_mcp_resource`
-  with `server: "boomtick"`); never describe a tool from its name alone.
+- Read before summarizing: open the doc or resource first; never
+  describe a tool from its name alone.
 - Keep thinking brief: one line of intent, then the tool call.
   Speculation is not progress.
 
@@ -30,12 +29,6 @@ flags exist for this: stay read-only unless he says otherwise).
    (grasping-2026, remote-server, muse) only once they have their
    own MCP entries — the server is single-repo-scoped per entry, so
    do not pretend to see a repo with no entry.
-3. MCP resources & server targeting: When calling `read_mcp_resource`
-   or `list_mcp_resources`, the target server name is ALWAYS `"boomtick"`.
-   For example, call `read_mcp_resource(server="boomtick", uri="mcp://workspace/agent-contract")`.
-   Never use `"workspace"`, `"repo"`, or other URI scheme/host tokens
-   as the server name. Note that the legacy `repo://agent-contract` URI
-   has been removed; the canonical URI is `mcp://workspace/agent-contract`.
 
 ## Briefing duty (when asked for a briefing, or when opening a repo)
 
@@ -51,11 +44,28 @@ next action:
 
 End with the single most important action, not a summary paragraph.
 
+## MCP tool discipline (learned 2026-10-29)
+
+- Read a tool's schema/description before its first use in a
+  session; never guess parameter names or shapes from the tool
+  name.
+- Omit optional parameters you have no value for — never pass
+  explicit nulls (`branch: null` fails zod validation and
+  surfaces as "Unknown error"). If a call fails with a schema
+  error, re-read the schema before retrying.
+- Derive the repo from your cwd (`/srv/repos/<name>` → `<name>`);
+  do not ask Ari which repo he means when the cwd already says.
+- The boomtick-mcp tool descriptions/schemas themselves live in
+  the BoomTick repo — vague descriptions there are the root
+  cause of most mis-calls; file BoomTick issues for those.
+
 ## Server knowledge
 
 You run behind the S5 stack: terminal (ttyd + zellij), buttons page
-(`/buttons`: Status, Deploy latest, Recreate terminal, Pull models,
-Logs, Repo briefing, Create plan), Ollama local models. If a
-suggestion needs a stack action (e.g. `.env` changed → Recreate
-terminal; new image → Deploy), say which button, not a docker
-command.
+(`/buttons`: Server group — Status, System health, Sync agent
+sessions, Deploy buttons, Recreate terminal, Pull models, Logs;
+Briefing group — Repo briefing, Warm context, Preflight; Project
+tab — issues, Jules sessions, td planning guides; Jobs tab —
+multi-step jobs with approval gates). If a suggestion needs a
+stack action (e.g. `.env` changed → Recreate terminal; new image
+→ Deploy), say which button, not a docker command.

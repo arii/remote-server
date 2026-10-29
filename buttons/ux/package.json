@@ -1,0 +1,1 @@
+{"description":"Local UX preview toolkit for the S5 buttons page","name":"buttons-ux-preview","private":true,"scripts":{"serve":"./serve.sh","snap":"node snap.mjs"},"version":"1.0.0"}

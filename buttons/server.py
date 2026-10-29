@@ -179,9 +179,10 @@ def _repo_strips_html(repos):
                      "The Server buttons below act here.")
         else:
             scope = ("Repo work — briefing, warm context, preflight, "
-                     "PR actions. Pick it in the picker above.")
+                     "PR actions. Tap this card to select it.")
         out.append(
-            f'<div class="repo"><div class="reponame">'
+            f'<div class="repo" data-repo-pick="{name}">'
+            f'<div class="reponame">'
             f'<a href="https://github.com/{gh}">{gh}</a></div>'
             f'<div class="reposcope">{scope}</div>'
             f'<div class="repostatus" data-repo-status="{gh}">'
@@ -596,6 +597,26 @@ def _webhook_worker(repo, info):
             # nothing, so it must not light the rebuild banner.
             advanced = bool(old_head and new_head
                             and old_head != new_head)
+            if ok and advanced:
+                # Connector pushes drop exec bits (100755 -> 100644),
+                # so scripts can arrive non-executable. Restore them
+                # on every advancing pull — the working tree is what
+                # runs, and this is cheaper than remembering to chmod.
+                try:
+                    ls = subprocess.run(
+                        git + ["ls-files", "-z", "*.sh"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=30, text=True, env=env)
+                    files = [f for f in ls.stdout.split("\0")
+                             if f.strip()]
+                    if files:
+                        subprocess.run(
+                            ["chmod", "+x"] + files,
+                            cwd=path,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, timeout=30)
+                except Exception:
+                    pass
         except Exception as exc:
             ok, detail = False, str(exc)[:200]
     with webhook_state_lock:
@@ -625,6 +646,18 @@ MAX_OUTPUT = 200_000  # keep the tail; model pulls are verbose
 GIT = ["git", "-c", f"safe.directory={STACK}", "-C", STACK]
 
 ACTIONS = {
+    "health": {
+        "label": "System health",
+        "group": "Server",
+        "sub": "Disk, memory, container states (read-only)",
+        "confirm": False,
+        "steps": [
+            ["df", "-h", "/srv/remote-server", "/home/ari"],
+            ["free", "-m"],
+            COMPOSE + ["ps", "--format",
+                       "table {{.Name}}\t{{.State}}\t{{.Status}}"],
+        ],
+    },
     "status": {
         "label": "Status",
         "group": "Server",
@@ -738,17 +771,31 @@ ACTIONS = {
     # NOT a failure: both steps notice and exit 0, so the run
     # stays green with an explanatory note instead of turning the
     # whole banner red for a config step the user hasn't done.
-    "sync-nudge": {
-        "label": "Sync & nudge agents",
+    # Sync and nudge are separate (issue #2): sync is a read-only
+    # button; nudge is a job so the session list (the preview of
+    # what would be nudged) is visible before the Approve tap on
+    # the write step. The nudge action itself stays hidden — there
+    # is no blind-nudge button.
+    "sync-agents": {
+        "label": "Sync agent sessions",
         "group": "Briefing",
-        "sub": "List Jules sessions, post feedback to stalled ones",
-        "confirm": True,
+        "sub": "List Jules sessions (read-only)",
+        "confirm": False,
         "steps": [
             EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
                     "\"notice: JULES_API_KEY is unset — add it to .env "
                     "to enable Jules session sync\"; else "
                     "td --json agent list-sessions || "
                     "td --json jules list-sessions; fi"],
+        ],
+    },
+    "nudge-agents": {
+        "label": "Nudge agents (job step)",
+        "group": "Briefing",
+        "sub": "Post feedback to stalled Jules sessions",
+        "confirm": False,
+        "hidden": True,
+        "steps": [
             EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
                     "\"notice: JULES_API_KEY is unset — skipping "
                     "feedback check\"; else "
@@ -1000,7 +1047,44 @@ JOB_TEMPLATES = {
              "kind": "pr-action", "action": "fix-ci", "write": True},
         ],
     },
+    # Sequential issue fixing: one approval per issue. Approving
+    # labels the issue 'jules', which starts a Jules session on it
+    # (Jules's GitHub integration). The Project tab's Jules list
+    # shows each session's progress before the next approval.
+    "fix-issues": {
+        "goal": "Fix issues via Jules, sequential: {issues} ({repo})",
+        "needs_issues": True,
+        "steps": [],
+    },
+    # Nudge is a job, not a button: the read-only session list
+    # (the preview of what would be nudged) runs first, and the
+    # write step waits for Approve. No blind-nudge path.
+    "nudge-agents": {
+        "goal": "Nudge stalled Jules sessions ({repo})",
+        "steps": [
+            {"label": "List Jules sessions (nudge preview)",
+             "kind": "action", "action": "sync-agents",
+             "write": False},
+            {"label": "Post feedback to stalled sessions",
+             "kind": "action", "action": "nudge-agents",
+             "write": True},
+        ],
+    },
 }
+
+
+def _label_issue_jules(repo, issue, repos):
+    """Label a GitHub issue 'jules' — Jules's GitHub integration
+    starts a session on it. Strict validation, shlex-quoted,
+    ledgered by the caller. Never raises ValueError silently."""
+    if repo not in repos or not isinstance(issue, int) \
+            or isinstance(issue, bool) or issue <= 0:
+        raise ValueError("bad repo or issue")
+    gh = repos[repo]["gh"]
+    _td_run("gh issue edit " + shlex.quote(str(issue)) +
+            " --repo " + shlex.quote(gh) +
+            " --add-label " + shlex.quote("jules"),
+            timeout=60, prefix=_td_prefix(repos[repo]["td_cwd"]))
 
 
 def _jobs_load():
@@ -1139,7 +1223,7 @@ def _job_advance(job):
             return
 
 
-def _job_create(template, repo, pr=None):
+def _job_create(template, repo, pr=None, issues=None):
     """Create a job from a template. Returns (job, error)."""
     spec = JOB_TEMPLATES.get(template)
     if spec is None:
@@ -1152,21 +1236,42 @@ def _job_create(template, repo, pr=None):
             return None, "bad pr number"
     else:
         pr = None
-    goal = spec["goal"].format(repo=repo, pr=pr)
+    if spec.get("needs_issues"):
+        if not isinstance(issues, list) or not issues \
+                or len(issues) > 10 \
+                or any(not isinstance(n, int) or isinstance(n, bool)
+                       or n <= 0 for n in issues):
+            return None, "bad issues list"
+        issues = sorted(set(issues))
+    else:
+        issues = None
+    issues_str = ", ".join("#" + str(n) for n in issues) \
+        if issues else ""
+    goal = spec["goal"].format(repo=repo, pr=pr, issues=issues_str)
     plan = []
-    for s in spec["steps"]:
-        plan.append({
-            "label": s["label"].format(repo=repo, pr=pr),
-            "kind": s["kind"], "action": s["action"],
-            "write": bool(s.get("write", False)),
-            "state": "pending", "approved_at": None, "auto": False,
-            "run_id": None, "finished_at": None,
-            "exit_code": None, "note": None,
-        })
+    if spec.get("needs_issues"):
+        for n in issues:
+            plan.append({
+                "label": f"Dispatch Jules on #{n} (label 'jules')",
+                "kind": "label-issue", "issue": n,
+                "write": True, "state": "pending",
+                "approved_at": None, "auto": False, "run_id": None,
+                "finished_at": None, "exit_code": None, "note": None,
+            })
+    else:
+        for s in spec["steps"]:
+            plan.append({
+                "label": s["label"].format(repo=repo, pr=pr),
+                "kind": s["kind"], "action": s.get("action"),
+                "write": bool(s.get("write", False)),
+                "state": "pending", "approved_at": None, "auto": False,
+                "run_id": None, "finished_at": None,
+                "exit_code": None, "note": None,
+            })
     jid = uuid.uuid4().hex[:12]
     now = time.time()
     job = {"id": jid, "template": template, "goal": goal,
-           "repo": repo, "pr": pr, "plan": plan,
+           "repo": repo, "pr": pr, "issues": issues, "plan": plan,
            "approvals": [], "state": "active", "outcome": None,
            "created_at": now, "ended_at": None}
     with jobs_lock:
@@ -1387,7 +1492,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>S5 buttons</title>
+<title>S5 console</title>
 <style>
 :root {
   --bg-app: #0b1120;
@@ -1437,6 +1542,13 @@ button.btn-ghost:hover { border-color: var(--primary); background: var(--bg-card
 summary.grouphead { cursor: pointer; }
 .repo { border: 1px solid var(--border); border-radius: 10px; padding: 0.5em;
   margin: 0.5em 0; background: var(--bg-card); }
+.repo[data-repo-pick] { cursor: pointer; }
+.repo[data-repo-pick]:hover { border-color: var(--primary); }
+.repo.selected { border-color: var(--primary); }
+.issuepick { max-height: 12em; overflow-y: auto; margin: 0.5em 0;
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.5em; }
+.issuepick label { display: block; padding: 0.3em 0; cursor: pointer; }
+.issuepick input { margin-right: 0.5em; }
 .reponame { font-weight: bold; }
 .reponame a { color: inherit; text-decoration: underline; }
 .reposcope { font-size: 0.9em; color: var(--text-muted); }
@@ -1522,7 +1634,11 @@ a { color: #8bf; }
 #drawerHead { display: flex; align-items: center; justify-content: space-between;
   padding: 0.4em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; }
 #drawerHead .dbactions { display: flex; gap: 0.5em; }
-#drawerHead button { width: auto; margin: 0; padding: 0.4em 0.8em; font-size: 0.85em; }
+#drawerHead button { width: auto; margin: 0; padding: 0.7em 1em; font-size: 0.85em; }
+#piSessionList:empty { display: none; }
+.pirow { display: flex; gap: 0.5em; align-items: center; margin: 0.4em 0; }
+.pirow button:first-child { flex: 1; text-align: left; }
+.pirowdel { flex: 0 0 auto; width: auto; padding: 0.4em 0.7em; }
 #outputDrawer pre { border: none; border-radius: 0; max-height: 45vh; margin: 0; }
 /* confirm modal (replaces window.confirm) */
 #confirmModal { position: fixed; inset: 0; z-index: 2000; display: none;
@@ -1564,8 +1680,9 @@ a { color: #8bf; }
 </style>
 </head>
 <body>
-<h1>S5 buttons</h1>
-<p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
+<h1>S5 console</h1>
+<p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.
+Tap a repo card above to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
 </div>
@@ -1600,33 +1717,39 @@ action buttons, and the repo buttons.</p>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
 <h2>Suggested next actions</h2>
+<details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
 runs only what you approve: each suggestion has its own Run
 button with a confirm dialog. Pi runs read-only here;
 suggestions are validated against a fixed td-command list,
 anything else is shown as text, never run. Asking Pi takes
 minutes on the local model.</p>
+</details>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
 <h2>Ask Pi</h2>
+<details><summary>How this works</summary>
 <p>Open-ended instructions for this repo, in your own words —
 e.g. "draft an issue for the flaky briefing refresh" or "where
 does the webhook worker live?". Pi investigates read-only and
 replies here. If you asked for a write (like creating an issue),
 Pi proposes the exact change and nothing runs until you confirm
 it. Takes minutes on the local model.</p>
+</details>
 <textarea id="askBox" rows="3" placeholder="Ask Pi anything about this repo…"></textarea>
 <button id="askBtn">Ask Pi</button>
 <div id="askOut"></div>
 <div id="askErr"></div>
 
 <h2>Pi sessions</h2>
+<details><summary>How this works</summary>
 <p>Browse Pi transcripts on disk (pi-data volume). List shows the
 newest sessions with date, repo, and first prompt — tap one to
 render it readably. The full JSONL stays on disk. Clearing
 deletes all transcripts.</p>
+</details>
 <button id="listPiSessions">List sessions</button>
 <button id="clearPiSessions">Clear Pi sessions</button>
 <div id="piSessionList"></div>
@@ -1635,8 +1758,10 @@ deletes all transcripts.</p>
 </section>
 <section class="tabpanel" id="tab-project" style="display:none">
 <h2>Issues</h2>
+<details><summary>How this works</summary>
 <p>Open issues for the picked repo — status, assignees, labels.
 Tap one to expand, assign, or open it in GitHub.</p>
+</details>
 <button id="refreshIssues">Refresh issues</button>
 <div id="issues"></div>
 <div id="issuesErr"></div>
@@ -1646,14 +1771,18 @@ Tap one to expand, assign, or open it in GitHub.</p>
 <button id="createIssueBtn">Create issue</button>
 <div id="newIssueErr"></div>
 <h2>Jules sessions</h2>
+<details><summary>How this works</summary>
 <p>What Jules is doing — state, what it's working on, link.
 Needs JULES_API_KEY in .env.</p>
+</details>
 <button id="refreshJules">Refresh Jules sessions</button>
 <div id="julesSessions"></div>
 <div id="julesErr"></div>
 <h2>Plans</h2>
+<details><summary>How this works</summary>
 <p>Deterministic td planning guides. They read repo state and
 write a markdown plan file; nothing executes or pushes.</p>
+</details>
 <div class="planrow"><button id="planIssueAuditBtn">Audit open issues</button>
 <button id="planWorkflowAuditBtn">Audit workflows</button></div>
 <div class="planrow"><label>Review plan for PR
@@ -1668,6 +1797,7 @@ write a markdown plan file; nothing executes or pushes.</p>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
 <h2>Jobs</h2>
+<details><summary>How this works</summary>
 <p>Multi-step tasks with a visible plan. Read-only steps run on
 their own once the job starts; only steps that act outside the box
 wait for your Approve or Decline tap. Output streams to the drawer;
@@ -1676,6 +1806,7 @@ plan, approvals with timestamps, run ids, outcome — to the Ledger
 tab and a JSON file on the buttons volume. Jobs only run the same
 allowlisted actions the buttons already offer; nothing new becomes
 writable.</p>
+</details>
 <div id="jobNew"></div>
 <div id="jobErr"></div>
 <h2>Active and past jobs</h2>
@@ -1684,10 +1815,12 @@ writable.</p>
 </section>
 <section class="tabpanel" id="tab-ledger" style="display:none">
 <details open><summary class="grouphead">Ledger</summary>
+<details><summary>How this works</summary>
 <p>Durable audit log — every run, webhook pull, and PR-action tap,
 newest first. Survives container restarts (named volume, not the
 checkout). Briefing reads are not logged. Clearing deletes all
 entries but leaves a 'ledger cleared' record.</p>
+</details>
 <label>Kind: <select id="ledgerKind">
 <option value="all">All</option>
 <option value="run">Runs</option>
@@ -1703,7 +1836,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </details>
 </section>
 <div id="outputDrawer">
-<div id="drawerHead"><span>Output</span><span class="dbactions"><button id="bugBtn" style="display:none">Report bug</button><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
+<div id="drawerHead"><span>Output</span><span class="dbactions"><button id="bugBtn" title="File the failed run as a GitHub issue">Report bug</button><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
 <div id="state"></div>
 <pre id="out"></pre>
 </div>
@@ -1727,6 +1860,31 @@ let timer = null;
 // because on a phone the drawer is how progress stays visible
 // across tabs.
 let userStartedRun = false;
+
+// Repo cards are tap-to-select: clicking a card (outside its
+// GitHub link) sets the picker and refreshes the briefing. The
+// picker remains as the explicit control.
+function markSelectedRepo() {
+  const picker = document.getElementById("briefingRepo");
+  const cur = picker ? picker.value : "";
+  document.querySelectorAll("[data-repo-pick]").forEach(el => {
+    el.classList.toggle("selected",
+      el.getAttribute("data-repo-pick") === cur);
+  });
+}
+document.querySelectorAll("[data-repo-pick]").forEach(el => {
+  el.addEventListener("click", e => {
+    if (e.target.closest("a")) return;
+    const picker = document.getElementById("briefingRepo");
+    if (!picker) return;
+    picker.value = el.getAttribute("data-repo-pick");
+    markSelectedRepo();
+    if (typeof refreshBriefing === "function") refreshBriefing();
+  });
+});
+const _pickerEl = document.getElementById("briefingRepo");
+if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
+markSelectedRepo();
 
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
@@ -1778,12 +1936,30 @@ function confirmDialog(title, body, danger) {
 // on network failure. Call sites read data.error with
 // textContent only — never innerHTML — so an error string can
 // never inject markup.
+// Map raw infrastructure errors to one-line plain-language
+// messages with a next action. The raw detail stays in the
+// ledger; the phone screen gets the actionable version.
+function friendlyError(msg) {
+  msg = String(msg || "");
+  if (/\[Errno 2\] No such file or directory: 'docker'/.test(msg))
+    return "terminal container not reachable — is the stack " +
+      "running? Check the Terminal tab.";
+  if (/\[Errno 2\] No such file or directory/.test(msg))
+    return "a required file or checkout is missing on the server — " +
+      "check the terminal container.";
+  if (/JULES_API_KEY/.test(msg))
+    return "JULES_API_KEY is not set — add it to .env to enable " +
+      "Jules features.";
+  return msg;
+}
 async function fetchJson(url, options) {
   let res;
   try {
     res = await fetch(url, options);
   } catch (e) {
-    return {ok: false, status: 0, data: {error: "network error: " + e}};
+    return {ok: false, status: 0, data: {error:
+      "cannot reach the buttons server — check your connection, " +
+      "or it may be rebuilding (retry in ~30s)"}};
   }
   let text;
   try {
@@ -1798,6 +1974,13 @@ async function fetchJson(url, options) {
   } catch (e) {
     data = {error: text.slice(0, 200) || ("HTTP " + res.status)};
   }
+  if (!res.ok && res.status === 502 && !data.error) {
+    // 502 comes from the proxy in front, never from our API:
+    // the buttons container is down or rebuilding.
+    data.error = "buttons server unreachable (502) — it may be " +
+      "rebuilding; retry in ~30s";
+  }
+  if (!res.ok && data.error) data.error = friendlyError(data.error);
   return {ok: res.ok, status: res.status, data: data};
 }
 
@@ -1979,8 +2162,9 @@ function renderState(run) {
   outEl.className = cls;
   stateEl.textContent = text;
   const bugBtn = document.getElementById("bugBtn");
-  if (bugBtn) bugBtn.style.display =
-    (run.done && run.exit_code !== 0) ? "" : "none";
+  // Always visible so the feature is discoverable; disabled
+  // until there is a failed run to report.
+  if (bugBtn) bugBtn.disabled = !(run.done && run.exit_code !== 0);
 }
 
 let currentId = null;
@@ -2073,6 +2257,9 @@ async function poll(id, action) {
     if (run.done) {
       clearInterval(timer);
       setBusy(false);
+      // The ledger is append-only server-side; re-render it so a
+      // finished run shows up without a manual Refresh tap.
+      if (typeof refreshLedger === "function") refreshLedger();
       if (userStartedRun) {
         userStartedRun = false;
         openDrawer();
@@ -2150,7 +2337,7 @@ async function reportBug() {
     }
     await confirmDialog("Issue created", res.data.url || "created", false);
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) btn.disabled = !(run.done && run.exit_code !== 0);
   }
 }
 document.getElementById("bugBtn").onclick = reportBug;
@@ -2329,7 +2516,17 @@ async function refreshBriefing() {
     briefingEl.textContent = "";
     briefingErrEl.textContent = "briefing unavailable: " + (res.data.error || ("HTTP " + res.status));
     const att = document.getElementById("attentionBody");
-    if (att) att.textContent = "Briefing unavailable — attention list will update on the next refresh.";
+    if (att) {
+      att.textContent = "";
+      const span = document.createElement("span");
+      span.textContent = "Briefing unavailable — ";
+      att.appendChild(span);
+      const rb = document.createElement("button");
+      rb.textContent = "Retry";
+      rb.style.width = "auto";
+      rb.onclick = () => refreshBriefing();
+      att.appendChild(rb);
+    }
     return;
   }
   briefingErrEl.textContent = "";
@@ -2380,6 +2577,13 @@ const JOB_TEMPLATES = {
     desc: "Briefing → warm context → preflight. Runs on its own."},
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
+  "fix-issues": {label: "Fix issues via Jules",
+    desc: "Pick issues; each gets one Approve tap, which labels it " +
+      "'jules' and starts a Jules session. Sequential.",
+    needsIssues: true},
+  "nudge-agents": {label: "Nudge agents",
+    desc: "Preview the session list, then Approve to post feedback " +
+      "to stalled sessions."},
 };
 let pendingJobStep = null; // {job, step, runId} while a step run polls
 let briefingPrs = []; // open PRs from the latest briefing, for the PR dropdown
@@ -2431,6 +2635,36 @@ function renderJobNew() {
       // select empty (the "No open PRs" option included).
       refreshJobPrSelect(prSelect);
     }
+    // Issue checkboxes for jobs that need them (fix-issues):
+    // fetched from the open-issues endpoint for the picked repo.
+    let issueBox = null;
+    if (t.needsIssues) {
+      issueBox = document.createElement("div");
+      issueBox.className = "issuepick";
+      issueBox.textContent = "Loading issues…";
+      d.appendChild(issueBox);
+      const picker = document.getElementById("briefingRepo");
+      const repo = picker ? picker.value : "tech-dancer";
+      fetchJson("/buttons/api/issues?repo=" + encodeURIComponent(repo))
+        .then(res => {
+          issueBox.textContent = "";
+          const issues = (res.data && res.data.issues) || [];
+          if (!res.ok || !issues.length) {
+            issueBox.textContent = res.ok ? "No open issues."
+              : "Issues unavailable: " + (res.data.error || res.status);
+            return;
+          }
+          issues.forEach(i => {
+            const lab = document.createElement("label");
+            const cb = document.createElement("input");
+            cb.type = "checkbox"; cb.value = i.number;
+            lab.appendChild(cb);
+            lab.appendChild(document.createTextNode(
+              " #" + i.number + " — " + (i.title || "")));
+            issueBox.appendChild(lab);
+          });
+        });
+    }
     const b = document.createElement("button");
     b.textContent = "Start job";
     b.onclick = async () => {
@@ -2440,6 +2674,12 @@ function renderJobNew() {
         const n = parseInt(prSelect.value, 10);
         if (!(n > 0)) { jobErr("Pick an open PR."); return; }
         body.pr = n;
+      }
+      if (t.needsIssues) {
+        const nums = [...issueBox.querySelectorAll("input:checked")]
+          .map(cb => parseInt(cb.value, 10)).filter(n => n > 0);
+        if (!nums.length) { jobErr("Pick at least one issue."); return; }
+        body.issues = nums;
       }
       const res = await fetchJson("/buttons/api/jobs", {method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -2838,13 +3078,38 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     const sessions = data.sessions || [];
     if (!sessions.length) { piSessionListEl.textContent = "No Pi sessions found."; return; }
     sessions.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "pirow";
       const b = document.createElement("button");
       const when = s.mtime ? new Date(s.mtime * 1000).toLocaleString() : "";
       const repo = s.cwd ? s.cwd.split("/").filter(Boolean).pop() : "";
-      b.textContent = s.title ? [when, repo, s.title].filter(Boolean).join(" · ") : s.file;
-      b.title = s.file;
+      // Never show the raw filename in the label: date, repo,
+      // first prompt, or "untitled session".
+      b.textContent = [when, repo, (s.title || "untitled session")]
+        .filter(Boolean).join(" · ");
       b.onclick = () => showSession(s.file);
-      piSessionListEl.appendChild(b);
+      const del = document.createElement("button");
+      del.textContent = "✕";
+      del.className = "pirowdel";
+      del.title = "Delete this session";
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!(await confirmDialog("Delete Pi session",
+            "Delete this transcript? It cannot be undone.", true)))
+          return;
+        const r = await fetchJson("/buttons/api/pi-sessions/delete",
+          {method: "POST", headers: {"Content-Type": "application/json"},
+           body: JSON.stringify({session: s.file})});
+        if (!r.ok) {
+          piSessionErrEl.textContent = "delete failed: " +
+            (r.data.error || r.status);
+          return;
+        }
+        piSessionErrEl.textContent = r.data.output || "Deleted.";
+        row.remove();
+      };
+      row.appendChild(b); row.appendChild(del);
+      piSessionListEl.appendChild(row);
     });
   } catch (e) {
     piSessionListEl.textContent = "";
@@ -3552,7 +3817,38 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
             return
-        if path == "/buttons/api/pr-action":
+        if path == "/buttons/api/pi-sessions/delete":
+            # Delete one session transcript. Strict validation:
+            # basename charset only, must end .jsonl, no path
+            # separators — nothing from the request reaches a
+            # shell string; pi_logs.py --delete QUERY matches on
+            # basename substring and refuses ambiguous queries.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            session = str(data.get("session", ""))
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}\.jsonl",
+                                session):
+                self._json({"error": "bad session name"}, 400)
+                return
+            try:
+                proc = subprocess.run(
+                    EXEC + ["python3 /srv/remote-server/buttons/"
+                            "pi_logs.py --delete " + shlex.quote(session)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=120, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "pi delete failed")
+                _ledger_append({"kind": "system", "action": "pi-session-delete",
+                                "session": session[:120],
+                                "output": proc.stdout[-500:]})
+                self._json({"ok": True, "output": proc.stdout[-2000:]})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
             # Strict validation: integer PR number only (bools are
             # ints in Python, so exclude them), allowlisted action.
             # The number is then safe to interpolate: it cannot
@@ -3926,7 +4222,9 @@ class Handler(BaseHTTPRequestHandler):
             repos = _discover_repos()
             repo = data.get("repo", _default_repo(repos))
             pr = data.get("pr")
-            job, err = _job_create(data.get("template"), repo, pr)
+            issues = data.get("issues")
+            job, err = _job_create(data.get("template"), repo, pr,
+                                   issues)
             if err:
                 self._json({"error": err}, 400)
                 return
@@ -3988,6 +4286,35 @@ class Handler(BaseHTTPRequestHandler):
                     _ledger_append({"kind": "job", "job": jid,
                                     "step": step, "event": "step done"
                                     if ok else "step failed",
+                                    "ok": ok})
+                    self._json({"ok": ok, "state": st["state"],
+                                "error": err})
+                    return
+                if kind == "label-issue":
+                    # Synchronous: label the issue 'jules' to start
+                    # a Jules session on it (Jules GitHub
+                    # integration). Gates re-checked in
+                    # _label_issue_jules.
+                    try:
+                        _label_issue_jules(job["repo"], st["issue"],
+                                           _discover_repos())
+                        ok, err = True, None
+                    except ValueError as exc:
+                        ok, err = False, str(exc)
+                    except Exception as exc:
+                        ok, err = False, str(exc)[:500]
+                    with jobs_lock:
+                        st["state"] = "done" if ok else "failed"
+                        st["finished_at"] = time.time()
+                        st["exit_code"] = 0 if ok else 1
+                        st["note"] = None if ok else err
+                        _job_after_step(job)
+                        _jobs_save()
+                    _ledger_append({"kind": "job", "job": jid,
+                                    "step": step,
+                                    "event": "dispatched Jules on #"
+                                    + str(st["issue"]) if ok
+                                    else "dispatch failed",
                                     "ok": ok})
                     self._json({"ok": ok, "state": st["state"],
                                 "error": err})

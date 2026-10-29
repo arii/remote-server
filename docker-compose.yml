@@ -72,7 +72,11 @@ services:
       - --port=7681
       - --interface=0.0.0.0
       - --writable # ttyd >= 1.7.5 is READ-ONLY by default; without this the shell is view-only
-      - --max-clients=1
+      # No --max-clients=1: a second window (e.g. phone while the
+      # laptop tab is open) attaches to the SAME zellij session
+      # instead of being refused. zellij is a multiplexer — shared
+      # attach is its native model, so no takeover button is needed:
+      # opening the terminal anywhere just joins the live session.
       - --ping-interval=30 # keep the websocket alive on flaky mobile networks
       - -t
       - fontSize=15
@@ -118,7 +122,6 @@ services:
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      JULES_API_KEY: ${JULES_API_KEY:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:

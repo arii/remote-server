@@ -105,9 +105,12 @@ def _session_meta(path):
 
 def _render_file(path, header=None):
     """Render one session file readably. Never raises. The
-    default header names the file; the default Logs mode passes
-    its own "Latest session" header so that output is unchanged."""
-    print(header if header is not None else f"=== Session: {path} ===")
+    default header names the session (basename, never a raw
+    path); the default Logs mode passes its own "Latest session"
+    header so that output is unchanged."""
+    if header is None:
+        header = f"=== Session: {os.path.basename(path)} ==="
+    print(header)
     rendered = deque(maxlen=SHOW_ENTRIES)
     total = 0
     try:
@@ -223,6 +226,30 @@ def main(argv):
                       f"{os.path.basename(path)}: {exc}")
         print(f"Deleted {deleted} Pi session(s).")
         return 0
+    if len(argv) == 2 and argv[0] == "--delete":
+        # Delete ONE session transcript. The query must match
+        # exactly one file; anything ambiguous or missing deletes
+        # nothing and says so. Same exit-0 contract as --clear.
+        query = argv[1]
+        files = _list_files()
+        matches = [f for f in files
+                   if query in os.path.basename(f)]
+        if not matches:
+            print(f"No session matching '{query}' under {ROOT}")
+            return 0
+        if len(matches) > 1:
+            print(f"Multiple sessions match '{query}' — "
+                  "deleting nothing:")
+            for path in matches:
+                print(f"- {os.path.basename(path)}")
+            return 0
+        try:
+            os.remove(matches[0])
+            print(f"Deleted {os.path.basename(matches[0])}.")
+        except Exception as exc:
+            print(f"Could not delete "
+                  f"{os.path.basename(matches[0])}: {exc}")
+        return 0
     if len(argv) == 2 and argv[0] == "--session":
         query = argv[1]
         files = _list_files()
@@ -240,7 +267,7 @@ def main(argv):
         return 0
     if argv:
         print("usage: pi_logs.py [--list-json | --session QUERY | "
-              "--clear]")
+              "--delete QUERY | --clear]")
         return 0
     print("=== Pi sessions ===")
     files = _list_files()
