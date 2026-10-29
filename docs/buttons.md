@@ -12,13 +12,23 @@ command path (see Ask Pi below).
 
 Four tabs share one sticky header: **Actions** (stack buttons),
 **Briefing** (briefing + PR cards), **Pi agent** (suggestions + Ask Pi
-+ Pi sessions), **Ledger** (audit log). The header holds the repo picker
++ Pi sessions), **Jobs** (multi-step tasks, see below), **Ledger**
+(audit log). The header holds the repo picker
 (the repo chip — every repo-scoped button and the briefing follow
 it) plus a server status dot, green while the status endpoint
 answers, red when it does not. Run output lives in a slide-up
 drawer at the bottom of the screen, reachable from every tab: it
 opens when a run starts, holds the status line above the output
 pane, and carries Clear output and Close in its header.
+
+The Actions tab is status-first: a **Needs attention** section on
+top shows failing runs and attention items from the latest
+briefing, plus the stale-rebuild banner when the served page
+predates the checkout. Action buttons are grouped in collapsible
+sections (Server stays closed; the repo-action group stays open).
+A **Settings** section persists three preferences to the buttons
+volume: briefing auto-refresh (off / 1 min / 5 min), compact
+buttons (hide subtitles), and which repos appear in the picker.
 
 The theme is dark navy (`--bg-app: #0b1120`, `--bg-card: #131d31`,
 `--primary: #3b82f6`, `--danger: #ef4444`, `--warning: #f59e0b`,
@@ -373,6 +383,42 @@ Anything not in the exact PROPOSE form is shown as text, never
 run — a dithering model degrades to a readable reply, not a
 broken action. Like suggest: slow by design on the local model,
 minutes not seconds.
+
+## Jobs (multi-step tasks with approval gates)
+
+The Jobs tab turns repeated multi-step work into named jobs with
+a visible plan. A job = goal + plan checklist + per-step
+Approve/Decline gates + audit. Jobs only run the same allowlisted
+actions the buttons already offer — they add orchestration, not
+capability. v1 is local-only and deterministic; Pi judgment stays
+in the Suggestions / Ask Pi flows.
+
+Templates (fixed, no free text):
+
+| Template | Goal | Plan |
+|---|---|---|
+| Triage | Triage `{repo}` | Refresh briefing → Warm repo context → Preflight check |
+| Pre-merge check | Pre-merge check on `{repo}` | Preflight check → Refresh briefing |
+| Fix CI | Fix CI on PR `#{pr}` (`{repo}`) via Jules | Dispatch Jules fix-ci (pr-action) |
+
+Each plan step waits for your tap: **Approve** runs it (buttons
+actions stream to the drawer like normal runs; pr-actions run
+synchronously), **Decline** ends the job. Steps run in order —
+later steps unlock only when earlier ones are done. A second
+concurrent run still 409s; the step stays pending and you retry.
+
+Every terminal job (done / failed / declined) writes an audit:
+a JSON file on the buttons volume (`job-audits/audit-<id>.json`
+with goal, plan, every approval with timestamp, run ids,
+outcome) plus a `job` ledger entry. The Jobs tab lists active
+and past jobs newest-first with per-step state badges. Restarting
+the buttons container fails any job left mid-step, visibly.
+
+Open design questions for v2: Pi-judgment steps inside jobs,
+Gemini fallback for the judgment parts, whether phone approval
+should unlock currently-unavailable writes. v1 deliberately
+changes none of the approval boundaries.
+
 
 ## Pi session audit
 

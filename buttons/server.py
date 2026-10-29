@@ -828,8 +828,8 @@ def _buttons_html():
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
         else:
             parts.append(
-                f'<div class="grouphead">{GROUP_TITLES[group]}</div>'
-                f'{"".join(btns)}')
+                f'<details open><summary class="grouphead">'
+                f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
     return "".join(parts)
 
 
@@ -853,7 +853,7 @@ LEDGER_PATH = os.environ.get("BUTTONS_LEDGER_PATH",
 LEDGER_MAX_BYTES = 2_000_000
 LEDGER_PRUNE_LINES = 2000
 ledger_lock = threading.Lock()
-LEDGER_KINDS = ("run", "webhook", "pr-action", "system")
+LEDGER_KINDS = ("run", "webhook", "pr-action", "system", "job")
 
 
 def _ledger_append(entry):
@@ -913,6 +913,238 @@ def _ledger_clear():
         return False
     _ledger_append({"kind": "system", "event": "ledger cleared"})
     return True
+
+
+# --- Agent jobs (multi-step tasks with approval gates) ---------------
+# A job = goal + plan checklist + approvals + audit. Jobs only run
+# the same allowlisted actions the buttons already offer (ACTIONS
+# entries and pr-actions); they add orchestration, not capability.
+# Every plan step waits for an explicit Approve/Decline tap — the
+# gate that makes multi-step tasks safe from the phone. v1 is
+# local-only and deterministic: no model calls inside jobs (Pi
+# judgment stays in the Suggestions flow). On terminal state
+# (done/failed/declined) the job writes an audit JSON file plus a
+# ledger entry: goal, plan, every approval with timestamp, run ids,
+# outcome.
+JOBS_PATH = os.environ.get("BUTTONS_JOBS_PATH",
+                           "/var/lib/buttons/jobs.json")
+JOBS_AUDIT_DIR = os.environ.get("BUTTONS_JOBS_AUDIT_DIR",
+                                "/var/lib/buttons/job-audits")
+jobs_lock = threading.Lock()
+jobs = {}  # id -> job dict; persisted to JOBS_PATH on mutation
+
+JOB_TEMPLATES = {
+    "triage": {
+        "goal": "Triage {repo}: refresh briefing, warm context, preflight",
+        "steps": [
+            {"label": "Refresh briefing", "kind": "action",
+             "action": "briefing-td"},
+            {"label": "Warm repo context", "kind": "action",
+             "action": "warm-context"},
+            {"label": "Preflight check", "kind": "action",
+             "action": "preflight"},
+        ],
+    },
+    "pre-merge": {
+        "goal": "Pre-merge check on {repo}",
+        "steps": [
+            {"label": "Preflight check", "kind": "action",
+             "action": "preflight"},
+            {"label": "Refresh briefing", "kind": "action",
+             "action": "briefing-td"},
+        ],
+    },
+    "fix-ci": {
+        "goal": "Fix CI on PR #{pr} ({repo}) via Jules",
+        "needs_pr": True,
+        "steps": [
+            {"label": "Dispatch Jules fix-ci on PR #{pr}",
+             "kind": "pr-action", "action": "fix-ci"},
+        ],
+    },
+}
+
+
+def _jobs_load():
+    """Load persisted jobs; fail interrupted ones. Never raises."""
+    try:
+        with open(JOBS_PATH) as f:
+            data = json.load(f)
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    for jid, job in data.items():
+        if not isinstance(job, dict):
+            continue
+        if job.get("state") == "active":
+            for st in job.get("plan", []):
+                if st.get("state") == "running":
+                    st["state"] = "failed"
+                    st["note"] = "server restarted mid-step"
+            job["state"] = "terminal"
+            job["outcome"] = "failed"
+            job["ended_at"] = time.time()
+        jobs[jid] = job
+
+
+def _jobs_save():
+    """Persist the jobs dict. Never raises."""
+    try:
+        d = os.path.dirname(JOBS_PATH)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = JOBS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(jobs, f)
+        os.replace(tmp, JOBS_PATH)
+    except Exception as exc:
+        print(f"jobs save failed: {exc}", flush=True)
+
+
+def _job_audit(job):
+    """Write the completion audit file + ledger entry. Never raises."""
+    try:
+        os.makedirs(JOBS_AUDIT_DIR, exist_ok=True)
+        audit = {
+            "id": job["id"], "template": job["template"],
+            "goal": job["goal"], "repo": job["repo"],
+            "pr": job.get("pr"), "created_at": job["created_at"],
+            "ended_at": job.get("ended_at"),
+            "outcome": job.get("outcome"),
+            "steps": job["plan"], "approvals": job.get("approvals", []),
+        }
+        with open(os.path.join(JOBS_AUDIT_DIR,
+                               "audit-" + job["id"] + ".json"),
+                  "w") as f:
+            json.dump(audit, f, indent=2, sort_keys=True)
+    except Exception as exc:
+        print(f"job audit failed: {exc}", flush=True)
+    _ledger_append({"kind": "job", "job": job["id"],
+                    "template": job["template"], "repo": job["repo"],
+                    "outcome": job.get("outcome")})
+
+
+def _job_end(job, outcome):
+    """Terminal state: stamp, audit, persist. jobs_lock held."""
+    job["state"] = "terminal"
+    job["outcome"] = outcome
+    job["ended_at"] = time.time()
+    _job_audit(job)
+    _jobs_save()
+
+
+def _job_after_step(job):
+    """End the job if the plan reached a terminal state.
+    jobs_lock held."""
+    states = [s["state"] for s in job["plan"]]
+    if all(s == "done" for s in states):
+        _job_end(job, "done")
+    elif any(s == "failed" for s in states):
+        _job_end(job, "failed")
+
+
+def _job_create(template, repo, pr=None):
+    """Create a job from a template. Returns (job, error)."""
+    spec = JOB_TEMPLATES.get(template)
+    if spec is None:
+        return None, "unknown template"
+    repos = _discover_repos()
+    if repo not in repos:
+        return None, "unknown repo"
+    if spec.get("needs_pr"):
+        if not isinstance(pr, int) or isinstance(pr, bool) or pr <= 0:
+            return None, "bad pr number"
+    else:
+        pr = None
+    goal = spec["goal"].format(repo=repo, pr=pr)
+    plan = []
+    for s in spec["steps"]:
+        plan.append({
+            "label": s["label"].format(repo=repo, pr=pr),
+            "kind": s["kind"], "action": s["action"],
+            "state": "pending", "approved_at": None,
+            "run_id": None, "finished_at": None,
+            "exit_code": None, "note": None,
+        })
+    jid = uuid.uuid4().hex[:12]
+    now = time.time()
+    job = {"id": jid, "template": template, "goal": goal,
+           "repo": repo, "pr": pr, "plan": plan,
+           "approvals": [], "state": "active", "outcome": None,
+           "created_at": now, "ended_at": None}
+    with jobs_lock:
+        jobs[jid] = job
+        _jobs_save()
+    _ledger_append({"kind": "job", "job": jid, "template": template,
+                    "repo": repo, "event": "created"})
+    return job, None
+
+
+def _job_public(job):
+    """Summary shape for the job list (no step internals)."""
+    return {"id": job["id"], "template": job["template"],
+            "goal": job["goal"], "repo": job["repo"],
+            "state": job["state"], "outcome": job.get("outcome"),
+            "created_at": job["created_at"],
+            "steps": [{"label": s["label"], "state": s["state"]}
+                      for s in job["plan"]]}
+
+
+# --- Settings (persisted page preferences) ---------------------------
+# Small, honest configuration: briefing auto-refresh, compact
+# buttons, repo visibility in the picker. Stored as JSON on the
+# buttons-data volume; validated strictly on write.
+SETTINGS_PATH = os.environ.get("BUTTONS_SETTINGS_PATH",
+                               "/var/lib/buttons/settings.json")
+DEFAULT_SETTINGS = {"briefing_refresh": 0, "compact": False,
+                    "hidden_repos": []}
+REFRESH_CHOICES = (0, 60, 300)
+
+
+def _settings_read():
+    """Validated settings; defaults on any failure."""
+    try:
+        with open(SETTINGS_PATH) as f:
+            s = json.load(f)
+        if not isinstance(s, dict):
+            return dict(DEFAULT_SETTINGS)
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
+    out = dict(DEFAULT_SETTINGS)
+    if s.get("briefing_refresh") in REFRESH_CHOICES:
+        out["briefing_refresh"] = s["briefing_refresh"]
+    if isinstance(s.get("compact"), bool):
+        out["compact"] = s["compact"]
+    if isinstance(s.get("hidden_repos"), list):
+        repos = _discover_repos()
+        out["hidden_repos"] = [r for r in s["hidden_repos"]
+                               if isinstance(r, str) and r in repos]
+    return out
+
+
+def _settings_write(s):
+    """Validate + persist. Returns (settings, error)."""
+    out = dict(DEFAULT_SETTINGS)
+    if s.get("briefing_refresh") in REFRESH_CHOICES:
+        out["briefing_refresh"] = s["briefing_refresh"]
+    if isinstance(s.get("compact"), bool):
+        out["compact"] = s["compact"]
+    if isinstance(s.get("hidden_repos"), list):
+        repos = _discover_repos()
+        out["hidden_repos"] = [r for r in s["hidden_repos"]
+                               if isinstance(r, str) and r in repos]
+    try:
+        d = os.path.dirname(SETTINGS_PATH)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = SETTINGS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(out, f)
+        os.replace(tmp, SETTINGS_PATH)
+    except Exception as exc:
+        return None, str(exc)[:200]
+    return out, None
 
 
 def _append(run, text):
@@ -1245,6 +1477,42 @@ a { color: #8bf; }
 #confirmBody { color: var(--text-muted); margin-bottom: 1em; white-space: pre-line; }
 .modal-actions { display: flex; gap: 0.5em; justify-content: flex-end; }
 .modal-actions button { margin: 0; }
+/* status-first attention section */
+#attention { border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-card); padding: 0.75em; margin: 0.5em 0; }
+#attention ul { margin: 0.4em 0; padding-left: 1.2em; }
+#attention li { margin: 0.25em 0; font-size: 0.92em; }
+#attention .attn-head { font-weight: bold; margin-bottom: 0.2em; }
+/* jobs */
+.jobcard { border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-card); padding: 0.75em; margin: 0.5em 0; }
+.jobcard .jobgoal { font-weight: bold; margin-bottom: 0.4em; }
+.jobcard .jobmeta { font-size: 0.85em; color: var(--text-muted); margin-bottom: 0.4em; }
+.jobstep { display: flex; align-items: center; gap: 0.5em; padding: 0.35em 0;
+  border-top: 1px solid var(--border); font-size: 0.92em; }
+.jobstep .st { font-size: 0.78em; border-radius: 20px; padding: 0.15em 0.6em;
+  border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+.jobstep .st.done { color: #7ed07e; border-color: #2e7d32; }
+.jobstep .st.failed { color: #ff8a8a; border-color: var(--danger); }
+.jobstep .st.running { color: #ffd75e; border-color: #8a6d1b; }
+.jobstep .st.approved { color: #8bf; border-color: var(--primary); }
+.jobstep .st.declined { color: var(--text-muted); }
+.jobstep .sactions { margin-left: auto; display: flex; gap: 0.4em; }
+.jobstep .sactions button { width: auto; margin: 0; padding: 0.35em 0.7em; font-size: 0.85em; }
+.jobtmpl { border: 1px solid var(--border); border-radius: 10px; padding: 0.6em;
+  margin: 0.4em 0; background: var(--bg-card); }
+.jobtmpl .blabel { font-weight: 600; }
+.jobtmpl .bsub { font-size: 0.85em; color: var(--text-muted); margin: 0.2em 0 0.4em; }
+.jobtmpl button { width: auto; margin: 0.2em 0 0; }
+/* settings */
+#settings label.setrow { display: block; margin: 0.6em 0; font-size: 0.92em; }
+#settings select, #settings input[type="number"] { background: var(--bg-card-hover);
+  color: var(--text-main); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.4em; font-size: 0.95em; }
+#settings .repocheck { display: block; margin: 0.25em 0; font-size: 0.9em; }
+#settings button { width: auto; margin-top: 0.5em; }
+/* compact mode hides button subtitles */
+body.compact .bsub { display: none; }
 </style>
 </head>
 <body>
@@ -1254,7 +1522,6 @@ a { color: #8bf; }
 <!--REPO_STRIPS-->
 </div>
 <div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span></div>
-<div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -1266,11 +1533,15 @@ below are still visible, but they need JavaScript to start a run.</div>
 <button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
 <button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
 <button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
-<button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
+<button class="tab" data-tab="jobs" role="tab">🧰 Jobs</button><button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
 </div>
 </div>
 <section class="tabpanel" id="tab-actions">
+<div id="attention"><div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div><div id="attentionBody"><span class="spinner"></span> Loading briefing…</div></div>
 <div id="buttons"><!--BUTTONS--></div>
+<details><summary class="grouphead">Settings</summary>
+<div id="settings"><span class="spinner"></span> Loading settings…</div>
+</details>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
@@ -1316,6 +1587,21 @@ deletes all transcripts.</p>
 <pre id="piSessionOut"></pre>
 <div id="piSessionErr"></div>
 </section>
+<section class="tabpanel" id="tab-jobs" style="display:none">
+<h2>Jobs</h2>
+<p>Multi-step tasks with a visible plan: each step waits for your
+Approve or Decline tap. Approving runs the step (output streams to
+the drawer); declining ends the job. Every job writes an audit
+record — goal, plan, approvals with timestamps, run ids, outcome —
+to the Ledger tab and a JSON file on the buttons volume. Jobs only
+run the same allowlisted actions the buttons already offer; nothing
+new becomes writable.</p>
+<div id="jobNew"></div>
+<div id="jobErr"></div>
+<h2>Active and past jobs</h2>
+<div id="jobList"></div>
+<div id="jobListErr"></div>
+</section>
 <section class="tabpanel" id="tab-ledger" style="display:none">
 <details open><summary class="grouphead">Ledger</summary>
 <p>Durable audit log — every run, webhook pull, and PR-action tap,
@@ -1327,6 +1613,7 @@ entries but leaves a 'ledger cleared' record.</p>
 <option value="run">Runs</option>
 <option value="webhook">Webhooks</option>
 <option value="pr-action">PR actions</option>
+<option value="job">Jobs</option>
 <option value="system">System</option>
 </select></label>
 <div id="ledger"></div>
@@ -1712,6 +1999,8 @@ async function poll(id, action) {
           typeof refreshBriefing === "function") refreshBriefing();
       // Any finished run is a new ledger line.
       if (typeof refreshLedger === "function") refreshLedger();
+      // A finished job step advances the job's plan.
+      if (typeof jobStepDone === "function") jobStepDone(run);
     }
   }, 2000);
 }
@@ -1914,11 +2203,305 @@ async function refreshBriefing() {
   if (!res.ok) {
     briefingEl.textContent = "";
     briefingErrEl.textContent = "briefing unavailable: " + (res.data.error || ("HTTP " + res.status));
+    const att = document.getElementById("attentionBody");
+    if (att) att.textContent = "Briefing unavailable — attention list will update on the next refresh.";
     return;
   }
   briefingErrEl.textContent = "";
   renderBriefing(res.data);
+  if (typeof renderAttention === "function") renderAttention(res.data);
 }
+
+// Status-first: the Actions tab leads with what needs attention —
+// failing runs and attention items from the latest briefing. Runs
+// whenever the briefing refreshes, so the top of the default tab
+// always reflects the freshest state.
+function renderAttention(b) {
+  const el = document.getElementById("attentionBody");
+  if (!el) return;
+  el.textContent = "";
+  const items = [];
+  (b.failing_runs || []).forEach(run => {
+    items.push("Failing run: " + run.name + " on " + run.branch);
+  });
+  (b.attention || []).forEach(a => items.push(a));
+  if (!items.length) {
+    el.textContent = "All clear — nothing needs attention.";
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "attn-head";
+  head.textContent = "Needs attention";
+  el.appendChild(head);
+  const ul = document.createElement("ul");
+  items.slice(0, 8).forEach(t => {
+    const li = document.createElement("li");
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+  el.appendChild(ul);
+}
+
+// Settings: persisted page preferences (briefing auto-refresh,
+// compact buttons, repo visibility in the picker).
+let briefingTimer = null;
+async function loadSettings() {
+  const res = await fetchJson("/buttons/api/settings");
+  const s = res.ok && res.data ? res.data
+    : {briefing_refresh: 0, compact: false, hidden_repos: []};
+  applySettings(s);
+  renderSettingsForm(s);
+}
+function applySettings(s) {
+  document.body.classList.toggle("compact", !!s.compact);
+  const picker = document.getElementById("briefingRepo");
+  const hidden = new Set(s.hidden_repos || []);
+  if (picker) {
+    const opts = [...picker.options];
+    opts.forEach(o => { o.hidden = hidden.has(o.value); });
+    if (hidden.has(picker.value)) {
+      const first = opts.find(o => !hidden.has(o.value));
+      if (first) {
+        picker.value = first.value;
+        if (typeof refreshBriefing === "function") refreshBriefing();
+      }
+    }
+  }
+  if (briefingTimer) { clearInterval(briefingTimer); briefingTimer = null; }
+  if (s.briefing_refresh > 0 && typeof refreshBriefing === "function") {
+    briefingTimer = setInterval(refreshBriefing,
+      s.briefing_refresh * 1000);
+  }
+}
+function renderSettingsForm(s) {
+  const el = document.getElementById("settings");
+  if (!el) return;
+  el.textContent = "";
+  const r1 = document.createElement("label");
+  r1.className = "setrow";
+  r1.textContent = "Briefing auto-refresh: ";
+  const sel = document.createElement("select");
+  [[0, "Off"], [60, "Every minute"], [300, "Every 5 minutes"]].forEach(([v, t]) => {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = t;
+    if (s.briefing_refresh === v) o.selected = true;
+    sel.appendChild(o);
+  });
+  r1.appendChild(sel);
+  el.appendChild(r1);
+  const r2 = document.createElement("label");
+  r2.className = "setrow";
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = !!s.compact;
+  r2.appendChild(cb);
+  r2.appendChild(document.createTextNode(" Compact buttons (hide subtitles)"));
+  el.appendChild(r2);
+  const r3 = document.createElement("div");
+  r3.className = "setrow";
+  r3.textContent = "Repos in the picker:";
+  el.appendChild(r3);
+  const picker = document.getElementById("briefingRepo");
+  const boxes = [];
+  if (picker) [...picker.options].forEach(o => {
+    const lab = document.createElement("label");
+    lab.className = "repocheck";
+    const c = document.createElement("input");
+    c.type = "checkbox"; c.value = o.value;
+    c.checked = !(s.hidden_repos || []).includes(o.value);
+    lab.appendChild(c);
+    lab.appendChild(document.createTextNode(" " + o.value));
+    el.appendChild(lab);
+    boxes.push(c);
+  });
+  const save = document.createElement("button");
+  save.textContent = "Save settings";
+  save.onclick = async () => {
+    const body = {
+      briefing_refresh: parseInt(sel.value, 10),
+      compact: cb.checked,
+      hidden_repos: boxes.filter(b => !b.checked).map(b => b.value),
+    };
+    const res = await fetchJson("/buttons/api/settings", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)});
+    if (!res.ok) {
+      save.textContent = "Save failed: " + (res.data.error || res.status);
+      return;
+    }
+    save.textContent = "Saved ✓";
+    applySettings(res.data);
+    setTimeout(() => { save.textContent = "Save settings"; }, 2000);
+  };
+  el.appendChild(save);
+}
+loadSettings();
+
+// Agent jobs: multi-step tasks with per-step Approve/Decline gates.
+// Approving runs the step through the existing run machinery
+// (output in the drawer); declining ends the job. Every terminal
+// job writes an audit record.
+const JOB_TEMPLATES = {
+  "triage": {label: "Triage repo",
+    desc: "Briefing → warm context → preflight, one approval per step."},
+  "pre-merge": {label: "Pre-merge check",
+    desc: "Preflight → briefing before you merge."},
+  "fix-ci": {label: "Fix CI on a PR",
+    desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
+};
+let pendingJobStep = null; // {job, step, runId} while a step run polls
+function jobErr(t) {
+  const e = document.getElementById("jobErr");
+  if (e) e.textContent = t;
+}
+function renderJobNew() {
+  const el = document.getElementById("jobNew");
+  if (!el) return;
+  el.textContent = "";
+  Object.entries(JOB_TEMPLATES).forEach(([name, t]) => {
+    const d = document.createElement("div");
+    d.className = "jobtmpl";
+    const l = document.createElement("div");
+    l.className = "blabel"; l.textContent = t.label;
+    const s = document.createElement("div");
+    s.className = "bsub"; s.textContent = t.desc;
+    d.appendChild(l); d.appendChild(s);
+    let prInput = null;
+    if (t.needsPr) {
+      prInput = document.createElement("input");
+      prInput.type = "number"; prInput.min = "1";
+      prInput.placeholder = "PR number";
+      prInput.style.marginRight = "0.5em";
+      d.appendChild(prInput);
+    }
+    const b = document.createElement("button");
+    b.textContent = "Start job";
+    b.onclick = async () => {
+      const picker = document.getElementById("briefingRepo");
+      const body = {template: name, repo: picker ? picker.value : "tech-dancer"};
+      if (t.needsPr) {
+        const n = parseInt(prInput.value, 10);
+        if (!(n > 0)) { jobErr("Enter a PR number."); return; }
+        body.pr = n;
+      }
+      const res = await fetchJson("/buttons/api/jobs", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)});
+      if (!res.ok) {
+        jobErr("Could not start job: " + (res.data.error || res.status));
+        return;
+      }
+      jobErr("");
+      refreshJobs();
+    };
+    d.appendChild(b);
+    el.appendChild(d);
+  });
+}
+async function refreshJobs() {
+  const listEl = document.getElementById("jobList");
+  const errEl = document.getElementById("jobListErr");
+  if (!listEl) return;
+  const res = await fetchJson("/buttons/api/jobs");
+  if (!res.ok) {
+    if (errEl) errEl.textContent = "jobs unavailable: " + (res.data.error || res.status);
+    return;
+  }
+  if (errEl) errEl.textContent = "";
+  listEl.textContent = "";
+  const jobs = res.data.jobs || [];
+  if (!jobs.length) {
+    listEl.textContent = "No jobs yet. Start one above.";
+    return;
+  }
+  jobs.forEach(j => listEl.appendChild(renderJobCard(j)));
+}
+function renderJobCard(j) {
+  const card = document.createElement("div");
+  card.className = "jobcard";
+  const g = document.createElement("div");
+  g.className = "jobgoal";
+  g.textContent = j.goal;
+  card.appendChild(g);
+  const m = document.createElement("div");
+  m.className = "jobmeta";
+  const done = j.steps.filter(s => s.state === "done").length;
+  m.textContent = j.repo + " · " + done + "/" + j.steps.length + " steps" +
+    (j.state === "terminal" ? " · " + j.outcome : " · active");
+  card.appendChild(m);
+  j.steps.forEach((s, i) => {
+    const row = document.createElement("div");
+    row.className = "jobstep";
+    const badge = document.createElement("span");
+    badge.className = "st " + s.state;
+    badge.textContent = s.state;
+    const lab = document.createElement("span");
+    lab.textContent = s.label;
+    row.appendChild(badge);
+    row.appendChild(lab);
+    if (j.state === "active" && s.state === "pending" &&
+        j.steps.slice(0, i).every(p => p.state === "done")) {
+      const acts = document.createElement("span");
+      acts.className = "sactions";
+      const ok = document.createElement("button");
+      ok.textContent = "Approve";
+      ok.onclick = () => jobApprove(j.id, i);
+      const no = document.createElement("button");
+      no.textContent = "Decline";
+      no.className = "btn-ghost";
+      no.onclick = () => jobDecline(j.id, i);
+      acts.appendChild(ok); acts.appendChild(no);
+      row.appendChild(acts);
+    }
+    card.appendChild(row);
+  });
+  return card;
+}
+async function jobApprove(id, step) {
+  jobErr("");
+  const res = await fetchJson("/buttons/api/jobs/" + id + "/approve",
+    {method: "POST", headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({step})});
+  if (!res.ok) {
+    jobErr("Approve failed: " + (res.data.error || res.status));
+    return;
+  }
+  if (res.data.run_id) {
+    pendingJobStep = {job: id, step: step, runId: res.data.run_id};
+    openDrawer();
+    if (typeof poll === "function") poll(res.data.run_id, "job-step");
+  }
+  refreshJobs();
+}
+async function jobDecline(id, step) {
+  const ok = await confirmDialog("Decline step",
+    "Decline this step and end the job? The audit record is still written.",
+    false);
+  if (!ok) return;
+  const res = await fetchJson("/buttons/api/jobs/" + id + "/decline",
+    {method: "POST", headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({step})});
+  if (!res.ok) {
+    jobErr("Decline failed: " + (res.data.error || res.status));
+    return;
+  }
+  refreshJobs();
+  if (typeof refreshLedger === "function") refreshLedger();
+}
+// Called from the poll loop when a run finishes: if it was a job
+// step, report completion so the server advances the plan.
+async function jobStepDone(run) {
+  if (!pendingJobStep || run.id !== pendingJobStep.runId) return;
+  const sj = pendingJobStep;
+  pendingJobStep = null;
+  const res = await fetchJson("/buttons/api/jobs/" + sj.job + "/step-done",
+    {method: "POST", headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({step: sj.step, run_id: sj.runId})});
+  if (!res.ok) jobErr("Step completion not recorded: " + (res.data.error || res.status));
+  refreshJobs();
+  if (typeof refreshLedger === "function") refreshLedger();
+}
+renderJobNew();
+refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
@@ -2335,6 +2918,35 @@ def _pr_action(pr_number, action, repo, repos):
     return {"ok": True, "output": out[-2000:]}
 
 
+def _start_run(action, repo, td_argv=None):
+    """Create and start a run for an allowlisted action. Returns
+    (run_id, error). Single-flight: a second concurrent run gets
+    the 'already in progress' error, same as the API."""
+    global active_id
+    if action not in ACTIONS:
+        return None, "unknown action"
+    with runs_lock:
+        if active_id is not None:
+            return None, "a run is already in progress"
+        run_id = uuid.uuid4().hex[:12]
+        now = time.time()
+        run = {"id": run_id, "action": action, "done": False,
+               "exit_code": None, "output": "",
+               "seq": len(runs), "started_at": now,
+               "finished_at": None, "last_output_at": now,
+               "step_index": 0, "step_total": 1
+               if action == "run-td" else len(ACTIONS[action]["steps"]),
+               "current_step": ""}
+        if td_argv is not None:
+            run["td_argv"] = td_argv
+        runs[run_id] = run
+        active_id = run_id
+    print(f"run {run_id} ({action}) started", flush=True)
+    threading.Thread(target=run_action, args=(run_id, action, repo),
+                     daemon=True).start()
+    return run_id, None
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # keep docker logs clean; runs log their own lines
@@ -2528,6 +3140,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"error": "unknown run"}, 404)
                 else:
                     self._json(_public(run))
+        elif path == "/buttons/api/jobs":
+            with jobs_lock:
+                out = [_job_public(j) for j in jobs.values()]
+            out.sort(key=lambda j: j["created_at"], reverse=True)
+            self._json({"jobs": out})
+        elif path.startswith("/buttons/api/jobs/"):
+            jid = path[len("/buttons/api/jobs/"):].split("/")[0]
+            with jobs_lock:
+                job = jobs.get(jid)
+                self._json({"job": job} if job is not None
+                           else {"error": "unknown job"},
+                           200 if job is not None else 404)
+        elif path == "/buttons/api/settings":
+            self._json(_settings_read())
         else:
             self._json({"error": "not found"}, 404)
 
@@ -2773,26 +3399,167 @@ class Handler(BaseHTTPRequestHandler):
             if repo not in repos or not tokens:
                 self._json({"error": "bad repo or command"}, 400)
                 return
-            with runs_lock:
-                if active_id is not None:
-                    self._json({"error": "a run is already in progress"},
-                               409)
-                    return
-                run_id = uuid.uuid4().hex[:12]
-                now = time.time()
-                runs[run_id] = {"id": run_id, "action": "run-td",
-                                "done": False, "exit_code": None,
-                                "output": "", "seq": len(runs),
-                                "started_at": now, "finished_at": None,
-                                "last_output_at": now, "step_index": 0,
-                                "step_total": 1, "current_step": "",
-                                "td_argv": tokens}
-                active_id = run_id
-            print(f"run {run_id} (run-td) started", flush=True)
-            threading.Thread(target=run_action,
-                             args=(run_id, "run-td", repo),
-                             daemon=True).start()
+            run_id, err = _start_run("run-td", repo, td_argv=tokens)
+            if err:
+                self._json({"error": err}, 409)
+                return
             self._json({"id": run_id})
+            return
+        # --- Agent jobs ---
+        if path == "/buttons/api/jobs":
+            # POST: create a job from a template.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            pr = data.get("pr")
+            job, err = _job_create(data.get("template"), repo, pr)
+            if err:
+                self._json({"error": err}, 400)
+                return
+            self._json({"job": job})
+            return
+        if path.startswith("/buttons/api/jobs/"):
+            # /buttons/api/jobs/<id>/{approve|decline|step-done} (POST)
+            rest = path[len("/buttons/api/jobs/"):]
+            jid, _, sub = rest.partition("/")
+            with jobs_lock:
+                job = jobs.get(jid)
+            if job is None:
+                self._json({"error": "unknown job"}, 404)
+                return
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            step = data.get("step")
+            if sub == "approve":
+                with jobs_lock:
+                    if not isinstance(step, int) or isinstance(step, bool) \
+                            or not 0 <= step < len(job["plan"]):
+                        self._json({"error": "bad step"}, 400)
+                        return
+                    st = job["plan"][step]
+                    if job["state"] != "active" \
+                            or st["state"] != "pending":
+                        self._json({"error": "step not pending"}, 409)
+                        return
+                    if any(p["state"] != "done"
+                           for p in job["plan"][:step]):
+                        self._json({"error": "earlier steps not done"},
+                                   409)
+                        return
+                    st["state"] = "approved"
+                    st["approved_at"] = time.time()
+                    job["approvals"].append(
+                        {"step": step, "decision": "approved",
+                         "at": st["approved_at"]})
+                    kind = st["kind"]
+                if kind == "pr-action":
+                    # Synchronous: gates re-checked inside _pr_action.
+                    try:
+                        _pr_action(job["pr"], st["action"], job["repo"],
+                                   _discover_repos())
+                        ok, err = True, None
+                    except ValueError as exc:
+                        ok, err = False, str(exc)
+                    except Exception as exc:
+                        ok, err = False, str(exc)[:500]
+                    with jobs_lock:
+                        st["state"] = "done" if ok else "failed"
+                        st["finished_at"] = time.time()
+                        st["exit_code"] = 0 if ok else 1
+                        st["note"] = None if ok else err
+                        _job_after_step(job)
+                        _jobs_save()
+                    _ledger_append({"kind": "job", "job": jid,
+                                    "step": step, "event": "step done"
+                                    if ok else "step failed",
+                                    "ok": ok})
+                    self._json({"ok": ok, "state": st["state"],
+                                "error": err})
+                    return
+                # kind == "action": async run, client polls it.
+                run_id, err = _start_run(st["action"], job["repo"])
+                with jobs_lock:
+                    if err:
+                        st["state"] = "pending"
+                        st["approved_at"] = None
+                        job["approvals"].pop()
+                        _jobs_save()
+                        self._json({"error": err}, 409)
+                        return
+                    st["state"] = "running"
+                    st["run_id"] = run_id
+                    _jobs_save()
+                _ledger_append({"kind": "job", "job": jid, "step": step,
+                                "event": "step approved", "run": run_id})
+                self._json({"run_id": run_id})
+                return
+            if sub == "decline":
+                with jobs_lock:
+                    if not isinstance(step, int) or isinstance(step, bool) \
+                            or not 0 <= step < len(job["plan"]):
+                        self._json({"error": "bad step"}, 400)
+                        return
+                    st = job["plan"][step]
+                    if job["state"] != "active" \
+                            or st["state"] != "pending":
+                        self._json({"error": "step not pending"}, 409)
+                        return
+                    st["state"] = "declined"
+                    job["approvals"].append(
+                        {"step": step, "decision": "declined",
+                         "at": time.time()})
+                    _job_end(job, "declined")
+                self._json({"ok": True})
+                return
+            if sub == "step-done":
+                # Client reports the polled run finished.
+                run_id = data.get("run_id")
+                with runs_lock:
+                    run = runs.get(run_id)
+                    run_done = run is not None and run["done"]
+                    run_exit = run["exit_code"] if run else None
+                with jobs_lock:
+                    if not isinstance(step, int) or isinstance(step, bool) \
+                            or not 0 <= step < len(job["plan"]):
+                        self._json({"error": "bad step"}, 400)
+                        return
+                    st = job["plan"][step]
+                    if st["state"] != "running" \
+                            or st.get("run_id") != run_id:
+                        self._json({"error": "step not running this run"},
+                                   409)
+                        return
+                    if not run_done:
+                        self._json({"error": "run not done"}, 409)
+                        return
+                    st["state"] = "done" \
+                        if run_exit == 0 else "failed"
+                    st["finished_at"] = time.time()
+                    st["exit_code"] = run_exit
+                    _job_after_step(job)
+                    _jobs_save()
+                    state = st["state"]
+                _ledger_append({"kind": "job", "job": jid, "step": step,
+                                "event": "step " + state, "run": run_id})
+                self._json({"ok": True, "state": state})
+                return
+            self._json({"error": "not found"}, 404)
+            return
+        if path == "/buttons/api/settings":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            settings, err = _settings_write(data)
+            if err:
+                self._json({"error": err}, 500)
+                return
+            self._json(settings)
             return
         if path != "/buttons/api/run":
             self._json({"error": "not found"}, 404)
@@ -2810,26 +3577,15 @@ class Handler(BaseHTTPRequestHandler):
         if repo not in repos:
             self._json({"error": "unknown repo"}, 400)
             return
-        with runs_lock:
-            if active_id is not None:
-                self._json({"error": "a run is already in progress"}, 409)
-                return
-            run_id = uuid.uuid4().hex[:12]
-            now = time.time()
-            runs[run_id] = {"id": run_id, "action": action, "done": False,
-                            "exit_code": None, "output": "",
-                            "seq": len(runs), "started_at": now,
-                            "finished_at": None, "last_output_at": now,
-                            "step_index": 0, "step_total": len(ACTIONS[action]["steps"]),
-                            "current_step": ""}
-            active_id = run_id
-        print(f"run {run_id} ({action}) started", flush=True)
-        threading.Thread(target=run_action, args=(run_id, action, repo),
-                         daemon=True).start()
+        run_id, err = _start_run(action, repo)
+        if err:
+            self._json({"error": err}, 409)
+            return
         self._json({"id": run_id})
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("BUTTONS_PORT", "8000"))
     _ledger_append({"kind": "system", "event": "buttons started"})
+    _jobs_load()
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
