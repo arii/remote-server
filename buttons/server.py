@@ -1091,62 +1091,6 @@ def _job_public(job):
                       for s in job["plan"]]}
 
 
-# --- Settings (persisted page preferences) ---------------------------
-# Small, honest configuration: briefing auto-refresh, compact
-# buttons, repo visibility in the picker. Stored as JSON on the
-# buttons-data volume; validated strictly on write.
-SETTINGS_PATH = os.environ.get("BUTTONS_SETTINGS_PATH",
-                               "/var/lib/buttons/settings.json")
-DEFAULT_SETTINGS = {"briefing_refresh": 0, "compact": False,
-                    "hidden_repos": []}
-REFRESH_CHOICES = (0, 60, 300)
-
-
-def _settings_read():
-    """Validated settings; defaults on any failure."""
-    try:
-        with open(SETTINGS_PATH) as f:
-            s = json.load(f)
-        if not isinstance(s, dict):
-            return dict(DEFAULT_SETTINGS)
-    except Exception:
-        return dict(DEFAULT_SETTINGS)
-    out = dict(DEFAULT_SETTINGS)
-    if s.get("briefing_refresh") in REFRESH_CHOICES:
-        out["briefing_refresh"] = s["briefing_refresh"]
-    if isinstance(s.get("compact"), bool):
-        out["compact"] = s["compact"]
-    if isinstance(s.get("hidden_repos"), list):
-        repos = _discover_repos()
-        out["hidden_repos"] = [r for r in s["hidden_repos"]
-                               if isinstance(r, str) and r in repos]
-    return out
-
-
-def _settings_write(s):
-    """Validate + persist. Returns (settings, error)."""
-    out = dict(DEFAULT_SETTINGS)
-    if s.get("briefing_refresh") in REFRESH_CHOICES:
-        out["briefing_refresh"] = s["briefing_refresh"]
-    if isinstance(s.get("compact"), bool):
-        out["compact"] = s["compact"]
-    if isinstance(s.get("hidden_repos"), list):
-        repos = _discover_repos()
-        out["hidden_repos"] = [r for r in s["hidden_repos"]
-                               if isinstance(r, str) and r in repos]
-    try:
-        d = os.path.dirname(SETTINGS_PATH)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        tmp = SETTINGS_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(out, f)
-        os.replace(tmp, SETTINGS_PATH)
-    except Exception as exc:
-        return None, str(exc)[:200]
-    return out, None
-
-
 def _append(run, text):
     run["output"] += text
     run["last_output_at"] = time.time()
@@ -1504,15 +1448,6 @@ a { color: #8bf; }
 .jobtmpl .blabel { font-weight: 600; }
 .jobtmpl .bsub { font-size: 0.85em; color: var(--text-muted); margin: 0.2em 0 0.4em; }
 .jobtmpl button { width: auto; margin: 0.2em 0 0; }
-/* settings */
-#settings label.setrow { display: block; margin: 0.6em 0; font-size: 0.92em; }
-#settings select, #settings input[type="number"] { background: var(--bg-card-hover);
-  color: var(--text-main); border: 1px solid var(--border); border-radius: 6px;
-  padding: 0.4em; font-size: 0.95em; }
-#settings .repocheck { display: block; margin: 0.25em 0; font-size: 0.9em; }
-#settings button { width: auto; margin-top: 0.5em; }
-/* compact mode hides button subtitles */
-body.compact .bsub { display: none; }
 </style>
 </head>
 <body>
@@ -1539,9 +1474,6 @@ below are still visible, but they need JavaScript to start a run.</div>
 <section class="tabpanel" id="tab-actions">
 <div id="attention"><div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div><div id="attentionBody"><span class="spinner"></span> Loading briefing…</div></div>
 <div id="buttons"><!--BUTTONS--></div>
-<details><summary class="grouphead">Settings</summary>
-<div id="settings"><span class="spinner"></span> Loading settings…</div>
-</details>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
@@ -2244,100 +2176,6 @@ function renderAttention(b) {
   });
   el.appendChild(ul);
 }
-
-// Settings: persisted page preferences (briefing auto-refresh,
-// compact buttons, repo visibility in the picker).
-let briefingTimer = null;
-async function loadSettings() {
-  const res = await fetchJson("/buttons/api/settings");
-  const s = res.ok && res.data ? res.data
-    : {briefing_refresh: 0, compact: false, hidden_repos: []};
-  applySettings(s);
-  renderSettingsForm(s);
-}
-function applySettings(s) {
-  document.body.classList.toggle("compact", !!s.compact);
-  const picker = document.getElementById("briefingRepo");
-  const hidden = new Set(s.hidden_repos || []);
-  if (picker) {
-    const opts = [...picker.options];
-    opts.forEach(o => { o.hidden = hidden.has(o.value); });
-    if (hidden.has(picker.value)) {
-      const first = opts.find(o => !hidden.has(o.value));
-      if (first) {
-        picker.value = first.value;
-        if (typeof refreshBriefing === "function") refreshBriefing();
-      }
-    }
-  }
-  if (briefingTimer) { clearInterval(briefingTimer); briefingTimer = null; }
-  if (s.briefing_refresh > 0 && typeof refreshBriefing === "function") {
-    briefingTimer = setInterval(refreshBriefing,
-      s.briefing_refresh * 1000);
-  }
-}
-function renderSettingsForm(s) {
-  const el = document.getElementById("settings");
-  if (!el) return;
-  el.textContent = "";
-  const r1 = document.createElement("label");
-  r1.className = "setrow";
-  r1.textContent = "Briefing auto-refresh: ";
-  const sel = document.createElement("select");
-  [[0, "Off"], [60, "Every minute"], [300, "Every 5 minutes"]].forEach(([v, t]) => {
-    const o = document.createElement("option");
-    o.value = v; o.textContent = t;
-    if (s.briefing_refresh === v) o.selected = true;
-    sel.appendChild(o);
-  });
-  r1.appendChild(sel);
-  el.appendChild(r1);
-  const r2 = document.createElement("label");
-  r2.className = "setrow";
-  const cb = document.createElement("input");
-  cb.type = "checkbox"; cb.checked = !!s.compact;
-  r2.appendChild(cb);
-  r2.appendChild(document.createTextNode(" Compact buttons (hide subtitles)"));
-  el.appendChild(r2);
-  const r3 = document.createElement("div");
-  r3.className = "setrow";
-  r3.textContent = "Repos in the picker:";
-  el.appendChild(r3);
-  const picker = document.getElementById("briefingRepo");
-  const boxes = [];
-  if (picker) [...picker.options].forEach(o => {
-    const lab = document.createElement("label");
-    lab.className = "repocheck";
-    const c = document.createElement("input");
-    c.type = "checkbox"; c.value = o.value;
-    c.checked = !(s.hidden_repos || []).includes(o.value);
-    lab.appendChild(c);
-    lab.appendChild(document.createTextNode(" " + o.value));
-    el.appendChild(lab);
-    boxes.push(c);
-  });
-  const save = document.createElement("button");
-  save.textContent = "Save settings";
-  save.onclick = async () => {
-    const body = {
-      briefing_refresh: parseInt(sel.value, 10),
-      compact: cb.checked,
-      hidden_repos: boxes.filter(b => !b.checked).map(b => b.value),
-    };
-    const res = await fetchJson("/buttons/api/settings", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(body)});
-    if (!res.ok) {
-      save.textContent = "Save failed: " + (res.data.error || res.status);
-      return;
-    }
-    save.textContent = "Saved ✓";
-    applySettings(res.data);
-    setTimeout(() => { save.textContent = "Save settings"; }, 2000);
-  };
-  el.appendChild(save);
-}
-loadSettings();
 
 // Agent jobs: multi-step tasks with per-step Approve/Decline gates.
 // Approving runs the step through the existing run machinery
@@ -3155,8 +2993,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": job} if job is not None
                            else {"error": "unknown job"},
                            200 if job is not None else 404)
-        elif path == "/buttons/api/settings":
-            self._json(_settings_read())
         else:
             self._json({"error": "not found"}, 404)
 
@@ -3552,17 +3388,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "state": state})
                 return
             self._json({"error": "not found"}, 404)
-            return
-        if path == "/buttons/api/settings":
-            try:
-                data = json.loads(body) if body else {}
-            except Exception:
-                data = {}
-            settings, err = _settings_write(data)
-            if err:
-                self._json({"error": err}, 500)
-                return
-            self._json(settings)
             return
         if path != "/buttons/api/run":
             self._json({"error": "not found"}, 404)
