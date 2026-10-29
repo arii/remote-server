@@ -1,0 +1,29 @@
+name: CI Self-Repair Automation
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  ci-repair:
+    name: CI Self-Repair
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initiate Self-Repair Session
+        uses: arii/boomtick/.github/actions/ci-repair@main
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

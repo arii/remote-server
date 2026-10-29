@@ -1,0 +1,31 @@
+name: ChatOps Trigger
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  chatops:
+    name: ChatOps Dispatch
+    if: ${{ github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Dispatch ChatOps Command
+        uses: arii/boomtick@main
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          comment_body: ${{ github.event.comment.body }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
