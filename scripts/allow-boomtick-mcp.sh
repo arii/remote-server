@@ -5,8 +5,8 @@ set -euo pipefail
 # - Boomtick MCP commands
 # - Common CLI utility commands (echo, head, tail, stat, file, touch, sed, etc.)
 
-SETTINGS_FILE="${HOME}/.gemini/antigravity-cli/settings.json"
-CONFIG_FILE="${HOME}/.gemini/config/config.json"
+export SETTINGS_FILE="${HOME}/.gemini/antigravity-cli/settings.json"
+export CONFIG_FILE="${HOME}/.gemini/config/config.json"
 
 echo "==> Updating Antigravity permissions..."
 
@@ -99,8 +99,8 @@ def update_global_config(filepath):
 
     print(f"Updated global grants in {filepath}: added {added} rule(s).")
 
-cli_path = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
-config_path = os.path.expanduser("~/.gemini/config/config.json")
+cli_path = os.environ.get("SETTINGS_FILE", os.path.expanduser("~/.gemini/antigravity-cli/settings.json"))
+config_path = os.environ.get("CONFIG_FILE", os.path.expanduser("~/.gemini/config/config.json"))
 
 update_cli_settings(cli_path)
 update_global_config(config_path)
