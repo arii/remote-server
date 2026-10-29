@@ -11,13 +11,19 @@ Verified against BoomTick `main` on 2026-10-29 unless noted.
 - **State:** OPEN (filed by Ari 2026-10-29, label `jules`, 2 comments).
 - **Symptom:** `MCP error -32602: Invalid tools/call result: structuredContent:
   Invalid input: expected record, received array`.
-- **Cause:** response handler expects a record; `jules.list_sessions` returns a
-  bare JSON array.
-- **Fix:** wrap the result as `{"sessions": [...]}`.
+- **Cause:** `listJulesSessionsHandler` (`mcp/src/tools/jules/list-sessions.ts`)
+  returns `Promise<JulesSession[]>` — a bare array — while the declared
+  `JulesListSessionsResponseSchema` is `z.object({ sessions: ... })`.
+  Checked the other jules handlers: only `list_sessions` returns a raw
+  array; the rest return objects.
+- **Fix (patch ready, verified `git apply --check` clean):**
+  `~/workspace/boomtick-1010-fix/fix-1010-list-sessions-wrap.patch` —
+  apply with `git apply` in a BoomTick checkout. Wraps the return as
+  `{ sessions: [...] }`, matching the schema and the issue's remediation.
 - **Why it matters here:** buttons "Sync & nudge agents" calls
   `td agent list-sessions` → `jules.list_sessions` via MCP. Until fixed, the
   Jules half of that button fails. (The missing-`JULES_API_KEY` graceful
-  handling is a separate buttons-side item — see evaluation doc §3.)
+  handling is a separate buttons-side item — done in 6a201762.)
 
 ## Resolved (verified 2026-10-29)
 
