@@ -1544,6 +1544,7 @@ summary.grouphead { cursor: pointer; }
   margin: 0.5em 0; background: var(--bg-card); }
 .repo[data-repo-pick] { cursor: pointer; }
 .repo[data-repo-pick]:hover { border-color: var(--primary); }
+.forrepo { font-size: 0.6em; font-weight: normal; color: var(--text-muted); }
 .repo.selected { border-color: var(--primary); }
 .issuepick { max-height: 12em; overflow-y: auto; margin: 0.5em 0;
   border: 1px solid var(--border); border-radius: 8px; padding: 0.5em; }
@@ -1757,7 +1758,7 @@ deletes all transcripts.</p>
 <div id="piSessionErr"></div>
 </section>
 <section class="tabpanel" id="tab-project" style="display:none">
-<h2>Issues</h2>
+<h2>Issues <span class="forrepo" data-forrepo></span></h2>
 <details><summary>How this works</summary>
 <p>Open issues for the picked repo — status, assignees, labels.
 Tap one to expand, assign, or open it in GitHub.</p>
@@ -1770,7 +1771,7 @@ Tap one to expand, assign, or open it in GitHub.</p>
 <textarea id="newIssueBody" rows="3" placeholder="Body (optional)"></textarea>
 <button id="createIssueBtn">Create issue</button>
 <div id="newIssueErr"></div>
-<h2>Jules sessions</h2>
+<h2>Jules sessions <span class="forrepo" data-forrepo></span></h2>
 <details><summary>How this works</summary>
 <p>What Jules is doing — state, what it's working on, link.
 Needs JULES_API_KEY in .env.</p>
@@ -1778,7 +1779,7 @@ Needs JULES_API_KEY in .env.</p>
 <button id="refreshJules">Refresh Jules sessions</button>
 <div id="julesSessions"></div>
 <div id="julesErr"></div>
-<h2>Plans</h2>
+<h2>Plans <span class="forrepo" data-forrepo></span></h2>
 <details><summary>How this works</summary>
 <p>Deterministic td planning guides. They read repo state and
 write a markdown plan file; nothing executes or pushes.</p>
@@ -1882,8 +1883,23 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     if (typeof refreshBriefing === "function") refreshBriefing();
   });
 });
+// Project tab: repo context lives where the work happens. The
+// section headers name the repo, and switching the picker
+// re-renders the tab (like the briefing does) so a stale repo
+// is never a silent empty list.
+function refreshProject() {
+  const repo = projectRepo();
+  document.querySelectorAll("[data-forrepo]").forEach(el => {
+    el.textContent = "— " + repo;
+  });
+  if (typeof refreshIssues === "function") refreshIssues();
+  if (typeof refreshJulesSessions === "function") refreshJulesSessions();
+}
 const _pickerEl = document.getElementById("briefingRepo");
 if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
+if (_pickerEl) _pickerEl.addEventListener("change", () => {
+  if (typeof refreshProject === "function") refreshProject();
+});
 markSelectedRepo();
 
 // Tab bar: one visible panel at a time. The output drawer is
@@ -1895,6 +1911,10 @@ document.querySelectorAll("#tabbar .tab").forEach(t => {
     document.querySelectorAll(".tabpanel").forEach(p => {
       p.style.display = (p.id === "tab-" + t.dataset.tab) ? "" : "none";
     });
+    // Opening the Project tab re-renders it for the current
+    // picker repo, so the sections never show a stale repo's data.
+    if (t.dataset.tab === "project" &&
+        typeof refreshProject === "function") refreshProject();
   };
 });
 
@@ -3163,7 +3183,10 @@ async function refreshIssues() {
   }
   el.innerHTML = "";
   const issues = data.issues || [];
-  if (!issues.length) { el.textContent = "No open issues."; return; }
+  if (!issues.length) {
+    el.textContent = "No open issues on " + projectRepo() + ".";
+    return;
+  }
   issues.forEach(iss => {
     const card = document.createElement("div");
     card.className = "prcard";
