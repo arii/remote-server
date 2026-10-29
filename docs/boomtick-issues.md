@@ -7,8 +7,8 @@ Verified against BoomTick `main` on 2026-10-29.
 
 ## Open
 
-### Unfiled — `td preflight` runs BoomTick-repo checks on every repo
-- **State:** UNFILED (found 2026-10-29 from the S5 ledger).
+### #1024 — `td preflight` runs BoomTick-repo checks on every repo
+- **State:** OPEN ([Issue #1024](https://github.com/arii/boomtick/issues/1024)).
 - **Symptom:** `td --json preflight` in `/srv/remote-server` fails: `pnpm run
   type-check` → `ERR_PNPM_NO_SCRIPT`, `pnpm run lint` → `ERR_PNPM_NO_SCRIPT`,
   `node scripts/detect-antipatterns.mjs` → `MODULE_NOT_FOUND`. The buttons
@@ -26,6 +26,16 @@ Verified against BoomTick `main` on 2026-10-29.
 - **Why it matters here:** the buttons preflight digest surfaces these as
   failures; after the patch, remote-server preflight degrades to the checks
   that exist (doctor, overlaps, merge simulation).
+
+### #1025 — Clarify repo override param description and surface errors in `repo_get_workflow_runs`
+- **State:** OPEN ([Issue #1025](https://github.com/arii/boomtick/issues/1025)).
+- **Symptom:** LLMs (e.g. Pi) literally pass `{"repo": "org/repo"}` and receive `Failed to fetch workflow runs: Unknown error`.
+- **Cause:** Schema description `(e.g. org/repo)` induces literal usage, and MCP handler swallows GitHub 404 details into "Unknown error".
+
+### #1026 — Sanitize dot-notated tool names to conform with MCP client tool naming regex
+- **State:** OPEN ([Issue #1026](https://github.com/arii/boomtick/issues/1026)).
+- **Symptom:** Antigravity CLI and standard MCP clients reject 17 dot-notated tool registrations at startup (`violates ^[a-zA-Z0-9_-]{1,64}$`).
+- **Fix:** Canonicalize tool registrations to underscores or sanitize manifests.
 
 ## Resolved (verified 2026-10-29)
 

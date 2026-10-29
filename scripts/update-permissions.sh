@@ -1,0 +1,1 @@
+allow-boomtick-mcp.sh
