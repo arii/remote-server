@@ -11,7 +11,7 @@
 # (Tailscale app on).
 #
 # Requires a REUSABLE TS_AUTHKEY (entrypoint re-runs `tailscale up` on restart).
-set -euo pipefail
+set -eu
 
 : "${TS_AUTHKEY:?TS_AUTHKEY is required (reusable auth key)}"
 TS_HOSTNAME="${TS_HOSTNAME:-s5}"
@@ -23,7 +23,7 @@ TAILSCALED_PID=$!
 
 # wait for the socket
 for _ in $(seq 1 30); do
-  [[ -S /var/run/tailscale/tailscaled.sock ]] && break
+  [ -S /var/run/tailscale/tailscaled.sock ] && break
   sleep 1
 done
 
