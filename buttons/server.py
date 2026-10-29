@@ -949,15 +949,6 @@ JOB_TEMPLATES = {
              "action": "preflight", "write": False},
         ],
     },
-    "pre-merge": {
-        "goal": "Pre-merge check on {repo}",
-        "steps": [
-            {"label": "Preflight check", "kind": "action",
-             "action": "preflight", "write": False},
-            {"label": "Refresh briefing", "kind": "action",
-             "action": "briefing-td", "write": False},
-        ],
-    },
     "fix-ci": {
         "goal": "Fix CI on PR #{pr} ({repo}) via Jules",
         "needs_pr": True,
@@ -2252,8 +2243,6 @@ function renderAttention(b) {
 const JOB_TEMPLATES = {
   "triage": {label: "Triage repo",
     desc: "Briefing → warm context → preflight. Runs on its own."},
-  "pre-merge": {label: "Pre-merge check",
-    desc: "Preflight → briefing before you merge."},
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
 };
