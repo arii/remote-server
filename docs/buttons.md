@@ -228,6 +228,39 @@ actual root cause of the empty-buttons page; the server-rendered
 buttons are what made the page survive it anyway. If the template
 ever stops being raw, the jsdiag line will tell you first.
 
+## Project tab (issues, Jules, plans)
+
+The Project tab is the project-management surface: open issues,
+Jules session progress, and the td planning guides — all for the
+repo picked above.
+
+- **Issues:** `GET /buttons/api/issues` runs `gh issue list` in
+  the terminal container (fixed `--json` field set, body
+  truncated). Each card shows number, title, assignees, labels,
+  updated time; expanding shows the body and an assign row.
+  Assign goes through `POST /buttons/api/assign-issue`
+  (repo from discovery, issue digits, assignee GitHub-username
+  charset, shlex-quoted, ledgered as `pr-action` /
+  `assign-issue`). The New issue form posts to the same
+  validated `/buttons/api/create-issue` as Ask Pi proposals and
+  Report bug.
+- **Jules sessions:** `GET /buttons/api/jules-sessions` runs
+  `td --json jules list-sessions` with the JULES_API_KEY guard
+  (notice + empty list when unset, same as sync-nudge). Cards
+  show title (linked), state, source repo, updated time, and the
+  linked PR when the session produced one — this is the "how is
+  Jules progressing" view.
+- **Plans:** `POST /buttons/api/run-plan` runs one allowlisted
+  td planning guide — `plan-issue-audit --all-open`,
+  `plan-workflow-audit`, `plan-review --pr N`,
+  `plan-aggregation --pr N… --target T`. Plans are deterministic:
+  they read repo state and write a markdown plan file; nothing
+  executes or pushes. Validation is strict (plan name from the
+  allowlist, PR numbers digits, target branch charset, every
+  token shlex-quoted), and the run is ledgered. The PR selects
+  populate from the briefing's `pr_list` on every briefing
+  refresh, same as the fix-ci job dropdown.
+
 ## Live Briefing view
 
 Below the output pane, a Briefing section renders the same

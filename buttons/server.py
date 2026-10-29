@@ -1480,6 +1480,13 @@ h2 { font-size: 1.1em; margin-top: 1.5em; }
 .chip-fail { color: #ff8a8a; border-color: var(--danger); }
 .chip-warn { color: #ffd75e; border-color: #8a6d1b; }
 .prcard .prmeta { font-size: 0.9em; color: var(--text-muted); }
+.planrow { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap;
+  margin: 0.4em 0; }
+.planrow button { width: auto; margin: 0; }
+.planrow input, .planrow select { font-size: 0.9em; }
+#issues .prcard, #julesSessions .prcard { margin: 0.4em 0; }
+#issues details { margin-top: 0.4em; }
+#issues input { margin-right: 0.4em; }
 .prcard .prresult { font-size: 0.9em; margin-top: 0.4em; }
 .practions { margin-top: 0.5em; display: flex; gap: 0.5em; flex-wrap: wrap; }
 .practions button { margin: 0; }
@@ -1503,6 +1510,9 @@ a { color: #8bf; }
   text-align: center; }
 #tabbar .tab.active { border-color: var(--primary); background: var(--bg-card-hover);
   font-weight: bold; }
+@media (max-width: 520px) {
+  #tabbar .tab { font-size: 0.72em; padding: 0.6em 0.1em; }
+}
 /* slide-up output drawer */
 #outputDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
   background: #050811; border-top: 1px solid var(--border);
@@ -1571,6 +1581,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 <button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
 <button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
 <button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
+<button class="tab" data-tab="project" role="tab">📊 Project</button>
 <button class="tab" data-tab="jobs" role="tab">🧰 Jobs</button><button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
 </div>
 </div>
@@ -1621,6 +1632,39 @@ deletes all transcripts.</p>
 <div id="piSessionList"></div>
 <pre id="piSessionOut"></pre>
 <div id="piSessionErr"></div>
+</section>
+<section class="tabpanel" id="tab-project" style="display:none">
+<h2>Issues</h2>
+<p>Open issues for the picked repo — status, assignees, labels.
+Tap one to expand, assign, or open it in GitHub.</p>
+<button id="refreshIssues">Refresh issues</button>
+<div id="issues"></div>
+<div id="issuesErr"></div>
+<h3>New issue</h3>
+<input id="newIssueTitle" placeholder="Title" maxlength="200" style="width:100%;box-sizing:border-box">
+<textarea id="newIssueBody" rows="3" placeholder="Body (optional)"></textarea>
+<button id="createIssueBtn">Create issue</button>
+<div id="newIssueErr"></div>
+<h2>Jules sessions</h2>
+<p>What Jules is doing — state, what it's working on, link.
+Needs JULES_API_KEY in .env.</p>
+<button id="refreshJules">Refresh Jules sessions</button>
+<div id="julesSessions"></div>
+<div id="julesErr"></div>
+<h2>Plans</h2>
+<p>Deterministic td planning guides. They read repo state and
+write a markdown plan file; nothing executes or pushes.</p>
+<div class="planrow"><button id="planIssueAuditBtn">Audit open issues</button>
+<button id="planWorkflowAuditBtn">Audit workflows</button></div>
+<div class="planrow"><label>Review plan for PR
+<select id="planPrSelect"><option value="">—</option></select></label>
+<button id="planReviewBtn">Generate</button></div>
+<div class="planrow"><span>Aggregate PRs</span>
+<select id="planAggPrs" multiple size="4" style="min-width:9em"><option value="">—</option></select>
+<label>into <input id="planAggTarget" value="main" size="12" maxlength="64"></label>
+<button id="planAggBtn">Generate</button></div>
+<div id="planOut"></div>
+<div id="planErr"></div>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
 <h2>Jobs</h2>
@@ -2292,6 +2336,7 @@ async function refreshBriefing() {
   renderBriefing(res.data);
   briefingPrs = res.data.pr_list || [];
   if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
+  if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
   if (typeof renderAttention === "function") renderAttention(res.data);
 }
 
@@ -2341,8 +2386,8 @@ let briefingPrs = []; // open PRs from the latest briefing, for the PR dropdown
 // Open-PR dropdown for jobs that need one (fix-ci): rebuilt from the
 // latest briefing's PR list as "#number — title", not a blind number
 // field. Rebuilt whenever the briefing refreshes (repo switch incl.).
-function refreshJobPrSelect() {
-  const sel = document.getElementById("jobPrSelect");
+function refreshJobPrSelect(sel) {
+  sel = sel || document.getElementById("jobPrSelect");
   if (!sel) return;
   sel.textContent = "";
   if (!briefingPrs.length) {
@@ -2381,7 +2426,10 @@ function renderJobNew() {
       prSelect.style.marginRight = "0.5em";
       prSelect.style.maxWidth = "100%";
       d.appendChild(prSelect);
-      refreshJobPrSelect();
+      // Populate directly: the card is still detached here, so a
+      // getElementById lookup would find nothing and leave the
+      // select empty (the "No open PRs" option included).
+      refreshJobPrSelect(prSelect);
     }
     const b = document.createElement("button");
     b.textContent = "Start job";
@@ -2803,6 +2851,265 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     piSessionErrEl.textContent = "sessions unavailable: " + e;
   }
 };
+
+// Project tab: issues, Jules sessions, td planning guides.
+// Reads the repo from the picker at tap time, like the other tabs.
+function projectRepo() {
+  const p = document.getElementById("briefingRepo");
+  return p ? p.value : "remote-server";
+}
+function renderPlanPrSelects() {
+  const single = document.getElementById("planPrSelect");
+  if (single) {
+    single.innerHTML = '<option value="">—</option>';
+    (briefingPrs || []).forEach(pr => {
+      const o = document.createElement("option");
+      o.value = pr.number;
+      o.textContent = "#" + pr.number + " — " +
+        String(pr.title || "").slice(0, 60);
+      single.appendChild(o);
+    });
+  }
+  const multi = document.getElementById("planAggPrs");
+  if (multi) {
+    multi.innerHTML = "";
+    (briefingPrs || []).forEach(pr => {
+      const o = document.createElement("option");
+      o.value = pr.number;
+      o.textContent = "#" + pr.number + " — " +
+        String(pr.title || "").slice(0, 40);
+      multi.appendChild(o);
+    });
+  }
+}
+async function refreshIssues() {
+  const el = document.getElementById("issues");
+  const err = document.getElementById("issuesErr");
+  if (!el) return;
+  el.innerHTML = '<span class="spinner"></span> Loading issues…';
+  err.textContent = "";
+  const res = await fetchJson("/buttons/api/issues?repo=" +
+    encodeURIComponent(projectRepo()));
+  const data = res.data || {};
+  if (!res.ok) {
+    el.innerHTML = "";
+    err.textContent = "issues unavailable: " + (data.error || res.status);
+    return;
+  }
+  el.innerHTML = "";
+  const issues = data.issues || [];
+  if (!issues.length) { el.textContent = "No open issues."; return; }
+  issues.forEach(iss => {
+    const card = document.createElement("div");
+    card.className = "prcard";
+    const title = document.createElement("div");
+    title.className = "prtitle";
+    const a = document.createElement("a");
+    a.href = iss.url; a.target = "_blank"; a.rel = "noopener";
+    a.textContent = "#" + iss.number + " " + iss.title;
+    title.appendChild(a);
+    card.appendChild(title);
+    const meta = document.createElement("div");
+    meta.className = "prmeta";
+    const who = (iss.assignees || []).map(x => x.login).join(", ") ||
+      "unassigned";
+    const labs = (iss.labels || []).map(x => x.name).join(", ");
+    let when = "";
+    try { when = new Date(iss.updatedAt).toLocaleString(); } catch (e) {}
+    meta.textContent = who + (labs ? " · " + labs : "") +
+      (when ? " · updated " + when : "");
+    card.appendChild(meta);
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = "Details / assign";
+    det.appendChild(sum);
+    const pre = document.createElement("pre");
+    pre.textContent = iss.body || "(no body)";
+    det.appendChild(pre);
+    const row = document.createElement("div");
+    const inp = document.createElement("input");
+    inp.placeholder = "assignee username";
+    inp.size = 18;
+    inp.maxLength = 39;
+    const btn = document.createElement("button");
+    btn.textContent = "Assign";
+    btn.onclick = async () => {
+      const name = inp.value.trim();
+      if (!name) return;
+      if (!(await confirmDialog("Assign issue",
+          "Assign #" + iss.number + " to " + name + "?", false))) return;
+      btn.disabled = true;
+      const r = await fetchJson("/buttons/api/assign-issue", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({repo: projectRepo(), issue: iss.number,
+                              assignee: name})});
+      btn.disabled = false;
+      if (!r.ok) {
+        err.textContent = "assign failed: " +
+          (((r.data || {}).error) || r.status);
+        return;
+      }
+      refreshIssues();
+    };
+    row.appendChild(inp);
+    row.appendChild(btn);
+    det.appendChild(row);
+    card.appendChild(det);
+    el.appendChild(card);
+  });
+}
+async function createProjectIssue() {
+  const tEl = document.getElementById("newIssueTitle");
+  const bEl = document.getElementById("newIssueBody");
+  const err = document.getElementById("newIssueErr");
+  const title = (tEl.value || "").trim();
+  const repo = projectRepo();
+  if (!title) { err.textContent = "Title is required."; return; }
+  err.textContent = "";
+  if (!(await confirmDialog("Create GitHub issue",
+      "Create this issue in " + repo + "?\n\n" + title, false))) return;
+  const btn = document.getElementById("createIssueBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetchJson("/buttons/api/create-issue", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({repo: repo, title: title,
+                            body: bEl.value || ""})});
+    const data = res.data || {};
+    if (!res.ok) {
+      err.textContent = "create failed: " + (data.error || res.status);
+      return;
+    }
+    tEl.value = "";
+    bEl.value = "";
+    await confirmDialog("Issue created", data.url || "created", false);
+    refreshIssues();
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function refreshJulesSessions() {
+  const el = document.getElementById("julesSessions");
+  const err = document.getElementById("julesErr");
+  if (!el) return;
+  el.innerHTML = '<span class="spinner"></span> Loading Jules sessions…';
+  err.textContent = "";
+  const res = await fetchJson("/buttons/api/jules-sessions?repo=" +
+    encodeURIComponent(projectRepo()));
+  const data = res.data || {};
+  if (!res.ok) {
+    el.innerHTML = "";
+    err.textContent = "jules unavailable: " + (data.error || res.status);
+    return;
+  }
+  el.innerHTML = "";
+  if (data.notice) {
+    const n = document.createElement("p");
+    n.textContent = data.notice;
+    el.appendChild(n);
+  }
+  const ss = data.sessions || [];
+  if (!ss.length) {
+    el.appendChild(document.createTextNode("No Jules sessions."));
+    return;
+  }
+  ss.forEach(s => {
+    const card = document.createElement("div");
+    card.className = "prcard";
+    const title = document.createElement("div");
+    title.className = "prtitle";
+    if (s.url) {
+      const a = document.createElement("a");
+      a.href = s.url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = s.title || s.id;
+      title.appendChild(a);
+    } else {
+      title.textContent = s.title || s.id;
+    }
+    card.appendChild(title);
+    const meta = document.createElement("div");
+    meta.className = "prmeta";
+    let when = "";
+    try { when = new Date(s.updated).toLocaleString(); } catch (e) {}
+    meta.textContent = (s.state || "?") +
+      (s.source ? " · " + s.source : "") +
+      (when ? " · updated " + when : "");
+    card.appendChild(meta);
+    if (s.pr_url) {
+      const pr = document.createElement("div");
+      const a = document.createElement("a");
+      a.href = s.pr_url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = "PR: " + s.pr_url.split("/").pop();
+      pr.appendChild(a);
+      card.appendChild(pr);
+    }
+    el.appendChild(card);
+  });
+}
+async function runPlan(plan, extra) {
+  const out = document.getElementById("planOut");
+  const err = document.getElementById("planErr");
+  out.innerHTML = '<span class="spinner"></span> Generating plan…';
+  err.textContent = "";
+  const res = await fetchJson("/buttons/api/run-plan", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(Object.assign({repo: projectRepo(), plan: plan},
+                                      extra || {}))});
+  const data = res.data || {};
+  if (!res.ok) {
+    out.innerHTML = "";
+    err.textContent = "plan failed: " + (data.error || res.status);
+    return;
+  }
+  out.innerHTML = "";
+  if (data.plan_path) {
+    const p = document.createElement("p");
+    p.textContent = "Plan written to: " + data.plan_path;
+    out.appendChild(p);
+  }
+  const pre = document.createElement("pre");
+  pre.textContent = data.output || "(empty)";
+  out.appendChild(pre);
+}
+(function wireProjectTab() {
+  const ri = document.getElementById("refreshIssues");
+  if (ri) ri.onclick = refreshIssues;
+  const ci = document.getElementById("createIssueBtn");
+  if (ci) ci.onclick = createProjectIssue;
+  const rj = document.getElementById("refreshJules");
+  if (rj) rj.onclick = refreshJulesSessions;
+  const pia = document.getElementById("planIssueAuditBtn");
+  if (pia) pia.onclick = () => runPlan("issue-audit");
+  const pwa = document.getElementById("planWorkflowAuditBtn");
+  if (pwa) pwa.onclick = () => runPlan("workflow-audit");
+  const prb = document.getElementById("planReviewBtn");
+  if (prb) prb.onclick = () => {
+    const pr = document.getElementById("planPrSelect").value;
+    if (!pr) {
+      document.getElementById("planErr").textContent =
+        "Pick a PR first.";
+      return;
+    }
+    runPlan("review", {pr: pr});
+  };
+  const pab = document.getElementById("planAggBtn");
+  if (pab) pab.onclick = () => {
+    const sel = document.getElementById("planAggPrs");
+    const prs = Array.from(sel.selectedOptions).map(o => o.value);
+    const target =
+      (document.getElementById("planAggTarget").value || "").trim() ||
+      "main";
+    if (!prs.length) {
+      document.getElementById("planErr").textContent =
+        "Select at least one PR.";
+      return;
+    }
+    runPlan("aggregation", {prs: prs, target: target});
+  };
+})();
 
 // Live updates: re-fetch status every 10s (skipped while the tab
 // is hidden) so webhook auto-pulls show up without a reload. The
@@ -3413,6 +3720,178 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 _ledger_append({"kind": "pr-action", "repo": repo,
                                 "action": "create-issue", "ok": False,
+                                "error": str(exc)[:500]})
+                self._json({"error": str(exc)[:500]}, 500)
+            return
+        if path == "/buttons/api/issues":
+            # Open issues for the picked repo: number, title,
+            # assignees, labels, updated, url, body (truncated).
+            # Read-only; gh list with a fixed --json field set.
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            gh = repos[repo]["gh"]
+            try:
+                out = _td_run(
+                    "gh issue list --repo " + shlex.quote(gh) +
+                    " --state open --limit 50 --json "
+                    "number,title,state,assignees,labels,updatedAt,"
+                    "url,body",
+                    timeout=60,
+                    prefix=_td_prefix(repos[repo]["td_cwd"]))
+                issues = json.loads(out)
+                for i in issues:
+                    if isinstance(i.get("body"), str) \
+                            and len(i["body"]) > 600:
+                        i["body"] = i["body"][:600] + "…"
+                self._json({"repo": repo, "issues": issues})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
+        if path == "/buttons/api/assign-issue":
+            # Assign an issue to a user. Strict validation: repo
+            # from discovery, issue digits, assignee GitHub-username
+            # charset; everything shlex-quoted into the gh argv.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            issue = str(data.get("issue", ""))
+            assignee = str(data.get("assignee", "")).strip()
+            if repo not in repos or not issue.isdigit() \
+                    or not re.fullmatch(r"[A-Za-z0-9-]{1,39}",
+                                        assignee):
+                self._json({"error": "bad repo, issue or assignee"},
+                           400)
+                return
+            gh = repos[repo]["gh"]
+            try:
+                _td_run("gh issue edit " + shlex.quote(issue) +
+                        " --repo " + shlex.quote(gh) +
+                        " --add-assignee " + shlex.quote(assignee),
+                        timeout=60,
+                        prefix=_td_prefix(repos[repo]["td_cwd"]))
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "action": "assign-issue", "ok": True,
+                                "note": f"#{issue} -> {assignee}"[:200]})
+                self._json({"ok": True})
+            except Exception as exc:
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "action": "assign-issue", "ok": False,
+                                "error": str(exc)[:500]})
+                self._json({"error": str(exc)[:500]}, 500)
+            return
+        if path == "/buttons/api/jules-sessions":
+            # Jules sessions for progress visibility: id, title,
+            # state, updated, url, source repo, linked PR. Read-only.
+            # Graceful when JULES_API_KEY is unset — the notice
+            # pattern from the sync-nudge button.
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            info = repos[repo]
+            cmd = ("if [ -z \"$JULES_API_KEY\" ]; then "
+                   "echo '{\"sessions\": [], "
+                   "\"notice\": \"JULES_API_KEY is unset — add it to "
+                   ".env to see Jules sessions\"}'; else "
+                   "td --json jules list-sessions; fi")
+            try:
+                out = _td_run(cmd, timeout=120,
+                              prefix=_td_prefix(info["td_cwd"]))
+                data = json.loads(out)
+                sessions = []
+                for s in data.get("sessions", [])[:30]:
+                    pr_url = ""
+                    for o in s.get("outputs", []) or []:
+                        pr = o.get("pullRequest") or {}
+                        if pr.get("url"):
+                            pr_url = pr["url"]
+                            break
+                    sessions.append({
+                        "id": s.get("id"), "title": s.get("title"),
+                        "state": s.get("state"),
+                        "updated": s.get("updateTime"),
+                        "url": s.get("url"),
+                        "source": ((s.get("sourceContext") or {})
+                                   .get("source", "")
+                                   .split("/")[-1]),
+                        "pr_url": pr_url,
+                    })
+                self._json({"repo": repo, "sessions": sessions,
+                            "notice": data.get("notice", "")})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
+        if path == "/buttons/api/run-plan":
+            # Run one allowlisted td planning guide. Plans are
+            # deterministic: they read repo state and write a
+            # markdown plan file; nothing executes or pushes.
+            # Strict validation: plan name from the allowlist, PR
+            # numbers digits, target branch charset; every token
+            # shlex-quoted into the argv.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            plan = data.get("plan")
+            if repo not in repos or plan not in (
+                    "issue-audit", "workflow-audit", "review",
+                    "aggregation"):
+                self._json({"error": "bad repo or plan"}, 400)
+                return
+            argv = ["td", "--json", "agent"]
+            if plan == "issue-audit":
+                argv += ["plan-issue-audit", "--all-open"]
+            elif plan == "workflow-audit":
+                argv += ["plan-workflow-audit"]
+            elif plan == "review":
+                pr = str(data.get("pr", ""))
+                if not pr.isdigit() or int(pr) <= 0:
+                    self._json({"error": "bad pr"}, 400)
+                    return
+                argv += ["plan-review", "--pr", pr]
+            else:  # aggregation
+                prs = data.get("prs") or []
+                target = str(data.get("target", "")).strip()
+                if not prs or len(prs) > 10 or not all(
+                        str(p).isdigit() and int(p) > 0
+                        for p in prs) \
+                        or not re.fullmatch(r"[A-Za-z0-9._/-]{1,64}",
+                                            target):
+                    self._json({"error": "bad prs or target"}, 400)
+                    return
+                argv += ["plan-aggregation"]
+                for p in prs:
+                    argv += ["--pr", str(int(p))]
+                argv += ["--target", target]
+            cmd = " ".join(shlex.quote(t) for t in argv)
+            try:
+                out = _td_run(cmd, timeout=300,
+                              prefix=_td_prefix(repos[repo]["td_cwd"]))
+                plan_path = ""
+                try:
+                    plan_path = json.loads(out).get("plan_path",
+                                                    "") or ""
+                except Exception:
+                    pass
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "action": "plan-" + plan, "ok": True,
+                                "note": str(plan_path)[:200]})
+                self._json({"ok": True, "output": out[-4000:],
+                            "plan_path": plan_path})
+            except Exception as exc:
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "action": "plan-" + plan, "ok": False,
                                 "error": str(exc)[:500]})
                 self._json({"error": str(exc)[:500]}, 500)
             return
