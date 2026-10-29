@@ -142,21 +142,27 @@ Node 22 satisfies the server's stated Node >= 22).
 
 ## Agent brief
 
-Pi's standing instructions live in `terminal/pi-config/agent-brief.md`
-(baked into the terminal image; same volume rule as `mcp.json` — an
-existing `pi-data` volume needs
-`docker cp terminal/pi-config/agent-brief.md remote-terminal-1:/root/.pi/agent/agent-brief.md`).
+Pi's standing instructions live in `terminal/pi-config/APPEND_SYSTEM.md`
+(baked into the terminal image and bind-mounted at
+`/root/.pi/agent/APPEND_SYSTEM.md`; same volume rule as `mcp.json` —
+an existing `pi-data` volume needs
+`docker cp terminal/pi-config/APPEND_SYSTEM.md remote-terminal-1:/root/.pi/agent/APPEND_SYSTEM.md`).
+`APPEND_SYSTEM.md` is Pi's native steering file: the harness appends it
+to the system prompt automatically every session. (It was previously
+`agent-brief.md`, which Pi never auto-loaded — renamed 2026-10-28.)
 The brief covers: MCP health checks first every session, repos
 watched (tech-dancer only to start — MCP is single-repo-scoped per
 entry), the briefing list (open PRs + CI, conflicts, failing checks,
 unresolved review comments, stale PRs, one top action), and the
 read-only boundary (no merge/push/post without explicit approval).
 
-Interactive use: start Pi and ask it to read
-`/root/.pi/agent/agent-brief.md` and follow it. The buttons page can
+Interactive use: the steering loads automatically in every session —
+no need to ask Pi to read anything; `/reload` picks it up without a
+restart. The buttons page can
 also trigger briefings without opening Pi: "Repo briefing (td, fast)"
-runs td commands, "Repo briefing (agent, slow)" runs `pi -p` with the
-brief (print mode: one-shot reply, no TUI), "Create plan" saves a
+runs td commands, "Repo briefing (agent, slow)" runs `pi -p` with
+limited task context (not the brief; print mode: one-shot reply, no
+TUI), "Create plan" saves a
 dated plan to tech-dancer's `.agents/plans/`. See docs/buttons.md.
 
 ## Repos in the terminal (active 2026-10-27)

@@ -94,7 +94,7 @@ services:
       - pi-data:/root/.pi
       - ./terminal/pi-config/models.json:/root/.pi/agent/models.json
       - ./terminal/pi-config/mcp.json:/root/.pi/agent/mcp.json
-      - ./terminal/pi-config/agent-brief.md:/root/.pi/agent/agent-brief.md
+      - ./terminal/pi-config/APPEND_SYSTEM.md:/root/.pi/agent/APPEND_SYSTEM.md
       # Persist Antigravity CLI (agy) binary, state, auth, and chat history across container recreates.
       - gemini-data:/root/.gemini
       - local-data:/root/.local

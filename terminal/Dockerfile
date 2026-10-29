@@ -86,7 +86,7 @@ COPY pi-config/settings.json /root/.pi/agent/settings.json
 COPY pi-config/mcp.json /root/.pi/agent/mcp.json
 # Agent brief: standing instructions for Pi (see docs/pi-setup.md § Agent brief).
 # Same volume-seeding caveat: copy it into an existing pi-data volume.
-COPY pi-config/agent-brief.md /root/.pi/agent/agent-brief.md
+COPY pi-config/APPEND_SYSTEM.md /root/.pi/agent/APPEND_SYSTEM.md
 
 WORKDIR /srv/remote-server
 EXPOSE 7681

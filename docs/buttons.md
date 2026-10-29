@@ -296,8 +296,8 @@ suggest td commands, then runs only what you approve:
    items, one line per PR (number, title, CI, merge, conflict,
    review), failing runs, Jules count, capped at 6000 chars.
    Pi gets limited, relevant context plus a short task
-   instruction — not the full briefing, and not
-   `agent-brief.md`.
+   instruction — not the full briefing, and not the contents of
+   `APPEND_SYSTEM.md`.
 3. Pi runs in print mode (`pi -p`) with read-only tools
    (`read,grep,find,ls`): it can read the checkout for more
    context but cannot run anything. Its prompt travels

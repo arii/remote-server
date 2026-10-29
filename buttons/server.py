@@ -196,7 +196,7 @@ ENV = {**os.environ, "HOME": "/home/ari"}
 # suggest endpoint (1) fetches the briefing JSON for the picked
 # repo, (2) compresses it to a compact context — attention items
 # + one line per PR + failing runs + Jules count, capped, NOT
-# the full briefing and NOT agent-brief.md (Pi gets limited,
+# the full briefing and NOT APPEND_SYSTEM.md (Pi gets limited,
 # relevant context plus a short task instruction, per the
 # standing Pi-context steer) — (3) runs Pi in print mode with
 # READ-ONLY tools (read,grep,find,ls: Pi can read the checkout
