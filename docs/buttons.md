@@ -4,12 +4,15 @@ A tabbed phone UI at `https://<domain>:<port>/buttons` (same URL as
 the terminal, same GitHub OAuth gate) with buttons for the stack
 operations that are painful to type on a phone keyboard. No free-text
 command input anywhere: every button runs one fixed command list.
+The Ask Pi box takes free-text *instructions*, but Pi only proposes —
+every execution still goes through a confirm dialog and a validated
+command path (see Ask Pi below).
 
 ## Layout
 
 Four tabs share one sticky header: **Actions** (stack buttons),
-**Briefing** (briefing + PR cards), **Pi agent** (suggestions + Pi
-sessions), **Ledger** (audit log). The header holds the repo picker
+**Briefing** (briefing + PR cards), **Pi agent** (suggestions + Ask Pi
++ Pi sessions), **Ledger** (audit log). The header holds the repo picker
 (the repo chip — every repo-scoped button and the briefing follow
 it) plus a server status dot, green while the status endpoint
 answers, red when it does not. Run output lives in a slide-up
@@ -45,9 +48,9 @@ recreate containers, unlike the read-only actions.
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
 | Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
-| Sync & nudge agents | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses), then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped). The fallback covers a group-name difference only, not a missing JULES_API_KEY — both spellings fail that way, and the failure note below says so |
+| Sync & nudge agents | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses), then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped). A missing JULES_API_KEY is not a failure: both steps print a notice and exit 0, so the run stays green instead of turning the banner red for config you haven't done |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
-| Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for the picked repo |
+| Preflight check | `td --json preflight` piped through `buttons/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code |
 
 Deploy buttons, Recreate, and Sync & nudge agents ask for
 confirmation first, as do the per-PR action buttons on the
@@ -134,12 +137,16 @@ the old behavior (its own output is the cause).
   Clear cancels nothing and runs no command. The button sits in the
   drawer header (not the Actions tab) on purpose, so it is never
   disabled while a run is in progress.
-- **Failure banner:** a failed run's status line carries the last
-  three non-empty output lines (read from the output pane, so ANSI
-  is already stripped) instead of pointing at the `step failed` line
-  at the end of the output — the pane sits below the fold on a
-  phone, so the cause was never visible. The tail usually includes
-  that `step failed` line itself, since the server appends it last.
+- **Failure banner:** a failed run's status line carries the single
+  most error-like output line (read from the output pane, so ANSI
+  is already stripped) instead of the raw tail — the pane sits
+  below the fold on a phone, so the cause was never visible. The
+  echoed `$ ...` command line and the server's own `step failed …
+  aborting` trailer are filtered first (they say nothing about the
+  cause); then a JSON `"message"`/`"error"` field, a traceback, or
+  an Error/failed line wins, falling back to the raw last line.
+  One line, truncated at 220 chars: the banner is a pointer, not
+  a log.
 - **Green / red:** the status line and the output pane's border go
   green on exit 0, red on any other exit code, amber while running.
   Border colour comes **only from the exit code**, never from
@@ -330,6 +337,42 @@ real — briefing fetch plus a local-model Pi run can take
 minutes; the section shows a spinner line while it thinks.
 Suggestions themselves are not ledger entries (reads, like
 briefing reads); executions are.
+
+## Ask Pi
+
+Below Suggest next actions, the Pi tab has a free-text box for
+open-ended instructions about the picked repo — "draft an issue
+for the flaky briefing refresh", "where does the webhook worker
+live?", anything you would otherwise type into a terminal. This
+is the one place the page accepts free text, and it never becomes
+a command directly:
+
+1. `POST /buttons/api/ask` takes `{repo, instruction}` (2000 chars
+   max, repo must be known). The server wraps your instruction in
+   a prompt that tells Pi to investigate read-only and, if you
+   asked for a write, to propose the exact change and stop —
+   never execute it. The prompt travels base64-encoded like the
+   suggest flow.
+2. Pi runs in print mode with read-only tools
+   (`read,grep,find,ls`). The reply renders inline. If Pi emitted
+   a `PROPOSE` block in the strict form (`PROPOSE issue` +
+   `TITLE:`/`BODY:`/`END PROPOSE`, or `PROPOSE td` +
+   `COMMAND:`/`END PROPOSE`), the page shows it as a proposal
+   card with the title/body or command verbatim.
+3. Nothing runs until you tap the proposal's button and confirm
+   in the dialog. A td proposal goes through `/buttons/api/run-td`
+   (re-validated against the same allowlist as suggestions). An
+   issue proposal goes through `/buttons/api/create-issue`, which
+   validates the repo, caps title/body length, and shlex-quotes
+   both into `gh issue create --repo <discovered gh path>` —
+   free text never reaches a shell unquoted. Issue creations are
+   ledger entries (`pr-action` / `create-issue`, with the issue
+   URL as the note).
+
+Anything not in the exact PROPOSE form is shown as text, never
+run — a dithering model degrades to a readable reply, not a
+broken action. Like suggest: slow by design on the local model,
+minutes not seconds.
 
 ## Pi session audit
 

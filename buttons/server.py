@@ -336,6 +336,87 @@ def _parse_suggestions(raw):
     return suggestions
 
 
+ASK_MAX_CHARS = 2000
+
+
+def _ask_prompt(repo, instruction):
+    """Prompt wrapper for the Ask Pi text box. Pi investigates
+    read-only; a write the user asked for (create an issue, run a
+    td command) comes back as a PROPOSE block, never executed —
+    the page shows it with a confirm dialog and the server
+    re-validates before running anything."""
+    return (
+        f"You are helping Ari from his phone. Repo: {repo}. "
+        "Be terse, no filler.\n"
+        "The user instruction follows. Investigate read-only using "
+        "the files in this repo's checkout (do not run any tools).\n"
+        "If the instruction asks for a write action, do the "
+        "read-only investigation first, then propose the exact "
+        "change and STOP — do not execute it. Allowed proposal "
+        "kinds: creating a GitHub issue, or running one allowlisted "
+        "td command.\n"
+        "Emit a proposal ONLY in exactly this form, on its own lines:\n"
+        "PROPOSE issue\n"
+        "TITLE: <issue title, one line>\n"
+        "BODY:\n"
+        "<issue body, markdown>\n"
+        "END PROPOSE\n"
+        "or\n"
+        "PROPOSE td\n"
+        "COMMAND: <exact td command>\n"
+        "END PROPOSE\n"
+        "Allowed td commands (exact shapes):\n"
+        "td --json agent fix-ci --pr N --execute\n"
+        "td gh read-pr-reviews --pr N\n"
+        "td gh read-pr-comments --pr N\n"
+        "td gh resolve-conflicts --pr N\n"
+        "td context-warm\n"
+        "td --json preflight\n"
+        "td --json agent list-sessions\n"
+        "td --json jules list-sessions\n"
+        "td --json agent run-feedback-check\n"
+        "If no write is needed, just answer the instruction — no "
+        "PROPOSE block.\n"
+        "Instruction:\n" + instruction)
+
+
+def _parse_proposal(raw):
+    """Strict PROPOSE block parser. Returns a dict or None. ANSI
+    escapes are stripped first. Anything not in the exact form is
+    ignored — the reply is still shown, just not runnable. A td
+    proposal goes through _validate_td_command, the same gate as
+    suggestion Run buttons; an issue proposal is length-capped
+    here and the title/body are shown verbatim in the confirm
+    dialog before anything is created."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", raw or "")
+    m = re.search(r"^PROPOSE\s+(issue|td)\s*$", clean, re.M)
+    if not m:
+        return None
+    kind = m.group(1)
+    tail = clean[m.end():]
+    end = re.search(r"^END PROPOSE\s*$", tail, re.M)
+    if not end:
+        return None
+    body = tail[:end.start()]
+    if kind == "td":
+        cm = re.search(r"^COMMAND:\s*(.+)$", body, re.M)
+        if not cm:
+            return None
+        tokens = _validate_td_command(cm.group(1).strip())
+        if not tokens:
+            return None
+        return {"kind": "td", "command": " ".join(tokens)}
+    tm = re.search(r"^TITLE:\s*(.+)$", body, re.M)
+    if not tm:
+        return None
+    title = tm.group(1).strip()[:200]
+    bm = re.search(r"^BODY:\s*$", body, re.M)
+    text = body[bm.end():].strip()[:4000] if bm else ""
+    if not title:
+        return None
+    return {"kind": "issue", "title": title, "body": text}
+
+
 # GitHub webhook auto-pull (pull-only, never rebuild, never hooks).
 # This is the ONE endpoint that is not behind the OAuth gate: GitHub
 # cannot pass GitHub OAuth, so oauth2-proxy skips auth for exactly
@@ -630,18 +711,25 @@ ACTIONS = {
     # second step writes to live agent sessions. The list step
     # falls back to the jules group (same fallback the briefing's
     # Jules section uses): a group-name difference must not make
-    # the whole button fail silently. It does NOT cover a missing
-    # JULES_API_KEY — both spellings fail that way, and the
-    # failure note below says so.
+    # the whole button fail silently. A missing JULES_API_KEY is
+    # NOT a failure: both steps notice and exit 0, so the run
+    # stays green with an explanatory note instead of turning the
+    # whole banner red for a config step the user hasn't done.
     "sync-nudge": {
         "label": "Sync & nudge agents",
         "group": "Briefing",
         "sub": "List Jules sessions, post feedback to stalled ones",
         "confirm": True,
         "steps": [
-            EXEC + [TD + "td --json agent list-sessions || "
-                    "td --json jules list-sessions"],
-            EXEC + [TD + "td --json agent run-feedback-check"],
+            EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
+                    "\"notice: JULES_API_KEY is unset — add it to .env "
+                    "to enable Jules session sync\"; else "
+                    "td --json agent list-sessions || "
+                    "td --json jules list-sessions; fi"],
+            EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
+                    "\"notice: JULES_API_KEY is unset — skipping "
+                    "feedback check\"; else "
+                    "td --json agent run-feedback-check; fi"],
         ],
     },
     # Warm context: regenerate .agent-context.json only if stale
@@ -658,14 +746,21 @@ ACTIONS = {
         ],
     },
     # Preflight: doctor + typecheck + lint + overlap detection +
-    # merge simulation, in one deterministic run.
+    # merge simulation, in one deterministic run. td's raw JSON is
+    # 30KB+ of nested lint reports — unreadable on a phone — so the
+    # step pipes through preflight_digest.py, which prints one
+    # OK/FAIL line per check plus a summary (raw output is kept
+    # only when the JSON won't parse). pipefail keeps td's own
+    # non-zero exit failing the step; the digest exits 1 when any
+    # check fails.
     "preflight": {
         "label": "Preflight check",
         "group": "Briefing",
-        "sub": "doctor + typecheck + lint + overlap + merge simulation",
+        "sub": "doctor + typecheck + lint + overlap + merge simulation (compact digest)",
         "confirm": False,
         "steps": [
-            EXEC + [TD + "td --json preflight"],
+            EXEC + [TD + "set -o pipefail; td --json preflight | "
+                    "python3 /srv/remote-server/buttons/preflight_digest.py"],
         ],
     },
     # Hidden: no button renders for this (see _buttons_html).
@@ -1112,6 +1207,15 @@ h2 { font-size: 1.1em; margin-top: 1.5em; }
 #staleBar { border: 1px solid var(--warning); border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
 button.needs-update { border-color: var(--warning); box-shadow: 0 0 0 2px rgba(245,158,11,0.4); }
 #briefingErr { color: #ff8a8a; }
+#askBox { width: 100%; box-sizing: border-box; background: var(--bg-card);
+  color: var(--text-main); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.6em; font: inherit; margin: 0.4em 0; resize: vertical; }
+#askBox:focus { border-color: var(--primary); outline: none; }
+.proposal { border: 1px solid var(--primary); border-radius: 10px; padding: 0.75em;
+  margin: 0.5em 0; background: var(--bg-card); }
+.proposal .ptitle { font-weight: bold; margin-bottom: 0.4em; }
+.proposal pre { max-height: 12em; overflow: auto; }
+#askErr, #suggestErr { color: #ff8a8a; }
 a { color: #8bf; }
 /* segmented tab bar */
 #tabbar { display: flex; gap: 0.4em; background: var(--bg-app); padding: 0.5em 0;
@@ -1188,6 +1292,18 @@ minutes on the local model.</p>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
+
+<h2>Ask Pi</h2>
+<p>Open-ended instructions for this repo, in your own words —
+e.g. "draft an issue for the flaky briefing refresh" or "where
+does the webhook worker live?". Pi investigates read-only and
+replies here. If you asked for a write (like creating an issue),
+Pi proposes the exact change and nothing runs until you confirm
+it. Takes minutes on the local model.</p>
+<textarea id="askBox" rows="3" placeholder="Ask Pi anything about this repo…"></textarea>
+<button id="askBtn">Ask Pi</button>
+<div id="askOut"></div>
+<div id="askErr"></div>
 
 <h2>Pi sessions</h2>
 <p>Browse Pi transcripts on disk (pi-data volume). List shows the
@@ -1437,22 +1553,33 @@ function ansiToHtml(text) {
 }
 let lastRenderedOutput = null;
 
-// Last non-empty output lines for the failure banner, read from
-// the output pane itself: the pane already holds the run's
-// output with ANSI stripped (ansiToHtml), so its text is the
-// plain tail — no second strip pass. The banner used to point
-// at the "step failed" line at the end of the output, but the
-// pane sits below the fold on a phone, so the cause was never
-// visible. The tail usually includes that step-failed line
-// itself (the server appends it last), plus whatever the
-// command printed before dying.
+// Last error line for the failure banner, read from the output
+// pane itself: the pane already holds the run's output with ANSI
+// stripped (ansiToHtml), so its text is the plain tail — no
+// second strip pass. The banner used to show the last 3 raw
+// lines, but the tail usually ends with our own "step failed"
+// trailer and the echoed "$ ..." command line, neither of which
+// says anything about the cause — and the pane sits below the
+// fold on a phone, so the cause was never visible. Noise is
+// filtered first, then the most error-like line wins: a JSON
+// "message"/"error" field, a traceback, or an Error/failed line.
+// Falls back to the raw last line when nothing looks like an
+// error. One line, truncated: a banner is a pointer, not a log.
 function lastErrorLines() {
   const lines = outEl.textContent.split("\n").map(l => {
     const i = l.lastIndexOf("\r");
     return (i >= 0 ? l.slice(i + 1) : l).trim();
-  }).filter(l => l);
+  }).filter(l => l && !l.startsWith("$ ") &&
+    !/^step failed with exit code \d+; aborting$/.test(l));
   if (!lines.length) return "";
-  return "\n" + lines.slice(-3).join("\n");
+  const isErr = l =>
+    /"(message|error)"\s*:|traceback|error|failed|exception/i.test(l);
+  let pick = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (isErr(lines[i])) { pick = i; break; }
+  }
+  const line = pick >= 0 ? lines[pick] : lines[lines.length - 1];
+  return "\n" + line.slice(0, 220);
 }
 
 // Status colour comes from the exit code only, never from output
@@ -1862,6 +1989,89 @@ if (suggestBtn) suggestBtn.onclick = async () => {
   }
 };
 
+// Ask Pi: open-ended instruction text box. Pi investigates
+// read-only and replies inline; a write it was asked for comes
+// back as a PROPOSE block (parsed server-side). td proposals run
+// through /api/run-td like suggestion Run buttons; issue
+// proposals go through /api/create-issue after a confirm dialog
+// showing the exact title and body.
+const askBtn = document.getElementById("askBtn");
+const askBox = document.getElementById("askBox");
+const askOut = document.getElementById("askOut");
+const askErr = document.getElementById("askErr");
+if (askBtn) askBtn.onclick = async () => {
+  const picker = document.getElementById("briefingRepo");
+  const repo = picker ? picker.value : "tech-dancer";
+  const instruction = askBox.value.trim();
+  if (!instruction) { askErr.textContent = "Type an instruction first."; return; }
+  askErr.textContent = "";
+  askOut.textContent = "Asking Pi (local model, may take minutes)…";
+  askBtn.disabled = true;
+  try {
+    const r = await fetch("/buttons/api/ask", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({repo: repo, instruction: instruction})});
+    const data = await r.json().catch(() => ({}));
+    askBtn.disabled = false;
+    if (!r.ok) { askOut.textContent = ""; askErr.textContent = "ask failed: " + (data.error || r.status); return; }
+    askOut.textContent = "";
+    const pre = document.createElement("pre");
+    pre.textContent = data.reply || "(Pi said nothing)";
+    askOut.appendChild(pre);
+    const p = data.proposal;
+    if (!p) return;
+    const div = document.createElement("div");
+    div.className = "proposal";
+    const title = document.createElement("div");
+    title.className = "ptitle";
+    const b = document.createElement("button");
+    if (p.kind === "issue") {
+      title.textContent = "Proposed issue: " + p.title;
+      div.appendChild(title);
+      const bodyPre = document.createElement("pre");
+      bodyPre.textContent = p.body || "(no body)";
+      div.appendChild(bodyPre);
+      b.textContent = "Create issue";
+      b.onclick = async () => {
+        if (!(await confirmDialog("Create GitHub issue",
+            "Create this issue in " + repo + "?\n\n" + p.title, false))) return;
+        b.disabled = true;
+        const rr = await fetch("/buttons/api/create-issue", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({repo: repo, title: p.title, body: p.body})});
+        const dd = await rr.json().catch(() => ({}));
+        if (!rr.ok) { askErr.textContent = "create failed: " + (dd.error || rr.status); b.disabled = false; return; }
+        title.textContent = "Issue created: " + (dd.url || "ok");
+        b.remove();
+      };
+    } else {
+      title.textContent = "Proposed command:";
+      div.appendChild(title);
+      const code = document.createElement("code");
+      code.textContent = p.command;
+      div.appendChild(code);
+      b.textContent = "Run";
+      b.onclick = async () => {
+        if (!(await confirmDialog("Run proposed command", "Run: " + p.command + "?", false))) return;
+        b.disabled = true;
+        const rr = await fetch("/buttons/api/run-td", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({repo: repo, command: p.command})});
+        const dd = await rr.json().catch(() => ({}));
+        if (!rr.ok) { askErr.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
+        userStartedRun = true;
+        poll(dd.id, "run-td");
+      };
+    }
+    div.appendChild(b);
+    askOut.appendChild(div);
+  } catch (e) {
+    askBtn.disabled = false;
+    askOut.textContent = "";
+    askErr.textContent = "ask failed: " + e;
+  }
+};
+
 // Ledger view. Entry data is rendered with textContent only —
 // never innerHTML — so a log line can never inject markup.
 // Output tails hide in <details> so the list stays scannable.
@@ -1871,7 +2081,7 @@ const ledgerKindEl = document.getElementById("ledgerKind");
 function ledgerSummary(e) {
   if (e.kind === "run") return "run " + e.action + (e.repo ? " (" + e.repo + ")" : "") + " — exit " + e.exit;
   if (e.kind === "webhook") return "webhook " + e.repo + " — " + (e.ok ? "pulled" : "FAILED") + (e.advanced ? " (advanced)" : "") + ": " + (e.detail || "");
-  if (e.kind === "pr-action") return "pr-action " + e.action + " #" + e.pr + (e.repo ? " (" + e.repo + ")" : "") + " — " + (e.ok ? "ok" : "refused/failed");
+  if (e.kind === "pr-action") return "pr-action " + e.action + (e.pr ? " #" + e.pr : "") + (e.repo ? " (" + e.repo + ")" : "") + " — " + (e.ok ? "ok" : "refused/failed") + (e.note ? " — " + e.note : "");
   if (e.kind === "system") return "system: " + (e.event || "");
   return "unknown entry";
 }
@@ -2465,6 +2675,88 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"repo": repo,
                         "suggestions": _parse_suggestions(raw),
                         "raw": raw[-2000:]})
+            return
+        if path == "/buttons/api/ask":
+            # Ask Pi: open-ended instruction from the text box.
+            # Pi investigates read-only and replies; a write the
+            # user asked for comes back as a PROPOSE block, parsed
+            # strictly by _parse_proposal. Nothing is executed
+            # here — proposals run only after a confirm tap, via
+            # /buttons/api/run-td (td commands, re-validated) or
+            # /buttons/api/create-issue. Like suggest: reads only,
+            # not a ledger entry; slow by design on the local model.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            instruction = data.get("instruction", "")
+            if repo not in repos or not isinstance(instruction, str) \
+                    or not instruction.strip() \
+                    or len(instruction) > ASK_MAX_CHARS:
+                self._json({"error": "bad repo or instruction"}, 400)
+                return
+            info = repos[repo]
+            prompt = _ask_prompt(repo, instruction.strip())
+            b64 = base64.b64encode(prompt.encode()).decode()
+            # Base64 again: the instruction is free text, so it
+            # must never touch the shell unencoded.
+            cmd = (_td_prefix(info["td_cwd"]) +
+                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
+                   ' | base64 -d)"')
+            try:
+                proc = subprocess.run(
+                    EXEC + [cmd],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=600, text=True)
+                raw = proc.stdout or ""
+            except Exception as exc:
+                self._json({"error": f"Pi failed: {exc}"[:500]}, 500)
+                return
+            self._json({"repo": repo,
+                        "reply": raw[-6000:],
+                        "proposal": _parse_proposal(raw)})
+            return
+        if path == "/buttons/api/create-issue":
+            # Create the GitHub issue Pi proposed, after the user's
+            # confirm tap. Strict validation: the repo must be
+            # known (gh path comes from discovery, never the
+            # client), title/body are length-capped strings, and
+            # both are shlex-quoted into the gh argv — free text
+            # never reaches a shell unquoted. The confirm dialog
+            # shows the exact title and body first.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            title, body_text = data.get("title"), data.get("body", "")
+            if repo not in repos or not isinstance(title, str) \
+                    or not title.strip() or len(title) > 200 \
+                    or not isinstance(body_text, str) \
+                    or len(body_text) > 4000:
+                self._json({"error": "bad repo, title or body"}, 400)
+                return
+            gh = repos[repo]["gh"]
+            cmd = ("gh issue create --repo " + shlex.quote(gh) +
+                   " --title " + shlex.quote(title.strip()) +
+                   " --body " + shlex.quote(body_text.strip()))
+            try:
+                out = _td_run(cmd, timeout=120,
+                              prefix=_td_prefix(repos[repo]["td_cwd"]))
+                url = out.strip().splitlines()
+                url = url[-1] if url else ""
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "action": "create-issue", "ok": True,
+                                "note": url[:200]})
+                self._json({"ok": True, "url": url[:500]})
+            except Exception as exc:
+                _ledger_append({"kind": "pr-action", "repo": repo,
+                                "action": "create-issue", "ok": False,
+                                "error": str(exc)[:500]})
+                self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/run-td":
             # Run one suggested td command. The command is
