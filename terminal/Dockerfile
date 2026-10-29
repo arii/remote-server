@@ -17,7 +17,8 @@ ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
 ARG BOOMTICK_MCP_VERSION=0.6.2
-ARG BOOMTICK_CLI_REF=cli-v0.14.2
+# Tracks BoomTick main so td updates flow on every terminal rebuild; pin to a cli-vX.Y.Z tag to freeze.
+ARG BOOMTICK_CLI_REF=main
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -60,8 +61,6 @@ RUN apt-get update \
  && python3 -m venv /opt/venvs/td \
  && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
  && /opt/venvs/td/bin/td --help > /dev/null \
- && ln -sf /root/.local/bin/agy /usr/local/bin/agy \
- && mkdir -p /home/ari && ln -sfn /srv/remote-server /home/ari/remote-server \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
