@@ -8,7 +8,7 @@ Verified against BoomTick `main` on 2026-10-29 unless noted.
 ## Open
 
 ### #1010 — `jules.list_sessions` returns raw array, breaks structuredContent validation
-- **State:** OPEN (filed by Ari 2026-10-29, label `jules`, 2 comments).
+- **State:** PR OPEN (addressed by [PR #1013](https://github.com/arii/boomtick/pull/1013) by Jules).
 - **Symptom:** `MCP error -32602: Invalid tools/call result: structuredContent:
   Invalid input: expected record, received array`.
 - **Cause:** `listJulesSessionsHandler` (`mcp/src/tools/jules/list-sessions.ts`)
@@ -16,14 +16,14 @@ Verified against BoomTick `main` on 2026-10-29 unless noted.
   `JulesListSessionsResponseSchema` is `z.object({ sessions: ... })`.
   Checked the other jules handlers: only `list_sessions` returns a raw
   array; the rest return objects.
-- **Fix (patch ready, verified `git apply --check` clean):**
-  `~/workspace/boomtick-1010-fix/fix-1010-list-sessions-wrap.patch` —
-  apply with `git apply` in a BoomTick checkout. Wraps the return as
-  `{ sessions: [...] }`, matching the schema and the issue's remediation.
+- **Fix:** Jules opened PR #1013 (`fix(mcp): wrap jules.list_sessions response in object`) with full unit test coverage. CI is green/completing.
 - **Why it matters here:** buttons "Sync & nudge agents" calls
-  `td agent list-sessions` → `jules.list_sessions` via MCP. Until fixed, the
-  Jules half of that button fails. (The missing-`JULES_API_KEY` graceful
-  handling is a separate buttons-side item — done in 6a201762.)
+  `td agent list-sessions` → `jules.list_sessions` via MCP. (Graceful handling for unset `JULES_API_KEY` was completed in 6a201762; `JULES_API_KEY` is now set in `.env` and `docker-compose.yml`).
+
+### #1012 — Align resource URI schemes with MCP server discovery and add context status check tool
+- **State:** OPEN / IN PROGRESS ([Issue #1012](https://github.com/arii/boomtick/issues/1012); active Jules session `15215182197630379369`).
+- **Symptom:** Small/medium LLMs calling `read_mcp_resource` deduce `server: "workspace"` and `server: "repo"` from URIs like `mcp://workspace/agent-contract` and `repo://package-json`, causing immediate MCP errors (`MCP server "workspace" has no resources. Servers with resources: boomtick`).
+- **Fix:** Clarify server ownership in resource descriptors, add direct `repo_read_agent_contract` tool, add `repo_get_context_status` for `.agent-context.json` freshness inspection, and support dynamic workspace resolution.
 
 ## Resolved (verified 2026-10-29)
 

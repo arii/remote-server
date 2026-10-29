@@ -118,6 +118,7 @@ services:
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      JULES_API_KEY: ${JULES_API_KEY:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
