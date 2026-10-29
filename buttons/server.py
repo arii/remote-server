@@ -118,11 +118,26 @@ def _discover_repos():
         if not (os.path.isdir(git_path) or os.path.isfile(git_path)):
             continue
         try:
+            # safe.directory is load-bearing here, as for every
+            # other git call in this container: buttons runs as
+            # root while the checkouts are owned by ari, and git
+            # refuses even a config read in a "dubious" repo
+            # without it. Without the flag every repo silently
+            # failed discovery (empty stdout, no parseable
+            # origin) and only the special stack repo listed —
+            # the exact symptom this fixes.
             proc = subprocess.run(
-                ["git", "-C", host_path, "config", "--get",
+                ["git", "-c", f"safe.directory={host_path}",
+                 "-C", host_path, "config", "--get",
                  "remote.origin.url"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=30, text=True)
+            if proc.returncode != 0:
+                err = (proc.stderr or "").strip().splitlines()
+                print(f"repo discovery: skipping {name} (git "
+                      f"config failed: {err[-1] if err else 'exit ' + str(proc.returncode)})",
+                      flush=True)
+                continue
             gh = _parse_gh_remote(proc.stdout.strip())
         except Exception as exc:
             print(f"repo discovery: skipping {name} ({exc})",
