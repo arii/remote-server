@@ -8,18 +8,22 @@ mode for search-prs only prints "Found N PRs" with no per-PR detail.
 So the buttons side parses td's JSON plus `gh` enrichment and prints
 a briefing a person can act on from a phone.
 
-Scope: tech-dancer only. The caller (buttons/server.py, via the TD
-prefix) runs this with cwd = the tech-dancer checkout and .env
-sourced, so `td` and `gh` (authed in the terminal container) work.
+Scope: any repo the server discovers. The caller
+(buttons/server.py, via the TD prefix) runs this with cwd = the
+repo checkout and .env sourced, so `td` and `gh` (authed in the
+terminal container) work.
 
 Modes:
   --briefing          print the readable briefing to stdout
   --briefing-json     print analyze() as JSON (the live Briefing
                       view on the buttons page renders this)
-  --repo KEY          repo to brief: tech-dancer (default) or
-                      remote-server. td runs with cwd = that
-                      repo's checkout, so it picks up that repo's
-                      project_config.json; gh api paths follow.
+  --repo NAME         short repo name (the page picker's value).
+                      Requires --gh: without it the default gh
+                      path would brief the wrong repo.
+  --gh OWNER/REPO     GitHub path for the gh api paths. td runs
+                      with cwd = that repo's checkout, so it
+                      picks up that repo's project_config.json;
+                      the gh paths must name the same repo.
   --plan-dir DIR      write DIR/<date>-briefing-plan.md: the briefing,
                       then a Next-actions checklist DERIVED from the
                       findings (one checkbox per attention item, not
@@ -74,15 +78,20 @@ from datetime import date, datetime, timezone
 STALE_DAYS = 30
 RAW_CAP = 20_000  # raw appendix cap, chars
 
-# Repos the briefing can cover. Keys are the short names the page
-# and --repo use; values are the GitHub owner/repo paths. The td
-# commands run with cwd = the repo checkout (the server's TD
-# prefix cds there), so td picks up that repo's project config;
-# the gh api paths here must name the same repo.
-REPOS = {"tech-dancer": "arii/tech-dancer",
-         "remote-server": "arii/remote-server"}
+# The repo briefed: --repo is the short name the page uses,
+# --gh is the GitHub owner/repo path for the gh api paths. There
+# is deliberately no repo table here — the server discovers
+# repos from ~/repos and passes both flags, so a new repo needs
+# no summarizer change. The td commands run with cwd = the repo
+# checkout (the server's TD prefix cds there), so td picks up
+# that repo's project config; the gh api paths must name the
+# same repo, which is why --repo without --gh is an error: the
+# default gh path would silently brief the wrong repo.
+import re
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPO_KEY = "tech-dancer"
-REPO_GH = REPOS[REPO_KEY]
+REPO_GH = "arii/tech-dancer"
 FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 
 
@@ -172,8 +181,8 @@ def _normalize_review(raw):
 def _session_repo(session):
     """An 'owner/repo', or None, from a Jules session object —
     checked across the field spellings the Jules API and td's
-    client use. A display name mentioning a known repo key maps
-    to that repo."""
+    client use. A display name mentioning this run's repo name
+    maps to this run's gh path."""
     if not isinstance(session, dict):
         return None
     candidates = []
@@ -199,10 +208,8 @@ def _session_repo(session):
         if isinstance(full, str) and "/" in full:
             return full
         name = cand.get("displayName") or cand.get("display_name") or ""
-        if isinstance(name, str):
-            for key, gh in REPOS.items():
-                if key in name:
-                    return gh
+        if isinstance(name, str) and REPO_KEY.lower() in name.lower():
+            return REPO_GH
     return None
 
 
@@ -711,14 +718,25 @@ def main(argv):
         plan_dir = argv[argv.index("--plan-dir") + 1]
     if "--repo" in argv:
         key = argv[argv.index("--repo") + 1]
-        if key not in REPOS:
-            print(f"unknown repo: {key} (known: {', '.join(REPOS)})",
-                  file=sys.stderr)
+        if not NAME_RE.match(key):
+            print(f"bad repo name: {key}", file=sys.stderr)
             return 2
-        REPO_KEY, REPO_GH = key, REPOS[key]
+        if "--gh" not in argv:
+            print("--repo needs --gh (refusing to brief with the "
+                  "default gh path)", file=sys.stderr)
+            return 2
+        REPO_KEY = key
+    if "--gh" in argv:
+        gh = argv[argv.index("--gh") + 1]
+        if not GH_RE.match(gh):
+            print(f"bad gh path: {gh}", file=sys.stderr)
+            return 2
+        REPO_GH = gh
+        if "--repo" not in argv:
+            REPO_KEY = gh.split("/")[1]
     if not briefing and not briefing_json and not plan_dir:
         print("usage: briefing_summary.py --briefing | --briefing-json | "
-              "--plan-dir DIR [--repo tech-dancer|remote-server]",
+              "--plan-dir DIR [--repo NAME --gh OWNER/REPO]",
               file=sys.stderr)
         return 2
     data = fetch()

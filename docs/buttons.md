@@ -161,22 +161,37 @@ terminal container and passes its JSON through. The JSON and
 the text briefing come from one `analyze()` function, so the
 cards and the text output cannot disagree about a PR.
 
-The section is repo-general, not tech-dancer-only: a picker
-above the cards selects the repo, and it sets the repo for the
-cards, their action buttons, and the repo-scoped buttons
-(briefing, warm context, preflight) — the server validates the
-repo against an allowlist (`tech-dancer`, `remote-server`) on
-every endpoint, and the summarizer takes `--repo` for its gh
-api paths. The td commands run with cwd = that repo's checkout
-in the terminal container, so td picks up that repo's
-`project_config.json` — which is why this batch adds one to
-remote-server (`github_repo` + `packageName`, mirroring
-tech-dancer's shape) and ignores `.agent-context.json` there,
-so warming it cannot dirty the checkout. A repo without a td
-project config degrades per source like any other td failure;
-it does not silently brief the wrong repo. Sync & nudge stays
-global: Jules sessions span repos, so it lists and nudges
-across all of them regardless of the picker.
+The section is repo-general, not tech-dancer-only — and the
+repo set is discovered, not hardcoded. The server lists
+`~/repos` on every request and covers every git checkout there
+plus the stack checkout itself (remote-server lives outside
+the repos dir, so it stays special); the repo strip cards and
+the picker options render per request from that discovery, so
+a repo added to `~/repos` — boomtick, or any future one —
+appears on the next page load with no code change and no
+container restart. The picker sets the repo for the cards,
+their action buttons, and the repo-scoped buttons (briefing,
+warm context, preflight); every endpoint validates the repo
+against the discovered set, and the summarizer takes `--repo`
+(the picker's name) plus `--gh` (the checkout's git-remote
+owner/repo — it carries no repo table, so a new repo needs no
+summarizer change). The td commands run with cwd = that repo's
+checkout in the terminal container, so td picks up that repo's
+`project_config.json` — remote-server has a minimal one
+(`github_repo` + `packageName`, mirroring tech-dancer's
+shape) and ignores `.agent-context.json` there, so warming it
+cannot dirty the checkout. A repo without a td project config
+degrades per source like any other td failure; it does not
+silently brief the wrong repo. Discovery is defensive about
+names: a directory name or remote that fails validation is
+skipped with a log line, never mapped to another repo's data,
+because both values are interpolated into td/gh command
+lines. Webhook pulls and warming follow the same discovered
+set: any repo's main push auto-pulls, and warming runs for
+any repo (pnpm install only when the lockfiles changed AND
+the checkout has a package.json; context-warm always). Sync &
+nudge stays global: Jules sessions span repos, so it lists
+and nudges across all of them regardless of the picker.
 
 Each open PR renders as a card: number + title (linked to
 GitHub), branch, CI state with failing checks, merge state,

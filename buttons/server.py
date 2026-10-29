@@ -41,20 +41,134 @@ COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
 EXEC = COMPOSE + ["exec", "-T", "terminal", "bash", "-c"]
 TD = "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set +a && cd /srv/repos/tech-dancer && "
 
-# Repos the page's repo-work UI can cover. Keys are the short
-# names the picker and --repo use; the TD prefix cds into that
-# repo's checkout in the terminal container, where td picks up
-# its project config. Keep in sync with briefing_summary.REPOS.
-# Only the actions listed as scoped honour a repo: the rest are
-# stack-wide (Server group) or global (Sync & nudge lists Jules
-# sessions across repos), so a repo for them is ignored.
-REPO_TD = {
-    "tech-dancer": TD,
-    "remote-server": "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set +a && cd /srv/remote-server && ",
-}
-REPO_GH = {"tech-dancer": "arii/tech-dancer",
-           "remote-server": "arii/remote-server"}
+# Repos the page's repo-work UI can cover — discovered, not
+# hardcoded. The picker, the repo-scoped buttons, the briefing
+# view, PR actions, webhook pulls and warming all cover every
+# git checkout in ~/repos, plus the stack checkout itself, which
+# lives outside the repos dir and stays special. A repo added to
+# ~/repos appears on the next page load with no code change and
+# no container restart: discovery runs per request, and the
+# picker/strip cards are rendered per request from it. Keys are
+# directory basenames (the picker and --repo use them); the gh
+# path comes from each checkout's git remote origin, so a new
+# repo never needs a mapping table. Only the actions listed as
+# scoped honour a repo: the rest are stack-wide (Server group)
+# or global (Sync & nudge lists Jules sessions across repos),
+# so a repo for them is ignored.
+REPOS_DIR = os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos")
+STACK_GH = "arii/remote-server"
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight"}
+
+
+def _td_prefix(cwd):
+    return ("set -a && [ -f /srv/remote-server/.env ] && "
+            f". /srv/remote-server/.env; set +a && cd {cwd} && ")
+
+
+def _parse_gh_remote(url):
+    """owner/repo from a git remote URL, or None. Accepts the
+    ssh (git@github.com:owner/repo[.git]), https, and ssh://
+    spellings, github.com only — a non-GitHub remote cannot
+    serve the gh api paths the briefing and PR actions use."""
+    if not url:
+        return None
+    url = url.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+    m = re.match(r"^(?:git@github\.com:|https://github\.com/|"
+                 r"ssh://git@github\.com/)(.+)$", url)
+    if not m or not GH_RE.match(m.group(1)):
+        return None
+    return m.group(1)
+
+
+def _discover_repos():
+    """name -> {gh, td_cwd, host_path}. remote-server is the
+    special stack checkout; every other entry is a ~/repos
+    checkout with a parseable GitHub origin. Names and gh paths
+    are charset-validated because both are interpolated into
+    bash -c strings for td/gh calls — a directory name carrying
+    shell text must never reach a command line. A checkout that
+    fails discovery is skipped with a log line, never mapped to
+    another repo's data. A missing repos dir degrades to the
+    stack repo alone, not a crash."""
+    repos = {"remote-server": {"gh": STACK_GH,
+                               "td_cwd": "/srv/remote-server",
+                               "host_path": "/home/ari/remote-server"}}
+    try:
+        entries = sorted(os.listdir(REPOS_DIR))
+    except Exception as exc:
+        print(f"repo discovery: cannot list {REPOS_DIR}: {exc}",
+              flush=True)
+        return repos
+    for name in entries:
+        if name == "remote-server":
+            print("repo discovery: skipping repos-dir entry "
+                  "remote-server (name reserved for the stack "
+                  "checkout)", flush=True)
+            continue
+        if not NAME_RE.match(name):
+            print(f"repo discovery: skipping {name!r} (unsafe name)",
+                  flush=True)
+            continue
+        host_path = os.path.join(REPOS_DIR, name)
+        git_path = os.path.join(host_path, ".git")
+        if not (os.path.isdir(git_path) or os.path.isfile(git_path)):
+            continue
+        try:
+            proc = subprocess.run(
+                ["git", "-C", host_path, "config", "--get",
+                 "remote.origin.url"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, text=True)
+            gh = _parse_gh_remote(proc.stdout.strip())
+        except Exception as exc:
+            print(f"repo discovery: skipping {name} ({exc})",
+                  flush=True)
+            continue
+        if not gh:
+            print(f"repo discovery: skipping {name} (no parseable "
+                  "GitHub origin)", flush=True)
+            continue
+        repos[name] = {"gh": gh, "td_cwd": f"/srv/repos/{name}",
+                       "host_path": host_path}
+    return repos
+
+
+def _default_repo(repos):
+    if "tech-dancer" in repos:
+        return "tech-dancer"
+    return sorted(repos)[0]
+
+
+def _repo_options_html(repos):
+    default = _default_repo(repos)
+    out = []
+    for name in sorted(repos):
+        sel = " selected" if name == default else ""
+        out.append(f'<option value="{name}"{sel}>{name}</option>')
+    return "\n".join(out)
+
+
+def _repo_strips_html(repos):
+    out = []
+    for name in sorted(repos):
+        gh = repos[name]["gh"]
+        if name == "remote-server":
+            scope = ("This stack — terminal, buttons, oauth2-proxy. "
+                     "The Server buttons below act here.")
+        else:
+            scope = ("Repo work — briefing, warm context, preflight, "
+                     "PR actions. Pick it in the Briefing picker.")
+        out.append(
+            f'<div class="repo"><div class="reponame">'
+            f'<a href="https://github.com/{gh}">{gh}</a></div>'
+            f'<div class="reposcope">{scope}</div>'
+            f'<div class="repostatus" data-repo-status="{gh}">'
+            "Auto-pull: not yet</div></div>")
+    return "\n".join(out)
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
@@ -84,10 +198,10 @@ ENV = {**os.environ, "HOME": "/home/ari"}
 # (method + full path, no wildcards), and even a bypassed skip rule
 # still faces the HMAC check here.
 WEBHOOK_PATH = "/buttons/api/webhook"
-WEBHOOK_REPOS = {
-    "arii/remote-server": "/home/ari/remote-server",
-    "arii/tech-dancer": "/home/ari/repos/tech-dancer",
-}
+# No webhook allowlist table: the allowlist is the discovered
+# repo set (_discover_repos, gh path -> checkout). A repo added
+# to ~/repos accepts webhooks with no code change; a repo
+# removed from the dir stops accepting them.
 WEBHOOK_MAX_BODY = 10_000_000
 webhook_state = {}  # repo -> {"at": epoch, "ok": bool, "detail": str}
 webhook_state_lock = threading.Lock()
@@ -117,28 +231,33 @@ def _verify_signature(secret, body, header):
     return hmac.compare_digest(expect, header)
 
 
-def _webhook_warm(old_head, new_head):
-    """Best-effort post-pull warming for tech-dancer. Runs in the
+def _webhook_warm(old_head, new_head, info):
+    """Best-effort post-pull warming for any repo. Runs in the
     terminal container (same transport as the briefing buttons):
     pnpm install only when package.json/pnpm-lock.yaml changed
-    across the pull, context-warm always (no --force: it rewrites
-    only when stale or missing). .agent-context.json is gitignored,
-    so warming never dirties the checkout. Any failure is logged,
-    never surfaced as a pull failure."""
+    across the pull AND the checkout has a package.json (a
+    Python-only repo skips the step instead of failing it),
+    context-warm always (no --force: it rewrites only when stale
+    or missing). .agent-context.json is gitignored, so warming
+    never dirties the checkout. Any failure is logged, never
+    surfaced as a pull failure. A repo without a td project
+    config degrades here the way briefing does: context-warm
+    fails visibly in the container log, and nothing else breaks."""
+    host_path = info["host_path"]
     try:
         changed = set()
         if old_head and new_head and old_head != new_head:
             diff = subprocess.run(
-                ["git", "-c", "safe.directory="
-                 + WEBHOOK_REPOS["arii/tech-dancer"], "-C",
-                 WEBHOOK_REPOS["arii/tech-dancer"],
+                ["git", "-c", "safe.directory=" + host_path, "-C",
+                 host_path,
                  "diff", "--name-only", old_head, new_head],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=60, text=True)
             changed = set((diff.stdout or "").split())
-        if changed & {"package.json", "pnpm-lock.yaml"}:
+        if changed & {"package.json", "pnpm-lock.yaml"} and \
+                os.path.isfile(os.path.join(host_path, "package.json")):
             subprocess.run(
-                EXEC + ["cd /srv/repos/tech-dancer && "
+                EXEC + [f"cd {info['td_cwd']} && "
                         "pnpm install --frozen-lockfile"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=300, text=True)
@@ -146,7 +265,7 @@ def _webhook_warm(old_head, new_head):
     except Exception as exc:
         print(f"webhook warm: pnpm install skipped: {exc}", flush=True)
     try:
-        subprocess.run(EXEC + [TD + "td context-warm"],
+        subprocess.run(EXEC + [_td_prefix(info["td_cwd"]) + "td context-warm"],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=300, text=True)
         print("webhook warm: context-warm done", flush=True)
@@ -154,10 +273,13 @@ def _webhook_warm(old_head, new_head):
         print(f"webhook warm: context-warm skipped: {exc}", flush=True)
 
 
-def _webhook_worker(repo, path):
+def _webhook_worker(repo, info):
     # Serialized: two pushes racing the same checkout must not run
     # fetch+merge concurrently. State/pending updates are separate
     # and brief, so status reads never block on a pull.
+    # repo is the GitHub full_name; info is the discovered entry
+    # (host_path for git here, td_cwd for warming in terminal).
+    path = info["host_path"]
     with webhook_pull_lock:
         git = ["git", "-c", f"safe.directory={path}", "-C", path,
                "-c", "core.hooksPath=/dev/null"]
@@ -221,9 +343,10 @@ def _webhook_worker(repo, path):
     # Warming runs AFTER the pull record lands, in its own thread:
     # it must never hold the pull lock (a slow pnpm install would
     # serialize later pushes) and never fail the pull record.
-    if ok and repo == "arii/tech-dancer":
+    if ok:
         threading.Thread(target=_webhook_warm,
-                         args=(old_head, new_head), daemon=True).start()
+                         args=(old_head, new_head, info),
+                         daemon=True).start()
 # Steps run under a PTY (see _run_step): commands then emit the
 # ANSI colours they would show in the terminal, and the page renders
 # them. A TTY stdout also makes some tools page their output (git
@@ -404,7 +527,7 @@ ACTIONS = {
 # tech-dancer repo (briefings read tech-dancer only).
 GROUP_TITLES = {
     "Server": "Server · arii/remote-server",
-    "Briefing": "Briefing · arii/tech-dancer",
+    "Briefing": "Briefing · repo from the picker below",
 }
 
 
@@ -576,17 +699,45 @@ def _run_step(step, append):
     return proc.wait()
 
 
+def _finish_run(run_id, action, repo, run):
+    # The assignment below needs the global: without it, the
+    # `active_id = None` reset would make every read in this
+    # function local and raise UnboundLocalError, leaving the
+    # run active forever (every later run 409s).
+    global active_id
+    print(f"run {run_id} ({action}) finished: exit={run['exit_code']}",
+          flush=True)
+    _ledger_append({"kind": "run", "action": action, "repo": repo,
+                    "exit": run["exit_code"],
+                    "output": run["output"][-2000:]})
+    with runs_lock:
+        if active_id == run_id:
+            active_id = None
+
+
 def run_action(run_id, action, repo="tech-dancer"):
     global active_id
     run = runs[run_id]
+    repos = _discover_repos()
+    if action in REPO_SCOPED_ACTIONS and repo not in repos:
+        # The repo vanished between validation and run start (or
+        # was never valid): fail visibly rather than running the
+        # steps against tech-dancer's checkout by default.
+        with runs_lock:
+            _append(run, f"error: unknown repo {repo}\n")
+            run["exit_code"] = 1
+            run["done"] = True
+            run["finished_at"] = time.time()
+        _finish_run(run_id, action, repo, run)
+        return
     steps = ACTIONS[action]["steps"]
-    if repo in REPO_TD and action in REPO_SCOPED_ACTIONS \
+    if repo in repos and action in REPO_SCOPED_ACTIONS \
             and repo != "tech-dancer":
         # Repo-scoped steps run td in the repo checkout: rewrite
         # the TD prefix (the step's last element) to that repo.
         # The step shape is fixed (EXEC + [TD + cmd]), so the
         # rewrite is exact, never string surgery on free text.
-        prefix = REPO_TD[repo]
+        prefix = _td_prefix(repos[repo]["td_cwd"])
         rewritten = []
         for step in steps:
             if len(step) == len(EXEC) + 1 and step[:len(EXEC)] == EXEC \
@@ -594,8 +745,10 @@ def run_action(run_id, action, repo="tech-dancer"):
                 cmd = step[-1][len(TD):]
                 if action == "briefing-td":
                     # The cwd alone does not pick the repo: the
-                    # summarizer's gh api paths need --repo too.
-                    cmd += f" --repo {repo}"
+                    # summarizer's gh api paths need --repo and
+                    # --gh (it no longer carries a repo table).
+                    cmd += (f" --repo {repo}"
+                            f" --gh {repos[repo]['gh']}")
                 rewritten.append(EXEC + [prefix + cmd])
             else:
                 rewritten.append(step)
@@ -651,13 +804,7 @@ def run_action(run_id, action, repo="tech-dancer"):
             run["exit_code"] = 0
             run["done"] = True
             run["finished_at"] = time.time()
-    print(f"run {run_id} ({action}) finished: exit={run['exit_code']}", flush=True)
-    _ledger_append({"kind": "run", "action": action, "repo": repo,
-                    "exit": run["exit_code"],
-                    "output": run["output"][-2000:]})
-    with runs_lock:
-        if active_id == run_id:
-            active_id = None
+    _finish_run(run_id, action, repo, run)
 
 
 HTML = r"""<!DOCTYPE html>
@@ -722,8 +869,7 @@ a { color: #8bf; }
 <h1>S5 buttons</h1>
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.</p>
 <div id="repos">
-<div class="repo"><div class="reponame"><a href="https://github.com/arii/remote-server">arii/remote-server</a></div><div class="reposcope">This stack — terminal, buttons, oauth2-proxy. The Server buttons below act here.</div><div class="repostatus" data-repo-status="arii/remote-server">Auto-pull: not yet</div></div>
-<div class="repo"><div class="reponame"><a href="https://github.com/arii/tech-dancer">arii/tech-dancer</a></div><div class="reposcope">Repo work — briefings, agent sessions. The Briefing buttons below read this repo only.</div><div class="repostatus" data-repo-status="arii/tech-dancer">Auto-pull: not yet</div></div>
+<!--REPO_STRIPS-->
 </div>
 <div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span></div>
 <div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div>
@@ -740,8 +886,7 @@ sessions. Runs on load; Refresh re-fetches. The picker sets the
 repo for the cards, their action buttons, and the repo-scoped
 buttons above (briefing, warm context, preflight).</p>
 <label>Repo: <select id="briefingRepo">
-<option value="tech-dancer">tech-dancer</option>
-<option value="remote-server">remote-server</option>
+<!--REPO_OPTIONS-->
 </select></label>
 <div id="briefing"></div>
 <button id="refreshBriefing">Refresh briefing</button>
@@ -1415,16 +1560,16 @@ def _ci_label(rollup):
     return "passing"
 
 
-def _pr_view(pr_number, repo):
+def _pr_view(pr_number, repo, repos):
     """Fresh (CI label, merge state) for gating, at tap time."""
     view = json.loads(_td_run(
         f"gh pr view {pr_number} --json statusCheckRollup,mergeStateStatus",
-        timeout=60, prefix=REPO_TD[repo]))
+        timeout=60, prefix=_td_prefix(repos[repo]["td_cwd"])))
     return (_ci_label(view.get("statusCheckRollup")),
             str(view.get("mergeStateStatus") or "?").lower())
 
 
-def _pr_action(pr_number, action, repo):
+def _pr_action(pr_number, action, repo, repos):
     """Per-PR actions from the Briefing view. Every action re-checks
     fresh state at tap time — the card may be minutes old. Merge is
     gated on CI passing + merge clean; update only on BEHIND (a
@@ -1434,23 +1579,23 @@ def _pr_action(pr_number, action, repo):
     fix-ci requires CI failing and dispatches a Jules session via
     `fix-ci --execute` (fix-ci defaults to dry-run, so the flag is
     load-bearing). ValueError = gate refused (400)."""
-    prefix = REPO_TD[repo]
+    prefix = _td_prefix(repos[repo]["td_cwd"])
     if action == "merge":
-        ci, merge = _pr_view(pr_number, repo)
+        ci, merge = _pr_view(pr_number, repo, repos)
         if ci != "passing" or merge != "clean":
             raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
         out = _td_run(f"gh pr merge {pr_number} --squash --delete-branch",
                       prefix=prefix)
         return {"ok": True, "output": out[-2000:]}
     if action == "update":
-        _ci, merge = _pr_view(pr_number, repo)
+        _ci, merge = _pr_view(pr_number, repo, repos)
         if merge != "behind":
             raise ValueError(f"cannot update: merge state is {merge} "
                              "(only behind branches update this way)")
-        out = _td_run(f"gh api repos/{REPO_GH[repo]}/pulls/{pr_number}/"
+        out = _td_run(f"gh api repos/{repos[repo]['gh']}/pulls/{pr_number}/"
                       "update-branch --method PUT", prefix=prefix)
         return {"ok": True, "output": out[-2000:]}
-    ci, _merge = _pr_view(pr_number, repo)
+    ci, _merge = _pr_view(pr_number, repo, repos)
     if ci != "failing":
         raise ValueError(f"CI is {ci}, not failing — nothing to fix")
     out = _td_run(f"td --json agent fix-ci --pr {pr_number} --execute",
@@ -1493,21 +1638,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "bad JSON"}, 400)
                 return
         repo = (payload.get("repository") or {}).get("full_name")
+        # The allowlist is the discovered set, by GitHub path:
+        # a repo added to ~/repos accepts webhooks immediately,
+        # a removed one stops. Discovery runs per delivery, so a
+        # push for a repo cloned after container start still
+        # pulls.
+        by_gh = {info["gh"]: info
+                 for info in _discover_repos().values()}
         if event == "ping":
             print(f"webhook ping {repo or '?'}: pong", flush=True)
-            if repo in WEBHOOK_REPOS:
+            if repo in by_gh:
                 with webhook_state_lock:
                     if repo not in webhook_pending:
                         webhook_pending.add(repo)
                         threading.Thread(target=_webhook_worker,
-                                         args=(repo, WEBHOOK_REPOS[repo]),
+                                         args=(repo, by_gh[repo]),
                                          daemon=True).start()
             self._json({"ok": True, "msg": "pong"})
             return
         if event != "push":
             self._json({"ignored": event})
             return
-        if repo not in WEBHOOK_REPOS:
+        if repo not in by_gh:
             self._json({"ignored": repo})
             return
         if payload.get("ref") != "refs/heads/main":
@@ -1519,14 +1671,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             webhook_pending.add(repo)
         threading.Thread(target=_webhook_worker,
-                         args=(repo, WEBHOOK_REPOS[repo]),
+                         args=(repo, by_gh[repo]),
                          daemon=True).start()
         self._json({"queued": True, "repo": repo}, 202)
 
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ("/buttons", "/buttons/"):
-            body = HTML.encode()
+            # Repo strips and picker options render per request
+            # from discovery, so a repo added to ~/repos shows up
+            # without a container rebuild.
+            repos = _discover_repos()
+            body = HTML.replace(
+                "<!--REPO_STRIPS-->",
+                _repo_strips_html(repos)).replace(
+                "<!--REPO_OPTIONS-->",
+                _repo_options_html(repos)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1539,7 +1699,7 @@ class Handler(BaseHTTPRequestHandler):
             with webhook_state_lock:
                 hooks = dict(webhook_state)
                 pending = sorted(webhook_pending)
-            rs = hooks.get("arii/remote-server", {})
+            rs = hooks.get(STACK_GH, {})
             stale = bool(rs.get("ok") and rs.get("advanced")
                          and rs.get("at", 0) > STARTED_AT)
             self._json({"active": active_id, "runs": recent,
@@ -1551,16 +1711,19 @@ class Handler(BaseHTTPRequestHandler):
             # transport as the briefing button) and its JSON is
             # passed through. Slow (td + gh calls), so the page
             # shows a spinner while it loads. ?repo= picks the
-            # repo (allowlisted; default tech-dancer).
+            # repo (discovered set; default tech-dancer).
+            repos = _discover_repos()
             repo = parse_qs(urlparse(self.path).query).get(
-                "repo", ["tech-dancer"])[0]
-            if repo not in REPO_TD:
+                "repo", [_default_repo(repos)])[0]
+            if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
             try:
                 proc = subprocess.run(
-                    EXEC + [REPO_TD[repo] + "python3 /srv/remote-server/buttons/"
-                            f"briefing_summary.py --briefing-json --repo {repo}"],
+                    EXEC + [_td_prefix(repos[repo]["td_cwd"])
+                            + "python3 /srv/remote-server/buttons/"
+                            "briefing_summary.py --briefing-json "
+                            f"--repo {repo} --gh {repos[repo]['gh']}"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=180, text=True)
                 if proc.returncode != 0:
@@ -1702,15 +1865,16 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
             pr_number, action = data.get("pr_number"), data.get("action")
-            repo = data.get("repo", "tech-dancer")
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
             if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
                     or pr_number <= 0 \
                     or action not in ("merge", "update", "fix-ci") \
-                    or repo not in REPO_TD:
+                    or repo not in repos:
                 self._json({"error": "bad pr_number, action or repo"}, 400)
                 return
             try:
-                result = _pr_action(pr_number, action, repo)
+                result = _pr_action(pr_number, action, repo, repos)
                 _ledger_append({"kind": "pr-action", "repo": repo,
                                 "pr": pr_number, "action": action,
                                 "ok": True,
@@ -1736,11 +1900,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             data = {}
         action = data.get("action")
-        repo = data.get("repo", "tech-dancer")
+        repos = _discover_repos()
+        repo = data.get("repo", _default_repo(repos))
         if action not in ACTIONS:
             self._json({"error": "unknown action"}, 400)
             return
-        if repo not in REPO_TD:
+        if repo not in repos:
             self._json({"error": "unknown repo"}, 400)
             return
         with runs_lock:
