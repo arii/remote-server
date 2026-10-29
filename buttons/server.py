@@ -1492,7 +1492,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>S5 console</title>
+<title>S5 Control Panel</title>
 <style>
 :root {
   --bg-app: #0b1120;
@@ -1542,10 +1542,10 @@ button.btn-ghost:hover { border-color: var(--primary); background: var(--bg-card
 summary.grouphead { cursor: pointer; }
 .repo { border: 1px solid var(--border); border-radius: 10px; padding: 0.5em;
   margin: 0.5em 0; background: var(--bg-card); }
-.repo[data-repo-pick] { cursor: pointer; }
+.repo[data-repo-pick] { cursor: pointer; transition: border-color 0.15s ease, background-color 0.15s ease; }
 .repo[data-repo-pick]:hover { border-color: var(--primary); }
 .forrepo { font-size: 0.6em; font-weight: normal; color: var(--text-muted); }
-.repo.selected { border-color: var(--primary); }
+.repo.selected { border-color: var(--primary); background: #1a2744; box-shadow: 0 0 0 1px var(--primary); }
 .issuepick { max-height: 12em; overflow-y: auto; margin: 0.5em 0;
   border: 1px solid var(--border); border-radius: 8px; padding: 0.5em; }
 .issuepick label { display: block; padding: 0.3em 0; cursor: pointer; }
@@ -1681,9 +1681,9 @@ a { color: #8bf; }
 </style>
 </head>
 <body>
-<h1>S5 console</h1>
+<h1>S5 Control Panel</h1>
 <p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.
-Tap a repo card above to select it for the buttons and briefing.</p>
+Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
 </div>
@@ -1692,9 +1692,9 @@ Tap a repo card above to select it for the buttons and briefing.</p>
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
 <div id="stickyHead">
-<div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><label>Repo for the buttons and briefing below: <select id="briefingRepo">
+<div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><span>Active repo: <strong id="selectedRepoName">...</strong></span><select id="briefingRepo" style="display:none">
 <!--REPO_OPTIONS-->
-</select></label></div>
+</select></div>
 <div id="tabbar" role="tablist">
 <button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
 <button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
@@ -1711,8 +1711,8 @@ below are still visible, but they need JavaScript to start a run.</div>
 <h2>Briefing</h2>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
 sessions. Runs on load; the Refresh briefing button re-runs it
-from td. The picker above sets the repo for the cards, their
-action buttons, and the repo buttons.</p>
+from td. Tap a repo card above to select the repo for the cards,
+their action buttons, and the repo buttons.</p>
 <div id="briefing"></div>
 <div id="briefingErr"></div>
 </section>
@@ -1868,6 +1868,8 @@ let userStartedRun = false;
 function markSelectedRepo() {
   const picker = document.getElementById("briefingRepo");
   const cur = picker ? picker.value : "";
+  const nameEl = document.getElementById("selectedRepoName");
+  if (nameEl && cur) nameEl.textContent = cur;
   document.querySelectorAll("[data-repo-pick]").forEach(el => {
     el.classList.toggle("selected",
       el.getAttribute("data-repo-pick") === cur);
