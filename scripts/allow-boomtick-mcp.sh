@@ -5,9 +5,6 @@ set -euo pipefail
 # - Boomtick MCP commands
 # - Common CLI utility commands (echo, head, tail, stat, file, touch, sed, etc.)
 
-SETTINGS_FILE="${HOME}/.gemini/antigravity-cli/settings.json"
-CONFIG_FILE="${HOME}/.gemini/config/config.json"
-
 echo "==> Updating Antigravity permissions..."
 
 python3 - <<'EOF'
