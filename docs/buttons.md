@@ -1,9 +1,33 @@
 # Buttons — phone action page
 
-A one-page phone UI at `https://<domain>:<port>/buttons` (same URL as
+A tabbed phone UI at `https://<domain>:<port>/buttons` (same URL as
 the terminal, same GitHub OAuth gate) with buttons for the stack
 operations that are painful to type on a phone keyboard. No free-text
 command input anywhere: every button runs one fixed command list.
+
+## Layout
+
+Four tabs share one sticky header: **Actions** (stack buttons),
+**Briefing** (briefing + PR cards), **Pi agent** (suggestions + Pi
+sessions), **Ledger** (audit log). The header holds the repo picker
+(the repo chip — every repo-scoped button and the briefing follow
+it) plus a server status dot, green while the status endpoint
+answers, red when it does not. Run output lives in a slide-up
+drawer at the bottom of the screen, reachable from every tab: it
+opens when a run starts, holds the status line above the output
+pane, and carries Clear output and Close in its header.
+
+The theme is dark navy (`--bg-app: #0b1120`, `--bg-card: #131d31`,
+`--primary: #3b82f6`, `--danger: #ef4444`, `--warning: #f59e0b`,
+`--success: #10b981` on `:root`). Action buttons are left-aligned
+cards; Deploy buttons and Recreate terminal keep the amber left
+border — they destroy or recreate containers, unlike the read-only
+actions. Briefing PR cards are structured: `#123` badge + CI status
+dot + linked title on the header row, chips for branch / CI /
+merge state / updated / flags (CONFLICTED, draft, stale), failing
+CI details as a shortened line, and an action strip with a
+primary/ghost hierarchy (blue filled Fix CI and Merge, ghost
+outline Update branch).
 
 ## Buttons
 
@@ -25,14 +49,20 @@ recreate containers, unlike the read-only actions.
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
 | Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for the picked repo |
 
-Deploy buttons, Recreate, and Sync & nudge agents ask for a
-browser confirm first, as do the per-PR action buttons on the
-Briefing cards (their own confirm dialogs). Status, Logs, Refresh
-briefing, Warm repo context, and Preflight check do not.
+Deploy buttons, Recreate, and Sync & nudge agents ask for
+confirmation first, as do the per-PR action buttons on the
+Briefing cards and the destructive Clear buttons (ledger, Pi
+sessions). The confirm is a custom in-page modal, not
+`window.confirm`: title + body text, red Confirm button for
+destructive actions, backdrop tap or Cancel to back out. Status,
+Logs, Refresh briefing, Warm repo context, and Preflight check do
+not ask.
 One run at a time: starting a
 second run while one is active returns an error until the first
-finishes. Output streams to the page (polled every 2s); reloading
-mid-run re-attaches to it. Recreating the terminal kills any running
+finishes. Output streams into the slide-up drawer (polled every
+2s); the drawer opens when a run starts and stays reachable from
+every tab. Reloading mid-run re-attaches to it. Recreating the
+terminal kills any running
 Pi session in it — that is the point of Recreate, but do not press
 it mid-conversation.
 
@@ -96,12 +126,14 @@ the old behavior (its own output is the cause).
   is still producing lines keeps "last output" near zero; one that
   has gone quiet for minutes is genuinely stuck or waiting, not
   just slow.
-- **Clear output:** the button below the action buttons clears the
+- **Clear output:** the button in the drawer header clears the
   stored output server-side (`POST /buttons/api/clear`), so the next
   poll does not refill the pane with old lines. A running run keeps
   its progress line and only new lines appear after the clear; a
   finished run keeps its done/failed status with an empty pane.
-  Clear cancels nothing and runs no command.
+  Clear cancels nothing and runs no command. The button sits in the
+  drawer header (not the Actions tab) on purpose, so it is never
+  disabled while a run is in progress.
 - **Failure banner:** a failed run's status line carries the last
   three non-empty output lines (read from the output pane, so ANSI
   is already stripped) instead of pointing at the `step failed` line

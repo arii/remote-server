@@ -1015,60 +1015,132 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>S5 buttons</title>
 <style>
-body { font-family: system-ui, sans-serif; margin: 1em; background: #111; color: #eee; }
-h1 { font-size: 1.2em; }
-button { display: block; width: 100%; margin: 0.5em 0; padding: 1em; font-size: 1.1em;
-  background: #2a2a2a; color: #eee; border: 1px solid #555; border-radius: 8px;
-  text-align: left; }
+:root {
+  --bg-app: #0b1120;
+  --bg-card: #131d31;
+  --bg-card-hover: #1e293b;
+  --border: #24344d;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --danger: #ef4444;
+  --danger-bg: #450a0a;
+  --warning: #f59e0b;
+  --success: #10b981;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  margin: 0; padding: 12px 16px 140px; background: var(--bg-app); color: var(--text-main); }
+h1 { font-size: 1.2em; margin: 0.3em 0; }
+button { display: block; width: 100%; margin: 0.5em 0; padding: 0.9em 1em; font-size: 1.05em;
+  background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border);
+  border-radius: 10px; text-align: left; cursor: pointer; }
+button:hover { background: var(--bg-card-hover); border-color: var(--primary); }
 /* danger = destroys or recreates containers (deploy, recreate) */
-button.danger { border-left: 4px solid #e6a817; }
-#pickerBar { position: sticky; top: 0; background: #111; padding: 0.5em 0;
-  border-bottom: 1px solid #333; z-index: 10; }
+button.danger { border-left: 4px solid var(--warning); }
 button:disabled { opacity: 0.4; }
-.blabel { display: block; }
-.bsub { display: block; font-size: 0.85em; opacity: 0.7; font-weight: normal;
+/* primary / danger / ghost action hierarchy */
+button.btn-primary { display: inline-block; width: auto; background: var(--primary);
+  border-color: var(--primary); color: #fff; padding: 0.6em 1em; font-size: 0.95em; }
+button.btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+button.btn-danger { display: inline-block; width: auto; background: var(--danger);
+  border-color: var(--danger); color: #fff; padding: 0.6em 1em; font-size: 0.95em; }
+button.btn-ghost { display: inline-block; width: auto; background: transparent;
+  border: 1px solid var(--border); color: var(--text-main); padding: 0.6em 1em; font-size: 0.95em; }
+button.btn-ghost:hover { border-color: var(--primary); background: var(--bg-card); }
+#stickyHead { position: sticky; top: 0; z-index: 20; background: var(--bg-app); }
+#pickerBar { background: var(--bg-app); padding: 0.5em 0;
+  border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.5em; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  background: #555; flex: none; }
+.dot.ok { background: var(--success); }
+.dot.fail { background: var(--danger); }
+.dot.running { background: var(--warning); }
+.blabel { display: block; font-weight: 600; }
+.bsub { display: block; font-size: 0.85em; color: var(--text-muted); font-weight: normal;
   margin-top: 0.25em; }
-.grouphead { font-weight: bold; margin: 1em 0 0.2em; color: #bbb; }
+.grouphead { font-weight: bold; margin: 1em 0 0.2em; color: var(--text-muted); }
 summary.grouphead { cursor: pointer; }
-.repo { border: 1px solid #555; border-radius: 8px; padding: 0.5em;
-  margin: 0.5em 0; }
+.repo { border: 1px solid var(--border); border-radius: 10px; padding: 0.5em;
+  margin: 0.5em 0; background: var(--bg-card); }
 .reponame { font-weight: bold; }
 .reponame a { color: inherit; text-decoration: underline; }
-.reposcope { font-size: 0.9em; color: #bbb; }
-.repostatus { font-size: 0.9em; color: #bbb; }
+.reposcope { font-size: 0.9em; color: var(--text-muted); }
+.repostatus { font-size: 0.9em; color: var(--text-muted); }
 .planexcerpt { max-height: 30vh; }
 .planact button { display: inline-block; width: auto; margin: 0.5em 0.5em 0.5em 0;
   padding: 0.5em 0.8em; font-size: 0.9em; }
 .planact a { margin-left: 0.5em; }
-#clearBtn { padding: 0.5em; font-size: 0.9em; }
 #jsdiag { color: #ffd75e; border: 1px solid #8a6d1b; background: #3a2f0a;
   padding: 0.5em; border-radius: 8px; margin: 0.5em 0; }
-#liveBar { font-size: 0.9em; color: #bbb; margin: 0.5em 0; }
+#liveBar { font-size: 0.9em; color: var(--text-muted); margin: 0.5em 0; }
 .spinner { display: inline-block; width: 12px; height: 12px;
   margin-right: 0.4em; vertical-align: -2px; border: 2px solid #555;
   border-top-color: #eee; border-radius: 50%;
   animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-#state { margin: 0.5em 0; font-weight: bold; padding: 0.5em; border-radius: 8px;
-  white-space: pre-line; border: 1px solid #555; }
+#state { margin: 0.5em 0.8em; font-weight: bold; padding: 0.5em; border-radius: 8px;
+  white-space: pre-line; border: 1px solid var(--border); }
 #state.ok { color: #7ed07e; background: #12351a; border-color: #2e7d32; }
-#state.fail { color: #ff8a8a; background: #3d1414; border-color: #a33; }
+#state.fail { color: #ff8a8a; background: var(--danger-bg); border-color: var(--danger); }
 #state.running { color: #ffd75e; background: #3a2f0a; border-color: #8a6d1b; }
-pre { white-space: pre-wrap; word-break: break-all; background: #000; padding: 0.5em;
-  border-radius: 8px; max-height: 60vh; overflow: auto; border: 1px solid #333; }
+pre { white-space: pre-wrap; word-break: break-all; background: #050811; padding: 0.5em;
+  border-radius: 8px; max-height: 60vh; overflow: auto; border: 1px solid var(--border); }
 pre.ok { border-color: #2e7d32; }
-pre.fail { border-color: #a33; }
+pre.fail { border-color: var(--danger); }
 pre.running { border-color: #8a6d1b; }
 h2 { font-size: 1.1em; margin-top: 1.5em; }
-.prcard { border: 1px solid #555; border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
+/* PR cards: badge + status dot + title, chips, action strip */
+.prcard { border: 1px solid var(--border); border-radius: 10px; padding: 0.75em;
+  margin: 0.5em 0; background: var(--bg-card); }
+.prhead { display: flex; align-items: baseline; gap: 0.5em; margin-bottom: 0.4em; }
+.prnum { font-weight: bold; background: var(--bg-card-hover); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.1em 0.45em; font-size: 0.9em; white-space: nowrap; }
 .prcard .prtitle { font-weight: bold; }
-.prcard .prmeta { font-size: 0.9em; color: #bbb; }
+.prcard .prtitle a { color: var(--text-main); }
+.chips { display: flex; flex-wrap: wrap; gap: 0.35em; margin: 0.4em 0; }
+.chip { font-size: 0.8em; color: var(--text-muted); background: var(--bg-card-hover);
+  border: 1px solid var(--border); border-radius: 20px; padding: 0.15em 0.6em;
+  white-space: nowrap; }
+.chip-ok { color: #7ed07e; border-color: #2e7d32; }
+.chip-fail { color: #ff8a8a; border-color: var(--danger); }
+.chip-warn { color: #ffd75e; border-color: #8a6d1b; }
+.prcard .prmeta { font-size: 0.9em; color: var(--text-muted); }
 .prcard .prresult { font-size: 0.9em; margin-top: 0.4em; }
-.practions { margin-top: 0.4em; }
-#staleBar { border: 1px solid #e6a817; border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
-button.needs-update { border-color: #e6a817; box-shadow: 0 0 0 2px rgba(230,168,23,0.4); }
+.practions { margin-top: 0.5em; display: flex; gap: 0.5em; flex-wrap: wrap; }
+.practions button { margin: 0; }
+#staleBar { border: 1px solid var(--warning); border-radius: 8px; padding: 0.5em; margin: 0.5em 0; }
+button.needs-update { border-color: var(--warning); box-shadow: 0 0 0 2px rgba(245,158,11,0.4); }
 #briefingErr { color: #ff8a8a; }
 a { color: #8bf; }
+/* segmented tab bar */
+#tabbar { display: flex; gap: 0.4em; background: var(--bg-app); padding: 0.5em 0;
+  border-bottom: 1px solid var(--border); }
+#tabbar .tab { flex: 1; width: auto; margin: 0; padding: 0.6em 0.2em; font-size: 0.9em;
+  text-align: center; }
+#tabbar .tab.active { border-color: var(--primary); background: var(--bg-card-hover);
+  font-weight: bold; }
+/* slide-up output drawer */
+#outputDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
+  background: #050811; border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.6);
+  transform: translateY(105%); transition: transform 0.25s ease-out; }
+#outputDrawer.open { transform: none; }
+#drawerHead { display: flex; align-items: center; justify-content: space-between;
+  padding: 0.4em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; }
+#drawerHead .dbactions { display: flex; gap: 0.5em; }
+#drawerHead button { width: auto; margin: 0; padding: 0.4em 0.8em; font-size: 0.85em; }
+#outputDrawer pre { border: none; border-radius: 0; max-height: 45vh; margin: 0; }
+/* confirm modal (replaces window.confirm) */
+#confirmModal { position: fixed; inset: 0; z-index: 2000; display: none;
+  align-items: center; justify-content: center; background: rgba(0,0,0,0.6); padding: 1em; }
+#confirmModal.open { display: flex; }
+.modal-card { background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 1.2em; max-width: 26em; width: 100%; }
+#confirmTitle { font-weight: bold; font-size: 1.1em; margin-bottom: 0.5em; }
+#confirmBody { color: var(--text-muted); margin-bottom: 1em; white-space: pre-line; }
+.modal-actions { display: flex; gap: 0.5em; justify-content: flex-end; }
+.modal-actions button { margin: 0; }
 </style>
 </head>
 <body>
@@ -1082,13 +1154,21 @@ a { color: #8bf; }
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
-<div id="pickerBar"><label>Repo for the buttons and briefing below: <select id="briefingRepo">
+<div id="stickyHead">
+<div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><label>Repo for the buttons and briefing below: <select id="briefingRepo">
 <!--REPO_OPTIONS-->
 </select></label></div>
+<div id="tabbar" role="tablist">
+<button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
+<button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
+<button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
+<button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
+</div>
+</div>
+<section class="tabpanel" id="tab-actions">
 <div id="buttons"><!--BUTTONS--></div>
-<button id="clearBtn">Clear output</button>
-<div id="state"></div>
-<pre id="out"></pre>
+</section>
+<section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
 sessions. Runs on load; the Refresh briefing button re-runs it
@@ -1096,6 +1176,8 @@ from td. The picker above sets the repo for the cards, their
 action buttons, and the repo buttons.</p>
 <div id="briefing"></div>
 <div id="briefingErr"></div>
+</section>
+<section class="tabpanel" id="tab-pi" style="display:none">
 <h2>Suggested next actions</h2>
 <p>Pi reads the briefing context and suggests td commands, then
 runs only what you approve: each suggestion has its own Run
@@ -1106,7 +1188,20 @@ minutes on the local model.</p>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
-<details><summary class="grouphead">Ledger</summary>
+
+<h2>Pi sessions</h2>
+<p>Browse Pi transcripts on disk (pi-data volume). List shows the
+newest sessions with date, repo, and first prompt — tap one to
+render it readably. The full JSONL stays on disk. Clearing
+deletes all transcripts.</p>
+<button id="listPiSessions">List sessions</button>
+<button id="clearPiSessions">Clear Pi sessions</button>
+<div id="piSessionList"></div>
+<pre id="piSessionOut"></pre>
+<div id="piSessionErr"></div>
+</section>
+<section class="tabpanel" id="tab-ledger" style="display:none">
+<details open><summary class="grouphead">Ledger</summary>
 <p>Durable audit log — every run, webhook pull, and PR-action tap,
 newest first. Survives container restarts (named volume, not the
 checkout). Briefing reads are not logged. Clearing deletes all
@@ -1123,16 +1218,17 @@ entries but leaves a 'ledger cleared' record.</p>
 <button id="clearLedger">Clear ledger</button>
 <div id="ledgerErr"></div>
 </details>
-<h2>Pi sessions</h2>
-<p>Browse Pi transcripts on disk (pi-data volume). List shows the
-newest sessions with date, repo, and first prompt — tap one to
-render it readably. The full JSONL stays on disk. Clearing
-deletes all transcripts.</p>
-<button id="listPiSessions">List sessions</button>
-<button id="clearPiSessions">Clear Pi sessions</button>
-<div id="piSessionList"></div>
-<pre id="piSessionOut"></pre>
-<div id="piSessionErr"></div>
+</section>
+<div id="outputDrawer">
+<div id="drawerHead"><span>Output</span><span class="dbactions"><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
+<div id="state"></div>
+<pre id="out"></pre>
+</div>
+<div id="confirmModal"><div class="modal-card">
+<div id="confirmTitle"></div>
+<div id="confirmBody"></div>
+<div class="modal-actions"><button id="confirmCancel" class="btn-ghost">Cancel</button><button id="confirmOk" class="btn-primary">Confirm</button></div>
+</div></div>
 <script>
 // Core script (script block 1). The buttons above are rendered
 // server-side; this only attaches handlers to them, so a failure
@@ -1144,11 +1240,54 @@ const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
 let timer = null;
 // True only for a run this page-load started (not a re-attached
-// run from a reload): its completion scrolls the output into
-// view, because on a phone the output pane sits below the
-// buttons and "finished: exit 0" in the state line alone looks
-// like no output.
+// run from a reload): its completion opens the output drawer,
+// because on a phone the drawer is how progress stays visible
+// across tabs.
 let userStartedRun = false;
+
+// Tab bar: one visible panel at a time. The output drawer is
+// fixed-position, so it stays reachable from every tab.
+document.querySelectorAll("#tabbar .tab").forEach(t => {
+  t.onclick = () => {
+    document.querySelectorAll("#tabbar .tab").forEach(x =>
+      x.classList.toggle("active", x === t));
+    document.querySelectorAll(".tabpanel").forEach(p => {
+      p.style.display = (p.id === "tab-" + t.dataset.tab) ? "" : "none";
+    });
+  };
+});
+
+// Slide-up output drawer (replaces the inline <pre> below the
+// buttons): opens on run start and on new output, so progress is
+// visible without scrolling, on any tab.
+const drawerEl = document.getElementById("outputDrawer");
+function openDrawer() { if (drawerEl) drawerEl.classList.add("open"); }
+function closeDrawer() { if (drawerEl) drawerEl.classList.remove("open"); }
+const drawerCloseBtn = document.getElementById("drawerClose");
+if (drawerCloseBtn) drawerCloseBtn.onclick = closeDrawer;
+
+// Confirm modal (replaces window.confirm): non-blocking, carries
+// a title + body, danger styling for destructive actions.
+// Returns a Promise<boolean>.
+function confirmDialog(title, body, danger) {
+  return new Promise(resolve => {
+    const modal = document.getElementById("confirmModal");
+    const ok = document.getElementById("confirmOk");
+    const cancel = document.getElementById("confirmCancel");
+    document.getElementById("confirmTitle").textContent = title;
+    document.getElementById("confirmBody").textContent = body;
+    ok.className = danger ? "btn-danger" : "btn-primary";
+    const done = v => {
+      modal.classList.remove("open");
+      ok.onclick = null; cancel.onclick = null; modal.onclick = null;
+      resolve(v);
+    };
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+    modal.onclick = e => { if (e.target === modal) done(false); };
+    modal.classList.add("open");
+  });
+}
 
 // Safe JSON fetch: never throws on an empty or non-JSON body.
 // Returns {ok, status, data}; data is the parsed JSON, or
@@ -1179,9 +1318,10 @@ async function fetchJson(url, options) {
   return {ok: res.ok, status: res.status, data: data};
 }
 
-async function startRun(name, label, confirmFlag) {
+async function startRun(name, label, confirmFlag, dangerFlag) {
   userStartedRun = true;
-  if (confirmFlag && !window.confirm(label + " — run it?")) return;
+  if (confirmFlag && !(await confirmDialog("Run action", label + " — run it?", !!dangerFlag))) return;
+  openDrawer();
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
   const body = {action: name};
@@ -1201,7 +1341,7 @@ async function startRun(name, label, confirmFlag) {
 
 btnDiv.querySelectorAll("button").forEach(b => {
   b.onclick = () => startRun(b.dataset.action, b.dataset.label,
-    b.dataset.confirm === "1");
+    b.dataset.confirm === "1", b.classList.contains("danger"));
 });
 
 function setBusy(busy) {
@@ -1435,7 +1575,7 @@ async function poll(id, action) {
       setBusy(false);
       if (userStartedRun) {
         userStartedRun = false;
-        outEl.scrollIntoView();
+        openDrawer();
       }
       // A finished briefing-td run means the cards are stale:
       // refresh them so tapping Refresh briefing visibly updates
@@ -1488,11 +1628,12 @@ const briefingErrEl = document.getElementById("briefingErr");
 // at tap time — the card may be minutes old). Merge is squash +
 // delete-branch; Update is the GitHub update-branch API, BEHIND
 // only; Fix CI dispatches a Jules session, it is not instant.
-function prActionButton(pr, action, label, confirmText) {
+function prActionButton(pr, action, label, confirmText, cls, danger) {
   const b = document.createElement("button");
   b.textContent = label;
+  if (cls) b.className = cls;
   b.onclick = async () => {
-    if (!window.confirm(confirmText)) return;
+    if (!(await confirmDialog(label, confirmText, !!danger))) return;
     b.disabled = true;
     const card = b.closest(".prcard");
     const res = card ? card.querySelector(".prresult") : null;
@@ -1533,25 +1674,47 @@ function renderBriefing(b) {
   (b.prs || []).forEach(pr => {
     const card = document.createElement("div");
     card.className = "prcard";
-    const title = document.createElement("div");
+    const head = document.createElement("div");
+    head.className = "prhead";
+    const num = document.createElement("span");
+    num.className = "prnum";
+    num.textContent = "#" + pr.number;
+    const cdot = document.createElement("span");
+    cdot.className = "dot " + (pr.ci === "passing" ? "ok" : pr.ci === "failing" ? "fail" : "");
+    cdot.title = "CI: " + pr.ci;
+    const title = document.createElement("span");
     title.className = "prtitle";
     if (pr.url) {
       const link = document.createElement("a");
-      link.href = pr.url; link.textContent = "#" + pr.number + " " + pr.title;
+      link.href = pr.url; link.textContent = pr.title;
       title.appendChild(link);
     } else {
-      title.textContent = "#" + pr.number + " " + pr.title;
+      title.textContent = pr.title;
     }
-    const meta = document.createElement("div");
-    meta.className = "prmeta";
-    meta.textContent = pr.branch + " — CI: " + pr.ci +
-      (pr.failing.length ? " (" + pr.failing.join(", ") + ")" : "") +
-      " — merge: " + pr.merge +
-      (pr.conflicted ? " — CONFLICTED" : "") +
-      (pr.stale ? " — stale" : "") +
-      (pr.draft ? " — draft" : "") + " — updated " + pr.updated;
-    card.appendChild(title);
-    card.appendChild(meta);
+    head.appendChild(num); head.appendChild(cdot); head.appendChild(title);
+    card.appendChild(head);
+    const chips = document.createElement("div");
+    chips.className = "chips";
+    const chip = (t, cls) => {
+      const s = document.createElement("span");
+      s.className = "chip" + (cls ? " " + cls : "");
+      s.textContent = t;
+      chips.appendChild(s);
+    };
+    chip(pr.branch);
+    chip("CI " + pr.ci, pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
+    chip("merge " + pr.merge, pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
+    if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.draft) chip("draft");
+    if (pr.stale) chip("stale", "chip-warn");
+    chip(pr.updated);
+    card.appendChild(chips);
+    if (pr.failing && pr.failing.length) {
+      const fl = document.createElement("div");
+      fl.className = "prmeta";
+      fl.textContent = "failing: " + pr.failing.map(f => shorten(String(f), 160)).join("; ");
+      card.appendChild(fl);
+    }
     if (pr.verdicts && pr.verdicts.length) {
       const rev = document.createElement("div"); rev.className = "prmeta";
       rev.textContent = "Reviews: " + pr.verdicts.map(v => "@" + v.user + " " + v.state).join("; ");
@@ -1567,13 +1730,14 @@ function renderBriefing(b) {
     actions.setAttribute("data-pr", pr.number);
     if (pr.ci === "passing" && pr.merge === "clean" && !pr.draft)
       actions.appendChild(prActionButton(pr, "merge", "Merge (squash)",
-        "Merge PR #" + pr.number + " (squash, delete branch)?"));
+        "Merge PR #" + pr.number + " (squash, delete branch)?", "btn-primary", true));
     if (pr.merge === "behind" && !pr.draft)
       actions.appendChild(prActionButton(pr, "update", "Update branch",
-        "Update PR #" + pr.number + " branch to the base branch?"));
+        "Update PR #" + pr.number + " branch to the base branch?", "btn-ghost", false));
     if (pr.ci === "failing" && !pr.draft)
       actions.appendChild(prActionButton(pr, "fix-ci", "Fix CI with Jules",
-        "Dispatch a Jules session to fix CI on PR #" + pr.number + "? This creates an agent session, it is not instant."));
+        "Dispatch a Jules session to fix CI on PR #" + pr.number + "? This creates an agent session, it is not instant.",
+        "btn-primary", false));
     card.appendChild(actions);
     const result = document.createElement("div");
     result.className = "prresult";
@@ -1679,7 +1843,7 @@ if (suggestBtn) suggestBtn.onclick = async () => {
       const b = document.createElement("button");
       b.textContent = "Run";
       b.onclick = async () => {
-        if (!window.confirm("Run: " + s.command + "?")) return;
+        if (!(await confirmDialog("Run suggested command", "Run: " + s.command + "?", false))) return;
         b.disabled = true;
         const rr = await fetch("/buttons/api/run-td", {method: "POST",
           headers: {"Content-Type": "application/json"},
@@ -1750,7 +1914,7 @@ const refreshLedgerBtn = document.getElementById("refreshLedger");
 if (refreshLedgerBtn) refreshLedgerBtn.onclick = refreshLedger;
 const clearLedgerBtn = document.getElementById("clearLedger");
 if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
-  if (!window.confirm("Clear the ledger? All entries will be deleted except a 'ledger cleared' record. This cannot be undone.")) return;
+  if (!(await confirmDialog("Clear ledger", "All entries will be deleted except a 'ledger cleared' record. This cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/ledger/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { ledgerErrEl.textContent = "ledger clear failed: " + (data.error || r.status); return; }
@@ -1779,7 +1943,7 @@ async function showSession(file) {
 }
 const clearPiSessionsBtn = document.getElementById("clearPiSessions");
 if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
-  if (!window.confirm("Clear all Pi sessions? This deletes the transcripts and cannot be undone.")) return;
+  if (!(await confirmDialog("Clear Pi sessions", "This deletes the transcripts and cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { piSessionErrEl.textContent = "clear failed: " + (data.error || r.status); return; }
@@ -1827,6 +1991,8 @@ async function refreshStatus() {
   if (spinner) spinner.style.display = "inline-block";
   try {
     const s = await (await fetch("/buttons/api/status")).json();
+    const dot = document.getElementById("serverDot");
+    if (dot) dot.className = "dot ok";
     if (s.active && liveAttachedRun !== s.active) {
       liveAttachedRun = s.active;
       poll(s.active);
@@ -1868,6 +2034,8 @@ async function refreshStatus() {
     if (spinner) spinner.style.display = pending.length ? "inline-block" : "none";
   } catch (e) {
     if (spinner) spinner.style.display = "none";
+    const dot = document.getElementById("serverDot");
+    if (dot) dot.className = "dot fail";
   }
   liveFetching = false;
 }
