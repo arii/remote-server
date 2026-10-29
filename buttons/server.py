@@ -2209,6 +2209,8 @@ async function refreshBriefing() {
   }
   briefingErrEl.textContent = "";
   renderBriefing(res.data);
+  briefingPrs = res.data.pr_list || [];
+  if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
   if (typeof renderAttention === "function") renderAttention(res.data);
 }
 
@@ -2256,6 +2258,27 @@ const JOB_TEMPLATES = {
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
 };
 let pendingJobStep = null; // {job, step, runId} while a step run polls
+let briefingPrs = []; // open PRs from the latest briefing, for the PR dropdown
+// Open-PR dropdown for jobs that need one (fix-ci): rebuilt from the
+// latest briefing's PR list as "#number — title", not a blind number
+// field. Rebuilt whenever the briefing refreshes (repo switch incl.).
+function refreshJobPrSelect() {
+  const sel = document.getElementById("jobPrSelect");
+  if (!sel) return;
+  sel.textContent = "";
+  if (!briefingPrs.length) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "No open PRs";
+    sel.appendChild(o);
+    return;
+  }
+  briefingPrs.forEach(pr => {
+    const o = document.createElement("option");
+    o.value = pr.number;
+    o.textContent = "#" + pr.number + " — " + (pr.title || "");
+    sel.appendChild(o);
+  });
+}
 function jobErr(t) {
   const e = document.getElementById("jobErr");
   if (e) e.textContent = t;
@@ -2272,13 +2295,14 @@ function renderJobNew() {
     const s = document.createElement("div");
     s.className = "bsub"; s.textContent = t.desc;
     d.appendChild(l); d.appendChild(s);
-    let prInput = null;
+    let prSelect = null;
     if (t.needsPr) {
-      prInput = document.createElement("input");
-      prInput.type = "number"; prInput.min = "1";
-      prInput.placeholder = "PR number";
-      prInput.style.marginRight = "0.5em";
-      d.appendChild(prInput);
+      prSelect = document.createElement("select");
+      prSelect.id = "jobPrSelect";
+      prSelect.style.marginRight = "0.5em";
+      prSelect.style.maxWidth = "100%";
+      d.appendChild(prSelect);
+      refreshJobPrSelect();
     }
     const b = document.createElement("button");
     b.textContent = "Start job";
@@ -2286,8 +2310,8 @@ function renderJobNew() {
       const picker = document.getElementById("briefingRepo");
       const body = {template: name, repo: picker ? picker.value : "tech-dancer"};
       if (t.needsPr) {
-        const n = parseInt(prInput.value, 10);
-        if (!(n > 0)) { jobErr("Enter a PR number."); return; }
+        const n = parseInt(prSelect.value, 10);
+        if (!(n > 0)) { jobErr("Pick an open PR."); return; }
         body.pr = n;
       }
       const res = await fetchJson("/buttons/api/jobs", {method: "POST",
