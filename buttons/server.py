@@ -29,6 +29,7 @@ import re
 import shlex
 import struct
 import subprocess
+import tempfile
 import termios
 from html import escape
 import threading
@@ -193,7 +194,122 @@ def _repo_strips_html(repos):
 # the resulting host path.
 ENV = {**os.environ, "HOME": "/home/ari"}
 
-# --- Suggested next actions (Pi) --------------------------------
+# --- Pi background runs with live progress (issue #7) ---
+# Suggest and Ask Pi run the local model for minutes. They run in
+# a thread writing to a temp file; the client polls
+# /buttons/api/pi-progress/<id> and streams the tail live,
+# instead of staring at a spinner. Entries are pruned an hour
+# after completion.
+pi_runs = {}
+pi_runs_lock = threading.Lock()
+PI_PROGRESS_TAIL = 6000
+
+
+def _pi_progress_path(rid):
+    return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
+
+
+def _pi_start(kind, repo, instruction=None):
+    """Validate, start the thread, return (rid, error)."""
+    repos = _discover_repos()
+    if repo not in repos:
+        return None, "unknown repo"
+    if kind == "ask":
+        if not isinstance(instruction, str) or not instruction.strip() \
+                or len(instruction) > ASK_MAX_CHARS:
+            return None, "bad instruction"
+        instruction = instruction.strip()
+    elif kind != "suggest":
+        return None, "unknown kind"
+    rid = uuid.uuid4().hex[:12]
+    with pi_runs_lock:
+        # Prune completed runs older than an hour.
+        now = time.time()
+        for k in [k for k, v in pi_runs.items()
+                  if v.get("done") and now - v.get("finished_at", now)
+                  > 3600]:
+            try:
+                os.remove(_pi_progress_path(k))
+            except Exception:
+                pass
+            del pi_runs[k]
+        pi_runs[rid] = {"kind": kind, "repo": repo, "done": False,
+                        "started_at": now, "result": None,
+                        "error": None}
+    open(_pi_progress_path(rid), "w").write("")
+    t = threading.Thread(target=_pi_thread,
+                         args=(rid, kind, repo, instruction),
+                         daemon=True)
+    t.start()
+    return rid, None
+
+
+def _pi_thread(rid, kind, repo, instruction):
+    """Full Pi pipeline in a thread; never raises out."""
+    path = _pi_progress_path(rid)
+    try:
+        repos = _discover_repos()
+        info = repos[repo]
+        with open(path, "a") as f:
+            if kind == "suggest":
+                f.write("Fetching briefing…\n")
+                f.flush()
+                proc = subprocess.run(
+                    EXEC + [_td_prefix(info["td_cwd"])
+                            + "python3 /srv/remote-server/buttons/"
+                            "briefing_summary.py --briefing-json "
+                            f"--repo {repo} --gh {info['gh']}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=180, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "briefing failed")
+                brief = json.loads(proc.stdout)
+                prompt = _suggest_prompt(repo, _suggest_context(brief))
+            else:
+                prompt = _ask_prompt(repo, instruction)
+            b64 = base64.b64encode(prompt.encode()).decode()
+            # The prompt travels base64-encoded: its alphabet is
+            # shell-safe, so briefing titles or free-text
+            # instructions carrying quotes or $ cannot break out
+            # of the pi argument.
+            cmd = (_td_prefix(info["td_cwd"]) +
+                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
+                   ' | base64 -d)"')
+            f.write("Asking Pi (local model, may take minutes)…\n")
+            f.flush()
+        # stdout+stderr go to the file so the progress endpoint
+        # streams them live; nothing is parsed until done.
+        proc = subprocess.run(
+            EXEC + [cmd], stdout=open(path, "a"),
+            stderr=subprocess.STDOUT, timeout=600, text=True)
+        raw = open(path).read()
+        with pi_runs_lock:
+            r = pi_runs.get(rid)
+            if r is None:
+                return
+            if kind == "suggest":
+                r["result"] = {"repo": repo,
+                               "suggestions": _parse_suggestions(raw),
+                               "raw": raw[-2000:]}
+            else:
+                r["result"] = {"repo": repo, "reply": raw[-6000:],
+                               "proposal": _parse_proposal(raw)}
+            r["done"] = True
+            r["finished_at"] = time.time()
+    except Exception as exc:
+        with pi_runs_lock:
+            r = pi_runs.get(rid)
+            if r is not None:
+                r["error"] = str(exc)[:500]
+                r["done"] = True
+                r["finished_at"] = time.time()
+        try:
+            with open(path, "a") as f:
+                f.write(f"\nPi failed: {exc}\n")
+        except Exception:
+            pass
 # Pi suggests, the allowlist disposes, the user approves. The
 # suggest endpoint (1) fetches the briefing JSON for the picked
 # repo, (2) compresses it to a compact context — attention items
@@ -2841,70 +2957,115 @@ const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
 
+// Pi background runs: the POST returns an id immediately; this
+// polls /buttons/api/pi-progress/<id> and streams the live tail
+// into a <pre>, then calls onDone(result) once. One poll loop at
+// a time per button — starting a new run abandons the old loop.
+let piPollToken = 0;
+async function pollPiProgress(id, pre, errEl, onDone, label) {
+  const token = ++piPollToken;
+  const tick = async () => {
+    if (token !== piPollToken) return;
+    let res;
+    try {
+      res = await fetchJson("/buttons/api/pi-progress/" + id);
+    } catch (e) {
+      res = null;
+    }
+    if (token !== piPollToken) return;
+    if (!res || !res.ok) {
+      errEl.textContent = label + " failed: " +
+        ((res && res.data && res.data.error) || "unreachable");
+      pre.remove();
+      return;
+    }
+    const d = res.data || {};
+    pre.textContent = d.output || "";
+    pre.scrollTop = pre.scrollHeight;
+    if (d.done) {
+      pre.remove();
+      if (d.error) {
+        errEl.textContent = label + " failed: " + friendlyError(d.error);
+        return;
+      }
+      onDone(d.result || {});
+      return;
+    }
+    setTimeout(tick, 2000);
+  };
+  tick();
+}
+
 // Suggested next actions: Pi suggests td commands from the
 // briefing context; each suggestion runs only on its own
 // confirm tap, through /api/run-td (which re-validates).
 const suggestBtn = document.getElementById("suggestBtn");
 const suggestionsEl = document.getElementById("suggestions");
 const suggestErrEl = document.getElementById("suggestErr");
+function renderSuggestions(data, repo) {
+  suggestionsEl.textContent = "";
+  if (!data.suggestions || !data.suggestions.length) {
+    suggestionsEl.textContent = "Pi suggested nothing runnable.";
+    if (data.raw) {
+      const pre = document.createElement("pre");
+      pre.textContent = data.raw;
+      suggestionsEl.appendChild(pre);
+    }
+    return;
+  }
+  data.suggestions.forEach(s => {
+    const div = document.createElement("div");
+    div.className = "prcard";
+    const reason = document.createElement("div");
+    reason.textContent = s.reason || s.command;
+    div.appendChild(reason);
+    const code = document.createElement("div");
+    const c = document.createElement("code");
+    c.textContent = s.command;
+    code.appendChild(c);
+    div.appendChild(code);
+    if (s.caveat) {
+      const cav = document.createElement("div");
+      cav.className = "prmeta";
+      cav.textContent = s.caveat;
+      div.appendChild(cav);
+    }
+    const b = document.createElement("button");
+    b.textContent = "Run";
+    b.onclick = async () => {
+      if (!(await confirmDialog("Run suggested command", "Run: " + s.command + "?", false))) return;
+      b.disabled = true;
+      const rr = await fetchJson("/buttons/api/run-td", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({repo: repo, command: s.command})});
+      const dd = rr.data || {};
+      if (!rr.ok) { suggestErrEl.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
+      userStartedRun = true;
+      poll(dd.id, "run-td");
+    };
+    div.appendChild(b);
+    suggestionsEl.appendChild(div);
+  });
+}
 if (suggestBtn) suggestBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
   const repo = picker ? picker.value : "tech-dancer";
   suggestErrEl.textContent = "";
-  suggestionsEl.textContent = "Asking Pi (local model, may take minutes)…";
-  try {
-    const r = await fetch("/buttons/api/suggest", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({repo: repo})});
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) { suggestionsEl.textContent = ""; suggestErrEl.textContent = "suggest failed: " + (data.error || r.status); return; }
-    suggestionsEl.textContent = "";
-    if (!data.suggestions || !data.suggestions.length) {
-      suggestionsEl.textContent = "Pi suggested nothing runnable.";
-      if (data.raw) {
-        const pre = document.createElement("pre");
-        pre.textContent = data.raw;
-        suggestionsEl.appendChild(pre);
-      }
-      return;
-    }
-    data.suggestions.forEach(s => {
-      const div = document.createElement("div");
-      div.className = "prcard";
-      const reason = document.createElement("div");
-      reason.textContent = s.reason || s.command;
-      div.appendChild(reason);
-      const code = document.createElement("div");
-      const c = document.createElement("code");
-      c.textContent = s.command;
-      code.appendChild(c);
-      div.appendChild(code);
-      if (s.caveat) {
-        const cav = document.createElement("div");
-        cav.className = "prmeta";
-        cav.textContent = s.caveat;
-        div.appendChild(cav);
-      }
-      const b = document.createElement("button");
-      b.textContent = "Run";
-      b.onclick = async () => {
-        if (!(await confirmDialog("Run suggested command", "Run: " + s.command + "?", false))) return;
-        b.disabled = true;
-        const rr = await fetch("/buttons/api/run-td", {method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({repo: repo, command: s.command})});
-        const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) { suggestErrEl.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
-        userStartedRun = true;
-        poll(dd.id, "run-td");
-      };
-      div.appendChild(b);
-      suggestionsEl.appendChild(div);
-    });
-  } catch (e) {
-    suggestionsEl.textContent = "";
-    suggestErrEl.textContent = "suggest failed: " + e;
+  suggestionsEl.textContent = "";
+  const pre = document.createElement("pre");
+  pre.textContent = "Starting Pi…";
+  suggestionsEl.appendChild(pre);
+  const res = await fetchJson("/buttons/api/suggest", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({repo: repo})});
+  if (!res.ok) {
+    pre.remove();
+    suggestErrEl.textContent = "suggest failed: " +
+      ((res.data && res.data.error) || res.status);
+    return;
   }
+  pollPiProgress(res.data.id, pre, suggestErrEl,
+    (result) => renderSuggestions(result, repo), "suggest");
 };
 
 // Ask Pi: open-ended instruction text box. Pi investigates
@@ -2917,77 +3078,84 @@ const askBtn = document.getElementById("askBtn");
 const askBox = document.getElementById("askBox");
 const askOut = document.getElementById("askOut");
 const askErr = document.getElementById("askErr");
+function renderAskResult(data, repo) {
+  askOut.textContent = "";
+  const pre = document.createElement("pre");
+  pre.textContent = (data.result && data.result.reply) || "(Pi said nothing)";
+  askOut.appendChild(pre);
+  const p = data.result && data.result.proposal;
+  if (!p) return;
+  const div = document.createElement("div");
+  div.className = "proposal";
+  const title = document.createElement("div");
+  title.className = "ptitle";
+  const b = document.createElement("button");
+  if (p.kind === "issue") {
+    title.textContent = "Proposed issue: " + p.title;
+    div.appendChild(title);
+    const bodyPre = document.createElement("pre");
+    bodyPre.textContent = p.body || "(no body)";
+    div.appendChild(bodyPre);
+    b.textContent = "Create issue";
+    b.onclick = async () => {
+      if (!(await confirmDialog("Create GitHub issue",
+          "Create this issue in " + repo + "?\n\n" + p.title, false))) return;
+      b.disabled = true;
+      const rr = await fetchJson("/buttons/api/create-issue", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({repo: repo, title: p.title, body: p.body})});
+      const dd = rr.data || {};
+      if (!rr.ok) { askErr.textContent = "create failed: " + (dd.error || rr.status); b.disabled = false; return; }
+      title.textContent = "Issue created: " + (dd.url || "ok");
+      b.remove();
+    };
+  } else {
+    title.textContent = "Proposed command:";
+    div.appendChild(title);
+    const code = document.createElement("code");
+    code.textContent = p.command;
+    div.appendChild(code);
+    b.textContent = "Run";
+    b.onclick = async () => {
+      if (!(await confirmDialog("Run proposed command", "Run: " + p.command + "?", false))) return;
+      b.disabled = true;
+      const rr = await fetchJson("/buttons/api/run-td", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({repo: repo, command: p.command})});
+      const dd = rr.data || {};
+      if (!rr.ok) { askErr.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
+      userStartedRun = true;
+      poll(dd.id, "run-td");
+    };
+  }
+  div.appendChild(b);
+  askOut.appendChild(div);
+}
 if (askBtn) askBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
   const repo = picker ? picker.value : "tech-dancer";
   const instruction = askBox.value.trim();
   if (!instruction) { askErr.textContent = "Type an instruction first."; return; }
   askErr.textContent = "";
-  askOut.textContent = "Asking Pi (local model, may take minutes)…";
+  askOut.textContent = "";
+  const pre = document.createElement("pre");
+  pre.textContent = "Starting Pi…";
+  askOut.appendChild(pre);
   askBtn.disabled = true;
-  try {
-    const r = await fetch("/buttons/api/ask", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({repo: repo, instruction: instruction})});
-    const data = await r.json().catch(() => ({}));
+  const res = await fetchJson("/buttons/api/ask", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({repo: repo, instruction: instruction})});
+  if (!res.ok) {
     askBtn.disabled = false;
-    if (!r.ok) { askOut.textContent = ""; askErr.textContent = "ask failed: " + (data.error || r.status); return; }
-    askOut.textContent = "";
-    const pre = document.createElement("pre");
-    pre.textContent = data.reply || "(Pi said nothing)";
-    askOut.appendChild(pre);
-    const p = data.proposal;
-    if (!p) return;
-    const div = document.createElement("div");
-    div.className = "proposal";
-    const title = document.createElement("div");
-    title.className = "ptitle";
-    const b = document.createElement("button");
-    if (p.kind === "issue") {
-      title.textContent = "Proposed issue: " + p.title;
-      div.appendChild(title);
-      const bodyPre = document.createElement("pre");
-      bodyPre.textContent = p.body || "(no body)";
-      div.appendChild(bodyPre);
-      b.textContent = "Create issue";
-      b.onclick = async () => {
-        if (!(await confirmDialog("Create GitHub issue",
-            "Create this issue in " + repo + "?\n\n" + p.title, false))) return;
-        b.disabled = true;
-        const rr = await fetch("/buttons/api/create-issue", {method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({repo: repo, title: p.title, body: p.body})});
-        const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) { askErr.textContent = "create failed: " + (dd.error || rr.status); b.disabled = false; return; }
-        title.textContent = "Issue created: " + (dd.url || "ok");
-        b.remove();
-      };
-    } else {
-      title.textContent = "Proposed command:";
-      div.appendChild(title);
-      const code = document.createElement("code");
-      code.textContent = p.command;
-      div.appendChild(code);
-      b.textContent = "Run";
-      b.onclick = async () => {
-        if (!(await confirmDialog("Run proposed command", "Run: " + p.command + "?", false))) return;
-        b.disabled = true;
-        const rr = await fetch("/buttons/api/run-td", {method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({repo: repo, command: p.command})});
-        const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) { askErr.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
-        userStartedRun = true;
-        poll(dd.id, "run-td");
-      };
-    }
-    div.appendChild(b);
-    askOut.appendChild(div);
-  } catch (e) {
-    askBtn.disabled = false;
-    askOut.textContent = "";
-    askErr.textContent = "ask failed: " + e;
+    pre.remove();
+    askErr.textContent = "ask failed: " +
+      ((res.data && res.data.error) || res.status);
+    return;
   }
+  pollPiProgress(res.data.id, pre, askErr, (result) => {
+    askBtn.disabled = false;
+    renderAskResult({result: result}, repo);
+  }, "ask");
 };
 
 // Ledger view. Entry data is rendered with textContent only —
@@ -3781,6 +3949,108 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": job} if job is not None
                            else {"error": "unknown job"},
                            200 if job is not None else 404)
+        elif path == "/buttons/api/issues":
+            # Open issues for the picked repo: number, title,
+            # assignees, labels, updated, url, body (truncated).
+            # Read-only; gh list with a fixed --json field set.
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            gh = repos[repo]["gh"]
+            try:
+                out = _td_run(
+                    "gh issue list --repo " + shlex.quote(gh) +
+                    " --state open --limit 50 --json "
+                    "number,title,state,assignees,labels,updatedAt,"
+                    "url,body",
+                    timeout=60,
+                    prefix=_td_prefix(repos[repo]["td_cwd"]))
+                issues = json.loads(out)
+                for i in issues:
+                    if isinstance(i.get("body"), str) \
+                            and len(i["body"]) > 600:
+                        i["body"] = i["body"][:600] + "…"
+                self._json({"repo": repo, "issues": issues})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
+        elif path.startswith("/buttons/api/pi-progress/"):
+            # Live tail of a Pi background run: {done, output,
+            # result?, error?}. The id is a server-issued hex
+            # token, validated by charset; the file it maps to is
+            # built server-side, never from the request.
+            rid = path[len("/buttons/api/pi-progress/"):]
+            if not re.fullmatch(r"[0-9a-f]{12}", rid):
+                self._json({"error": "unknown run"}, 404)
+                return
+            with pi_runs_lock:
+                r = pi_runs.get(rid)
+            if r is None:
+                self._json({"error": "unknown run"}, 404)
+                return
+            try:
+                with open(_pi_progress_path(rid)) as f:
+                    f.seek(0, 2)
+                    size = f.tell()
+                    f.seek(max(0, size - PI_PROGRESS_TAIL))
+                    tail = f.read()
+            except Exception:
+                tail = ""
+            out = {"done": r["done"], "output": tail}
+            if r["done"]:
+                if r["error"]:
+                    out["error"] = r["error"]
+                elif r["result"]:
+                    out["result"] = r["result"]
+            self._json(out)
+            return
+        elif path == "/buttons/api/jules-sessions":
+            # Jules sessions for progress visibility: id, title,
+            # state, updated, url, source repo, linked PR. Read-only.
+            # Graceful when JULES_API_KEY is unset — the notice
+            # pattern from the sync-nudge button.
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            info = repos[repo]
+            cmd = ("if [ -z \"$JULES_API_KEY\" ]; then "
+                   "echo '{\"sessions\": [], "
+                   "\"notice\": \"JULES_API_KEY is unset — add it to "
+                   ".env to see Jules sessions\"}'; else "
+                   "td --json jules list-sessions; fi")
+            try:
+                out = _td_run(cmd, timeout=120,
+                              prefix=_td_prefix(info["td_cwd"]))
+                data = json.loads(out)
+                sessions = []
+                for s in data.get("sessions", [])[:30]:
+                    pr_url = ""
+                    for o in s.get("outputs", []) or []:
+                        pr = o.get("pullRequest") or {}
+                        if pr.get("url"):
+                            pr_url = pr["url"]
+                            break
+                    sessions.append({
+                        "id": s.get("id"), "title": s.get("title"),
+                        "state": s.get("state"),
+                        "updated": s.get("updateTime"),
+                        "url": s.get("url"),
+                        "source": ((s.get("sourceContext") or {})
+                                   .get("source", "")
+                                   .split("/")[-1]),
+                        "pr_url": pr_url,
+                    })
+                self._json({"repo": repo, "sessions": sessions,
+                            "notice": data.get("notice", "")})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
         else:
             self._json({"error": "not found"}, 404)
 
@@ -3872,6 +4142,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
             return
+        if path == "/buttons/api/pr-action":
             # Strict validation: integer PR number only (bools are
             # ints in Python, so exclude them), allowlisted action.
             # The number is then safe to interpolate: it cannot
@@ -3909,98 +4180,45 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/suggest":
-            # Pi suggests (see the section above). Reads only:
-            # suggestions are not ledger entries, exactly like
-            # briefing reads. Slow by design: briefing fetch plus
-            # a local-model Pi run can take minutes.
+            # Pi suggests, in the background (see _pi_start): the
+            # local-model run takes minutes, so the POST returns
+            # an id immediately and the client polls
+            # /buttons/api/pi-progress/<id> for live output.
+            # Reads only: suggestions are not ledger entries,
+            # exactly like briefing reads.
             try:
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
             repos = _discover_repos()
             repo = data.get("repo", _default_repo(repos))
-            if repo not in repos:
-                self._json({"error": "unknown repo"}, 400)
+            rid, err = _pi_start("suggest", repo)
+            if err:
+                self._json({"error": err}, 400)
                 return
-            info = repos[repo]
-            try:
-                proc = subprocess.run(
-                    EXEC + [_td_prefix(info["td_cwd"])
-                            + "python3 /srv/remote-server/buttons/"
-                            "briefing_summary.py --briefing-json "
-                            f"--repo {repo} --gh {info['gh']}"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=180, text=True)
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        (proc.stderr or "").strip().splitlines()[-1]
-                        if proc.stderr.strip() else "briefing failed")
-                brief = json.loads(proc.stdout)
-            except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
-                return
-            prompt = _suggest_prompt(repo, _suggest_context(brief))
-            b64 = base64.b64encode(prompt.encode()).decode()
-            # The prompt travels base64-encoded: its alphabet is
-            # shell-safe, so briefing titles carrying quotes or
-            # $ cannot break out of the pi argument.
-            cmd = (_td_prefix(info["td_cwd"]) +
-                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-                   ' | base64 -d)"')
-            try:
-                proc = subprocess.run(
-                    EXEC + [cmd],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=600, text=True)
-                raw = proc.stdout or ""
-            except Exception as exc:
-                self._json({"error": f"Pi failed: {exc}"[:500]}, 500)
-                return
-            self._json({"repo": repo,
-                        "suggestions": _parse_suggestions(raw),
-                        "raw": raw[-2000:]})
+            self._json({"id": rid})
             return
         if path == "/buttons/api/ask":
-            # Ask Pi: open-ended instruction from the text box.
-            # Pi investigates read-only and replies; a write the
-            # user asked for comes back as a PROPOSE block, parsed
-            # strictly by _parse_proposal. Nothing is executed
-            # here — proposals run only after a confirm tap, via
-            # /buttons/api/run-td (td commands, re-validated) or
-            # /buttons/api/create-issue. Like suggest: reads only,
-            # not a ledger entry; slow by design on the local model.
+            # Ask Pi, in the background like suggest: the POST
+            # validates and returns an id; the client polls
+            # /buttons/api/pi-progress/<id>. Pi investigates
+            # read-only and replies; a write it was asked for comes
+            # back as a PROPOSE block, parsed strictly by
+            # _parse_proposal. Nothing is executed here — proposals
+            # run only after a confirm tap, via /buttons/api/run-td
+            # (td commands, re-validated) or /buttons/api/create-issue.
+            # Like suggest: reads only, not a ledger entry.
             try:
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
             repos = _discover_repos()
             repo = data.get("repo", _default_repo(repos))
-            instruction = data.get("instruction", "")
-            if repo not in repos or not isinstance(instruction, str) \
-                    or not instruction.strip() \
-                    or len(instruction) > ASK_MAX_CHARS:
-                self._json({"error": "bad repo or instruction"}, 400)
+            rid, err = _pi_start("ask", repo, data.get("instruction"))
+            if err:
+                self._json({"error": err}, 400)
                 return
-            info = repos[repo]
-            prompt = _ask_prompt(repo, instruction.strip())
-            b64 = base64.b64encode(prompt.encode()).decode()
-            # Base64 again: the instruction is free text, so it
-            # must never touch the shell unencoded.
-            cmd = (_td_prefix(info["td_cwd"]) +
-                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-                   ' | base64 -d)"')
-            try:
-                proc = subprocess.run(
-                    EXEC + [cmd],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    timeout=600, text=True)
-                raw = proc.stdout or ""
-            except Exception as exc:
-                self._json({"error": f"Pi failed: {exc}"[:500]}, 500)
-                return
-            self._json({"repo": repo,
-                        "reply": raw[-6000:],
-                        "proposal": _parse_proposal(raw)})
+            self._json({"id": rid})
             return
         if path == "/buttons/api/create-issue":
             # Create the GitHub issue Pi proposed, after the user's
@@ -4042,34 +4260,6 @@ class Handler(BaseHTTPRequestHandler):
                                 "error": str(exc)[:500]})
                 self._json({"error": str(exc)[:500]}, 500)
             return
-        if path == "/buttons/api/issues":
-            # Open issues for the picked repo: number, title,
-            # assignees, labels, updated, url, body (truncated).
-            # Read-only; gh list with a fixed --json field set.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
-            if repo not in repos:
-                self._json({"error": "unknown repo"}, 400)
-                return
-            gh = repos[repo]["gh"]
-            try:
-                out = _td_run(
-                    "gh issue list --repo " + shlex.quote(gh) +
-                    " --state open --limit 50 --json "
-                    "number,title,state,assignees,labels,updatedAt,"
-                    "url,body",
-                    timeout=60,
-                    prefix=_td_prefix(repos[repo]["td_cwd"]))
-                issues = json.loads(out)
-                for i in issues:
-                    if isinstance(i.get("body"), str) \
-                            and len(i["body"]) > 600:
-                        i["body"] = i["body"][:600] + "…"
-                self._json({"repo": repo, "issues": issues})
-            except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
-            return
         if path == "/buttons/api/assign-issue":
             # Assign an issue to a user. Strict validation: repo
             # from discovery, issue digits, assignee GitHub-username
@@ -4103,50 +4293,6 @@ class Handler(BaseHTTPRequestHandler):
                 _ledger_append({"kind": "pr-action", "repo": repo,
                                 "action": "assign-issue", "ok": False,
                                 "error": str(exc)[:500]})
-                self._json({"error": str(exc)[:500]}, 500)
-            return
-        if path == "/buttons/api/jules-sessions":
-            # Jules sessions for progress visibility: id, title,
-            # state, updated, url, source repo, linked PR. Read-only.
-            # Graceful when JULES_API_KEY is unset — the notice
-            # pattern from the sync-nudge button.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
-            if repo not in repos:
-                self._json({"error": "unknown repo"}, 400)
-                return
-            info = repos[repo]
-            cmd = ("if [ -z \"$JULES_API_KEY\" ]; then "
-                   "echo '{\"sessions\": [], "
-                   "\"notice\": \"JULES_API_KEY is unset — add it to "
-                   ".env to see Jules sessions\"}'; else "
-                   "td --json jules list-sessions; fi")
-            try:
-                out = _td_run(cmd, timeout=120,
-                              prefix=_td_prefix(info["td_cwd"]))
-                data = json.loads(out)
-                sessions = []
-                for s in data.get("sessions", [])[:30]:
-                    pr_url = ""
-                    for o in s.get("outputs", []) or []:
-                        pr = o.get("pullRequest") or {}
-                        if pr.get("url"):
-                            pr_url = pr["url"]
-                            break
-                    sessions.append({
-                        "id": s.get("id"), "title": s.get("title"),
-                        "state": s.get("state"),
-                        "updated": s.get("updateTime"),
-                        "url": s.get("url"),
-                        "source": ((s.get("sourceContext") or {})
-                                   .get("source", "")
-                                   .split("/")[-1]),
-                        "pr_url": pr_url,
-                    })
-                self._json({"repo": repo, "sessions": sessions,
-                            "notice": data.get("notice", "")})
-            except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/run-plan":
