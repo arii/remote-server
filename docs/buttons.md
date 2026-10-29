@@ -17,15 +17,15 @@ label, so you do not have to remember the docs to use the page.
 | Deploy buttons (rebuild this page) | Runs in the TERMINAL container, not buttons itself: `git pull --ff-only`, `docker compose up -d --build buttons`, then a verify loop curling the new container's status endpoint (60s, fails visibly with `compose ps` output on timeout) — rebuilds the buttons container from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
-| Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the Briefing picker |
+| Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
 | Sync & nudge agents | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses), then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped). The fallback covers a group-name difference only, not a missing JULES_API_KEY — both spellings fail that way, and the failure note below says so |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
 | Preflight check | `td preflight` — doctor + typecheck + lint + overlap + merge simulation for the picked repo |
 
 Deploy buttons, Recreate, and Sync & nudge agents ask for a
 browser confirm first, as do the per-PR action buttons on the
-Briefing cards (their own confirm dialogs). Status, Logs, Repo
-briefing (td), Warm repo context, and Preflight check do not.
+Briefing cards (their own confirm dialogs). Status, Logs, Refresh
+briefing, Warm repo context, and Preflight check do not.
 One run at a time: starting a
 second run while one is active returns an error until the first
 finishes. Output streams to the page (polled every 2s); reloading
@@ -99,6 +99,12 @@ the old behavior (its own output is the cause).
   its progress line and only new lines appear after the clear; a
   finished run keeps its done/failed status with an empty pane.
   Clear cancels nothing and runs no command.
+- **Failure banner:** a failed run's status line carries the last
+  three non-empty output lines (read from the output pane, so ANSI
+  is already stripped) instead of pointing at the `step failed` line
+  at the end of the output — the pane sits below the fold on a
+  phone, so the cause was never visible. The tail usually includes
+  that `step failed` line itself, since the server appends it last.
 - **Green / red:** the status line and the output pane's border go
   green on exit 0, red on any other exit code, amber while running.
   Border colour comes **only from the exit code**, never from
@@ -169,7 +175,7 @@ the repos dir, so it stays special); the repo strip cards and
 the picker options render per request from that discovery, so
 a repo added to `~/repos` — boomtick, or any future one —
 appears on the next page load with no code change and no
-container restart. The picker sets the repo for the cards,
+container restart. The picker, above the action buttons so it precedes every control it governs, sets the repo for the cards,
 their action buttons, and the repo-scoped buttons (briefing,
 warm context, preflight); every endpoint validates the repo
 against the discovered set, and the summarizer takes `--repo`
@@ -317,7 +323,8 @@ buttons completion (the container restarts mid-run, so the old
 process never gets to log it; the new container's `buttons
 started` line is the deploy evidence instead).
 
-The page's Ledger section reads it via
+The page's Ledger section — behind a closed drawer, one tap to
+open, so the audit log does not dominate the page — reads it via
 `GET /buttons/api/ledger?kind=&limit=` (kind allowlisted:
 `all`, `run`, `webhook`, `pr-action`, `system`; limit clamped
 1–200, default 50), newest first, with a kind picker and

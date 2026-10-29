@@ -374,6 +374,13 @@ def fetch():
             data["jules_err"] = "list-sessions returned no sessions list"
         else:
             data["jules_err"] = err
+    # A td without the agent/jules group (e.g. the pinned
+    # cli-v0.14.2) fails with Click's "No such command" — the
+    # raw wording reads as a page bug, so say what it means
+    # and what fixes it instead.
+    if data["jules"] is None and "No such command" in (data["jules_err"] or ""):
+        data["jules_err"] = ("this td version can't list Jules sessions — "
+                             "rebuild the terminal for a newer td")
     return data
 
 

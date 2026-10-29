@@ -178,7 +178,7 @@ def _repo_strips_html(repos):
                      "The Server buttons below act here.")
         else:
             scope = ("Repo work — briefing, warm context, preflight, "
-                     "PR actions. Pick it in the Briefing picker.")
+                     "PR actions. Pick it in the picker above.")
         out.append(
             f'<div class="repo"><div class="reponame">'
             f'<a href="https://github.com/{gh}">{gh}</a></div>'
@@ -524,7 +524,7 @@ ACTIONS = {
     "status": {
         "label": "Status",
         "group": "Server",
-        "sub": "What's running, what's changed, which terminal image is in use",
+        "sub": "Running containers, checkout state, terminal image",
         "confirm": False,
         "steps": [
             GIT + ["status", "--short", "--branch"],
@@ -557,7 +557,7 @@ ACTIONS = {
     "deploy-buttons": {
         "label": "Deploy buttons (rebuild this page)",
         "group": "Server",
-        "sub": "Git pull, rebuild this page's container — page drops for ~30s, terminal stays up",
+        "sub": "Pull + rebuild this page (drops ~30s)",
         "confirm": True,
         "steps": [
             EXEC + ["git -c safe.directory=/srv/remote-server -C /srv/remote-server pull --ff-only"],
@@ -577,7 +577,7 @@ ACTIONS = {
         # restart by this button, and a terminal image update, when
         # one is ever needed, is a host-shell job: compose pull
         # terminal && compose up -d terminal.)
-        "sub": "Restart terminal with the current image and .env — no code or image update. Use after editing .env",
+        "sub": "Restart terminal with current image and .env",
         "confirm": True,
         "steps": [
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
@@ -594,7 +594,7 @@ ACTIONS = {
         # calls. The full JSONL stays on disk; pi_logs.py never
         # fails the run, so a missing sessions dir degrades to a
         # note instead of turning Logs red.
-        "sub": "Last 100 lines from terminal + Ollama, plus Pi session audit (latest session, readable)",
+        "sub": "Terminal + Ollama logs, latest Pi session",
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
@@ -613,9 +613,9 @@ ACTIONS = {
     # terminal container; if a gh call fails, that PR's CI reads
     # "unknown" instead of failing the whole briefing.
     "briefing-td": {
-        "label": "Repo briefing (td, fast)",
+        "label": "Refresh briefing",
         "group": "Briefing",
-        "sub": "Open PRs, CI state, conflicts — fast, from td (repo follows the Briefing picker below)",
+        "sub": "Open PRs, CI, conflicts from td (repo from picker above)",
         "confirm": False,
         "steps": [
             EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
@@ -634,7 +634,7 @@ ACTIONS = {
     "sync-nudge": {
         "label": "Sync & nudge agents",
         "group": "Briefing",
-        "sub": "List active Jules sessions, then post CI/review feedback to stalled ones",
+        "sub": "List Jules sessions, post feedback to stalled ones",
         "confirm": True,
         "steps": [
             EXEC + [TD + "td --json agent list-sessions || "
@@ -649,7 +649,7 @@ ACTIONS = {
     "warm-context": {
         "label": "Warm repo context",
         "group": "Briefing",
-        "sub": "Regenerate the picked repo's .agent-context.json if stale",
+        "sub": "Regenerate .agent-context.json if stale",
         "confirm": False,
         "steps": [
             EXEC + [TD + "td context-warm"],
@@ -660,7 +660,7 @@ ACTIONS = {
     "preflight": {
         "label": "Preflight check",
         "group": "Briefing",
-        "sub": "doctor + typecheck + lint + overlap + merge simulation for the picked repo",
+        "sub": "doctor + typecheck + lint + overlap + merge simulation",
         "confirm": False,
         "steps": [
             EXEC + [TD + "td --json preflight"],
@@ -698,12 +698,11 @@ ACTIONS = {
 # data-label carries the bare label for the confirm dialog; the
 # button's textContent now includes the subtitle too.
 # Group headings carry the repo each group acts on, because the
-# page covers two repos and the old bare headings left that
-# ambiguous: Server = the remote-server stack, Briefing = the
-# tech-dancer repo (briefings read tech-dancer only).
+# old bare headings left that ambiguous: Server = the
+# remote-server stack, Briefing = the repo from the picker above.
 GROUP_TITLES = {
     "Server": "Server · arii/remote-server",
-    "Briefing": "Briefing · repo from the picker below",
+    "Briefing": "Briefing · repo from the picker above",
 }
 
 
@@ -1073,38 +1072,35 @@ a { color: #8bf; }
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
+<label>Repo for the buttons and briefing below: <select id="briefingRepo">
+<!--REPO_OPTIONS-->
+</select></label>
 <div id="buttons"><!--BUTTONS--></div>
 <button id="clearBtn">Clear output</button>
 <div id="state"></div>
 <pre id="out"></pre>
 <h2>Briefing</h2>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
-sessions. Runs on load; Refresh re-fetches. The picker sets the
-repo for the cards, their action buttons, and the repo-scoped
-buttons above (briefing, warm context, preflight).</p>
-<label>Repo: <select id="briefingRepo">
-<!--REPO_OPTIONS-->
-</select></label>
+sessions. Runs on load; the Refresh briefing button re-runs it
+from td. The picker above sets the repo for the cards, their
+action buttons, and the repo buttons.</p>
 <div id="briefing"></div>
-<button id="refreshBriefing">Refresh briefing</button>
 <div id="briefingErr"></div>
 <h2>Suggested next actions</h2>
 <p>Pi reads the briefing context and suggests td commands, then
-runs only what you approve: each suggestion below has its own
-Run button with a confirm dialog. Pi runs read-only for this
-(no tools that execute anything); suggestions are validated
-against a fixed td-command list, and anything else Pi prints
-is shown as text, never run. Asking Pi takes minutes on the
-local model — the list shows a spinner line while it thinks.</p>
+runs only what you approve: each suggestion has its own Run
+button with a confirm dialog. Pi runs read-only here;
+suggestions are validated against a fixed td-command list,
+anything else is shown as text, never run. Asking Pi takes
+minutes on the local model.</p>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
-<h2>Ledger</h2>
+<details><summary class="grouphead">Ledger</summary>
 <p>Durable audit log — every run, webhook pull, and PR-action tap,
 newest first. Survives container restarts (named volume, not the
-checkout). Briefing reads are not logged: reads are not actions.
-Clear ledger deletes all entries but leaves a 'ledger cleared'
-record behind, so the clear itself stays on the record.</p>
+checkout). Briefing reads are not logged. Clearing deletes all
+entries but leaves a 'ledger cleared' record.</p>
 <label>Kind: <select id="ledgerKind">
 <option value="all">All</option>
 <option value="run">Runs</option>
@@ -1116,12 +1112,12 @@ record behind, so the clear itself stays on the record.</p>
 <button id="refreshLedger">Refresh ledger</button>
 <button id="clearLedger">Clear ledger</button>
 <div id="ledgerErr"></div>
+</details>
 <h2>Pi sessions</h2>
 <p>Browse Pi transcripts on disk (pi-data volume). List shows the
 newest sessions with date, repo, and first prompt — tap one to
-render it readably (the filename is the hover text). The full
-JSONL stays on disk — this is the readable view, not the
-archive. Clear Pi sessions deletes all transcripts.</p>
+render it readably. The full JSONL stays on disk. Clearing
+deletes all transcripts.</p>
 <button id="listPiSessions">List sessions</button>
 <button id="clearPiSessions">Clear Pi sessions</button>
 <div id="piSessionList"></div>
@@ -1147,7 +1143,7 @@ let userStartedRun = false;
 async function startRun(name, label, confirmFlag) {
   userStartedRun = true;
   if (confirmFlag && !window.confirm(label + " — run it?")) return;
-  // Repo-scoped buttons follow the Briefing picker; the rest are
+  // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
   const body = {action: name};
   if (name === "briefing-td" || name === "warm-context" || name === "preflight") {
@@ -1259,6 +1255,24 @@ function ansiToHtml(text) {
 }
 let lastRenderedOutput = null;
 
+// Last non-empty output lines for the failure banner, read from
+// the output pane itself: the pane already holds the run's
+// output with ANSI stripped (ansiToHtml), so its text is the
+// plain tail — no second strip pass. The banner used to point
+// at the "step failed" line at the end of the output, but the
+// pane sits below the fold on a phone, so the cause was never
+// visible. The tail usually includes that step-failed line
+// itself (the server appends it last), plus whatever the
+// command printed before dying.
+function lastErrorLines() {
+  const lines = outEl.textContent.split("\n").map(l => {
+    const i = l.lastIndexOf("\r");
+    return (i >= 0 ? l.slice(i + 1) : l).trim();
+  }).filter(l => l);
+  if (!lines.length) return "";
+  return "\n" + lines.slice(-3).join("\n");
+}
+
 // Status colour comes from the exit code only, never from output
 // text: steps run without a PTY, so there is no terminal colour to
 // read. A silent-but-running step is distinguished from a stuck one
@@ -1275,7 +1289,7 @@ function renderState(run) {
   } else if (run.done) {
     cls = "fail";
     text = "failed (exit " + run.exit_code + ") — " + step +
-      " — " + fmt(elapsed) + "\nsee the “step failed” line at the end of the output";
+      " — " + fmt(elapsed) + lastErrorLines();
   } else {
     cls = "running";
     text = "running: " + run.action + " — " + step + " — " + fmt(elapsed) +
@@ -1371,8 +1385,9 @@ async function poll(id, action) {
         outEl.scrollIntoView();
       }
       // A finished briefing-td run means the cards are stale:
-      // refresh them so "ran briefing" visibly updates the view
-      // instead of leaving the reader to guess where output went.
+      // refresh them so tapping Refresh briefing visibly updates
+      // the view instead of leaving the reader to guess where
+      // output went.
       if (run.action === "briefing-td" &&
           typeof refreshBriefing === "function") refreshBriefing();
       // Any finished run is a new ledger line.
@@ -1411,8 +1426,8 @@ document.getElementById("clearBtn").onclick = async () => {
 // Briefing view (script block 2, separate from the core block
 // above, so a Briefing failure cannot take the core buttons down).
 // Renders the structured briefing from /buttons/api/briefing as
-// PR cards — the live view that replaces the old Plans file
-// checkboxes. Auto-runs on load; Refresh re-fetches.
+// PR cards. Auto-runs on load and after a Refresh briefing run;
+// changing the picker above re-fetches.
 const briefingEl = document.getElementById("briefing");
 const briefingErrEl = document.getElementById("briefingErr");
 // Per-PR actions: one tap per card, gated both client-side
@@ -1531,7 +1546,7 @@ function renderBriefing(b) {
   } else if (j.items && j.items.length) {
     j.items.forEach(t => { const p = document.createElement("p"); p.textContent = t.replace(/^- /, ""); js.appendChild(p); });
   } else {
-    const p = document.createElement("p"); p.textContent = "No active Jules sessions for tech-dancer."; js.appendChild(p);
+    const p = document.createElement("p"); p.textContent = "No active Jules sessions for " + (b.repo || "this repo") + "."; js.appendChild(p);
   }
   if (j.other) { const p = document.createElement("p"); p.textContent = "(" + j.other + " active session(s) for other repos, not listed.)"; js.appendChild(p); }
   briefingEl.appendChild(js);
@@ -1549,7 +1564,6 @@ async function refreshBriefing() {
     briefingErrEl.textContent = "briefing unavailable: " + e;
   }
 }
-document.getElementById("refreshBriefing").onclick = refreshBriefing;
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
