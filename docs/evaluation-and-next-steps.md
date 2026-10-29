@@ -1,89 +1,75 @@
 # Evaluation, Button Audit, and Next Steps — 2026-10-29
 
-## 1. Executive Summary & Critical Issue Resolvings
+## 1. Executive Summary & Current Stack State
 
-### A. Repos Dropdown Only Showing `remote-server` (Resolved)
-- **Root Cause:** In `_discover_repos()`, the server ran `git -C <host_path> config --get remote.origin.url` without `-c safe.directory=<host_path>`. Because `buttons` runs as `root` while `/home/ari/repos` is owned by `1000:1000` (`ari`), git flagged dubious ownership and exited with code 1. Discovery logged `skipping boomtick/tech-dancer (no parseable GitHub origin)` and fell back to the hardcoded `remote-server` entry.
-- **Resolution (`b66a676`):** Added `safe.directory={host_path}` to `git config` in `_discover_repos()`.
-- **Live Status:** All three repositories now discover dynamically and populate the dropdown: `boomtick`, `remote-server`, and `tech-dancer`.
+All three repositories are verified on their latest releases, fully synchronized with GitHub, and wired into the automated webhook / hook infrastructure:
 
-### B. BoomTick Out-of-Sync, Missing Webhook & 0.15.0 Upgrade (Resolved)
-- **Root Cause of BoomTick Errors:**
-  1. **20 Commits Behind:** Local `/srv/repos/boomtick` was stuck on `0.14.3` (`f19f28e`), while GitHub was on `0.15.0` (`15dc98a`).
-  2. **Dirty Schema Blocked Pulls:** An earlier `td context-warm` modified `cli/dev_tools/cli-schema.json`, preventing automated git pulls.
-  3. **No Webhook Registered:** `scripts/setup-webhooks.sh` only registered `remote-server` and `tech-dancer`. GitHub never sent push events for `boomtick`.
-  4. **Missing Node Modules:** `pnpm install` had never been run in `boomtick`, causing `preflight` / `type-check` to fail with `tsx: not found` and `run-p: not found`.
-  5. **Stale Installed CLI:** `/opt/venvs/td` had `boomtick-cli 0.14.3` installed in non-editable mode.
-- **Fixes Applied & Verified:**
-  - Discarded unstaged schema changes and fast-forwarded `boomtick` to latest `origin/main` (`15dc98a`, tagged `cli-v0.15.0`, `mcp-v0.7.0`).
-  - Ran `pnpm install` in `boomtick` (installed dependencies for `@arii/boomtick-mcp` and dev tooling).
-  - Installed `boomtick-cli 0.15.0` in editable mode (`pip install -e /srv/repos/boomtick/cli`) inside `/opt/venvs/td`, so updates in `boomtick/cli` take effect immediately.
-  - Added `arii/boomtick` to `scripts/setup-webhooks.sh` and created webhook `704572541` on GitHub. Verified incoming ping and pull (`ok: 16 files changed, 778 insertions(+), 50 deletions(-)`).
-  - Added `boomtick` to `scripts/setup-hooks.sh` and installed the `post-merge` hook.
+| Repository | Current Release / Head | Open PRs | Auto-Pull Webhook | Tracked Post-Merge Hook |
+|---|---|---|---|---|
+| **`remote-server`** | `c5a0aa0` (latest `main`) | 0 | Registered (`704473987`) | `/srv/remote-server/.git/hooks/post-merge` |
+| **`tech-dancer`** | `1fbc9c9` (`v0.10.0`) | **0** (all merged clean) | Registered (`704473991`) | `/srv/repos/tech-dancer/.git/hooks/post-merge` |
+| **`boomtick`** | `37fd8da` (`cli-v0.15.1`, `mcp-v0.7.1`) | **0** (clean release) | Registered (`704572541`) | `/srv/repos/boomtick/.git/hooks/post-merge` |
 
-### C. Access URL & Navigation Clarification (`buttons` is not a valid URL)
-- Entering plain `buttons` or `http://buttons` into a mobile browser address bar fails or triggers a web search because `buttons` is not a top-level domain or hostname.
-- **Correct Full URL:**
+- **Live Buttons Service:** Rebuilt and reloaded as `remote-buttons:local`. Both `boomtick` and `tech-dancer` return live briefings with zero open PRs and clean boards.
+- **Auto-Approval Configured:** `/root/.gemini/antigravity-cli/settings.json` permits `git`, `docker`, `gh`, `npm`, `pnpm`, `td`, `python3`, `curl`, `bash`, `sh`, and `/opt/venvs/td/bin/pip` without manual prompt clicking.
+- **Valid Access URL:** The phone UI is reached at:
   ```text
   https://dev-onasafari.ddns.net:8443/buttons
   ```
-  (or `https://<TERMINAL_DOMAIN>:<TERMINAL_PORT>/buttons`). Both `/buttons` and `/buttons/` route through oauth2-proxy (GitHub OAuth gate) and Caddy to the buttons service on port 8000. Navigating to `/` opens the interactive web terminal (`ttyd` + `zellij`).
-
-### D. Agent Command Permissions Configured (No Manual Approval Clicking)
-- Updated `/root/.gemini/antigravity-cli/settings.json` under `permissions.allow` to permit binary prefixes:
-  `command(git)`, `command(docker)`, `command(gh)`, `command(npm)`, `command(pnpm)`, `command(td)`, `command(python3)`, `command(curl)`, `command(bash)`, `command(sh)`, `command(/opt/venvs/td/bin/pip)`.
-- Eliminates the repetitive approval dialogs for git, docker, and development commands.
+  (Entering plain `buttons` in a browser search bar fails because `buttons` is an internal route on port 8443, not a standalone URL.)
 
 ---
 
-## 2. Button UX Evaluation: Why Buttons Fail & How to Improve Mobile Usability
+## 2. Issues Investigated & Resolved During Reload
 
-User feedback highlighted that multiple buttons fail with errors and are difficult to use on mobile:
+### A. Repos Dropdown Multi-Repo Discovery (`b66a676`)
+- **Issue:** Dropdown previously only listed `remote-server`.
+- **Cause:** `_discover_repos()` ran `git -C <path> config --get remote.origin.url` without `-c safe.directory=<path>`. Git flagged dubious ownership across the container `root` and host `1000` (`ari`) boundary and returned exit 1.
+- **Fix:** Added `-c safe.directory={host_path}` to `_discover_repos()`. Dropdown now dynamically lists `boomtick`, `remote-server`, and `tech-dancer`.
 
-### 1. `Sync & Nudge Agents` Hard-Fails when `JULES_API_KEY` is Unset
-- **Behavior:** The button runs `td --json agent list-sessions` followed by `td --json agent run-feedback-check`.
-- **Failure:** If `JULES_API_KEY` is not defined in `.env`, `td agent list-sessions` exits with code 1 (`ValueError: JULES_API_KEY is not set or empty`). The button aborts immediately, turns the status bar red, and shows `failed (exit 2) — step 1/2`.
-- **UX Problem:** The user sees a red failure banner with no immediate explanation unless they scroll through the raw output.
-- **Remedy:** Gracefully check if `JULES_API_KEY` is set and output an actionable notice (`"Jules not configured: set JULES_API_KEY in .env to use agent sync"`) rather than an aborting exit-code failure.
+### B. BoomTick State Synchronization & Release Upgrade
+- **Issue:** `boomtick` was out of sync on server, had an unstaged schema diff, lacked a GitHub webhook, and missed node dependencies.
+- **Fixes Applied & Verified:**
+  - Fast-forwarded `boomtick` to `37fd8da` (`cli-v0.15.1`, `mcp-v0.7.1`).
+  - Ran `pnpm install --frozen-lockfile` (479 packages added for MCP and dev tooling).
+  - Reinstalled `boomtick-cli 0.15.1` in editable mode (`pip install -e /srv/repos/boomtick/cli`) inside `/opt/venvs/td`.
+  - Registered GitHub webhook `704572541` on `arii/boomtick` and verified incoming push deliveries.
+  - Pre-warmed `.agent-context.json` via `td context-warm`.
 
-### 2. `Preflight Check` Dumps Megabytes of Raw JSON and Fails on Linter Warnings
-- **Behavior:** `td --json preflight` runs `doctor`, `typecheck`, `lint`, `audit`, and `merge-simulation`.
-- **Failure:** In `tech-dancer`, Python linter (`pylint`) fails with exit code 1 because optional ETL packages (`pandas`, `playwright`, `bs4`) are not installed in the global python environment.
-- **UX Problem:** Preflight returns a 30,000+ character JSON dump. On a phone, reading this inside a `<pre>` block is cumbersome.
-- **Remedy:** Parse the preflight output to show a concise high-level checklist (e.g., `Doctor: ✓, Types: ✓, Lint: ✗ (pylint warnings)`) instead of raw JSON.
-
-### 3. Error Feedback is Buried in Raw `<pre>` Logs
-- **Behavior:** When an action fails, the top status banner only says:
-  `failed (exit 1) — step 1/1 — 0s\nsee the “step failed” line at the end of the output`
-- **UX Problem:** On mobile screens, the user must scroll past hundreds of lines to find the actual reason (e.g. missing API key, uncommitted change, or lint failure).
-- **Remedy:** Extract the terminal error summary or top-level JSON `"message"` and display it directly in the status bar in plain English.
+### C. Tech-Dancer PR Queue Cleared
+- **`chore(main): release tech-dancer 0.10.0` (#4814)** has been merged into `main`. Both #4827 and #4826 were incorporated.
+- The `tech-dancer` board now reports 0 open PRs and clean statusCheckRollups. Context has been refreshed via `td context-warm`.
 
 ---
 
-## 3. Current Button Inventory & Classification
+## 3. Button UX Evaluation: Mobile Pain Points & Proposed Polishing
 
-| Button | Target Repo | Failure Modes & Usability Issues | Recommended Treatment |
+User testing confirmed that button feedback on mobile needs targeted refinement:
+
+1. **`Sync & Nudge Agents` Graceful Handling:**
+   - Currently, if `JULES_API_KEY` is not in `.env`, `td agent list-sessions` exits with code 1 (`ValueError: JULES_API_KEY is not set or empty`), which turns the entire status banner red.
+   - **Recommendation:** Wrap step 1 to check for `JULES_API_KEY` or catch exit 1 and report: `"Notice: JULES_API_KEY is unset; add to .env to enable active session syncing."` without turning the run status red.
+
+2. **Error Extraction for Mobile Status Banner:**
+   - The current banner (`failed (exit 1) — see "step failed" line at the end of output`) forces users to scroll through hundreds of lines in a mobile `<pre>` tag.
+   - **Recommendation:** Extract the top-level error line or JSON `"message"` from the output and display it directly in the `#state` banner.
+
+3. **Preflight JSON Digest:**
+   - `td preflight` returns 30KB+ of nested JSON with oxlint/pylint/semgrep reports.
+   - **Recommendation:** Render a compact checklist (`Doctor: OK, Typecheck: OK, Lint: Warnings`) instead of dumping raw JSON into the output pre-block.
+
+---
+
+## 4. Current Button Inventory
+
+| Button | Target Repo | Role on Phone UI | Current Status |
 |---|---|---|---|
-| **Status** | Stack | Very stable (<1s). | Keep as-is. |
-| **Deploy buttons** | Stack | Stable (runs via `terminal` container). | Keep as-is. |
-| **Recreate terminal** | Stack | Stable (container recreate). | Keep as-is. |
-| **Logs** | Stack | Renders terminal logs + Pi logs. | Keep as-is. |
-| **Repo briefing** | Selected | Fast (~7s), reliable. Shows Jules warning if key missing. | Keep as-is. |
-| **Sync & nudge agents** | Stack / Repos | **Fails red** if `JULES_API_KEY` missing. | Update step to check for key or exit 0 with reminder. |
-| **Warm context** | Selected | Fast (~1s). | Keep as-is. |
-| **Preflight check** | Selected | **Fails red** on linter warnings, dumps 30KB JSON. | Parse JSON to show concise checklist (Doctor ✓, Types ✓, Lint ✗). |
-| **Agent suggests next actions** | Selected | Slow (Pi inference); requires clear spinner. | Keep allowlisted execution. |
-
----
-
-## 4. Current Repository Status & Next Steps
-
-All three repositories are verified up to date on `main`:
-- **`remote-server`:** `e7c018f` (all webhook, discovery, and documentation updates pushed).
-- **`tech-dancer`:** `b906042cae` (tagged `tech-dancer-v0.10.0`, all recent PRs merged clean).
-- **`boomtick`:** `15dc98a` (tagged `cli-v0.15.0` & `mcp-v0.7.0`, pnpm dependencies installed, CLI installed in editable mode).
-
-### Next Actions:
-- [ ] Test the live briefing on `boomtick` by visiting `https://dev-onasafari.ddns.net:8443/buttons` and selecting `boomtick`.
-- [ ] Implement error extraction in `buttons/server.py` so mobile failures display human-readable root causes rather than generic exit-code banners.
-- [ ] Add graceful fallback in `Sync & nudge agents` when `JULES_API_KEY` is not present in `.env`.
+| **Status** | Stack | Quick health check (git status, compose ps, terminal image). | Active & fast (<1s). |
+| **Deploy buttons** | Stack | Rebuilds the buttons container via `terminal` container without self-kill. | Active. |
+| **Recreate terminal** | Stack | Recreates `terminal` after `.env` changes or if `zellij` hangs. | Active escape hatch. |
+| **Logs** | Stack | Tails 100 lines of `terminal` + `ollama` + Pi session audit. | Active. |
+| **Repo briefing** | Selected | Fast (~7s) triage of open PRs, CI, conflicts, and reviews. | Active (shows 0 PRs on clean boards). |
+| **Sync & nudge agents** | Stack / Repos | Syncs Jules sessions and runs automated CI feedback check. | Active (needs `JULES_API_KEY`). |
+| **Warm context** | Selected | Regenerates `.agent-context.json` for agent tools. | Active (~1s). |
+| **Preflight check** | Selected | Full-stack doctor, typecheck, lint, and merge simulation. | Active. |
+| **Agent suggests next actions** | Selected | Pi analyzes briefing and renders allowlist-validated one-tap action buttons. | Active (`ef294e5`). |
