@@ -249,19 +249,35 @@ ACTIONS = {
              "--format", "{{.Repository}}:{{.Tag}}  {{.Size}}  {{.CreatedSince}}"],
         ],
     },
-    # Rebuilds THIS service from the checked-out code. It recreates
-    # its own container mid-run, so the run's connection drops and
-    # the client must treat connection loss as "refresh in ~30s",
-    # not as a failure to report. The terminal stays up throughout,
-    # so a failed build is recoverable from there. Confirm first.
+    # Rebuilds THIS service from the checked-out code — but NOT
+    # from inside itself. The old steps ran `docker compose up
+    # --build buttons` from the buttons container: compose stops
+    # that container to recreate it, killing the compose CLI
+    # mid-sequence, so the new container is never created and the
+    # page stays down until someone runs `up -d` on the host.
+    # That is the "Deploy crashes the site and it never comes
+    # back" bug. These steps run in the TERMINAL container
+    # instead (EXEC), which stays up across a buttons recreate,
+    # so the sequence completes. HOME=/home/ari is load-bearing
+    # for the compose calls: the compose file interpolates
+    # ${HOME} for the repos mount, and the terminal runs as root
+    # (HOME=/root) — without the override the daemon would mount
+    # the host's /root/repos. (git keeps the terminal's own HOME
+    # so its gitconfig/ssh mounts still resolve; the -c flag
+    # covers safe.directory without depending on that gitconfig.)
+    # The verify step proves the NEW container serves before the
+    # run reports success; on timeout it prints `compose ps`
+    # and fails visibly instead of leaving a silently dead page.
+    # Confirm first.
     "deploy-buttons": {
         "label": "Deploy buttons (rebuild this page)",
         "group": "Server",
         "sub": "Git pull, rebuild this page's container — page drops for ~30s, terminal stays up",
         "confirm": True,
         "steps": [
-            GIT + ["pull", "--ff-only"],
-            COMPOSE + ["up", "-d", "--build", "buttons"],
+            EXEC + ["git -c safe.directory=/srv/remote-server -C /srv/remote-server pull --ff-only"],
+            EXEC + ["HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml up -d --build buttons"],
+            EXEC + ["for i in $(seq 1 30); do if curl -sf http://buttons:8000/buttons/api/status >/dev/null; then echo buttons up; exit 0; fi; sleep 2; done; HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml ps buttons; exit 1"],
         ],
     },
     "recreate": {
@@ -789,7 +805,7 @@ async function startRun(name, label, confirmFlag) {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body)});
   if (!r.ok) { stateEl.textContent = "error: " + (await r.json()).error; return; }
-  poll((await r.json()).id);
+  poll((await r.json()).id, name);
 }
 
 btnDiv.querySelectorAll("button").forEach(b => {
@@ -921,7 +937,7 @@ function renderState(run) {
 let currentId = null;
 let lastRun = null;
 
-async function poll(id) {
+async function poll(id, action) {
   currentId = id;
   outEl.innerHTML = "";
   lastRenderedOutput = null;
@@ -939,11 +955,39 @@ async function poll(id) {
       r = null;
     }
     if (!r || !r.ok) {
-      // The buttons server itself is unreachable — most notably
-      // when Deploy buttons recreates its own container mid-run.
-      // That is expected there, not a run failure: say so and
-      // stop polling instead of spinning forever with disabled
-      // buttons and a stale "running" line.
+      // Deploy buttons recreates its own container, so the run
+      // record dies with the old container: the new container
+      // answers 404 for the old id, or the fetch fails while the
+      // page is down. That is a deploy in progress, not a run
+      // failure — stop polling the dead run and poll the status
+      // endpoint instead; when it answers, the new container is
+      // serving, so reload into it. After 120s with no answer,
+      // say so with the terminal command that shows the real
+      // state, instead of leaving a stale "running" line.
+      if (action === "deploy-buttons") {
+        clearInterval(timer);
+        stateEl.textContent = "Deploying — waiting for the new page to come up…";
+        stateEl.className = "";
+        let tries = 0;
+        const recover = setInterval(async () => {
+          tries++;
+          try {
+            const s = await fetch("/buttons/api/status");
+            if (s.ok) { clearInterval(recover); location.reload(); return; }
+          } catch (e) {}
+          if (tries >= 40) {
+            clearInterval(recover);
+            stateEl.textContent = "Buttons has not come back after 120s — " +
+              "from the terminal run: docker compose ps buttons";
+            stateEl.className = "fail";
+            setBusy(false);
+          }
+        }, 3000);
+        return;
+      }
+      // Any other action: the buttons server itself is
+      // unreachable. Say so and stop polling instead of spinning
+      // forever with disabled buttons and a stale "running" line.
       failures++;
       if (failures >= 5) {
         clearInterval(timer);

@@ -14,7 +14,7 @@ label, so you do not have to remember the docs to use the page.
 | Button | Runs |
 |---|---|
 | Status | `git status` + `git log -3` in the checkout, `docker compose ps`, terminal image tags |
-| Deploy buttons (rebuild this page) | `git pull --ff-only`, `docker compose up -d --build buttons` — rebuilds the buttons container itself from the checked-out code |
+| Deploy buttons (rebuild this page) | Runs in the TERMINAL container, not buttons itself: `git pull --ff-only`, `docker compose up -d --build buttons`, then a verify loop curling the new container's status endpoint (60s, fails visibly with `compose ps` output on timeout) — rebuilds the buttons container from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
 | Repo briefing (td, fast) | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the Briefing picker |
@@ -46,15 +46,27 @@ needed, it is a host-shell job, not a phone button:
 `docker compose pull terminal && docker compose up -d terminal`.
 
 Deploy buttons is special: it recreates the very container serving
-the page, so the run's connection drops mid-run. The page treats
-5 consecutive failed polls as "connection lost — refresh in ~30s"
-and re-enables the buttons instead of spinning forever; that is
-the expected outcome for this button, not a failure. If the build
-itself fails, the old container is gone but the terminal still
-works — fix from there and run `docker compose up -d --build
-buttons` from the host shell. The same connection-lost message
-covers any other case where the buttons server goes away
-mid-run.
+the page, so the run's connection drops mid-run. The page handles
+that case, not as a failure: when a deploy-buttons run's polls
+start failing (404 for the dead run id, or unreachable), it polls
+the status endpoint instead and reloads into the new container
+as soon as it answers; after 120s with no answer it says so with
+the terminal command that shows the real state. For any OTHER
+action, 5 consecutive failed polls still mean "connection lost —
+refresh in ~30s" with the buttons re-enabled.
+
+Why the steps run in the terminal: the original Deploy ran
+`docker compose up --build buttons` from the buttons container
+itself, and that strands the site. Compose stops the buttons
+container to recreate it, which kills the compose CLI
+mid-sequence — the new container is never created, and a stopped
+container is never auto-restarted, so the page stays down until
+someone runs `up -d` on the host. That was the reported "Deploy
+crashes the site and it never comes back" bug. The terminal
+stays up across a buttons recreate, so running the same sequence
+there completes. If the build itself fails, the old container
+keeps serving and the run fails visibly in it; fix from the
+terminal and press Deploy buttons again.
 
 ## Failed runs show their cause
 
@@ -585,12 +597,14 @@ browser -> oauth2-proxy (TLS + GitHub OAuth, same gate as the terminal)
   same trust level as the terminal itself — the OAuth single-user gate
   is the boundary for both. Do not publish the buttons port or bypass
   oauth2-proxy for it.
-- **SSH key mount (read-only).** Deploy buttons runs `git pull` over SSH, so
-  the container mounts `${HOME}/.ssh:/root/.ssh:ro` (same as the
-  terminal container) for the key and `github.com` in `known_hosts`.
-  Without it, pull fails with "Host key verification failed". This
-  adds no trust: the socket above already gives the container
-  root-equivalent host access.
+- **SSH key mount (read-only).** Webhook auto-pulls run `git fetch`/`merge`
+  over SSH, so the container mounts `${HOME}/.ssh:/root/.ssh:ro`
+  (same as the terminal container) for the key and `github.com`
+  in `known_hosts`. Without it, pulls fail with "Host key
+  verification failed". (Deploy's own pull moved to the terminal
+  container, which has the same mount.) This adds no trust: the
+  socket above already gives the container root-equivalent host
+  access.
 
 ## The path-identity trick (load-bearing)
 
@@ -605,6 +619,17 @@ from the host path, `up` would hand the daemon a nonexistent bind
 source and the terminal container would come up with an empty
 `/srv/remote-server`. Do not "clean up" this mount to `/srv/...`
 without also changing every path in `buttons/server.py`.
+
+Deploy buttons is the deliberate exception: it runs compose
+from the TERMINAL container, where the project directory is
+`/srv/remote-server`, with `HOME=/home/ari` prefixed to the
+compose calls so `${HOME}` still interpolates to host paths
+(the terminal runs as root, so its own `HOME` would point the
+daemon at `/root/repos`). The other services' relative-path
+volumes in the compose file are never created by this command —
+`up buttons` only touches the buttons service, whose own mounts
+are all `${HOME}`-based — so the `/srv` project directory is
+safe here.
 
 Two smaller details in the same vein:
 
