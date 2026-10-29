@@ -55,6 +55,15 @@ def _detail(node):
         v = node.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip().splitlines()[0][:160]
+    # td error envelopes put the actionable text in stderr/stdout
+    # rather than message. First stderr line is usually the cause;
+    # stdout's last line is the fallback summary.
+    for k, pick in (("stderr", 0), ("stdout", -1)):
+        v = node.get(k)
+        if isinstance(v, str) and v.strip():
+            lines = [l.strip() for l in v.strip().splitlines() if l.strip()]
+            if lines:
+                return lines[pick][:160]
     counts = []
     for k in COUNT_KEYS:
         v = node.get(k)

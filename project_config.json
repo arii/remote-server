@@ -1,1 +1,1 @@
-{"github_repo":"arii/remote-server","packageName":"remote-server"}
+{"code_review_chain":{"fallbacks":["deepseek-r1","llama-3.3-70b-instruct"],"max_retries":3,"primary":"gpt-4o"},"github_repo":"arii/remote-server","packageName":"remote-server","triage_chain":{"fallbacks":["gemini-1.5-flash"],"max_retries":2,"primary":"gpt-4o-mini"},"vite_base_path":"/buttons/"}

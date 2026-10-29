@@ -1826,8 +1826,11 @@ function ansiLineToHtml(line) {
   return out;
 }
 function ansiToHtml(text) {
-  // \r overwrites the current line (progress output), so a line
+  // The PTY translates \n to \r\n (ONLCR), so a raw \r\n pair is a
+  // normal line ending, not a redraw. Collapse those first; a lone \r
+  // still overwrites the current line (progress output), so a line
   // built with \r shows only its final state, not every redraw.
+  text = text.replace(/\r\n/g, "\n");
   const lines = [];
   let cur = "";
   for (const ch of text) {

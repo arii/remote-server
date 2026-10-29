@@ -113,7 +113,12 @@ def run_json(cmd, timeout):
     raw = proc.stdout or ""
     if proc.returncode != 0:
         err = (proc.stderr or "").strip().splitlines()
-        return None, raw, err[-1] if err else f"exit {proc.returncode}"
+        if not err:
+            # td sometimes reports the failure on stdout instead.
+            out = raw.strip().splitlines()
+            err = [out[-1]] if out else []
+        return None, raw, (err[-1][:160] if err
+                           else f"exit {proc.returncode}")
     try:
         return json.loads(raw), raw, ""
     except Exception:
