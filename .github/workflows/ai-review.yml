@@ -1,0 +1,31 @@
+name: AI Code Review & Impact Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai-review:
+    name: AI Review & Impact Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Automated AI Code Review
+        uses: arii/boomtick@main
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          github-app-id: ${{ secrets.APP_ID }}
+          github-app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
+          jules-api-key: ${{ secrets.JULES_API_KEY }}
+          send-to-jules: "true"

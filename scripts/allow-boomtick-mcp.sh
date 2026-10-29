@@ -7,6 +7,7 @@ set -euo pipefail
 
 SETTINGS_FILE="${HOME}/.gemini/antigravity-cli/settings.json"
 CONFIG_FILE="${HOME}/.gemini/config/config.json"
+export SETTINGS_FILE CONFIG_FILE
 
 echo "==> Updating Antigravity permissions..."
 
@@ -99,8 +100,8 @@ def update_global_config(filepath):
 
     print(f"Updated global grants in {filepath}: added {added} rule(s).")
 
-cli_path = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
-config_path = os.path.expanduser("~/.gemini/config/config.json")
+cli_path = os.getenv("SETTINGS_FILE", os.path.expanduser("~/.gemini/antigravity-cli/settings.json"))
+config_path = os.getenv("CONFIG_FILE", os.path.expanduser("~/.gemini/config/config.json"))
 
 update_cli_settings(cli_path)
 update_global_config(config_path)

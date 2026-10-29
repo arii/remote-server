@@ -1,0 +1,44 @@
+name: Agent Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_type:
+        description: 'Task Type (e.g. audit, repair, dependabot)'
+        required: true
+        default: 'audit'
+        type: choice
+        options:
+          - audit
+          - repair
+          - dependabot
+      audit_type:
+        description: 'Audit Type (e.g. codebase-integrity-audit, review-pr)'
+        required: false
+        default: 'codebase-integrity-audit'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  agent-orchestrator:
+    name: Agent Orchestration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Agent Orchestrator
+        uses: arii/boomtick/.github/actions/agent-orchestrator@main
+        with:
+          task_type: ${{ inputs.task_type }}
+          audit_type: ${{ inputs.audit_type }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
