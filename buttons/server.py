@@ -1636,6 +1636,9 @@ a { color: #8bf; }
   padding: 0.4em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; }
 #drawerHead .dbactions { display: flex; gap: 0.5em; }
 #drawerHead button { width: auto; margin: 0; padding: 0.7em 1em; font-size: 0.85em; }
+.actions-footer { display: flex; justify-content: center; margin: 1.5em 0 0.5em; padding-top: 1em; border-top: 1px dashed var(--border); }
+.actions-footer button { width: auto; font-size: 0.85em; padding: 0.5em 1em; color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
+.actions-footer button:hover { color: var(--text-main); border-color: var(--primary); }
 #piSessionList:empty { display: none; }
 .pirow { display: flex; gap: 0.5em; align-items: center; margin: 0.4em 0; }
 .pirow button:first-child { flex: 1; text-align: left; }
@@ -1706,6 +1709,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 <section class="tabpanel" id="tab-actions">
 <div id="attention"><div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div><div id="attentionBody"><span class="spinner"></span> Loading briefing…</div></div>
 <div id="buttons"><!--BUTTONS--></div>
+<div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
@@ -2331,21 +2335,30 @@ document.getElementById("clearBtn").onclick = async () => {
 // proposals, so it is ledgered the same way.
 async function reportBug() {
   const run = lastRun;
-  if (!run || !run.done || run.exit_code === 0) return;
   const picker = document.getElementById("briefingRepo");
-  const repo = run.repo || (picker ? picker.value : "remote-server");
-  const errLine = (lastErrorLines() || "").trim() || "(no error line captured)";
-  const tail = (run.output || "").slice(-2500);
-  const title = ("[buttons] " + run.action + " failed on " + repo +
-    " (exit " + run.exit_code + ")").slice(0, 200);
-  const body = ("Run `" + run.action + "` on `" + repo +
-    "` failed with exit " + run.exit_code + ".\n\nError:\n" +
-    errLine + "\n\nOutput tail:\n```\n" + tail + "\n```").slice(0, 4000);
-  if (!(await confirmDialog("Report bug as GitHub issue",
-      "File this in " + repo + "?\n\n" + title + "\n\n" +
-      errLine.slice(0, 300), false))) return;
-  const btn = document.getElementById("bugBtn");
-  if (btn) btn.disabled = true;
+  const repo = (run && run.repo) || (picker ? picker.value : "remote-server");
+  let title, body;
+  if (run && run.done && run.exit_code !== 0) {
+    const errLine = (lastErrorLines() || "").trim() || "(no error line captured)";
+    const tail = (run.output || "").slice(-2500);
+    title = ("[buttons] " + run.action + " failed on " + repo +
+      " (exit " + run.exit_code + ")").slice(0, 200);
+    body = ("Run `" + run.action + "` on `" + repo +
+      "` failed with exit " + run.exit_code + ".\n\nError:\n" +
+      errLine + "\n\nOutput tail:\n```\n" + tail + "\n```").slice(0, 4000);
+    if (!(await confirmDialog("Report bug as GitHub issue",
+        "File this in " + repo + "?\n\n" + title + "\n\n" +
+        errLine.slice(0, 300), false))) return;
+  } else {
+    title = ("[buttons] Bug report for " + repo).slice(0, 200);
+    if (!(await confirmDialog("Report bug as GitHub issue",
+        "File a bug report in " + repo + "?\n\nTitle: " + title, false))) return;
+    body = "Bug reported from S5 console for `" + repo + "`.";
+  }
+  const btn1 = document.getElementById("bugBtn");
+  const btn2 = document.getElementById("actionsBugBtn");
+  if (btn1) btn1.disabled = true;
+  if (btn2) btn2.disabled = true;
   try {
     const res = await fetchJson("/buttons/api/create-issue", {method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -2357,10 +2370,13 @@ async function reportBug() {
     }
     await confirmDialog("Issue created", res.data.url || "created", false);
   } finally {
-    if (btn) btn.disabled = !(run.done && run.exit_code !== 0);
+    if (btn1) btn1.disabled = !(run && run.done && run.exit_code !== 0);
+    if (btn2) btn2.disabled = false;
   }
 }
 document.getElementById("bugBtn").onclick = reportBug;
+const actionsBugBtn = document.getElementById("actionsBugBtn");
+if (actionsBugBtn) actionsBugBtn.onclick = reportBug;
 
 </script>
 <script>
