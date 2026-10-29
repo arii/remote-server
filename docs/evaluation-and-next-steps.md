@@ -7,41 +7,56 @@
 - **Resolution (`b66a676`):** Added `safe.directory={host_path}` to `git config` in `_discover_repos()`.
 - **Live Status:** All three repositories now discover dynamically and populate the dropdown: `boomtick`, `remote-server`, and `tech-dancer`.
 
-### B. BoomTick Out-of-Sync & Missing Webhook (Resolved)
+### B. BoomTick Out-of-Sync, Missing Webhook & 0.15.0 Upgrade (Resolved)
 - **Root Cause of BoomTick Errors:**
-  1. **20 Commits Behind:** The local checkout `/srv/repos/boomtick` was stuck on `0.14.3` (`f19f28e`), while GitHub was on `0.15.0` (`15dc98a`).
+  1. **20 Commits Behind:** Local `/srv/repos/boomtick` was stuck on `0.14.3` (`f19f28e`), while GitHub was on `0.15.0` (`15dc98a`).
   2. **Dirty Schema Blocked Pulls:** An earlier `td context-warm` modified `cli/dev_tools/cli-schema.json`, preventing automated git pulls.
   3. **No Webhook Registered:** `scripts/setup-webhooks.sh` only registered `remote-server` and `tech-dancer`. GitHub never sent push events for `boomtick`.
   4. **Missing Node Modules:** `pnpm install` had never been run in `boomtick`, causing `preflight` / `type-check` to fail with `tsx: not found` and `run-p: not found`.
   5. **Stale Installed CLI:** `/opt/venvs/td` had `boomtick-cli 0.14.3` installed in non-editable mode.
-- **Fixes Applied:**
-  - Discarded unstaged schema changes and fast-forwarded `boomtick` to `0.15.0` (`15dc98a`).
-  - Ran `pnpm install` in `boomtick` (installed 479 packages).
-  - Reinstalled `boomtick-cli 0.15.0` in editable mode (`pip install -e /srv/repos/boomtick/cli`) inside `/opt/venvs/td`.
+- **Fixes Applied & Verified:**
+  - Discarded unstaged schema changes and fast-forwarded `boomtick` to latest `origin/main` (`15dc98a`, tagged `cli-v0.15.0`, `mcp-v0.7.0`).
+  - Ran `pnpm install` in `boomtick` (installed dependencies for `@arii/boomtick-mcp` and dev tooling).
+  - Installed `boomtick-cli 0.15.0` in editable mode (`pip install -e /srv/repos/boomtick/cli`) inside `/opt/venvs/td`, so updates in `boomtick/cli` take effect immediately.
   - Added `arii/boomtick` to `scripts/setup-webhooks.sh` and created webhook `704572541` on GitHub. Verified incoming ping and pull (`ok: 16 files changed, 778 insertions(+), 50 deletions(-)`).
-  - Added `boomtick` to `scripts/setup-hooks.sh` and installed `hooks/post-merge-tech-dancer` as `/srv/repos/boomtick/.git/hooks/post-merge`.
+  - Added `boomtick` to `scripts/setup-hooks.sh` and installed the `post-merge` hook.
+
+### C. Access URL & Navigation Clarification (`buttons` is not a valid URL)
+- Entering plain `buttons` or `http://buttons` into a mobile browser address bar fails or triggers a web search because `buttons` is not a top-level domain or hostname.
+- **Correct Full URL:**
+  ```text
+  https://dev-onasafari.ddns.net:8443/buttons
+  ```
+  (or `https://<TERMINAL_DOMAIN>:<TERMINAL_PORT>/buttons`). Both `/buttons` and `/buttons/` route through oauth2-proxy (GitHub OAuth gate) and Caddy to the buttons service on port 8000. Navigating to `/` opens the interactive web terminal (`ttyd` + `zellij`).
+
+### D. Agent Command Permissions Configured (No Manual Approval Clicking)
+- Updated `/root/.gemini/antigravity-cli/settings.json` under `permissions.allow` to permit binary prefixes:
+  `command(git)`, `command(docker)`, `command(gh)`, `command(npm)`, `command(pnpm)`, `command(td)`, `command(python3)`, `command(curl)`, `command(bash)`, `command(sh)`, `command(/opt/venvs/td/bin/pip)`.
+- Eliminates the repetitive approval dialogs for git, docker, and development commands.
 
 ---
 
-## 2. Button UX Evaluation: Why Buttons Are Failing & Difficult to Use on Mobile
+## 2. Button UX Evaluation: Why Buttons Fail & How to Improve Mobile Usability
 
-User feedback flagged that multiple buttons fail with errors and the interface is difficult to use on a phone. An audit of button execution revealed clear causes:
+User feedback highlighted that multiple buttons fail with errors and are difficult to use on mobile:
 
 ### 1. `Sync & Nudge Agents` Hard-Fails when `JULES_API_KEY` is Unset
 - **Behavior:** The button runs `td --json agent list-sessions` followed by `td --json agent run-feedback-check`.
 - **Failure:** If `JULES_API_KEY` is not defined in `.env`, `td agent list-sessions` exits with code 1 (`ValueError: JULES_API_KEY is not set or empty`). The button aborts immediately, turns the status bar red, and shows `failed (exit 2) — step 1/2`.
-- **UX Problem:** The user is left with a red failure box and no explanation unless they scroll through the raw terminal output. It should degrade gracefully with a clear message: `"Jules not configured: set JULES_API_KEY in .env to use agent sync"`.
+- **UX Problem:** The user sees a red failure banner with no immediate explanation unless they scroll through the raw output.
+- **Remedy:** Gracefully check if `JULES_API_KEY` is set and output an actionable notice (`"Jules not configured: set JULES_API_KEY in .env to use agent sync"`) rather than an aborting exit-code failure.
 
 ### 2. `Preflight Check` Dumps Megabytes of Raw JSON and Fails on Linter Warnings
 - **Behavior:** `td --json preflight` runs `doctor`, `typecheck`, `lint`, `audit`, and `merge-simulation`.
-- **Failure:** In `tech-dancer`, Python linter (`pylint`) fails with exit code 1 because optional ETL packages (`pandas`, `playwright`, `bs4`) are not installed in the global python environment. In `boomtick`, preflight previously failed because `node_modules` was missing.
-- **UX Problem:** Preflight returns a 30,000+ character JSON structure with nested stack traces. On a phone, reading this inside a `<pre>` block is nearly impossible.
+- **Failure:** In `tech-dancer`, Python linter (`pylint`) fails with exit code 1 because optional ETL packages (`pandas`, `playwright`, `bs4`) are not installed in the global python environment.
+- **UX Problem:** Preflight returns a 30,000+ character JSON dump. On a phone, reading this inside a `<pre>` block is cumbersome.
+- **Remedy:** Parse the preflight output to show a concise high-level checklist (e.g., `Doctor: ✓, Types: ✓, Lint: ✗ (pylint warnings)`) instead of raw JSON.
 
 ### 3. Error Feedback is Buried in Raw `<pre>` Logs
-- **Behavior:** When any action fails, the top status banner only says:
+- **Behavior:** When an action fails, the top status banner only says:
   `failed (exit 1) — step 1/1 — 0s\nsee the “step failed” line at the end of the output`
 - **UX Problem:** On mobile screens, the user must scroll past hundreds of lines to find the actual reason (e.g. missing API key, uncommitted change, or lint failure).
-- **Solution Needed:** The UI should extract the terminal error summary or top-level JSON `"message"` and display it directly in the status bar in plain English.
+- **Remedy:** Extract the terminal error summary or top-level JSON `"message"` and display it directly in the status bar in plain English.
 
 ---
 
@@ -61,19 +76,14 @@ User feedback flagged that multiple buttons fail with errors and the interface i
 
 ---
 
-## 4. Prioritized Next Steps
+## 4. Current Repository Status & Next Steps
 
-1. **Improve Mobile UX for Error Reporting:**
-   - [ ] Update `buttons/server.py` to extract the primary error message from stderr/JSON payloads so the top status bar displays the actual cause (e.g., `"Error: JULES_API_KEY is not set"` or `"Linting failed with exit 1"`) instead of generic `"see step failed line"`.
-   - [ ] Make `Sync & nudge agents` check for `JULES_API_KEY` and print a friendly configuration prompt rather than turning the status pane red.
+All three repositories are verified up to date on `main`:
+- **`remote-server`:** `e7c018f` (all webhook, discovery, and documentation updates pushed).
+- **`tech-dancer`:** `b906042cae` (tagged `tech-dancer-v0.10.0`, all recent PRs merged clean).
+- **`boomtick`:** `15dc98a` (tagged `cli-v0.15.0` & `mcp-v0.7.0`, pnpm dependencies installed, CLI installed in editable mode).
 
-2. **Verify BoomTick End-to-End:**
-   - [x] Fast-forward `boomtick` to `0.15.0` (`15dc98a`).
-   - [x] Run `pnpm install` in `boomtick`.
-   - [x] Install `boomtick-cli 0.15.0` editable in `td` venv.
-   - [x] Register GitHub webhook `704572541` for `boomtick` and test ping/pull.
-   - [ ] Test `Repo briefing (td, fast)` with `boomtick` selected in `/buttons`.
-
-3. **Process `tech-dancer` PR Queue:**
-   - [ ] Use the live one-tap **Merge** button on **PR #4827** (`chore/update-config-for-td`) and **PR #4826** (`dependabot/npm_and_yarn`).
-   - [ ] Allow `release-please` to refresh and resolve conflicts on **PR #4814** for release `0.10.0`.
+### Next Actions:
+- [ ] Test the live briefing on `boomtick` by visiting `https://dev-onasafari.ddns.net:8443/buttons` and selecting `boomtick`.
+- [ ] Implement error extraction in `buttons/server.py` so mobile failures display human-readable root causes rather than generic exit-code banners.
+- [ ] Add graceful fallback in `Sync & nudge agents` when `JULES_API_KEY` is not present in `.env`.

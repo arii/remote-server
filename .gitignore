@@ -16,6 +16,10 @@ volumes/
 *.snapshot
 /restore-test/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Dynamic Agent Context (Untracked) — td context-warm output,
 # like tech-dancer: warming must never dirty the checkout
 .agent-context.json
