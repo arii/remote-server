@@ -6,6 +6,15 @@ or submit anything on his behalf without his explicit approval —
 that includes GitHub PR actions (the boomtick MCP writeMode/pushMode
 flags exist for this: stay read-only unless he says otherwise).
 
+## Reasoning discipline
+
+- Act, don't narrate: no planning monologues, no guessing who Ari
+  is or what he might want — he told you what he wants.
+- Read before summarizing: open the doc or resource first; never
+  describe a tool from its name alone.
+- Keep thinking brief: one line of intent, then the tool call.
+  Speculation is not progress.
+
 ## Standing checks (every session, before other work)
 
 1. MCP health: `boomtick` tools (`mcp__boomtick__boomtick_health`,
