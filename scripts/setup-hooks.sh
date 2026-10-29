@@ -15,6 +15,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TD_DIR="${TECH_DANCER_DIR:-$HOME/repos/tech-dancer}"
+BT_DIR="${BOOMTICK_DIR:-$HOME/repos/boomtick}"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 
@@ -43,6 +44,7 @@ install_one() { # source, dest-dir
 
 install_one "$ROOT/hooks/post-merge" "$ROOT/.git/hooks"
 install_one "$ROOT/hooks/post-merge-tech-dancer" "$TD_DIR/.git/hooks"
+install_one "$ROOT/hooks/post-merge-tech-dancer" "$BT_DIR/.git/hooks"
 
 if [ "$CHECK" = 0 ]; then
   echo "Done. Notes:"

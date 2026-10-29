@@ -31,7 +31,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK=0
 if [ "${1:-}" = "--check" ]; then CHECK=1; shift; fi
 REPOS=("$@")
-[ "${#REPOS[@]}" -eq 0 ] && REPOS=("arii/remote-server" "arii/tech-dancer")
+[ "${#REPOS[@]}" -eq 0 ] && REPOS=("arii/remote-server" "arii/tech-dancer" "arii/boomtick")
 
 command -v gh >/dev/null 2>&1 || {
   echo "ERROR: gh not found. Run this where gh is authenticated (terminal container: npm run webhooks:setup)." >&2

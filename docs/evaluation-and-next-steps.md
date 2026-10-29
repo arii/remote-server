@@ -1,78 +1,79 @@
 # Evaluation, Button Audit, and Next Steps — 2026-10-29
 
-## 1. Executive Summary & Root-Cause Analysis
+## 1. Executive Summary & Critical Issue Resolvings
 
-### A. Root Cause: Repos Dropdown Only Showing `remote-server`
-When multi-repo discovery landed (`93d9252`), the dropdown in `/buttons` displayed only `remote-server` and omitted `boomtick` and `tech-dancer`.
-
-- **Root Cause:** In `_discover_repos()`, the server ran `git -C <host_path> config --get remote.origin.url` without `-c safe.directory=<host_path>`. Because the `buttons` container runs as `root` while the checkouts in `/home/ari/repos` are owned by `1000:1000` (`ari`), git flagged "dubious ownership" and exited with code 1. Discovery logged `skipping boomtick (no parseable GitHub origin)` and fell back to the hardcoded `remote-server` entry.
+### A. Repos Dropdown Only Showing `remote-server` (Resolved)
+- **Root Cause:** In `_discover_repos()`, the server ran `git -C <host_path> config --get remote.origin.url` without `-c safe.directory=<host_path>`. Because `buttons` runs as `root` while `/home/ari/repos` is owned by `1000:1000` (`ari`), git flagged dubious ownership and exited with code 1. Discovery logged `skipping boomtick/tech-dancer (no parseable GitHub origin)` and fell back to the hardcoded `remote-server` entry.
 - **Resolution (`b66a676`):** Added `safe.directory={host_path}` to `git config` in `_discover_repos()`.
-- **Live Status:** Verified live in `remote-buttons-1`. The `<select id="briefingRepo">` dropdown and repo strip cards now dynamically discover and present all three checkouts:
-  - `boomtick` (`arii/boomtick`)
-  - `remote-server` (`arii/remote-server`)
-  - `tech-dancer` (`arii/tech-dancer`)
+- **Live Status:** All three repositories now discover dynamically and populate the dropdown: `boomtick`, `remote-server`, and `tech-dancer`.
+
+### B. BoomTick Out-of-Sync & Missing Webhook (Resolved)
+- **Root Cause of BoomTick Errors:**
+  1. **20 Commits Behind:** The local checkout `/srv/repos/boomtick` was stuck on `0.14.3` (`f19f28e`), while GitHub was on `0.15.0` (`15dc98a`).
+  2. **Dirty Schema Blocked Pulls:** An earlier `td context-warm` modified `cli/dev_tools/cli-schema.json`, preventing automated git pulls.
+  3. **No Webhook Registered:** `scripts/setup-webhooks.sh` only registered `remote-server` and `tech-dancer`. GitHub never sent push events for `boomtick`.
+  4. **Missing Node Modules:** `pnpm install` had never been run in `boomtick`, causing `preflight` / `type-check` to fail with `tsx: not found` and `run-p: not found`.
+  5. **Stale Installed CLI:** `/opt/venvs/td` had `boomtick-cli 0.14.3` installed in non-editable mode.
+- **Fixes Applied:**
+  - Discarded unstaged schema changes and fast-forwarded `boomtick` to `0.15.0` (`15dc98a`).
+  - Ran `pnpm install` in `boomtick` (installed 479 packages).
+  - Reinstalled `boomtick-cli 0.15.0` in editable mode (`pip install -e /srv/repos/boomtick/cli`) inside `/opt/venvs/td`.
+  - Added `arii/boomtick` to `scripts/setup-webhooks.sh` and created webhook `704572541` on GitHub. Verified incoming ping and pull (`ok: 16 files changed, 778 insertions(+), 50 deletions(-)`).
+  - Added `boomtick` to `scripts/setup-hooks.sh` and installed `hooks/post-merge-tech-dancer` as `/srv/repos/boomtick/.git/hooks/post-merge`.
 
 ---
 
-## 2. Evaluation of Recent Architectural Evolution (`6a97c2d..ef294e5`)
+## 2. Button UX Evaluation: Why Buttons Are Failing & Difficult to Use on Mobile
 
-The buttons page has completed the transition from a **passive server/status dashboard** into an **active agentic control plane**:
+User feedback flagged that multiple buttons fail with errors and the interface is difficult to use on a phone. An audit of button execution revealed clear causes:
 
-1. **Dead Weight Trimmed (`b845501`):**
-   - **Removed `Pull models`:** Multi-GB one-off downloads no longer occupy prime phone screen space; kept in `package.json` (`npm run models:pull`).
-   - **Removed `Repo briefing (agent, slow)`:** Eliminated the slow (multi-minute) CPU 8b model paraphrase in favor of deterministic ~7s briefings.
-   - **Replaced static Plans markdown checklist:** The old `.agents/plans/<date>-briefing-plan.md` checkboxes (where tapping a box on a phone only edited an untracked text file) were replaced with the live Briefing view.
+### 1. `Sync & Nudge Agents` Hard-Fails when `JULES_API_KEY` is Unset
+- **Behavior:** The button runs `td --json agent list-sessions` followed by `td --json agent run-feedback-check`.
+- **Failure:** If `JULES_API_KEY` is not defined in `.env`, `td agent list-sessions` exits with code 1 (`ValueError: JULES_API_KEY is not set or empty`). The button aborts immediately, turns the status bar red, and shows `failed (exit 2) — step 1/2`.
+- **UX Problem:** The user is left with a red failure box and no explanation unless they scroll through the raw terminal output. It should degrade gracefully with a clear message: `"Jules not configured: set JULES_API_KEY in .env to use agent sync"`.
 
-2. **Actionable PR Cards with One-Tap Operations (`b845501`):**
-   - Each open PR card in the live Briefing view now renders contextual, allowlisted action buttons validated strictly by integer `pr_number` and repo name:
-     - **Merge (squash):** Enabled only when CI is passing and merge is clean (e.g. PR #4827 and PR #4826).
-     - **Update branch:** Rebase/updates branch via GitHub API when behind base.
-     - **Fix CI with agent:** Dispatches `td agent fix-ci --pr <N>` directly from the phone.
+### 2. `Preflight Check` Dumps Megabytes of Raw JSON and Fails on Linter Warnings
+- **Behavior:** `td --json preflight` runs `doctor`, `typecheck`, `lint`, `audit`, and `merge-simulation`.
+- **Failure:** In `tech-dancer`, Python linter (`pylint`) fails with exit code 1 because optional ETL packages (`pandas`, `playwright`, `bs4`) are not installed in the global python environment. In `boomtick`, preflight previously failed because `node_modules` was missing.
+- **UX Problem:** Preflight returns a 30,000+ character JSON structure with nested stack traces. On a phone, reading this inside a `<pre>` block is nearly impossible.
 
-3. **Real Agentic Control Buttons (`b845501`, `fa16d41`):**
-   - **Sync & Nudge Agents:** Runs `td agent sync` and `td agent run-feedback-check` to sync active Jules sessions and post CI/review feedback to unblock stalled agent PRs.
-   - **Warm Repo Context:** Runs `td context-warm` to regenerate `.agent-context.json` so interactive agents (`agy`, `pi`, `td`) start with fresh semantic indexes.
-   - **Preflight Check:** Runs `td preflight` (or `td doctor`) across the selected repo.
-
-4. **Agent Suggests Next Actions (`ef294e5`):**
-   - A dedicated **Agent suggests next actions** action invokes Pi with the live briefing payload. Pi recommends up to 3 concrete `td` commands, strictly filtered against an allowlist (`td gh`, `td agent`, `td context-warm`, `td preflight`).
-   - Each suggested action renders with a one-tap **Approve & run** button on the phone.
-
-5. **Operational Reliability & Resilience:**
-   - **Deploy in Terminal (`d3ef069`):** Deploy buttons now executes inside the `terminal` container via `docker compose up -d --build buttons`, eliminating the container self-kill race condition.
-   - **Durable Audit Ledger (`ecd6c55`, `d4cf925`):** Appends all PR actions and agent runs to a JSONL audit ledger stored on the persistent `buttons-data` volume (`/var/lib/buttons/ledger.jsonl`), complete with **Clear ledger** and **Clear Pi sessions** controls.
-   - **Stale Page Detection (`2811065`):** Shows an amber banner if a webhook auto-pull advanced the checkout after the page was loaded.
+### 3. Error Feedback is Buried in Raw `<pre>` Logs
+- **Behavior:** When any action fails, the top status banner only says:
+  `failed (exit 1) — step 1/1 — 0s\nsee the “step failed” line at the end of the output`
+- **UX Problem:** On mobile screens, the user must scroll past hundreds of lines to find the actual reason (e.g. missing API key, uncommitted change, or lint failure).
+- **Solution Needed:** The UI should extract the terminal error summary or top-level JSON `"message"` and display it directly in the status bar in plain English.
 
 ---
 
 ## 3. Current Button Inventory & Classification
 
-| Button | Scope | Classification | Role on Phone UI |
+| Button | Target Repo | Failure Modes & Usability Issues | Recommended Treatment |
 |---|---|---|---|
-| **Status** | Stack | Server utility | Quick health check (git status, compose ps, terminal image). |
-| **Deploy buttons** | Stack | Server utility | Rebuilds the buttons container via `terminal` container without self-kill. |
-| **Recreate terminal** | Stack | Escape hatch | Recreates `terminal` after `.env` changes or if `zellij`/`ttyd` hangs. |
-| **Logs** | Stack | Server utility | Tails 100 lines of `terminal` + `ollama`. |
-| **Repo briefing (td, fast)** | Repo-scoped | Agentic triage | Runs `briefing_summary.py` on selected repo; feeds live Briefing view. |
-| **Sync & nudge agents** | Stack / Multi-repo | Agentic workflow | Syncs Jules sessions and runs feedback loop to unblock stalled agent PRs. |
-| **Warm context** | Repo-scoped | Agentic workflow | Updates `.agent-context.json` index in the selected repo. |
-| **Preflight** | Repo-scoped | Agentic workflow | Validates environment, dependencies, and repo configuration. |
-| **Agent suggests next actions** | Repo-scoped | Autonomous assistance | Pi analyzes briefing and renders allowlist-validated one-tap action buttons. |
+| **Status** | Stack | Very stable (<1s). | Keep as-is. |
+| **Deploy buttons** | Stack | Stable (runs via `terminal` container). | Keep as-is. |
+| **Recreate terminal** | Stack | Stable (container recreate). | Keep as-is. |
+| **Logs** | Stack | Renders terminal logs + Pi logs. | Keep as-is. |
+| **Repo briefing** | Selected | Fast (~7s), reliable. Shows Jules warning if key missing. | Keep as-is. |
+| **Sync & nudge agents** | Stack / Repos | **Fails red** if `JULES_API_KEY` missing. | Update step to check for key or exit 0 with reminder. |
+| **Warm context** | Selected | Fast (~1s). | Keep as-is. |
+| **Preflight check** | Selected | **Fails red** on linter warnings, dumps 30KB JSON. | Parse JSON to show concise checklist (Doctor ✓, Types ✓, Lint ✗). |
+| **Agent suggests next actions** | Selected | Slow (Pi inference); requires clear spinner. | Keep allowlisted execution. |
 
 ---
 
 ## 4. Prioritized Next Steps
 
-1. **Verify Multi-Repo Briefings on Phone:**
-   - [x] Verify `tech-dancer` briefing and PR actions load properly.
-   - [ ] Switch the **Repo:** dropdown on `/buttons` to `boomtick` and confirm briefing and Jules session listing load cleanly.
-   - [ ] Confirm `remote-server` preflight and status operate cleanly under the new multi-repo layout.
+1. **Improve Mobile UX for Error Reporting:**
+   - [ ] Update `buttons/server.py` to extract the primary error message from stderr/JSON payloads so the top status bar displays the actual cause (e.g., `"Error: JULES_API_KEY is not set"` or `"Linting failed with exit 1"`) instead of generic `"see step failed line"`.
+   - [ ] Make `Sync & nudge agents` check for `JULES_API_KEY` and print a friendly configuration prompt rather than turning the status pane red.
 
-2. **Process `tech-dancer` PR Queue via One-Tap Phone UI:**
-   - [ ] On `/buttons` with `tech-dancer` selected:
-     1. Tap **Merge** on **PR #4827** (`chore/update-config-for-td` — clean, CI passing).
-     2. Tap **Merge** on **PR #4826** (`dependabot/npm_and_yarn` — clean, CI passing).
-     3. Once #4826 merges, allow `release-please` to update **PR #4814** (clearing the `package.json` conflict), then merge #4814 for release `0.10.0`.
+2. **Verify BoomTick End-to-End:**
+   - [x] Fast-forward `boomtick` to `0.15.0` (`15dc98a`).
+   - [x] Run `pnpm install` in `boomtick`.
+   - [x] Install `boomtick-cli 0.15.0` editable in `td` venv.
+   - [x] Register GitHub webhook `704572541` for `boomtick` and test ping/pull.
+   - [ ] Test `Repo briefing (td, fast)` with `boomtick` selected in `/buttons`.
 
-3. **Webhook Auto-Warming Enhancement:**
-   - [ ] Wire automatic `td context-warm` execution in the terminal container when a push webhook arrives for `tech-dancer` on `main`, ensuring the repo context is warm without manual taps.
+3. **Process `tech-dancer` PR Queue:**
+   - [ ] Use the live one-tap **Merge** button on **PR #4827** (`chore/update-config-for-td`) and **PR #4826** (`dependabot/npm_and_yarn`).
+   - [ ] Allow `release-please` to refresh and resolve conflicts on **PR #4814** for release `0.10.0`.
