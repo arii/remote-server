@@ -7,7 +7,25 @@ Verified against BoomTick `main` on 2026-10-29.
 
 ## Open
 
-None. All tracked issues and proposed features have been filed as issues on `arii/boomtick` and resolved.
+### Unfiled — `td preflight` runs BoomTick-repo checks on every repo
+- **State:** UNFILED (found 2026-10-29 from the S5 ledger).
+- **Symptom:** `td --json preflight` in `/srv/remote-server` fails: `pnpm run
+  type-check` → `ERR_PNPM_NO_SCRIPT`, `pnpm run lint` → `ERR_PNPM_NO_SCRIPT`,
+  `node scripts/detect-antipatterns.mjs` → `MODULE_NOT_FOUND`. The buttons
+  "Preflight check" button is red for remote-server for the wrong reason.
+- **Cause:** `Orchestrator.run_preflight` (`cli/dev_tools/orchestrator.py`)
+  hardcodes the BoomTick pnpm monorepo checks — it never checks whether the
+  current repo has those scripts. `has_errors` then flips the whole report
+  to `status: error`.
+- **Fix (patch ready, applies clean, py_compile clean):**
+  `~/workspace/boomtick-preflight-skip/fix-preflight-skip-missing-checks.patch`
+  — apply with `git apply` in a BoomTick checkout. Adds `_pnpm_has_script()`;
+  typecheck/lint/audit report `{"status": "skipped", "reason": ...}` when the
+  repo lacks the script, instead of erroring. `has_errors` already only
+  counts `"error"`, so skipped checks don't fail the report.
+- **Why it matters here:** the buttons preflight digest surfaces these as
+  failures; after the patch, remote-server preflight degrades to the checks
+  that exist (doctor, overlaps, merge simulation).
 
 ## Resolved (verified 2026-10-29)
 
@@ -33,5 +51,5 @@ All items were filed and resolved in `arii/boomtick`:
 - **Issue #969 — Config loading outside repo:** Lazy config loading implemented and resolved in PR #975 (`fix(cli): load project config lazily to avoid crash outside repo`).
 
 ## Watch list
-
-All items clear. There are currently no open issues in `arii/boomtick`.
+- Import-time config crash draft (from 2026-10-28 notes): never verified, never
+  filed. Re-check if `td` cold-start failures appear in buttons logs.

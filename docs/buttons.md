@@ -402,7 +402,6 @@ Templates (fixed, no free text):
 | Template | Plan | Taps needed |
 |---|---|---|
 | Triage | Refresh briefing → Warm repo context → Preflight check | None — runs on its own |
-| Pre-merge check | Preflight check → Refresh briefing | None — runs on its own |
 | Fix CI | Dispatch Jules fix-ci on PR `#{pr}` | One Approve (dispatches an agent) |
 
 Every terminal job (done / failed / declined) writes an audit:
