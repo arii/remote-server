@@ -19,22 +19,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: AI Code Review
-        uses: arii/boomtick/.github/actions/ai-review@main
-        with:
-          pr_number: "${{ github.event.pull_request.number }}"
+      - name: Automated AI Code Review
+        uses: arii/boomtick@main
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-      - name: Impact Analysis
-        uses: arii/boomtick/.github/actions/impact-analysis@main
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          github-app-id: ${{ secrets.APP_ID }}
+          github-app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
+          jules-api-key: ${{ secrets.JULES_API_KEY }}
+          send-to-jules: "true"
