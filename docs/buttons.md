@@ -10,6 +10,9 @@ command input anywhere: every button runs one fixed command list.
 The page itself says what each button does: buttons are grouped
 (Server / Briefing) and each carries a one-line subtitle under its
 label, so you do not have to remember the docs to use the page.
+Button text is left-aligned for readability; Deploy buttons and
+Recreate terminal carry an amber left border — they destroy or
+recreate containers, unlike the read-only actions.
 
 | Button | Runs |
 |---|---|
@@ -120,6 +123,16 @@ the old behavior (its own output is the cause).
   (git log into less would hang a run), so the run environment
   forces `GIT_PAGER=cat` and `PAGER=cat`, and step stdin is
   `/dev/null` so a prompt fails fast instead of hanging.
+
+- **Safe fetch:** every page `fetch` goes through `fetchJson()`,
+  which never throws on an empty or non-JSON body — it returns
+  `{ok, status, data}` with `data.error` set from the body text
+  (truncated) or the HTTP status, and `"network error: ..."` when
+  the fetch itself fails. Error strings render via `textContent`
+  only, never `innerHTML`. (A repo switch once crashed the
+  briefing with a raw `SyntaxError: Failed to execute 'json' on
+  'Response'`; that path now shows "briefing unavailable: ..."
+  instead.)
   Every run ends with an
   explicit trailer line in the output: `finished: exit 0`, or
   `step failed with exit code N; aborting` on the failing step
@@ -177,7 +190,8 @@ a repo added to `~/repos` — boomtick, or any future one —
 appears on the next page load with no code change and no
 container restart. The picker, above the action buttons so it precedes every control it governs, sets the repo for the cards,
 their action buttons, and the repo-scoped buttons (briefing,
-warm context, preflight); every endpoint validates the repo
+warm context, preflight) — the picker bar is sticky, so the
+current repo stays visible while scrolling; every endpoint validates the repo
 against the discovered set, and the summarizer takes `--repo`
 (the picker's name) plus `--gh` (the checkout's git-remote
 owner/repo — it carries no repo table, so a new repo needs no
@@ -203,7 +217,9 @@ Each open PR renders as a card: number + title (linked to
 GitHub), branch, CI state with failing checks, merge state,
 conflict/stale/draft flags, review verdicts, and up to two
 review excerpts. Below the cards come failing runs (with failed
-jobs and steps) and active Jules sessions. The section degrades
+jobs and steps — long job/step strings are truncated so a
+Dependabot package dump cannot blow out the card height) and
+active Jules sessions. The section degrades
 per source like the text briefing: a failed source shows as a
 note, not a blank section.
 

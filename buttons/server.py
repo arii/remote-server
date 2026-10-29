@@ -559,6 +559,7 @@ ACTIONS = {
         "group": "Server",
         "sub": "Pull + rebuild this page (drops ~30s)",
         "confirm": True,
+        "risk": "danger",
         "steps": [
             EXEC + ["git -c safe.directory=/srv/remote-server -C /srv/remote-server pull --ff-only"],
             EXEC + ["HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml up -d --build buttons"],
@@ -579,6 +580,7 @@ ACTIONS = {
         # terminal && compose up -d terminal.)
         "sub": "Restart terminal with current image and .env",
         "confirm": True,
+        "risk": "danger",
         "steps": [
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
         ],
@@ -709,7 +711,9 @@ GROUP_TITLES = {
 def _buttons_html():
     # Server is a closed <details> drawer: the phone screen belongs
     # to repo work, and Status/Logs/Recreate are escape hatches,
-    # one tap away. Briefing stays open.
+    # one tap away. Briefing stays open. Buttons with risk=danger
+    # (deploy-buttons, recreate) get an amber left border: they
+    # destroy or recreate containers, unlike the read-only actions.
     parts = []
     for group in ("Server", "Briefing"):
         btns = []
@@ -719,6 +723,7 @@ def _buttons_html():
             btns.append(
                 f'<button data-action="{escape(name)}" '
                 f'data-confirm="{"1" if spec["confirm"] else "0"}" '
+                f'class="{"danger" if spec.get("risk") == "danger" else ""}" '
                 f'data-label="{escape(spec["label"])}">'
                 f'<span class="blabel">{escape(spec["label"])}</span>'
                 f'<span class="bsub">{escape(spec["sub"])}</span></button>')
@@ -1013,7 +1018,12 @@ HTML = r"""<!DOCTYPE html>
 body { font-family: system-ui, sans-serif; margin: 1em; background: #111; color: #eee; }
 h1 { font-size: 1.2em; }
 button { display: block; width: 100%; margin: 0.5em 0; padding: 1em; font-size: 1.1em;
-  background: #2a2a2a; color: #eee; border: 1px solid #555; border-radius: 8px; }
+  background: #2a2a2a; color: #eee; border: 1px solid #555; border-radius: 8px;
+  text-align: left; }
+/* danger = destroys or recreates containers (deploy, recreate) */
+button.danger { border-left: 4px solid #e6a817; }
+#pickerBar { position: sticky; top: 0; background: #111; padding: 0.5em 0;
+  border-bottom: 1px solid #333; z-index: 10; }
 button:disabled { opacity: 0.4; }
 .blabel { display: block; }
 .bsub { display: block; font-size: 0.85em; opacity: 0.7; font-weight: normal;
@@ -1072,9 +1082,9 @@ a { color: #8bf; }
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
-<label>Repo for the buttons and briefing below: <select id="briefingRepo">
+<div id="pickerBar"><label>Repo for the buttons and briefing below: <select id="briefingRepo">
 <!--REPO_OPTIONS-->
-</select></label>
+</select></label></div>
 <div id="buttons"><!--BUTTONS--></div>
 <button id="clearBtn">Clear output</button>
 <div id="state"></div>
@@ -1140,6 +1150,35 @@ let timer = null;
 // like no output.
 let userStartedRun = false;
 
+// Safe JSON fetch: never throws on an empty or non-JSON body.
+// Returns {ok, status, data}; data is the parsed JSON, or
+// {error: <text>} when the body is not JSON, or {error: ...}
+// on network failure. Call sites read data.error with
+// textContent only — never innerHTML — so an error string can
+// never inject markup.
+async function fetchJson(url, options) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (e) {
+    return {ok: false, status: 0, data: {error: "network error: " + e}};
+  }
+  let text;
+  try {
+    text = await res.text();
+  } catch (e) {
+    return {ok: res.ok, status: res.status,
+      data: {error: "unreadable response: " + e}};
+  }
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (e) {
+    data = {error: text.slice(0, 200) || ("HTTP " + res.status)};
+  }
+  return {ok: res.ok, status: res.status, data: data};
+}
+
 async function startRun(name, label, confirmFlag) {
   userStartedRun = true;
   if (confirmFlag && !window.confirm(label + " — run it?")) return;
@@ -1150,11 +1189,14 @@ async function startRun(name, label, confirmFlag) {
     const picker = document.getElementById("briefingRepo");
     if (picker) body.repo = picker.value;
   }
-  const r = await fetch("/buttons/api/run", {method: "POST",
+  const res = await fetchJson("/buttons/api/run", {method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(body)});
-  if (!r.ok) { stateEl.textContent = "error: " + (await r.json()).error; return; }
-  poll((await r.json()).id, name);
+  if (!res.ok) {
+    stateEl.textContent = "error: " + (res.data.error || ("HTTP " + res.status));
+    return;
+  }
+  poll(res.data.id, name);
 }
 
 btnDiv.querySelectorAll("button").forEach(b => {
@@ -1304,6 +1346,18 @@ function renderState(run) {
 let currentId = null;
 let lastRun = null;
 
+// Shared "server unreachable" end state for the poll loop: used
+// both when fetches fail and when they succeed with a body that
+// is not JSON (a proxy or error page mid-deploy, never our API).
+function lostConnection() {
+  clearInterval(timer);
+  stateEl.textContent = "connection lost — the buttons server may " +
+    "be rebuilding itself; refresh this page in ~30s";
+  stateEl.className = "fail";
+  outEl.className = "fail";
+  setBusy(false);
+}
+
 async function poll(id, action) {
   currentId = id;
   outEl.innerHTML = "";
@@ -1356,18 +1410,17 @@ async function poll(id, action) {
       // unreachable. Say so and stop polling instead of spinning
       // forever with disabled buttons and a stale "running" line.
       failures++;
-      if (failures >= 5) {
-        clearInterval(timer);
-        stateEl.textContent = "connection lost — the buttons server may " +
-          "be rebuilding itself; refresh this page in ~30s";
-        stateEl.className = "fail";
-        outEl.className = "fail";
-        setBusy(false);
-      }
+      if (failures >= 5) lostConnection();
       return;
     }
     failures = 0;
-    const run = await r.json();
+    let run = null;
+    try { run = await r.json(); } catch (e) { run = null; }
+    if (!run) {
+      failures++;
+      if (failures >= 5) lostConnection();
+      return;
+    }
     lastRun = run;
     // Re-render only on change: re-parsing a 200KB tail every poll
     // would churn on a phone for no visible difference.
@@ -1447,11 +1500,11 @@ function prActionButton(pr, action, label, confirmText) {
       const picker = document.getElementById("briefingRepo");
       const body = {pr_number: pr.number, action: action,
         repo: picker ? picker.value : "tech-dancer"};
-      const r = await fetch("/buttons/api/pr-action", {method: "POST",
+      const resp = await fetchJson("/buttons/api/pr-action", {method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)});
-      const data = await r.json();
-      if (!r.ok) { if (res) res.textContent = "Failed: " + data.error; b.disabled = false; return; }
+      const data = resp.data || {};
+      if (!resp.ok) { if (res) res.textContent = "Failed: " + (data.error || ("HTTP " + resp.status)); b.disabled = false; return; }
       if (res) res.textContent = "Done. Refresh the briefing to see the new state.";
       if (typeof refreshLedger === "function") refreshLedger();
     } catch (e) {
@@ -1527,13 +1580,24 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
+  // Long job/step strings (a Dependabot run dumps dozens of
+  // package names) blow out the card height: cap one segment
+  // and the whole line.
+  function shorten(s, n) {
+    s = String(s || "");
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
   if (b.failing_runs && b.failing_runs.length) {
     const w = document.createElement("div");
     const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
     b.failing_runs.forEach(run => {
       const p = document.createElement("p");
-      p.textContent = run.name + " on " + run.branch + " (" + run.event + ")" +
-        (run.failed.length ? " — failed: " + run.failed.map(f => f.job + (f.steps.length ? " (" + f.steps.join(", ") + ")" : "")).join("; ") : "");
+      const failed = (run.failed || []).map(f =>
+        shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
+      ).join("; ");
+      p.textContent = shorten(
+        run.name + " on " + run.branch + " (" + run.event + ")" +
+        (failed ? " — failed: " + failed : ""), 600);
       w.appendChild(p);
     });
     briefingEl.appendChild(w);
@@ -1555,14 +1619,14 @@ async function refreshBriefing() {
   const picker = document.getElementById("briefingRepo");
   const repo = picker ? picker.value : "tech-dancer";
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
-  try {
-    const r = await fetch("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
-    if (!r.ok) { briefingEl.textContent = ""; briefingErrEl.textContent = "briefing unavailable: " + (await r.json()).error; return; }
-    renderBriefing(await r.json());
-  } catch (e) {
+  const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
+  if (!res.ok) {
     briefingEl.textContent = "";
-    briefingErrEl.textContent = "briefing unavailable: " + e;
+    briefingErrEl.textContent = "briefing unavailable: " + (res.data.error || ("HTTP " + res.status));
+    return;
   }
+  briefingErrEl.textContent = "";
+  renderBriefing(res.data);
 }
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
@@ -1652,13 +1716,14 @@ async function refreshLedger() {
   const kind = ledgerKindEl ? ledgerKindEl.value : "all";
   ledgerEl.textContent = "Loading ledger…";
   try {
-    const r = await fetch("/buttons/api/ledger?kind=" + encodeURIComponent(kind) + "&limit=50");
-    if (!r.ok) { ledgerEl.textContent = ""; ledgerErrEl.textContent = "ledger unavailable: " + (await r.json()).error; return; }
-    const data = await r.json();
+    const res = await fetchJson("/buttons/api/ledger?kind=" + encodeURIComponent(kind) + "&limit=50");
+    if (!res.ok) { ledgerEl.textContent = ""; ledgerErrEl.textContent = "ledger unavailable: " + (res.data.error || ("HTTP " + res.status)); return; }
+    const data = res.data || {};
     ledgerErrEl.textContent = "";
     ledgerEl.textContent = "";
-    if (!data.entries.length) { ledgerEl.textContent = "No ledger entries yet."; return; }
-    data.entries.forEach(e => {
+    const entries = data.entries || [];
+    if (!entries.length) { ledgerEl.textContent = "No ledger entries yet."; return; }
+    entries.forEach(e => {
       const row = document.createElement("div");
       const head = document.createElement("div");
       head.textContent = new Date(e.ts * 1000).toLocaleString() + " — " + ledgerSummary(e);
@@ -1702,9 +1767,9 @@ const piSessionErrEl = document.getElementById("piSessionErr");
 async function showSession(file) {
   piSessionOutEl.textContent = "Loading session…";
   try {
-    const r = await fetch("/buttons/api/pi-session?session=" + encodeURIComponent(file));
-    const data = await r.json();
-    if (!r.ok) { piSessionOutEl.textContent = ""; piSessionErrEl.textContent = "session unavailable: " + data.error; return; }
+    const res = await fetchJson("/buttons/api/pi-session?session=" + encodeURIComponent(file));
+    const data = res.data || {};
+    if (!res.ok) { piSessionOutEl.textContent = ""; piSessionErrEl.textContent = "session unavailable: " + (data.error || ("HTTP " + res.status)); return; }
     piSessionErrEl.textContent = "";
     piSessionOutEl.textContent = data.output;
   } catch (e) {
@@ -1726,13 +1791,14 @@ const listPiSessionsBtn = document.getElementById("listPiSessions");
 if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   piSessionListEl.textContent = "Loading sessions…";
   try {
-    const r = await fetch("/buttons/api/pi-sessions");
-    const data = await r.json();
-    if (!r.ok) { piSessionListEl.textContent = ""; piSessionErrEl.textContent = "sessions unavailable: " + data.error; return; }
+    const res = await fetchJson("/buttons/api/pi-sessions");
+    const data = res.data || {};
+    if (!res.ok) { piSessionListEl.textContent = ""; piSessionErrEl.textContent = "sessions unavailable: " + (data.error || ("HTTP " + res.status)); return; }
     piSessionErrEl.textContent = "";
     piSessionListEl.textContent = "";
-    if (!data.sessions.length) { piSessionListEl.textContent = "No Pi sessions found."; return; }
-    data.sessions.forEach(s => {
+    const sessions = data.sessions || [];
+    if (!sessions.length) { piSessionListEl.textContent = "No Pi sessions found."; return; }
+    sessions.forEach(s => {
       const b = document.createElement("button");
       const when = s.mtime ? new Date(s.mtime * 1000).toLocaleString() : "";
       const repo = s.cwd ? s.cwd.split("/").filter(Boolean).pop() : "";
