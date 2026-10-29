@@ -27,6 +27,7 @@ import os
 import pty
 import re
 import shlex
+import shutil
 import struct
 import subprocess
 import termios
@@ -159,6 +160,96 @@ def _default_repo(repos):
     if "tech-dancer" in repos:
         return "tech-dancer"
     return sorted(repos)[0]
+
+
+def _get_system_health():
+    """Read-only box health metrics: disk, memory, container states.
+    All calls are read-only and degrade gracefully on errors."""
+    path = "/home/ari" if os.path.exists("/home/ari") else "/"
+    try:
+        du = shutil.disk_usage(path)
+        total_gb = du.total / (1024**3)
+        used_gb = du.used / (1024**3)
+        free_gb = du.free / (1024**3)
+        disk_pct = (du.used / du.total * 100) if du.total else 0
+        disk_info = {
+            "total_gb": round(total_gb, 1),
+            "used_gb": round(used_gb, 1),
+            "free_gb": round(free_gb, 1),
+            "percent": round(disk_pct, 1),
+            "summary": f"{used_gb:.1f} / {total_gb:.1f} GB ({disk_pct:.0f}%)",
+        }
+    except Exception as exc:
+        disk_info = {"error": str(exc)}
+
+    try:
+        mem = {}
+        if os.path.exists("/proc/meminfo"):
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        mem[parts[0].strip()] = int(parts[1].split()[0])
+        total_kb = mem.get("MemTotal", 0)
+        avail_kb = mem.get("MemAvailable", mem.get("MemFree", 0))
+        used_kb = total_kb - avail_kb if total_kb >= avail_kb else 0
+        total_gb = total_kb / (1024**2)
+        used_gb = used_kb / (1024**2)
+        avail_gb = avail_kb / (1024**2)
+        mem_pct = (used_kb / total_kb * 100) if total_kb else 0
+        mem_info = {
+            "total_gb": round(total_gb, 1),
+            "used_gb": round(used_gb, 1),
+            "avail_gb": round(avail_gb, 1),
+            "percent": round(mem_pct, 1),
+            "summary": f"{used_gb:.1f} / {total_gb:.1f} GB ({mem_pct:.0f}%)",
+        }
+    except Exception as exc:
+        mem_info = {"error": str(exc)}
+
+    containers = []
+    try:
+        proc = subprocess.run(
+            COMPOSE + ["ps", "--format", "json"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=10, text=True, env=ENV
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            raw = proc.stdout.strip()
+            items = []
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    items = parsed
+                elif isinstance(parsed, dict):
+                    items = [parsed]
+            except Exception:
+                for line in raw.splitlines():
+                    if line.strip():
+                        try:
+                            items.append(json.loads(line.strip()))
+                        except Exception:
+                            pass
+            for item in items:
+                service = item.get("Service") or item.get("Name") or "unknown"
+                state = item.get("State") or "unknown"
+                status = item.get("Status") or ""
+                health = item.get("Health") or ""
+                containers.append({
+                    "name": item.get("Name", service),
+                    "service": service,
+                    "state": state,
+                    "status": status,
+                    "health": health,
+                })
+    except Exception:
+        pass
+
+    return {
+        "disk": disk_info,
+        "memory": mem_info,
+        "containers": containers,
+    }
 
 
 def _repo_options_html(repos):
@@ -1657,6 +1748,12 @@ a { color: #8bf; }
 #attention ul { margin: 0.4em 0; padding-left: 1.2em; }
 #attention li { margin: 0.25em 0; font-size: 0.92em; }
 #attention .attn-head { font-weight: bold; margin-bottom: 0.2em; }
+/* system health section */
+.health-card { border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-card); padding: 0.75em; margin: 0.5em 0; }
+.health-head { font-weight: bold; margin-bottom: 0.4em; }
+.health-metrics { display: flex; flex-wrap: wrap; gap: 1em; font-size: 0.9em; margin-bottom: 0.4em; }
+.hmetric .hlabel { color: var(--text-muted); margin-right: 0.3em; }
 /* jobs */
 .jobcard { border: 1px solid var(--border); border-radius: 10px;
   background: var(--bg-card); padding: 0.75em; margin: 0.5em 0; }
@@ -1704,6 +1801,14 @@ below are still visible, but they need JavaScript to start a run.</div>
 </div>
 </div>
 <section class="tabpanel" id="tab-actions">
+<div id="healthCard" class="health-card">
+<div class="health-head">System Health</div>
+<div class="health-metrics">
+<div class="hmetric"><span class="hlabel">Disk:</span><span id="healthDisk"><span class="spinner"></span></span></div>
+<div class="hmetric"><span class="hlabel">Mem:</span><span id="healthMem"><span class="spinner"></span></span></div>
+</div>
+<div id="healthContainers" class="chips"><span class="spinner"></span> Checking containers…</div>
+</div>
 <div id="attention"><div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div><div id="attentionBody"><span class="spinner"></span> Loading briefing…</div></div>
 <div id="buttons"><!--BUTTONS--></div>
 </section>
@@ -3450,6 +3555,7 @@ async function refreshStatus() {
       if (staleBar) staleBar.style.display = "none";
       if (depBtn) depBtn.classList.remove("needs-update");
     }
+    if (s.health) renderHealth(s.health);
     if (upd) upd.textContent = "Updated " + new Date().toLocaleTimeString();
     if (pend) pend.textContent = pending.length
       ? " · Pulling " + pending.join(", ") + "…" : "";
@@ -3458,6 +3564,44 @@ async function refreshStatus() {
     if (spinner) spinner.style.display = "none";
     const dot = document.getElementById("serverDot");
     if (dot) dot.className = "dot fail";
+  }
+}
+function renderHealth(h) {
+  if (!h) return;
+  const diskEl = document.getElementById("healthDisk");
+  const memEl = document.getElementById("healthMem");
+  const contEl = document.getElementById("healthContainers");
+  if (diskEl && h.disk) {
+    diskEl.textContent = h.disk.summary || (h.disk.error ? ("error: " + h.disk.error) : "N/A");
+  }
+  if (memEl && h.memory) {
+    memEl.textContent = h.memory.summary || (h.memory.error ? ("error: " + h.memory.error) : "N/A");
+  }
+  if (contEl) {
+    contEl.textContent = "";
+    const containers = h.containers || [];
+    if (!containers.length) {
+      contEl.textContent = "No container data";
+      return;
+    }
+    containers.forEach(c => {
+      const chip = document.createElement("span");
+      const state = (c.state || "").toLowerCase();
+      let cls = "chip";
+      if (state === "running") {
+        cls += " chip-ok";
+      } else if (state === "exited" || state === "dead") {
+        cls += " chip-fail";
+      } else {
+        cls += " chip-warn";
+      }
+      chip.className = cls;
+      let label = (c.service || c.name) + ": " + (c.state || "unknown");
+      if (c.health) label += " (" + c.health + ")";
+      chip.textContent = label;
+      chip.title = c.status || label;
+      contEl.appendChild(chip);
+    });
   }
   liveFetching = false;
 }
@@ -3677,7 +3821,10 @@ class Handler(BaseHTTPRequestHandler):
                          and rs.get("at", 0) > STARTED_AT)
             self._json({"active": active_id, "runs": recent,
                         "webhooks": hooks, "webhooks_pending": pending,
-                        "stale_buttons": stale})
+                        "stale_buttons": stale,
+                        "health": _get_system_health()})
+        elif path == "/buttons/api/health":
+            self._json(_get_system_health())
         elif path == "/buttons/api/briefing":
             # Structured briefing for the live Briefing view: the
             # summarizer runs in the terminal container (same
