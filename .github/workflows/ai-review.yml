@@ -22,7 +22,7 @@ jobs:
       - name: AI Code Review
         uses: arii/boomtick/.github/actions/ai-review@main
         with:
-          pr_number: ${{ github.event.pull_request.number }}
+          pr_number: "${{ github.event.pull_request.number }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APP_ID: ${{ secrets.APP_ID }}

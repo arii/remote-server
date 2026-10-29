@@ -22,7 +22,7 @@ jobs:
       - name: Dispatch ChatOps Command
         uses: arii/boomtick@main
         with:
-          pr_number: ${{ github.event.issue.number }}
+          pr_number: "${{ github.event.issue.number }}"
           comment_body: ${{ github.event.comment.body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
