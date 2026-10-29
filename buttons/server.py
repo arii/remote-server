@@ -2590,6 +2590,13 @@ function ledgerSummary(e) {
   if (e.kind === "webhook") return "webhook " + e.repo + " — " + (e.ok ? "pulled" : "FAILED") + (e.advanced ? " (advanced)" : "") + ": " + (e.detail || "");
   if (e.kind === "pr-action") return "pr-action " + e.action + (e.pr ? " #" + e.pr : "") + (e.repo ? " (" + e.repo + ")" : "") + " — " + (e.ok ? "ok" : "refused/failed") + (e.note ? " — " + e.note : "");
   if (e.kind === "system") return "system: " + (e.event || "");
+  if (e.kind === "job") {
+    const label = e.template || (e.job || "").slice(0, 8);
+    const step = (typeof e.step === "number") ? " · step " + (e.step + 1) : "";
+    const what = e.event || (e.outcome ? "ended: " + e.outcome : "");
+    return "job " + label + (e.repo ? " (" + e.repo + ")" : "") + step +
+      (what ? " — " + what : "");
+  }
   return "unknown entry";
 }
 async function refreshLedger() {

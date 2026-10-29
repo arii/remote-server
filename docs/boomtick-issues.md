@@ -7,8 +7,28 @@ Verified against BoomTick `main` on 2026-10-29 unless noted.
 
 ## Open
 
+### Unfiled — `td preflight` runs BoomTick-repo checks on every repo
+- **State:** UNFILED (found 2026-10-29 from the S5 ledger).
+- **Symptom:** `td --json preflight` in `/srv/remote-server` fails: `pnpm run
+  type-check` → `ERR_PNPM_NO_SCRIPT`, `pnpm run lint` → `ERR_PNPM_NO_SCRIPT`,
+  `node scripts/detect-antipatterns.mjs` → `MODULE_NOT_FOUND`. The buttons
+  "Preflight check" button is red for remote-server for the wrong reason.
+- **Cause:** `Orchestrator.run_preflight` (`cli/dev_tools/orchestrator.py`)
+  hardcodes the BoomTick pnpm monorepo checks — it never checks whether the
+  current repo has those scripts. `has_errors` then flips the whole report
+  to `status: error`.
+- **Fix (patch ready, applies clean, py_compile clean):**
+  `~/workspace/boomtick-preflight-skip/fix-preflight-skip-missing-checks.patch`
+  — apply with `git apply` in a BoomTick checkout. Adds `_pnpm_has_script()`;
+  typecheck/lint/audit report `{"status": "skipped", "reason": ...}` when the
+  repo lacks the script, instead of erroring. `has_errors` already only
+  counts `"error"`, so skipped checks don't fail the report.
+- **Why it matters here:** the buttons preflight digest surfaces these as
+  failures; after the patch, remote-server preflight degrades to the checks
+  that exist (doctor, overlaps, merge simulation).
+
 ### #1010 — `jules.list_sessions` returns raw array, breaks structuredContent validation
-- **State:** PR OPEN (addressed by [PR #1013](https://github.com/arii/boomtick/pull/1013) by Jules).
+- **State:** OPEN (filed by Ari 2026-10-29, label `jules`, 2 comments).
 - **Symptom:** `MCP error -32602: Invalid tools/call result: structuredContent:
   Invalid input: expected record, received array`.
 - **Cause:** `listJulesSessionsHandler` (`mcp/src/tools/jules/list-sessions.ts`)
@@ -16,14 +36,14 @@ Verified against BoomTick `main` on 2026-10-29 unless noted.
   `JulesListSessionsResponseSchema` is `z.object({ sessions: ... })`.
   Checked the other jules handlers: only `list_sessions` returns a raw
   array; the rest return objects.
-- **Fix:** Jules opened PR #1013 (`fix(mcp): wrap jules.list_sessions response in object`) with full unit test coverage. CI is green/completing.
+- **Fix (patch ready, verified `git apply --check` clean):**
+  `~/workspace/boomtick-1010-fix/fix-1010-list-sessions-wrap.patch` —
+  apply with `git apply` in a BoomTick checkout. Wraps the return as
+  `{ sessions: [...] }`, matching the schema and the issue's remediation.
 - **Why it matters here:** buttons "Sync & nudge agents" calls
-  `td agent list-sessions` → `jules.list_sessions` via MCP. (Graceful handling for unset `JULES_API_KEY` was completed in 6a201762; `JULES_API_KEY` is now set in `.env` and `docker-compose.yml`).
-
-### #1012 — Align resource URI schemes with MCP server discovery and add context status check tool
-- **State:** OPEN / IN PROGRESS ([Issue #1012](https://github.com/arii/boomtick/issues/1012); active Jules session `15215182197630379369`).
-- **Symptom:** Small/medium LLMs calling `read_mcp_resource` deduce `server: "workspace"` and `server: "repo"` from URIs like `mcp://workspace/agent-contract` and `repo://package-json`, causing immediate MCP errors (`MCP server "workspace" has no resources. Servers with resources: boomtick`).
-- **Fix:** Clarify server ownership in resource descriptors, add direct `repo_read_agent_contract` tool, add `repo_get_context_status` for `.agent-context.json` freshness inspection, and support dynamic workspace resolution.
+  `td agent list-sessions` → `jules.list_sessions` via MCP. Until fixed, the
+  Jules half of that button fails. (The missing-`JULES_API_KEY` graceful
+  handling is a separate buttons-side item — done in 6a201762.)
 
 ## Resolved (verified 2026-10-29)
 
