@@ -230,6 +230,53 @@ the plan file and its checkboxes. `briefing_summary.py
 --plan-dir` still exists as a CLI for writing a plan file from
 the terminal, but no button calls it.
 
+## Suggested next actions (Pi)
+
+The Briefing section has a Suggest next actions button. It
+asks Pi to read the briefing context for the picked repo and
+suggest td commands, then runs only what you approve:
+
+1. The server fetches the briefing JSON for the picked repo
+   (same transport as the Briefing view).
+2. It compresses that JSON to a compact context — attention
+   items, one line per PR (number, title, CI, merge, conflict,
+   review), failing runs, Jules count, capped at 6000 chars.
+   Pi gets limited, relevant context plus a short task
+   instruction — not the full briefing, and not
+   `agent-brief.md`.
+3. Pi runs in print mode (`pi -p`) with read-only tools
+   (`read,grep,find,ls`): it can read the checkout for more
+   context but cannot run anything. Its prompt travels
+   base64-encoded, so briefing titles carrying quotes or `$`
+   cannot break out of the pi argument. BoomTick MCP tools are
+   excluded by instruction (they are scoped to tech-dancer,
+   so they would mislead on any other repo).
+4. Pi must output only `SUGGEST: <td command> :: <reason>`
+   lines. The server parses them through a fixed td-command
+   allowlist (exact token shapes: `fix-ci --execute`,
+   `read-pr-reviews`, `read-pr-comments`, `resolve-conflicts`,
+   `context-warm` without `--force`, `preflight`,
+   `list-sessions` in both spellings, `run-feedback-check`).
+   Anything else — extra flags, pipes, other verbs — is
+   dropped and shown as text, never run.
+5. Each surviving suggestion renders with its reason and a
+   Run button. Tapping Run asks for confirmation, then
+   `/api/run-td` re-validates the command server-side and
+   runs it as a normal run (streamed output, ledger entry
+   with action `run-td`). There is no batch run and no
+   auto-run in v1: one tap per action is the approval gate,
+   matching Pi's own read-only boundary.
+
+Failure modes, all visible: a briefing failure or Pi failure
+returns 500 with the cause; Pi suggesting nothing runnable
+shows Pi's raw output instead of an empty section; a
+suggestion that names a repo that vanished mid-flight fails
+visibly rather than running against another repo. Latency is
+real — briefing fetch plus a local-model Pi run can take
+minutes; the section shows a spinner line while it thinks.
+Suggestions themselves are not ledger entries (reads, like
+briefing reads); executions are.
+
 ## Pi session audit
 
 The Logs button now shows more than container logs. Container

@@ -18,6 +18,7 @@ host path, `up` would hand the daemon a nonexistent bind source and
 the terminal container would come up with an empty /srv/remote-server.
 """
 
+import base64
 import fcntl
 import hashlib
 import hmac
@@ -25,6 +26,7 @@ import json
 import os
 import pty
 import re
+import shlex
 import struct
 import subprocess
 import termios
@@ -188,6 +190,151 @@ def _repo_strips_html(repos):
 # mount) interpolates from the CLI environment, and the daemon resolves
 # the resulting host path.
 ENV = {**os.environ, "HOME": "/home/ari"}
+
+# --- Suggested next actions (Pi) --------------------------------
+# Pi suggests, the allowlist disposes, the user approves. The
+# suggest endpoint (1) fetches the briefing JSON for the picked
+# repo, (2) compresses it to a compact context — attention items
+# + one line per PR + failing runs + Jules count, capped, NOT
+# the full briefing and NOT agent-brief.md (Pi gets limited,
+# relevant context plus a short task instruction, per the
+# standing Pi-context steer) — (3) runs Pi in print mode with
+# READ-ONLY tools (read,grep,find,ls: Pi can read the checkout
+# for more context but cannot run anything), and (4) parses
+# Pi's SUGGEST lines through the td-command allowlist below.
+# Anything Pi prints outside the allowlist is shown as text,
+# never run. Execution is a separate, approved step: each
+# suggestion's Run button asks for confirmation, then
+# /api/run-td re-validates the command server-side and runs it
+# as a normal run (streamed output, ledger entry). There is no
+# batch run and no auto-run in v1: one tap per action is the
+# approval gate, matching Pi's own read-only boundary (no
+# merge/push/post without explicit approval).
+def _validate_td_command(text):
+    """argv tokens for a suggested td command, or None. Exact
+    shapes only: same tokens, PR numbers digits. Anything else —
+    extra flags, pipes, semicolons, other verbs — is rejected,
+    so Pi output can never smuggle shell text into a run: the
+    runner additionally shlex-quotes every token."""
+    try:
+        tokens = shlex.split(text or "")
+    except Exception:
+        return None
+    if not tokens or tokens[0] != "td":
+        return None
+    shapes = [
+        ["td", "--json", "agent", "fix-ci", "--pr", "N", "--execute"],
+        ["td", "--json", "agent", "list-sessions"],
+        ["td", "--json", "jules", "list-sessions"],
+        ["td", "--json", "agent", "run-feedback-check"],
+        ["td", "--json", "preflight"],
+        ["td", "context-warm"],
+        ["td", "gh", "read-pr-reviews", "--pr", "N"],
+        ["td", "gh", "read-pr-comments", "--pr", "N"],
+        ["td", "gh", "resolve-conflicts", "--pr", "N"],
+    ]
+    for shape in shapes:
+        if len(tokens) != len(shape):
+            continue
+        ok = True
+        for want, got in zip(shape, tokens):
+            if want == "N":
+                if not got.isdigit() or int(got) <= 0:
+                    ok = False
+                    break
+            elif want != got:
+                ok = False
+                break
+        if ok:
+            return tokens
+    return None
+
+
+def _suggest_context(brief):
+    lines = [f"Repo: {brief.get('repo', '?')}"]
+    att = brief.get("attention") or []
+    lines.append("Needs attention:")
+    if att:
+        lines += [f"- {a}" for a in att[:10]]
+    else:
+        lines.append("- Nothing needs attention.")
+    prs = brief.get("prs") or []
+    lines.append("Open PRs:")
+    for pr in prs[:20]:
+        if isinstance(pr, dict):
+            lines.append(
+                f"- #{pr.get('number')} "
+                f"{str(pr.get('title') or '?')[:80]} | "
+                f"CI {pr.get('ci')} | merge {pr.get('merge')} | "
+                f"conflicted {bool(pr.get('conflicted'))} | "
+                f"review {pr.get('review')}")
+    fr = brief.get("failing_runs") or []
+    if fr:
+        lines.append("Failing runs:")
+        for r in fr[:5]:
+            if isinstance(r, dict):
+                lines.append(f"- {r.get('name')} on {r.get('branch')}")
+    j = brief.get("jules") or {}
+    if isinstance(j, dict):
+        lines.append("Active Jules sessions for this repo: "
+                     f"{len(j.get('items') or [])}")
+    return "\n".join(lines)[:6000]
+
+
+def _suggest_prompt(repo, context):
+    return (
+        f"Suggest the next actions for repo {repo}, as td commands.\n"
+        "Use ONLY the context below (plus files you can read in "
+        "this repo's checkout). Do not run any tools. Do not use "
+        "boomtick MCP tools for this task — they are scoped to a "
+        "different repo.\n"
+        "Output ONLY lines in exactly this form, one per action:\n"
+        "SUGGEST: <td command> :: <one-line reason>\n"
+        "Allowed td commands (exact shapes, PR numbers only from "
+        "the context):\n"
+        "td --json agent fix-ci --pr N --execute\n"
+        "td gh read-pr-reviews --pr N\n"
+        "td gh read-pr-comments --pr N\n"
+        "td gh resolve-conflicts --pr N\n"
+        "td context-warm\n"
+        "td --json preflight\n"
+        "td --json agent list-sessions\n"
+        "td --json jules list-sessions\n"
+        "td --json agent run-feedback-check\n"
+        "If nothing needs doing, output exactly one line: "
+        "SUGGEST: none :: <reason>\n"
+        "Context:\n" + context)
+
+
+def _parse_suggestions(raw):
+    """Validated suggestions from Pi's stdout. ANSI escapes are
+    stripped first (print mode may color). Unparseable lines are
+    dropped, never run; the raw tail is returned alongside so
+    the page can show what Pi actually said."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", raw or "")
+    suggestions = []
+    for line in clean.splitlines():
+        line = line.strip()
+        if not line.startswith("SUGGEST:"):
+            continue
+        rest = line[len("SUGGEST:"):].strip()
+        if rest.lower().startswith("none"):
+            continue
+        if "::" in rest:
+            cmdpart, reason = rest.split("::", 1)
+        else:
+            cmdpart, reason = rest, ""
+        tokens = _validate_td_command(cmdpart.strip())
+        if not tokens:
+            continue
+        suggestions.append({
+            "command": " ".join(tokens),
+            "reason": reason.strip()[:200],
+            "caveat": ("resolves in a worktree, does not push"
+                       if "resolve-conflicts" in tokens else ""),
+        })
+    return suggestions
+
 
 # GitHub webhook auto-pull (pull-only, never rebuild, never hooks).
 # This is the ONE endpoint that is not behind the OAuth gate: GitHub
@@ -519,6 +666,20 @@ ACTIONS = {
             EXEC + [TD + "td --json preflight"],
         ],
     },
+    # Hidden: no button renders for this (see _buttons_html).
+    # Suggestion Run buttons post to /api/run-td instead, which
+    # attaches the validated argv to the run record; run_action
+    # builds this action's single step from it. Steps here stay
+    # empty so a bare /api/run naming run-td fails visibly in
+    # run_action instead of running an empty step.
+    "run-td": {
+        "label": "Run suggested td command",
+        "group": "Briefing",
+        "sub": "Runs one validated td command from the suggestions below.",
+        "confirm": False,
+        "hidden": True,
+        "steps": [],
+    },
 }
 
 # Action buttons are rendered into the HTML server-side, not built
@@ -554,7 +715,7 @@ def _buttons_html():
     for group in ("Server", "Briefing"):
         btns = []
         for name, spec in ACTIONS.items():
-            if spec["group"] != group:
+            if spec["group"] != group or spec.get("hidden"):
                 continue
             btns.append(
                 f'<button data-action="{escape(name)}" '
@@ -734,7 +895,8 @@ def run_action(run_id, action, repo="tech-dancer"):
     global active_id
     run = runs[run_id]
     repos = _discover_repos()
-    if action in REPO_SCOPED_ACTIONS and repo not in repos:
+    if (action in REPO_SCOPED_ACTIONS or action == "run-td") \
+            and repo not in repos:
         # The repo vanished between validation and run start (or
         # was never valid): fail visibly rather than running the
         # steps against tech-dancer's checkout by default.
@@ -746,7 +908,27 @@ def run_action(run_id, action, repo="tech-dancer"):
         _finish_run(run_id, action, repo, run)
         return
     steps = ACTIONS[action]["steps"]
-    if repo in repos and action in REPO_SCOPED_ACTIONS \
+    if action == "run-td":
+        # The command arrives attached to the run record (from
+        # /api/run-td, which validated it); a bare /api/run
+        # naming run-td attaches nothing and must fail visibly
+        # rather than running an empty step. Tokens are
+        # re-validated here and shlex-quoted, so even a
+        # tampered record cannot smuggle shell text in.
+        tokens = run.get("td_argv")
+        if not tokens or _validate_td_command(" ".join(tokens)) != tokens:
+            with runs_lock:
+                _append(run, "error: run-td needs a validated td "
+                             "command attached\n")
+                run["exit_code"] = 1
+                run["done"] = True
+                run["finished_at"] = time.time()
+            _finish_run(run_id, action, repo, run)
+            return
+        prefix = _td_prefix(repos[repo]["td_cwd"])
+        steps = [EXEC + [prefix + " ".join(shlex.quote(t)
+                                         for t in tokens)]]
+    elif repo in repos and action in REPO_SCOPED_ACTIONS \
             and repo != "tech-dancer":
         # Repo-scoped steps run td in the repo checkout: rewrite
         # the TD prefix (the step's last element) to that repo.
@@ -906,6 +1088,17 @@ buttons above (briefing, warm context, preflight).</p>
 <div id="briefing"></div>
 <button id="refreshBriefing">Refresh briefing</button>
 <div id="briefingErr"></div>
+<h2>Suggested next actions</h2>
+<p>Pi reads the briefing context and suggests td commands, then
+runs only what you approve: each suggestion below has its own
+Run button with a confirm dialog. Pi runs read-only for this
+(no tools that execute anything); suggestions are validated
+against a fixed td-command list, and anything else Pi prints
+is shown as text, never run. Asking Pi takes minutes on the
+local model — the list shows a spinner line while it thinks.</p>
+<button id="suggestBtn">Suggest next actions</button>
+<div id="suggestions"></div>
+<div id="suggestErr"></div>
 <h2>Ledger</h2>
 <p>Durable audit log — every run, webhook pull, and PR-action tap,
 newest first. Survives container restarts (named volume, not the
@@ -1360,6 +1553,72 @@ document.getElementById("refreshBriefing").onclick = refreshBriefing;
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
+
+// Suggested next actions: Pi suggests td commands from the
+// briefing context; each suggestion runs only on its own
+// confirm tap, through /api/run-td (which re-validates).
+const suggestBtn = document.getElementById("suggestBtn");
+const suggestionsEl = document.getElementById("suggestions");
+const suggestErrEl = document.getElementById("suggestErr");
+if (suggestBtn) suggestBtn.onclick = async () => {
+  const picker = document.getElementById("briefingRepo");
+  const repo = picker ? picker.value : "tech-dancer";
+  suggestErrEl.textContent = "";
+  suggestionsEl.textContent = "Asking Pi (local model, may take minutes)…";
+  try {
+    const r = await fetch("/buttons/api/suggest", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({repo: repo})});
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { suggestionsEl.textContent = ""; suggestErrEl.textContent = "suggest failed: " + (data.error || r.status); return; }
+    suggestionsEl.textContent = "";
+    if (!data.suggestions || !data.suggestions.length) {
+      suggestionsEl.textContent = "Pi suggested nothing runnable.";
+      if (data.raw) {
+        const pre = document.createElement("pre");
+        pre.textContent = data.raw;
+        suggestionsEl.appendChild(pre);
+      }
+      return;
+    }
+    data.suggestions.forEach(s => {
+      const div = document.createElement("div");
+      div.className = "prcard";
+      const reason = document.createElement("div");
+      reason.textContent = s.reason || s.command;
+      div.appendChild(reason);
+      const code = document.createElement("div");
+      const c = document.createElement("code");
+      c.textContent = s.command;
+      code.appendChild(c);
+      div.appendChild(code);
+      if (s.caveat) {
+        const cav = document.createElement("div");
+        cav.className = "prmeta";
+        cav.textContent = s.caveat;
+        div.appendChild(cav);
+      }
+      const b = document.createElement("button");
+      b.textContent = "Run";
+      b.onclick = async () => {
+        if (!window.confirm("Run: " + s.command + "?")) return;
+        b.disabled = true;
+        const rr = await fetch("/buttons/api/run-td", {method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({repo: repo, command: s.command})});
+        const dd = await rr.json().catch(() => ({}));
+        if (!rr.ok) { suggestErrEl.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
+        userStartedRun = true;
+        poll(dd.id, "run-td");
+      };
+      div.appendChild(b);
+      suggestionsEl.appendChild(div);
+    });
+  } catch (e) {
+    suggestionsEl.textContent = "";
+    suggestErrEl.textContent = "suggest failed: " + e;
+  }
+};
 
 // Ledger view. Entry data is rendered with textContent only —
 // never innerHTML — so a log line can never inject markup.
@@ -1906,6 +2165,94 @@ class Handler(BaseHTTPRequestHandler):
                                 "pr": pr_number, "action": action,
                                 "ok": False, "error": str(exc)[:500]})
                 self._json({"error": str(exc)[:500]}, 500)
+            return
+        if path == "/buttons/api/suggest":
+            # Pi suggests (see the section above). Reads only:
+            # suggestions are not ledger entries, exactly like
+            # briefing reads. Slow by design: briefing fetch plus
+            # a local-model Pi run can take minutes.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            info = repos[repo]
+            try:
+                proc = subprocess.run(
+                    EXEC + [_td_prefix(info["td_cwd"])
+                            + "python3 /srv/remote-server/buttons/"
+                            "briefing_summary.py --briefing-json "
+                            f"--repo {repo} --gh {info['gh']}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=180, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(
+                        (proc.stderr or "").strip().splitlines()[-1]
+                        if proc.stderr.strip() else "briefing failed")
+                brief = json.loads(proc.stdout)
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+                return
+            prompt = _suggest_prompt(repo, _suggest_context(brief))
+            b64 = base64.b64encode(prompt.encode()).decode()
+            # The prompt travels base64-encoded: its alphabet is
+            # shell-safe, so briefing titles carrying quotes or
+            # $ cannot break out of the pi argument.
+            cmd = (_td_prefix(info["td_cwd"]) +
+                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
+                   ' | base64 -d)"')
+            try:
+                proc = subprocess.run(
+                    EXEC + [cmd],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=600, text=True)
+                raw = proc.stdout or ""
+            except Exception as exc:
+                self._json({"error": f"Pi failed: {exc}"[:500]}, 500)
+                return
+            self._json({"repo": repo,
+                        "suggestions": _parse_suggestions(raw),
+                        "raw": raw[-2000:]})
+            return
+        if path == "/buttons/api/run-td":
+            # Run one suggested td command. The command is
+            # re-validated here (never trust the client) and
+            # attached to the run record; run_action builds the
+            # step from it. One run at a time, like every run.
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            tokens = _validate_td_command(data.get("command", ""))
+            if repo not in repos or not tokens:
+                self._json({"error": "bad repo or command"}, 400)
+                return
+            with runs_lock:
+                if active_id is not None:
+                    self._json({"error": "a run is already in progress"},
+                               409)
+                    return
+                run_id = uuid.uuid4().hex[:12]
+                now = time.time()
+                runs[run_id] = {"id": run_id, "action": "run-td",
+                                "done": False, "exit_code": None,
+                                "output": "", "seq": len(runs),
+                                "started_at": now, "finished_at": None,
+                                "last_output_at": now, "step_index": 0,
+                                "step_total": 1, "current_step": "",
+                                "td_argv": tokens}
+                active_id = run_id
+            print(f"run {run_id} (run-td) started", flush=True)
+            threading.Thread(target=run_action,
+                             args=(run_id, "run-td", repo),
+                             daemon=True).start()
+            self._json({"id": run_id})
             return
         if path != "/buttons/api/run":
             self._json({"error": "not found"}, 404)
