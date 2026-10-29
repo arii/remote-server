@@ -3,16 +3,18 @@
   "packageName": "remote-server",
   "vite_base_path": "/buttons/",
   "triage_chain": {
-    "primary": "gemini-1.5-flash",
+    "primary": "gemini-3.6-flash",
     "fallbacks": [
-      "gemini-1.5-pro"
+      "gemini-3.5-flash",
+      "gemini-2.5-flash"
     ],
     "max_retries": 2
   },
   "code_review_chain": {
-    "primary": "gemini-1.5-pro",
+    "primary": "gemini-3.6-flash",
     "fallbacks": [
-      "gemini-1.5-flash"
+      "gemini-3.5-flash",
+      "gemini-2.5-flash"
     ],
     "max_retries": 3
   }
