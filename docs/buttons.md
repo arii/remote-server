@@ -57,7 +57,7 @@ recreate containers, unlike the read-only actions.
 | Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
 | Sync & nudge agents | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses), then `td agent run-feedback-check` — list active Jules sessions, post CI/review feedback to stalled ones (global across repos, not picker-scoped). A missing JULES_API_KEY is not a failure: both steps print a notice and exit 0, so the run stays green instead of turning the banner red for config you haven't done |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
-| Preflight check | `td --json preflight` piped through `buttons/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code |
+| Preflight check | `td --json preflight` piped through `buttons/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code. Note: td's preflight currently hardcodes the BoomTick repo's checks — on other repos the pnpm/audit checks fail spuriously (tracked in `docs/boomtick-issues.md`, patch ready); the digest surfaces the first stderr line as the failure detail |
 
 Deploy buttons, Recreate, and Sync & nudge agents ask for
 confirmation first, as do the per-PR action buttons on the
@@ -114,13 +114,18 @@ terminal and press Deploy buttons again.
 ## Failed runs show their cause
 
 Run steps stream through a PTY, so stdout and stderr both reach
-the output pane as they arrive. The remaining failure trap was
-a step that exits non-zero without printing anything: the pane
-showed the command and then a blank gap, which reads like a
-rendering bug. `run_action` now detects that case (no step
-output at all, excluding the handler's own error line) and
-appends an explicit note — the step printed nothing before
-failing, re-run the command in the terminal, check
+the output pane as they arrive. One rendering trap was fixed
+2026-10-29: the PTY translates `\n` to `\r\n` (ONLCR), and the
+page's ANSI renderer treated `\r` as "wipe the line" — so every
+subprocess line rendered blank while the echoed command and the
+trailer survived. `ansiToHtml` now collapses `\r\n` first; a lone
+`\r` still collapses progress redraws to their final line. The
+remaining failure trap is a step that exits non-zero without
+printing anything: the pane shows the command and then a blank
+gap, which reads like a rendering bug. `run_action` detects that
+case (no step output at all, excluding the handler's own error
+line) and appends an explicit note — the step printed nothing
+before failing, re-run the command in the terminal, check
 JULES_API_KEY and the td agent/jules group names first — ahead
 of the `step failed` line. A step that printed anything keeps
 the old behavior (its own output is the cause).
@@ -162,13 +167,23 @@ the old behavior (its own output is the cause).
   (`_run_step` in `server.py`, `TERM=xterm-256color`), so git,
   compose, and td emit the ANSI colours they would show in the
   terminal, and the page converts SGR codes to styled spans
-  (`ansiToHtml` — basic + bright + 256-colour + truecolour, `\r`
-  progress redraws collapsed to their final line, non-SGR escapes
-  stripped, output HTML-escaped first). That PTY detail has one
+  (`ansiToHtml` — basic + bright + 256-colour + truecolour, `\r\n`
+  collapsed to `\n` first since the PTY's ONLCR translates
+  newlines, lone `\r` progress redraws collapsed to their final
+  line, non-SGR escapes stripped, output HTML-escaped first). That PTY detail has one
   guard attached: a TTY stdout makes some tools page their output
   (git log into less would hang a run), so the run environment
   forces `GIT_PAGER=cat` and `PAGER=cat`, and step stdin is
   `/dev/null` so a prompt fails fast instead of hanging.
+- **Report bug:** when a run fails, a Report bug button appears in
+  the drawer header. It files the failure as a GitHub issue in the
+  run's repo: the title/body are built from the run record
+  (`[buttons] <action> failed on <repo> (exit N)` plus the
+  extracted error line and output tail), shown in a confirm dialog
+  first, then created through the same validated
+  `/buttons/api/create-issue` endpoint as Ask Pi proposals
+  (length-capped, shlex-quoted, ledgered as `pr-action` /
+  `create-issue`). One tap from a red banner to a filed issue.
 
 - **Safe fetch:** every page `fetch` goes through `fetchJson()`,
   which never throws on an empty or non-JSON body — it returns
@@ -381,7 +396,7 @@ run — a dithering model degrades to a readable reply, not a
 broken action. Like suggest: slow by design on the local model,
 minutes not seconds.
 
-## Jobs (multi-step tasks with approval gates)
+## Jobs (multi-step tasks; approval guards writes)
 
 The Jobs tab turns repeated multi-step work into named jobs with
 a visible plan. A job = goal + plan checklist + audit. Jobs only
@@ -448,6 +463,10 @@ so pulls and rebuilds cannot dirty or erase it:
   the pull record lands.
 - `pr-action`: `{repo, pr, action, ok, output|error}` — success
   and refusal both logged; a refused tap is audit-worthy too.
+- `job`: `{job, template, repo, step, event, outcome}` — job
+  lifecycle: created, step auto-started/done/failed, approvals,
+  terminal outcome. The Ledger UI renders these (an earlier
+  version wrote them with no renderer, showing "unknown entry").
 - `system`: `{event}` — currently just `buttons started`, so a
   rebuild is visible as a fresh start line.
 
@@ -524,8 +543,8 @@ The fast briefing is a summarizer, not a td dump — and that is
 deliberate. td defaults to JSON output, and its human mode for
 search-prs only prints "Found N PRs", so neither td mode gives a
 briefing a person can act on. The summarizer (`buttons/
-briefing_summary.py`, stdlib only, run with cwd = the tech-dancer
-checkout) parses `td --json gh search-prs --state open`,
+briefing_summary.py`, stdlib only, run with cwd = the picked
+repo's checkout) parses `td --json gh search-prs --state open`,
 `td --json gh status-board`, `td --json gh detect-conflicts --all`,
 and `td --json repo workflow-runs` (`--json` is a top-level td
 flag — per-subcommand `--json` fails on real td for all but
@@ -573,9 +592,7 @@ but the button definitions in `server.py` that call it still need
 
 Briefing notes: the agent briefing's MCP tools in Pi print mode
 are unverified on the S5 — its prompt falls back to `td`/`gh`
-CLI if MCP tools are absent there. The plan file lands untracked
-in the tech-dancer checkout; commit or delete it from the
-terminal as usual.
+CLI if MCP tools are absent there.
 
 ## GitHub webhook auto-pull
 
@@ -651,16 +668,17 @@ still need `up -d --build buttons`, `.env` changes still need
 Recreate terminal, and a terminal image update is still a
 host-shell job.
 
-### The two repos on the page
+### The repos on the page
 
-The page covers two repos and says so at the top: one card per
-repo with its scope and its last auto-pull result.
-`arii/remote-server` is the stack itself — the Server buttons
-act there. `arii/tech-dancer` is the repo work — the Briefing
-buttons read that repo only, and plans live in its
-`.agents/plans/`. Group headings repeat the repo name for the
-same reason, so no button is ambiguous about which repo it
-touches.
+The page covers every repo the server discovers, and says so at the
+top: one card per repo with its scope and its last auto-pull result.
+Discovery lists `~/repos` on every request plus the stack checkout
+itself — currently `arii/remote-server` (the stack; the Server
+buttons act there), `arii/tech-dancer` (the blog repo), and
+`arii/boomtick` (the MCP/td repo). A repo added to `~/repos`
+appears on the next page load with no code change. Group headings
+repeat the repo name, so no button is ambiguous about which repo
+it touches.
 
 ### Live updates on the page
 

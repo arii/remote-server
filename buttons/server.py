@@ -1162,7 +1162,8 @@ def _public(run):
     done = run["done"]
     elapsed = (run["finished_at"] - run["started_at"]) if done else now - run["started_at"]
     return {
-        "id": run["id"], "action": run["action"], "done": done,
+        "id": run["id"], "action": run["action"], "repo": run.get("repo"),
+        "done": done,
         "exit_code": run["exit_code"], "output": run["output"],
         "step_index": run["step_index"], "step_total": run["step_total"],
         "current_step": run["current_step"],
@@ -1611,7 +1612,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </details>
 </section>
 <div id="outputDrawer">
-<div id="drawerHead"><span>Output</span><span class="dbactions"><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
+<div id="drawerHead"><span>Output</span><span class="dbactions"><button id="bugBtn" style="display:none">Report bug</button><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
 <div id="state"></div>
 <pre id="out"></pre>
 </div>
@@ -1886,6 +1887,9 @@ function renderState(run) {
   stateEl.className = cls;
   outEl.className = cls;
   stateEl.textContent = text;
+  const bugBtn = document.getElementById("bugBtn");
+  if (bugBtn) bugBtn.style.display =
+    (run.done && run.exit_code !== 0) ? "" : "none";
 }
 
 let currentId = null;
@@ -2020,6 +2024,45 @@ document.getElementById("clearBtn").onclick = async () => {
     outEl.className = "";
   }
 };
+
+// Report bug: file the failed run as a GitHub issue in the run's
+// repo. The title/body are built from the run record (action,
+// repo, exit code, extracted error line, output tail) and shown
+// in a confirm dialog first; creation goes through the same
+// validated /buttons/api/create-issue endpoint as Ask Pi
+// proposals, so it is ledgered the same way.
+async function reportBug() {
+  const run = lastRun;
+  if (!run || !run.done || run.exit_code === 0) return;
+  const picker = document.getElementById("briefingRepo");
+  const repo = run.repo || (picker ? picker.value : "remote-server");
+  const errLine = (lastErrorLines() || "").trim() || "(no error line captured)";
+  const tail = (run.output || "").slice(-2500);
+  const title = ("[buttons] " + run.action + " failed on " + repo +
+    " (exit " + run.exit_code + ")").slice(0, 200);
+  const body = ("Run `" + run.action + "` on `" + repo +
+    "` failed with exit " + run.exit_code + ".\n\nError:\n" +
+    errLine + "\n\nOutput tail:\n```\n" + tail + "\n```").slice(0, 4000);
+  if (!(await confirmDialog("Report bug as GitHub issue",
+      "File this in " + repo + "?\n\n" + title + "\n\n" +
+      errLine.slice(0, 300), false))) return;
+  const btn = document.getElementById("bugBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetchJson("/buttons/api/create-issue", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({repo: repo, title: title, body: body})});
+    if (!res.ok) {
+      await confirmDialog("Failed",
+        "Could not create issue: " + (res.data.error || res.status), false);
+      return;
+    }
+    await confirmDialog("Issue created", res.data.url || "created", false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+document.getElementById("bugBtn").onclick = reportBug;
 
 </script>
 <script>
@@ -2874,7 +2917,7 @@ def _start_run(action, repo, td_argv=None):
             return None, "a run is already in progress"
         run_id = uuid.uuid4().hex[:12]
         now = time.time()
-        run = {"id": run_id, "action": action, "done": False,
+        run = {"id": run_id, "action": action, "repo": repo, "done": False,
                "exit_code": None, "output": "",
                "seq": len(runs), "started_at": now,
                "finished_at": None, "last_output_at": now,
