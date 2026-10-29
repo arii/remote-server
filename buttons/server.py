@@ -1961,16 +1961,53 @@ function confirmDialog(title, body, danger) {
 // ledger; the phone screen gets the actionable version.
 function friendlyError(msg) {
   msg = String(msg || "");
-  if (/\[Errno 2\] No such file or directory: 'docker'/.test(msg))
-    return "terminal container not reachable — is the stack " +
-      "running? Check the Terminal tab.";
-  if (/\[Errno 2\] No such file or directory/.test(msg))
-    return "a required file or checkout is missing on the server — " +
-      "check the terminal container.";
+  if (/\[Errno 2\] No such file or directory: 'docker'/i.test(msg) || /docker: command not found/i.test(msg) || /Cannot connect to the Docker daemon/i.test(msg))
+    return "terminal container or Docker daemon unreachable — check the terminal container and tap Refresh.";
+  if (/\[Errno 2\] No such file or directory/i.test(msg) || /fatal: not a git repository/i.test(msg) || /checkout missing/i.test(msg))
+    return "required repo checkout or file is missing on the server — check the terminal container and tap Refresh.";
+  if (/td: command not found/i.test(msg) || /tech-dancer/i.test(msg) && /command failed|failed with exit/i.test(msg) || /briefing failed/i.test(msg))
+    return "td command failed in terminal container — check the terminal container logs or tap Refresh.";
   if (/JULES_API_KEY/.test(msg))
-    return "JULES_API_KEY is not set — add it to .env to enable " +
-      "Jules features.";
+    return "JULES_API_KEY is not set — add it to .env to enable Jules features.";
+  if (/Traceback \(most recent call last\)/i.test(msg) || /\[Errno \d+\]/.test(msg))
+    return "server error encountered — check terminal container or tap Refresh.";
   return msg;
+}
+
+function setErrorEl(el, rawMsg, prefix) {
+  if (!el) return;
+  const raw = String(rawMsg || "");
+  const friendly = friendlyError(raw);
+  const pfx = prefix ? prefix + ": " : "";
+  el.textContent = "";
+  if (!raw) return;
+
+  const msgSpan = document.createElement("span");
+  msgSpan.textContent = pfx + friendly;
+  el.appendChild(msgSpan);
+
+  // If friendlyError mapped raw detail or it contains a traceback / raw error,
+  // append collapsible details container so raw traceback is available in ledger/collapsible.
+  if (friendly !== raw || /Traceback|\[Errno \d+\]/i.test(raw)) {
+    const det = document.createElement("details");
+    det.style.marginTop = "0.3em";
+    const sum = document.createElement("summary");
+    sum.style.cursor = "pointer";
+    sum.style.fontSize = "0.85em";
+    sum.style.opacity = "0.8";
+    sum.textContent = "Raw error detail";
+    det.appendChild(sum);
+
+    const pre = document.createElement("pre");
+    pre.style.marginTop = "0.3em";
+    pre.style.fontSize = "0.8em";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.wordBreak = "break-all";
+    pre.textContent = raw;
+    det.appendChild(pre);
+
+    el.appendChild(det);
+  }
 }
 async function fetchJson(url, options) {
   let res;
@@ -2534,7 +2571,7 @@ async function refreshBriefing() {
   const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
   if (!res.ok) {
     briefingEl.textContent = "";
-    briefingErrEl.textContent = "briefing unavailable: " + (res.data.error || ("HTTP " + res.status));
+    setErrorEl(briefingErrEl, res.data.error || ("HTTP " + res.status), "briefing unavailable");
     const att = document.getElementById("attentionBody");
     if (att) {
       att.textContent = "";
@@ -2629,7 +2666,7 @@ function refreshJobPrSelect(sel) {
 }
 function jobErr(t) {
   const e = document.getElementById("jobErr");
-  if (e) e.textContent = t;
+  if (e) setErrorEl(e, t);
 }
 function renderJobNew() {
   const el = document.getElementById("jobNew");
@@ -2721,7 +2758,7 @@ async function refreshJobs() {
   if (!listEl) return;
   const res = await fetchJson("/buttons/api/jobs");
   if (!res.ok) {
-    if (errEl) errEl.textContent = "jobs unavailable: " + (res.data.error || res.status);
+    if (errEl) setErrorEl(errEl, res.data.error || res.status, "jobs unavailable");
     return;
   }
   if (errEl) errEl.textContent = "";
@@ -2857,7 +2894,7 @@ if (suggestBtn) suggestBtn.onclick = async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({repo: repo})});
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) { suggestionsEl.textContent = ""; suggestErrEl.textContent = "suggest failed: " + (data.error || r.status); return; }
+    if (!r.ok) { suggestionsEl.textContent = ""; setErrorEl(suggestErrEl, data.error || r.status, "suggest failed"); return; }
     suggestionsEl.textContent = "";
     if (!data.suggestions || !data.suggestions.length) {
       suggestionsEl.textContent = "Pi suggested nothing runnable.";
@@ -2894,7 +2931,7 @@ if (suggestBtn) suggestBtn.onclick = async () => {
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({repo: repo, command: s.command})});
         const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) { suggestErrEl.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
+        if (!rr.ok) { setErrorEl(suggestErrEl, dd.error || rr.status, "run failed"); b.disabled = false; return; }
         userStartedRun = true;
         poll(dd.id, "run-td");
       };
@@ -2903,7 +2940,7 @@ if (suggestBtn) suggestBtn.onclick = async () => {
     });
   } catch (e) {
     suggestionsEl.textContent = "";
-    suggestErrEl.textContent = "suggest failed: " + e;
+    setErrorEl(suggestErrEl, e, "suggest failed");
   }
 };
 
@@ -2931,7 +2968,7 @@ if (askBtn) askBtn.onclick = async () => {
       body: JSON.stringify({repo: repo, instruction: instruction})});
     const data = await r.json().catch(() => ({}));
     askBtn.disabled = false;
-    if (!r.ok) { askOut.textContent = ""; askErr.textContent = "ask failed: " + (data.error || r.status); return; }
+    if (!r.ok) { askOut.textContent = ""; setErrorEl(askErr, data.error || r.status, "ask failed"); return; }
     askOut.textContent = "";
     const pre = document.createElement("pre");
     pre.textContent = data.reply || "(Pi said nothing)";
@@ -2958,7 +2995,7 @@ if (askBtn) askBtn.onclick = async () => {
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({repo: repo, title: p.title, body: p.body})});
         const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) { askErr.textContent = "create failed: " + (dd.error || rr.status); b.disabled = false; return; }
+        if (!rr.ok) { setErrorEl(askErr, dd.error || rr.status, "create failed"); b.disabled = false; return; }
         title.textContent = "Issue created: " + (dd.url || "ok");
         b.remove();
       };
@@ -2976,7 +3013,7 @@ if (askBtn) askBtn.onclick = async () => {
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({repo: repo, command: p.command})});
         const dd = await rr.json().catch(() => ({}));
-        if (!rr.ok) { askErr.textContent = "run failed: " + (dd.error || rr.status); b.disabled = false; return; }
+        if (!rr.ok) { setErrorEl(askErr, dd.error || rr.status, "run failed"); b.disabled = false; return; }
         userStartedRun = true;
         poll(dd.id, "run-td");
       };
@@ -2986,7 +3023,7 @@ if (askBtn) askBtn.onclick = async () => {
   } catch (e) {
     askBtn.disabled = false;
     askOut.textContent = "";
-    askErr.textContent = "ask failed: " + e;
+    setErrorEl(askErr, e, "ask failed");
   }
 };
 
@@ -3016,7 +3053,7 @@ async function refreshLedger() {
   ledgerEl.textContent = "Loading ledger…";
   try {
     const res = await fetchJson("/buttons/api/ledger?kind=" + encodeURIComponent(kind) + "&limit=50");
-    if (!res.ok) { ledgerEl.textContent = ""; ledgerErrEl.textContent = "ledger unavailable: " + (res.data.error || ("HTTP " + res.status)); return; }
+    if (!res.ok) { ledgerEl.textContent = ""; setErrorEl(ledgerErrEl, res.data.error || ("HTTP " + res.status), "ledger unavailable"); return; }
     const data = res.data || {};
     ledgerErrEl.textContent = "";
     ledgerEl.textContent = "";
@@ -3042,7 +3079,7 @@ async function refreshLedger() {
     });
   } catch (e) {
     ledgerEl.textContent = "";
-    ledgerErrEl.textContent = "ledger unavailable: " + e;
+    setErrorEl(ledgerErrEl, e, "ledger unavailable");
   }
 }
 const refreshLedgerBtn = document.getElementById("refreshLedger");
@@ -3052,7 +3089,7 @@ if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
   if (!(await confirmDialog("Clear ledger", "All entries will be deleted except a 'ledger cleared' record. This cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/ledger/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) { ledgerErrEl.textContent = "ledger clear failed: " + (data.error || r.status); return; }
+  if (!r.ok) { setErrorEl(ledgerErrEl, data.error || r.status, "ledger clear failed"); return; }
   refreshLedger();
 };
 if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
@@ -3068,12 +3105,12 @@ async function showSession(file) {
   try {
     const res = await fetchJson("/buttons/api/pi-session?session=" + encodeURIComponent(file));
     const data = res.data || {};
-    if (!res.ok) { piSessionOutEl.textContent = ""; piSessionErrEl.textContent = "session unavailable: " + (data.error || ("HTTP " + res.status)); return; }
+    if (!res.ok) { piSessionOutEl.textContent = ""; setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "session unavailable"); return; }
     piSessionErrEl.textContent = "";
     piSessionOutEl.textContent = data.output;
   } catch (e) {
     piSessionOutEl.textContent = "";
-    piSessionErrEl.textContent = "session unavailable: " + e;
+    setErrorEl(piSessionErrEl, e, "session unavailable");
   }
 }
 const clearPiSessionsBtn = document.getElementById("clearPiSessions");
@@ -3081,7 +3118,7 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   if (!(await confirmDialog("Clear Pi sessions", "This deletes the transcripts and cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) { piSessionErrEl.textContent = "clear failed: " + (data.error || r.status); return; }
+  if (!r.ok) { setErrorEl(piSessionErrEl, data.error || r.status, "clear failed"); return; }
   piSessionListEl.textContent = "";
   piSessionOutEl.textContent = "";
   piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
@@ -3092,7 +3129,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   try {
     const res = await fetchJson("/buttons/api/pi-sessions");
     const data = res.data || {};
-    if (!res.ok) { piSessionListEl.textContent = ""; piSessionErrEl.textContent = "sessions unavailable: " + (data.error || ("HTTP " + res.status)); return; }
+    if (!res.ok) { piSessionListEl.textContent = ""; setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "sessions unavailable"); return; }
     piSessionErrEl.textContent = "";
     piSessionListEl.textContent = "";
     const sessions = data.sessions || [];
@@ -3121,8 +3158,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
           {method: "POST", headers: {"Content-Type": "application/json"},
            body: JSON.stringify({session: s.file})});
         if (!r.ok) {
-          piSessionErrEl.textContent = "delete failed: " +
-            (r.data.error || r.status);
+          setErrorEl(piSessionErrEl, r.data.error || r.status, "delete failed");
           return;
         }
         piSessionErrEl.textContent = r.data.output || "Deleted.";
@@ -3133,7 +3169,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     });
   } catch (e) {
     piSessionListEl.textContent = "";
-    piSessionErrEl.textContent = "sessions unavailable: " + e;
+    setErrorEl(piSessionErrEl, e, "sessions unavailable");
   }
 };
 
@@ -3178,7 +3214,7 @@ async function refreshIssues() {
   const data = res.data || {};
   if (!res.ok) {
     el.innerHTML = "";
-    err.textContent = "issues unavailable: " + (data.error || res.status);
+    setErrorEl(err, data.error || res.status, "issues unavailable");
     return;
   }
   el.innerHTML = "";
@@ -3234,8 +3270,7 @@ async function refreshIssues() {
                               assignee: name})});
       btn.disabled = false;
       if (!r.ok) {
-        err.textContent = "assign failed: " +
-          (((r.data || {}).error) || r.status);
+        setErrorEl(err, ((r.data || {}).error) || r.status, "assign failed");
         return;
       }
       refreshIssues();
@@ -3267,7 +3302,7 @@ async function createProjectIssue() {
                             body: bEl.value || ""})});
     const data = res.data || {};
     if (!res.ok) {
-      err.textContent = "create failed: " + (data.error || res.status);
+      setErrorEl(err, data.error || res.status, "create failed");
       return;
     }
     tEl.value = "";
@@ -3289,7 +3324,7 @@ async function refreshJulesSessions() {
   const data = res.data || {};
   if (!res.ok) {
     el.innerHTML = "";
-    err.textContent = "jules unavailable: " + (data.error || res.status);
+    setErrorEl(err, data.error || res.status, "jules unavailable");
     return;
   }
   el.innerHTML = "";
@@ -3349,7 +3384,7 @@ async function runPlan(plan, extra) {
   const data = res.data || {};
   if (!res.ok) {
     out.innerHTML = "";
-    err.textContent = "plan failed: " + (data.error || res.status);
+    setErrorEl(err, data.error || res.status, "plan failed");
     return;
   }
   out.innerHTML = "";
