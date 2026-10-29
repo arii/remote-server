@@ -10,10 +10,11 @@ CONFIG_FILE="${HOME}/.gemini/config/config.json"
 
 echo "==> Updating Antigravity permissions..."
 
-python3 - <<'EOF'
+python3 - "$SETTINGS_FILE" "$CONFIG_FILE" <<'EOF'
 import json
 import os
 import shutil
+import sys
 from datetime import datetime
 
 RULES_TO_ALLOW = [
@@ -99,8 +100,8 @@ def update_global_config(filepath):
 
     print(f"Updated global grants in {filepath}: added {added} rule(s).")
 
-cli_path = os.path.expanduser("~/.gemini/antigravity-cli/settings.json")
-config_path = os.path.expanduser("~/.gemini/config/config.json")
+cli_path = os.path.expanduser(sys.argv[1])
+config_path = os.path.expanduser(sys.argv[2])
 
 update_cli_settings(cli_path)
 update_global_config(config_path)

@@ -813,6 +813,26 @@ commands, so bring-up and clean-up stop being lengthy shell lines:
 Run with `npm run <script>` from the checkout. It needs node/npm
 where you run it, plus docker compose and git on PATH.
 
+## Proactive Notifications & Scheduled Digest
+
+To satisfy the personal-assistant harness vision (moving from 100% pull-based to surfacing events unprompted), the Buttons service includes an in-process background notifier and scheduler loop.
+
+### Notification Channels
+1. **`ntfy` (HTTP Push Service):** Primary channel (`NTFY_TOPIC`, `NTFY_URL` defaulting to `https://ntfy.sh`, and optional `NTFY_TOKEN`). Sends mobile/desktop push notifications with title, priority tags, and direct action/click URLs back to the Buttons interface.
+2. **Generic Webhook (`NOTIFICATION_WEBHOOK_URL`):** Optional secondary channel that posts JSON payloads (`{event, repo, title, message, url, timestamp}`) to custom endpoints (Discord, Slack, or automation bridges).
+
+### Event Triggers
+The background loop runs every 5 minutes (`NOTIFIER_INTERVAL_SECONDS`, default 300s) and checks for state transitions across discovered repositories:
+- **CI Failure on Main:** Detects when a default/main branch run transitions from passing to failing.
+- **Jules Session Completed / Failed:** Detects state changes in active Jules sessions (`completed` or `failed`/`error`).
+- **New Merge Conflicts:** Detects open PRs entering a conflicted state.
+
+### Scheduled Briefing Digest
+- Configured via `DIGEST_INTERVAL_HOURS` (default `12`, or `0` to disable).
+- Generates a multi-repo summary of open PRs, failing CI runs, attention items, and active agent sessions.
+- Pushes a digest notification via `ntfy`/webhook on the schedule, allowing Ari to see overall stack status without opening the page.
+- Can also be triggered manually via `POST /buttons/api/notifications/trigger-digest` or the "Send digest now" button in the UI.
+
 ## Architecture
 
 ```
