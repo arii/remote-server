@@ -5195,37 +5195,115 @@ async function refreshIssues() {
     const sum = document.createElement("summary");
     sum.textContent = "Details / assign";
     det.appendChild(sum);
+
+    // Labels section
+    const labelsHead = document.createElement("div");
+    labelsHead.style.fontWeight = "bold";
+    labelsHead.style.marginTop = "0.5em";
+    labelsHead.textContent = "Labels:";
+    det.appendChild(labelsHead);
+    const labChips = document.createElement("div");
+    labChips.className = "chips";
+    if (iss.labels && iss.labels.length) {
+      iss.labels.forEach(l => {
+        const c = document.createElement("span");
+        c.className = "chip";
+        c.textContent = l.name || l;
+        labChips.appendChild(c);
+      });
+    } else {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = "none";
+      labChips.appendChild(c);
+    }
+    det.appendChild(labChips);
+
+    // Body section
+    const bodyHead = document.createElement("div");
+    bodyHead.style.fontWeight = "bold";
+    bodyHead.style.marginTop = "0.5em";
+    bodyHead.textContent = "Description:";
+    det.appendChild(bodyHead);
     const pre = document.createElement("pre");
     pre.textContent = iss.body || "(no body)";
     det.appendChild(pre);
+
+    // Assignees section
+    const assignHead = document.createElement("div");
+    assignHead.style.fontWeight = "bold";
+    assignHead.style.marginTop = "0.5em";
+    assignHead.textContent = "Assignee:";
+    det.appendChild(assignHead);
+    const whoChips = document.createElement("div");
+    whoChips.className = "chips";
+    if (iss.assignees && iss.assignees.length) {
+      iss.assignees.forEach(u => {
+        const c = document.createElement("span");
+        c.className = "chip chip-ok";
+        c.textContent = "@" + (u.login || u);
+        whoChips.appendChild(c);
+      });
+    } else {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = "unassigned";
+      whoChips.appendChild(c);
+    }
+    det.appendChild(whoChips);
+
+    // Assignment input and action
     const row = document.createElement("div");
+    row.style.marginTop = "0.4em";
     const inp = document.createElement("input");
     inp.placeholder = "assignee username";
     inp.size = 18;
     inp.maxLength = 39;
     const btn = document.createElement("button");
     btn.textContent = "Assign";
+    const cardErr = document.createElement("div");
+    cardErr.style.color = "#ff8a8a";
+    cardErr.style.marginTop = "0.3em";
+    cardErr.style.fontSize = "0.9em";
+
     btn.onclick = async () => {
+      cardErr.textContent = "";
       const name = inp.value.trim();
-      if (!name) return;
+      if (!name) {
+        cardErr.textContent = "Please enter a username to assign.";
+        return;
+      }
+      if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(name)) {
+        cardErr.textContent = "Invalid GitHub username format.";
+        return;
+      }
       if (!(await confirmDialog("Assign issue",
           "Assign #" + iss.number + " to " + name + "?", false))) return;
       btn.disabled = true;
-      const r = await fetchJson("/buttons/api/assign-issue", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({repo: projectRepo(), issue: iss.number,
-                              assignee: name})});
-      btn.disabled = false;
-      if (!r.ok) {
-        setErrorEl(err, ((r.data || {}).error) || r.status, "assign failed");
-        return;
+      try {
+        const r = await fetchJson("/buttons/api/assign-issue", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({repo: projectRepo(), issue: iss.number,
+                                assignee: name})});
+        btn.disabled = false;
+        if (!r.ok) {
+          const errMsg = ((r.data || {}).error) || ("HTTP " + r.status);
+          cardErr.textContent = "Assign failed: " + errMsg;
+          setErrorEl(err, errMsg, "assign failed");
+          return;
+        }
+        await refreshIssues();
+      } catch (e) {
+        btn.disabled = false;
+        cardErr.textContent = "Assign request failed: " + (e.message || e);
+        setErrorEl(err, e.message || e, "assign request failed");
       }
-      refreshIssues();
     };
     row.appendChild(inp);
     row.appendChild(btn);
     det.appendChild(row);
+    det.appendChild(cardErr);
     card.appendChild(det);
     el.appendChild(card);
   });
