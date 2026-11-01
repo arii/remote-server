@@ -5,8 +5,8 @@
   "scripts": {
     "buttons:logs": "docker compose logs --tail=100 buttons",
     "buttons:rebuild": "docker compose up -d --build buttons",
-    "check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py",
-    "type-check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py buttons/preflight_digest.py",
+    "check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py buttons/context_filter.py",
+    "type-check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py buttons/preflight_digest.py buttons/context_filter.py",
     "lint": "bash -n scripts/*.sh && (command -v shellcheck >/dev/null 2>&1 && shellcheck -S warning scripts/*.sh || true)",
     "clean": "docker compose down --remove-orphans",
     "down": "docker compose down",

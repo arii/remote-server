@@ -20,6 +20,10 @@ the terminal container would come up with an empty /srv/remote-server.
 
 import base64
 import fcntl
+try:
+    from buttons import context_filter
+except ImportError:
+    import context_filter
 import hashlib
 import hmac
 import json
@@ -357,9 +361,35 @@ def _pi_thread(rid, kind, repo, instruction):
                         (proc.stderr or "").strip().splitlines()[-1]
                         if proc.stderr.strip() else "briefing failed")
                 brief = json.loads(proc.stdout)
+
+                # Deterministic fast-path: if queues are completely clear, return immediately
+                # in <50ms without invoking CPU LLM inference (eliminates 180s stall on empty state)
+                open_prs = len(brief.get("prs") or [])
+                failing_runs = len(brief.get("failing_runs") or [])
+                attention_items = len(brief.get("attention") or [])
+                active_jules = len((brief.get("jules") or {}).get("items") or [])
+
+                if open_prs == 0 and failing_runs == 0 and attention_items == 0 and active_jules == 0:
+                    clean_res = "SUGGEST: none :: All queues clear and checks green.\n"
+                    f.write(clean_res)
+                    f.flush()
+                    with pi_runs_lock:
+                        r = pi_runs.get(rid)
+                        if r is not None:
+                            r["result"] = {"repo": repo,
+                                           "suggestions": [],
+                                           "raw": clean_res}
+                            r["done"] = True
+                            r["finished_at"] = time.time()
+                    return
+
                 prompt = _suggest_prompt(repo, _suggest_context(brief))
             else:
                 prompt = _ask_prompt(repo, instruction)
+
+            # Enforce context budget on prompt payload before passing to local LLM
+            prompt = context_filter.enforce_context_budget(prompt, max_tokens=4000)
+
             b64 = base64.b64encode(prompt.encode()).decode()
             # The prompt travels base64-encoded: its alphabet is
             # shell-safe, so briefing titles or free-text
@@ -503,7 +533,8 @@ def _suggest_context(brief):
     if isinstance(j, dict):
         lines.append("Active Jules sessions for this repo: "
                      f"{len(j.get('items') or [])}")
-    return "\n".join(lines)[:6000]
+    raw_context = "\n".join(lines)
+    return context_filter.enforce_context_budget(raw_context, max_tokens=3000)
 
 
 def _suggest_prompt(repo, context):
