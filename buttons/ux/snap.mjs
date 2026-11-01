@@ -22,7 +22,7 @@ const base = process.argv[2] || "http://127.0.0.1:18099/buttons";
 const outdir = process.argv[3] || defaultOutDir;
 mkdirSync(outdir, { recursive: true });
 
-const TABS = ["actions", "briefing", "pi", "project", "jobs", "ledger"];
+const TABS = ["actions", "prs", "briefing", "pi", "project", "jobs", "ledger"];
 const WIDTHS = [
   { name: "phone", width: 390, height: 844 },
   { name: "desktop", width: 1440, height: 900 },
