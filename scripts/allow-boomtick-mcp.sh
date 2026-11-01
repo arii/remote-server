@@ -21,20 +21,57 @@ RULES_TO_ALLOW = [
     # Boomtick MCP server wildcard
     "mcp(boomtick/*)",
 
-    # User-requested common CLI inspection/utility commands
-    "command(echo)",
-    "command(head)",
-    "command(tail)",
+    # Developer & VCS tools
+    "command(gh)",
+    "command(git)",
+    "command(docker)",
+    "command(docker-compose)",
+    "command(td)",
+
+    # Package managers & runtimes
+    "command(pnpm)",
+    "command(npm)",
+    "command(npx)",
+    "command(node)",
+    "command(python3)",
+    "command(python)",
+    "command(pip)",
+    "command(pip3)",
+
+    # Testing, linting & code audit tools
+    "command(pytest)",
+    "command(fallow)",
+    "command(shellcheck)",
+    "command(oxlint)",
+    "command(eslint)",
+
+    # Networking & transfer
+    "command(curl)",
+    "command(wget)",
+
+    # File, process & permissions management
+    "command(chmod)",
+    "command(chown)",
+    "command(mkdir)",
+    "command(rm)",
+    "command(cp)",
+    "command(mv)",
+    "command(ln)",
+    "command(touch)",
     "command(stat)",
     "command(file)",
-    "command(touch)",
-    "command(sed)",
 
-    # Standard complementary CLI utilities
+    # Shell execution
+    "command(bash)",
+    "command(sh)",
+
+    # Text, streams & data processing
+    "command(echo)",
     "command(cat)",
-    "command(ls)",
+    "command(head)",
+    "command(tail)",
     "command(grep)",
-    "command(find)",
+    "command(sed)",
     "command(awk)",
     "command(diff)",
     "command(wc)",
@@ -42,9 +79,17 @@ RULES_TO_ALLOW = [
     "command(uniq)",
     "command(cut)",
     "command(tr)",
+    "command(find)",
     "command(which)",
     "command(basename)",
     "command(dirname)",
+    "command(jq)",
+    "command(base64)",
+    "command(tee)",
+    "command(xargs)",
+    "command(tar)",
+    "command(gzip)",
+    "command(unzip)",
 ]
 
 def update_cli_settings(filepath):
