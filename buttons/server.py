@@ -41,7 +41,12 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.request
 from urllib.parse import urlparse, parse_qs
+try:
+    from buttons.briefing_summary import ci_summary
+except ImportError:
+    from briefing_summary import ci_summary
 
 STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
@@ -93,7 +98,13 @@ def _parse_gh_remote(url):
     return m.group(1)
 
 
-def _discover_repos():
+_REPOS_CACHE = None
+_REPOS_CACHE_TIME = 0.0
+_REPOS_CACHE_TTL = 15.0  # seconds
+_repos_cache_lock = threading.Lock()
+
+
+def _discover_repos(force=False):
     """name -> {gh, td_cwd, host_path}. remote-server is the
     special stack checkout; every other entry is a ~/repos
     checkout with a parseable GitHub origin. Names and gh paths
@@ -103,6 +114,11 @@ def _discover_repos():
     fails discovery is skipped with a log line, never mapped to
     another repo's data. A missing repos dir degrades to the
     stack repo alone, not a crash."""
+    global _REPOS_CACHE, _REPOS_CACHE_TIME
+    now = time.time()
+    if not force and _REPOS_CACHE is not None and (now - _REPOS_CACHE_TIME) < _REPOS_CACHE_TTL:
+        return dict(_REPOS_CACHE)
+
     repos = {"remote-server": {"gh": STACK_GH,
                                "td_cwd": "/srv/remote-server",
                                "host_path": "/home/ari/remote-server"}}
@@ -111,6 +127,9 @@ def _discover_repos():
     except Exception as exc:
         print(f"repo discovery: cannot list {REPOS_DIR}: {exc}",
               flush=True)
+        with _repos_cache_lock:
+            _REPOS_CACHE = dict(repos)
+            _REPOS_CACHE_TIME = now
         return repos
     for name in entries:
         if name == "remote-server":
@@ -158,6 +177,9 @@ def _discover_repos():
             continue
         repos[name] = {"gh": gh, "td_cwd": f"/srv/repos/{name}",
                        "host_path": host_path}
+    with _repos_cache_lock:
+        _REPOS_CACHE = dict(repos)
+        _REPOS_CACHE_TIME = now
     return repos
 
 
@@ -328,9 +350,10 @@ def _pi_start(kind, repo, instruction=None):
             except Exception:
                 pass
             del pi_runs[k]
-        pi_runs[rid] = {"kind": kind, "repo": repo, "done": False,
-                        "started_at": now, "result": None,
-                        "error": None}
+        pi_runs[rid] = {"id": rid, "kind": kind, "repo": repo, "done": False,
+                        "started_at": now, "finished_at": None,
+                        "instruction": instruction or ("Suggest next actions" if kind == "suggest" else ""),
+                        "result": None, "error": None}
     open(_pi_progress_path(rid), "w").write("")
     t = threading.Thread(target=_pi_thread,
                          args=(rid, kind, repo, instruction),
@@ -449,6 +472,21 @@ def _pi_thread(rid, kind, repo, instruction):
 # batch run and no auto-run in v1: one tap per action is the
 # approval gate, matching Pi's own read-only boundary (no
 # merge/push/post without explicit approval).
+ALLOWED_TD_COMMANDS = [
+    "td --json agent fix-ci --pr N --execute",
+    "td gh read-pr-reviews --pr N",
+    "td gh read-pr-comments --pr N",
+    "td gh resolve-conflicts --pr N",
+    "td context-warm",
+    "td --json preflight",
+    "td --json agent list-sessions",
+    "td --json jules list-sessions",
+    "td --json agent run-feedback-check",
+]
+ALLOWED_TD_COMMANDS_TEXT = "\n".join(ALLOWED_TD_COMMANDS)
+ALLOWED_TD_SHAPES = [cmd.split() for cmd in ALLOWED_TD_COMMANDS]
+
+
 def _validate_td_command(text):
     """argv tokens for a suggested td command, or None. Exact
     shapes only: same tokens, PR numbers digits. Anything else —
@@ -461,18 +499,7 @@ def _validate_td_command(text):
         return None
     if not tokens or tokens[0] != "td":
         return None
-    shapes = [
-        ["td", "--json", "agent", "fix-ci", "--pr", "N", "--execute"],
-        ["td", "--json", "agent", "list-sessions"],
-        ["td", "--json", "jules", "list-sessions"],
-        ["td", "--json", "agent", "run-feedback-check"],
-        ["td", "--json", "preflight"],
-        ["td", "context-warm"],
-        ["td", "gh", "read-pr-reviews", "--pr", "N"],
-        ["td", "gh", "read-pr-comments", "--pr", "N"],
-        ["td", "gh", "resolve-conflicts", "--pr", "N"],
-    ]
-    for shape in shapes:
+    for shape in ALLOWED_TD_SHAPES:
         if len(tokens) != len(shape):
             continue
         ok = True
@@ -556,23 +583,10 @@ def _suggest_prompt(repo, context):
         "this repo's checkout). Do not run any tools. Do not use "
         "boomtick MCP tools for this task — they are scoped to a "
         "different repo.\n"
-        "Code discipline: Workaround chains (e.g. `cmd || variant-cmd`, "
-        "fallback ladders papering over errors, or retrying with tweaked flags) "
-        "are review-blocking findings, not nits. Never suggest workaround chains; "
-        "always address root causes with ONE canonical command path.\n"
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
-        "the context):\n"
-        "td --json agent fix-ci --pr N --execute\n"
-        "td gh read-pr-reviews --pr N\n"
-        "td gh read-pr-comments --pr N\n"
-        "td gh resolve-conflicts --pr N\n"
-        "td context-warm\n"
-        "td --json preflight\n"
-        "td --json agent list-sessions\n"
-        "td --json jules list-sessions\n"
-        "td --json agent run-feedback-check\n"
+        f"the context):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
         "If the context shows a problem (failing CI, conflicts, "
         "stale PRs) but no allowed command fits it directly, read "
         "the repo checkout (git log, .github/workflows) to pin "
@@ -628,10 +642,6 @@ def _ask_prompt(repo, instruction):
         "Be terse, no filler.\n"
         "The user instruction follows. Investigate read-only using "
         "the files in this repo's checkout (do not run any tools).\n"
-        "Code discipline & review rule: Workaround chains (such as "
-        "`cmd || variant-cmd`, retry ladders, or chaining fallbacks to dodge "
-        "failures) are review-blocking findings, not nits. Diagnose the root cause "
-        "and maintain ONE canonical command path.\n"
         "If the instruction asks for a write action, do the "
         "read-only investigation first, then propose the exact "
         "change and STOP — do not execute it. Allowed proposal "
@@ -647,16 +657,7 @@ def _ask_prompt(repo, instruction):
         "PROPOSE td\n"
         "COMMAND: <exact td command>\n"
         "END PROPOSE\n"
-        "Allowed td commands (exact shapes):\n"
-        "td --json agent fix-ci --pr N --execute\n"
-        "td gh read-pr-reviews --pr N\n"
-        "td gh read-pr-comments --pr N\n"
-        "td gh resolve-conflicts --pr N\n"
-        "td context-warm\n"
-        "td --json preflight\n"
-        "td --json agent list-sessions\n"
-        "td --json jules list-sessions\n"
-        "td --json agent run-feedback-check\n"
+        f"Allowed td commands (exact shapes):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
         "If no write is needed, just answer the instruction — no "
         "PROPOSE block.\n"
         "Instruction:\n" + instruction)
@@ -1063,16 +1064,6 @@ ACTIONS = {
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
         ],
     },
-    "recreate-code": {
-        "label": "Recreate VS Code",
-        "group": "Server",
-        "sub": "Restart code-server with current config and .env",
-        "confirm": True,
-        "risk": "danger",
-        "steps": [
-            COMPOSE + ["up", "-d", "--force-recreate", "code-server"],
-        ],
-    },
     "logs": {
         "label": "Logs",
         "group": "Server",
@@ -1285,9 +1276,6 @@ active_id = None
 # Dispatches push notifications via ntfy (HTTP push) and/or generic Webhooks.
 # Tracks state transitions across polls to notify on CI failures, completed/failed
 # Jules sessions, and new merge conflicts, plus scheduled briefing digests.
-import urllib.request
-import urllib.parse
-
 NOTIFIER_STATE_PATH = os.environ.get("BUTTONS_NOTIFIER_STATE_PATH",
                                      "/var/lib/buttons/notifier_state.json")
 notifier_lock = threading.Lock()
@@ -1644,11 +1632,11 @@ JOB_TEMPLATES = {
         ],
     },
     # Sequential issue fixing: one approval per issue. Approving
-    # dispatches the autonomous repair worker on the issue.
-    # The repair worker operates in an isolated worktree, verifies code,
-    # and opens a PR without auto-merging.
+    # labels the issue 'jules', which starts a Jules session on it
+    # (Jules's GitHub integration). The Project tab's Jules list
+    # shows each session's progress before the next approval.
     "fix-issues": {
-        "goal": "Fix issues via repair worker, sequential: {issues} ({repo})",
+        "goal": "Fix issues via Jules, sequential: {issues} ({repo})",
         "needs_issues": True,
         "steps": [],
     },
@@ -1772,8 +1760,6 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
     try:
         if kind == "pr-action":
             _pr_action(job["pr"], step_obj["action"], job["repo"], repos)
-        elif kind == "repair-issue":
-            _trigger_repair(step_obj["issue"])
         elif kind == "label-issue":
             _label_issue_jules(job["repo"], step_obj["issue"], repos)
         else:
@@ -1794,8 +1780,6 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
 
     if event_prefix:
         event = f"{event_prefix}" + ("done" if ok else "failed")
-    elif kind == "repair-issue":
-        event = f"dispatched repair worker on #{step_obj.get('issue')}" if ok else "repair dispatch failed"
     elif kind == "label-issue":
         event = f"dispatched Jules on #{step_obj.get('issue')}" if ok else "dispatch failed"
     else:
@@ -1804,6 +1788,8 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
     _ledger_append({"kind": "job", "job": job["id"], "step": step_idx,
                     "event": event, "ok": ok})
     return ok, err
+
+
 def _job_advance(job):
     """Run the next pending read-only step, if any. Write steps wait
     for an explicit Approve tap. jobs_lock NOT held on entry."""
@@ -1825,24 +1811,7 @@ def _job_advance(job):
             kind, action = st["kind"], st["action"]
         if kind == "pr-action":
             # Synchronous: runs inline, then advance to the next step.
-            try:
-                _pr_action(job["pr"], action, job["repo"],
-                           _discover_repos())
-                ok, err = True, None
-            except ValueError as exc:
-                ok, err = False, str(exc)
-            except Exception as exc:
-                ok, err = False, str(exc)[:500]
-            with jobs_lock:
-                st["state"] = "done" if ok else "failed"
-                st["finished_at"] = time.time()
-                st["exit_code"] = 0 if ok else 1
-                st["note"] = None if ok else err
-                _job_after_step(job)
-                _jobs_save()
-            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
-                            "event": "step auto-" + ("done" if ok else "failed"),
-                            "ok": ok})
+            _execute_job_step(job, idx, st, event_prefix="step auto-")
         else:
             # Async action: start the run; the client polls it and
             # reports step-done, which advances the plan again.
@@ -1890,8 +1859,8 @@ def _job_create(template, repo, pr=None, issues=None):
     if spec.get("needs_issues"):
         for n in issues:
             plan.append({
-                "label": f"Dispatch repair worker on #{n}",
-                "kind": "repair-issue", "issue": n,
+                "label": f"Dispatch Jules on #{n} (label 'jules')",
+                "kind": "label-issue", "issue": n,
                 "write": True, "state": "pending",
                 "approved_at": None, "auto": False, "run_id": None,
                 "finished_at": None, "exit_code": None, "note": None,
@@ -2391,20 +2360,11 @@ a { color: #8bf; }
 .review-prompt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5em; margin: 0.6em 0; }
 .review-prompt-btn { text-align: left; padding: 0.6em 0.8em; font-size: 0.85em; border-radius: 6px; }
 .review-prompt-btn small { display: block; color: var(--text-muted); font-size: 0.78em; margin-top: 0.2em; }
-.launcher-bar { display: flex; gap: 0.6em; margin: 0.6em 0; flex-wrap: wrap; }
-.launcher-tile { display: inline-flex; align-items: center; gap: 0.4em; background: var(--bg-card);
-  border: 1px solid var(--border); border-radius: 8px; padding: 0.5em 0.9em;
-  color: var(--text-main); text-decoration: none; font-size: 0.95em; font-weight: 500; transition: border-color 0.15s ease, background 0.15s ease; }
-.launcher-tile:hover { border-color: var(--primary); background: var(--bg-card-hover); color: #fff; }
 </style>
 </head>
 <body>
 <h1>S5 Control Panel</h1>
-<div class="launcher-bar">
-  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
-  <a class="launcher-tile" id="codeLauncher" href="#" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
-</div>
-<p>Fixed actions only, no free-text commands.
+<p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
@@ -2669,11 +2629,6 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
-const codeLauncher = document.getElementById("codeLauncher");
-if (codeLauncher) {
-  const codePort = "<!--CODE_PORT-->";
-  codeLauncher.href = window.location.protocol + "//" + window.location.hostname + ":" + codePort + "/";
-}
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
@@ -2796,6 +2751,8 @@ function friendlyError(msg) {
     return "td command failed in terminal container — check the terminal container logs or tap Refresh.";
   if (/JULES_API_KEY/.test(msg))
     return "JULES_API_KEY is not set — add it to .env to enable Jules features.";
+  if (/No such command ['"]?(?:jules|agent)['"]?/i.test(msg))
+    return "this td version can't list Jules sessions — rebuild the terminal for a newer td.";
   if (/Traceback \(most recent call last\)/i.test(msg) || /\[Errno \d+\]/.test(msg))
     return "server error encountered — check terminal container or tap Refresh.";
   return msg;
@@ -3338,36 +3295,7 @@ function renderBriefing(b) {
   att.appendChild(attHead);
   if (b.attention && b.attention.length) {
     const ul = document.createElement("ul");
-    b.attention.forEach(a => {
-      const li = document.createElement("li");
-      const span = document.createElement("span");
-      span.textContent = a;
-      li.appendChild(span);
-      const m = a.match(/(?:^|\s)#(\d+)/);
-      if (m) {
-        const btn = document.createElement("button");
-        btn.textContent = "Repair";
-        btn.className = "btn-ghost";
-        btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
-        btn.onclick = async () => {
-          btn.disabled = true;
-          try {
-            await fetchJson("/buttons/api/repair/dispatch", {
-              method: "POST",
-              headers: {"Content-Type": "application/json"},
-              body: JSON.stringify({issue: parseInt(m[1], 10)})
-            });
-            const details = document.getElementById("repairDetails");
-            if (details) details.open = true;
-            if (typeof refreshStatus === "function") refreshStatus();
-          } finally {
-            btn.disabled = false;
-          }
-        };
-        li.appendChild(btn);
-      }
-      ul.appendChild(li);
-    });
+    b.attention.forEach(a => { const li = document.createElement("li"); li.textContent = a; ul.appendChild(li); });
     att.appendChild(ul);
   } else {
     const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
@@ -3535,32 +3463,7 @@ function renderAttention(b) {
   const ul = document.createElement("ul");
   items.slice(0, 8).forEach(t => {
     const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = t;
-    li.appendChild(span);
-    const m = t.match(/(?:^|\s)#(\d+)/);
-    if (m) {
-      const btn = document.createElement("button");
-      btn.textContent = "Repair";
-      btn.className = "btn-ghost";
-      btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        try {
-          await fetchJson("/buttons/api/repair/dispatch", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({issue: parseInt(m[1], 10)})
-          });
-          const details = document.getElementById("repairDetails");
-          if (details) details.open = true;
-          if (typeof refreshStatus === "function") refreshStatus();
-        } finally {
-          btn.disabled = false;
-        }
-      };
-      li.appendChild(btn);
-    }
+    li.textContent = t;
     ul.appendChild(li);
   });
   el.appendChild(ul);
@@ -3576,9 +3479,9 @@ const JOB_TEMPLATES = {
     desc: "Briefing → warm context → preflight. Runs on its own."},
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
-  "fix-issues": {label: "Fix issues via repair worker",
-    desc: "Pick issues; each gets one Approve tap, which dispatches " +
-      "the autonomous repair worker. Sequential.",
+  "fix-issues": {label: "Fix issues via Jules",
+    desc: "Pick issues; each gets one Approve tap, which labels it " +
+      "'jules' and starts a Jules session. Sequential.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -3880,6 +3783,16 @@ async function pollPiProgress(id, pre, errEl, onDone, label, repo) {
       outEl.className = "";
       stateEl.textContent = "done ✓ — pi " + (label || "agent");
       if (typeof refreshLedger === "function") refreshLedger();
+      if (typeof fetchJson === "function") {
+        fetchJson("/buttons/api/pi-sessions").then(res => {
+          if (res && res.ok && res.data && res.data.sessions) {
+            loadedPiSessions = res.data.sessions;
+            if (typeof renderSessionList === "function" && piSessionListEl && piSessionListEl.style.display !== "none") {
+              renderSessionList();
+            }
+          }
+        }).catch(() => {});
+      }
       if (typeof onDone === "function") onDone(d.result || {});
       return;
     }
@@ -4307,6 +4220,15 @@ function renderSessionList() {
     badge.className = "pirow-badge";
     badge.textContent = repoName;
     meta.appendChild(badge);
+
+    if (s.source === "background" || (s.file && s.file.startsWith("bg-"))) {
+      const bgBadge = document.createElement("span");
+      bgBadge.className = "pirow-badge";
+      bgBadge.style.background = "#3b4252";
+      bgBadge.style.color = "#88c0d0";
+      bgBadge.textContent = s.kind ? "bg:" + s.kind : "background";
+      meta.appendChild(bgBadge);
+    }
 
     if (s.mtime) {
       const timeSpan = document.createElement("span");
@@ -5311,21 +5233,9 @@ def _td_run(cmd, timeout=120, prefix=None):
 
 
 def _ci_label(rollup):
-    """CI label from a gh statusCheckRollup list. Mirrors
-    briefing_summary.ci_summary (kept local: server.py cannot
-    import the summarizer script)."""
-    if rollup is None:
-        return "unknown"
-    if not rollup:
-        return "no checks"
-    failing = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
-    for check in rollup:
-        if isinstance(check, dict) and check.get("conclusion") in failing:
-            return "failing"
-    for check in rollup:
-        if isinstance(check, dict) and check.get("status") != "COMPLETED":
-            return "pending"
-    return "passing"
+    """CI label from a gh statusCheckRollup list, backed by briefing_summary.ci_summary."""
+    label, _ = ci_summary(rollup)
+    return label
 
 
 def _pr_view(pr_number, repo, repos):
@@ -5412,6 +5322,151 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _get_request_repo(self, qs_or_data=None, repos=None):
+        """Resolves (repo_name, repos_dict) from query string dict, parsed body dict,
+        or None (falling back to parsing self.path query string)."""
+        if repos is None:
+            repos = _discover_repos()
+        if qs_or_data is None:
+            qs_or_data = parse_qs(urlparse(self.path).query)
+        if isinstance(qs_or_data, dict):
+            val = qs_or_data.get("repo")
+            if isinstance(val, list) and val:
+                repo = val[0]
+            elif isinstance(val, str) and val:
+                repo = val
+            else:
+                repo = _default_repo(repos)
+        else:
+            repo = _default_repo(repos)
+        return repo, repos
+
+    def _send_sse_event(self, event, data):
+        try:
+            payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+            self.wfile.write(payload)
+            self.wfile.flush()
+            return True
+        except Exception:
+            return False
+
+    def _handle_chat_stream(self, prompt, repo, session_id):
+        repos = _discover_repos()
+        if repo not in repos:
+            self._json({"error": "unknown repo"}, 400)
+            return
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            self._json({"error": "empty prompt"}, 400)
+            return
+
+        prompt = prompt.strip()[:CHAT_MAX_PROMPT]
+        info = repos[repo]
+
+        # Prepare SSE response headers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        with chat_sessions_lock:
+            chat_sessions[session_id] = {
+                "id": session_id,
+                "repo": repo,
+                "prompt": prompt,
+                "started_at": time.time(),
+                "aborted": False,
+                "proc": None,
+            }
+
+        _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "prompt": prompt[:150], "event": "chat started"})
+
+        start_time = time.time()
+        # Phase 1: Prefill phase
+        if not self._send_sse_event("phase", {"phase": "prefill", "message": "Analyzing context and preparing request..."}):
+            return
+
+        # Pre-filter context / prompt
+        budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
+        b64 = base64.b64encode(budgeted_prompt.encode()).decode()
+
+        # Build command: pi in print mode with read-only tools
+        cmd = (_td_prefix(info["td_cwd"]) +
+               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
+               ' | base64 -d)"')
+
+        # Check for tool calling heuristics in the request
+        tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
+        has_tool_hint = any(k in prompt.lower() for k in tool_keywords)
+
+        if has_tool_hint:
+            time.sleep(0.05)
+            self._send_sse_event("phase", {"phase": "tool_call", "message": "Inspecting repository context with tools..."})
+
+        # Spawn subprocess
+        try:
+            proc = subprocess.Popen(
+                EXEC + [cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            with chat_sessions_lock:
+                if session_id in chat_sessions:
+                    chat_sessions[session_id]["proc"] = proc
+                    if chat_sessions[session_id]["aborted"]:
+                        proc.terminate()
+        except Exception as exc:
+            self._send_sse_event("phase", {"phase": "error", "error": str(exc)})
+            self._send_sse_event("error", {"error": str(exc)})
+            with chat_sessions_lock:
+                chat_sessions.pop(session_id, None)
+            return
+
+        # Phase: generating
+        self._send_sse_event("phase", {"phase": "generating", "message": "Streaming response from model..."})
+
+        full_response = []
+        is_aborted = False
+
+        try:
+            if proc.stdout:
+                # Read chunks / lines
+                for chunk in iter(lambda: proc.stdout.read(16), ""):
+                    with chat_sessions_lock:
+                        sess = chat_sessions.get(session_id)
+                        if sess and sess.get("aborted"):
+                            is_aborted = True
+                            break
+                    full_response.append(chunk)
+                    if not self._send_sse_event("token", {"token": chunk}):
+                        # Client disconnected
+                        break
+
+            proc.wait()
+            code = proc.returncode
+        except Exception as exc:
+            code = 1
+            self._send_sse_event("error", {"error": str(exc)})
+
+        with chat_sessions_lock:
+            sess = chat_sessions.pop(session_id, None)
+            if sess and sess.get("aborted"):
+                is_aborted = True
+
+        elapsed = round(time.time() - start_time, 2)
+        if is_aborted:
+            self._send_sse_event("phase", {"phase": "aborted", "message": "Generation aborted by user.", "elapsed": elapsed})
+            self._send_sse_event("done", {"text": "".join(full_response), "aborted": True, "elapsed": elapsed})
+            _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "event": "chat aborted", "elapsed": elapsed})
+        else:
+            self._send_sse_event("phase", {"phase": "done", "message": "Complete ✓", "elapsed": elapsed})
+            self._send_sse_event("done", {"text": "".join(full_response), "aborted": False, "elapsed": elapsed})
+            _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "event": "chat finished", "exit": code, "elapsed": elapsed})
+
     def _handle_webhook(self, body):
         secret = _webhook_secret()
         if not secret:
@@ -5497,14 +5552,11 @@ class Handler(BaseHTTPRequestHandler):
             # from discovery, so a repo added to ~/repos shows up
             # without a container rebuild.
             repos = _discover_repos()
-            code_port = os.environ.get("CODE_PORT", "8444")
             body = HTML.replace(
                 "<!--REPO_STRIPS-->",
                 _repo_strips_html(repos)).replace(
                 "<!--REPO_OPTIONS-->",
-                _repo_options_html(repos)).replace(
-                "<!--CODE_PORT-->",
-                code_port).encode()
+                _repo_options_html(repos)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -5543,6 +5595,14 @@ class Handler(BaseHTTPRequestHandler):
                             "topic": ntfy_topic,
                             "last_digest": state.get("last_digest", 0)
                         }})
+        elif path == "/buttons/api/chat/stream":
+            # Interactive chat streaming endpoint via SSE (GET / query params)
+            qs = parse_qs(urlparse(self.path).query)
+            repo, repos = self._get_request_repo(qs)
+            prompt = qs.get("prompt", [""])[0]
+            session_id = qs.get("session_id", [""])[0] or uuid.uuid4().hex[:12]
+            self._handle_chat_stream(prompt, repo, session_id)
+            return
         elif path == "/buttons/api/repair/status":
             with repair_state_lock:
                 rep = dict(repair_state)
@@ -5573,9 +5633,7 @@ class Handler(BaseHTTPRequestHandler):
             # passed through. Slow (td + gh calls), so the page
             # shows a spinner while it loads. ?repo= picks the
             # repo (discovered set; default tech-dancer).
-            repos = _discover_repos()
-            repo = parse_qs(urlparse(self.path).query).get(
-                "repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5627,32 +5685,115 @@ class Handler(BaseHTTPRequestHandler):
             limit = max(1, min(200, limit))
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
-            # List Pi session files (newest first) as JSON. No TD
-            # prefix: pi_logs reads /root/.pi directly, it needs
-            # no repo cwd and no .env.
+            # List Pi session files (newest first) as JSON, unified with
+            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
+            sessions = []
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
                             "pi_logs.py --list-json"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=60, text=True)
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        (proc.stderr or "").strip().splitlines()[-1]
-                        if proc.stderr.strip() else "pi sessions failed")
-                self._json(json.loads(proc.stdout))
-            except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
+                if proc.returncode == 0:
+                    data = json.loads(proc.stdout)
+                    sessions = data.get("sessions", [])
+            except Exception:
+                pass
+
+            # Merge background runs from in-memory pi_runs
+            with pi_runs_lock:
+                for rid, r in pi_runs.items():
+                    mtime = r.get("finished_at") or r.get("started_at") or 0
+                    title = (r.get("instruction") or ("Suggest next actions" if r.get("kind") == "suggest" else "")).strip()
+                    if not title:
+                        title = f"Background Pi run ({r.get('kind', 'run')})"
+                    if len(title) > 80:
+                        title = title[:77] + "…"
+                    sessions.append({
+                        "file": f"bg-{rid}.jsonl",
+                        "id": f"bg-{rid}",
+                        "mtime": mtime,
+                        "cwd": f"/srv/repos/{r.get('repo', '')}",
+                        "repo": r.get("repo", ""),
+                        "title": title,
+                        "kind": r.get("kind", "ask"),
+                        "source": "background",
+                        "done": r.get("done", False)
+                    })
+
+            sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
+            self._json({"sessions": sessions})
         elif path == "/buttons/api/pi-session":
             # Render one Pi session by filename query. Returns structured
             # turns (and raw formatted output for fallback/toggle).
-            # The query is interpolated into a bash -c string, so it must
-            # match a strict allowlist — anything else is rejected.
+            # If the session is a background run (bg-<rid>.jsonl or bg-<rid>),
+            # serve directly from the background run state and progress log.
             qs = parse_qs(urlparse(self.path).query)
             query = qs.get("session", [""])[0]
             if not re.fullmatch(r"[A-Za-z0-9._-]+", query):
                 self._json({"error": "bad session query"}, 400)
                 return
+
+            if query.startswith("bg-"):
+                clean_id = query[3:]
+                if clean_id.endswith(".jsonl"):
+                    clean_id = clean_id[:-6]
+                with pi_runs_lock:
+                    r = pi_runs.get(clean_id)
+                if r is None:
+                    self._json({"error": f"No background run matching '{query}'"}, 404)
+                    return
+
+                # Read raw output from the progress file
+                raw_output = ""
+                try:
+                    with open(_pi_progress_path(clean_id), "r", encoding="utf-8", errors="replace") as pf:
+                        raw_output = pf.read()
+                except Exception:
+                    pass
+
+                user_prompt = r.get("instruction") or ("Suggest next actions" if r.get("kind") == "suggest" else "")
+                res = r.get("result") or {}
+                reply = res.get("reply") or ""
+                if not reply and res.get("suggestions") is not None:
+                    suggs = res.get("suggestions", [])
+                    if suggs:
+                        reply = "\n".join(f"- {s.get('command')}: {s.get('reason')}" for s in suggs)
+                    else:
+                        reply = res.get("raw") or "No suggestions."
+                if not reply and r.get("error"):
+                    reply = f"Run failed: {r.get('error')}"
+                if not reply and not r.get("done"):
+                    reply = "Run in progress…"
+
+                turns = []
+                if user_prompt:
+                    turns.append({
+                        "role": "user",
+                        "text": user_prompt,
+                        "timestamp": r.get("started_at")
+                    })
+                if reply or raw_output:
+                    turns.append({
+                        "role": "assistant",
+                        "text": reply or raw_output,
+                        "timestamp": r.get("finished_at") or r.get("started_at")
+                    })
+
+                self._json({
+                    "file": f"bg-{clean_id}.jsonl",
+                    "id": f"bg-{clean_id}",
+                    "cwd": f"/srv/repos/{r.get('repo', '')}",
+                    "repo": r.get("repo", ""),
+                    "started": r.get("started_at"),
+                    "source": "background",
+                    "turns": turns,
+                    "raw_output": raw_output or reply,
+                    "output": raw_output or reply
+                })
+                return
+
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -5697,13 +5838,60 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": job} if job is not None
                            else {"error": "unknown job"},
                            200 if job is not None else 404)
+        elif path == "/buttons/api/prs":
+            # Open PRs for the picked repo: number, title, isDraft,
+            # mergeable, reviewDecision, headRefName, statusCheckRollup,
+            # url, author. Read-only; gh pr list with --json fields.
+            repo, repos = self._get_request_repo()
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            gh = repos[repo]["gh"]
+            try:
+                out = _td_run(
+                    "gh pr list --repo " + shlex.quote(gh) +
+                    " --state open --limit 50 --json "
+                    "number,title,isDraft,mergeable,reviewDecision,"
+                    "headRefName,statusCheckRollup,url,author",
+                    timeout=60,
+                    prefix=_td_prefix(repos[repo]["td_cwd"]))
+                raw_prs = json.loads(out) if out.strip() else []
+                prs = []
+                for pr in raw_prs:
+                    if not isinstance(pr, dict):
+                        continue
+                    num = pr.get("number")
+                    title = pr.get("title", "")
+                    draft = bool(pr.get("isDraft"))
+                    branch = pr.get("headRefName", "")
+                    mergeable = str(pr.get("mergeable") or "UNKNOWN").upper()
+                    url = pr.get("url", "")
+                    author_val = pr.get("author")
+                    author = author_val.get("login") if isinstance(author_val, dict) else (author_val or "")
+                    rollup = pr.get("statusCheckRollup")
+                    ci_status = _format_ci_status(rollup)
+                    rev_decision = _format_review_decision(pr.get("reviewDecision"))
+                    prs.append({
+                        "number": num,
+                        "title": title,
+                        "author": author,
+                        "branch": branch,
+                        "isDraft": draft,
+                        "ciStatus": ci_status,
+                        "ciLabel": _ci_label(rollup),
+                        "reviewDecision": rev_decision,
+                        "mergeable": mergeable,
+                        "url": url,
+                    })
+                self._json({"repo": repo, "prs": prs})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
         elif path == "/buttons/api/issues":
             # Open issues for the picked repo: number, title,
             # assignees, labels, updated, url, body (truncated).
             # Read-only; gh list with a fixed --json field set.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5833,7 +6021,7 @@ class Handler(BaseHTTPRequestHandler):
                     event = fr.get("event", "?")
                     html_url = fr.get("html_url") or fr.get("url")
 
-                    failed_wf_jobs = []
+                    jobs = []
                     annotations = []
                     diagnosed_cause = "Workflow failed."
                     if run_id:
@@ -5843,7 +6031,7 @@ class Handler(BaseHTTPRequestHandler):
                             for j in jobs_json:
                                 if j.get("conclusion") == "failure":
                                     failed_steps = [s.get("name", "?") for s in (j.get("steps") or []) if s.get("conclusion") == "failure"]
-                                    failed_wf_jobs.append({
+                                    jobs.append({
                                         "name": j.get("name", "?"),
                                         "conclusion": "failure",
                                         "failed_steps": failed_steps
@@ -5870,8 +6058,8 @@ class Handler(BaseHTTPRequestHandler):
                     if annotations:
                         first_ann = annotations[0]
                         diagnosed_cause = f"[{first_ann.get('path', 'unknown')}:{first_ann.get('start_line', '?')}] {first_ann.get('message', '')}"
-                    elif failed_wf_jobs:
-                        first_job = failed_wf_jobs[0]
+                    elif jobs:
+                        first_job = jobs[0]
                         steps_str = (": " + ", ".join(first_job["failed_steps"])) if first_job["failed_steps"] else ""
                         diagnosed_cause = f"Job '{first_job['name']}' failed{steps_str}."
 
@@ -5884,7 +6072,7 @@ class Handler(BaseHTTPRequestHandler):
                         "url": html_url,
                         "diagnosed_cause": diagnosed_cause,
                         "annotations": annotations,
-                        "jobs": failed_wf_jobs
+                        "jobs": jobs
                     })
 
                 self._json({
@@ -5930,9 +6118,8 @@ class Handler(BaseHTTPRequestHandler):
                         prompts = [
                             {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, secret leaks, input validation, and auth boundary issues in files: " + ", ".join(f['path'] for f in files)},
                             {"id": "architecture", "label": "Architecture Review", "prompt": f"Review architectural fit, coupling, error propagation, and state boundaries in PR #{pr_number}."},
-                            {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                             {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Identify missing unit tests, edge conditions, or regression scenarios for changes in PR #{pr_number}."},
-                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
+                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}."}
                         ]
                         self._json({
                             "repo": repo,
@@ -5982,9 +6169,8 @@ class Handler(BaseHTTPRequestHandler):
                 prompts = [
                     {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, injection risks, and auth flaws across changed files: " + ", ".join(f['path'] for f in files[:10])},
                     {"id": "architecture", "label": "Architecture Review", "prompt": f"Review design decisions, coupling, and modularity in PR #{pr_number} ({view.get('title')})."},
-                    {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                     {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Determine untested paths and recommend automated tests for PR #{pr_number}."},
-                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
+                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}."}
                 ]
                 self._json({
                     "repo": repo,
@@ -6014,9 +6200,7 @@ class Handler(BaseHTTPRequestHandler):
             # state, updated, url, source repo, linked PR. Read-only.
             # Graceful when JULES_API_KEY is unset — the notice
             # pattern from the sync-nudge button.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -6025,6 +6209,7 @@ class Handler(BaseHTTPRequestHandler):
                    "echo '{\"sessions\": [], "
                    "\"notice\": \"JULES_API_KEY is unset — add it to "
                    ".env to see Jules sessions\"}'; else "
+                   "td --json agent list-sessions || "
                    "td --json jules list-sessions; fi")
             try:
                 out = _td_run(cmd, timeout=120,
@@ -6051,7 +6236,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"repo": repo, "sessions": sessions,
                             "notice": data.get("notice", "")})
             except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
+                err_msg = str(exc)
+                if "No such command" in err_msg:
+                    self._json({
+                        "repo": repo,
+                        "sessions": [],
+                        "notice": "this td version can't list Jules sessions — rebuild the terminal for a newer td"
+                    })
+                else:
+                    self._json({"error": err_msg[:500]}, 500)
             return
         else:
             self._json({"error": "not found"}, 404)
@@ -6085,14 +6278,39 @@ class Handler(BaseHTTPRequestHandler):
 
             self._json({"ok": True, "title": title, "body": md_body})
             return
+        if path == "/buttons/api/chat/stream":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repo, repos = self._get_request_repo(data)
+            prompt = data.get("prompt", "")
+            session_id = data.get("session_id") or uuid.uuid4().hex[:12]
+            self._handle_chat_stream(prompt, repo, session_id)
+            return
+        if path == "/buttons/api/chat/abort":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            session_id = data.get("session_id")
+            if not session_id or not isinstance(session_id, str):
+                self._json({"error": "invalid session_id"}, 400)
+                return
+            ok, err = _chat_abort_session(session_id)
+            if not ok:
+                self._json({"error": err or "abort failed"}, 404)
+                return
+            _ledger_append({"kind": "chat", "session_id": session_id, "event": "chat aborted via api"})
+            self._json({"ok": True, "session_id": session_id})
+            return
         if path == "/buttons/api/jules/dispatch":
             # General agent handoff: dispatch Jules session for branch tasks or reviews
             try:
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -6106,7 +6324,6 @@ class Handler(BaseHTTPRequestHandler):
             cmd = f"td --json agent dispatch --prompt {shlex.quote(prompt)}"
             if branch:
                 cmd += f" --branch {shlex.quote(branch)}"
-
             try:
                 # Try running td agent dispatch, fallback to simulated session initiation if td version lacks command
                 out = ""
@@ -6199,10 +6416,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/buttons/api/pi-sessions/clear":
             # Bulk-delete Pi session transcripts in the terminal
-            # container. File discovery lives in pi_logs.py (the
-            # same _list_files as the browser), never in the page,
-            # and --clear takes no argument, so nothing from the
-            # request reaches a shell string.
+            # container and in-memory background runs.
+            with pi_runs_lock:
+                for k in list(pi_runs.keys()):
+                    try:
+                        os.remove(_pi_progress_path(k))
+                    except Exception:
+                        pass
+                    del pi_runs[k]
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -6232,6 +6453,27 @@ class Handler(BaseHTTPRequestHandler):
                                 session):
                 self._json({"error": "bad session name"}, 400)
                 return
+
+            if session.startswith("bg-"):
+                clean_id = session[3:]
+                if clean_id.endswith(".jsonl"):
+                    clean_id = clean_id[:-6]
+                with pi_runs_lock:
+                    if clean_id in pi_runs:
+                        del pi_runs[clean_id]
+                        try:
+                            os.remove(_pi_progress_path(clean_id))
+                        except Exception:
+                            pass
+                        _ledger_append({"kind": "system", "action": "pi-session-delete",
+                                        "session": session[:120],
+                                        "output": f"Deleted background run {clean_id}."})
+                        self._json({"ok": True, "output": f"Deleted background run {clean_id}."})
+                        return
+                    else:
+                        self._json({"error": f"No background run matching '{session}'"}, 404)
+                        return
+
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -6259,8 +6501,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
             pr_number, action = data.get("pr_number"), data.get("action")
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
                     or pr_number <= 0 \
                     or action not in ("merge", "update", "fix-ci") \
@@ -6297,8 +6538,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             rid, err = _pi_start("suggest", repo)
             if err:
                 self._json({"error": err}, 400)
@@ -6319,8 +6559,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             rid, err = _pi_start("ask", repo, data.get("instruction"))
             if err:
                 self._json({"error": err}, 400)
@@ -6339,8 +6578,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             title, body_text = data.get("title"), data.get("body", "")
             if repo not in repos or not isinstance(title, str) \
                     or not title.strip() or len(title) > 200 \
@@ -6375,8 +6613,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             issue = str(data.get("issue", ""))
             assignee = str(data.get("assignee", "")).strip()
             if repo not in repos or not issue.isdigit() \
@@ -6413,8 +6650,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             plan = data.get("plan")
             if repo not in repos or plan not in (
                     "issue-audit", "workflow-audit", "review",
@@ -6476,8 +6712,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             tokens = _validate_td_command(data.get("command", ""))
             if repo not in repos or not tokens:
                 self._json({"error": "bad repo or command"}, 400)
@@ -6495,8 +6730,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             pr = data.get("pr")
             issues = data.get("issues")
             job, err = _job_create(data.get("template"), repo, pr,
@@ -6542,56 +6776,9 @@ class Handler(BaseHTTPRequestHandler):
                         {"step": step, "decision": "approved",
                          "at": st["approved_at"]})
                     kind = st["kind"]
-                if kind == "pr-action":
-                    # Synchronous: gates re-checked inside _pr_action.
-                    try:
-                        _pr_action(job["pr"], st["action"], job["repo"],
-                                   _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step, "event": "step done"
-                                    if ok else "step failed",
-                                    "ok": ok})
-                    self._json({"ok": ok, "state": st["state"],
-                                "error": err})
-                    return
-                if kind == "label-issue":
-                    # Synchronous: label the issue 'jules' to start
-                    # a Jules session on it (Jules GitHub
-                    # integration). Gates re-checked in
-                    # _label_issue_jules.
-                    try:
-                        _label_issue_jules(job["repo"], st["issue"],
-                                           _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step,
-                                    "event": "dispatched Jules on #"
-                                    + str(st["issue"]) if ok
-                                    else "dispatch failed",
-                                    "ok": ok})
+                if kind in ("pr-action", "label-issue"):
+                    # Synchronous: executed via helper
+                    ok, err = _execute_job_step(job, step, st)
                     self._json({"ok": ok, "state": st["state"],
                                 "error": err})
                     return
@@ -6673,8 +6860,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             data = {}
         action = data.get("action")
-        repos = _discover_repos()
-        repo = data.get("repo", _default_repo(repos))
+        repo, repos = self._get_request_repo(data)
         if action not in ACTIONS:
             self._json({"error": "unknown action"}, 400)
             return

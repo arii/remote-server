@@ -27,23 +27,7 @@ phone browser ──https://TERMINAL_DOMAIN:TERMINAL_PORT──▶ oauth2-proxy
                                                           (session persists; closing the
                                                            tab "detaches", reopening
                                                            re-attaches)
-
-phone browser ──https://TERMINAL_DOMAIN:CODE_PORT──────▶ oauth2-proxy-code
-   (browser VS Code)                                      │ TLS w/ same LE cert
-                                                          │ GitHub OAuth, 1-user allowlist
-                                                          ▼
-                                                   code-server:8080 (compose net)
-                                                   --auth none
-                                                     └─ Continue extension (Ollama qwen3:8b)
 ```
-
-### code-server behind GitHub OAuth gate
-`code-server` does not support subpaths cleanly, so rather than running behind Caddy subpaths, a second `oauth2-proxy` instance (`oauth2-proxy-code`) listens on a dedicated public port `CODE_PORT` (e.g. 8444).
-- Reuses the existing Let's Encrypt certificate and GitHub OAuth single-user allowlist.
-- Runs `code-server` with `--auth none` inside the private compose network, treating oauth2-proxy as the sole security boundary.
-- Persists user extensions and settings across container recreates via named volumes `code-server-data` and `code-server-config`.
-- Preconfigures the Continue extension in `config/continue/config.yaml` pointing to local Ollama at `http://ollama:11434` with `qwen3:8b` for offline, zero-external-call in-IDE assistance.
-- Buttons dashboard provides launcher tiles to quickly switch between the terminal and VS Code.
 
 Why this shape: Ari already owns the hard parts (DDNS hostname, valid certs,
 a forwarded port). oauth2-proxy terminates TLS *itself*

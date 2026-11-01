@@ -128,9 +128,9 @@ def _session_meta(path):
 def _iter_session_entries(path):
     """Yield parsed JSON entries from a session JSONL file.
 
-    Yields (total_line_count, obj) for each parsed JSON line.
-    Skips empty/blank lines and unparseable JSON lines, while counting
-    all non-empty lines in total_line_count.
+    Yields (total_line_count, obj) for each non-empty line in the file.
+    If a line cannot be parsed as JSON, obj is None while total_line_count
+    is still incremented and yielded.
     """
     total = 0
     with open(path, encoding="utf-8", errors="replace") as f:
@@ -142,7 +142,7 @@ def _iter_session_entries(path):
             try:
                 obj = json.loads(line)
             except Exception:
-                continue
+                obj = None
             yield total, obj
 
 
@@ -158,6 +158,8 @@ def _render_file(path, header=None):
     total = 0
     try:
         for total, obj in _iter_session_entries(path):
+            if obj is None:
+                continue
             if isinstance(obj, dict) and obj.get("type") == "session":
                 print(f"Session {obj.get('id', '?')} — "
                       f"cwd {obj.get('cwd', '?')} — "
@@ -265,6 +267,8 @@ def _parse_session_file(path):
     total = 0
     try:
         for total, obj in _iter_session_entries(path):
+            if obj is None:
+                continue
             if isinstance(obj, dict) and obj.get("type") == "session":
                 session_id = obj.get("id") or session_id
                 cwd = obj.get("cwd") or cwd

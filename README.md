@@ -20,15 +20,6 @@ phone browser ── https://TERMINAL_DOMAIN:TERMINAL_PORT ──▶ oauth2-prox
                                                               └─ zellij attach --create main
                                                                  (close tab = detach;
                                                                   reopen = re-attach)
-
-phone browser ── https://TERMINAL_DOMAIN:CODE_PORT ──────▶ oauth2-proxy-code
-   (browser VS Code)                (reusing same DDNS + LE cert,  │
-                                     router port-forward)          │ TLS terminates here
-                                                                   │ GitHub OAuth, single-user
-                                                                   ▼
-                                                            code-server:8080 (compose net)
-                                                            --auth none (OAuth is boundary)
-                                                              └─ Continue extension (Ollama qwen3:8b)
 ```
 
 Tailscale (VPN, outbound-only) gives admin access to everything else
