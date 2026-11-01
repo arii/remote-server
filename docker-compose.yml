@@ -226,6 +226,59 @@ services:
       - buttons
     restart: unless-stopped
 
+  # Browser-based VS Code: code-server.
+  # --auth none: the GitHub OAuth gate is the boundary, same as ttyd.
+  # Mounts repos checkouts, stack checkout, and persistent config/extensions volumes.
+  code-server:
+    image: codercom/code-server:latest
+    command:
+      - --auth
+      - none
+      - --bind-addr
+      - 0.0.0.0:8080
+      - /srv/repos
+    volumes:
+      - ${HOST_HOME:-/home/ari}/repos:/srv/repos
+      - .:/srv/remote-server
+      # Persistent settings and extensions across container recreates:
+      - code-server-data:/home/coder/.local/share/code-server
+      - code-server-config:/home/coder/.config/code-server
+      # Continue extension configuration pre-pointed to local Ollama (qwen3:8b):
+      - ./config/continue:/home/coder/.continue:ro
+    expose:
+      - "8080" # compose network only; ingress is via oauth2-proxy-code
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  # TLS edge + GitHub OAuth gate for code-server.
+  # Runs on CODE_PORT, reusing the same LE cert and GitHub allowlist,
+  # upstreaming directly to code-server:8080 (no subpath translation needed).
+  oauth2-proxy-code:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2
+    command:
+      - --config=/etc/oauth2-proxy.cfg
+      - --http-address= # disable the plain-HTTP listener entirely
+      - --https-address=0.0.0.0:${CODE_PORT:-8444}
+      - --tls-cert-file=/certs/live/${TERMINAL_DOMAIN}/fullchain.pem
+      - --tls-key-file=/certs/live/${TERMINAL_DOMAIN}/privkey.pem
+      - --upstream=http://code-server:8080
+    user: "0:0" # must read the LE privkey (root-owned)
+    volumes:
+      - ./config/oauth2-proxy.cfg:/etc/oauth2-proxy.cfg:ro
+      - ${LE_DIR:-/etc/letsencrypt}:/certs:ro
+    environment:
+      OAUTH2_PROXY_CLIENT_ID: ${OAUTH2_PROXY_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OAUTH2_PROXY_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_GITHUB_USER: ${GITHUB_USER}
+      OAUTH2_PROXY_REDIRECT_URL: ${OAUTH2_PROXY_CODE_REDIRECT_URL:-https://${TERMINAL_DOMAIN}:${CODE_PORT:-8444}/oauth2/callback}
+    ports:
+      - "${CODE_PORT:-8444}:${CODE_PORT:-8444}" # public: DDNS + router forward land here
+    depends_on:
+      - code-server
+    restart: unless-stopped
+
 volumes:
   tailscale-state:
   ollama-data:
@@ -233,6 +286,8 @@ volumes:
   gemini-data:
   local-data:
   buttons-data:
+  code-server-data:
+  code-server-config:
 
 # ---------------------------------------------------------------------------
 # ON HOLD — remaining agent harness decisions deferred (2026-10-22).

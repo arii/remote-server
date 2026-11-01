@@ -238,6 +238,32 @@ class TestButtonsRepairTrigger(unittest.TestCase):
         self.assertIn('id="repairStatusText"', html)
         self.assertIn('id="repairLog"', html)
 
+    @patch("buttons.server._trigger_repair")
+    def test_fix_issues_job_executes_repair_worker(self, mock_trigger):
+        mock_trigger.return_value = None
+        # Verify job creation for fix-issues creates repair-issue steps
+        job, err = server._job_create("fix-issues", "remote-server", issues=[12, 34])
+        self.assertIsNone(err)
+        self.assertIsNotNone(job)
+        self.assertEqual(len(job["plan"]), 2)
+        self.assertEqual(job["plan"][0]["kind"], "repair-issue")
+        self.assertEqual(job["plan"][0]["issue"], 12)
+        self.assertIn("Dispatch repair worker", job["plan"][0]["label"])
+
+        # Execute the synchronous job step
+        ok, err = server._execute_job_step(job, 0, job["plan"][0])
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertEqual(job["plan"][0]["state"], "done")
+        mock_trigger.assert_called_once_with(12)
+
+    def test_ui_attention_item_repair_button(self):
+        status, html = self._get("/buttons/")
+        self.assertEqual(status, 200)
+        # Check that briefing rendering code includes the Repair button logic for attention items
+        self.assertIn('btn.textContent = "Repair"', html)
+        self.assertIn('/buttons/api/repair/dispatch', html)
+
 
 if __name__ == "__main__":
     unittest.main()
