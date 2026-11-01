@@ -299,6 +299,27 @@ pi_runs = {}
 pi_runs_lock = threading.Lock()
 PI_PROGRESS_TAIL = 6000
 
+# --- Interactive Chat & Streaming Agent Sessions (SSE) ---
+chat_sessions = {}
+chat_sessions_lock = threading.Lock()
+CHAT_MAX_PROMPT = 3000
+
+
+def _chat_abort_session(session_id):
+    """Abort an active chat session by session_id."""
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        if not sess:
+            return False, "session not found"
+        sess["aborted"] = True
+        proc = sess.get("proc")
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        return True, None
+
 
 def _pi_progress_path(rid):
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
@@ -2315,6 +2336,29 @@ a { color: #8bf; }
 .repair-details { margin-top: 0.4em; }
 .repair-details summary { cursor: pointer; font-size: 0.85em; color: var(--text-muted); }
 .repair-log { max-height: 200px; overflow-y: auto; font-size: 0.85em; margin-top: 0.3em; }
+/* interactive chat card & mobile-friendly streaming viewer */
+.chat-card { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card); padding: 0.8em; margin: 0.6em 0 1em; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5em; flex-wrap: wrap; gap: 0.5em; }
+.chat-title { font-weight: bold; font-size: 1.05em; display: flex; align-items: center; gap: 0.4em; }
+.phase-badge { font-size: 0.8em; font-weight: 600; padding: 0.2em 0.6em; border-radius: 14px; border: 1px solid var(--border); background: var(--bg-card-hover); color: var(--text-muted); transition: all 0.2s ease; }
+.phase-badge.prefill { color: #ffd75e; border-color: #8a6d1b; background: rgba(245, 158, 11, 0.15); }
+.phase-badge.tool_call { color: #8bf; border-color: var(--primary); background: rgba(59, 130, 246, 0.15); }
+.phase-badge.generating { color: #7ed07e; border-color: #2e7d32; background: rgba(16, 185, 129, 0.15); }
+.phase-badge.done { color: #7ed07e; border-color: #2e7d32; }
+.phase-badge.aborted { color: #ff8a8a; border-color: var(--danger); background: var(--danger-bg); }
+.phase-badge.error { color: #ff8a8a; border-color: var(--danger); background: var(--danger-bg); }
+.chat-input-wrap { display: flex; flex-direction: column; gap: 0.4em; position: relative; }
+.chat-textarea { width: 100%; box-sizing: border-box; background: #080d19; color: var(--text-main); border: 1px solid var(--border); border-radius: 10px; padding: 0.7em 0.8em; font: inherit; font-size: 0.95em; min-height: 58px; max-height: 180px; resize: vertical; outline: none; }
+.chat-textarea:focus { border-color: var(--primary); }
+.chat-ctrls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin-top: 0.3em; }
+.chat-ctrls button { width: auto; margin: 0; padding: 0.5em 0.9em; font-size: 0.9em; }
+.chat-stream-box { margin-top: 0.8em; border: 1px solid var(--border); border-radius: 10px; background: #050811; max-height: 50vh; overflow-y: auto; padding: 0.75em 0.9em; font-size: 0.93em; line-height: 1.5; word-break: break-word; white-space: pre-wrap; position: relative; }
+.chat-stream-box:empty { display: none; }
+.code-block-wrap { position: relative; margin: 0.6em 0; }
+.code-block-wrap pre { margin: 0; padding-top: 2em; }
+.code-copy-btn { position: absolute; top: 0.4em; right: 0.5em; padding: 0.2em 0.6em; font-size: 0.75em; border-radius: 5px; background: rgba(255, 255, 255, 0.1); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+.code-copy-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+.code-copy-btn.copied { color: #7ed07e; border-color: #2e7d32; }
 </style>
 </head>
 <body>
@@ -2390,6 +2434,24 @@ Shows CI status, review approvals, branch, and draft state.
 <div id="prsErr" class="repair-err"></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
+<div class="chat-card" id="briefingChatCard">
+  <div class="chat-head">
+    <div class="chat-title">💬 Ask Pi / Quick Agent Prompt <span class="forrepo" data-forrepo></span></div>
+    <span id="briefingPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Ask ad-hoc questions or task requests. Streams tokens live with phase status.</div>
+  <div class="chat-input-wrap">
+    <textarea id="briefingChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, CI status, recent commits, or task requests…"></textarea>
+    <div class="chat-ctrls">
+      <button id="briefingChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="briefingChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="briefingChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="briefingChatStream" class="chat-stream-box"></div>
+  <div id="briefingChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
+
 <h2>Briefing</h2>
 <details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
@@ -2401,6 +2463,24 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
+<div class="chat-card" id="piChatCard">
+  <div class="chat-head">
+    <div class="chat-title">🤖 Interactive Agent Chat & Streaming <span class="forrepo" data-forrepo></span></div>
+    <span id="piPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Interactive chat prompt with local LLM & Pi agent. Tap-to-copy code blocks, real-time token streaming, and cancellation.</div>
+  <div class="chat-input-wrap">
+    <textarea id="piChatInput" class="chat-textarea" rows="3" placeholder="Ask ad-hoc questions or task requests (e.g. 'Summarize failing CI runs in main' or 'Where are webhook handlers defined?')..."></textarea>
+    <div class="chat-ctrls">
+      <button id="piChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="piChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="piChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="piChatStream" class="chat-stream-box"></div>
+  <div id="piChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
+
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -4963,6 +5043,237 @@ if (digestNotifyBtn) digestNotifyBtn.onclick = async () => {
     if (typeof confirmDialog === "function") await confirmDialog("Briefing Digest Sent", "Digest sent:\n\n" + (res.data.digest || "ok"), false);
   }
 };
+
+// --- Interactive Chat & Streaming Agent UI Controller ---
+function initInteractiveChat(prefix) {
+  const inputEl = document.getElementById(prefix + "ChatInput");
+  const sendBtn = document.getElementById(prefix + "ChatSendBtn");
+  const abortBtn = document.getElementById(prefix + "ChatAbortBtn");
+  const clearBtn = document.getElementById(prefix + "ChatClearBtn");
+  const streamBox = document.getElementById(prefix + "ChatStream");
+  const badgeEl = document.getElementById(prefix + "PhaseBadge");
+  const errEl = document.getElementById(prefix + "ChatErr");
+
+  if (!inputEl || !sendBtn) return;
+
+  let activeSessionId = null;
+  let activeEventSource = null;
+  let rawTextBuffer = "";
+
+  function setPhase(phase, label) {
+    if (!badgeEl) return;
+    badgeEl.className = "phase-badge" + (phase ? " " + phase : "");
+    badgeEl.textContent = label || phase || "Ready";
+  }
+
+  let activeTextNode = null;
+
+  function renderFullMarkdown(container, text) {
+    container.innerHTML = "";
+    activeTextNode = null;
+    if (!text) return;
+
+    // Split markdown code blocks: ```[lang]\n...\n```
+    const parts = text.split(/(```[\s\S]*?```)/g);
+    parts.forEach(part => {
+      if (part.startsWith("```") && part.endsWith("```")) {
+        const wrap = document.createElement("div");
+        wrap.className = "code-block-wrap";
+
+        // Remove opening/closing ticks and extract code
+        const lines = part.slice(3, -3).split("\n");
+        let lang = "";
+        let codeContent = part.slice(3, -3);
+        if (lines.length > 1 && !lines[0].includes(" ")) {
+          lang = lines[0].trim();
+          codeContent = lines.slice(1).join("\n");
+        }
+
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "code-copy-btn";
+        copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+        copyBtn.onclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(codeContent);
+            copyBtn.textContent = "Copied! ✓";
+            copyBtn.classList.add("copied");
+            setTimeout(() => {
+              copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+              copyBtn.classList.remove("copied");
+            }, 2000);
+          } catch (err) {
+            copyBtn.textContent = "Failed";
+          }
+        };
+
+        const pre = document.createElement("pre");
+        pre.className = "ok";
+        const code = document.createElement("code");
+        code.textContent = codeContent;
+        pre.appendChild(code);
+
+        wrap.appendChild(copyBtn);
+        wrap.appendChild(pre);
+        container.appendChild(wrap);
+      } else {
+        const textSpan = document.createElement("span");
+        textSpan.textContent = part;
+        container.appendChild(textSpan);
+      }
+    });
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function appendStreamingToken(container, chunk) {
+    if (!chunk) return;
+
+    // If a code block delimiter is encountered in the chunk, re-parse structured markdown blocks
+    if (chunk.includes("```")) {
+      renderFullMarkdown(container, rawTextBuffer);
+      return;
+    }
+
+    // Fast path: append directly to active text node to avoid DOM teardown O(N^2) churn
+    if (!activeTextNode) {
+      activeTextNode = document.createTextNode("");
+      container.appendChild(activeTextNode);
+    }
+    activeTextNode.nodeValue += chunk;
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async function abortChat() {
+    if (!activeSessionId) return;
+    const sessId = activeSessionId;
+    if (activeEventSource) {
+      activeEventSource.close();
+      activeEventSource = null;
+    }
+    setPhase("aborted", "Aborting...");
+    try {
+      await fetchJson("/buttons/api/chat/abort", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({session_id: sessId})
+      });
+    } catch (e) {}
+    setPhase("aborted", "Aborted ⏹");
+    if (abortBtn) abortBtn.style.display = "none";
+    if (sendBtn) sendBtn.disabled = false;
+    activeSessionId = null;
+  }
+
+  async function startChat() {
+    const promptText = inputEl.value.trim();
+    if (!promptText) {
+      if (errEl) errEl.textContent = "Please enter a question or instruction.";
+      return;
+    }
+    if (errEl) errEl.textContent = "";
+
+    const picker = document.getElementById("briefingRepo");
+    const repo = picker ? picker.value : "tech-dancer";
+    const sessionId = "chat-" + Math.random().toString(36).substring(2, 10);
+    activeSessionId = sessionId;
+
+    rawTextBuffer = "";
+    streamBox.textContent = "";
+    streamBox.style.display = "block";
+
+    setPhase("prefill", "Prefill / Context...");
+    sendBtn.disabled = true;
+    if (abortBtn) {
+      abortBtn.style.display = "inline-block";
+      abortBtn.disabled = false;
+    }
+
+    const streamUrl = "/buttons/api/chat/stream?session_id=" + encodeURIComponent(sessionId) +
+                      "&repo=" + encodeURIComponent(repo) +
+                      "&prompt=" + encodeURIComponent(promptText);
+
+    try {
+      activeEventSource = new EventSource(streamUrl);
+
+      activeEventSource.addEventListener("phase", (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          const ph = payload.phase || "";
+          if (ph === "prefill") setPhase("prefill", "Analyzing Context...");
+          else if (ph === "tool_call") setPhase("tool_call", "Running Tool ⚙...");
+          else if (ph === "generating") setPhase("generating", "Generating Response...");
+          else if (ph === "done") setPhase("done", "Complete ✓" + (payload.elapsed ? " (" + payload.elapsed + "s)" : ""));
+          else if (ph === "aborted") setPhase("aborted", "Aborted ⏹");
+          else if (ph === "error") setPhase("error", "Error: " + (payload.error || "failed"));
+        } catch (ex) {}
+      });
+
+      activeEventSource.addEventListener("token", (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          const chunk = payload.token || "";
+          rawTextBuffer += chunk;
+          appendStreamingToken(streamBox, chunk);
+        } catch (ex) {}
+      });
+
+      activeEventSource.addEventListener("done", (e) => {
+        if (activeEventSource) {
+          activeEventSource.close();
+          activeEventSource = null;
+        }
+        renderFullMarkdown(streamBox, rawTextBuffer);
+        sendBtn.disabled = false;
+        if (abortBtn) abortBtn.style.display = "none";
+        activeSessionId = null;
+      });
+
+      activeEventSource.addEventListener("error", (e) => {
+        if (activeEventSource) {
+          activeEventSource.close();
+          activeEventSource = null;
+        }
+        sendBtn.disabled = false;
+        if (abortBtn) abortBtn.style.display = "none";
+        activeSessionId = null;
+        if (errEl && !rawTextBuffer) errEl.textContent = "Streaming connection closed or encountered an error.";
+      });
+
+    } catch (err) {
+      sendBtn.disabled = false;
+      if (abortBtn) abortBtn.style.display = "none";
+      setPhase("error", "Error");
+      if (errEl) errEl.textContent = "Failed to start streaming: " + err;
+    }
+  }
+
+  sendBtn.onclick = startChat;
+  if (abortBtn) abortBtn.onclick = abortChat;
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      rawTextBuffer = "";
+      activeTextNode = null;
+      streamBox.innerHTML = "";
+      inputEl.value = "";
+      if (errEl) errEl.textContent = "";
+      setPhase("", "Ready");
+    };
+  }
+
+  // Virtual keyboard convenience: Ctrl+Enter / Cmd+Enter submits
+  inputEl.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      startChat();
+    }
+  });
+}
+
+initInteractiveChat("briefing");
+initInteractiveChat("pi");
 </script>
 </body>
 </html>
@@ -5127,6 +5438,132 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_sse_event(self, event, data):
+        try:
+            payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+            self.wfile.write(payload)
+            self.wfile.flush()
+            return True
+        except Exception:
+            return False
+
+    def _handle_chat_stream(self, prompt, repo, session_id):
+        repos = _discover_repos()
+        if repo not in repos:
+            self._json({"error": "unknown repo"}, 400)
+            return
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            self._json({"error": "empty prompt"}, 400)
+            return
+
+        prompt = prompt.strip()[:CHAT_MAX_PROMPT]
+        info = repos[repo]
+
+        # Prepare SSE response headers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        with chat_sessions_lock:
+            chat_sessions[session_id] = {
+                "id": session_id,
+                "repo": repo,
+                "prompt": prompt,
+                "started_at": time.time(),
+                "aborted": False,
+                "proc": None,
+            }
+
+        _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "prompt": prompt[:150], "event": "chat started"})
+
+        start_time = time.time()
+        # Phase 1: Prefill phase
+        if not self._send_sse_event("phase", {"phase": "prefill", "message": "Analyzing context and preparing request..."}):
+            return
+
+        # Pre-filter context / prompt
+        budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
+        b64 = base64.b64encode(budgeted_prompt.encode()).decode()
+
+        # Build command: pi in print mode with read-only tools
+        cmd = (_td_prefix(info["td_cwd"]) +
+               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
+               ' | base64 -d)"')
+
+        # Check for tool calling heuristics in the request
+        tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
+        has_tool_hint = any(k in prompt.lower() for k in tool_keywords)
+
+        if has_tool_hint:
+            time.sleep(0.05)
+            self._send_sse_event("phase", {"phase": "tool_call", "message": "Inspecting repository context with tools..."})
+
+        # Spawn subprocess
+        try:
+            proc = subprocess.Popen(
+                EXEC + [cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            with chat_sessions_lock:
+                if session_id in chat_sessions:
+                    chat_sessions[session_id]["proc"] = proc
+                    if chat_sessions[session_id]["aborted"]:
+                        proc.terminate()
+        except Exception as exc:
+            self._send_sse_event("phase", {"phase": "error", "error": str(exc)})
+            self._send_sse_event("error", {"error": str(exc)})
+            with chat_sessions_lock:
+                chat_sessions.pop(session_id, None)
+            return
+
+        # Phase: generating
+        self._send_sse_event("phase", {"phase": "generating", "message": "Streaming response from model..."})
+
+        full_response = []
+        is_aborted = False
+
+        try:
+            if proc.stdout:
+                # Read chunks / lines
+                for chunk in iter(lambda: proc.stdout.read(16), ""):
+                    with chat_sessions_lock:
+                        sess = chat_sessions.get(session_id)
+                        if sess and sess.get("aborted"):
+                            is_aborted = True
+                            break
+                    full_response.append(chunk)
+                    if not self._send_sse_event("token", {"token": chunk}):
+                        # Client disconnected
+                        break
+
+            proc.wait()
+            code = proc.returncode
+        except Exception as exc:
+            code = 1
+            self._send_sse_event("error", {"error": str(exc)})
+
+        with chat_sessions_lock:
+            sess = chat_sessions.pop(session_id, None)
+            if sess and sess.get("aborted"):
+                is_aborted = True
+
+        elapsed = round(time.time() - start_time, 2)
+        if is_aborted:
+            self._send_sse_event("phase", {"phase": "aborted", "message": "Generation aborted by user.", "elapsed": elapsed})
+            self._send_sse_event("done", {"text": "".join(full_response), "aborted": True, "elapsed": elapsed})
+            _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "event": "chat aborted", "elapsed": elapsed})
+        else:
+            self._send_sse_event("phase", {"phase": "done", "message": "Complete ✓", "elapsed": elapsed})
+            self._send_sse_event("done", {"text": "".join(full_response), "aborted": False, "elapsed": elapsed})
+            _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "event": "chat finished", "exit": code, "elapsed": elapsed})
+
     def _handle_webhook(self, body):
         secret = _webhook_secret()
         if not secret:
@@ -5255,6 +5692,15 @@ class Handler(BaseHTTPRequestHandler):
                             "topic": ntfy_topic,
                             "last_digest": state.get("last_digest", 0)
                         }})
+        elif path == "/buttons/api/chat/stream":
+            # Interactive chat streaming endpoint via SSE (GET / query params)
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            prompt = qs.get("prompt", [""])[0]
+            session_id = qs.get("session_id", [""])[0] or uuid.uuid4().hex[:12]
+            self._handle_chat_stream(prompt, repo, session_id)
+            return
         elif path == "/buttons/api/repair/status":
             with repair_state_lock:
                 rep = dict(repair_state)
@@ -5572,6 +6018,33 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         if path == WEBHOOK_PATH:
             self._handle_webhook(body)
+            return
+        if path == "/buttons/api/chat/stream":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            prompt = data.get("prompt", "")
+            session_id = data.get("session_id") or uuid.uuid4().hex[:12]
+            self._handle_chat_stream(prompt, repo, session_id)
+            return
+        if path == "/buttons/api/chat/abort":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            session_id = data.get("session_id")
+            if not session_id or not isinstance(session_id, str):
+                self._json({"error": "invalid session_id"}, 400)
+                return
+            ok, err = _chat_abort_session(session_id)
+            if not ok:
+                self._json({"error": err or "abort failed"}, 404)
+                return
+            _ledger_append({"kind": "chat", "session_id": session_id, "event": "chat aborted via api"})
+            self._json({"ok": True, "session_id": session_id})
             return
         if path == "/buttons/api/repair/dispatch":
             try:
