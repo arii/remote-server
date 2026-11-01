@@ -3329,7 +3329,7 @@ async function refreshBriefing() {
   }
   briefingErrEl.textContent = "";
   renderBriefing(res.data);
-  briefingPrs = res.data.pr_list || [];
+  briefingPrs = res.data.pr_list || res.data.prs || [];
   if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
   if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
   if (typeof renderAttention === "function") renderAttention(res.data);
