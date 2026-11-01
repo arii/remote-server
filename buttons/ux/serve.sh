@@ -7,7 +7,7 @@
 # Then open http://localhost:<port>/buttons
 set -euo pipefail
 PORT="${1:-18099}"
-HERE="$(cd "$(dirname "$0")/.." && pwd)"
+HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 SEED_DIR="${UX_SEED_DIR:-/tmp/buttons-ux-seed}"
 LEDGER="${UX_LEDGER:-/tmp/buttons-ux-ledger.json}"
 
