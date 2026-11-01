@@ -27,3 +27,10 @@ __pycache__/
 # Boomtick CLI artifacts
 .boomtick/
 
+# UX preview toolkit artifacts (local development)
+node_modules/
+buttons/ux/shots/
+buttons/ux/node_modules/
+buttons/ux/.scratch*
+buttons/ux/scratch-ledger.json
+*.scratch.json

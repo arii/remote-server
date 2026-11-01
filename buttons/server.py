@@ -4804,6 +4804,24 @@ class Handler(BaseHTTPRequestHandler):
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
+
+            # Preview / fixture override: if BUTTONS_FIXTURE_BRIEFING or
+            # a fixture file exists in the seed/repos directory, serve it.
+            fixture_path = os.environ.get("BUTTONS_FIXTURE_BRIEFING")
+            if not fixture_path and os.path.exists(os.path.join(REPOS_DIR, "fixture-briefing.json")):
+                fixture_path = os.path.join(REPOS_DIR, "fixture-briefing.json")
+            if fixture_path and os.path.exists(fixture_path):
+                try:
+                    with open(fixture_path, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    if isinstance(data, dict):
+                        data["repo"] = repo
+                    self._json(data)
+                    return
+                except Exception as exc:
+                    self._json({"error": f"fixture briefing failed: {exc}"}, 500)
+                    return
+
             try:
                 proc = subprocess.run(
                     EXEC + [_td_prefix(repos[repo]["td_cwd"])
@@ -5568,7 +5586,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("BUTTONS_PORT", "8000"))
+    host = os.environ.get("BUTTONS_HOST", "0.0.0.0" if os.path.exists("/.dockerenv") else "127.0.0.1")
     _ledger_append({"kind": "system", "event": "buttons started"})
     _jobs_load()
     threading.Thread(target=_notifier_loop, daemon=True).start()
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
