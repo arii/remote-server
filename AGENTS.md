@@ -13,3 +13,9 @@ When using BoomTick MCP tools:
 - The default MCP server configuration points to `arii/tech-dancer`.
 - If you are in `/srv/remote-server` or another repository under `/srv/repos/`, provide the `repo` parameter override in `"owner/repo"` format (for example: `"repo": "arii/remote-server"`).
 - Never pass placeholder string `"org/repo"` or null values to optional schema fields.
+
+## Code discipline
+
+- **Ban workaround chains**: Never write fallback chains that retry the same operation with tweaked flags/arguments to dodge a failure (e.g. `cmd || slightly-different cmd`, chained `try ... except` ladders papering over sequential errors, or fallback ladders where each rung papers over the previous failure).
+- **Fix root causes**: Diagnose the actual failure, fix the root cause, and keep ONE canonical command or code path.
+- **Allowed exception**: A fallback is permitted ONLY for genuine platform variance (e.g., Linux vs macOS) and MUST include an explanatory comment documenting why the platform variance exists.
