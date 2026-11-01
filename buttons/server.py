@@ -2087,7 +2087,7 @@ a { color: #8bf; }
 #drawerHead { display: flex; align-items: center; justify-content: space-between;
   padding: 0.4em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; }
 #drawerHead .dbactions { display: flex; gap: 0.5em; }
-#drawerHead button { width: auto; margin: 0; padding: 0.7em 1em; font-size: 0.85em; }
+#drawerHead button { width: auto; margin: 0; padding: 1em 1em; font-size: 0.85em; }
 .actions-footer { display: flex; justify-content: center; margin: 1.5em 0 0.5em; padding-top: 1em; border-top: 1px dashed var(--border); }
 .actions-footer button { width: auto; font-size: 0.85em; padding: 0.5em 1em; color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
 .actions-footer button:hover { color: var(--text-main); border-color: var(--primary); }
