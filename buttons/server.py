@@ -321,6 +321,27 @@ pi_runs = {}
 pi_runs_lock = threading.Lock()
 PI_PROGRESS_TAIL = 6000
 
+# --- Interactive Chat & Streaming Agent Sessions (SSE) ---
+chat_sessions = {}
+chat_sessions_lock = threading.Lock()
+CHAT_MAX_PROMPT = 3000
+
+
+def _chat_abort_session(session_id):
+    """Abort an active chat session by session_id."""
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        if not sess:
+            return False, "session not found"
+        sess["aborted"] = True
+        proc = sess.get("proc")
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        return True, None
+
 
 def _pi_progress_path(rid):
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
@@ -2382,6 +2403,29 @@ a { color: #8bf; }
 .review-prompt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5em; margin: 0.6em 0; }
 .review-prompt-btn { text-align: left; padding: 0.6em 0.8em; font-size: 0.85em; border-radius: 6px; }
 .review-prompt-btn small { display: block; color: var(--text-muted); font-size: 0.78em; margin-top: 0.2em; }
+/* interactive chat card & mobile-friendly streaming viewer */
+.chat-card { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card); padding: 0.8em; margin: 0.6em 0 1em; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5em; flex-wrap: wrap; gap: 0.5em; }
+.chat-title { font-weight: bold; font-size: 1.05em; display: flex; align-items: center; gap: 0.4em; }
+.phase-badge { font-size: 0.8em; font-weight: 600; padding: 0.2em 0.6em; border-radius: 14px; border: 1px solid var(--border); background: var(--bg-card-hover); color: var(--text-muted); transition: all 0.2s ease; }
+.phase-badge.prefill { color: #ffd75e; border-color: #8a6d1b; background: rgba(245, 158, 11, 0.15); }
+.phase-badge.tool_call { color: #8bf; border-color: var(--primary); background: rgba(59, 130, 246, 0.15); }
+.phase-badge.generating { color: #7ed07e; border-color: #2e7d32; background: rgba(16, 185, 129, 0.15); }
+.phase-badge.done { color: #7ed07e; border-color: #2e7d32; }
+.phase-badge.aborted { color: #ff8a8a; border-color: var(--danger); background: var(--danger-bg); }
+.phase-badge.error { color: #ff8a8a; border-color: var(--danger); background: var(--danger-bg); }
+.chat-input-wrap { display: flex; flex-direction: column; gap: 0.4em; position: relative; }
+.chat-textarea { width: 100%; box-sizing: border-box; background: #080d19; color: var(--text-main); border: 1px solid var(--border); border-radius: 10px; padding: 0.7em 0.8em; font: inherit; font-size: 0.95em; min-height: 58px; max-height: 180px; resize: vertical; outline: none; }
+.chat-textarea:focus { border-color: var(--primary); }
+.chat-ctrls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin-top: 0.3em; }
+.chat-ctrls button { width: auto; margin: 0; padding: 0.5em 0.9em; font-size: 0.9em; }
+.chat-stream-box { margin-top: 0.8em; border: 1px solid var(--border); border-radius: 10px; background: #050811; max-height: 50vh; overflow-y: auto; padding: 0.75em 0.9em; font-size: 0.93em; line-height: 1.5; word-break: break-word; white-space: pre-wrap; position: relative; }
+.chat-stream-box:empty { display: none; }
+.code-block-wrap { position: relative; margin: 0.6em 0; }
+.code-block-wrap pre { margin: 0; padding-top: 2em; }
+.code-copy-btn { position: absolute; top: 0.4em; right: 0.5em; padding: 0.2em 0.6em; font-size: 0.75em; border-radius: 5px; background: rgba(255, 255, 255, 0.1); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+.code-copy-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+.global-chat-btn { margin-left: auto; width: auto; padding: 0.3em 0.75em; font-size: 0.85em; display: inline-flex; align-items: center; gap: 0.35em; cursor: pointer; border-radius: 8px; }
 .launcher-bar { display: flex; gap: 0.6em; margin: 0.6em 0; flex-wrap: wrap; }
 .launcher-tile { display: inline-flex; align-items: center; gap: 0.4em; background: var(--bg-card);
   border: 1px solid var(--border); border-radius: 8px; padding: 0.5em 0.9em;
@@ -2407,7 +2451,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="stickyHead">
 <div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><span>Active repo: <strong id="selectedRepoName">...</strong></span><select id="briefingRepo" style="display:none">
 <!--REPO_OPTIONS-->
-</select></div>
+</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">💬 Chat / Ask Agent</button></div>
 <div id="tabbar" role="tablist">
 <button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
 <button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
@@ -2433,6 +2477,23 @@ below are still visible, but they need JavaScript to start a run.</div>
 </div>
 <div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
 </div>
+<div class="chat-card" id="actionsChatCard">
+  <div class="chat-head">
+    <div class="chat-title">💬 Ask Pi / Interactive Agent Chat <span class="forrepo" data-forrepo></span></div>
+    <span id="actionsPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+  <div class="chat-input-wrap">
+    <textarea id="actionsChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
+    <div class="chat-ctrls">
+      <button id="actionsChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="actionsChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="actionsChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="actionsChatStream" class="chat-stream-box"></div>
+  <div id="actionsChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
 <div id="repairCard" class="health-card">
 <div class="health-head">Agent / Tools: Local Repair Worker</div>
 <div class="bsub" style="margin-bottom: 0.5em;">Trigger a local repair run by passing an issue number or issue URL.</div>
@@ -2451,6 +2512,23 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
+<div class="chat-card" id="briefingChatCard">
+  <div class="chat-head">
+    <div class="chat-title">💬 Ask Pi / Quick Agent Prompt <span class="forrepo" data-forrepo></span></div>
+    <span id="briefingPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Ask ad-hoc questions or task requests. Streams tokens live with phase status.</div>
+  <div class="chat-input-wrap">
+    <textarea id="briefingChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, CI status, recent commits, or task requests…"></textarea>
+    <div class="chat-ctrls">
+      <button id="briefingChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="briefingChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="briefingChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="briefingChatStream" class="chat-stream-box"></div>
+  <div id="briefingChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
 <h2>Briefing</h2>
 <details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
@@ -2462,6 +2540,23 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
+<div class="chat-card" id="piChatCard">
+  <div class="chat-head">
+    <div class="chat-title">🤖 Interactive Agent Chat & Streaming <span class="forrepo" data-forrepo></span></div>
+    <span id="piPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Interactive chat prompt with local LLM & Pi agent. Tap-to-copy code blocks, real-time token streaming, and cancellation.</div>
+  <div class="chat-input-wrap">
+    <textarea id="piChatInput" class="chat-textarea" rows="3" placeholder="Ask ad-hoc questions or task requests (e.g. 'Summarize failing CI runs in main' or 'Where are webhook handlers defined?')..."></textarea>
+    <div class="chat-ctrls">
+      <button id="piChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="piChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="piChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="piChatStream" class="chat-stream-box"></div>
+  <div id="piChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -5299,6 +5394,260 @@ if (digestNotifyBtn) digestNotifyBtn.onclick = async () => {
     if (typeof confirmDialog === "function") await confirmDialog("Briefing Digest Sent", "Digest sent:\n\n" + (res.data.digest || "ok"), false);
   }
 };
+
+// --- Interactive Chat Client ---
+function initInteractiveChat(prefix) {
+  const inputEl = document.getElementById(prefix + "ChatInput");
+  const sendBtn = document.getElementById(prefix + "ChatSendBtn");
+  const abortBtn = document.getElementById(prefix + "ChatAbortBtn");
+  const clearBtn = document.getElementById(prefix + "ChatClearBtn");
+  const streamBox = document.getElementById(prefix + "ChatStream");
+  const badgeEl = document.getElementById(prefix + "PhaseBadge");
+  const errEl = document.getElementById(prefix + "ChatErr");
+
+  if (!inputEl || !sendBtn) return;
+
+  let activeSessionId = null;
+  let activeEventSource = null;
+  let rawTextBuffer = "";
+
+  function setPhase(phase, label) {
+    if (!badgeEl) return;
+    badgeEl.className = "phase-badge" + (phase ? " " + phase : "");
+    badgeEl.textContent = label || phase || "Ready";
+  }
+
+  let activeTextNode = null;
+
+  function renderFullMarkdown(container, text) {
+    container.innerHTML = "";
+    activeTextNode = null;
+    if (!text) return;
+
+    // Split markdown code blocks: ```[lang]\n...\n```
+    const parts = text.split(/(```[\s\S]*?```)/g);
+    parts.forEach(part => {
+      if (part.startsWith("```") && part.endsWith("```")) {
+        const wrap = document.createElement("div");
+        wrap.className = "code-block-wrap";
+
+        // Remove opening/closing ticks and extract code
+        const lines = part.slice(3, -3).split("\n");
+        let lang = "";
+        let codeContent = part.slice(3, -3);
+        if (lines.length > 1 && !lines[0].includes(" ")) {
+          lang = lines[0].trim();
+          codeContent = lines.slice(1).join("\n");
+        }
+
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "code-copy-btn";
+        copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+        copyBtn.onclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(codeContent);
+            copyBtn.textContent = "Copied! ✓";
+            copyBtn.classList.add("copied");
+            setTimeout(() => {
+              copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+              copyBtn.classList.remove("copied");
+            }, 2000);
+          } catch (err) {
+            copyBtn.textContent = "Failed";
+          }
+        };
+
+        const pre = document.createElement("pre");
+        pre.className = "ok";
+        const code = document.createElement("code");
+        code.textContent = codeContent;
+        pre.appendChild(code);
+
+        wrap.appendChild(copyBtn);
+        wrap.appendChild(pre);
+        container.appendChild(wrap);
+      } else {
+        const textSpan = document.createElement("span");
+        textSpan.textContent = part;
+        container.appendChild(textSpan);
+      }
+    });
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function appendStreamingToken(container, chunk) {
+    if (!chunk) return;
+
+    if (chunk.includes("```")) {
+      renderFullMarkdown(container, rawTextBuffer);
+      return;
+    }
+
+    if (!activeTextNode) {
+      activeTextNode = document.createTextNode("");
+      container.appendChild(activeTextNode);
+    }
+    activeTextNode.nodeValue += chunk;
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async function abortChat() {
+    if (!activeSessionId) return;
+    const sessId = activeSessionId;
+    if (activeEventSource) {
+      activeEventSource.close();
+      activeEventSource = null;
+    }
+    setPhase("aborted", "Aborting...");
+    try {
+      await fetchJson("/buttons/api/chat/abort", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({session_id: sessId})
+      });
+    } catch (e) {}
+    setPhase("aborted", "Aborted ⏹");
+    if (abortBtn) abortBtn.style.display = "none";
+    if (sendBtn) sendBtn.disabled = false;
+    activeSessionId = null;
+  }
+
+  async function startChat() {
+    const promptText = inputEl.value.trim();
+    if (!promptText) {
+      if (errEl) errEl.textContent = "Please enter a question or instruction.";
+      return;
+    }
+    if (errEl) errEl.textContent = "";
+
+    const picker = document.getElementById("briefingRepo");
+    const repo = picker ? picker.value : "tech-dancer";
+    const sessionId = "chat-" + Math.random().toString(36).substring(2, 10);
+    activeSessionId = sessionId;
+
+    rawTextBuffer = "";
+    streamBox.textContent = "";
+    streamBox.style.display = "block";
+
+    setPhase("prefill", "Prefill / Context...");
+    sendBtn.disabled = true;
+    if (abortBtn) {
+      abortBtn.style.display = "inline-block";
+      abortBtn.disabled = false;
+    }
+
+    const streamUrl = "/buttons/api/chat/stream?session_id=" + encodeURIComponent(sessionId) +
+                      "&repo=" + encodeURIComponent(repo) +
+                      "&prompt=" + encodeURIComponent(promptText);
+
+    try {
+      activeEventSource = new EventSource(streamUrl);
+
+      activeEventSource.addEventListener("phase", (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          const ph = payload.phase || "";
+          if (ph === "prefill") setPhase("prefill", "Analyzing Context...");
+          else if (ph === "tool_call") setPhase("tool_call", "Running Tool ⚙...");
+          else if (ph === "generating") setPhase("generating", "Generating Response...");
+          else if (ph === "done") setPhase("done", "Complete ✓" + (payload.elapsed ? " (" + payload.elapsed + "s)" : ""));
+          else if (ph === "aborted") setPhase("aborted", "Aborted ⏹");
+          else if (ph === "error") setPhase("error", "Error: " + (payload.error || "failed"));
+        } catch (ex) {}
+      });
+
+      activeEventSource.addEventListener("token", (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          const chunk = payload.token || "";
+          rawTextBuffer += chunk;
+          appendStreamingToken(streamBox, chunk);
+        } catch (ex) {}
+      });
+
+      activeEventSource.addEventListener("done", (e) => {
+        if (activeEventSource) {
+          activeEventSource.close();
+          activeEventSource = null;
+        }
+        sendBtn.disabled = false;
+        if (abortBtn) abortBtn.style.display = "none";
+        activeSessionId = null;
+        renderFullMarkdown(streamBox, rawTextBuffer);
+      });
+
+      activeEventSource.addEventListener("error", (e) => {
+        if (activeEventSource) {
+          activeEventSource.close();
+          activeEventSource = null;
+        }
+        sendBtn.disabled = false;
+        if (abortBtn) abortBtn.style.display = "none";
+        activeSessionId = null;
+        if (errEl && !rawTextBuffer) errEl.textContent = "Streaming connection closed or encountered an error.";
+        renderFullMarkdown(streamBox, rawTextBuffer);
+      });
+
+    } catch (err) {
+      sendBtn.disabled = false;
+      if (abortBtn) abortBtn.style.display = "none";
+      setPhase("error", "Error");
+      if (errEl) errEl.textContent = "Failed to start streaming: " + err;
+    }
+  }
+
+  sendBtn.onclick = startChat;
+  if (abortBtn) abortBtn.onclick = abortChat;
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      rawTextBuffer = "";
+      streamBox.innerHTML = "";
+      inputEl.value = "";
+      if (errEl) errEl.textContent = "";
+      setPhase("", "Ready");
+    };
+  }
+
+  inputEl.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      startChat();
+    }
+  });
+}
+
+initInteractiveChat("actions");
+initInteractiveChat("briefing");
+initInteractiveChat("pi");
+
+// Global Chat button click handler: navigate to Actions tab or current tab chat and focus input
+const globalChatBtn = document.getElementById("globalChatBtn");
+if (globalChatBtn) {
+  globalChatBtn.onclick = () => {
+    const activeTab = document.querySelector("#tabbar .tab.active");
+    const activeTabName = activeTab ? activeTab.dataset.tab : "actions";
+    let targetPrefix = "actions";
+    if (activeTabName === "briefing" || activeTabName === "pi") {
+      targetPrefix = activeTabName;
+    } else if (activeTabName !== "actions") {
+      const actionsTabBtn = document.querySelector('#tabbar .tab[data-tab="actions"]');
+      if (actionsTabBtn) actionsTabBtn.click();
+      targetPrefix = "actions";
+    }
+    const targetCard = document.getElementById(targetPrefix + "ChatCard");
+    const targetInput = document.getElementById(targetPrefix + "ChatInput");
+    if (targetCard) {
+      targetCard.scrollIntoView({behavior: "smooth", block: "start"});
+    }
+    if (targetInput) {
+      setTimeout(() => targetInput.focus(), 150);
+    }
+  };
+}
 </script>
 </body>
 </html>
