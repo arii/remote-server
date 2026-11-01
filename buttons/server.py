@@ -3614,19 +3614,65 @@ function renderBriefing(b) {
   const attHead = document.createElement("b");
   attHead.textContent = "Needs attention";
   att.appendChild(attHead);
-  if (b.attention && b.attention.length) {
+  // Collect attention items, ensuring failing runs are always included.
+  const attentionItems = [];
+  const seenAtt = new Set();
+  (b.attention || []).forEach(a => {
+    attentionItems.push({text: a, raw: a});
+    seenAtt.add(a);
+  });
+  // Guarantee each failing run is surfaced as an actionable item with likely cause
+  (b.failing_runs || []).forEach(run => {
+    const runName = run.name || "CI";
+    const branchName = run.branch || "main";
+    const eventName = run.event || "push";
+    const failedParts = (run.failed || []).map(f =>
+      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
+    ).join("; ");
+    const causeSummary = failedParts || "workflow failed";
+    const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
+    // Check if an equivalent item was already in b.attention
+    let alreadyPresent = false;
+    for (const item of attentionItems) {
+      if (item.text.includes(runName) && item.text.includes(branchName)) {
+        alreadyPresent = true;
+        item.run = run;
+        item.cause = causeSummary;
+        break;
+      }
+    }
+    if (!alreadyPresent) {
+      attentionItems.push({
+        text: runText,
+        raw: runText,
+        run: run,
+        cause: causeSummary
+      });
+    }
+  });
+
+  const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
+  const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
+
+  if (attentionItems.length) {
     const ul = document.createElement("ul");
-    b.attention.forEach(a => {
+    attentionItems.forEach(item => {
       const li = document.createElement("li");
       const span = document.createElement("span");
-      span.textContent = a;
+      span.textContent = item.text;
       li.appendChild(span);
-      const m = a.match(/(?:^|\s)#(\d+)/);
+
+      // Actions container for attention item
+      const actionsSpan = document.createElement("span");
+      actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
+
+      // Repair button if linked to issue
+      const m = item.text.match(/(?:^|\s)#(\d+)/);
       if (m) {
         const btn = document.createElement("button");
         btn.textContent = "Repair";
         btn.className = "btn-ghost";
-        btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+        btn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
         btn.onclick = async () => {
           btn.disabled = true;
           try {
@@ -3642,12 +3688,69 @@ function renderBriefing(b) {
             btn.disabled = false;
           }
         };
-        li.appendChild(btn);
+        actionsSpan.appendChild(btn);
+      }
+
+      // If item is a failing run, surface "Draft issue from failure" and "Ask Pi to diagnose"
+      const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
+      if (isRun) {
+        let wfName = item.run ? (item.run.name || "CI") : "";
+        let wfBranch = item.run ? (item.run.branch || "main") : "";
+        let wfCause = item.cause || "";
+        if (!wfName) {
+          const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
+          if (matchRun) {
+            wfName = matchRun[1].trim();
+            wfBranch = matchRun[2].trim();
+          } else {
+            wfName = "Workflow";
+            wfBranch = "main";
+          }
+        }
+        if (!wfCause) {
+          const matchCause = item.text.match(/likely cause:\s*(.+)$/);
+          wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
+        }
+
+        const draftBtn = document.createElement("button");
+        draftBtn.type = "button";
+        draftBtn.className = "btn-ghost";
+        draftBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
+        draftBtn.textContent = "Draft issue from failure";
+        draftBtn.onclick = () => {
+          if (typeof draftIssueFromFinding === "function") {
+            draftIssueFromFinding({
+              source: "workflow",
+              id: (item.run && item.run.id) || wfName,
+              title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
+              cause: wfCause,
+              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+            });
+          }
+        };
+        actionsSpan.appendChild(draftBtn);
+
+        const askPiBtn = document.createElement("button");
+        askPiBtn.type = "button";
+        askPiBtn.className = "btn-primary";
+        askPiBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
+        askPiBtn.textContent = "Ask Pi to diagnose";
+        askPiBtn.onclick = () => {
+          const piTab = document.querySelector('[data-tab="pi"]');
+          const piInp = document.getElementById("piPrompt");
+          if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
+          if (piTab) piTab.click();
+        };
+        actionsSpan.appendChild(askPiBtn);
+      }
+
+      if (actionsSpan.children.length > 0) {
+        li.appendChild(actionsSpan);
       }
       ul.appendChild(li);
     });
     att.appendChild(ul);
-  } else {
+  } else if (!hasFailingRuns && !hasConflicts) {
     const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
   }
   briefingEl.appendChild(att);
@@ -3798,11 +3901,36 @@ function renderAttention(b) {
   if (!el) return;
   el.textContent = "";
   const items = [];
-  (b.failing_runs || []).forEach(run => {
-    items.push("Failing run: " + run.name + " on " + run.branch);
+  (b.attention || []).forEach(a => {
+    items.push({text: a, raw: a});
   });
-  (b.attention || []).forEach(a => items.push(a));
-  if (!items.length) {
+  (b.failing_runs || []).forEach(run => {
+    const runName = run.name || "CI";
+    const branchName = run.branch || "main";
+    const eventName = run.event || "push";
+    const failedParts = (run.failed || []).map(f =>
+      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
+    ).join("; ");
+    const causeSummary = failedParts || "workflow failed";
+    const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
+    let found = false;
+    for (const it of items) {
+      if (it.text.includes(runName) && it.text.includes(branchName)) {
+        found = true;
+        it.run = run;
+        it.cause = causeSummary;
+        break;
+      }
+    }
+    if (!found) {
+      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
+    }
+  });
+
+  const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
+  const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
+
+  if (!items.length && !hasFailingRuns && !hasConflicts) {
     el.textContent = "All clear — nothing needs attention.";
     return;
   }
@@ -3811,17 +3939,21 @@ function renderAttention(b) {
   head.textContent = "Needs attention";
   el.appendChild(head);
   const ul = document.createElement("ul");
-  items.slice(0, 8).forEach(t => {
+  items.slice(0, 8).forEach(item => {
     const li = document.createElement("li");
     const span = document.createElement("span");
-    span.textContent = t;
+    span.textContent = item.text;
     li.appendChild(span);
-    const m = t.match(/(?:^|\s)#(\d+)/);
+
+    const actionsSpan = document.createElement("span");
+    actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
+
+    const m = item.text.match(/(?:^|\s)#(\d+)/);
     if (m) {
       const btn = document.createElement("button");
       btn.textContent = "Repair";
       btn.className = "btn-ghost";
-      btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+      btn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
       btn.onclick = async () => {
         btn.disabled = true;
         try {
@@ -3837,7 +3969,63 @@ function renderAttention(b) {
           btn.disabled = false;
         }
       };
-      li.appendChild(btn);
+      actionsSpan.appendChild(btn);
+    }
+
+    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
+    if (isRun) {
+      let wfName = item.run ? (item.run.name || "CI") : "";
+      let wfBranch = item.run ? (item.run.branch || "main") : "";
+      let wfCause = item.cause || "";
+      if (!wfName) {
+        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
+        if (matchRun) {
+          wfName = matchRun[1].trim();
+          wfBranch = matchRun[2].trim();
+        } else {
+          wfName = "Workflow";
+          wfBranch = "main";
+        }
+      }
+      if (!wfCause) {
+        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
+        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
+      }
+
+      const draftBtn = document.createElement("button");
+      draftBtn.type = "button";
+      draftBtn.className = "btn-ghost";
+      draftBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
+      draftBtn.textContent = "Draft issue from failure";
+      draftBtn.onclick = () => {
+        if (typeof draftIssueFromFinding === "function") {
+          draftIssueFromFinding({
+            source: "workflow",
+            id: (item.run && item.run.id) || wfName,
+            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
+            cause: wfCause,
+            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+          });
+        }
+      };
+      actionsSpan.appendChild(draftBtn);
+
+      const askPiBtn = document.createElement("button");
+      askPiBtn.type = "button";
+      askPiBtn.className = "btn-primary";
+      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
+      askPiBtn.textContent = "Ask Pi to diagnose";
+      askPiBtn.onclick = () => {
+        const piTab = document.querySelector('[data-tab="pi"]');
+        const piInp = document.getElementById("piPrompt");
+        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
+        if (piTab) piTab.click();
+      };
+      actionsSpan.appendChild(askPiBtn);
+    }
+
+    if (actionsSpan.children.length > 0) {
+      li.appendChild(actionsSpan);
     }
     ul.appendChild(li);
   });
