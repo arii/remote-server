@@ -27,3 +27,8 @@ __pycache__/
 # Boomtick CLI artifacts
 .boomtick/
 
+# Dependencies and cache
+node_modules/
+.fallow/
+.pnpm-store/
+
