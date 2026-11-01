@@ -33,20 +33,33 @@ OK_WORDS = {"ok", "pass", "passed", "success", "successful", "clean",
             "healthy", "up-to-date"}
 FAIL_WORDS = {"fail", "failed", "failure", "error", "errored", "dirty",
               "conflicted"}
+SKIP_WORDS = {"skip", "skipped", "ignore", "ignored", "disabled"}
+WARN_WORDS = {"warn", "warning", "warnings"}
+
+STATUS_CONFIG = {
+    "ok": {"mark": "✓", "label": "OK"},
+    "skipped": {"mark": "⊘", "label": "Skipped"},
+    "warn": {"mark": "⚠", "label": "Warnings"},
+    "fail": {"mark": "✗", "label": "FAIL"},
+}
 
 
 def _classify(value):
-    """True/False/None from a status-ish value. Numbers are never
-    statuses (a count of 0 is not a verdict)."""
+    """'ok', 'fail', 'skipped', 'warn', or None from a status-ish value.
+    Numbers are never statuses (a count of 0 is not a verdict)."""
     if isinstance(value, bool):
-        return value
+        return "ok" if value else "fail"
     if isinstance(value, (int, float)):
         return None
     s = str(value).strip().lower()
     if s in OK_WORDS:
-        return True
+        return "ok"
     if s in FAIL_WORDS:
-        return False
+        return "fail"
+    if s in SKIP_WORDS:
+        return "skipped"
+    if s in WARN_WORDS:
+        return "warn"
     return None
 
 
@@ -126,19 +139,39 @@ def main():
         sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
         return 0
     lines = []
+    passed = 0
     failed = 0
+    skipped = 0
+    warnings = 0
     for name, status, detail in uniq[:MAX_LINES]:
-        mark = "✓" if status else "✗"
-        if not status:
+        cfg = STATUS_CONFIG.get(status, {"mark": "?", "label": status})
+        mark = cfg["mark"]
+        label = cfg["label"]
+        if status == "ok":
+            passed += 1
+        elif status == "fail":
             failed += 1
-        line = f"{mark} {name}"
+        elif status == "skipped":
+            skipped += 1
+        elif status == "warn":
+            warnings += 1
+
+        # Format name nicely (e.g. capitalize or preserve acronyms)
+        disp_name = name[0].upper() + name[1:] if name else "Check"
+        line = f"{mark} {disp_name}: {label}"
         if detail:
             line += f" — {detail}"
         lines.append(line)
     if len(uniq) > MAX_LINES:
         lines.append(f"… {len(uniq) - MAX_LINES} more")
-    passed = len(uniq) - failed
-    lines.append(f"preflight: {passed} passed, {failed} failed")
+
+    summary_parts = [f"{passed} passed"]
+    if warnings:
+        summary_parts.append(f"{warnings} warnings")
+    if skipped:
+        summary_parts.append(f"{skipped} skipped")
+    summary_parts.append(f"{failed} failed")
+    lines.append(f"preflight: {', '.join(summary_parts)}")
     sys.stdout.write("\n".join(lines) + "\n")
     return 1 if failed else 0
 
