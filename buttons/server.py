@@ -503,6 +503,7 @@ ALLOWED_TD_COMMANDS = [
     "td --json jules list-sessions",
     "td --json agent run-feedback-check",
 ]
+ALLOWED_TD_COMMANDS_TEXT = "\n".join(ALLOWED_TD_COMMANDS)
 ALLOWED_TD_SHAPES = [cmd.split() for cmd in ALLOWED_TD_COMMANDS]
 
 
@@ -593,7 +594,7 @@ def _suggest_prompt(repo, context):
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
-        f"the context):\n{"\n".join(ALLOWED_TD_COMMANDS)}\n"
+        f"the context):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
         "If the context shows a problem (failing CI, conflicts, "
         "stale PRs) but no allowed command fits it directly, read "
         "the repo checkout (git log, .github/workflows) to pin "
@@ -664,7 +665,7 @@ def _ask_prompt(repo, instruction):
         "PROPOSE td\n"
         "COMMAND: <exact td command>\n"
         "END PROPOSE\n"
-        f"Allowed td commands (exact shapes):\n{"\n".join(ALLOWED_TD_COMMANDS)}\n"
+        f"Allowed td commands (exact shapes):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
         "If no write is needed, just answer the instruction — no "
         "PROPOSE block.\n"
         "Instruction:\n" + instruction)
