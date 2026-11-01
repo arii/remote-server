@@ -41,7 +41,12 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.request
 from urllib.parse import urlparse, parse_qs
+try:
+    from buttons.briefing_summary import ci_summary
+except ImportError:
+    from briefing_summary import ci_summary
 
 STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
@@ -93,7 +98,13 @@ def _parse_gh_remote(url):
     return m.group(1)
 
 
-def _discover_repos():
+_REPOS_CACHE = None
+_REPOS_CACHE_TIME = 0.0
+_REPOS_CACHE_TTL = 15.0  # seconds
+_repos_cache_lock = threading.Lock()
+
+
+def _discover_repos(force=False):
     """name -> {gh, td_cwd, host_path}. remote-server is the
     special stack checkout; every other entry is a ~/repos
     checkout with a parseable GitHub origin. Names and gh paths
@@ -103,6 +114,11 @@ def _discover_repos():
     fails discovery is skipped with a log line, never mapped to
     another repo's data. A missing repos dir degrades to the
     stack repo alone, not a crash."""
+    global _REPOS_CACHE, _REPOS_CACHE_TIME
+    now = time.time()
+    if not force and _REPOS_CACHE is not None and (now - _REPOS_CACHE_TIME) < _REPOS_CACHE_TTL:
+        return dict(_REPOS_CACHE)
+
     repos = {"remote-server": {"gh": STACK_GH,
                                "td_cwd": "/srv/remote-server",
                                "host_path": "/home/ari/remote-server"}}
@@ -111,6 +127,9 @@ def _discover_repos():
     except Exception as exc:
         print(f"repo discovery: cannot list {REPOS_DIR}: {exc}",
               flush=True)
+        with _repos_cache_lock:
+            _REPOS_CACHE = dict(repos)
+            _REPOS_CACHE_TIME = now
         return repos
     for name in entries:
         if name == "remote-server":
@@ -158,6 +177,9 @@ def _discover_repos():
             continue
         repos[name] = {"gh": gh, "td_cwd": f"/srv/repos/{name}",
                        "host_path": host_path}
+    with _repos_cache_lock:
+        _REPOS_CACHE = dict(repos)
+        _REPOS_CACHE_TIME = now
     return repos
 
 
@@ -298,6 +320,27 @@ ENV = {**os.environ, "HOME": "/home/ari"}
 pi_runs = {}
 pi_runs_lock = threading.Lock()
 PI_PROGRESS_TAIL = 6000
+
+# --- Interactive Chat & Streaming Agent Sessions (SSE) ---
+chat_sessions = {}
+chat_sessions_lock = threading.Lock()
+CHAT_MAX_PROMPT = 3000
+
+
+def _chat_abort_session(session_id):
+    """Abort an active chat session by session_id."""
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        if not sess:
+            return False, "session not found"
+        sess["aborted"] = True
+        proc = sess.get("proc")
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        return True, None
 
 
 def _pi_progress_path(rid):
@@ -449,6 +492,21 @@ def _pi_thread(rid, kind, repo, instruction):
 # batch run and no auto-run in v1: one tap per action is the
 # approval gate, matching Pi's own read-only boundary (no
 # merge/push/post without explicit approval).
+ALLOWED_TD_COMMANDS = [
+    "td --json agent fix-ci --pr N --execute",
+    "td gh read-pr-reviews --pr N",
+    "td gh read-pr-comments --pr N",
+    "td gh resolve-conflicts --pr N",
+    "td context-warm",
+    "td --json preflight",
+    "td --json agent list-sessions",
+    "td --json jules list-sessions",
+    "td --json agent run-feedback-check",
+]
+ALLOWED_TD_COMMANDS_TEXT = "\n".join(ALLOWED_TD_COMMANDS)
+ALLOWED_TD_SHAPES = [cmd.split() for cmd in ALLOWED_TD_COMMANDS]
+
+
 def _validate_td_command(text):
     """argv tokens for a suggested td command, or None. Exact
     shapes only: same tokens, PR numbers digits. Anything else —
@@ -461,18 +519,7 @@ def _validate_td_command(text):
         return None
     if not tokens or tokens[0] != "td":
         return None
-    shapes = [
-        ["td", "--json", "agent", "fix-ci", "--pr", "N", "--execute"],
-        ["td", "--json", "agent", "list-sessions"],
-        ["td", "--json", "jules", "list-sessions"],
-        ["td", "--json", "agent", "run-feedback-check"],
-        ["td", "--json", "preflight"],
-        ["td", "context-warm"],
-        ["td", "gh", "read-pr-reviews", "--pr", "N"],
-        ["td", "gh", "read-pr-comments", "--pr", "N"],
-        ["td", "gh", "resolve-conflicts", "--pr", "N"],
-    ]
-    for shape in shapes:
+    for shape in ALLOWED_TD_SHAPES:
         if len(tokens) != len(shape):
             continue
         ok = True
@@ -559,16 +606,7 @@ def _suggest_prompt(repo, context):
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
-        "the context):\n"
-        "td --json agent fix-ci --pr N --execute\n"
-        "td gh read-pr-reviews --pr N\n"
-        "td gh read-pr-comments --pr N\n"
-        "td gh resolve-conflicts --pr N\n"
-        "td context-warm\n"
-        "td --json preflight\n"
-        "td --json agent list-sessions\n"
-        "td --json jules list-sessions\n"
-        "td --json agent run-feedback-check\n"
+        f"the context):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
         "If the context shows a problem (failing CI, conflicts, "
         "stale PRs) but no allowed command fits it directly, read "
         "the repo checkout (git log, .github/workflows) to pin "
@@ -639,16 +677,7 @@ def _ask_prompt(repo, instruction):
         "PROPOSE td\n"
         "COMMAND: <exact td command>\n"
         "END PROPOSE\n"
-        "Allowed td commands (exact shapes):\n"
-        "td --json agent fix-ci --pr N --execute\n"
-        "td gh read-pr-reviews --pr N\n"
-        "td gh read-pr-comments --pr N\n"
-        "td gh resolve-conflicts --pr N\n"
-        "td context-warm\n"
-        "td --json preflight\n"
-        "td --json agent list-sessions\n"
-        "td --json jules list-sessions\n"
-        "td --json agent run-feedback-check\n"
+        f"Allowed td commands (exact shapes):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
         "If no write is needed, just answer the instruction — no "
         "PROPOSE block.\n"
         "Instruction:\n" + instruction)
@@ -1267,9 +1296,6 @@ active_id = None
 # Dispatches push notifications via ntfy (HTTP push) and/or generic Webhooks.
 # Tracks state transitions across polls to notify on CI failures, completed/failed
 # Jules sessions, and new merge conflicts, plus scheduled briefing digests.
-import urllib.request
-import urllib.parse
-
 NOTIFIER_STATE_PATH = os.environ.get("BUTTONS_NOTIFIER_STATE_PATH",
                                      "/var/lib/buttons/notifier_state.json")
 notifier_lock = threading.Lock()
@@ -1744,6 +1770,46 @@ def _job_after_step(job):
         _job_end(job, "failed")
 
 
+def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
+    """Execute a synchronous job step (pr-action or label-issue), updating
+    step state, exit_code, finished_at, saving jobs, and logging to ledger.
+    Returns (ok, err)."""
+    if repos is None:
+        repos = _discover_repos()
+    kind = step_obj.get("kind")
+    try:
+        if kind == "pr-action":
+            _pr_action(job["pr"], step_obj["action"], job["repo"], repos)
+        elif kind == "label-issue":
+            _label_issue_jules(job["repo"], step_obj["issue"], repos)
+        else:
+            raise ValueError(f"unsupported synchronous step kind: {kind}")
+        ok, err = True, None
+    except ValueError as exc:
+        ok, err = False, str(exc)
+    except Exception as exc:
+        ok, err = False, str(exc)[:500]
+
+    with jobs_lock:
+        step_obj["state"] = "done" if ok else "failed"
+        step_obj["finished_at"] = time.time()
+        step_obj["exit_code"] = 0 if ok else 1
+        step_obj["note"] = None if ok else err
+        _job_after_step(job)
+        _jobs_save()
+
+    if event_prefix:
+        event = f"{event_prefix}" + ("done" if ok else "failed")
+    elif kind == "label-issue":
+        event = f"dispatched Jules on #{step_obj.get('issue')}" if ok else "dispatch failed"
+    else:
+        event = "step " + ("done" if ok else "failed")
+
+    _ledger_append({"kind": "job", "job": job["id"], "step": step_idx,
+                    "event": event, "ok": ok})
+    return ok, err
+
+
 def _job_advance(job):
     """Run the next pending read-only step, if any. Write steps wait
     for an explicit Approve tap. jobs_lock NOT held on entry."""
@@ -1765,24 +1831,7 @@ def _job_advance(job):
             kind, action = st["kind"], st["action"]
         if kind == "pr-action":
             # Synchronous: runs inline, then advance to the next step.
-            try:
-                _pr_action(job["pr"], action, job["repo"],
-                           _discover_repos())
-                ok, err = True, None
-            except ValueError as exc:
-                ok, err = False, str(exc)
-            except Exception as exc:
-                ok, err = False, str(exc)[:500]
-            with jobs_lock:
-                st["state"] = "done" if ok else "failed"
-                st["finished_at"] = time.time()
-                st["exit_code"] = 0 if ok else 1
-                st["note"] = None if ok else err
-                _job_after_step(job)
-                _jobs_save()
-            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
-                            "event": "step auto-" + ("done" if ok else "failed"),
-                            "ok": ok})
+            _execute_job_step(job, idx, st, event_prefix="step auto-")
         else:
             # Async action: start the run; the client polls it and
             # reports step-done, which advances the plan again.
@@ -2331,6 +2380,29 @@ a { color: #8bf; }
 .review-prompt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5em; margin: 0.6em 0; }
 .review-prompt-btn { text-align: left; padding: 0.6em 0.8em; font-size: 0.85em; border-radius: 6px; }
 .review-prompt-btn small { display: block; color: var(--text-muted); font-size: 0.78em; margin-top: 0.2em; }
+/* interactive chat card & mobile-friendly streaming viewer */
+.chat-card { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card); padding: 0.8em; margin: 0.6em 0 1em; }
+.chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5em; flex-wrap: wrap; gap: 0.5em; }
+.chat-title { font-weight: bold; font-size: 1.05em; display: flex; align-items: center; gap: 0.4em; }
+.phase-badge { font-size: 0.8em; font-weight: 600; padding: 0.2em 0.6em; border-radius: 14px; border: 1px solid var(--border); background: var(--bg-card-hover); color: var(--text-muted); transition: all 0.2s ease; }
+.phase-badge.prefill { color: #ffd75e; border-color: #8a6d1b; background: rgba(245, 158, 11, 0.15); }
+.phase-badge.tool_call { color: #8bf; border-color: var(--primary); background: rgba(59, 130, 246, 0.15); }
+.phase-badge.generating { color: #7ed07e; border-color: #2e7d32; background: rgba(16, 185, 129, 0.15); }
+.phase-badge.done { color: #7ed07e; border-color: #2e7d32; }
+.phase-badge.aborted { color: #ff8a8a; border-color: var(--danger); background: var(--danger-bg); }
+.phase-badge.error { color: #ff8a8a; border-color: var(--danger); background: var(--danger-bg); }
+.chat-input-wrap { display: flex; flex-direction: column; gap: 0.4em; position: relative; }
+.chat-textarea { width: 100%; box-sizing: border-box; background: #080d19; color: var(--text-main); border: 1px solid var(--border); border-radius: 10px; padding: 0.7em 0.8em; font: inherit; font-size: 0.95em; min-height: 58px; max-height: 180px; resize: vertical; outline: none; }
+.chat-textarea:focus { border-color: var(--primary); }
+.chat-ctrls { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; margin-top: 0.3em; }
+.chat-ctrls button { width: auto; margin: 0; padding: 0.5em 0.9em; font-size: 0.9em; }
+.chat-stream-box { margin-top: 0.8em; border: 1px solid var(--border); border-radius: 10px; background: #050811; max-height: 50vh; overflow-y: auto; padding: 0.75em 0.9em; font-size: 0.93em; line-height: 1.5; word-break: break-word; white-space: pre-wrap; position: relative; }
+.chat-stream-box:empty { display: none; }
+.code-block-wrap { position: relative; margin: 0.6em 0; }
+.code-block-wrap pre { margin: 0; padding-top: 2em; }
+.code-copy-btn { position: absolute; top: 0.4em; right: 0.5em; padding: 0.2em 0.6em; font-size: 0.75em; border-radius: 5px; background: rgba(255, 255, 255, 0.1); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+.code-copy-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
+.global-chat-btn { margin-left: auto; width: auto; padding: 0.3em 0.75em; font-size: 0.85em; display: inline-flex; align-items: center; gap: 0.35em; cursor: pointer; border-radius: 8px; }
 </style>
 </head>
 <body>
@@ -2347,7 +2419,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="stickyHead">
 <div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><span>Active repo: <strong id="selectedRepoName">...</strong></span><select id="briefingRepo" style="display:none">
 <!--REPO_OPTIONS-->
-</select></div>
+</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">💬 Chat / Ask Agent</button></div>
 <div id="tabbar" role="tablist">
 <button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
 <button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
@@ -2373,6 +2445,23 @@ below are still visible, but they need JavaScript to start a run.</div>
 </div>
 <div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
 </div>
+<div class="chat-card" id="actionsChatCard">
+  <div class="chat-head">
+    <div class="chat-title">💬 Ask Pi / Interactive Agent Chat <span class="forrepo" data-forrepo></span></div>
+    <span id="actionsPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+  <div class="chat-input-wrap">
+    <textarea id="actionsChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
+    <div class="chat-ctrls">
+      <button id="actionsChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="actionsChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="actionsChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="actionsChatStream" class="chat-stream-box"></div>
+  <div id="actionsChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
 <div id="repairCard" class="health-card">
 <div class="health-head">Agent / Tools: Local Repair Worker</div>
 <div class="bsub" style="margin-bottom: 0.5em;">Trigger a local repair run by passing an issue number or issue URL.</div>
@@ -2391,6 +2480,23 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
+<div class="chat-card" id="briefingChatCard">
+  <div class="chat-head">
+    <div class="chat-title">💬 Ask Pi / Quick Agent Prompt <span class="forrepo" data-forrepo></span></div>
+    <span id="briefingPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Ask ad-hoc questions or task requests. Streams tokens live with phase status.</div>
+  <div class="chat-input-wrap">
+    <textarea id="briefingChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, CI status, recent commits, or task requests…"></textarea>
+    <div class="chat-ctrls">
+      <button id="briefingChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="briefingChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="briefingChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="briefingChatStream" class="chat-stream-box"></div>
+  <div id="briefingChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
 <h2>Briefing</h2>
 <details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
@@ -2402,6 +2508,23 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
+<div class="chat-card" id="piChatCard">
+  <div class="chat-head">
+    <div class="chat-title">🤖 Interactive Agent Chat & Streaming <span class="forrepo" data-forrepo></span></div>
+    <span id="piPhaseBadge" class="phase-badge">Ready</span>
+  </div>
+  <div class="bsub" style="margin-bottom:0.5em;">Interactive chat prompt with local LLM & Pi agent. Tap-to-copy code blocks, real-time token streaming, and cancellation.</div>
+  <div class="chat-input-wrap">
+    <textarea id="piChatInput" class="chat-textarea" rows="3" placeholder="Ask ad-hoc questions or task requests (e.g. 'Summarize failing CI runs in main' or 'Where are webhook handlers defined?')..."></textarea>
+    <div class="chat-ctrls">
+      <button id="piChatSendBtn" class="btn-primary">Send Prompt</button>
+      <button id="piChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+      <button id="piChatClearBtn" class="btn-ghost">Clear</button>
+    </div>
+  </div>
+  <div id="piChatStream" class="chat-stream-box"></div>
+  <div id="piChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+</div>
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -2722,6 +2845,8 @@ function friendlyError(msg) {
     return "td command failed in terminal container — check the terminal container logs or tap Refresh.";
   if (/JULES_API_KEY/.test(msg))
     return "JULES_API_KEY is not set — add it to .env to enable Jules features.";
+  if (/No such command ['"]?(?:jules|agent)['"]?/i.test(msg))
+    return "this td version can't list Jules sessions — rebuild the terminal for a newer td.";
   if (/Traceback \(most recent call last\)/i.test(msg) || /\[Errno \d+\]/.test(msg))
     return "server error encountered — check terminal container or tap Refresh.";
   return msg;
@@ -5159,6 +5284,260 @@ if (digestNotifyBtn) digestNotifyBtn.onclick = async () => {
     if (typeof confirmDialog === "function") await confirmDialog("Briefing Digest Sent", "Digest sent:\n\n" + (res.data.digest || "ok"), false);
   }
 };
+
+// --- Interactive Chat Client ---
+function initInteractiveChat(prefix) {
+  const inputEl = document.getElementById(prefix + "ChatInput");
+  const sendBtn = document.getElementById(prefix + "ChatSendBtn");
+  const abortBtn = document.getElementById(prefix + "ChatAbortBtn");
+  const clearBtn = document.getElementById(prefix + "ChatClearBtn");
+  const streamBox = document.getElementById(prefix + "ChatStream");
+  const badgeEl = document.getElementById(prefix + "PhaseBadge");
+  const errEl = document.getElementById(prefix + "ChatErr");
+
+  if (!inputEl || !sendBtn) return;
+
+  let activeSessionId = null;
+  let activeEventSource = null;
+  let rawTextBuffer = "";
+
+  function setPhase(phase, label) {
+    if (!badgeEl) return;
+    badgeEl.className = "phase-badge" + (phase ? " " + phase : "");
+    badgeEl.textContent = label || phase || "Ready";
+  }
+
+  let activeTextNode = null;
+
+  function renderFullMarkdown(container, text) {
+    container.innerHTML = "";
+    activeTextNode = null;
+    if (!text) return;
+
+    // Split markdown code blocks: ```[lang]\n...\n```
+    const parts = text.split(/(```[\s\S]*?```)/g);
+    parts.forEach(part => {
+      if (part.startsWith("```") && part.endsWith("```")) {
+        const wrap = document.createElement("div");
+        wrap.className = "code-block-wrap";
+
+        // Remove opening/closing ticks and extract code
+        const lines = part.slice(3, -3).split("\n");
+        let lang = "";
+        let codeContent = part.slice(3, -3);
+        if (lines.length > 1 && !lines[0].includes(" ")) {
+          lang = lines[0].trim();
+          codeContent = lines.slice(1).join("\n");
+        }
+
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "code-copy-btn";
+        copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+        copyBtn.onclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(codeContent);
+            copyBtn.textContent = "Copied! ✓";
+            copyBtn.classList.add("copied");
+            setTimeout(() => {
+              copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+              copyBtn.classList.remove("copied");
+            }, 2000);
+          } catch (err) {
+            copyBtn.textContent = "Failed";
+          }
+        };
+
+        const pre = document.createElement("pre");
+        pre.className = "ok";
+        const code = document.createElement("code");
+        code.textContent = codeContent;
+        pre.appendChild(code);
+
+        wrap.appendChild(copyBtn);
+        wrap.appendChild(pre);
+        container.appendChild(wrap);
+      } else {
+        const textSpan = document.createElement("span");
+        textSpan.textContent = part;
+        container.appendChild(textSpan);
+      }
+    });
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function appendStreamingToken(container, chunk) {
+    if (!chunk) return;
+
+    if (chunk.includes("```")) {
+      renderFullMarkdown(container, rawTextBuffer);
+      return;
+    }
+
+    if (!activeTextNode) {
+      activeTextNode = document.createTextNode("");
+      container.appendChild(activeTextNode);
+    }
+    activeTextNode.nodeValue += chunk;
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async function abortChat() {
+    if (!activeSessionId) return;
+    const sessId = activeSessionId;
+    if (activeEventSource) {
+      activeEventSource.close();
+      activeEventSource = null;
+    }
+    setPhase("aborted", "Aborting...");
+    try {
+      await fetchJson("/buttons/api/chat/abort", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({session_id: sessId})
+      });
+    } catch (e) {}
+    setPhase("aborted", "Aborted ⏹");
+    if (abortBtn) abortBtn.style.display = "none";
+    if (sendBtn) sendBtn.disabled = false;
+    activeSessionId = null;
+  }
+
+  async function startChat() {
+    const promptText = inputEl.value.trim();
+    if (!promptText) {
+      if (errEl) errEl.textContent = "Please enter a question or instruction.";
+      return;
+    }
+    if (errEl) errEl.textContent = "";
+
+    const picker = document.getElementById("briefingRepo");
+    const repo = picker ? picker.value : "tech-dancer";
+    const sessionId = "chat-" + Math.random().toString(36).substring(2, 10);
+    activeSessionId = sessionId;
+
+    rawTextBuffer = "";
+    streamBox.textContent = "";
+    streamBox.style.display = "block";
+
+    setPhase("prefill", "Prefill / Context...");
+    sendBtn.disabled = true;
+    if (abortBtn) {
+      abortBtn.style.display = "inline-block";
+      abortBtn.disabled = false;
+    }
+
+    const streamUrl = "/buttons/api/chat/stream?session_id=" + encodeURIComponent(sessionId) +
+                      "&repo=" + encodeURIComponent(repo) +
+                      "&prompt=" + encodeURIComponent(promptText);
+
+    try {
+      activeEventSource = new EventSource(streamUrl);
+
+      activeEventSource.addEventListener("phase", (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          const ph = payload.phase || "";
+          if (ph === "prefill") setPhase("prefill", "Analyzing Context...");
+          else if (ph === "tool_call") setPhase("tool_call", "Running Tool ⚙...");
+          else if (ph === "generating") setPhase("generating", "Generating Response...");
+          else if (ph === "done") setPhase("done", "Complete ✓" + (payload.elapsed ? " (" + payload.elapsed + "s)" : ""));
+          else if (ph === "aborted") setPhase("aborted", "Aborted ⏹");
+          else if (ph === "error") setPhase("error", "Error: " + (payload.error || "failed"));
+        } catch (ex) {}
+      });
+
+      activeEventSource.addEventListener("token", (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          const chunk = payload.token || "";
+          rawTextBuffer += chunk;
+          appendStreamingToken(streamBox, chunk);
+        } catch (ex) {}
+      });
+
+      activeEventSource.addEventListener("done", (e) => {
+        if (activeEventSource) {
+          activeEventSource.close();
+          activeEventSource = null;
+        }
+        sendBtn.disabled = false;
+        if (abortBtn) abortBtn.style.display = "none";
+        activeSessionId = null;
+        renderFullMarkdown(streamBox, rawTextBuffer);
+      });
+
+      activeEventSource.addEventListener("error", (e) => {
+        if (activeEventSource) {
+          activeEventSource.close();
+          activeEventSource = null;
+        }
+        sendBtn.disabled = false;
+        if (abortBtn) abortBtn.style.display = "none";
+        activeSessionId = null;
+        if (errEl && !rawTextBuffer) errEl.textContent = "Streaming connection closed or encountered an error.";
+        renderFullMarkdown(streamBox, rawTextBuffer);
+      });
+
+    } catch (err) {
+      sendBtn.disabled = false;
+      if (abortBtn) abortBtn.style.display = "none";
+      setPhase("error", "Error");
+      if (errEl) errEl.textContent = "Failed to start streaming: " + err;
+    }
+  }
+
+  sendBtn.onclick = startChat;
+  if (abortBtn) abortBtn.onclick = abortChat;
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      rawTextBuffer = "";
+      streamBox.innerHTML = "";
+      inputEl.value = "";
+      if (errEl) errEl.textContent = "";
+      setPhase("", "Ready");
+    };
+  }
+
+  inputEl.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      startChat();
+    }
+  });
+}
+
+initInteractiveChat("actions");
+initInteractiveChat("briefing");
+initInteractiveChat("pi");
+
+// Global Chat button click handler: navigate to Actions tab or current tab chat and focus input
+const globalChatBtn = document.getElementById("globalChatBtn");
+if (globalChatBtn) {
+  globalChatBtn.onclick = () => {
+    const activeTab = document.querySelector("#tabbar .tab.active");
+    const activeTabName = activeTab ? activeTab.dataset.tab : "actions";
+    let targetPrefix = "actions";
+    if (activeTabName === "briefing" || activeTabName === "pi") {
+      targetPrefix = activeTabName;
+    } else if (activeTabName !== "actions") {
+      const actionsTabBtn = document.querySelector('#tabbar .tab[data-tab="actions"]');
+      if (actionsTabBtn) actionsTabBtn.click();
+      targetPrefix = "actions";
+    }
+    const targetCard = document.getElementById(targetPrefix + "ChatCard");
+    const targetInput = document.getElementById(targetPrefix + "ChatInput");
+    if (targetCard) {
+      targetCard.scrollIntoView({behavior: "smooth", block: "start"});
+    }
+    if (targetInput) {
+      setTimeout(() => targetInput.focus(), 150);
+    }
+  };
+}
 </script>
 </body>
 </html>
@@ -5183,21 +5562,9 @@ def _td_run(cmd, timeout=120, prefix=None):
 
 
 def _ci_label(rollup):
-    """CI label from a gh statusCheckRollup list. Mirrors
-    briefing_summary.ci_summary (kept local: server.py cannot
-    import the summarizer script)."""
-    if rollup is None:
-        return "unknown"
-    if not rollup:
-        return "no checks"
-    failing = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
-    for check in rollup:
-        if isinstance(check, dict) and check.get("conclusion") in failing:
-            return "failing"
-    for check in rollup:
-        if isinstance(check, dict) and check.get("status") != "COMPLETED":
-            return "pending"
-    return "passing"
+    """CI label from a gh statusCheckRollup list, backed by briefing_summary.ci_summary."""
+    label, _ = ci_summary(rollup)
+    return label
 
 
 def _pr_view(pr_number, repo, repos):
@@ -5283,6 +5650,151 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _get_request_repo(self, qs_or_data=None, repos=None):
+        """Resolves (repo_name, repos_dict) from query string dict, parsed body dict,
+        or None (falling back to parsing self.path query string)."""
+        if repos is None:
+            repos = _discover_repos()
+        if qs_or_data is None:
+            qs_or_data = parse_qs(urlparse(self.path).query)
+        if isinstance(qs_or_data, dict):
+            val = qs_or_data.get("repo")
+            if isinstance(val, list) and val:
+                repo = val[0]
+            elif isinstance(val, str) and val:
+                repo = val
+            else:
+                repo = _default_repo(repos)
+        else:
+            repo = _default_repo(repos)
+        return repo, repos
+
+    def _send_sse_event(self, event, data):
+        try:
+            payload = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+            self.wfile.write(payload)
+            self.wfile.flush()
+            return True
+        except Exception:
+            return False
+
+    def _handle_chat_stream(self, prompt, repo, session_id):
+        repos = _discover_repos()
+        if repo not in repos:
+            self._json({"error": "unknown repo"}, 400)
+            return
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            self._json({"error": "empty prompt"}, 400)
+            return
+
+        prompt = prompt.strip()[:CHAT_MAX_PROMPT]
+        info = repos[repo]
+
+        # Prepare SSE response headers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+
+        with chat_sessions_lock:
+            chat_sessions[session_id] = {
+                "id": session_id,
+                "repo": repo,
+                "prompt": prompt,
+                "started_at": time.time(),
+                "aborted": False,
+                "proc": None,
+            }
+
+        _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "prompt": prompt[:150], "event": "chat started"})
+
+        start_time = time.time()
+        # Phase 1: Prefill phase
+        if not self._send_sse_event("phase", {"phase": "prefill", "message": "Analyzing context and preparing request..."}):
+            return
+
+        # Pre-filter context / prompt
+        budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
+        b64 = base64.b64encode(budgeted_prompt.encode()).decode()
+
+        # Build command: pi in print mode with read-only tools
+        cmd = (_td_prefix(info["td_cwd"]) +
+               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
+               ' | base64 -d)"')
+
+        # Check for tool calling heuristics in the request
+        tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
+        has_tool_hint = any(k in prompt.lower() for k in tool_keywords)
+
+        if has_tool_hint:
+            time.sleep(0.05)
+            self._send_sse_event("phase", {"phase": "tool_call", "message": "Inspecting repository context with tools..."})
+
+        # Spawn subprocess
+        try:
+            proc = subprocess.Popen(
+                EXEC + [cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            with chat_sessions_lock:
+                if session_id in chat_sessions:
+                    chat_sessions[session_id]["proc"] = proc
+                    if chat_sessions[session_id]["aborted"]:
+                        proc.terminate()
+        except Exception as exc:
+            self._send_sse_event("phase", {"phase": "error", "error": str(exc)})
+            self._send_sse_event("error", {"error": str(exc)})
+            with chat_sessions_lock:
+                chat_sessions.pop(session_id, None)
+            return
+
+        # Phase: generating
+        self._send_sse_event("phase", {"phase": "generating", "message": "Streaming response from model..."})
+
+        full_response = []
+        is_aborted = False
+
+        try:
+            if proc.stdout:
+                # Read chunks / lines
+                for chunk in iter(lambda: proc.stdout.read(16), ""):
+                    with chat_sessions_lock:
+                        sess = chat_sessions.get(session_id)
+                        if sess and sess.get("aborted"):
+                            is_aborted = True
+                            break
+                    full_response.append(chunk)
+                    if not self._send_sse_event("token", {"token": chunk}):
+                        # Client disconnected
+                        break
+
+            proc.wait()
+            code = proc.returncode
+        except Exception as exc:
+            code = 1
+            self._send_sse_event("error", {"error": str(exc)})
+
+        with chat_sessions_lock:
+            sess = chat_sessions.pop(session_id, None)
+            if sess and sess.get("aborted"):
+                is_aborted = True
+
+        elapsed = round(time.time() - start_time, 2)
+        if is_aborted:
+            self._send_sse_event("phase", {"phase": "aborted", "message": "Generation aborted by user.", "elapsed": elapsed})
+            self._send_sse_event("done", {"text": "".join(full_response), "aborted": True, "elapsed": elapsed})
+            _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "event": "chat aborted", "elapsed": elapsed})
+        else:
+            self._send_sse_event("phase", {"phase": "done", "message": "Complete ✓", "elapsed": elapsed})
+            self._send_sse_event("done", {"text": "".join(full_response), "aborted": False, "elapsed": elapsed})
+            _ledger_append({"kind": "chat", "session_id": session_id, "repo": repo, "event": "chat finished", "exit": code, "elapsed": elapsed})
 
     def _handle_webhook(self, body):
         secret = _webhook_secret()
@@ -5412,6 +5924,14 @@ class Handler(BaseHTTPRequestHandler):
                             "topic": ntfy_topic,
                             "last_digest": state.get("last_digest", 0)
                         }})
+        elif path == "/buttons/api/chat/stream":
+            # Interactive chat streaming endpoint via SSE (GET / query params)
+            qs = parse_qs(urlparse(self.path).query)
+            repo, repos = self._get_request_repo(qs)
+            prompt = qs.get("prompt", [""])[0]
+            session_id = qs.get("session_id", [""])[0] or uuid.uuid4().hex[:12]
+            self._handle_chat_stream(prompt, repo, session_id)
+            return
         elif path == "/buttons/api/repair/status":
             with repair_state_lock:
                 rep = dict(repair_state)
@@ -5442,9 +5962,7 @@ class Handler(BaseHTTPRequestHandler):
             # passed through. Slow (td + gh calls), so the page
             # shows a spinner while it loads. ?repo= picks the
             # repo (discovered set; default tech-dancer).
-            repos = _discover_repos()
-            repo = parse_qs(urlparse(self.path).query).get(
-                "repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5566,13 +6084,60 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": job} if job is not None
                            else {"error": "unknown job"},
                            200 if job is not None else 404)
+        elif path == "/buttons/api/prs":
+            # Open PRs for the picked repo: number, title, isDraft,
+            # mergeable, reviewDecision, headRefName, statusCheckRollup,
+            # url, author. Read-only; gh pr list with --json fields.
+            repo, repos = self._get_request_repo()
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            gh = repos[repo]["gh"]
+            try:
+                out = _td_run(
+                    "gh pr list --repo " + shlex.quote(gh) +
+                    " --state open --limit 50 --json "
+                    "number,title,isDraft,mergeable,reviewDecision,"
+                    "headRefName,statusCheckRollup,url,author",
+                    timeout=60,
+                    prefix=_td_prefix(repos[repo]["td_cwd"]))
+                raw_prs = json.loads(out) if out.strip() else []
+                prs = []
+                for pr in raw_prs:
+                    if not isinstance(pr, dict):
+                        continue
+                    num = pr.get("number")
+                    title = pr.get("title", "")
+                    draft = bool(pr.get("isDraft"))
+                    branch = pr.get("headRefName", "")
+                    mergeable = str(pr.get("mergeable") or "UNKNOWN").upper()
+                    url = pr.get("url", "")
+                    author_val = pr.get("author")
+                    author = author_val.get("login") if isinstance(author_val, dict) else (author_val or "")
+                    rollup = pr.get("statusCheckRollup")
+                    ci_status = _format_ci_status(rollup)
+                    rev_decision = _format_review_decision(pr.get("reviewDecision"))
+                    prs.append({
+                        "number": num,
+                        "title": title,
+                        "author": author,
+                        "branch": branch,
+                        "isDraft": draft,
+                        "ciStatus": ci_status,
+                        "ciLabel": _ci_label(rollup),
+                        "reviewDecision": rev_decision,
+                        "mergeable": mergeable,
+                        "url": url,
+                    })
+                self._json({"repo": repo, "prs": prs})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
         elif path == "/buttons/api/issues":
             # Open issues for the picked repo: number, title,
             # assignees, labels, updated, url, body (truncated).
             # Read-only; gh list with a fixed --json field set.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5702,7 +6267,7 @@ class Handler(BaseHTTPRequestHandler):
                     event = fr.get("event", "?")
                     html_url = fr.get("html_url") or fr.get("url")
 
-                    jobs = []
+                    wf_jobs = []
                     annotations = []
                     diagnosed_cause = "Workflow failed."
                     if run_id:
@@ -5712,7 +6277,7 @@ class Handler(BaseHTTPRequestHandler):
                             for j in jobs_json:
                                 if j.get("conclusion") == "failure":
                                     failed_steps = [s.get("name", "?") for s in (j.get("steps") or []) if s.get("conclusion") == "failure"]
-                                    jobs.append({
+                                    wf_jobs.append({
                                         "name": j.get("name", "?"),
                                         "conclusion": "failure",
                                         "failed_steps": failed_steps
@@ -5739,8 +6304,8 @@ class Handler(BaseHTTPRequestHandler):
                     if annotations:
                         first_ann = annotations[0]
                         diagnosed_cause = f"[{first_ann.get('path', 'unknown')}:{first_ann.get('start_line', '?')}] {first_ann.get('message', '')}"
-                    elif jobs:
-                        first_job = jobs[0]
+                    elif wf_jobs:
+                        first_job = wf_jobs[0]
                         steps_str = (": " + ", ".join(first_job["failed_steps"])) if first_job["failed_steps"] else ""
                         diagnosed_cause = f"Job '{first_job['name']}' failed{steps_str}."
 
@@ -5881,9 +6446,7 @@ class Handler(BaseHTTPRequestHandler):
             # state, updated, url, source repo, linked PR. Read-only.
             # Graceful when JULES_API_KEY is unset — the notice
             # pattern from the sync-nudge button.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5892,6 +6455,7 @@ class Handler(BaseHTTPRequestHandler):
                    "echo '{\"sessions\": [], "
                    "\"notice\": \"JULES_API_KEY is unset — add it to "
                    ".env to see Jules sessions\"}'; else "
+                   "td --json agent list-sessions || "
                    "td --json jules list-sessions; fi")
             try:
                 out = _td_run(cmd, timeout=120,
@@ -5918,7 +6482,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"repo": repo, "sessions": sessions,
                             "notice": data.get("notice", "")})
             except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
+                err_msg = str(exc)
+                if "No such command" in err_msg:
+                    self._json({
+                        "repo": repo,
+                        "sessions": [],
+                        "notice": "this td version can't list Jules sessions — rebuild the terminal for a newer td"
+                    })
+                else:
+                    self._json({"error": err_msg[:500]}, 500)
             return
         else:
             self._json({"error": "not found"}, 404)
@@ -5952,14 +6524,39 @@ class Handler(BaseHTTPRequestHandler):
 
             self._json({"ok": True, "title": title, "body": md_body})
             return
+        if path == "/buttons/api/chat/stream":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repo, repos = self._get_request_repo(data)
+            prompt = data.get("prompt", "")
+            session_id = data.get("session_id") or uuid.uuid4().hex[:12]
+            self._handle_chat_stream(prompt, repo, session_id)
+            return
+        if path == "/buttons/api/chat/abort":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            session_id = data.get("session_id")
+            if not session_id or not isinstance(session_id, str):
+                self._json({"error": "invalid session_id"}, 400)
+                return
+            ok, err = _chat_abort_session(session_id)
+            if not ok:
+                self._json({"error": err or "abort failed"}, 404)
+                return
+            _ledger_append({"kind": "chat", "session_id": session_id, "event": "chat aborted via api"})
+            self._json({"ok": True, "session_id": session_id})
+            return
         if path == "/buttons/api/jules/dispatch":
             # General agent handoff: dispatch Jules session for branch tasks or reviews
             try:
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5973,7 +6570,6 @@ class Handler(BaseHTTPRequestHandler):
             cmd = f"td --json agent dispatch --prompt {shlex.quote(prompt)}"
             if branch:
                 cmd += f" --branch {shlex.quote(branch)}"
-
             try:
                 # Try running td agent dispatch, fallback to simulated session initiation if td version lacks command
                 out = ""
@@ -6126,8 +6722,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
             pr_number, action = data.get("pr_number"), data.get("action")
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
                     or pr_number <= 0 \
                     or action not in ("merge", "update", "fix-ci") \
@@ -6164,8 +6759,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             rid, err = _pi_start("suggest", repo)
             if err:
                 self._json({"error": err}, 400)
@@ -6186,8 +6780,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             rid, err = _pi_start("ask", repo, data.get("instruction"))
             if err:
                 self._json({"error": err}, 400)
@@ -6206,8 +6799,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             title, body_text = data.get("title"), data.get("body", "")
             if repo not in repos or not isinstance(title, str) \
                     or not title.strip() or len(title) > 200 \
@@ -6242,8 +6834,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             issue = str(data.get("issue", ""))
             assignee = str(data.get("assignee", "")).strip()
             if repo not in repos or not issue.isdigit() \
@@ -6280,8 +6871,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             plan = data.get("plan")
             if repo not in repos or plan not in (
                     "issue-audit", "workflow-audit", "review",
@@ -6343,8 +6933,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             tokens = _validate_td_command(data.get("command", ""))
             if repo not in repos or not tokens:
                 self._json({"error": "bad repo or command"}, 400)
@@ -6362,8 +6951,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             pr = data.get("pr")
             issues = data.get("issues")
             job, err = _job_create(data.get("template"), repo, pr,
@@ -6409,56 +6997,9 @@ class Handler(BaseHTTPRequestHandler):
                         {"step": step, "decision": "approved",
                          "at": st["approved_at"]})
                     kind = st["kind"]
-                if kind == "pr-action":
-                    # Synchronous: gates re-checked inside _pr_action.
-                    try:
-                        _pr_action(job["pr"], st["action"], job["repo"],
-                                   _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step, "event": "step done"
-                                    if ok else "step failed",
-                                    "ok": ok})
-                    self._json({"ok": ok, "state": st["state"],
-                                "error": err})
-                    return
-                if kind == "label-issue":
-                    # Synchronous: label the issue 'jules' to start
-                    # a Jules session on it (Jules GitHub
-                    # integration). Gates re-checked in
-                    # _label_issue_jules.
-                    try:
-                        _label_issue_jules(job["repo"], st["issue"],
-                                           _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step,
-                                    "event": "dispatched Jules on #"
-                                    + str(st["issue"]) if ok
-                                    else "dispatch failed",
-                                    "ok": ok})
+                if kind in ("pr-action", "label-issue"):
+                    # Synchronous: executed via helper
+                    ok, err = _execute_job_step(job, step, st)
                     self._json({"ok": ok, "state": st["state"],
                                 "error": err})
                     return
@@ -6540,8 +7081,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             data = {}
         action = data.get("action")
-        repos = _discover_repos()
-        repo = data.get("repo", _default_repo(repos))
+        repo, repos = self._get_request_repo(data)
         if action not in ACTIONS:
             self._json({"error": "unknown action"}, 400)
             return
