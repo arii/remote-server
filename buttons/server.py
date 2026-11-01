@@ -4850,64 +4850,82 @@ function initInteractiveChat(prefix) {
     badgeEl.textContent = label || phase || "Ready";
   }
 
-  function renderStreamingContent(container, text) {
-    container.innerHTML = "";
-    if (!text) return;
+  let renderScheduled = false;
+  function renderStreamingContent(container, text, forceImmediate) {
+    const doRender = () => {
+      renderScheduled = false;
+      container.innerHTML = "";
+      if (!text) return;
 
-    // Split markdown code blocks: ```[lang]\n...\n```
-    const parts = text.split(/(```[\s\S]*?```)/g);
-    parts.forEach(part => {
-      if (part.startsWith("```") && part.endsWith("```")) {
-        const wrap = document.createElement("div");
-        wrap.className = "code-block-wrap";
+      // Split markdown code blocks: ```[lang]\n...\n```
+      const parts = text.split(/(```[\s\S]*?```)/g);
+      parts.forEach(part => {
+        if (part.startsWith("```") && part.endsWith("```")) {
+          const wrap = document.createElement("div");
+          wrap.className = "code-block-wrap";
 
-        // Remove opening/closing ticks and extract code
-        const lines = part.slice(3, -3).split("\n");
-        let lang = "";
-        let codeContent = part.slice(3, -3);
-        if (lines.length > 1 && !lines[0].includes(" ")) {
-          lang = lines[0].trim();
-          codeContent = lines.slice(1).join("\n");
-        }
-
-        const copyBtn = document.createElement("button");
-        copyBtn.type = "button";
-        copyBtn.className = "code-copy-btn";
-        copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
-        copyBtn.onclick = async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          try {
-            await navigator.clipboard.writeText(codeContent);
-            copyBtn.textContent = "Copied! ✓";
-            copyBtn.classList.add("copied");
-            setTimeout(() => {
-              copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
-              copyBtn.classList.remove("copied");
-            }, 2000);
-          } catch (err) {
-            copyBtn.textContent = "Failed";
+          // Remove opening/closing ticks and extract code
+          const lines = part.slice(3, -3).split("\n");
+          let lang = "";
+          let codeContent = part.slice(3, -3);
+          if (lines.length > 1 && !lines[0].includes(" ")) {
+            lang = lines[0].trim();
+            codeContent = lines.slice(1).join("\n");
           }
-        };
 
-        const pre = document.createElement("pre");
-        pre.className = "ok";
-        const code = document.createElement("code");
-        code.textContent = codeContent;
-        pre.appendChild(code);
+          const copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "code-copy-btn";
+          copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+          copyBtn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try {
+              await navigator.clipboard.writeText(codeContent);
+              copyBtn.textContent = "Copied! ✓";
+              copyBtn.classList.add("copied");
+              setTimeout(() => {
+                copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+                copyBtn.classList.remove("copied");
+              }, 2000);
+            } catch (err) {
+              copyBtn.textContent = "Failed";
+            }
+          };
 
-        wrap.appendChild(copyBtn);
-        wrap.appendChild(pre);
-        container.appendChild(wrap);
-      } else {
-        const textSpan = document.createElement("span");
-        textSpan.textContent = part;
-        container.appendChild(textSpan);
-      }
-    });
+          const pre = document.createElement("pre");
+          pre.className = "ok";
+          const code = document.createElement("code");
+          code.textContent = codeContent;
+          pre.appendChild(code);
 
-    // Auto-scroll to bottom of stream container
-    container.scrollTop = container.scrollHeight;
+          wrap.appendChild(copyBtn);
+          wrap.appendChild(pre);
+          container.appendChild(wrap);
+        } else {
+          const textSpan = document.createElement("span");
+          textSpan.textContent = part;
+          container.appendChild(textSpan);
+        }
+      });
+
+      // Auto-scroll to bottom of stream container
+      container.scrollTop = container.scrollHeight;
+    };
+
+    if (forceImmediate) {
+      renderScheduled = false;
+      doRender();
+      return;
+    }
+
+    if (renderScheduled) return;
+    renderScheduled = true;
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(doRender);
+    } else {
+      setTimeout(doRender, 16);
+    }
   }
 
   async function abortChat() {
@@ -4989,6 +5007,7 @@ function initInteractiveChat(prefix) {
           activeEventSource.close();
           activeEventSource = null;
         }
+        renderStreamingContent(streamBox, rawTextBuffer, true);
         sendBtn.disabled = false;
         if (abortBtn) abortBtn.style.display = "none";
         activeSessionId = null;
