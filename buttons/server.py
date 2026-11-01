@@ -2271,6 +2271,14 @@ a { color: #8bf; }
 .jules-session-row { border-top: 1px solid var(--border); padding: 0.4em 0; display: flex; flex-direction: column; gap: 0.2em; }
 .jules-session-head { display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
 .jules-session-meta { font-size: 0.85em; color: var(--text-muted); }
+.repair-control-row { display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; margin-bottom: 0.5em; }
+.repair-input { flex: 1; min-width: 180px; padding: 0.6em; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.repair-btn { width: auto; margin: 0; padding: 0.6em 1em; }
+.repair-status-badge { font-size: 0.9em; margin: 0.3em 0; }
+.repair-err { color: var(--danger); font-size: 0.9em; }
+.repair-details { margin-top: 0.4em; }
+.repair-details summary { cursor: pointer; font-size: 0.85em; color: var(--text-muted); }
+.repair-log { max-height: 200px; overflow-y: auto; font-size: 0.85em; margin-top: 0.3em; }
 </style>
 </head>
 <body>
@@ -2316,15 +2324,15 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="repairCard" class="health-card">
 <div class="health-head">Agent / Tools: Local Repair Worker</div>
 <div class="bsub" style="margin-bottom: 0.5em;">Trigger a local repair run by passing an issue number or issue URL.</div>
-<div style="display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; margin-bottom: 0.5em;">
-  <input id="repairIssueInput" type="text" placeholder="Issue number (e.g. 42) or URL" style="flex: 1; min-width: 180px; padding: 0.6em; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); border-radius: 8px;">
-  <button id="dispatchRepairBtn" class="btn-primary" style="width: auto; margin: 0; padding: 0.6em 1em;">Dispatch repair</button>
+<div class="repair-control-row">
+  <input id="repairIssueInput" class="repair-input" type="text" placeholder="Issue number (e.g. 42) or URL">
+  <button id="dispatchRepairBtn" class="btn-primary repair-btn">Dispatch repair</button>
 </div>
-<div id="repairStatusBadge" style="font-size: 0.9em; margin: 0.3em 0;">Repair Status: <span id="repairStatusText" class="chip">idle</span></div>
-<div id="repairErr" style="color: var(--danger); font-size: 0.9em;"></div>
-<details id="repairDetails" style="margin-top: 0.4em;">
-  <summary style="cursor: pointer; font-size: 0.85em; color: var(--text-muted);">Repair progress and log</summary>
-  <pre id="repairLog" style="max-height: 200px; overflow-y: auto; font-size: 0.85em; margin-top: 0.3em;">(no repair runs yet)</pre>
+<div id="repairStatusBadge" class="repair-status-badge">Repair Status: <span id="repairStatusText" class="chip">idle</span></div>
+<div id="repairErr" class="repair-err"></div>
+<details id="repairDetails" class="repair-details">
+  <summary>Repair progress and log</summary>
+  <pre id="repairLog" class="repair-log">(no repair runs yet)</pre>
 </details>
 </div>
 <div id="buttons"><!--BUTTONS--></div>
