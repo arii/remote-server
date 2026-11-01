@@ -1002,6 +1002,209 @@ def _trigger_repair(issue_number):
     t.start()
     return t
 
+
+# --- Plan execution & discovery state ------------------------------
+plan_execution_state = {
+    "status": "idle",
+    "plan": None,
+    "repo": None,
+    "timestamp": None,
+    "log_buffer": "",
+    "exit_code": None,
+}
+plan_execution_lock = threading.Lock()
+PLAN_FILE_RE = re.compile(r"^[A-Za-z0-9._-]+\.md$")
+
+
+def _get_repo_plans_dir(repo, repos):
+    """Resolve the directory containing .agents/plans/ for a given repo."""
+    if repo not in repos:
+        return None
+    custom_dir = os.environ.get("BUTTONS_PLANS_DIR")
+    if custom_dir and os.path.isdir(custom_dir):
+        return custom_dir
+    info = repos[repo]
+    host_path = info.get("host_path", "")
+    plans_dir = os.path.join(host_path, ".agents", "plans")
+    if os.path.isdir(plans_dir):
+        return plans_dir
+    alt_dir = os.path.join(os.getcwd(), ".agents", "plans")
+    if os.path.isdir(alt_dir):
+        return alt_dir
+    return plans_dir
+
+
+def _parse_plan_title(content, filename):
+    """Extract a human-friendly title from markdown content or filename."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            title = line.lstrip("#").strip()
+            if title:
+                return title[:120]
+    base = filename
+    if base.endswith(".md"):
+        base = base[:-3]
+    return base.replace("-", " ").replace("_", " ").capitalize()
+
+
+def _count_plan_tasks(content):
+    """Count total and completed checklist tasks in markdown content."""
+    total = 0
+    completed = 0
+    for line in content.splitlines():
+        line = line.strip()
+        if re.match(r"^[-*+]\s+\[[\sxX]\]", line):
+            total += 1
+            if re.match(r"^[-*+]\s+\[[xX]\]", line):
+                completed += 1
+    return total, completed
+
+
+def _list_repo_plans(repo, repos):
+    """List plan files in .agents/plans/ for the repo, sorted newest first."""
+    plans_dir = _get_repo_plans_dir(repo, repos)
+    if not plans_dir or not os.path.isdir(plans_dir):
+        return []
+    results = []
+    try:
+        entries = sorted(os.listdir(plans_dir))
+    except Exception as exc:
+        print(f"error listing plans in {plans_dir}: {exc}", flush=True)
+        return []
+
+    for name in entries:
+        if not PLAN_FILE_RE.match(name):
+            continue
+        full_path = os.path.join(plans_dir, name)
+        if not os.path.isfile(full_path):
+            continue
+        try:
+            stat = os.stat(full_path)
+            mtime = stat.st_mtime
+            with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(4096)
+            title = _parse_plan_title(content, name)
+            total_tasks, completed_tasks = _count_plan_tasks(content)
+            results.append({
+                "filename": name,
+                "title": title,
+                "mtime": mtime,
+                "size": stat.st_size,
+                "total_tasks": total_tasks,
+                "completed_tasks": completed_tasks,
+            })
+        except Exception as exc:
+            print(f"failed reading plan info for {name}: {exc}", flush=True)
+
+    results.sort(key=lambda p: p["mtime"], reverse=True)
+    return results
+
+
+def _read_repo_plan(repo, plan_name, repos):
+    """Read full markdown content of a plan file with path validation."""
+    if not isinstance(plan_name, str) or not PLAN_FILE_RE.match(plan_name):
+        return None, "invalid plan filename"
+    plans_dir = _get_repo_plans_dir(repo, repos)
+    if not plans_dir:
+        return None, "repo not found"
+    full_path = os.path.normpath(os.path.join(plans_dir, plan_name))
+    if not full_path.startswith(os.path.normpath(plans_dir) + os.sep):
+        return None, "path traversal rejected"
+    if not os.path.isfile(full_path):
+        return None, "plan file not found"
+    try:
+        stat = os.stat(full_path)
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        title = _parse_plan_title(content, plan_name)
+        total_tasks, completed_tasks = _count_plan_tasks(content)
+        return {
+            "filename": plan_name,
+            "title": title,
+            "content": content,
+            "mtime": stat.st_mtime,
+            "size": stat.st_size,
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+        }, None
+    except Exception as exc:
+        return None, str(exc)[:500]
+
+
+def _plan_execution_thread(repo, plan_name, repos):
+    """Execute plan actionable tasks using repair worker or task dispatcher."""
+    with plan_execution_lock:
+        plan_execution_state["status"] = "running"
+        plan_execution_state["plan"] = plan_name
+        plan_execution_state["repo"] = repo
+        plan_execution_state["timestamp"] = time.time()
+        plan_execution_state["log_buffer"] = (
+            f"Dispatched execution for plan '{plan_name}' on repo '{repo}'\n"
+        )
+        plan_execution_state["exit_code"] = None
+
+    _ledger_append({
+        "kind": "run",
+        "action": "execute-plan",
+        "repo": repo,
+        "plan": plan_name,
+        "event": "plan execution started",
+    })
+
+    plans_dir = _get_repo_plans_dir(repo, repos)
+    plan_full_path = os.path.join(plans_dir, plan_name) if plans_dir else plan_name
+
+    cmd = ["python3", "scripts/repair_worker.py", "--plan", plan_full_path]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                with plan_execution_lock:
+                    plan_execution_state["log_buffer"] += line
+                    if len(plan_execution_state["log_buffer"]) > MAX_OUTPUT:
+                        plan_execution_state["log_buffer"] = (
+                            plan_execution_state["log_buffer"][-MAX_OUTPUT:]
+                        )
+        code = proc.wait()
+        with plan_execution_lock:
+            plan_execution_state["status"] = "done" if code == 0 else "failed"
+            plan_execution_state["exit_code"] = code
+            plan_execution_state["log_buffer"] += f"\nPlan execution finished with code {code}\n"
+    except Exception as exc:
+        with plan_execution_lock:
+            plan_execution_state["status"] = "failed"
+            plan_execution_state["exit_code"] = 1
+            plan_execution_state["log_buffer"] += f"\nFailed to execute plan: {exc}\n"
+
+    with plan_execution_lock:
+        final_status = plan_execution_state["status"]
+        final_code = plan_execution_state["exit_code"]
+
+    _ledger_append({
+        "kind": "run",
+        "action": "execute-plan",
+        "repo": repo,
+        "plan": plan_name,
+        "event": "plan execution " + final_status,
+        "exit": final_code,
+    })
+
+
+def _trigger_plan_execution(repo, plan_name, repos):
+    """Trigger background plan execution thread."""
+    t = threading.Thread(
+        target=_plan_execution_thread, args=(repo, plan_name, repos), daemon=True
+    )
+    t.start()
+    return t
+
 # Steps run under a PTY (see _run_step): commands then emit the
 # ANSI colours they would show in the terminal, and the page renders
 # them. A TTY stdout also makes some tools page their output (git
@@ -2373,6 +2576,30 @@ a { color: #8bf; }
 .review-prompt-btn { text-align: left; padding: 0.6em 0.8em; font-size: 0.85em; border-radius: 6px; }
 .review-prompt-btn small { display: block; color: var(--text-muted); font-size: 0.78em; margin-top: 0.2em; }
 
+/* Audit Plans & Reports viewer */
+.plans-drawer { margin-top: 0.8em; }
+.plans-drawer summary { cursor: pointer; font-size: 1.05em; font-weight: bold; }
+.plans-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6em; }
+.plans-list { display: flex; flex-direction: column; gap: 0.4em; margin-bottom: 0.8em; max-height: 180px; overflow-y: auto; }
+.plan-item-btn { display: flex; justify-content: space-between; align-items: center; padding: 0.5em 0.8em; border-radius: 8px; width: 100%; box-sizing: border-box; text-align: left; }
+.plan-item-btn.selected { border-color: var(--primary); background: var(--bg-card-hover); }
+.plan-item-title { font-weight: 600; font-size: 0.92em; }
+.plan-item-meta { font-size: 0.8em; color: var(--text-muted); display: flex; gap: 0.5em; align-items: center; }
+.plan-viewer-card { border: 1px solid var(--border); border-radius: 10px; background: #080d1a; padding: 0.8em; margin-top: 0.6em; display: none; }
+.plan-viewer-card.open { display: block; }
+.plan-viewer-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5em; margin-bottom: 0.6em; flex-wrap: wrap; gap: 0.5em; }
+.plan-viewer-title { font-weight: bold; font-size: 1.05em; }
+.plan-actions-bar { display: flex; gap: 0.5em; align-items: center; flex-wrap: wrap; }
+.plan-exec-btn { width: auto; margin: 0; padding: 0.45em 0.9em; font-size: 0.88em; }
+.plan-status-badge { font-size: 0.82em; }
+.plan-rendered-markdown { line-height: 1.5; font-size: 0.92em; max-height: 50vh; overflow-y: auto; padding: 0.5em; background: #050811; border-radius: 8px; border: 1px solid var(--border); }
+.plan-rendered-markdown h1, .plan-rendered-markdown h2, .plan-rendered-markdown h3 { margin: 0.6em 0 0.3em; color: var(--text-main); font-size: 1.1em; }
+.plan-rendered-markdown ul { margin: 0.4em 0; padding-left: 1.3em; }
+.plan-rendered-markdown li { margin: 0.25em 0; }
+.plan-checklist-item { list-style: none; display: flex; align-items: baseline; gap: 0.4em; }
+.plan-rendered-markdown pre { background: #0d1117; padding: 0.5em; border-radius: 6px; overflow-x: auto; margin: 0.4em 0; font-size: 0.85em; }
+.plan-rendered-markdown code { background: rgba(255,255,255,0.08); padding: 0.15em 0.3em; border-radius: 4px; font-size: 0.9em; color: #ffd75e; }
+.plan-rendered-markdown blockquote { margin: 0.4em 0; padding-left: 0.8em; border-left: 3px solid var(--primary); color: var(--text-muted); }
 /* interactive chat card & mobile-friendly streaming viewer */
 .chat-card { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card); padding: 0.8em; margin: 0.6em 0 1em; }
 .chat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5em; flex-wrap: wrap; gap: 0.5em; }
@@ -2453,6 +2680,35 @@ below are still visible, but they need JavaScript to start a run.</div>
   <pre id="repairLog" class="repair-log">(no repair runs yet)</pre>
 </details>
 </div>
+<details id="auditPlansDrawer" class="health-card plans-drawer" open>
+  <summary class="health-head">Audit Plans &amp; Reports <span class="forrepo" data-forrepo></span></summary>
+  <div class="bsub" style="margin-bottom: 0.6em;">View generated audit/CI execution plans (.agents/plans/) and trigger execution via repair worker.</div>
+  <div class="plans-header-row">
+    <span>Saved plans</span>
+    <button id="refreshPlansBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.2em 0.6em;font-size:0.8em;">Refresh plans</button>
+  </div>
+  <div id="plansListContainer" class="plans-list"><span class="spinner"></span> Loading plans…</div>
+  <div id="plansListErr" class="repair-err"></div>
+  <div id="planViewerCard" class="plan-viewer-card">
+    <div class="plan-viewer-head">
+      <div>
+        <div id="planViewerTitle" class="plan-viewer-title">Plan Details</div>
+        <div id="planViewerMeta" class="bsub"></div>
+      </div>
+      <div class="plan-actions-bar">
+        <span id="planExecStatusBadge" class="chip plan-status-badge">Ready</span>
+        <button id="executePlanBtn" class="btn-primary plan-exec-btn">Execute Plan</button>
+        <button id="closePlanViewerBtn" class="btn-ghost" style="width:auto;margin:0;padding:0.3em 0.6em;font-size:0.8em;">✕ Close</button>
+      </div>
+    </div>
+    <div id="planExecErr" class="repair-err"></div>
+    <div id="planMarkdownContainer" class="plan-rendered-markdown"></div>
+    <details id="planExecLogDetails" class="repair-details" style="display:none; margin-top:0.6em;">
+      <summary>Plan execution logs</summary>
+      <pre id="planExecLog" class="repair-log">(no logs yet)</pre>
+    </details>
+  </div>
+</details>
 <div id="buttons"><!--BUTTONS--></div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
@@ -3249,6 +3505,8 @@ async function poll(id, action) {
       // output went.
       if (run.action === "briefing-td" &&
           typeof refreshBriefing === "function") refreshBriefing();
+      if (run.action === "create-plan" &&
+          typeof refreshPlans === "function") refreshPlans();
       // Any finished run is a new ledger line.
       if (typeof refreshLedger === "function") refreshLedger();
       // A finished job step advances the job's plan.
@@ -5443,6 +5701,338 @@ refreshStatus();
 if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 setInterval(refreshStatus, 10000);
 
+// --- Audit Plans & Reports Viewer & Execution ---
+let activePlanName = null;
+let activePlanRepo = null;
+let plansPollingInterval = null;
+
+function renderPlanMarkdown(mdText) {
+  if (!mdText) return "<p><em>(Empty plan)</em></p>";
+  const lines = mdText.split("\n");
+  let html = "";
+  let inCode = false;
+  let codeBuffer = [];
+  let inList = false;
+
+  function closeList() {
+    if (inList) {
+      html += "</ul>\n";
+      inList = false;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        html += "<pre><code>" + escHtml(codeBuffer.join("\n")) + "</code></pre>\n";
+        codeBuffer = [];
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuffer.push(rawLine);
+      continue;
+    }
+
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    // Check for checklist items: - [ ] or - [x]
+    const checkMatch = rawLine.match(/^(\s*)[-*+]\s+\[([\sxX])\]\s*(.*)$/);
+    if (checkMatch) {
+      if (!inList) {
+        html += "<ul>\n";
+        inList = true;
+      }
+      const isChecked = checkMatch[2].toLowerCase() === "x";
+      const taskText = formatInlineMarkdown(checkMatch[3]);
+      html += '<li class="plan-checklist-item">' +
+        '<input type="checkbox" disabled ' + (isChecked ? 'checked' : '') + ' style="margin-right:0.4em">' +
+        '<span>' + taskText + '</span></li>\n';
+      continue;
+    }
+
+    // Standard list items
+    const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
+    if (listMatch) {
+      if (!inList) {
+        html += "<ul>\n";
+        inList = true;
+      }
+      html += "<li>" + formatInlineMarkdown(listMatch[2]) + "</li>\n";
+      continue;
+    }
+
+    closeList();
+
+    // Headers
+    if (trimmed.startsWith("### ")) {
+      html += "<h3>" + formatInlineMarkdown(trimmed.slice(4)) + "</h3>\n";
+    } else if (trimmed.startsWith("## ")) {
+      html += "<h2>" + formatInlineMarkdown(trimmed.slice(3)) + "</h2>\n";
+    } else if (trimmed.startsWith("# ")) {
+      html += "<h1>" + formatInlineMarkdown(trimmed.slice(2)) + "</h1>\n";
+    } else if (trimmed.startsWith("> ")) {
+      html += "<blockquote>" + formatInlineMarkdown(trimmed.slice(2)) + "</blockquote>\n";
+    } else {
+      html += "<p>" + formatInlineMarkdown(trimmed) + "</p>\n";
+    }
+  }
+  closeList();
+  if (inCode && codeBuffer.length) {
+    html += "<pre><code>" + escHtml(codeBuffer.join("\n")) + "</code></pre>\n";
+  }
+  return html;
+}
+
+function formatInlineMarkdown(text) {
+  let s = escHtml(text || "");
+  // Bold **text**
+  s = s.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  // Inline code `code`
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Links [label](url)
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return s;
+}
+
+function getSelectedRepo() {
+  const picker = document.getElementById("briefingRepo");
+  return picker ? picker.value : "tech-dancer";
+}
+
+async function refreshPlans() {
+  const listEl = document.getElementById("plansListContainer");
+  const errEl = document.getElementById("plansListErr");
+  if (!listEl) return;
+  const repo = getSelectedRepo();
+  listEl.innerHTML = '<span class="spinner"></span> Loading plans…';
+  if (errEl) errEl.textContent = "";
+
+  try {
+    const res = await fetchJson("/buttons/api/plans?repo=" + encodeURIComponent(repo));
+    if (!res.ok) {
+      listEl.innerHTML = "";
+      if (errEl) setErrorEl(errEl, (res.data && res.data.error) || res.status, "plans unavailable");
+      return;
+    }
+    const plans = (res.data && res.data.plans) || [];
+    listEl.innerHTML = "";
+    if (!plans.length) {
+      listEl.innerHTML = '<div style="color:var(--text-muted); padding:0.4em 0;">No saved plans found in .agents/plans/ for ' + escHtml(repo) + '.</div>';
+      const viewerCard = document.getElementById("planViewerCard");
+      if (viewerCard) viewerCard.classList.remove("open");
+      return;
+    }
+
+    plans.forEach(plan => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "plan-item-btn";
+      if (activePlanName === plan.filename) btn.classList.add("selected");
+
+      const titleEl = document.createElement("span");
+      titleEl.className = "plan-item-title";
+      titleEl.textContent = plan.title || plan.filename;
+
+      const metaEl = document.createElement("span");
+      metaEl.className = "plan-item-meta";
+      let dateStr = "";
+      if (plan.mtime) {
+        try { dateStr = new Date(plan.mtime * 1000).toLocaleDateString(); } catch (e) {}
+      }
+      const taskSummary = (plan.total_tasks > 0) ? (plan.completed_tasks + "/" + plan.total_tasks + " tasks") : "";
+      metaEl.textContent = [dateStr, taskSummary].filter(Boolean).join(" · ");
+
+      btn.appendChild(titleEl);
+      btn.appendChild(metaEl);
+
+      btn.onclick = () => loadPlan(plan.filename);
+      listEl.appendChild(btn);
+    });
+
+    // If an active plan was selected, keep it, else auto-load the newest
+    if (!activePlanName && plans.length > 0) {
+      loadPlan(plans[0].filename);
+    }
+  } catch (e) {
+    listEl.innerHTML = "";
+    if (errEl) setErrorEl(errEl, e, "plans unavailable");
+  }
+}
+
+async function loadPlan(planName) {
+  activePlanName = planName;
+  activePlanRepo = getSelectedRepo();
+
+  // Update selected highlight in list
+  document.querySelectorAll(".plan-item-btn").forEach(btn => {
+    btn.classList.toggle("selected", btn.textContent.includes(planName));
+  });
+
+  const viewerCard = document.getElementById("planViewerCard");
+  const titleEl = document.getElementById("planViewerTitle");
+  const metaEl = document.getElementById("planViewerMeta");
+  const contentEl = document.getElementById("planMarkdownContainer");
+  const errEl = document.getElementById("planExecErr");
+  if (!viewerCard) return;
+
+  viewerCard.classList.add("open");
+  if (errEl) errEl.textContent = "";
+  if (contentEl) contentEl.innerHTML = '<span class="spinner"></span> Loading plan content…';
+
+  try {
+    const res = await fetchJson("/buttons/api/plan?repo=" + encodeURIComponent(activePlanRepo) + "&plan=" + encodeURIComponent(planName));
+    if (!res.ok) {
+      if (contentEl) contentEl.textContent = "";
+      if (errEl) setErrorEl(errEl, (res.data && res.data.error) || res.status, "failed to load plan");
+      return;
+    }
+    const p = (res.data && res.data.plan) || {};
+    if (titleEl) titleEl.textContent = p.title || p.filename;
+    if (metaEl) {
+      let when = "";
+      if (p.mtime) {
+        try { when = new Date(p.mtime * 1000).toLocaleString(); } catch (e) {}
+      }
+      const tasksStr = (p.total_tasks > 0) ? (p.completed_tasks + "/" + p.total_tasks + " completed") : "";
+      metaEl.textContent = [p.filename, when, tasksStr].filter(Boolean).join(" · ");
+    }
+    if (contentEl) {
+      contentEl.innerHTML = renderPlanMarkdown(p.content || "");
+    }
+  } catch (e) {
+    if (contentEl) contentEl.textContent = "";
+    if (errEl) setErrorEl(errEl, e, "failed to load plan");
+  }
+}
+
+async function executePlan(planName) {
+  if (!planName) return;
+  const repo = activePlanRepo || getSelectedRepo();
+  const confirmed = await confirmDialog(
+    "Execute Plan",
+    "Execute plan '" + planName + "' on " + repo + "?\nActionable tasks will be dispatched to the repair worker.",
+    false
+  );
+  if (!confirmed) return;
+
+  const btn = document.getElementById("executePlanBtn");
+  const badge = document.getElementById("planExecStatusBadge");
+  const errEl = document.getElementById("planExecErr");
+  if (btn) btn.disabled = true;
+  if (errEl) errEl.textContent = "";
+  if (badge) {
+    badge.textContent = "Pending…";
+    badge.className = "chip plan-status-badge chip-warn";
+  }
+
+  try {
+    const res = await fetchJson("/buttons/api/plan/execute", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({repo: repo, plan: planName})
+    });
+    if (!res.ok) {
+      if (errEl) setErrorEl(errEl, (res.data && res.data.error) || res.status, "execution failed");
+      if (badge) {
+        badge.textContent = "Failed";
+        badge.className = "chip plan-status-badge chip-fail";
+      }
+      return;
+    }
+    if (badge) {
+      badge.textContent = "In Progress";
+      badge.className = "chip plan-status-badge chip-warn";
+    }
+    const logDetails = document.getElementById("planExecLogDetails");
+    if (logDetails) logDetails.style.display = "block";
+    pollPlanStatus();
+    if (typeof refreshLedger === "function") refreshLedger();
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function pollPlanStatus() {
+  if (plansPollingInterval) clearInterval(plansPollingInterval);
+  const badge = document.getElementById("planExecStatusBadge");
+  const logEl = document.getElementById("planExecLog");
+
+  const tick = async () => {
+    try {
+      const res = await fetchJson("/buttons/api/plan/status");
+      if (!res.ok) return;
+      const st = res.data || {};
+      const status = st.status || "idle";
+
+      if (badge) {
+        if (status === "running") {
+          badge.textContent = "In Progress";
+          badge.className = "chip plan-status-badge chip-warn";
+        } else if (status === "done") {
+          badge.textContent = "Completed";
+          badge.className = "chip plan-status-badge chip-ok";
+        } else if (status === "failed") {
+          badge.textContent = "Failed";
+          badge.className = "chip plan-status-badge chip-fail";
+        } else {
+          badge.textContent = "Ready";
+          badge.className = "chip plan-status-badge";
+        }
+      }
+
+      if (logEl && st.log_buffer) {
+        logEl.textContent = st.log_buffer;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      if (status === "done" || status === "failed") {
+        clearInterval(plansPollingInterval);
+        plansPollingInterval = null;
+        if (typeof refreshLedger === "function") refreshLedger();
+      }
+    } catch (e) {}
+  };
+
+  tick();
+  plansPollingInterval = setInterval(tick, 3000);
+}
+
+const refreshPlansBtn = document.getElementById("refreshPlansBtn");
+if (refreshPlansBtn) refreshPlansBtn.onclick = () => refreshPlans();
+
+const executePlanBtn = document.getElementById("executePlanBtn");
+if (executePlanBtn) executePlanBtn.onclick = () => {
+  if (activePlanName) executePlan(activePlanName);
+};
+
+const closePlanViewerBtn = document.getElementById("closePlanViewerBtn");
+if (closePlanViewerBtn) closePlanViewerBtn.onclick = () => {
+  const viewerCard = document.getElementById("planViewerCard");
+  if (viewerCard) viewerCard.classList.remove("open");
+  activePlanName = null;
+  document.querySelectorAll(".plan-item-btn").forEach(b => b.classList.remove("selected"));
+};
+
+// Wire plan refresh to repo picker
+if (_pickerEl) {
+  _pickerEl.addEventListener("change", () => {
+    activePlanName = null;
+    refreshPlans();
+  });
+}
+refreshPlans();
+
 const testNotifyBtn = document.getElementById("testNotifyBtn");
 if (testNotifyBtn) testNotifyBtn.onclick = async () => {
   testNotifyBtn.disabled = true;
@@ -6128,6 +6718,35 @@ class Handler(BaseHTTPRequestHandler):
             with repair_state_lock:
                 rep = dict(repair_state)
             self._json(rep)
+        elif path == "/buttons/api/plan/status":
+            with plan_execution_lock:
+                pst = dict(plan_execution_state)
+            self._json(pst)
+        elif path == "/buttons/api/plans":
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            plans = _list_repo_plans(repo, repos)
+            self._json({"repo": repo, "plans": plans})
+            return
+        elif path == "/buttons/api/plan":
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            plan_name = qs.get("plan", [""])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            plan_data, err = _read_repo_plan(repo, plan_name, repos)
+            if err:
+                code = 400 if "invalid" in err or "traversal" in err else 404
+                self._json({"error": err}, code)
+                return
+            self._json({"repo": repo, "plan": plan_data})
+            return
         elif path == "/buttons/api/health":
             self._json(_get_system_health())
         elif path == "/buttons/api/notifications/status":
@@ -6795,6 +7414,27 @@ class Handler(BaseHTTPRequestHandler):
                 return
             _trigger_repair(issue_number)
             self._json({"ok": True, "issue": issue_number, "status": "running"}, 200)
+            return
+        if path == "/buttons/api/plan/execute":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            repos = _discover_repos()
+            repo = data.get("repo", _default_repo(repos))
+            plan_name = str(data.get("plan", ""))
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            if not PLAN_FILE_RE.match(plan_name):
+                self._json({"error": "invalid plan name"}, 400)
+                return
+            plan_data, err = _read_repo_plan(repo, plan_name, repos)
+            if err:
+                self._json({"error": f"cannot execute plan: {err}"}, 404)
+                return
+            _trigger_plan_execution(repo, plan_name, repos)
+            self._json({"ok": True, "plan": plan_name, "repo": repo, "status": "running"}, 200)
             return
         if path == "/buttons/api/notifications/test":
             res = send_notification("Test Notification", "Test push from S5 Buttons server.", priority="default", tags=["test"], event_type="test")
