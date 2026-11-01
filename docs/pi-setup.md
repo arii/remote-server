@@ -27,7 +27,7 @@ From `/srv/remote-server` (or wherever the repo lives on the box):
 git pull
 docker compose pull terminal   # CI-built image (or: docker compose build terminal)
 docker compose up -d ollama terminal
-./scripts/pull-models.sh       # pulls OLLAMA_MODELS, skips present ones
+./scripts/pull-models.sh       # pulls base models and auto-configures 16k Modelfiles (num_ctx 16384, temperature 0.2)
 docker compose exec ollama ollama list # confirm both tags are there
 ```
 

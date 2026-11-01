@@ -34,3 +34,7 @@ buttons/ux/node_modules/
 buttons/ux/.scratch*
 buttons/ux/scratch-ledger.json
 *.scratch.json
+
+# Dependencies and cache
+.pnpm-store/
+.fallow/

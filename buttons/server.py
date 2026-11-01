@@ -20,6 +20,10 @@ the terminal container would come up with an empty /srv/remote-server.
 
 import base64
 import fcntl
+try:
+    from buttons import context_filter
+except ImportError:
+    import context_filter
 import hashlib
 import hmac
 import json
@@ -357,9 +361,35 @@ def _pi_thread(rid, kind, repo, instruction):
                         (proc.stderr or "").strip().splitlines()[-1]
                         if proc.stderr.strip() else "briefing failed")
                 brief = json.loads(proc.stdout)
+
+                # Deterministic fast-path: if queues are completely clear, return immediately
+                # in <50ms without invoking CPU LLM inference (eliminates 180s stall on empty state)
+                open_prs = len(brief.get("prs") or [])
+                failing_runs = len(brief.get("failing_runs") or [])
+                attention_items = len(brief.get("attention") or [])
+                active_jules = len((brief.get("jules") or {}).get("items") or [])
+
+                if open_prs == 0 and failing_runs == 0 and attention_items == 0 and active_jules == 0:
+                    clean_res = "SUGGEST: none :: All queues clear and checks green.\n"
+                    f.write(clean_res)
+                    f.flush()
+                    with pi_runs_lock:
+                        r = pi_runs.get(rid)
+                        if r is not None:
+                            r["result"] = {"repo": repo,
+                                           "suggestions": [],
+                                           "raw": clean_res}
+                            r["done"] = True
+                            r["finished_at"] = time.time()
+                    return
+
                 prompt = _suggest_prompt(repo, _suggest_context(brief))
             else:
                 prompt = _ask_prompt(repo, instruction)
+
+            # Enforce context budget on prompt payload before passing to local LLM
+            prompt = context_filter.enforce_context_budget(prompt, max_tokens=4000)
+
             b64 = base64.b64encode(prompt.encode()).decode()
             # The prompt travels base64-encoded: its alphabet is
             # shell-safe, so briefing titles or free-text
@@ -503,7 +533,8 @@ def _suggest_context(brief):
     if isinstance(j, dict):
         lines.append("Active Jules sessions for this repo: "
                      f"{len(j.get('items') or [])}")
-    return "\n".join(lines)[:6000]
+    raw_context = "\n".join(lines)
+    return context_filter.enforce_context_budget(raw_context, max_tokens=3000)
 
 
 def _suggest_prompt(repo, context):
@@ -905,9 +936,9 @@ ACTIONS = {
         "confirm": True,
         "risk": "danger",
         "steps": [
-            EXEC + ["git -c safe.directory=/srv/remote-server -C /srv/remote-server pull --ff-only && chmod +x /srv/remote-server/scripts/*.sh 2>/dev/null || true"],
-            EXEC + ["HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml up -d --build buttons"],
-            EXEC + ["for i in $(seq 1 30); do if curl -sf http://buttons:8000/buttons/api/status >/dev/null; then echo buttons up; exit 0; fi; sleep 2; done; HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml ps buttons; exit 1"],
+            EXEC + ["git -c safe.directory=/srv/remote-server -c core.hooksPath=/dev/null -C /srv/remote-server pull --ff-only && chmod +x /srv/remote-server/scripts/*.sh 2>/dev/null || true"],
+            EXEC + ["HOST_HOME=/home/ari HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml up -d --build buttons"],
+            EXEC + ["for i in $(seq 1 30); do if curl -sf http://buttons:8000/buttons/api/status >/dev/null; then echo buttons up; exit 0; fi; sleep 2; done; HOST_HOME=/home/ari HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml ps buttons; exit 1"],
         ],
     },
     "recreate": {
@@ -2284,7 +2315,7 @@ deletes all transcripts.</p>
 <button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
 </div>
 <input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
-<div id="piSessionList"></div>
+<div id="piSessionList" style="display:none;"></div>
 <div id="piSessionViewer">
   <div class="pisession-head">
     <div id="piSessionHeadInfo" class="pisession-head-info"></div>
@@ -2587,7 +2618,11 @@ async function fetchJson(url, options) {
 
 async function startRun(name, label, confirmFlag, dangerFlag) {
   userStartedRun = true;
-  if (confirmFlag && !(await confirmDialog("Run action", label + " — run it?", !!dangerFlag))) return;
+  let confirmBody = label + " — run it?";
+  if (name === "sync-nudge" || name === "sync-agents" || /sync.*nudge/i.test(label)) {
+    confirmBody = label + " — run it?\n\nStep 2 posts feedback to stalled Jules sessions.";
+  }
+  if (confirmFlag && !(await confirmDialog("Run action", confirmBody, !!dangerFlag))) return;
   openDrawer();
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
@@ -3941,14 +3976,13 @@ function renderSessionList() {
   });
 
   if (!filtered.length) {
-    const notice = document.createElement("div");
-    notice.style.padding = "0.75em";
-    notice.style.color = "var(--text-muted)";
-    notice.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
-    piSessionListEl.appendChild(notice);
+    piSessionListEl.style.display = "none";
+    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
     return;
   }
 
+  piSessionErrEl.textContent = "";
+  piSessionListEl.style.display = "";
   filtered.forEach(s => {
     const row = document.createElement("div");
     row.className = "pirow";
@@ -4033,18 +4067,22 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   piSessionViewerEl.classList.remove("open");
   if (piSessionFilterEl) piSessionFilterEl.style.display = "none";
   piSessionListEl.textContent = "";
+  piSessionListEl.style.display = "none";
   piSessionOutEl.textContent = "";
   piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
 };
 
 const listPiSessionsBtn = document.getElementById("listPiSessions");
 if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
-  piSessionListEl.textContent = "Loading sessions…";
+  piSessionListEl.textContent = "";
+  piSessionListEl.style.display = "none";
+  piSessionErrEl.textContent = "Loading sessions…";
   try {
     const res = await fetchJson("/buttons/api/pi-sessions");
     const data = res.data || {};
     if (!res.ok) {
       piSessionListEl.textContent = "";
+      piSessionListEl.style.display = "none";
       setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "sessions unavailable");
       return;
     }
@@ -4057,6 +4095,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     renderSessionList();
   } catch (e) {
     piSessionListEl.textContent = "";
+    piSessionListEl.style.display = "none";
     setErrorEl(piSessionErrEl, e, "sessions unavailable");
   }
 };

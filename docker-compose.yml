@@ -103,12 +103,12 @@ services:
       - gemini-data:/root/.gemini
       - local-data:/root/.local
       # Other checkouts, cloned on the host (see docs/pi-setup.md § repos).
-      # ${HOME} interpolates from your shell environment at compose time.
-      - ${HOME}/repos:/srv/repos
+      # HOST_HOME defaults to /home/ari (host user path).
+      - ${HOST_HOME:-/home/ari}/repos:/srv/repos
       # Host SSH key, read-only: lets Pi (and git inside the container) push
       # over SSH as you. Requires github.com in the host ~/.ssh/known_hosts
       # (see the doc) — a read-only mount cannot add it on first connect.
-      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOST_HOME:-/home/ari}/.ssh:/root/.ssh:ro
     environment:
       TERM: xterm-256color
       PATH: /root/.local/bin:/opt/venvs/td/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -183,17 +183,17 @@ services:
     pull_policy: build
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${HOME}/remote-server:/home/ari/remote-server
+      - ${HOST_HOME:-/home/ari}/remote-server:/home/ari/remote-server
       # Host-identical repos mount, same trick as above: the webhook
       # auto-pull needs the tech-dancer checkout at the same path
       # inside this container as on the host.
-      - ${HOME}/repos:/home/ari/repos
+      - ${HOST_HOME:-/home/ari}/repos:/home/ari/repos
       # Host SSH key, read-only: Deploy runs `git pull` over SSH as
       # root inside this container, and git needs both the key and
       # github.com in known_hosts. Mirrors the terminal container.
       # No trust expansion: the socket already gives this container
       # root-equivalent host access.
-      - ${HOME}/.ssh:/root/.ssh:ro
+      - ${HOST_HOME:-/home/ari}/.ssh:/root/.ssh:ro
       # Ledger volume: the audit log lives here, never in a
       # checkout, so pulls and rebuilds cannot dirty or erase it.
       - buttons-data:/var/lib/buttons
