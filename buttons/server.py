@@ -5995,7 +5995,10 @@ function openChatDrawer() {
   if (chatDrawerEl) {
     chatDrawerEl.classList.add("open");
     const inp = document.getElementById("globalChatInput");
-    if (inp) setTimeout(() => inp.focus(), 150);
+    if (inp) {
+      chatDrawerEl.addEventListener("transitionend", () => inp.focus(), { once: true });
+      setTimeout(() => inp.focus(), 150);
+    }
   }
 }
 function closeChatDrawer() {
