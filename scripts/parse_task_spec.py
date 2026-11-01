@@ -139,7 +139,7 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
             # Strip list symbols if any remain
             cleaned_file = re.sub(r"^[-*+]\s+", "", cleaned_file).strip()
             cleaned_file = _clean_code_ticks(cleaned_file)
-            if cleaned_file:
+            if cleaned_file and cleaned_file not in ("-", "*", "+"):
                 target_files.append(cleaned_file)
 
     if not target_files:
