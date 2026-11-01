@@ -10,6 +10,7 @@
   "rules": {
     "unused-export": "warn",
     "complexity-cyclomatic": "warn",
-    "complexity-cognitive": "warn"
+    "complexity-cognitive": "warn",
+    "complexity-crap": "warn"
   }
 }

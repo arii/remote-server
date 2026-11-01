@@ -27,8 +27,14 @@ __pycache__/
 # Boomtick CLI artifacts
 .boomtick/
 
-# Dependencies and cache
+# UX preview toolkit artifacts (local development)
 node_modules/
-.fallow/
-.pnpm-store/
+buttons/ux/shots/
+buttons/ux/node_modules/
+buttons/ux/.scratch*
+buttons/ux/scratch-ledger.json
+*.scratch.json
 
+# Dependencies and cache
+.pnpm-store/
+.fallow/

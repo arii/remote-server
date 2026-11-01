@@ -6,6 +6,7 @@
 # via oauth2-proxy -> caddy only.
 FROM docker:27-cli
 RUN apk add --no-cache python3 git docker-cli-compose
-COPY server.py /app/server.py
+WORKDIR /app
+COPY . /app/
 EXPOSE 8000
 CMD ["python3", "/app/server.py"]
