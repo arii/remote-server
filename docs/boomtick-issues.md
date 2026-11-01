@@ -27,10 +27,25 @@ Verified against BoomTick `main` on 2026-10-29.
   failures; after the patch, remote-server preflight degrades to the checks
   that exist (doctor, overlaps, merge simulation).
 
-### #1025 — Clarify repo override param description and surface errors in `repo_get_workflow_runs`
+### #1025 — Clarify repo override param description, surface errors, and make branch/event optional with null-safety in `repo_get_workflow_runs` & CI-logs tools
 - **State:** OPEN ([Issue #1025](https://github.com/arii/boomtick/issues/1025)).
-- **Symptom:** LLMs (e.g. Pi) literally pass `{"repo": "org/repo"}` and receive `Failed to fetch workflow runs: Unknown error`.
-- **Cause:** Schema description `(e.g. org/repo)` induces literal usage, and MCP handler swallows GitHub 404 details into "Unknown error".
+- **Symptom:**
+  1. Passing `branch: null` or `event: null` to `repo.get_workflow_runs` (or other CI-logs / workflow tools) causes Zod validation errors: `Invalid input: expected string, received null`, surfaced to agents as `Failed to fetch workflow runs: Unknown error`.
+  2. LLMs (e.g. Pi) literally pass `{"repo": "org/repo"}` and receive `Failed to fetch workflow runs: Unknown error`.
+- **Cause:**
+  1. Input schemas define `branch: z.string().optional()` and `event: z.string().optional()`. In Zod, `.optional()` does not allow `null` unless `.nullable()` is also specified (`z.string().nullable().optional()`). When LLMs serialize explicit nulls (`{ branch: null, event: null }`), validation throws `ZodError`.
+  2. Schema description `(e.g. org/repo)` induces literal usage, and MCP handler error sanitization swallows GitHub 404 details into "Unknown error".
+- **Fix:**
+  1. Update `GetWorkflowRunsInputSchema` in `src/tools/repo.get_workflow_runs.ts` (and corresponding CI-logs / repo tool schemas):
+     ```typescript
+     export const GetWorkflowRunsInputSchema = z.object({
+       branch: z.string().nullable().optional().describe("Filter workflow runs by branch name."),
+       event: z.string().nullable().optional().describe("Filter workflow runs by event (e.g. push, pull_request)."),
+       repo: z.string().nullable().optional().describe("Target GitHub repository override in owner/repo format (e.g. arii/tech-dancer). Defaults to current repository."),
+     });
+     ```
+  2. Normalize inputs in handlers so `branch ?? undefined`, `event ?? undefined`, and `repo ?? undefined` are passed down cleanly, or treat null/empty strings as omitted filters.
+  3. Ensure stderr details from `td repo workflow-runs` (such as 404 / repo not found) are preserved and surfaced cleanly instead of collapsing into `Unknown error`.
 
 ### #1026 — Sanitize dot-notated tool names to conform with MCP client tool naming regex
 - **State:** OPEN ([Issue #1026](https://github.com/arii/boomtick/issues/1026)).
