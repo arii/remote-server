@@ -75,6 +75,11 @@ import subprocess
 import sys
 from datetime import date, datetime, timezone
 
+try:
+    from buttons import context_filter
+except ImportError:
+    import context_filter
+
 STALE_DAYS = 30
 RAW_CAP = 20_000  # raw appendix cap, chars
 
@@ -712,12 +717,15 @@ def build(data):
                       ("workflow-runs", "runs_raw")):
         raw = data[key]
         if raw:
-            raw_parts.append(f"### {name}\n{raw[:RAW_CAP]}")
+            cleaned = context_filter.enforce_context_budget(raw, max_tokens=2000)
+            raw_parts.append(f"### {name}\n{cleaned[:RAW_CAP]}")
     if data["reviews_raw_parts"]:
-        raw_parts.append("### read-pr-reviews\n"
-                         + "\n".join(data["reviews_raw_parts"])[:RAW_CAP])
+        rev_combined = "\n".join(data["reviews_raw_parts"])
+        rev_cleaned = context_filter.enforce_context_budget(rev_combined, max_tokens=2000)
+        raw_parts.append(f"### read-pr-reviews\n{rev_cleaned[:RAW_CAP]}")
     if data["jules_raw"]:
-        raw_parts.append(f"### agent list-sessions\n{data['jules_raw'][:RAW_CAP]}")
+        jules_cleaned = context_filter.enforce_context_budget(data["jules_raw"], max_tokens=2000)
+        raw_parts.append(f"### agent list-sessions\n{jules_cleaned[:RAW_CAP]}")
     raw_text = "\n\n".join(raw_parts)
     return "\n".join(lines), a["attention"], raw_text
 
