@@ -2091,10 +2091,53 @@ a { color: #8bf; }
 .actions-footer { display: flex; justify-content: center; margin: 1.5em 0 0.5em; padding-top: 1em; border-top: 1px dashed var(--border); }
 .actions-footer button { width: auto; font-size: 0.85em; padding: 0.5em 1em; color: var(--text-muted); background: transparent; border: 1px solid var(--border); }
 .actions-footer button:hover { color: var(--text-main); border-color: var(--primary); }
+#piSessionFilter { width: 100%; box-sizing: border-box; background: var(--bg-card);
+  color: var(--text-main); border: 1px solid var(--border); border-radius: 8px;
+  padding: 0.55em 0.8em; font: inherit; margin: 0.5em 0; }
+#piSessionFilter:focus { border-color: var(--primary); outline: none; }
 #piSessionList:empty { display: none; }
-.pirow { display: flex; gap: 0.5em; align-items: center; margin: 0.4em 0; }
-.pirow button:first-child { flex: 1; text-align: left; }
-.pirowdel { flex: 0 0 auto; width: auto; padding: 0.4em 0.7em; }
+.pirow { display: flex; gap: 0.5em; align-items: stretch; margin: 0.4em 0; }
+.pirow-btn { flex: 1; text-align: left; display: flex; flex-direction: column;
+  gap: 0.25em; padding: 0.5em 0.75em; border-radius: 8px; }
+.pirow-btn.selected { border-color: var(--primary); background: var(--bg-card-hover); }
+.pirow-meta { display: flex; gap: 0.5em; align-items: center; font-size: 0.82em; color: var(--text-muted); }
+.pirow-badge { font-weight: 600; padding: 0.1em 0.45em; border-radius: 4px;
+  background: var(--bg-card-hover); border: 1px solid var(--border); color: var(--text-main); }
+.pirow-time { white-space: nowrap; }
+.pirow-title { font-size: 0.92em; font-weight: 500; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
+.pirowdel { flex: 0 0 auto; width: auto; padding: 0.4em 0.75em; align-self: center;
+  border-radius: 8px; color: var(--text-muted); }
+.pirowdel:hover { color: #ff8a8a; border-color: var(--danger); }
+#piSessionViewer { margin-top: 1em; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--bg-card); padding: 0.8em; display: none; }
+#piSessionViewer.open { display: block; }
+.pisession-head { display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid var(--border); padding-bottom: 0.5em; margin-bottom: 0.8em; }
+.pisession-head-info { font-size: 0.9em; font-weight: 600; }
+.pisession-head-actions { display: flex; gap: 0.4em; }
+.pisession-head-actions button { width: auto; margin: 0; padding: 0.3em 0.6em; font-size: 0.8em; }
+.pi-conversation { display: flex; flex-direction: column; gap: 0.75em; }
+.pi-turn { border-radius: 8px; padding: 0.7em 0.9em; font-size: 0.92em;
+  border: 1px solid var(--border); }
+.pi-turn-user { background: rgba(59, 130, 246, 0.08); border-color: rgba(59, 130, 246, 0.25); }
+.pi-turn-assistant { background: var(--bg-card-hover); }
+.pi-turn-tool { background: rgba(245, 158, 11, 0.05); border-color: rgba(245, 158, 11, 0.2); }
+.pi-turn-head { display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 0.4em; font-size: 0.8em; }
+.pi-role-badge { font-weight: bold; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 0.1em 0.4em; border-radius: 4px; }
+.pi-role-user { background: #1e3a8a; color: #93c5fd; }
+.pi-role-assistant { background: #064e3b; color: #6ee7b7; }
+.pi-role-tool { background: #78350f; color: #fde68a; }
+.pi-turn-body { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+.pi-tool-pill { display: inline-block; font-size: 0.85em; font-family: monospace;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.15em 0.4em; margin: 0.2em 0.2em 0.2em 0; color: #ffd75e; }
+.pi-tool-result-details { margin-top: 0.4em; font-size: 0.85em; }
+.pi-tool-result-details summary { cursor: pointer; color: var(--text-muted); }
+.pi-tool-result-details pre { margin: 0.3em 0 0; max-height: 250px; overflow-y: auto;
+  font-size: 0.85em; background: #0d1117; }
 #outputDrawer pre { border: none; border-radius: 0; max-height: 45vh; margin: 0; }
 /* confirm modal (replaces window.confirm) */
 #confirmModal { position: fixed; inset: 0; z-index: 2000; display: none;
@@ -2221,10 +2264,23 @@ newest sessions with date, repo, and first prompt — tap one to
 render it readably. The full JSONL stays on disk. Clearing
 deletes all transcripts.</p>
 </details>
-<button id="listPiSessions">List sessions</button>
-<button id="clearPiSessions">Clear Pi sessions</button>
+<div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center;">
+<button id="listPiSessions" style="width:auto; margin:0;">List sessions</button>
+<button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
+</div>
+<input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
 <div id="piSessionList"></div>
-<pre id="piSessionOut"></pre>
+<div id="piSessionViewer">
+  <div class="pisession-head">
+    <div id="piSessionHeadInfo" class="pisession-head-info"></div>
+    <div class="pisession-head-actions">
+      <button id="piSessionToggleRaw" class="btn-ghost" title="Toggle between clean conversation and raw transcript">Raw transcript</button>
+      <button id="piSessionCloseViewer" class="btn-ghost">✕ Close</button>
+    </div>
+  </div>
+  <div id="piSessionConversation" class="pi-conversation"></div>
+  <pre id="piSessionOut" style="display:none;"></pre>
+</div>
 <div id="piSessionErr"></div>
 </section>
 <section class="tabpanel" id="tab-project" style="display:none">
@@ -3628,78 +3684,286 @@ if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
 if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
 refreshLedger();
 
-// Pi session browser. List renders each session file as a
-// button; tapping one renders that session readably below.
+// Pi session browser. List renders each session file as a compact
+// card showing date/time, repo, and first prompt snippet.
+// Tapping opens a structured conversation view below.
 const piSessionListEl = document.getElementById("piSessionList");
+const piSessionFilterEl = document.getElementById("piSessionFilter");
+const piSessionViewerEl = document.getElementById("piSessionViewer");
+const piSessionHeadInfoEl = document.getElementById("piSessionHeadInfo");
+const piSessionConversationEl = document.getElementById("piSessionConversation");
 const piSessionOutEl = document.getElementById("piSessionOut");
+const piSessionToggleRawBtn = document.getElementById("piSessionToggleRaw");
+const piSessionCloseViewerBtn = document.getElementById("piSessionCloseViewer");
 const piSessionErrEl = document.getElementById("piSessionErr");
-async function showSession(file) {
+
+let loadedPiSessions = [];
+let activeSessionFile = null;
+
+if (piSessionCloseViewerBtn) {
+  piSessionCloseViewerBtn.onclick = () => {
+    piSessionViewerEl.classList.remove("open");
+    activeSessionFile = null;
+    document.querySelectorAll(".pirow-btn.selected").forEach(b => b.classList.remove("selected"));
+  };
+}
+
+if (piSessionToggleRawBtn) {
+  piSessionToggleRawBtn.onclick = () => {
+    const rawVisible = piSessionOutEl.style.display !== "none";
+    if (rawVisible) {
+      piSessionOutEl.style.display = "none";
+      piSessionConversationEl.style.display = "flex";
+      piSessionToggleRawBtn.textContent = "Raw transcript";
+    } else {
+      piSessionOutEl.style.display = "block";
+      piSessionConversationEl.style.display = "none";
+      piSessionToggleRawBtn.textContent = "Clean conversation";
+    }
+  };
+}
+
+function renderConversation(sessionData) {
+  piSessionConversationEl.innerHTML = "";
+  const turns = sessionData.turns || [];
+  if (!turns.length) {
+    const emptyNotice = document.createElement("div");
+    emptyNotice.className = "pi-turn";
+    emptyNotice.textContent = "No rendered messages in session.";
+    piSessionConversationEl.appendChild(emptyNotice);
+    return;
+  }
+
+  turns.forEach(turn => {
+    const turnEl = document.createElement("div");
+    const role = (turn.role || "unknown").toLowerCase();
+    turnEl.className = "pi-turn pi-turn-" + role;
+
+    const headEl = document.createElement("div");
+    headEl.className = "pi-turn-head";
+
+    const badgeEl = document.createElement("span");
+    badgeEl.className = "pi-role-badge pi-role-" + role;
+    badgeEl.textContent = role;
+    headEl.appendChild(badgeEl);
+
+    if (turn.timestamp) {
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "pirow-time";
+      try {
+        const d = new Date(typeof turn.timestamp === "number" ? (turn.timestamp < 1e11 ? turn.timestamp * 1000 : turn.timestamp) : turn.timestamp);
+        if (!isNaN(d.getTime())) timeSpan.textContent = d.toLocaleTimeString();
+      } catch (e) {}
+      if (timeSpan.textContent) headEl.appendChild(timeSpan);
+    }
+    turnEl.appendChild(headEl);
+
+    if (turn.text) {
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "pi-turn-body";
+      bodyEl.textContent = turn.text;
+      turnEl.appendChild(bodyEl);
+    }
+
+    if (turn.tool_calls && turn.tool_calls.length) {
+      const tcContainer = document.createElement("div");
+      tcContainer.style.marginTop = "0.4em";
+      turn.tool_calls.forEach(tc => {
+        const pill = document.createElement("span");
+        pill.className = "pi-tool-pill";
+        pill.textContent = "⚙ " + (tc.name || "tool");
+        tcContainer.appendChild(pill);
+      });
+      turnEl.appendChild(tcContainer);
+    }
+
+    if (turn.tool_results && turn.tool_results.length) {
+      turn.tool_results.forEach(tr => {
+        const details = document.createElement("details");
+        details.className = "pi-tool-result-details";
+        const sum = document.createElement("summary");
+        sum.textContent = "⚙ Output: " + (tr.name || "tool result");
+        const pre = document.createElement("pre");
+        pre.textContent = tr.content || "";
+        details.appendChild(sum);
+        details.appendChild(pre);
+        turnEl.appendChild(details);
+      });
+    }
+
+    piSessionConversationEl.appendChild(turnEl);
+  });
+}
+
+async function showSession(sessionObj) {
+  const file = sessionObj.file;
+  activeSessionFile = file;
+
+  // Highlight selected button
+  document.querySelectorAll(".pirow-btn").forEach(b => {
+    b.classList.toggle("selected", b.dataset.file === file);
+  });
+
+  piSessionViewerEl.classList.add("open");
+  const repoName = sessionObj.repo || (sessionObj.cwd ? sessionObj.cwd.split("/").filter(Boolean).pop() : "unknown repo");
+  const when = sessionObj.mtime ? new Date(sessionObj.mtime * 1000).toLocaleString() : "";
+  piSessionHeadInfoEl.textContent = [when, repoName].filter(Boolean).join(" · ");
+
   piSessionOutEl.textContent = "Loading session…";
+  piSessionOutEl.style.display = "none";
+  piSessionConversationEl.style.display = "flex";
+  piSessionConversationEl.textContent = "Loading conversation…";
+  piSessionToggleRawBtn.textContent = "Raw transcript";
+
   try {
     const res = await fetchJson("/buttons/api/pi-session?session=" + encodeURIComponent(file));
     const data = res.data || {};
-    if (!res.ok) { piSessionOutEl.textContent = ""; setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "session unavailable"); return; }
+    if (!res.ok) {
+      piSessionConversationEl.textContent = "";
+      piSessionViewerEl.classList.remove("open");
+      setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "session unavailable");
+      return;
+    }
     piSessionErrEl.textContent = "";
-    piSessionOutEl.textContent = data.output;
+    piSessionOutEl.textContent = data.raw_output || data.output || "";
+    renderConversation(data);
   } catch (e) {
-    piSessionOutEl.textContent = "";
+    piSessionConversationEl.textContent = "";
+    piSessionViewerEl.classList.remove("open");
     setErrorEl(piSessionErrEl, e, "session unavailable");
   }
 }
+
+function renderSessionList() {
+  piSessionListEl.innerHTML = "";
+  const filterQuery = (piSessionFilterEl ? piSessionFilterEl.value : "").trim().toLowerCase();
+
+  // Sort newest first consistently
+  const sorted = [...loadedPiSessions].sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+
+  const filtered = sorted.filter(s => {
+    if (!filterQuery) return true;
+    const repo = (s.repo || (s.cwd ? s.cwd.split("/").filter(Boolean).pop() : "")).toLowerCase();
+    const title = (s.title || "").toLowerCase();
+    const when = s.mtime ? new Date(s.mtime * 1000).toLocaleString().toLowerCase() : "";
+    return repo.includes(filterQuery) || title.includes(filterQuery) || when.includes(filterQuery);
+  });
+
+  if (!filtered.length) {
+    const notice = document.createElement("div");
+    notice.style.padding = "0.75em";
+    notice.style.color = "var(--text-muted)";
+    notice.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
+    piSessionListEl.appendChild(notice);
+    return;
+  }
+
+  filtered.forEach(s => {
+    const row = document.createElement("div");
+    row.className = "pirow";
+
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pirow-btn";
+    b.dataset.file = s.file;
+    if (activeSessionFile === s.file) b.classList.add("selected");
+
+    const meta = document.createElement("div");
+    meta.className = "pirow-meta";
+
+    const repoName = s.repo || (s.cwd ? s.cwd.split("/").filter(Boolean).pop() : "") || "session";
+    const badge = document.createElement("span");
+    badge.className = "pirow-badge";
+    badge.textContent = repoName;
+    meta.appendChild(badge);
+
+    if (s.mtime) {
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "pirow-time";
+      timeSpan.textContent = new Date(s.mtime * 1000).toLocaleString();
+      meta.appendChild(timeSpan);
+    }
+    b.appendChild(meta);
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "pirow-title";
+    // Never show raw JSONL filename: date, repo, first user prompt
+    titleEl.textContent = s.title || "Untitled session";
+    b.appendChild(titleEl);
+
+    b.onclick = () => showSession(s);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "✕";
+    del.className = "pirowdel";
+    del.title = "Delete this session";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!(await confirmDialog("Delete Pi session",
+          "Delete this transcript? It cannot be undone.", true)))
+        return;
+      const r = await fetchJson("/buttons/api/pi-sessions/delete",
+        {method: "POST", headers: {"Content-Type": "application/json"},
+         body: JSON.stringify({session: s.file})});
+      if (!r.ok) {
+        setErrorEl(piSessionErrEl, r.data.error || r.status, "delete failed");
+        return;
+      }
+      piSessionErrEl.textContent = r.data.output || "Deleted.";
+      loadedPiSessions = loadedPiSessions.filter(item => item.file !== s.file);
+      if (activeSessionFile === s.file) {
+        piSessionViewerEl.classList.remove("open");
+        activeSessionFile = null;
+      }
+      renderSessionList();
+    };
+
+    row.appendChild(b);
+    row.appendChild(del);
+    piSessionListEl.appendChild(row);
+  });
+}
+
+if (piSessionFilterEl) {
+  piSessionFilterEl.oninput = () => {
+    renderSessionList();
+  };
+}
+
 const clearPiSessionsBtn = document.getElementById("clearPiSessions");
 if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   if (!(await confirmDialog("Clear Pi sessions", "This deletes the transcripts and cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { setErrorEl(piSessionErrEl, data.error || r.status, "clear failed"); return; }
+  loadedPiSessions = [];
+  activeSessionFile = null;
+  piSessionViewerEl.classList.remove("open");
+  if (piSessionFilterEl) piSessionFilterEl.style.display = "none";
   piSessionListEl.textContent = "";
   piSessionOutEl.textContent = "";
   piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
 };
+
 const listPiSessionsBtn = document.getElementById("listPiSessions");
 if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   piSessionListEl.textContent = "Loading sessions…";
   try {
     const res = await fetchJson("/buttons/api/pi-sessions");
     const data = res.data || {};
-    if (!res.ok) { piSessionListEl.textContent = ""; setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "sessions unavailable"); return; }
+    if (!res.ok) {
+      piSessionListEl.textContent = "";
+      setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "sessions unavailable");
+      return;
+    }
     piSessionErrEl.textContent = "";
-    piSessionListEl.textContent = "";
-    const sessions = data.sessions || [];
-    if (!sessions.length) { piSessionListEl.textContent = "No Pi sessions found."; return; }
-    sessions.forEach(s => {
-      const row = document.createElement("div");
-      row.className = "pirow";
-      const b = document.createElement("button");
-      const when = s.mtime ? new Date(s.mtime * 1000).toLocaleString() : "";
-      const repo = s.cwd ? s.cwd.split("/").filter(Boolean).pop() : "";
-      // Never show the raw filename in the label: date, repo,
-      // first prompt, or "untitled session".
-      b.textContent = [when, repo, (s.title || "untitled session")]
-        .filter(Boolean).join(" · ");
-      b.onclick = () => showSession(s.file);
-      const del = document.createElement("button");
-      del.textContent = "✕";
-      del.className = "pirowdel";
-      del.title = "Delete this session";
-      del.onclick = async (e) => {
-        e.stopPropagation();
-        if (!(await confirmDialog("Delete Pi session",
-            "Delete this transcript? It cannot be undone.", true)))
-          return;
-        const r = await fetchJson("/buttons/api/pi-sessions/delete",
-          {method: "POST", headers: {"Content-Type": "application/json"},
-           body: JSON.stringify({session: s.file})});
-        if (!r.ok) {
-          setErrorEl(piSessionErrEl, r.data.error || r.status, "delete failed");
-          return;
-        }
-        piSessionErrEl.textContent = r.data.output || "Deleted.";
-        row.remove();
-      };
-      row.appendChild(b); row.appendChild(del);
-      piSessionListEl.appendChild(row);
-    });
+    loadedPiSessions = data.sessions || [];
+    if (piSessionFilterEl) {
+      piSessionFilterEl.style.display = loadedPiSessions.length ? "block" : "none";
+      piSessionFilterEl.value = "";
+    }
+    renderSessionList();
   } catch (e) {
     piSessionListEl.textContent = "";
     setErrorEl(piSessionErrEl, e, "sessions unavailable");
@@ -4411,11 +4675,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
         elif path == "/buttons/api/pi-session":
-            # Render one Pi session by filename query. The query is
-            # interpolated into a bash -c string, so it must match
-            # a strict allowlist — anything else is rejected, never
-            # quoted-and-hoped. Session filenames are
-            # <timestamp>_<uuid>.jsonl, which this pattern covers.
+            # Render one Pi session by filename query. Returns structured
+            # turns (and raw formatted output for fallback/toggle).
+            # The query is interpolated into a bash -c string, so it must
+            # match a strict allowlist — anything else is rejected.
             qs = parse_qs(urlparse(self.path).query)
             query = qs.get("session", [""])[0]
             if not re.fullmatch(r"[A-Za-z0-9._-]+", query):
@@ -4424,14 +4687,25 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
-                            f"pi_logs.py --session {query}"],
+                            f"pi_logs.py --session-json {query}"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=60, text=True)
                 if proc.returncode != 0:
                     raise RuntimeError(
                         (proc.stderr or "").strip().splitlines()[-1]
                         if proc.stderr.strip() else "pi session failed")
-                self._json({"output": proc.stdout})
+                try:
+                    payload = json.loads(proc.stdout)
+                except Exception:
+                    payload = {"output": proc.stdout}
+                # Also fetch raw text for fallback/toggle view
+                proc_raw = subprocess.run(
+                    EXEC + ["python3 /srv/remote-server/buttons/"
+                            f"pi_logs.py --session {query}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=60, text=True)
+                payload["raw_output"] = proc_raw.stdout if proc_raw.returncode == 0 else ""
+                self._json(payload)
             except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
         elif path.startswith("/buttons/api/run/"):

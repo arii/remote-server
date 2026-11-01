@@ -541,29 +541,31 @@ output, not the ledger.
 ## Pi sessions (browser)
 
 The Logs button renders only the latest session. The Pi
-sessions block under Ledger browses all of them: List sessions
+sessions block under the Pi tab browses all of them: List sessions
 fetches `GET /buttons/api/pi-sessions`, which runs
 `pi_logs.py --list-json` in the terminal container (no TD
 prefix — it reads `/root/.pi` directly) and returns
-`{sessions: [{file, mtime, cwd, title}]}` newest first, capped at 20.
-`cwd` comes from the session header line and `title` is the first
-user prompt (whitespace-collapsed, capped at 80 chars, from the
-head of the file only — a title must not cost a full read of a
-long transcript); either is empty when absent. The page's list
-buttons show date, repo (last segment of cwd), and title, with
-the filename as hover text, falling back to the filename when
-there is no title.
+`{sessions: [{file, mtime, cwd, repo, title}]}` newest first, capped at 100.
+`cwd` comes from the session header line (or is derived from the enclosing
+directory path `--<cwd>--`), and `title` is the first user prompt
+(whitespace-collapsed, capped at 80 chars, falling back to "Untitled session"
+so raw filenames are never displayed in row labels).
+The list displays compact rows showing date/time, repo badge, and first prompt snippet,
+along with an individual delete button (✕) for each session.
+A client-side search box (`#piSessionFilter`) allows instantly filtering
+loaded sessions by repository name, prompt text, or date.
 Tapping a session fetches
 `GET /buttons/api/pi-session?session=<file>`, which runs
-`pi_logs.py --session <file>` and returns the readable render.
+`pi_logs.py --session-json <file>` to render the session as a clean,
+role-labeled conversation (User, Assistant, and expandable Tool calls/results),
+with an optional toggle to inspect the raw transcript.
 The query is validated server-side against
 `^[A-Za-z0-9._-]+$` before it is interpolated into the
 `bash -c` string — session filenames are
 `<timestamp>_<uuid>.jsonl`, which that pattern covers, and
 anything else is rejected with 400 rather than quoted and
-hoped. `--session` matches by filename substring: no match
-prints a note, multiple matches list the candidates, and an
-empty or missing session directory still exits 0. Clear Pi
+hoped. Individual deletion is supported via `POST /buttons/api/pi-sessions/delete`,
+which validates the filename and runs `pi_logs.py --delete <file>`. Clear Pi
 sessions (confirm dialog) posts
 `POST /buttons/api/pi-sessions/clear`, which runs
 `pi_logs.py --clear` in the terminal container: it deletes
