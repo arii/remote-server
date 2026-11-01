@@ -2234,10 +2234,12 @@ below are still visible, but they need JavaScript to start a run.</div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
+<details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
 sessions. Runs on load; the Refresh briefing button re-runs it
 from td. Tap a repo card above to select the repo for the cards,
 their action buttons, and the repo buttons.</p>
+</details>
 <div id="briefing"></div>
 <div id="briefingErr"></div>
 </section>
