@@ -9,8 +9,10 @@ and automated PR creation.
 
 import argparse
 import json
+import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -165,9 +167,14 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
             f"Specification:\n{issue_body}\n\n"
         )
         if current_errors:
+            # Bound context to most recent diagnostic output (max 50 lines / 3000 chars) to prevent context bloat
+            err_lines = current_errors.strip().splitlines()
+            truncated_errors = "\n".join(err_lines[-50:]) if len(err_lines) > 50 else current_errors.strip()
+            if len(truncated_errors) > 3000:
+                truncated_errors = truncated_errors[-3000:]
             prompt += (
                 "Previous attempt failed with the following error/compiler output:\n"
-                f"{current_errors}\n\n"
+                f"{truncated_errors}\n\n"
                 "Please fix these errors in your revised implementation.\n\n"
             )
         prompt += (
@@ -231,10 +238,11 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
     if not verification_cmd:
         return {"tests_passed": True, "current_errors": ""}
 
+    cmd_args = shlex.split(verification_cmd)
     proc = subprocess.run(
-        verification_cmd,
+        cmd_args,
         cwd=worktree_dir,
-        shell=True,
+        shell=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -382,7 +390,7 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
         final_state = graph.invoke(initial_state)
         return final_state.get("tests_passed", False)
     except Exception as exc:
-        print(f"Repair pipeline encountered error: {exc}", file=sys.stderr)
+        logging.error(f"Repair pipeline encountered error: {exc}")
         return False
 
 

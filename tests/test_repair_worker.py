@@ -135,6 +135,31 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         self.assertEqual(updates["file_contents"]["calc.py"], "def add(a, b):\n    return a + b")
         mock_query.assert_called_once()
 
+    @patch("scripts.repair_worker._query_ollama")
+    def test_edit_file_node_truncates_large_error_context(self, mock_query):
+        mock_query.return_value = "```python\ndef add(a, b):\n    return a + b\n```"
+
+        large_error = "\n".join([f"Line error {i}" for i in range(200)])
+        state: rw.AgentState = {
+            "issue_number": 1,
+            "issue_body": "Fix addition bug",
+            "target_files": ["calc.py"],
+            "verification_cmd": "pytest",
+            "file_contents": {"calc.py": "def add(a, b): return a - b"},
+            "current_errors": large_error,
+            "retry_count": 1,
+            "ast_valid": False,
+            "tests_passed": False,
+            "worktree_dir": "/tmp/worktree",
+            "branch_name": "repair/issue-1",
+        }
+
+        rw.edit_file_node(state)
+        mock_query.assert_called_once()
+        sent_prompt = mock_query.call_args[0][0]
+        self.assertIn("Line error 199", sent_prompt)
+        self.assertNotIn("Line error 0\n", sent_prompt)
+
     def test_ast_check_node_valid(self):
         temp_dir = tempfile.mkdtemp()
         try:
@@ -209,9 +234,9 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         self.assertTrue(updates["tests_passed"])
         self.assertEqual(updates["current_errors"], "")
         mock_run.assert_called_once_with(
-            "pytest",
+            ["pytest"],
             cwd="/tmp/worktree",
-            shell=True,
+            shell=False,
             stdout=rw.subprocess.PIPE,
             stderr=rw.subprocess.PIPE,
             text=True,
