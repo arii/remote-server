@@ -3120,8 +3120,7 @@ async function fetchJson(url, options) {
     res = await fetch(url, options);
   } catch (e) {
     return {ok: false, status: 0, data: {error:
-      "cannot reach the buttons server — check your connection, " +
-      "or it may be rebuilding (retry in ~30s)"}};
+      "buttons server unreachable - it may be rebuilding, retry in ~30s"}};
   }
   let text;
   try {
@@ -3136,11 +3135,10 @@ async function fetchJson(url, options) {
   } catch (e) {
     data = {error: text.slice(0, 200) || ("HTTP " + res.status)};
   }
-  if (!res.ok && res.status === 502 && !data.error) {
+  if (!res.ok && res.status === 502) {
     // 502 comes from the proxy in front, never from our API:
     // the buttons container is down or rebuilding.
-    data.error = "buttons server unreachable (502) — it may be " +
-      "rebuilding; retry in ~30s";
+    data.error = "buttons server unreachable - it may be rebuilding, retry in ~30s";
   }
   if (!res.ok && data.error) data.error = friendlyError(data.error);
   return {ok: res.ok, status: res.status, data: data};
@@ -4174,7 +4172,7 @@ async function pollPiProgress(id, pre, errEl, onDone, label, repo) {
       stateEl.className = "fail";
       outEl.className = "fail";
       stateEl.textContent = "failed — " + label + " unreachable";
-      if (errEl) setErrorEl(errEl, (res && res.data && res.data.error) || "unreachable", label + " failed");
+      if (errEl) setErrorEl(errEl, (res && res.data && res.data.error) || "buttons server unreachable - it may be rebuilding, retry in ~30s", label + " failed");
       if (pre) pre.remove();
       return;
     }
