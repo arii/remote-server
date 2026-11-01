@@ -2073,6 +2073,7 @@ HTML = r"""<!DOCTYPE html>
   --danger-bg: #450a0a;
   --warning: #f59e0b;
   --success: #10b981;
+  --success-hover: #059669;
 }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
   margin: 0; padding: 12px 16px 140px; background: var(--bg-app); color: var(--text-main); }
@@ -2090,7 +2091,7 @@ button.btn-primary { display: inline-block; width: auto; background: var(--prima
 button.btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
 button.btn-success { display: inline-block; width: auto; background: var(--success);
   border-color: var(--success); color: #000; font-weight: 600; padding: 0.6em 1em; font-size: 0.95em; }
-button.btn-success:hover { background: #059669; border-color: #059669; }
+button.btn-success:hover { background: var(--success-hover, #059669); border-color: var(--success-hover, #059669); }
 button.btn-danger { display: inline-block; width: auto; background: var(--danger);
   border-color: var(--danger); color: #fff; padding: 0.6em 1em; font-size: 0.95em; }
 button.btn-ghost { display: inline-block; width: auto; background: transparent;
