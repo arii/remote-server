@@ -3179,8 +3179,12 @@ async function refreshBriefing() {
       span.textContent = "Briefing unavailable — ";
       att.appendChild(span);
       const rb = document.createElement("button");
+      rb.className = "btn-ghost";
       rb.textContent = "Retry";
       rb.style.width = "auto";
+      rb.style.margin = "0 0 0 0.5em";
+      rb.style.padding = "0.2em 0.6em";
+      rb.style.fontSize = "0.85em";
       rb.onclick = () => refreshBriefing();
       att.appendChild(rb);
     }
