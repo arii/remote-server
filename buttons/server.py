@@ -5376,42 +5376,6 @@ async function refreshIssues() {
     meta.textContent = who + (labs ? " · " + labs : "") +
       (when ? " · updated " + when : "");
     card.appendChild(meta);
-    const det = document.createElement("details");
-    const sum = document.createElement("summary");
-    sum.textContent = "Details / assign";
-    det.appendChild(sum);
-    const pre = document.createElement("pre");
-    pre.textContent = iss.body || "(no body)";
-    det.appendChild(pre);
-    const row = document.createElement("div");
-    const inp = document.createElement("input");
-    inp.placeholder = "assignee username";
-    inp.size = 18;
-    inp.maxLength = 39;
-    const btn = document.createElement("button");
-    btn.textContent = "Assign";
-    btn.onclick = async () => {
-      const name = inp.value.trim();
-      if (!name) return;
-      if (!(await confirmDialog("Assign issue",
-          "Assign #" + iss.number + " to " + name + "?", false))) return;
-      btn.disabled = true;
-      const r = await fetchJson("/buttons/api/assign-issue", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({repo: projectRepo(), issue: iss.number,
-                              assignee: name})});
-      btn.disabled = false;
-      if (!r.ok) {
-        setErrorEl(err, ((r.data || {}).error) || r.status, "assign failed");
-        return;
-      }
-      refreshIssues();
-    };
-    row.appendChild(inp);
-    row.appendChild(btn);
-    det.appendChild(row);
-    card.appendChild(det);
     el.appendChild(card);
   });
 }
@@ -7622,40 +7586,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "error": str(exc)[:500]})
                 self._json({"error": str(exc)[:500]}, 500)
             return
-        if path == "/buttons/api/assign-issue":
-            # Assign an issue to a user. Strict validation: repo
-            # from discovery, issue digits, assignee GitHub-username
-            # charset; everything shlex-quoted into the gh argv.
-            try:
-                data = json.loads(body) if body else {}
-            except Exception:
-                data = {}
-            repo, repos = self._get_request_repo(data)
-            issue = str(data.get("issue", ""))
-            assignee = str(data.get("assignee", "")).strip()
-            if repo not in repos or not issue.isdigit() \
-                    or not re.fullmatch(r"[A-Za-z0-9-]{1,39}",
-                                        assignee):
-                self._json({"error": "bad repo, issue or assignee"},
-                           400)
-                return
-            gh = repos[repo]["gh"]
-            try:
-                _td_run("gh issue edit " + shlex.quote(issue) +
-                        " --repo " + shlex.quote(gh) +
-                        " --add-assignee " + shlex.quote(assignee),
-                        timeout=60,
-                        prefix=_td_prefix(repos[repo]["td_cwd"]))
-                _ledger_append({"kind": "pr-action", "repo": repo,
-                                "action": "assign-issue", "ok": True,
-                                "note": f"#{issue} -> {assignee}"[:200]})
-                self._json({"ok": True})
-            except Exception as exc:
-                _ledger_append({"kind": "pr-action", "repo": repo,
-                                "action": "assign-issue", "ok": False,
-                                "error": str(exc)[:500]})
-                self._json({"error": str(exc)[:500]}, 500)
-            return
+
         if path == "/buttons/api/run-plan":
             # Run one allowlisted td planning guide. Plans are
             # deterministic: they read repo state and write a

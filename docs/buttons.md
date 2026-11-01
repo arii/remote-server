@@ -242,11 +242,7 @@ repo picked above.
 - **Issues:** `GET /buttons/api/issues` runs `gh issue list` in
   the terminal container (fixed `--json` field set, body
   truncated). Each card shows number, title, assignees, labels,
-  updated time; expanding shows the body and an assign row.
-  Assign goes through `POST /buttons/api/assign-issue`
-  (repo from discovery, issue digits, assignee GitHub-username
-  charset, shlex-quoted, ledgered as `pr-action` /
-  `assign-issue`). The New issue form posts to the same
+  updated time. The New issue form posts to the same
   validated `/buttons/api/create-issue` as Ask Pi proposals and
   Report bug.
 - **Jules sessions:** `GET /buttons/api/jules-sessions` runs
