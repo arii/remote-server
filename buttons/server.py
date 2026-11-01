@@ -556,6 +556,10 @@ def _suggest_prompt(repo, context):
         "this repo's checkout). Do not run any tools. Do not use "
         "boomtick MCP tools for this task — they are scoped to a "
         "different repo.\n"
+        "Code discipline: Workaround chains (e.g. `cmd || variant-cmd`, "
+        "fallback ladders papering over errors, or retrying with tweaked flags) "
+        "are review-blocking findings, not nits. Never suggest workaround chains; "
+        "always address root causes with ONE canonical command path.\n"
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
@@ -624,6 +628,10 @@ def _ask_prompt(repo, instruction):
         "Be terse, no filler.\n"
         "The user instruction follows. Investigate read-only using "
         "the files in this repo's checkout (do not run any tools).\n"
+        "Code discipline & review rule: Workaround chains (such as "
+        "`cmd || variant-cmd`, retry ladders, or chaining fallbacks to dodge "
+        "failures) are review-blocking findings, not nits. Diagnose the root cause "
+        "and maintain ONE canonical command path.\n"
         "If the instruction asks for a write action, do the "
         "read-only investigation first, then propose the exact "
         "change and STOP — do not execute it. Allowed proposal "
@@ -1053,6 +1061,16 @@ ACTIONS = {
         "risk": "danger",
         "steps": [
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
+        ],
+    },
+    "recreate-code": {
+        "label": "Recreate VS Code",
+        "group": "Server",
+        "sub": "Restart code-server with current config and .env",
+        "confirm": True,
+        "risk": "danger",
+        "steps": [
+            COMPOSE + ["up", "-d", "--force-recreate", "code-server"],
         ],
     },
     "logs": {
@@ -1626,11 +1644,11 @@ JOB_TEMPLATES = {
         ],
     },
     # Sequential issue fixing: one approval per issue. Approving
-    # labels the issue 'jules', which starts a Jules session on it
-    # (Jules's GitHub integration). The Project tab's Jules list
-    # shows each session's progress before the next approval.
+    # dispatches the autonomous repair worker on the issue.
+    # The repair worker operates in an isolated worktree, verifies code,
+    # and opens a PR without auto-merging.
     "fix-issues": {
-        "goal": "Fix issues via Jules, sequential: {issues} ({repo})",
+        "goal": "Fix issues via repair worker, sequential: {issues} ({repo})",
         "needs_issues": True,
         "steps": [],
     },
@@ -1744,6 +1762,48 @@ def _job_after_step(job):
         _job_end(job, "failed")
 
 
+def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
+    """Execute a synchronous job step (pr-action or label-issue), updating
+    step state, exit_code, finished_at, saving jobs, and logging to ledger.
+    Returns (ok, err)."""
+    if repos is None:
+        repos = _discover_repos()
+    kind = step_obj.get("kind")
+    try:
+        if kind == "pr-action":
+            _pr_action(job["pr"], step_obj["action"], job["repo"], repos)
+        elif kind == "repair-issue":
+            _trigger_repair(step_obj["issue"])
+        elif kind == "label-issue":
+            _label_issue_jules(job["repo"], step_obj["issue"], repos)
+        else:
+            raise ValueError(f"unsupported synchronous step kind: {kind}")
+        ok, err = True, None
+    except ValueError as exc:
+        ok, err = False, str(exc)
+    except Exception as exc:
+        ok, err = False, str(exc)[:500]
+
+    with jobs_lock:
+        step_obj["state"] = "done" if ok else "failed"
+        step_obj["finished_at"] = time.time()
+        step_obj["exit_code"] = 0 if ok else 1
+        step_obj["note"] = None if ok else err
+        _job_after_step(job)
+        _jobs_save()
+
+    if event_prefix:
+        event = f"{event_prefix}" + ("done" if ok else "failed")
+    elif kind == "repair-issue":
+        event = f"dispatched repair worker on #{step_obj.get('issue')}" if ok else "repair dispatch failed"
+    elif kind == "label-issue":
+        event = f"dispatched Jules on #{step_obj.get('issue')}" if ok else "dispatch failed"
+    else:
+        event = "step " + ("done" if ok else "failed")
+
+    _ledger_append({"kind": "job", "job": job["id"], "step": step_idx,
+                    "event": event, "ok": ok})
+    return ok, err
 def _job_advance(job):
     """Run the next pending read-only step, if any. Write steps wait
     for an explicit Approve tap. jobs_lock NOT held on entry."""
@@ -1830,8 +1890,8 @@ def _job_create(template, repo, pr=None, issues=None):
     if spec.get("needs_issues"):
         for n in issues:
             plan.append({
-                "label": f"Dispatch Jules on #{n} (label 'jules')",
-                "kind": "label-issue", "issue": n,
+                "label": f"Dispatch repair worker on #{n}",
+                "kind": "repair-issue", "issue": n,
                 "write": True, "state": "pending",
                 "approved_at": None, "auto": False, "run_id": None,
                 "finished_at": None, "exit_code": None, "note": None,
@@ -2331,11 +2391,20 @@ a { color: #8bf; }
 .review-prompt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5em; margin: 0.6em 0; }
 .review-prompt-btn { text-align: left; padding: 0.6em 0.8em; font-size: 0.85em; border-radius: 6px; }
 .review-prompt-btn small { display: block; color: var(--text-muted); font-size: 0.78em; margin-top: 0.2em; }
+.launcher-bar { display: flex; gap: 0.6em; margin: 0.6em 0; flex-wrap: wrap; }
+.launcher-tile { display: inline-flex; align-items: center; gap: 0.4em; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.5em 0.9em;
+  color: var(--text-main); text-decoration: none; font-size: 0.95em; font-weight: 500; transition: border-color 0.15s ease, background 0.15s ease; }
+.launcher-tile:hover { border-color: var(--primary); background: var(--bg-card-hover); color: #fff; }
 </style>
 </head>
 <body>
 <h1>S5 Control Panel</h1>
-<p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.
+<div class="launcher-bar">
+  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
+  <a class="launcher-tile" id="codeLauncher" href="#" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+</div>
+<p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
@@ -2600,6 +2669,11 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
+const codeLauncher = document.getElementById("codeLauncher");
+if (codeLauncher) {
+  const codePort = "<!--CODE_PORT-->";
+  codeLauncher.href = window.location.protocol + "//" + window.location.hostname + ":" + codePort + "/";
+}
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
@@ -3264,7 +3338,36 @@ function renderBriefing(b) {
   att.appendChild(attHead);
   if (b.attention && b.attention.length) {
     const ul = document.createElement("ul");
-    b.attention.forEach(a => { const li = document.createElement("li"); li.textContent = a; ul.appendChild(li); });
+    b.attention.forEach(a => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = a;
+      li.appendChild(span);
+      const m = a.match(/(?:^|\s)#(\d+)/);
+      if (m) {
+        const btn = document.createElement("button");
+        btn.textContent = "Repair";
+        btn.className = "btn-ghost";
+        btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await fetchJson("/buttons/api/repair/dispatch", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({issue: parseInt(m[1], 10)})
+            });
+            const details = document.getElementById("repairDetails");
+            if (details) details.open = true;
+            if (typeof refreshStatus === "function") refreshStatus();
+          } finally {
+            btn.disabled = false;
+          }
+        };
+        li.appendChild(btn);
+      }
+      ul.appendChild(li);
+    });
     att.appendChild(ul);
   } else {
     const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
@@ -3432,7 +3535,32 @@ function renderAttention(b) {
   const ul = document.createElement("ul");
   items.slice(0, 8).forEach(t => {
     const li = document.createElement("li");
-    li.textContent = t;
+    const span = document.createElement("span");
+    span.textContent = t;
+    li.appendChild(span);
+    const m = t.match(/(?:^|\s)#(\d+)/);
+    if (m) {
+      const btn = document.createElement("button");
+      btn.textContent = "Repair";
+      btn.className = "btn-ghost";
+      btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await fetchJson("/buttons/api/repair/dispatch", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({issue: parseInt(m[1], 10)})
+          });
+          const details = document.getElementById("repairDetails");
+          if (details) details.open = true;
+          if (typeof refreshStatus === "function") refreshStatus();
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      li.appendChild(btn);
+    }
     ul.appendChild(li);
   });
   el.appendChild(ul);
@@ -3448,9 +3576,9 @@ const JOB_TEMPLATES = {
     desc: "Briefing → warm context → preflight. Runs on its own."},
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
-  "fix-issues": {label: "Fix issues via Jules",
-    desc: "Pick issues; each gets one Approve tap, which labels it " +
-      "'jules' and starts a Jules session. Sequential.",
+  "fix-issues": {label: "Fix issues via repair worker",
+    desc: "Pick issues; each gets one Approve tap, which dispatches " +
+      "the autonomous repair worker. Sequential.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -5369,11 +5497,14 @@ class Handler(BaseHTTPRequestHandler):
             # from discovery, so a repo added to ~/repos shows up
             # without a container rebuild.
             repos = _discover_repos()
+            code_port = os.environ.get("CODE_PORT", "8444")
             body = HTML.replace(
                 "<!--REPO_STRIPS-->",
                 _repo_strips_html(repos)).replace(
                 "<!--REPO_OPTIONS-->",
-                _repo_options_html(repos)).encode()
+                _repo_options_html(repos)).replace(
+                "<!--CODE_PORT-->",
+                code_port).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -5702,7 +5833,7 @@ class Handler(BaseHTTPRequestHandler):
                     event = fr.get("event", "?")
                     html_url = fr.get("html_url") or fr.get("url")
 
-                    jobs = []
+                    failed_wf_jobs = []
                     annotations = []
                     diagnosed_cause = "Workflow failed."
                     if run_id:
@@ -5712,7 +5843,7 @@ class Handler(BaseHTTPRequestHandler):
                             for j in jobs_json:
                                 if j.get("conclusion") == "failure":
                                     failed_steps = [s.get("name", "?") for s in (j.get("steps") or []) if s.get("conclusion") == "failure"]
-                                    jobs.append({
+                                    failed_wf_jobs.append({
                                         "name": j.get("name", "?"),
                                         "conclusion": "failure",
                                         "failed_steps": failed_steps
@@ -5739,8 +5870,8 @@ class Handler(BaseHTTPRequestHandler):
                     if annotations:
                         first_ann = annotations[0]
                         diagnosed_cause = f"[{first_ann.get('path', 'unknown')}:{first_ann.get('start_line', '?')}] {first_ann.get('message', '')}"
-                    elif jobs:
-                        first_job = jobs[0]
+                    elif failed_wf_jobs:
+                        first_job = failed_wf_jobs[0]
                         steps_str = (": " + ", ".join(first_job["failed_steps"])) if first_job["failed_steps"] else ""
                         diagnosed_cause = f"Job '{first_job['name']}' failed{steps_str}."
 
@@ -5753,7 +5884,7 @@ class Handler(BaseHTTPRequestHandler):
                         "url": html_url,
                         "diagnosed_cause": diagnosed_cause,
                         "annotations": annotations,
-                        "jobs": jobs
+                        "jobs": failed_wf_jobs
                     })
 
                 self._json({
@@ -5799,8 +5930,9 @@ class Handler(BaseHTTPRequestHandler):
                         prompts = [
                             {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, secret leaks, input validation, and auth boundary issues in files: " + ", ".join(f['path'] for f in files)},
                             {"id": "architecture", "label": "Architecture Review", "prompt": f"Review architectural fit, coupling, error propagation, and state boundaries in PR #{pr_number}."},
+                            {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                             {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Identify missing unit tests, edge conditions, or regression scenarios for changes in PR #{pr_number}."},
-                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}."}
+                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
                         ]
                         self._json({
                             "repo": repo,
@@ -5850,8 +5982,9 @@ class Handler(BaseHTTPRequestHandler):
                 prompts = [
                     {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, injection risks, and auth flaws across changed files: " + ", ".join(f['path'] for f in files[:10])},
                     {"id": "architecture", "label": "Architecture Review", "prompt": f"Review design decisions, coupling, and modularity in PR #{pr_number} ({view.get('title')})."},
+                    {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                     {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Determine untested paths and recommend automated tests for PR #{pr_number}."},
-                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}."}
+                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
                 ]
                 self._json({
                     "repo": repo,
