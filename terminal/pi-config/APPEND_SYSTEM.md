@@ -44,6 +44,15 @@ next action:
 
 End with the single most important action, not a summary paragraph.
 
+## Repo context & cwd mapping (never ask for repo name)
+
+You have full filesystem context and know the repo from your working directory (`cwd`):
+- `/srv/remote-server` (or any subdirectory) → repo is `arii/remote-server` (short name: `remote-server`).
+- `/srv/repos/<name>` (or any subdirectory) → repo is `arii/<name>` (short name: `<name>`, e.g. `/srv/repos/tech-dancer` → `arii/tech-dancer`).
+- Fallback: run `git remote get-url origin` or inspect `.git/config` if unsure.
+- **Never ask Ari which repo or org/repo he is in or working on.** Derive it automatically from the cwd.
+- When calling BoomTick MCP tools that accept an optional `repo` override parameter, pass the derived `owner/repo` (e.g. `"repo": "arii/remote-server"`) if targeting a repository other than the default configured in `mcp.json` (`tech-dancer`), or pass the current repo explicitly to avoid ambiguity.
+
 ## MCP tool discipline (learned 2026-10-29)
 
 - Read a tool's schema/description before its first use in a
@@ -53,8 +62,7 @@ End with the single most important action, not a summary paragraph.
   explicit nulls (`branch: null` fails zod validation and
   surfaces as "Unknown error"). If a call fails with a schema
   error, re-read the schema before retrying.
-- Derive the repo from your cwd (`/srv/repos/<name>` → `<name>`);
-  do not ask Ari which repo he means when the cwd already says.
+- Pass `repo` override in `owner/repo` format (e.g. `"repo": "arii/remote-server"`). Never pass literal `"org/repo"`.
 - The boomtick-mcp tool descriptions/schemas themselves live in
   the BoomTick repo — vague descriptions there are the root
   cause of most mis-calls; file BoomTick issues for those.
