@@ -125,6 +125,27 @@ def _session_meta(path):
     return cwd, title, repo
 
 
+def _iter_session_entries(path):
+    """Yield parsed JSON entries from a session JSONL file.
+
+    Yields (total_line_count, obj) for each parsed JSON line.
+    Skips empty/blank lines and unparseable JSON lines, while counting
+    all non-empty lines in total_line_count.
+    """
+    total = 0
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            total += 1
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            yield total, obj
+
+
 def _render_file(path, header=None):
     """Render one session file readably. Never raises. The
     default header names the session (basename, never a raw
@@ -136,24 +157,15 @@ def _render_file(path, header=None):
     rendered = deque(maxlen=SHOW_ENTRIES)
     total = 0
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                total += 1
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(obj, dict) and obj.get("type") == "session":
-                    print(f"Session {obj.get('id', '?')} — "
-                          f"cwd {obj.get('cwd', '?')} — "
-                          f"started {obj.get('timestamp', '?')}")
-                    continue
-                text = _render_entry(obj)
-                if text:
-                    rendered.append(text)
+        for total, obj in _iter_session_entries(path):
+            if isinstance(obj, dict) and obj.get("type") == "session":
+                print(f"Session {obj.get('id', '?')} — "
+                      f"cwd {obj.get('cwd', '?')} — "
+                      f"started {obj.get('timestamp', '?')}")
+                continue
+            text = _render_entry(obj)
+            if text:
+                rendered.append(text)
     except Exception as exc:
         print(f"Could not read session: {exc}")
         return
@@ -252,24 +264,15 @@ def _parse_session_file(path):
     turns = []
     total = 0
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                total += 1
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(obj, dict) and obj.get("type") == "session":
-                    session_id = obj.get("id") or session_id
-                    cwd = obj.get("cwd") or cwd
-                    started = obj.get("timestamp") or started
-                    continue
-                turn = _parse_turn(obj)
-                if turn:
-                    turns.append(turn)
+        for total, obj in _iter_session_entries(path):
+            if isinstance(obj, dict) and obj.get("type") == "session":
+                session_id = obj.get("id") or session_id
+                cwd = obj.get("cwd") or cwd
+                started = obj.get("timestamp") or started
+                continue
+            turn = _parse_turn(obj)
+            if turn:
+                turns.append(turn)
     except Exception as exc:
         return {"error": str(exc), "turns": []}
 
