@@ -938,7 +938,27 @@ def _repair_worker_thread(issue_number):
 
     _ledger_append({"kind": "repair", "issue": issue_number, "event": "repair started"})
 
-    cmd = ["python3", "scripts/repair_worker.py", "--issue", str(issue_number)]
+    candidate_paths = [
+        os.path.join(STACK, "scripts", "repair_worker.py"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "repair_worker.py"),
+        "scripts/repair_worker.py",
+    ]
+    worker_script = None
+    for p in candidate_paths:
+        if os.path.isfile(p):
+            worker_script = p
+            break
+
+    if not worker_script:
+        notice = "Repair worker not installed on this system: scripts/repair_worker.py missing\n"
+        with repair_state_lock:
+            repair_state["status"] = "failed"
+            repair_state["exit_code"] = 1
+            repair_state["log_buffer"] += notice
+        _ledger_append({"kind": "repair", "issue": issue_number, "event": "repair failed", "exit": 1})
+        return
+
+    cmd = ["python3", worker_script, "--issue", str(issue_number)]
     try:
         proc = subprocess.Popen(
             cmd,
@@ -958,6 +978,12 @@ def _repair_worker_thread(issue_number):
             repair_state["status"] = "done" if code == 0 else "failed"
             repair_state["exit_code"] = code
             repair_state["log_buffer"] += f"\nProcess exited with code {code}\n"
+    except FileNotFoundError:
+        notice = "Repair worker not installed on this system: scripts/repair_worker.py missing\n"
+        with repair_state_lock:
+            repair_state["status"] = "failed"
+            repair_state["exit_code"] = 1
+            repair_state["log_buffer"] += notice
     except Exception as exc:
         with repair_state_lock:
             repair_state["status"] = "failed"
