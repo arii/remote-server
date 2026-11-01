@@ -62,7 +62,10 @@ CHARS_PER_TOKEN = 4  # Standard approximation for code/log tokenizers
 
 
 def estimate_tokens(text: str) -> int:
-    """Fast approximation of token count based on length and whitespace/punctuation."""
+    """Fast approximation of token count based on length and whitespace/punctuation.
+
+    Useful both programmatically for context budget estimations and as a CLI diagnostic helper.
+    """
     if not text:
         return 0
     # Roughly 3.5 to 4 chars per token for code/markdown/diffs
@@ -70,7 +73,11 @@ def estimate_tokens(text: str) -> int:
 
 
 def is_excluded_path(path: str, patterns=None) -> bool:
-    """Return True if path matches any excluded pattern."""
+    """Return True if path matches any excluded pattern.
+
+    Excludes lockfiles, minified bundles, vector/binary assets, and build artifacts.
+    Public diagnostic and programmatic utility used by filter_diff.
+    """
     if not path:
         return False
     patterns = patterns if patterns is not None else DEFAULT_EXCLUDED_PATTERNS
@@ -82,7 +89,10 @@ def is_excluded_path(path: str, patterns=None) -> bool:
 
 
 def _extract_filepath_from_diff_header(header_lines):
-    """Extract destination or source file path from diff header lines."""
+    """Extract destination or source file path from diff header lines.
+
+    Parses standard git diff header lines ('+++ b/...', '--- a/...', or 'diff --git a/...').
+    """
     for line in header_lines:
         if line.startswith("+++ b/"):
             return line[6:].strip()
