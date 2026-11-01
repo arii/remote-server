@@ -5,7 +5,7 @@
   "scripts": {
     "buttons:logs": "docker compose logs --tail=100 buttons",
     "buttons:rebuild": "docker compose up -d --build buttons",
-    "check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py",
+    "check": "python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py buttons/context_filter.py",
     "clean": "docker compose down --remove-orphans",
     "down": "docker compose down",
     "hooks:check": "bash scripts/setup-hooks.sh --check",
