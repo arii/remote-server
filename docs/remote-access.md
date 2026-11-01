@@ -21,29 +21,21 @@ phone browser ──https://TERMINAL_DOMAIN:TERMINAL_PORT──▶ oauth2-proxy
    (any network, no app)                                  │ TLS w/ existing LE cert
                                                           │ GitHub OAuth, 1-user allowlist
                                                           ▼
-                                                   terminal:7681 (compose net)
-                                                   ttyd --writable --max-clients=1
-                                                     └─ zellij attach --create main
-                                                          (session persists; closing the
-                                                           tab "detaches", reopening
-                                                           re-attaches)
-
-phone browser ──https://TERMINAL_DOMAIN:CODE_PORT──────▶ oauth2-proxy-code
-   (browser VS Code)                                      │ TLS w/ same LE cert
-                                                          │ GitHub OAuth, 1-user allowlist
-                                                          ▼
-                                                   code-server:8080 (compose net)
-                                                   --auth none
-                                                     └─ Continue extension (Ollama qwen3:8b)
+                                                   caddy:8080 (compose net)
+                                                     ├── / (terminal:7681, ttyd + zellij)
+                                                     ├── /buttons* (buttons:8000)
+                                                     └── /code* (code-server:8080)
+                                                           └─ Continue extension (Ollama qwen3:8b)
 ```
 
-### code-server behind GitHub OAuth gate
-`code-server` does not support subpaths cleanly, so rather than running behind Caddy subpaths, a second `oauth2-proxy` instance (`oauth2-proxy-code`) listens on a dedicated public port `CODE_PORT` (e.g. 8444).
-- Reuses the existing Let's Encrypt certificate and GitHub OAuth single-user allowlist.
+### code-server behind GitHub OAuth gate via /code subpath
+`code-server` is served under the `/code` subpath through the existing chain (`oauth2-proxy` → Caddy) on the single public port `TERMINAL_PORT` without requiring a second port forward or extra firewall rule:
+- Reuses the existing Let's Encrypt certificate and GitHub OAuth single-user allowlist on `TERMINAL_PORT` (cookie path `/` covers `/code`).
+- Caddy strips the `/code` prefix (`uri strip_prefix /code`) and reverse proxies requests and websocket upgrades to `code-server:8080`.
 - Runs `code-server` with `--auth none` inside the private compose network, treating oauth2-proxy as the sole security boundary.
 - Persists user extensions and settings across container recreates via named volumes `code-server-data` and `code-server-config`.
 - Preconfigures the Continue extension in `config/continue/config.yaml` pointing to local Ollama at `http://ollama:11434` with `qwen3:8b` for offline, zero-external-call in-IDE assistance.
-- Buttons dashboard provides launcher tiles to quickly switch between the terminal and VS Code.
+- Buttons dashboard provides launcher tiles to quickly switch between the terminal (`/`) and VS Code (`/code`).
 
 Why this shape: Ari already owns the hard parts (DDNS hostname, valid certs,
 a forwarded port). oauth2-proxy terminates TLS *itself*

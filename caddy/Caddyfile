@@ -1,11 +1,16 @@
 # Internal router behind oauth2-proxy (single OAuth gate, single TLS port).
-# oauth2-proxy -> caddy:8080 -> terminal (/) or buttons (/buttons*).
-# Caddy reverse_proxy handles the ttyd websocket upgrade automatically.
+# oauth2-proxy -> caddy:8080 -> terminal (/), buttons (/buttons*), or code-server (/code*).
+# Caddy reverse_proxy handles websocket upgrades automatically (ttyd and code-server).
 # No TLS here: oauth2-proxy terminates TLS; this port is compose-network
 # only and is never published to the host.
 :8080 {
 	handle /buttons* {
 		reverse_proxy buttons:8000
+	}
+
+	handle /code* {
+		uri strip_prefix /code
+		reverse_proxy code-server:8080
 	}
 
 	handle {

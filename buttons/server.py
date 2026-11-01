@@ -2627,7 +2627,7 @@ a { color: #8bf; }
 <h1>S5 Control Panel</h1>
 <div class="launcher-bar">
   <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
-  <a class="launcher-tile" id="codeLauncher" href="#" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
 </div>
 <p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
@@ -2947,8 +2947,7 @@ entries but leaves a 'ledger cleared' record.</p>
 document.getElementById("jsdiag").style.display = "none";
 const codeLauncher = document.getElementById("codeLauncher");
 if (codeLauncher) {
-  const codePort = "<!--CODE_PORT-->";
-  codeLauncher.href = window.location.protocol + "//" + window.location.hostname + ":" + codePort + "/";
+  codeLauncher.href = window.location.origin + "/code";
 }
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
@@ -6380,14 +6379,11 @@ class Handler(BaseHTTPRequestHandler):
             # from discovery, so a repo added to ~/repos shows up
             # without a container rebuild.
             repos = _discover_repos()
-            code_port = os.environ.get("CODE_PORT", "8444")
             body = HTML.replace(
                 "<!--REPO_STRIPS-->",
                 _repo_strips_html(repos)).replace(
                 "<!--REPO_OPTIONS-->",
-                _repo_options_html(repos)).replace(
-                "<!--CODE_PORT-->",
-                code_port).encode()
+                _repo_options_html(repos)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
