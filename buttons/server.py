@@ -455,8 +455,11 @@ def _pi_thread(rid, kind, repo, instruction):
             if r is None:
                 return
             if kind == "suggest":
+                parsed_suggs = _parse_suggestions(raw)
+                note = _extract_suggestion_note(raw, parsed_suggs)
                 r["result"] = {"repo": repo,
-                               "suggestions": _parse_suggestions(raw),
+                               "suggestions": parsed_suggs,
+                               "note": note,
                                "raw": raw[-2000:]}
             else:
                 r["result"] = {"repo": repo, "reply": raw[-6000:],
@@ -625,32 +628,58 @@ def _suggest_prompt(repo, context):
 
 def _parse_suggestions(raw):
     """Validated suggestions from Pi's stdout. ANSI escapes are
-    stripped first (print mode may color). Unparseable lines are
-    dropped, never run; the raw tail is returned alongside so
-    the page can show what Pi actually said."""
+    stripped first (print mode may color). Tolerates small-model
+    quirks: markdown bullets, backticks, case-insensitive SUGGEST,
+    and trailing formatting. Unparseable lines are dropped from
+    the command list; non-empty rambling without runnable commands
+    is retained as a fallback note."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", raw or "")
     suggestions = []
     for line in clean.splitlines():
         line = line.strip()
-        if not line.startswith("SUGGEST:"):
+        # Strip common markdown bullet prefixes (*, -, +, numbered)
+        line = re.sub(r"^(\*|-|\+|\d+\.)\s+", "", line).strip()
+        # Strip wrapping markdown bold/backticks if line starts with backtick/star
+        line = line.strip("`*")
+        m = re.match(r"^SUGGEST:\s*(.+)$", line, re.IGNORECASE)
+        if not m:
             continue
-        rest = line[len("SUGGEST:"):].strip()
+        rest = m.group(1).strip()
         if rest.lower().startswith("none"):
             continue
         if "::" in rest:
             cmdpart, reason = rest.split("::", 1)
         else:
             cmdpart, reason = rest, ""
-        tokens = _validate_td_command(cmdpart.strip())
+        # Clean backticks and extra formatting around command
+        cmdpart = cmdpart.strip("` \t'\"")
+        reason = reason.strip("` \t'\"")
+        tokens = _validate_td_command(cmdpart)
         if not tokens:
             continue
         suggestions.append({
             "command": " ".join(tokens),
-            "reason": reason.strip()[:200],
+            "reason": reason[:200],
             "caveat": ("resolves in a worktree, does not push"
                        if "resolve-conflicts" in tokens else ""),
         })
     return suggestions
+
+
+def _extract_suggestion_note(raw, suggestions):
+    """Extract a concise readable note from raw model output when rambling
+    occurs or as context alongside suggestions. Avoids silent zero-items."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", raw or "").strip()
+    if not clean:
+        return ""
+    if not suggestions:
+        # Rambling model output degraded to readable note
+        lines = [line.strip() for line in clean.splitlines() if line.strip()]
+        # Strip system / banner lines if any
+        substantive = [l for l in lines if not l.startswith("Asking Pi")]
+        text = "\n".join(substantive) if substantive else clean
+        return text[:1000]
+    return ""
 
 
 ASK_MAX_CHARS = 2000
@@ -693,37 +722,43 @@ def _ask_prompt(repo, instruction):
 
 
 def _parse_proposal(raw):
-    """Strict PROPOSE block parser. Returns a dict or None. ANSI
-    escapes are stripped first. Anything not in the exact form is
-    ignored — the reply is still shown, just not runnable. A td
+    """PROPOSE block parser hardened for small-model output quirks
+    (markdown bullets, backticks, bold markers, trailing code fences).
+    Returns a dict or None. ANSI escapes are stripped first. A td
     proposal goes through _validate_td_command, the same gate as
     suggestion Run buttons; an issue proposal is length-capped
     here and the title/body are shown verbatim in the confirm
     dialog before anything is created."""
     clean = re.sub(r"\x1b\[[0-9;]*m", "", raw or "")
-    m = re.search(r"^PROPOSE\s+(issue|td)\s*$", clean, re.M)
+    # Tolerate leading bullets/bolding like `**PROPOSE td**` or `- PROPOSE issue`
+    m = re.search(r"^(?:[\*\-\+\s`]*)\bPROPOSE\s+(issue|td)\b(?:[\*\-\+\s`]*)$", clean, re.M | re.IGNORECASE)
     if not m:
         return None
-    kind = m.group(1)
+    kind = m.group(1).lower()
     tail = clean[m.end():]
-    end = re.search(r"^END PROPOSE\s*$", tail, re.M)
-    if not end:
-        return None
-    body = tail[:end.start()]
+    end = re.search(r"^(?:[\*\-\+\s`]*)\bEND PROPOSE\b(?:[\*\-\+\s`]*)$", tail, re.M | re.IGNORECASE)
+    body = tail[:end.start()] if end else tail
     if kind == "td":
-        cm = re.search(r"^COMMAND:\s*(.+)$", body, re.M)
+        cm = re.search(r"^(?:[\*\-\+\s`]*)\bCOMMAND:\s*`?([^`\n]+)`?", body, re.M | re.IGNORECASE)
         if not cm:
             return None
-        tokens = _validate_td_command(cm.group(1).strip())
+        cmd_candidate = cm.group(1).strip("` \t'\"")
+        tokens = _validate_td_command(cmd_candidate)
         if not tokens:
             return None
         return {"kind": "td", "command": " ".join(tokens)}
-    tm = re.search(r"^TITLE:\s*(.+)$", body, re.M)
+    tm = re.search(r"^(?:[\*\-\+\s`]*)\bTITLE:\s*(.+)$", body, re.M | re.IGNORECASE)
     if not tm:
         return None
-    title = tm.group(1).strip()[:200]
-    bm = re.search(r"^BODY:\s*$", body, re.M)
-    text = body[bm.end():].strip()[:4000] if bm else ""
+    title = tm.group(1).strip("`* \t'\"")[:200]
+    bm = re.search(r"^(?:[\*\-\+\s`]*)\bBODY:\s*$", body, re.M | re.IGNORECASE)
+    if bm:
+        text = body[bm.end():]
+        # If there's an END PROPOSE or trailing markdown fences, strip them
+        text = re.sub(r"```.*$", "", text, flags=re.DOTALL)
+        text = text.strip()[:4000]
+    else:
+        text = ""
     if not title:
         return None
     return {"kind": "issue", "title": title, "body": text}
@@ -1855,6 +1890,20 @@ def _job_advance(job):
         if kind == "pr-action":
             # Synchronous: runs inline, then advance to the next step.
             _execute_job_step(job, idx, st, event_prefix="step auto-")
+        elif kind == "run-td":
+            run_id, err = _start_run("run-td", job["repo"], td_argv=st.get("td_argv"))
+            with jobs_lock:
+                if err:
+                    st["state"] = "pending"
+                    st["auto"] = False
+                    st["note"] = err
+                    _jobs_save()
+                    return
+                st["run_id"] = run_id
+                _jobs_save()
+            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                            "event": "step auto-started", "run": run_id})
+            return
         else:
             # Async action: start the run; the client polls it and
             # reports step-done, which advances the plan again.
@@ -1873,51 +1922,90 @@ def _job_advance(job):
             return
 
 
-def _job_create(template, repo, pr=None, issues=None):
-    """Create a job from a template. Returns (job, error)."""
-    spec = JOB_TEMPLATES.get(template)
-    if spec is None:
-        return None, "unknown template"
+def _job_create(template, repo, pr=None, issues=None, suggestions=None):
+    """Create a job from a template or approved Pi suggestion batch.
+    Returns (job, error)."""
     repos = _discover_repos()
     if repo not in repos:
         return None, "unknown repo"
-    if spec.get("needs_pr"):
-        if not isinstance(pr, int) or isinstance(pr, bool) or pr <= 0:
-            return None, "bad pr number"
-    else:
-        pr = None
-    if spec.get("needs_issues"):
-        if not isinstance(issues, list) or not issues \
-                or len(issues) > 10 \
-                or any(not isinstance(n, int) or isinstance(n, bool)
-                       or n <= 0 for n in issues):
-            return None, "bad issues list"
-        issues = sorted(set(issues))
-    else:
+
+    if template == "pi-suggestions":
+        # Pi suggestions turned into job steps
+        if not isinstance(suggestions, list) or not suggestions or len(suggestions) > 10:
+            return None, "bad suggestions list"
+        validated_steps = []
+        for item in suggestions:
+            cmd = item.get("command") if isinstance(item, dict) else item
+            tokens = _validate_td_command(str(cmd or ""))
+            if not tokens:
+                return None, f"invalid suggestion command: {cmd}"
+            reason = item.get("reason", "") if isinstance(item, dict) else ""
+            validated_steps.append({
+                "command": " ".join(tokens),
+                "tokens": tokens,
+                "reason": str(reason)[:200],
+            })
+        goal = f"Execute Pi suggestions batch ({repo})"
+        plan = []
+        for s in validated_steps:
+            plan.append({
+                "label": f"Run suggested: {s['command']}" + (f" ({s['reason']})" if s['reason'] else ""),
+                "kind": "run-td",
+                "action": "run-td",
+                "td_argv": s["tokens"],
+                "write": True,
+                "state": "pending",
+                "approved_at": None,
+                "auto": False,
+                "run_id": None,
+                "finished_at": None,
+                "exit_code": None,
+                "note": None,
+            })
+        spec = {"goal": goal}
         issues = None
-    issues_str = ", ".join("#" + str(n) for n in issues) \
-        if issues else ""
-    goal = spec["goal"].format(repo=repo, pr=pr, issues=issues_str)
-    plan = []
-    if spec.get("needs_issues"):
-        for n in issues:
-            plan.append({
-                "label": f"Dispatch repair worker on #{n}",
-                "kind": "repair-issue", "issue": n,
-                "write": True, "state": "pending",
-                "approved_at": None, "auto": False, "run_id": None,
-                "finished_at": None, "exit_code": None, "note": None,
-            })
+        pr = None
     else:
-        for s in spec["steps"]:
-            plan.append({
-                "label": s["label"].format(repo=repo, pr=pr),
-                "kind": s["kind"], "action": s.get("action"),
-                "write": bool(s.get("write", False)),
-                "state": "pending", "approved_at": None, "auto": False,
-                "run_id": None, "finished_at": None,
-                "exit_code": None, "note": None,
-            })
+        spec = JOB_TEMPLATES.get(template)
+        if spec is None:
+            return None, "unknown template"
+        if spec.get("needs_pr"):
+            if not isinstance(pr, int) or isinstance(pr, bool) or pr <= 0:
+                return None, "bad pr number"
+        else:
+            pr = None
+        if spec.get("needs_issues"):
+            if not isinstance(issues, list) or not issues \
+                    or len(issues) > 10 \
+                    or any(not isinstance(n, int) or isinstance(n, bool)
+                           or n <= 0 for n in issues):
+                return None, "bad issues list"
+            issues = sorted(set(issues))
+        else:
+            issues = None
+        issues_str = ", ".join("#" + str(n) for n in issues) \
+            if issues else ""
+        goal = spec["goal"].format(repo=repo, pr=pr, issues=issues_str)
+        plan = []
+        if spec.get("needs_issues"):
+            for n in issues:
+                plan.append({
+                    "label": f"Dispatch repair worker on #{n}",
+                    "kind": "repair-issue", "issue": n,
+                    "write": True, "state": "pending",
+                    "approved_at": None, "auto": False, "run_id": None,
+                    "finished_at": None, "exit_code": None, "note": None,
+                })
+        else:
+            for s in spec["steps"]:
+                plan.append({
+                    "label": s["label"].format(repo=repo, pr=pr),
+                    "kind": s["kind"], "action": s.get("action"),
+                    "write": bool(s.get("write", False)),
+                    "state": "pending", "approved_at": None, "auto": False,
+                    "run_id": None, "finished_at": None,
+                    "exit_code": None, "note": None,
+                })
     jid = uuid.uuid4().hex[:12]
     now = time.time()
     job = {"id": jid, "template": template, "goal": goal,
@@ -3995,14 +4083,50 @@ const suggestErrEl = document.getElementById("suggestErr");
 function renderSuggestions(data, repo) {
   suggestionsEl.textContent = "";
   if (!data.suggestions || !data.suggestions.length) {
-    suggestionsEl.textContent = "Pi suggested nothing runnable.";
-    if (data.raw) {
-      const pre = document.createElement("pre");
-      pre.textContent = data.raw;
-      suggestionsEl.appendChild(pre);
-    }
+    const note = data.note || data.raw || "Pi suggested nothing runnable.";
+    const noteDiv = document.createElement("div");
+    noteDiv.className = "prmeta";
+    noteDiv.style.marginBottom = "0.5em";
+    noteDiv.textContent = "Pi note (no runnable commands):";
+    suggestionsEl.appendChild(noteDiv);
+    const pre = document.createElement("pre");
+    pre.textContent = note;
+    suggestionsEl.appendChild(pre);
     return;
   }
+
+  // Batch action: Turn all approved suggestions into a tracked job
+  if (data.suggestions.length > 1) {
+    const batchBar = document.createElement("div");
+    batchBar.style.marginBottom = "0.8em";
+    const batchBtn = document.createElement("button");
+    batchBtn.textContent = `Turn all ${data.suggestions.length} suggestions into Job`;
+    batchBtn.onclick = async () => {
+      if (!(await confirmDialog("Turn suggestions into Job",
+        `Create an auditable job with ${data.suggestions.length} steps in ${repo}?`, false))) return;
+      batchBtn.disabled = true;
+      const res = await fetchJson("/buttons/api/jobs", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          template: "pi-suggestions",
+          repo: repo,
+          suggestions: data.suggestions
+        })
+      });
+      if (!res.ok) {
+        setErrorEl(suggestErrEl, (res.data && res.data.error) || res.status, "create job failed");
+        batchBtn.disabled = false;
+        return;
+      }
+      refreshJobs();
+      const jobsTab = document.querySelector('[data-tab="jobs"]');
+      if (jobsTab) jobsTab.click();
+    };
+    batchBar.appendChild(batchBtn);
+    suggestionsEl.appendChild(batchBar);
+  }
+
   data.suggestions.forEach(s => {
     const div = document.createElement("div");
     div.className = "prcard";
@@ -4020,8 +4144,40 @@ function renderSuggestions(data, repo) {
       cav.textContent = s.caveat;
       div.appendChild(cav);
     }
+    const acts = document.createElement("div");
+    acts.style.display = "flex";
+    acts.style.gap = "0.5em";
+    acts.style.marginTop = "0.5em";
+
+    const bJob = document.createElement("button");
+    bJob.textContent = "Turn into Job";
+    bJob.onclick = async () => {
+      if (!(await confirmDialog("Turn suggestion into Job",
+        `Create a tracked job for: ${s.command}?`, false))) return;
+      bJob.disabled = true;
+      const res = await fetchJson("/buttons/api/jobs", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          template: "pi-suggestions",
+          repo: repo,
+          suggestions: [s]
+        })
+      });
+      if (!res.ok) {
+        setErrorEl(suggestErrEl, (res.data && res.data.error) || res.status, "job creation failed");
+        bJob.disabled = false;
+        return;
+      }
+      refreshJobs();
+      const jobsTab = document.querySelector('[data-tab="jobs"]');
+      if (jobsTab) jobsTab.click();
+    };
+    acts.appendChild(bJob);
+
     const b = document.createElement("button");
-    b.textContent = "Run";
+    b.className = "btn-ghost";
+    b.textContent = "Run directly";
     b.onclick = async () => {
       if (!(await confirmDialog("Run suggested command", "Run: " + s.command + "?", false))) return;
       b.disabled = true;
@@ -4033,7 +4189,9 @@ function renderSuggestions(data, repo) {
       userStartedRun = true;
       poll(dd.id, "run-td");
     };
-    div.appendChild(b);
+    acts.appendChild(b);
+
+    div.appendChild(acts);
     suggestionsEl.appendChild(div);
   });
 }
@@ -7177,8 +7335,9 @@ class Handler(BaseHTTPRequestHandler):
             repo, repos = self._get_request_repo(data)
             pr = data.get("pr")
             issues = data.get("issues")
+            suggestions = data.get("suggestions")
             job, err = _job_create(data.get("template"), repo, pr,
-                                   issues)
+                                   issues, suggestions)
             if err:
                 self._json({"error": err}, 400)
                 return
@@ -7225,6 +7384,23 @@ class Handler(BaseHTTPRequestHandler):
                     ok, err = _execute_job_step(job, step, st)
                     self._json({"ok": ok, "state": st["state"],
                                 "error": err})
+                    return
+                elif kind == "run-td":
+                    run_id, err = _start_run("run-td", job["repo"], td_argv=st.get("td_argv"))
+                    with jobs_lock:
+                        if err:
+                            st["state"] = "pending"
+                            st["approved_at"] = None
+                            job["approvals"].pop()
+                            _jobs_save()
+                            self._json({"error": err}, 409)
+                            return
+                        st["state"] = "running"
+                        st["run_id"] = run_id
+                        _jobs_save()
+                    _ledger_append({"kind": "job", "job": jid, "step": step,
+                                    "event": "step approved", "run": run_id})
+                    self._json({"run_id": run_id})
                     return
                 # kind == "action": async run, client polls it.
                 run_id, err = _start_run(st["action"], job["repo"])
