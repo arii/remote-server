@@ -583,6 +583,10 @@ def _suggest_prompt(repo, context):
         "this repo's checkout). Do not run any tools. Do not use "
         "boomtick MCP tools for this task — they are scoped to a "
         "different repo.\n"
+        "Code discipline: Workaround chains (e.g. `cmd || variant-cmd`, "
+        "fallback ladders papering over errors, or retrying with tweaked flags) "
+        "are review-blocking findings, not nits. Never suggest workaround chains; "
+        "always address root causes with ONE canonical command path.\n"
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
@@ -642,6 +646,10 @@ def _ask_prompt(repo, instruction):
         "Be terse, no filler.\n"
         "The user instruction follows. Investigate read-only using "
         "the files in this repo's checkout (do not run any tools).\n"
+        "Code discipline & review rule: Workaround chains (such as "
+        "`cmd || variant-cmd`, retry ladders, or chaining fallbacks to dodge "
+        "failures) are review-blocking findings, not nits. Diagnose the root cause "
+        "and maintain ONE canonical command path.\n"
         "If the instruction asks for a write action, do the "
         "read-only investigation first, then propose the exact "
         "change and STOP — do not execute it. Allowed proposal "
@@ -6118,8 +6126,9 @@ class Handler(BaseHTTPRequestHandler):
                         prompts = [
                             {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, secret leaks, input validation, and auth boundary issues in files: " + ", ".join(f['path'] for f in files)},
                             {"id": "architecture", "label": "Architecture Review", "prompt": f"Review architectural fit, coupling, error propagation, and state boundaries in PR #{pr_number}."},
+                            {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                             {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Identify missing unit tests, edge conditions, or regression scenarios for changes in PR #{pr_number}."},
-                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}."}
+                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
                         ]
                         self._json({
                             "repo": repo,
@@ -6169,8 +6178,9 @@ class Handler(BaseHTTPRequestHandler):
                 prompts = [
                     {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, injection risks, and auth flaws across changed files: " + ", ".join(f['path'] for f in files[:10])},
                     {"id": "architecture", "label": "Architecture Review", "prompt": f"Review design decisions, coupling, and modularity in PR #{pr_number} ({view.get('title')})."},
+                    {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                     {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Determine untested paths and recommend automated tests for PR #{pr_number}."},
-                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}."}
+                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
                 ]
                 self._json({
                     "repo": repo,
