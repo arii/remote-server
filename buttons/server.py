@@ -371,9 +371,10 @@ def _pi_start(kind, repo, instruction=None):
             except Exception:
                 pass
             del pi_runs[k]
-        pi_runs[rid] = {"kind": kind, "repo": repo, "done": False,
-                        "started_at": now, "result": None,
-                        "error": None}
+        pi_runs[rid] = {"id": rid, "kind": kind, "repo": repo, "done": False,
+                        "started_at": now, "finished_at": None,
+                        "instruction": instruction or ("Suggest next actions" if kind == "suggest" else ""),
+                        "result": None, "error": None}
     open(_pi_progress_path(rid), "w").write("")
     t = threading.Thread(target=_pi_thread,
                          args=(rid, kind, repo, instruction),
@@ -603,6 +604,10 @@ def _suggest_prompt(repo, context):
         "this repo's checkout). Do not run any tools. Do not use "
         "boomtick MCP tools for this task — they are scoped to a "
         "different repo.\n"
+        "Code discipline: Workaround chains (e.g. `cmd || variant-cmd`, "
+        "fallback ladders papering over errors, or retrying with tweaked flags) "
+        "are review-blocking findings, not nits. Never suggest workaround chains; "
+        "always address root causes with ONE canonical command path.\n"
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
@@ -662,6 +667,10 @@ def _ask_prompt(repo, instruction):
         "Be terse, no filler.\n"
         "The user instruction follows. Investigate read-only using "
         "the files in this repo's checkout (do not run any tools).\n"
+        "Code discipline & review rule: Workaround chains (such as "
+        "`cmd || variant-cmd`, retry ladders, or chaining fallbacks to dodge "
+        "failures) are review-blocking findings, not nits. Diagnose the root cause "
+        "and maintain ONE canonical command path.\n"
         "If the instruction asks for a write action, do the "
         "read-only investigation first, then propose the exact "
         "change and STOP — do not execute it. Allowed proposal "
@@ -1082,6 +1091,16 @@ ACTIONS = {
         "risk": "danger",
         "steps": [
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
+        ],
+    },
+    "recreate-code": {
+        "label": "Recreate VS Code",
+        "group": "Server",
+        "sub": "Restart code-server with current config and .env",
+        "confirm": True,
+        "risk": "danger",
+        "steps": [
+            COMPOSE + ["up", "-d", "--force-recreate", "code-server"],
         ],
     },
     "logs": {
@@ -1652,11 +1671,11 @@ JOB_TEMPLATES = {
         ],
     },
     # Sequential issue fixing: one approval per issue. Approving
-    # labels the issue 'jules', which starts a Jules session on it
-    # (Jules's GitHub integration). The Project tab's Jules list
-    # shows each session's progress before the next approval.
+    # dispatches the autonomous repair worker on the issue.
+    # The repair worker operates in an isolated worktree, verifies code,
+    # and opens a PR without auto-merging.
     "fix-issues": {
-        "goal": "Fix issues via Jules, sequential: {issues} ({repo})",
+        "goal": "Fix issues via repair worker, sequential: {issues} ({repo})",
         "needs_issues": True,
         "steps": [],
     },
@@ -1780,6 +1799,8 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
     try:
         if kind == "pr-action":
             _pr_action(job["pr"], step_obj["action"], job["repo"], repos)
+        elif kind == "repair-issue":
+            _trigger_repair(step_obj["issue"])
         elif kind == "label-issue":
             _label_issue_jules(job["repo"], step_obj["issue"], repos)
         else:
@@ -1800,6 +1821,8 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
 
     if event_prefix:
         event = f"{event_prefix}" + ("done" if ok else "failed")
+    elif kind == "repair-issue":
+        event = f"dispatched repair worker on #{step_obj.get('issue')}" if ok else "repair dispatch failed"
     elif kind == "label-issue":
         event = f"dispatched Jules on #{step_obj.get('issue')}" if ok else "dispatch failed"
     else:
@@ -1879,8 +1902,8 @@ def _job_create(template, repo, pr=None, issues=None):
     if spec.get("needs_issues"):
         for n in issues:
             plan.append({
-                "label": f"Dispatch Jules on #{n} (label 'jules')",
-                "kind": "label-issue", "issue": n,
+                "label": f"Dispatch repair worker on #{n}",
+                "kind": "repair-issue", "issue": n,
                 "write": True, "state": "pending",
                 "approved_at": None, "auto": False, "run_id": None,
                 "finished_at": None, "exit_code": None, "note": None,
@@ -2403,11 +2426,20 @@ a { color: #8bf; }
 .code-copy-btn { position: absolute; top: 0.4em; right: 0.5em; padding: 0.2em 0.6em; font-size: 0.75em; border-radius: 5px; background: rgba(255, 255, 255, 0.1); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
 .code-copy-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; }
 .global-chat-btn { margin-left: auto; width: auto; padding: 0.3em 0.75em; font-size: 0.85em; display: inline-flex; align-items: center; gap: 0.35em; cursor: pointer; border-radius: 8px; }
+.launcher-bar { display: flex; gap: 0.6em; margin: 0.6em 0; flex-wrap: wrap; }
+.launcher-tile { display: inline-flex; align-items: center; gap: 0.4em; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.5em 0.9em;
+  color: var(--text-main); text-decoration: none; font-size: 0.95em; font-weight: 500; transition: border-color 0.15s ease, background 0.15s ease; }
+.launcher-tile:hover { border-color: var(--primary); background: var(--bg-card-hover); color: #fff; }
 </style>
 </head>
 <body>
 <h1>S5 Control Panel</h1>
-<p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.
+<div class="launcher-bar">
+  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
+  <a class="launcher-tile" id="codeLauncher" href="#" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+</div>
+<p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
@@ -2723,6 +2755,11 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
+const codeLauncher = document.getElementById("codeLauncher");
+if (codeLauncher) {
+  const codePort = "<!--CODE_PORT-->";
+  codeLauncher.href = window.location.protocol + "//" + window.location.hostname + ":" + codePort + "/";
+}
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
@@ -3389,7 +3426,36 @@ function renderBriefing(b) {
   att.appendChild(attHead);
   if (b.attention && b.attention.length) {
     const ul = document.createElement("ul");
-    b.attention.forEach(a => { const li = document.createElement("li"); li.textContent = a; ul.appendChild(li); });
+    b.attention.forEach(a => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = a;
+      li.appendChild(span);
+      const m = a.match(/(?:^|\s)#(\d+)/);
+      if (m) {
+        const btn = document.createElement("button");
+        btn.textContent = "Repair";
+        btn.className = "btn-ghost";
+        btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await fetchJson("/buttons/api/repair/dispatch", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({issue: parseInt(m[1], 10)})
+            });
+            const details = document.getElementById("repairDetails");
+            if (details) details.open = true;
+            if (typeof refreshStatus === "function") refreshStatus();
+          } finally {
+            btn.disabled = false;
+          }
+        };
+        li.appendChild(btn);
+      }
+      ul.appendChild(li);
+    });
     att.appendChild(ul);
   } else {
     const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
@@ -3557,7 +3623,32 @@ function renderAttention(b) {
   const ul = document.createElement("ul");
   items.slice(0, 8).forEach(t => {
     const li = document.createElement("li");
-    li.textContent = t;
+    const span = document.createElement("span");
+    span.textContent = t;
+    li.appendChild(span);
+    const m = t.match(/(?:^|\s)#(\d+)/);
+    if (m) {
+      const btn = document.createElement("button");
+      btn.textContent = "Repair";
+      btn.className = "btn-ghost";
+      btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await fetchJson("/buttons/api/repair/dispatch", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({issue: parseInt(m[1], 10)})
+          });
+          const details = document.getElementById("repairDetails");
+          if (details) details.open = true;
+          if (typeof refreshStatus === "function") refreshStatus();
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      li.appendChild(btn);
+    }
     ul.appendChild(li);
   });
   el.appendChild(ul);
@@ -3573,9 +3664,9 @@ const JOB_TEMPLATES = {
     desc: "Briefing → warm context → preflight. Runs on its own."},
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
-  "fix-issues": {label: "Fix issues via Jules",
-    desc: "Pick issues; each gets one Approve tap, which labels it " +
-      "'jules' and starts a Jules session. Sequential.",
+  "fix-issues": {label: "Fix issues via repair worker",
+    desc: "Pick issues; each gets one Approve tap, which dispatches " +
+      "the autonomous repair worker. Sequential.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -3877,6 +3968,16 @@ async function pollPiProgress(id, pre, errEl, onDone, label, repo) {
       outEl.className = "";
       stateEl.textContent = "done ✓ — pi " + (label || "agent");
       if (typeof refreshLedger === "function") refreshLedger();
+      if (typeof fetchJson === "function") {
+        fetchJson("/buttons/api/pi-sessions").then(res => {
+          if (res && res.ok && res.data && res.data.sessions) {
+            loadedPiSessions = res.data.sessions;
+            if (typeof renderSessionList === "function" && piSessionListEl && piSessionListEl.style.display !== "none") {
+              renderSessionList();
+            }
+          }
+        }).catch(() => {});
+      }
       if (typeof onDone === "function") onDone(d.result || {});
       return;
     }
@@ -4304,6 +4405,15 @@ function renderSessionList() {
     badge.className = "pirow-badge";
     badge.textContent = repoName;
     meta.appendChild(badge);
+
+    if (s.source === "background" || (s.file && s.file.startsWith("bg-"))) {
+      const bgBadge = document.createElement("span");
+      bgBadge.className = "pirow-badge";
+      bgBadge.style.background = "#3b4252";
+      bgBadge.style.color = "#88c0d0";
+      bgBadge.textContent = s.kind ? "bg:" + s.kind : "background";
+      meta.appendChild(bgBadge);
+    }
 
     if (s.mtime) {
       const timeSpan = document.createElement("span");
@@ -5881,11 +5991,14 @@ class Handler(BaseHTTPRequestHandler):
             # from discovery, so a repo added to ~/repos shows up
             # without a container rebuild.
             repos = _discover_repos()
+            code_port = os.environ.get("CODE_PORT", "8444")
             body = HTML.replace(
                 "<!--REPO_STRIPS-->",
                 _repo_strips_html(repos)).replace(
                 "<!--REPO_OPTIONS-->",
-                _repo_options_html(repos)).encode()
+                _repo_options_html(repos)).replace(
+                "<!--CODE_PORT-->",
+                code_port).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -6014,32 +6127,115 @@ class Handler(BaseHTTPRequestHandler):
             limit = max(1, min(200, limit))
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
-            # List Pi session files (newest first) as JSON. No TD
-            # prefix: pi_logs reads /root/.pi directly, it needs
-            # no repo cwd and no .env.
+            # List Pi session files (newest first) as JSON, unified with
+            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
+            sessions = []
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
                             "pi_logs.py --list-json"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=60, text=True)
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        (proc.stderr or "").strip().splitlines()[-1]
-                        if proc.stderr.strip() else "pi sessions failed")
-                self._json(json.loads(proc.stdout))
-            except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
+                if proc.returncode == 0:
+                    data = json.loads(proc.stdout)
+                    sessions = data.get("sessions", [])
+            except Exception:
+                pass
+
+            # Merge background runs from in-memory pi_runs
+            with pi_runs_lock:
+                for rid, r in pi_runs.items():
+                    mtime = r.get("finished_at") or r.get("started_at") or 0
+                    title = (r.get("instruction") or ("Suggest next actions" if r.get("kind") == "suggest" else "")).strip()
+                    if not title:
+                        title = f"Background Pi run ({r.get('kind', 'run')})"
+                    if len(title) > 80:
+                        title = title[:77] + "…"
+                    sessions.append({
+                        "file": f"bg-{rid}.jsonl",
+                        "id": f"bg-{rid}",
+                        "mtime": mtime,
+                        "cwd": f"/srv/repos/{r.get('repo', '')}",
+                        "repo": r.get("repo", ""),
+                        "title": title,
+                        "kind": r.get("kind", "ask"),
+                        "source": "background",
+                        "done": r.get("done", False)
+                    })
+
+            sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
+            self._json({"sessions": sessions})
         elif path == "/buttons/api/pi-session":
             # Render one Pi session by filename query. Returns structured
             # turns (and raw formatted output for fallback/toggle).
-            # The query is interpolated into a bash -c string, so it must
-            # match a strict allowlist — anything else is rejected.
+            # If the session is a background run (bg-<rid>.jsonl or bg-<rid>),
+            # serve directly from the background run state and progress log.
             qs = parse_qs(urlparse(self.path).query)
             query = qs.get("session", [""])[0]
             if not re.fullmatch(r"[A-Za-z0-9._-]+", query):
                 self._json({"error": "bad session query"}, 400)
                 return
+
+            if query.startswith("bg-"):
+                clean_id = query[3:]
+                if clean_id.endswith(".jsonl"):
+                    clean_id = clean_id[:-6]
+                with pi_runs_lock:
+                    r = pi_runs.get(clean_id)
+                if r is None:
+                    self._json({"error": f"No background run matching '{query}'"}, 404)
+                    return
+
+                # Read raw output from the progress file
+                raw_output = ""
+                try:
+                    with open(_pi_progress_path(clean_id), "r", encoding="utf-8", errors="replace") as pf:
+                        raw_output = pf.read()
+                except Exception:
+                    pass
+
+                user_prompt = r.get("instruction") or ("Suggest next actions" if r.get("kind") == "suggest" else "")
+                res = r.get("result") or {}
+                reply = res.get("reply") or ""
+                if not reply and res.get("suggestions") is not None:
+                    suggs = res.get("suggestions", [])
+                    if suggs:
+                        reply = "\n".join(f"- {s.get('command')}: {s.get('reason')}" for s in suggs)
+                    else:
+                        reply = res.get("raw") or "No suggestions."
+                if not reply and r.get("error"):
+                    reply = f"Run failed: {r.get('error')}"
+                if not reply and not r.get("done"):
+                    reply = "Run in progress…"
+
+                turns = []
+                if user_prompt:
+                    turns.append({
+                        "role": "user",
+                        "text": user_prompt,
+                        "timestamp": r.get("started_at")
+                    })
+                if reply or raw_output:
+                    turns.append({
+                        "role": "assistant",
+                        "text": reply or raw_output,
+                        "timestamp": r.get("finished_at") or r.get("started_at")
+                    })
+
+                self._json({
+                    "file": f"bg-{clean_id}.jsonl",
+                    "id": f"bg-{clean_id}",
+                    "cwd": f"/srv/repos/{r.get('repo', '')}",
+                    "repo": r.get("repo", ""),
+                    "started": r.get("started_at"),
+                    "source": "background",
+                    "turns": turns,
+                    "raw_output": raw_output or reply,
+                    "output": raw_output or reply
+                })
+                return
+
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -6267,7 +6463,7 @@ class Handler(BaseHTTPRequestHandler):
                     event = fr.get("event", "?")
                     html_url = fr.get("html_url") or fr.get("url")
 
-                    wf_jobs = []
+                    failed_wf_jobs = []
                     annotations = []
                     diagnosed_cause = "Workflow failed."
                     if run_id:
@@ -6277,7 +6473,7 @@ class Handler(BaseHTTPRequestHandler):
                             for j in jobs_json:
                                 if j.get("conclusion") == "failure":
                                     failed_steps = [s.get("name", "?") for s in (j.get("steps") or []) if s.get("conclusion") == "failure"]
-                                    wf_jobs.append({
+                                    failed_wf_jobs.append({
                                         "name": j.get("name", "?"),
                                         "conclusion": "failure",
                                         "failed_steps": failed_steps
@@ -6304,8 +6500,8 @@ class Handler(BaseHTTPRequestHandler):
                     if annotations:
                         first_ann = annotations[0]
                         diagnosed_cause = f"[{first_ann.get('path', 'unknown')}:{first_ann.get('start_line', '?')}] {first_ann.get('message', '')}"
-                    elif wf_jobs:
-                        first_job = wf_jobs[0]
+                    elif failed_wf_jobs:
+                        first_job = failed_wf_jobs[0]
                         steps_str = (": " + ", ".join(first_job["failed_steps"])) if first_job["failed_steps"] else ""
                         diagnosed_cause = f"Job '{first_job['name']}' failed{steps_str}."
 
@@ -6318,7 +6514,7 @@ class Handler(BaseHTTPRequestHandler):
                         "url": html_url,
                         "diagnosed_cause": diagnosed_cause,
                         "annotations": annotations,
-                        "jobs": jobs
+                        "jobs": failed_wf_jobs
                     })
 
                 self._json({
@@ -6364,8 +6560,9 @@ class Handler(BaseHTTPRequestHandler):
                         prompts = [
                             {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, secret leaks, input validation, and auth boundary issues in files: " + ", ".join(f['path'] for f in files)},
                             {"id": "architecture", "label": "Architecture Review", "prompt": f"Review architectural fit, coupling, error propagation, and state boundaries in PR #{pr_number}."},
+                            {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                             {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Identify missing unit tests, edge conditions, or regression scenarios for changes in PR #{pr_number}."},
-                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}."}
+                            {"id": "summary", "label": "Review Comments", "prompt": f"Generate constructive, line-level feedback and a structured summary for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
                         ]
                         self._json({
                             "repo": repo,
@@ -6415,8 +6612,9 @@ class Handler(BaseHTTPRequestHandler):
                 prompts = [
                     {"id": "security", "label": "Security Audit", "prompt": f"Audit PR #{pr_number} for security vulnerabilities, injection risks, and auth flaws across changed files: " + ", ".join(f['path'] for f in files[:10])},
                     {"id": "architecture", "label": "Architecture Review", "prompt": f"Review design decisions, coupling, and modularity in PR #{pr_number} ({view.get('title')})."},
+                    {"id": "discipline", "label": "Code Discipline Review", "prompt": f"Check PR #{pr_number} for workaround chains (e.g. `cmd || variant-cmd`, try/except ladders, or fallback chains papering over failures). A workaround chain is a review-blocking finding, not a nit — flag any instance and demand root-cause fixes."},
                     {"id": "test_gaps", "label": "Test Gap Analysis", "prompt": f"Determine untested paths and recommend automated tests for PR #{pr_number}."},
-                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}."}
+                    {"id": "summary", "label": "Review Comments", "prompt": f"Synthesize line-level findings and approval readiness for PR #{pr_number}. Explicitly block on any workaround chains (`cmd || variant-cmd` or fallback ladders)."}
                 ]
                 self._json({
                     "repo": repo,
@@ -6662,10 +6860,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/buttons/api/pi-sessions/clear":
             # Bulk-delete Pi session transcripts in the terminal
-            # container. File discovery lives in pi_logs.py (the
-            # same _list_files as the browser), never in the page,
-            # and --clear takes no argument, so nothing from the
-            # request reaches a shell string.
+            # container and in-memory background runs.
+            with pi_runs_lock:
+                for k in list(pi_runs.keys()):
+                    try:
+                        os.remove(_pi_progress_path(k))
+                    except Exception:
+                        pass
+                    del pi_runs[k]
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -6695,6 +6897,27 @@ class Handler(BaseHTTPRequestHandler):
                                 session):
                 self._json({"error": "bad session name"}, 400)
                 return
+
+            if session.startswith("bg-"):
+                clean_id = session[3:]
+                if clean_id.endswith(".jsonl"):
+                    clean_id = clean_id[:-6]
+                with pi_runs_lock:
+                    if clean_id in pi_runs:
+                        del pi_runs[clean_id]
+                        try:
+                            os.remove(_pi_progress_path(clean_id))
+                        except Exception:
+                            pass
+                        _ledger_append({"kind": "system", "action": "pi-session-delete",
+                                        "session": session[:120],
+                                        "output": f"Deleted background run {clean_id}."})
+                        self._json({"ok": True, "output": f"Deleted background run {clean_id}."})
+                        return
+                    else:
+                        self._json({"error": f"No background run matching '{session}'"}, 404)
+                        return
+
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"

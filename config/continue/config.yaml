@@ -1,0 +1,26 @@
+# Continue extension configuration for code-server
+# Uses local Ollama instance on the compose network: zero external calls.
+name: Local Ollama Config
+version: 0.1.0
+models:
+  - name: Ollama Qwen3 8B
+    model: qwen3:8b
+    provider: ollama
+    apiBase: http://ollama:11434
+    roles:
+      - chat
+      - edit
+tabAutocompleteModel:
+  title: Ollama Qwen3 8B Autocomplete
+  model: qwen3:8b
+  provider: ollama
+  apiBase: http://ollama:11434
+context:
+  - name: code
+    provider: code
+  - name: docs
+    provider: docs
+  - name: diff
+    provider: diff
+  - name: terminal
+    provider: terminal
