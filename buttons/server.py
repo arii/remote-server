@@ -4985,6 +4985,20 @@ class Handler(BaseHTTPRequestHandler):
             _ledger_append({"kind": "system", "event": "manual digest sent", "result": res})
             self._json({"ok": True, "results": res, "digest": digest_msg})
             return
+        if path == "/buttons/api/terminal/takeover":
+            # Disconnect active ttyd client so this window can take over the session
+            # Send SIGHUP to 'zellij attach' client process inside the terminal container.
+            # zellij daemon persists the session, while ttyd closes the old websocket connection.
+            try:
+                proc = subprocess.run(
+                    EXEC + ["pkill -HUP -f 'zellij attach' || true"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=10, text=True)
+                _ledger_append({"kind": "system", "event": "terminal session takeover requested"})
+                self._json({"ok": True, "output": proc.stdout})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
         if path == "/buttons/api/clear":
             # Clears stored output only — no command runs, no run is
             # cancelled. With no id, clears the active or newest run.

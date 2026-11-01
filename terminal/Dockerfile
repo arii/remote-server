@@ -70,6 +70,9 @@ RUN apt-get update \
 # System gitconfig: safe.directory = * for bind-mounted host checkouts (/srv/remote-server, /srv/repos/*).
 COPY gitconfig /etc/gitconfig
 
+# Custom ttyd index.html with takeover button
+COPY index.html /etc/ttyd/index.html
+
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
 COPY config.kdl /root/.config/zellij/config.kdl
