@@ -2074,6 +2074,7 @@ HTML = r"""<!DOCTYPE html>
   --danger-bg: #450a0a;
   --warning: #f59e0b;
   --success: #10b981;
+  --success-hover: #059669;
 }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
   margin: 0; padding: 12px 16px 140px; background: var(--bg-app); color: var(--text-main); }
@@ -2089,6 +2090,9 @@ button:disabled { opacity: 0.4; }
 button.btn-primary { display: inline-block; width: auto; background: var(--primary);
   border-color: var(--primary); color: #fff; padding: 0.6em 1em; font-size: 0.95em; }
 button.btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+button.btn-success { display: inline-block; width: auto; background: var(--success);
+  border-color: var(--success); color: #000; font-weight: 600; padding: 0.6em 1em; font-size: 0.95em; }
+button.btn-success:hover { background: var(--success-hover, #059669); border-color: var(--success-hover, #059669); }
 button.btn-danger { display: inline-block; width: auto; background: var(--danger);
   border-color: var(--danger); color: #fff; padding: 0.6em 1em; font-size: 0.95em; }
 button.btn-ghost { display: inline-block; width: auto; background: transparent;
@@ -2330,6 +2334,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 </select></div>
 <div id="tabbar" role="tablist">
 <button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
+<button class="tab" data-tab="prs" role="tab">🔀 Pull Requests</button>
 <button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
 <button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
 <button class="tab" data-tab="project" role="tab">📊 Project</button>
@@ -2369,6 +2374,20 @@ below are still visible, but they need JavaScript to start a run.</div>
 </div>
 <div id="buttons"><!--BUTTONS--></div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
+</section>
+<section class="tabpanel" id="tab-prs" style="display:none">
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <h2>Open Pull Requests <span class="forrepo" data-forrepo></span></h2>
+  <button id="refreshPrsBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.3em 0.8em;font-size:0.85em;">Refresh</button>
+</div>
+<details><summary>How this works</summary>
+<p>Open PRs for the selected repository from GitHub.
+Shows CI status, review approvals, branch, and draft state.
+1-tap Squash & Merge is enabled when a PR is approved, non-draft, and passing CI.
+1-tap Mark Ready unmarks drafts when CI is passing.</p>
+</details>
+<div id="prsListContainer"></div>
+<div id="prsErr" class="repair-err"></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
@@ -2561,6 +2580,7 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     picker.value = el.getAttribute("data-repo-pick");
     markSelectedRepo();
     if (typeof refreshBriefing === "function") refreshBriefing();
+    if (typeof refreshPullRequests === "function") refreshPullRequests();
   });
 });
 // Project tab: repo context lives where the work happens. The
@@ -2580,6 +2600,7 @@ const _pickerEl = document.getElementById("briefingRepo");
 if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
 if (_pickerEl) _pickerEl.addEventListener("change", () => {
   if (typeof refreshProject === "function") refreshProject();
+  if (typeof refreshPullRequests === "function") refreshPullRequests();
 });
 markSelectedRepo();
 
@@ -2596,6 +2617,8 @@ document.querySelectorAll("#tabbar .tab").forEach(t => {
     // picker repo, so the sections never show a stale repo's data.
     if (t.dataset.tab === "project" &&
         typeof refreshProject === "function") refreshProject();
+    if (t.dataset.tab === "prs" &&
+        typeof refreshPullRequests === "function") refreshPullRequests();
   };
 });
 
@@ -3148,6 +3171,194 @@ if (actionsBugBtn) actionsBugBtn.onclick = reportBug;
 // Renders the structured briefing from /buttons/api/briefing as
 // PR cards. Auto-runs on load and after a Refresh briefing run;
 // changing the picker above re-fetches.
+// --- Open Pull Requests Tab & Actions ---
+const prsListContainer = document.getElementById("prsListContainer");
+const prsErrEl = document.getElementById("prsErr");
+const refreshPrsBtn = document.getElementById("refreshPrsBtn");
+
+async function refreshPullRequests() {
+  if (!prsListContainer) return;
+  const picker = document.getElementById("briefingRepo");
+  const repo = picker ? picker.value : "remote-server";
+  document.querySelectorAll("[data-forrepo]").forEach(el => {
+    el.textContent = "— " + repo;
+  });
+  prsListContainer.innerHTML = '<span class="spinner"></span> Loading open pull requests…';
+  if (prsErrEl) prsErrEl.textContent = "";
+
+  const res = await fetchJson("/buttons/api/prs?repo=" + encodeURIComponent(repo));
+  if (!res.ok) {
+    prsListContainer.textContent = "";
+    if (prsErrEl) setErrorEl(prsErrEl, res.data.error || ("HTTP " + res.status), "PR list unavailable");
+    return;
+  }
+  if (prsErrEl) prsErrEl.textContent = "";
+  renderPullRequests(res.data.prs || [], repo);
+}
+
+function renderPullRequests(prs, repo) {
+  if (!prsListContainer) return;
+  prsListContainer.textContent = "";
+  if (!prs.length) {
+    const p = document.createElement("p");
+    p.textContent = "No open pull requests on " + repo + ".";
+    p.style.color = "var(--text-muted)";
+    prsListContainer.appendChild(p);
+    return;
+  }
+
+  prs.forEach(pr => {
+    const card = document.createElement("div");
+    card.className = "prcard";
+
+    // PR #<number> and Title (with clickable link to GitHub)
+    const head = document.createElement("div");
+    head.className = "prhead";
+
+    const numSpan = document.createElement("span");
+    numSpan.className = "prnum";
+    numSpan.textContent = "#" + pr.number;
+    head.appendChild(numSpan);
+
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "prtitle";
+    if (pr.url) {
+      const a = document.createElement("a");
+      a.href = pr.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = pr.title || "(no title)";
+      titleSpan.appendChild(a);
+    } else {
+      titleSpan.textContent = pr.title || "(no title)";
+    }
+    head.appendChild(titleSpan);
+    card.appendChild(head);
+
+    // Author and branch name
+    const meta = document.createElement("div");
+    meta.className = "prmeta";
+    const authorText = pr.author ? "@" + pr.author : "unknown author";
+    meta.textContent = authorText + " · branch: " + (pr.branch || "unknown");
+    card.appendChild(meta);
+
+    // Status badges: Draft, CI Status (Passing / Failing / Running), Review State (APPROVED, CHANGES_REQUESTED, PENDING)
+    const chips = document.createElement("div");
+    chips.className = "chips";
+
+    if (pr.isDraft) {
+      const draftBadge = document.createElement("span");
+      draftBadge.className = "chip";
+      draftBadge.textContent = "Draft";
+      chips.appendChild(draftBadge);
+    }
+
+    const ciBadge = document.createElement("span");
+    const ciStat = pr.ciStatus || "Unknown";
+    let ciCls = "chip";
+    if (ciStat === "Passing") ciCls += " chip-ok";
+    else if (ciStat === "Failing") ciCls += " chip-fail";
+    else if (ciStat === "Running") ciCls += " chip-warn";
+    ciBadge.className = ciCls;
+    ciBadge.textContent = "CI: " + ciStat;
+    chips.appendChild(ciBadge);
+
+    const revBadge = document.createElement("span");
+    const revStat = pr.reviewDecision || "PENDING";
+    let revCls = "chip";
+    if (revStat === "APPROVED") revCls += " chip-ok";
+    else if (revStat === "CHANGES_REQUESTED") revCls += " chip-fail";
+    else revCls += " chip-warn";
+    revBadge.className = revCls;
+    revBadge.textContent = "Review: " + revStat;
+    chips.appendChild(revBadge);
+
+    card.appendChild(chips);
+
+    // Action buttons & result line
+    const actions = document.createElement("div");
+    actions.className = "practions";
+    actions.setAttribute("data-pr", pr.number);
+
+    const result = document.createElement("div");
+    result.className = "prresult";
+
+    // 1-tap Squash & Merge: Display green merge button when PR is APPROVED, non-draft, and passing CI
+    const canSquashMerge = !pr.isDraft && pr.reviewDecision === "APPROVED" && (pr.ciStatus === "Passing" || pr.ciLabel === "passing");
+    if (canSquashMerge) {
+      const mergeBtn = document.createElement("button");
+      mergeBtn.className = "btn-success";
+      mergeBtn.textContent = "Squash & Merge";
+      mergeBtn.onclick = async () => {
+        const confirmMsg = "Squash and merge PR #" + pr.number + " (" + pr.title + ") and delete branch?";
+        if (!(await confirmDialog("Squash & Merge PR #" + pr.number, confirmMsg, true))) return;
+        mergeBtn.disabled = true;
+        result.textContent = "Merging…";
+        try {
+          const resp = await fetchJson("/buttons/api/pr-action", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({pr_number: pr.number, action: "merge", repo: repo})
+          });
+          if (!resp.ok) {
+            result.textContent = "Merge failed: " + (resp.data.error || ("HTTP " + resp.status));
+            mergeBtn.disabled = false;
+          } else {
+            result.textContent = "Merged successfully.";
+            if (typeof refreshLedger === "function") refreshLedger();
+            setTimeout(refreshPullRequests, 1200);
+          }
+        } catch (e) {
+          result.textContent = "Merge failed: " + e;
+          mergeBtn.disabled = false;
+        }
+      };
+      actions.appendChild(mergeBtn);
+    }
+
+    // Mark Ready: 1-tap action to unmark drafts when CI is green
+    const canMarkReady = pr.isDraft && (pr.ciStatus === "Passing" || pr.ciLabel === "passing");
+    if (canMarkReady) {
+      const readyBtn = document.createElement("button");
+      readyBtn.className = "btn-ghost";
+      readyBtn.textContent = "Mark Ready";
+      readyBtn.onclick = async () => {
+        const confirmMsg = "Mark PR #" + pr.number + " (" + pr.title + ") as ready for review?";
+        if (!(await confirmDialog("Mark Ready #" + pr.number, confirmMsg, false))) return;
+        readyBtn.disabled = true;
+        result.textContent = "Marking ready…";
+        try {
+          const resp = await fetchJson("/buttons/api/pr-action", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({pr_number: pr.number, action: "ready", repo: repo})
+          });
+          if (!resp.ok) {
+            result.textContent = "Action failed: " + (resp.data.error || ("HTTP " + resp.status));
+            readyBtn.disabled = false;
+          } else {
+            result.textContent = "Marked ready for review.";
+            if (typeof refreshLedger === "function") refreshLedger();
+            setTimeout(refreshPullRequests, 1200);
+          }
+        } catch (e) {
+          result.textContent = "Action failed: " + e;
+          readyBtn.disabled = false;
+        }
+      };
+      actions.appendChild(readyBtn);
+    }
+
+    if (actions.children.length > 0) {
+      card.appendChild(actions);
+    }
+    card.appendChild(result);
+    prsListContainer.appendChild(card);
+  });
+}
+
+if (refreshPrsBtn) refreshPrsBtn.onclick = refreshPullRequests;
+
 const briefingEl = document.getElementById("briefing");
 const briefingErrEl = document.getElementById("briefingErr");
 // Per-PR actions: one tap per card, gated both client-side
@@ -3617,8 +3828,12 @@ async function jobStepDone(run) {
 renderJobNew();
 refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
-if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
+if (briefingRepoPicker) briefingRepoPicker.onchange = () => {
+  refreshBriefing();
+  if (typeof refreshPullRequests === "function") refreshPullRequests();
+};
 refreshBriefing();
+if (typeof refreshPullRequests === "function") refreshPullRequests();
 
 // Pi background runs: streams output directly into the slide-up
 // drawer (the way Jobs does) while updating inline status.
@@ -4789,42 +5004,81 @@ def _ci_label(rollup):
     return "passing"
 
 
+def _format_ci_status(rollup):
+    """Returns normalized badge status: Passing, Failing, Running, or No checks/Unknown."""
+    label = _ci_label(rollup)
+    if label == "passing":
+        return "Passing"
+    if label == "failing":
+        return "Failing"
+    if label == "pending":
+        return "Running"
+    if label == "no checks":
+        return "No checks"
+    return "Unknown"
+
+
+def _format_review_decision(decision):
+    """Normalize review decision into APPROVED, CHANGES_REQUESTED, or PENDING."""
+    if not decision:
+        return "PENDING"
+    dec = str(decision).upper().strip()
+    if dec == "APPROVED":
+        return "APPROVED"
+    if dec in ("CHANGES_REQUESTED", "CHANGESREQUESTED"):
+        return "CHANGES_REQUESTED"
+    return "PENDING"
+
+
 def _pr_view(pr_number, repo, repos):
-    """Fresh (CI label, merge state) for gating, at tap time."""
+    """Fresh (CI label, merge state, review decision, isDraft) for gating, at tap time."""
     view = json.loads(_td_run(
-        f"gh pr view {pr_number} --json statusCheckRollup,mergeStateStatus",
+        f"gh pr view {pr_number} --json statusCheckRollup,mergeStateStatus,reviewDecision,isDraft",
         timeout=60, prefix=_td_prefix(repos[repo]["td_cwd"])))
     return (_ci_label(view.get("statusCheckRollup")),
-            str(view.get("mergeStateStatus") or "?").lower())
+            str(view.get("mergeStateStatus") or "?").lower(),
+            _format_review_decision(view.get("reviewDecision")),
+            bool(view.get("isDraft")))
 
 
 def _pr_action(pr_number, action, repo, repos):
-    """Per-PR actions from the Briefing view. Every action re-checks
-    fresh state at tap time — the card may be minutes old. Merge is
-    gated on CI passing + merge clean; update only on BEHIND (a
-    DIRTY branch needs conflict resolution in the terminal, not a
-    one-tap button — td's resolve-conflicts resolves in a worktree
-    without pushing, so it cannot update the PR branch from here);
-    fix-ci requires CI failing and dispatches a Jules session via
-    `fix-ci --execute` (fix-ci defaults to dry-run, so the flag is
-    load-bearing). ValueError = gate refused (400)."""
+    """Per-PR actions from the Briefing and Pull Requests views.
+    Every action re-checks fresh state at tap time.
+    Merge is gated on CI passing, review APPROVED, and non-draft.
+    Ready (mark ready) unmarks draft PRs.
+    Update is gated on BEHIND.
+    fix-ci requires CI failing.
+    ValueError = gate refused (400)."""
     prefix = _td_prefix(repos[repo]["td_cwd"])
     if action == "merge":
-        ci, merge = _pr_view(pr_number, repo, repos)
-        if ci != "passing" or merge != "clean":
-            raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
+        ci, merge, review, draft = _pr_view(pr_number, repo, repos)
+        if draft:
+            raise ValueError("not mergeable: PR is draft")
+        if review != "APPROVED":
+            raise ValueError(f"not mergeable: review state is {review} (must be APPROVED)")
+        if ci != "passing":
+            raise ValueError(f"not mergeable: CI is {ci} (must be passing)")
+        if merge not in ("clean", "has_hooks", "unstable"):
+            if merge == "dirty":
+                raise ValueError(f"not mergeable: branch has conflicts (merge {merge})")
         out = _td_run(f"gh pr merge {pr_number} --squash --delete-branch",
                       prefix=prefix)
         return {"ok": True, "output": out[-2000:]}
+    if action == "ready":
+        _ci, _merge, _review, draft = _pr_view(pr_number, repo, repos)
+        if not draft:
+            raise ValueError("PR is already ready for review (not draft)")
+        out = _td_run(f"gh pr ready {pr_number}", prefix=prefix)
+        return {"ok": True, "output": out[-2000:]}
     if action == "update":
-        _ci, merge = _pr_view(pr_number, repo, repos)
+        _ci, merge, _review, _draft = _pr_view(pr_number, repo, repos)
         if merge != "behind":
             raise ValueError(f"cannot update: merge state is {merge} "
                              "(only behind branches update this way)")
         out = _td_run(f"gh api repos/{repos[repo]['gh']}/pulls/{pr_number}/"
                       "update-branch --method PUT", prefix=prefix)
         return {"ok": True, "output": out[-2000:]}
-    ci, _merge = _pr_view(pr_number, repo, repos)
+    ci, _merge, _review, _draft = _pr_view(pr_number, repo, repos)
     if ci != "failing":
         raise ValueError(f"CI is {ci}, not failing — nothing to fix")
     out = _td_run(f"td --json agent fix-ci --pr {pr_number} --execute",
@@ -5155,6 +5409,57 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": job} if job is not None
                            else {"error": "unknown job"},
                            200 if job is not None else 404)
+        elif path == "/buttons/api/prs":
+            # Open PRs for the picked repo: number, title, isDraft,
+            # mergeable, reviewDecision, headRefName, statusCheckRollup,
+            # url, author. Read-only; gh pr list with --json fields.
+            qs = parse_qs(urlparse(self.path).query)
+            repos = _discover_repos()
+            repo = qs.get("repo", [_default_repo(repos)])[0]
+            if repo not in repos:
+                self._json({"error": "unknown repo"}, 400)
+                return
+            gh = repos[repo]["gh"]
+            try:
+                out = _td_run(
+                    "gh pr list --repo " + shlex.quote(gh) +
+                    " --state open --limit 50 --json "
+                    "number,title,isDraft,mergeable,reviewDecision,"
+                    "headRefName,statusCheckRollup,url,author",
+                    timeout=60,
+                    prefix=_td_prefix(repos[repo]["td_cwd"]))
+                raw_prs = json.loads(out) if out.strip() else []
+                prs = []
+                for pr in raw_prs:
+                    if not isinstance(pr, dict):
+                        continue
+                    num = pr.get("number")
+                    title = pr.get("title", "")
+                    draft = bool(pr.get("isDraft"))
+                    branch = pr.get("headRefName", "")
+                    mergeable = str(pr.get("mergeable") or "UNKNOWN").upper()
+                    url = pr.get("url", "")
+                    author_val = pr.get("author")
+                    author = author_val.get("login") if isinstance(author_val, dict) else (author_val or "")
+                    rollup = pr.get("statusCheckRollup")
+                    ci_status = _format_ci_status(rollup)
+                    rev_decision = _format_review_decision(pr.get("reviewDecision"))
+                    prs.append({
+                        "number": num,
+                        "title": title,
+                        "author": author,
+                        "branch": branch,
+                        "isDraft": draft,
+                        "ciStatus": ci_status,
+                        "ciLabel": _ci_label(rollup),
+                        "reviewDecision": rev_decision,
+                        "mergeable": mergeable,
+                        "url": url,
+                    })
+                self._json({"repo": repo, "prs": prs})
+            except Exception as exc:
+                self._json({"error": str(exc)[:500]}, 500)
+            return
         elif path == "/buttons/api/issues":
             # Open issues for the picked repo: number, title,
             # assignees, labels, updated, url, body (truncated).
@@ -5405,7 +5710,7 @@ class Handler(BaseHTTPRequestHandler):
             repo = data.get("repo", _default_repo(repos))
             if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
                     or pr_number <= 0 \
-                    or action not in ("merge", "update", "fix-ci") \
+                    or action not in ("merge", "update", "fix-ci", "ready") \
                     or repo not in repos:
                 self._json({"error": "bad pr_number, action or repo"}, 400)
                 return
