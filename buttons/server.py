@@ -1979,6 +1979,7 @@ button.btn-danger { display: inline-block; width: auto; background: var(--danger
 button.btn-ghost { display: inline-block; width: auto; background: transparent;
   border: 1px solid var(--border); color: var(--text-main); padding: 0.6em 1em; font-size: 0.95em; }
 button.btn-ghost:hover { border-color: var(--primary); background: var(--bg-card); }
+button.btn-retry { margin: 0 0 0 0.5em; padding: 0.2em 0.6em; font-size: 0.85em; }
 #stickyHead { position: sticky; top: 0; z-index: 20; background: var(--bg-app); }
 #pickerBar { background: var(--bg-app); padding: 0.5em 0;
   border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 0.5em; }
@@ -3179,12 +3180,8 @@ async function refreshBriefing() {
       span.textContent = "Briefing unavailable — ";
       att.appendChild(span);
       const rb = document.createElement("button");
-      rb.className = "btn-ghost";
+      rb.className = "btn-ghost btn-retry";
       rb.textContent = "Retry";
-      rb.style.width = "auto";
-      rb.style.margin = "0 0 0 0.5em";
-      rb.style.padding = "0.2em 0.6em";
-      rb.style.fontSize = "0.85em";
       rb.onclick = () => refreshBriefing();
       att.appendChild(rb);
     }

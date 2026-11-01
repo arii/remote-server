@@ -9,7 +9,7 @@ class TestAttentionRetryButton(unittest.TestCase):
         # Verify that when briefing fails, attentionBody renders a Retry button
         self.assertIn('span.textContent = "Briefing unavailable — ";', content)
         self.assertIn('const rb = document.createElement("button");', content)
-        self.assertIn('rb.className = "btn-ghost";', content)
+        self.assertIn('rb.className = "btn-ghost btn-retry";', content)
         self.assertIn('rb.textContent = "Retry";', content)
         self.assertIn('rb.onclick = () => refreshBriefing();', content)
 
