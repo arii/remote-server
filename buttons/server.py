@@ -41,7 +41,12 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.request
 from urllib.parse import urlparse, parse_qs
+try:
+    from buttons.briefing_summary import ci_summary
+except ImportError:
+    from briefing_summary import ci_summary
 
 STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
@@ -93,7 +98,13 @@ def _parse_gh_remote(url):
     return m.group(1)
 
 
-def _discover_repos():
+_REPOS_CACHE = None
+_REPOS_CACHE_TIME = 0.0
+_REPOS_CACHE_TTL = 15.0  # seconds
+_repos_cache_lock = threading.Lock()
+
+
+def _discover_repos(force=False):
     """name -> {gh, td_cwd, host_path}. remote-server is the
     special stack checkout; every other entry is a ~/repos
     checkout with a parseable GitHub origin. Names and gh paths
@@ -103,6 +114,11 @@ def _discover_repos():
     fails discovery is skipped with a log line, never mapped to
     another repo's data. A missing repos dir degrades to the
     stack repo alone, not a crash."""
+    global _REPOS_CACHE, _REPOS_CACHE_TIME
+    now = time.time()
+    if not force and _REPOS_CACHE is not None and (now - _REPOS_CACHE_TIME) < _REPOS_CACHE_TTL:
+        return dict(_REPOS_CACHE)
+
     repos = {"remote-server": {"gh": STACK_GH,
                                "td_cwd": "/srv/remote-server",
                                "host_path": "/home/ari/remote-server"}}
@@ -111,6 +127,9 @@ def _discover_repos():
     except Exception as exc:
         print(f"repo discovery: cannot list {REPOS_DIR}: {exc}",
               flush=True)
+        with _repos_cache_lock:
+            _REPOS_CACHE = dict(repos)
+            _REPOS_CACHE_TIME = now
         return repos
     for name in entries:
         if name == "remote-server":
@@ -158,6 +177,9 @@ def _discover_repos():
             continue
         repos[name] = {"gh": gh, "td_cwd": f"/srv/repos/{name}",
                        "host_path": host_path}
+    with _repos_cache_lock:
+        _REPOS_CACHE = dict(repos)
+        _REPOS_CACHE_TIME = now
     return repos
 
 
@@ -470,6 +492,20 @@ def _pi_thread(rid, kind, repo, instruction):
 # batch run and no auto-run in v1: one tap per action is the
 # approval gate, matching Pi's own read-only boundary (no
 # merge/push/post without explicit approval).
+ALLOWED_TD_COMMANDS = [
+    "td --json agent fix-ci --pr N --execute",
+    "td gh read-pr-reviews --pr N",
+    "td gh read-pr-comments --pr N",
+    "td gh resolve-conflicts --pr N",
+    "td context-warm",
+    "td --json preflight",
+    "td --json agent list-sessions",
+    "td --json jules list-sessions",
+    "td --json agent run-feedback-check",
+]
+ALLOWED_TD_SHAPES = [cmd.split() for cmd in ALLOWED_TD_COMMANDS]
+
+
 def _validate_td_command(text):
     """argv tokens for a suggested td command, or None. Exact
     shapes only: same tokens, PR numbers digits. Anything else —
@@ -482,18 +518,7 @@ def _validate_td_command(text):
         return None
     if not tokens or tokens[0] != "td":
         return None
-    shapes = [
-        ["td", "--json", "agent", "fix-ci", "--pr", "N", "--execute"],
-        ["td", "--json", "agent", "list-sessions"],
-        ["td", "--json", "jules", "list-sessions"],
-        ["td", "--json", "agent", "run-feedback-check"],
-        ["td", "--json", "preflight"],
-        ["td", "context-warm"],
-        ["td", "gh", "read-pr-reviews", "--pr", "N"],
-        ["td", "gh", "read-pr-comments", "--pr", "N"],
-        ["td", "gh", "resolve-conflicts", "--pr", "N"],
-    ]
-    for shape in shapes:
+    for shape in ALLOWED_TD_SHAPES:
         if len(tokens) != len(shape):
             continue
         ok = True
@@ -568,16 +593,7 @@ def _suggest_prompt(repo, context):
         "Output ONLY lines in exactly this form, one per action:\n"
         "SUGGEST: <td command> :: <one-line reason>\n"
         "Allowed td commands (exact shapes, PR numbers only from "
-        "the context):\n"
-        "td --json agent fix-ci --pr N --execute\n"
-        "td gh read-pr-reviews --pr N\n"
-        "td gh read-pr-comments --pr N\n"
-        "td gh resolve-conflicts --pr N\n"
-        "td context-warm\n"
-        "td --json preflight\n"
-        "td --json agent list-sessions\n"
-        "td --json jules list-sessions\n"
-        "td --json agent run-feedback-check\n"
+        f"the context):\n{"\n".join(ALLOWED_TD_COMMANDS)}\n"
         "If the context shows a problem (failing CI, conflicts, "
         "stale PRs) but no allowed command fits it directly, read "
         "the repo checkout (git log, .github/workflows) to pin "
@@ -648,16 +664,7 @@ def _ask_prompt(repo, instruction):
         "PROPOSE td\n"
         "COMMAND: <exact td command>\n"
         "END PROPOSE\n"
-        "Allowed td commands (exact shapes):\n"
-        "td --json agent fix-ci --pr N --execute\n"
-        "td gh read-pr-reviews --pr N\n"
-        "td gh read-pr-comments --pr N\n"
-        "td gh resolve-conflicts --pr N\n"
-        "td context-warm\n"
-        "td --json preflight\n"
-        "td --json agent list-sessions\n"
-        "td --json jules list-sessions\n"
-        "td --json agent run-feedback-check\n"
+        f"Allowed td commands (exact shapes):\n{"\n".join(ALLOWED_TD_COMMANDS)}\n"
         "If no write is needed, just answer the instruction — no "
         "PROPOSE block.\n"
         "Instruction:\n" + instruction)
@@ -1277,9 +1284,6 @@ active_id = None
 # Dispatches push notifications via ntfy (HTTP push) and/or generic Webhooks.
 # Tracks state transitions across polls to notify on CI failures, completed/failed
 # Jules sessions, and new merge conflicts, plus scheduled briefing digests.
-import urllib.request
-import urllib.parse
-
 NOTIFIER_STATE_PATH = os.environ.get("BUTTONS_NOTIFIER_STATE_PATH",
                                      "/var/lib/buttons/notifier_state.json")
 notifier_lock = threading.Lock()
@@ -1754,6 +1758,46 @@ def _job_after_step(job):
         _job_end(job, "failed")
 
 
+def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
+    """Execute a synchronous job step (pr-action or label-issue), updating
+    step state, exit_code, finished_at, saving jobs, and logging to ledger.
+    Returns (ok, err)."""
+    if repos is None:
+        repos = _discover_repos()
+    kind = step_obj.get("kind")
+    try:
+        if kind == "pr-action":
+            _pr_action(job["pr"], step_obj["action"], job["repo"], repos)
+        elif kind == "label-issue":
+            _label_issue_jules(job["repo"], step_obj["issue"], repos)
+        else:
+            raise ValueError(f"unsupported synchronous step kind: {kind}")
+        ok, err = True, None
+    except ValueError as exc:
+        ok, err = False, str(exc)
+    except Exception as exc:
+        ok, err = False, str(exc)[:500]
+
+    with jobs_lock:
+        step_obj["state"] = "done" if ok else "failed"
+        step_obj["finished_at"] = time.time()
+        step_obj["exit_code"] = 0 if ok else 1
+        step_obj["note"] = None if ok else err
+        _job_after_step(job)
+        _jobs_save()
+
+    if event_prefix:
+        event = f"{event_prefix}" + ("done" if ok else "failed")
+    elif kind == "label-issue":
+        event = f"dispatched Jules on #{step_obj.get('issue')}" if ok else "dispatch failed"
+    else:
+        event = "step " + ("done" if ok else "failed")
+
+    _ledger_append({"kind": "job", "job": job["id"], "step": step_idx,
+                    "event": event, "ok": ok})
+    return ok, err
+
+
 def _job_advance(job):
     """Run the next pending read-only step, if any. Write steps wait
     for an explicit Approve tap. jobs_lock NOT held on entry."""
@@ -1775,24 +1819,7 @@ def _job_advance(job):
             kind, action = st["kind"], st["action"]
         if kind == "pr-action":
             # Synchronous: runs inline, then advance to the next step.
-            try:
-                _pr_action(job["pr"], action, job["repo"],
-                           _discover_repos())
-                ok, err = True, None
-            except ValueError as exc:
-                ok, err = False, str(exc)
-            except Exception as exc:
-                ok, err = False, str(exc)[:500]
-            with jobs_lock:
-                st["state"] = "done" if ok else "failed"
-                st["finished_at"] = time.time()
-                st["exit_code"] = 0 if ok else 1
-                st["note"] = None if ok else err
-                _job_after_step(job)
-                _jobs_save()
-            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
-                            "event": "step auto-" + ("done" if ok else "failed"),
-                            "ok": ok})
+            _execute_job_step(job, idx, st, event_prefix="step auto-")
         else:
             # Async action: start the run; the client polls it and
             # reports step-done, which advances the plan again.
@@ -5298,21 +5325,9 @@ def _td_run(cmd, timeout=120, prefix=None):
 
 
 def _ci_label(rollup):
-    """CI label from a gh statusCheckRollup list. Mirrors
-    briefing_summary.ci_summary (kept local: server.py cannot
-    import the summarizer script)."""
-    if rollup is None:
-        return "unknown"
-    if not rollup:
-        return "no checks"
-    failing = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
-    for check in rollup:
-        if isinstance(check, dict) and check.get("conclusion") in failing:
-            return "failing"
-    for check in rollup:
-        if isinstance(check, dict) and check.get("status") != "COMPLETED":
-            return "pending"
-    return "passing"
+    """CI label from a gh statusCheckRollup list, backed by briefing_summary.ci_summary."""
+    label, _ = ci_summary(rollup)
+    return label
 
 
 def _format_ci_status(rollup):
@@ -5437,6 +5452,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _get_request_repo(self, qs_or_data=None, repos=None):
+        """Resolves (repo_name, repos_dict) from query string dict, parsed body dict,
+        or None (falling back to parsing self.path query string)."""
+        if repos is None:
+            repos = _discover_repos()
+        if qs_or_data is None:
+            qs_or_data = parse_qs(urlparse(self.path).query)
+        if isinstance(qs_or_data, dict):
+            val = qs_or_data.get("repo")
+            if isinstance(val, list) and val:
+                repo = val[0]
+            elif isinstance(val, str) and val:
+                repo = val
+            else:
+                repo = _default_repo(repos)
+        else:
+            repo = _default_repo(repos)
+        return repo, repos
 
     def _send_sse_event(self, event, data):
         try:
@@ -5695,8 +5729,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/buttons/api/chat/stream":
             # Interactive chat streaming endpoint via SSE (GET / query params)
             qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo(qs)
             prompt = qs.get("prompt", [""])[0]
             session_id = qs.get("session_id", [""])[0] or uuid.uuid4().hex[:12]
             self._handle_chat_stream(prompt, repo, session_id)
@@ -5731,9 +5764,7 @@ class Handler(BaseHTTPRequestHandler):
             # passed through. Slow (td + gh calls), so the page
             # shows a spinner while it loads. ?repo= picks the
             # repo (discovered set; default tech-dancer).
-            repos = _discover_repos()
-            repo = parse_qs(urlparse(self.path).query).get(
-                "repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5859,9 +5890,7 @@ class Handler(BaseHTTPRequestHandler):
             # Open PRs for the picked repo: number, title, isDraft,
             # mergeable, reviewDecision, headRefName, statusCheckRollup,
             # url, author. Read-only; gh pr list with --json fields.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5910,9 +5939,7 @@ class Handler(BaseHTTPRequestHandler):
             # Open issues for the picked repo: number, title,
             # assignees, labels, updated, url, body (truncated).
             # Read-only; gh list with a fixed --json field set.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -5969,9 +5996,7 @@ class Handler(BaseHTTPRequestHandler):
             # state, updated, url, source repo, linked PR. Read-only.
             # Graceful when JULES_API_KEY is unset — the notice
             # pattern from the sync-nudge button.
-            qs = parse_qs(urlparse(self.path).query)
-            repos = _discover_repos()
-            repo = qs.get("repo", [_default_repo(repos)])[0]
+            repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
@@ -6024,8 +6049,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             prompt = data.get("prompt", "")
             session_id = data.get("session_id") or uuid.uuid4().hex[:12]
             self._handle_chat_stream(prompt, repo, session_id)
@@ -6179,8 +6203,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
             pr_number, action = data.get("pr_number"), data.get("action")
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             if not isinstance(pr_number, int) or isinstance(pr_number, bool) \
                     or pr_number <= 0 \
                     or action not in ("merge", "update", "fix-ci", "ready") \
@@ -6217,8 +6240,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             rid, err = _pi_start("suggest", repo)
             if err:
                 self._json({"error": err}, 400)
@@ -6239,8 +6261,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             rid, err = _pi_start("ask", repo, data.get("instruction"))
             if err:
                 self._json({"error": err}, 400)
@@ -6259,8 +6280,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             title, body_text = data.get("title"), data.get("body", "")
             if repo not in repos or not isinstance(title, str) \
                     or not title.strip() or len(title) > 200 \
@@ -6295,8 +6315,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             issue = str(data.get("issue", ""))
             assignee = str(data.get("assignee", "")).strip()
             if repo not in repos or not issue.isdigit() \
@@ -6333,8 +6352,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             plan = data.get("plan")
             if repo not in repos or plan not in (
                     "issue-audit", "workflow-audit", "review",
@@ -6396,8 +6414,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             tokens = _validate_td_command(data.get("command", ""))
             if repo not in repos or not tokens:
                 self._json({"error": "bad repo or command"}, 400)
@@ -6415,8 +6432,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
-            repos = _discover_repos()
-            repo = data.get("repo", _default_repo(repos))
+            repo, repos = self._get_request_repo(data)
             pr = data.get("pr")
             issues = data.get("issues")
             job, err = _job_create(data.get("template"), repo, pr,
@@ -6462,56 +6478,9 @@ class Handler(BaseHTTPRequestHandler):
                         {"step": step, "decision": "approved",
                          "at": st["approved_at"]})
                     kind = st["kind"]
-                if kind == "pr-action":
-                    # Synchronous: gates re-checked inside _pr_action.
-                    try:
-                        _pr_action(job["pr"], st["action"], job["repo"],
-                                   _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step, "event": "step done"
-                                    if ok else "step failed",
-                                    "ok": ok})
-                    self._json({"ok": ok, "state": st["state"],
-                                "error": err})
-                    return
-                if kind == "label-issue":
-                    # Synchronous: label the issue 'jules' to start
-                    # a Jules session on it (Jules GitHub
-                    # integration). Gates re-checked in
-                    # _label_issue_jules.
-                    try:
-                        _label_issue_jules(job["repo"], st["issue"],
-                                           _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step,
-                                    "event": "dispatched Jules on #"
-                                    + str(st["issue"]) if ok
-                                    else "dispatch failed",
-                                    "ok": ok})
+                if kind in ("pr-action", "label-issue"):
+                    # Synchronous: executed via helper
+                    ok, err = _execute_job_step(job, step, st)
                     self._json({"ok": ok, "state": st["state"],
                                 "error": err})
                     return
@@ -6593,8 +6562,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             data = {}
         action = data.get("action")
-        repos = _discover_repos()
-        repo = data.get("repo", _default_repo(repos))
+        repo, repos = self._get_request_repo(data)
         if action not in ACTIONS:
             self._json({"error": "unknown action"}, 400)
             return
