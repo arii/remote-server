@@ -26,6 +26,9 @@ Verified against BoomTick `main` on 2026-10-29.
 - **Why it matters here:** the buttons preflight digest surfaces these as
   failures; after the patch, remote-server preflight degrades to the checks
   that exist (doctor, overlaps, merge simulation).
+- **Workaround in remote-server:** added `type-check` and `lint` scripts to
+  `package.json` and implemented `scripts/detect-antipatterns.mjs` so that
+  `td preflight` passes on `remote-server` with 0 failures.
 
 ### #1025 — Clarify repo override param description, surface errors, and make branch/event optional with null-safety in `repo_get_workflow_runs` & CI-logs tools
 - **State:** OPEN ([Issue #1025](https://github.com/arii/boomtick/issues/1025)).
