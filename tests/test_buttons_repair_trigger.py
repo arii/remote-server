@@ -264,6 +264,21 @@ class TestButtonsRepairTrigger(unittest.TestCase):
         self.assertIn('btn.textContent = "Repair"', html)
         self.assertIn('/buttons/api/repair/dispatch', html)
 
+    def test_ui_fix_issues_copy_and_expandable_titles(self):
+        status, html = self._get("/buttons/")
+        self.assertEqual(status, 200)
+        # Verify updated copy describes checkboxes and Start job
+        self.assertIn('Pick issues with checkboxes and tap Start job to dispatch', html)
+        self.assertIn('the autonomous repair worker sequentially.', html)
+        self.assertNotIn('each gets one Approve tap', html)
+
+        # Verify expandable issue title DOM elements and tooltips exist in HTML script
+        self.assertIn('lab.className = "issuepick-label";', html)
+        self.assertIn('lab.title = fullTitle;', html)
+        self.assertIn('titleSpan.className = "issuepick-title compact";', html)
+        self.assertIn('expBtn.className = "issuepick-expand";', html)
+        self.assertIn('.issuepick-expand', html)
+
 
 if __name__ == "__main__":
     unittest.main()

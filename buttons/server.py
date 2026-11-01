@@ -2387,10 +2387,23 @@ summary.grouphead { cursor: pointer; }
 .repo[data-repo-pick]:hover { border-color: var(--primary); }
 .forrepo { font-size: 0.6em; font-weight: normal; color: var(--text-muted); }
 .repo.selected { border-color: var(--primary); background: #1a2744; box-shadow: 0 0 0 1px var(--primary); }
-.issuepick { max-height: 12em; overflow-y: auto; margin: 0.5em 0;
+.issuepick { max-height: 14em; overflow-y: auto; margin: 0.5em 0;
   border: 1px solid var(--border); border-radius: 8px; padding: 0.5em; }
-.issuepick label { display: block; padding: 0.3em 0; cursor: pointer; }
-.issuepick input { margin-right: 0.5em; }
+.issuepick-item { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 0.4em; padding: 0.35em 0.2em; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.issuepick-item:last-child { border-bottom: none; }
+.issuepick-label { display: flex; align-items: flex-start; gap: 0.4em; cursor: pointer;
+  flex: 1; min-width: 0; }
+.issuepick-label input[type="checkbox"] { margin-top: 0.25em; flex: none; }
+.issuepick-num { font-weight: 600; flex: none; color: var(--primary); }
+.issuepick-title { font-size: 0.92em; word-break: break-word; line-height: 1.35;
+  white-space: normal; }
+.issuepick-title.compact { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; }
+.issuepick-expand { flex: none; width: auto; margin: 0; padding: 0.1em 0.45em;
+  font-size: 0.78em; line-height: 1.2; border-radius: 4px; background: transparent;
+  border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+.issuepick-expand:hover { color: var(--text-main); border-color: var(--primary); }
 .reponame { font-weight: bold; }
 .reponame a { color: inherit; text-decoration: underline; }
 .reposcope { font-size: 0.9em; color: var(--text-muted); }
@@ -3855,8 +3868,8 @@ const JOB_TEMPLATES = {
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
   "fix-issues": {label: "Fix issues via repair worker",
-    desc: "Pick issues; each gets one Approve tap, which dispatches " +
-      "the autonomous repair worker. Sequential.",
+    desc: "Pick issues with checkboxes and tap Start job to dispatch " +
+      "the autonomous repair worker sequentially.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -3932,13 +3945,49 @@ function renderJobNew() {
             return;
           }
           issues.forEach(i => {
+            const item = document.createElement("div");
+            item.className = "issuepick-item";
+            const fullTitle = "#" + i.number + " — " + (i.title || "");
             const lab = document.createElement("label");
+            lab.className = "issuepick-label";
+            lab.title = fullTitle;
+
             const cb = document.createElement("input");
             cb.type = "checkbox"; cb.value = i.number;
             lab.appendChild(cb);
-            lab.appendChild(document.createTextNode(
-              " #" + i.number + " — " + (i.title || "")));
-            issueBox.appendChild(lab);
+
+            const numSpan = document.createElement("span");
+            numSpan.className = "issuepick-num";
+            numSpan.textContent = "#" + i.number;
+            lab.appendChild(numSpan);
+
+            const titleSpan = document.createElement("span");
+            titleSpan.className = "issuepick-title compact";
+            titleSpan.textContent = i.title || "";
+            lab.appendChild(titleSpan);
+
+            item.appendChild(lab);
+
+            const expBtn = document.createElement("button");
+            expBtn.type = "button";
+            expBtn.className = "issuepick-expand";
+            expBtn.textContent = "expand";
+            expBtn.title = "Toggle full title";
+            expBtn.onclick = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const isCompact = titleSpan.classList.contains("compact");
+              if (isCompact) {
+                titleSpan.classList.remove("compact");
+                expBtn.textContent = "collapse";
+              } else {
+                titleSpan.classList.add("compact");
+                expBtn.textContent = "expand";
+              }
+            };
+            item.appendChild(expBtn);
+
+            issueBox.appendChild(item);
           });
         });
     }
