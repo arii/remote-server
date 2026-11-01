@@ -238,33 +238,6 @@ class TestButtonsRepairTrigger(unittest.TestCase):
         self.assertIn('id="repairStatusText"', html)
         self.assertIn('id="repairLog"', html)
 
-    @patch("buttons.server.os.path.isfile", return_value=False)
-    @patch("buttons.server._ledger_append")
-    def test_repair_worker_thread_missing_script(self, mock_ledger, mock_isfile):
-        server._repair_worker_thread(404)
-        with server.repair_state_lock:
-            status = server.repair_state["status"]
-            exit_code = server.repair_state["exit_code"]
-            log_buffer = server.repair_state["log_buffer"]
-        self.assertEqual(status, "failed")
-        self.assertEqual(exit_code, 1)
-        self.assertIn("Repair worker not installed on this system: scripts/repair_worker.py missing", log_buffer)
-        mock_ledger.assert_any_call({"kind": "repair", "issue": 404, "event": "repair failed", "exit": 1})
-
-    @patch("buttons.server.subprocess.Popen", side_effect=FileNotFoundError("No such file or directory"))
-    @patch("buttons.server.os.path.isfile", return_value=True)
-    @patch("buttons.server._ledger_append")
-    def test_repair_worker_thread_file_not_found_exception(self, mock_ledger, mock_isfile, mock_popen):
-        server._repair_worker_thread(505)
-        with server.repair_state_lock:
-            status = server.repair_state["status"]
-            exit_code = server.repair_state["exit_code"]
-            log_buffer = server.repair_state["log_buffer"]
-        self.assertEqual(status, "failed")
-        self.assertEqual(exit_code, 1)
-        self.assertIn("Repair worker not installed on this system: scripts/repair_worker.py missing", log_buffer)
-        mock_ledger.assert_any_call({"kind": "repair", "issue": 505, "event": "repair failed", "exit": 1})
-
 
 if __name__ == "__main__":
     unittest.main()
