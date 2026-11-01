@@ -1631,11 +1631,11 @@ JOB_TEMPLATES = {
         ],
     },
     # Sequential issue fixing: one approval per issue. Approving
-    # labels the issue 'jules', which starts a Jules session on it
-    # (Jules's GitHub integration). The Project tab's Jules list
-    # shows each session's progress before the next approval.
+    # dispatches the autonomous repair worker on the issue.
+    # The repair worker operates in an isolated worktree, verifies code,
+    # and opens a PR without auto-merging.
     "fix-issues": {
-        "goal": "Fix issues via Jules, sequential: {issues} ({repo})",
+        "goal": "Fix issues via repair worker, sequential: {issues} ({repo})",
         "needs_issues": True,
         "steps": [],
     },
@@ -1759,6 +1759,8 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
     try:
         if kind == "pr-action":
             _pr_action(job["pr"], step_obj["action"], job["repo"], repos)
+        elif kind == "repair-issue":
+            _trigger_repair(step_obj["issue"])
         elif kind == "label-issue":
             _label_issue_jules(job["repo"], step_obj["issue"], repos)
         else:
@@ -1779,6 +1781,8 @@ def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
 
     if event_prefix:
         event = f"{event_prefix}" + ("done" if ok else "failed")
+    elif kind == "repair-issue":
+        event = f"dispatched repair worker on #{step_obj.get('issue')}" if ok else "repair dispatch failed"
     elif kind == "label-issue":
         event = f"dispatched Jules on #{step_obj.get('issue')}" if ok else "dispatch failed"
     else:
@@ -1858,8 +1862,8 @@ def _job_create(template, repo, pr=None, issues=None):
     if spec.get("needs_issues"):
         for n in issues:
             plan.append({
-                "label": f"Dispatch Jules on #{n} (label 'jules')",
-                "kind": "label-issue", "issue": n,
+                "label": f"Dispatch repair worker on #{n}",
+                "kind": "repair-issue", "issue": n,
                 "write": True, "state": "pending",
                 "approved_at": None, "auto": False, "run_id": None,
                 "finished_at": None, "exit_code": None, "note": None,
@@ -3292,7 +3296,36 @@ function renderBriefing(b) {
   att.appendChild(attHead);
   if (b.attention && b.attention.length) {
     const ul = document.createElement("ul");
-    b.attention.forEach(a => { const li = document.createElement("li"); li.textContent = a; ul.appendChild(li); });
+    b.attention.forEach(a => {
+      const li = document.createElement("li");
+      const span = document.createElement("span");
+      span.textContent = a;
+      li.appendChild(span);
+      const m = a.match(/(?:^|\s)#(\d+)/);
+      if (m) {
+        const btn = document.createElement("button");
+        btn.textContent = "Repair";
+        btn.className = "btn-ghost";
+        btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await fetchJson("/buttons/api/repair/dispatch", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({issue: parseInt(m[1], 10)})
+            });
+            const details = document.getElementById("repairDetails");
+            if (details) details.open = true;
+            if (typeof refreshStatus === "function") refreshStatus();
+          } finally {
+            btn.disabled = false;
+          }
+        };
+        li.appendChild(btn);
+      }
+      ul.appendChild(li);
+    });
     att.appendChild(ul);
   } else {
     const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
@@ -3460,7 +3493,32 @@ function renderAttention(b) {
   const ul = document.createElement("ul");
   items.slice(0, 8).forEach(t => {
     const li = document.createElement("li");
-    li.textContent = t;
+    const span = document.createElement("span");
+    span.textContent = t;
+    li.appendChild(span);
+    const m = t.match(/(?:^|\s)#(\d+)/);
+    if (m) {
+      const btn = document.createElement("button");
+      btn.textContent = "Repair";
+      btn.className = "btn-ghost";
+      btn.style.cssText = "width:auto;margin:0 0 0 0.5em;padding:0.1em 0.5em;font-size:0.8em;";
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await fetchJson("/buttons/api/repair/dispatch", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({issue: parseInt(m[1], 10)})
+          });
+          const details = document.getElementById("repairDetails");
+          if (details) details.open = true;
+          if (typeof refreshStatus === "function") refreshStatus();
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      li.appendChild(btn);
+    }
     ul.appendChild(li);
   });
   el.appendChild(ul);
@@ -3476,9 +3534,9 @@ const JOB_TEMPLATES = {
     desc: "Briefing → warm context → preflight. Runs on its own."},
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
-  "fix-issues": {label: "Fix issues via Jules",
-    desc: "Pick issues; each gets one Approve tap, which labels it " +
-      "'jules' and starts a Jules session. Sequential.",
+  "fix-issues": {label: "Fix issues via repair worker",
+    desc: "Pick issues; each gets one Approve tap, which dispatches " +
+      "the autonomous repair worker. Sequential.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -5916,7 +5974,7 @@ class Handler(BaseHTTPRequestHandler):
                     event = fr.get("event", "?")
                     html_url = fr.get("html_url") or fr.get("url")
 
-                    jobs = []
+                    failed_wf_jobs = []
                     annotations = []
                     diagnosed_cause = "Workflow failed."
                     if run_id:
@@ -5926,7 +5984,7 @@ class Handler(BaseHTTPRequestHandler):
                             for j in jobs_json:
                                 if j.get("conclusion") == "failure":
                                     failed_steps = [s.get("name", "?") for s in (j.get("steps") or []) if s.get("conclusion") == "failure"]
-                                    jobs.append({
+                                    failed_wf_jobs.append({
                                         "name": j.get("name", "?"),
                                         "conclusion": "failure",
                                         "failed_steps": failed_steps
@@ -5953,8 +6011,8 @@ class Handler(BaseHTTPRequestHandler):
                     if annotations:
                         first_ann = annotations[0]
                         diagnosed_cause = f"[{first_ann.get('path', 'unknown')}:{first_ann.get('start_line', '?')}] {first_ann.get('message', '')}"
-                    elif jobs:
-                        first_job = jobs[0]
+                    elif failed_wf_jobs:
+                        first_job = failed_wf_jobs[0]
                         steps_str = (": " + ", ".join(first_job["failed_steps"])) if first_job["failed_steps"] else ""
                         diagnosed_cause = f"Job '{first_job['name']}' failed{steps_str}."
 
@@ -5967,7 +6025,7 @@ class Handler(BaseHTTPRequestHandler):
                         "url": html_url,
                         "diagnosed_cause": diagnosed_cause,
                         "annotations": annotations,
-                        "jobs": jobs
+                        "jobs": failed_wf_jobs
                     })
 
                 self._json({
