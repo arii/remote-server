@@ -2618,7 +2618,11 @@ async function fetchJson(url, options) {
 
 async function startRun(name, label, confirmFlag, dangerFlag) {
   userStartedRun = true;
-  if (confirmFlag && !(await confirmDialog("Run action", label + " — run it?", !!dangerFlag))) return;
+  let confirmBody = label + " — run it?";
+  if (name === "sync-nudge" || name === "sync-agents" || /sync.*nudge/i.test(label)) {
+    confirmBody = label + " — run it?\n\nStep 2 posts feedback to stalled Jules sessions.";
+  }
+  if (confirmFlag && !(await confirmDialog("Run action", confirmBody, !!dangerFlag))) return;
   openDrawer();
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
