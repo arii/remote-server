@@ -8,6 +8,7 @@ fi
 
 LAN_SUBNET="${LAN_SUBNET:-192.168.1.0/24}"  # override: LAN_SUBNET=10.0.0.0/24 sudo -E ./bootstrap.sh
 TERMINAL_PORT="${TERMINAL_PORT:-8443}"  # public web-terminal port; must match .env
+CODE_PORT="${CODE_PORT:-8444}"  # public code-server port; must match .env
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -32,6 +33,7 @@ ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$TERMINAL_PORT"/tcp comment 'public web terminal (GitHub OAuth gated)'
+ufw allow "$CODE_PORT"/tcp comment 'public code-server (GitHub OAuth gated)'
 ufw allow from "$LAN_SUBNET" to any port 22 proto tcp comment 'LAN SSH only'
 ufw --force enable
 

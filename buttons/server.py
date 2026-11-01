@@ -1055,6 +1055,16 @@ ACTIONS = {
             COMPOSE + ["up", "-d", "--force-recreate", "terminal"],
         ],
     },
+    "recreate-code": {
+        "label": "Recreate VS Code",
+        "group": "Server",
+        "sub": "Restart code-server with current config and .env",
+        "confirm": True,
+        "risk": "danger",
+        "steps": [
+            COMPOSE + ["up", "-d", "--force-recreate", "code-server"],
+        ],
+    },
     "logs": {
         "label": "Logs",
         "group": "Server",
@@ -2331,11 +2341,20 @@ a { color: #8bf; }
 .review-prompt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5em; margin: 0.6em 0; }
 .review-prompt-btn { text-align: left; padding: 0.6em 0.8em; font-size: 0.85em; border-radius: 6px; }
 .review-prompt-btn small { display: block; color: var(--text-muted); font-size: 0.78em; margin-top: 0.2em; }
+.launcher-bar { display: flex; gap: 0.6em; margin: 0.6em 0; flex-wrap: wrap; }
+.launcher-tile { display: inline-flex; align-items: center; gap: 0.4em; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: 8px; padding: 0.5em 0.9em;
+  color: var(--text-main); text-decoration: none; font-size: 0.95em; font-weight: 500; transition: border-color 0.15s ease, background 0.15s ease; }
+.launcher-tile:hover { border-color: var(--primary); background: var(--bg-card-hover); color: #fff; }
 </style>
 </head>
 <body>
 <h1>S5 Control Panel</h1>
-<p><a href="/">Terminal</a> &middot; fixed actions only, no free-text commands.
+<div class="launcher-bar">
+  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
+  <a class="launcher-tile" id="codeLauncher" href="#" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+</div>
+<p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
@@ -2600,6 +2619,11 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
+const codeLauncher = document.getElementById("codeLauncher");
+if (codeLauncher) {
+  const codePort = "<!--CODE_PORT-->";
+  codeLauncher.href = window.location.protocol + "//" + window.location.hostname + ":" + codePort + "/";
+}
 const btnDiv = document.getElementById("buttons");
 const stateEl = document.getElementById("state");
 const outEl = document.getElementById("out");
@@ -5369,11 +5393,14 @@ class Handler(BaseHTTPRequestHandler):
             # from discovery, so a repo added to ~/repos shows up
             # without a container rebuild.
             repos = _discover_repos()
+            code_port = os.environ.get("CODE_PORT", "8444")
             body = HTML.replace(
                 "<!--REPO_STRIPS-->",
                 _repo_strips_html(repos)).replace(
                 "<!--REPO_OPTIONS-->",
-                _repo_options_html(repos)).encode()
+                _repo_options_html(repos)).replace(
+                "<!--CODE_PORT-->",
+                code_port).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
