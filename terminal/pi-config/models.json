@@ -1,1 +1,39 @@
-{"providers":{"ollama":{"api":"openai-completions","apiKey":"ollama","baseUrl":"http://ollama:11434/v1","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false},"models":[{"id":"qwen3:8b","name":"Qwen3 8B (default, interactive)"},{"id":"qwen3:14b","name":"Qwen3 14B (stronger, slower)"}]}}}
+{
+  "providers": {
+    "ollama": {
+      "api": "openai-completions",
+      "apiKey": "ollama",
+      "baseUrl": "http://ollama:11434/v1",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        {
+          "id": "qwen2.5-coder:7b",
+          "name": "Qwen2.5-Coder 7B (fast, interactive, 16k ctx)",
+          "contextWindow": 16384,
+          "maxTokens": 4096
+        },
+        {
+          "id": "qwen2.5-coder:14b",
+          "name": "Qwen2.5-Coder 14B (deep coding, 16k ctx)",
+          "contextWindow": 16384,
+          "maxTokens": 4096
+        },
+        {
+          "id": "qwen3:8b",
+          "name": "Qwen3 8B (general, reasoning)",
+          "contextWindow": 16384,
+          "maxTokens": 4096
+        },
+        {
+          "id": "qwen3:14b",
+          "name": "Qwen3 14B (general, reasoning)",
+          "contextWindow": 16384,
+          "maxTokens": 4096
+        }
+      ]
+    }
+  }
+}

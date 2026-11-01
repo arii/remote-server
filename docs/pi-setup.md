@@ -14,8 +14,9 @@ infrastructure: Pi runs inside the phone terminal, Ollama serves the model.
   smoke-tested with `--version` at build time). Pi's config (`terminal/pi-config/`)
   is baked into the image and bind-mounted directly into `/root/.pi/agent/` so
   edits apply across recreates without losing sessions in `pi-data`.
-- **Models** (`OLLAMA_MODELS` in `.env`): `qwen3:8b` (default — snappier
-  on the phone, ~6–12 tok/s) and `qwen3:14b` (stronger, ~3–6 tok/s).
+- **Models** (`OLLAMA_MODELS` in `.env`): `qwen2.5-coder:7b` (default — snappier
+  on the phone, 0.5s warm response, 16k context) and `qwen2.5-coder:14b` (stronger,
+  16k context). `qwen3:8b` and `qwen3:14b` remain available.
   Switch mid-session with `/model`.
 
 ## Deploy / update on the S5
@@ -35,8 +36,8 @@ docker compose exec ollama ollama list # confirm both tags are there
 Open the terminal in the browser, then:
 
 ```bash
-pi                             # interactive TUI, default model qwen3:8b
-pi --model qwen3:14b             # stronger model for a hard task
+pi                             # interactive TUI, default model qwen2.5-coder:7b
+pi --model qwen2.5-coder:14b     # stronger model for a hard task
 ```
 
 Inside Pi: `/model` switches models, `/help` lists commands. Pi's default

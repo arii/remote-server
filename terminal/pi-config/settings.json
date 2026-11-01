@@ -1,1 +1,4 @@
-{"defaultModel":"qwen3:8b","defaultProvider":"ollama"}
+{
+  "defaultModel": "qwen2.5-coder:7b",
+  "defaultProvider": "ollama"
+}
