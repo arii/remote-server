@@ -646,9 +646,15 @@ def analyze(data):
         jules_lines.append(f"Jules sessions unavailable: {data['jules_err']}")
     else:
         matched = []
+        seen_session_ids = set()
         for session in sessions:
             if not isinstance(session, dict):
                 continue
+            sid = getf(session, "id", "sessionId", "session_id", "name")
+            if sid:
+                if sid in seen_session_ids:
+                    continue
+                seen_session_ids.add(sid)
             state = str(getf(session, "state", default="") or "").upper()
             if state in TERMINAL_SESSION_STATES:
                 continue

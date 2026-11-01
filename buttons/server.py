@@ -7051,7 +7051,15 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
-                for s in data.get("sessions", [])[:30]:
+                seen_session_ids = set()
+                for s in data.get("sessions", []):
+                    if len(sessions) >= 30:
+                        break
+                    sid = s.get("id") or s.get("sessionId") or s.get("name")
+                    if sid:
+                        if sid in seen_session_ids:
+                            continue
+                        seen_session_ids.add(sid)
                     pr_url = ""
                     for o in s.get("outputs", []) or []:
                         pr = o.get("pullRequest") or {}
