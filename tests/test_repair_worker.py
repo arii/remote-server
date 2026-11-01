@@ -27,6 +27,7 @@ from scripts.repair_worker import (
     route_ast_check,
     route_verification,
     run_repair_worker,
+    sanitize_relative_path,
     setup_worktree_node,
     verify_code_node,
 )
@@ -97,14 +98,40 @@ class TestAstValidator(unittest.TestCase):
         self.assertTrue(valid)
         self.assertEqual(err, "")
 
+    def test_path_traversal_detection(self):
+        valid, err = validate_source_syntax("../etc/passwd", "test")
+        self.assertFalse(valid)
+        self.assertIn("Unsafe path traversal", err)
+
 
 class TestRepairWorkerNodes(unittest.TestCase):
+    def test_sanitize_relative_path(self):
+        self.assertEqual(sanitize_relative_path("scripts/app.py"), "scripts/app.py")
+        self.assertEqual(sanitize_relative_path("/scripts/app.py"), "scripts/app.py")
+        with self.assertRaises(ValueError):
+            sanitize_relative_path("../secret.py")
+        with self.assertRaises(ValueError):
+            sanitize_relative_path("scripts/../../secret.py")
+
     def test_extract_code_fence(self):
         raw = "Here is the code:\n```python\nprint('hello')\n```\nHope it helps!"
         self.assertEqual(extract_code_fence(raw, "app.py"), "print('hello')")
 
         plain = "print('hello plain')"
         self.assertEqual(extract_code_fence(plain, "app.py"), "print('hello plain')")
+
+    def test_extract_code_fence_multiple_blocks(self):
+        raw = (
+            "Let's write instructions first:\n"
+            "```text\nstep 1\n```\n"
+            "Here is the real source file:\n"
+            "```python\ndef full_implementation():\n    return 42\n```"
+        )
+        # Should pick the largest block
+        self.assertEqual(
+            extract_code_fence(raw, "app.py"),
+            "def full_implementation():\n    return 42",
+        )
 
     @patch("scripts.repair_worker.urllib.request.urlopen")
     def test_query_ollama(self, mock_urlopen):
@@ -224,13 +251,13 @@ class TestRepairWorkerNodes(unittest.TestCase):
     @patch("scripts.repair_worker.run_cmd")
     def test_verify_code_node_success(self, mock_run_cmd):
         mock_run_cmd.return_value = subprocess.CompletedProcess(
-            args=["pytest"], returncode=0, stdout="all tests passed", stderr=""
+            args=["pytest", "-v"], returncode=0, stdout="all tests passed", stderr=""
         )
         state: AgentState = {
             "issue_number": 42,
             "issue_body": "",
             "target_files": [],
-            "verification_cmd": "pytest",
+            "verification_cmd": "pytest -v",
             "file_contents": {},
             "current_errors": "",
             "retry_count": 1,
@@ -242,6 +269,13 @@ class TestRepairWorkerNodes(unittest.TestCase):
         res = verify_code_node(state)
         self.assertTrue(res["tests_passed"])
         self.assertEqual(res["current_errors"], "")
+        mock_run_cmd.assert_called_once_with(
+            ["pytest", "-v"],
+            cwd="/tmp/wt",
+            shell=False,
+            check=False,
+            timeout=300,
+        )
 
     @patch("scripts.repair_worker.run_cmd")
     def test_verify_code_node_failure(self, mock_run_cmd):
@@ -264,6 +298,13 @@ class TestRepairWorkerNodes(unittest.TestCase):
         res = verify_code_node(state)
         self.assertFalse(res["tests_passed"])
         self.assertIn("FAILED tests/test_app.py", res["current_errors"])
+        mock_run_cmd.assert_called_once_with(
+            ["pytest"],
+            cwd="/tmp/wt",
+            shell=False,
+            check=False,
+            timeout=300,
+        )
 
     @patch("scripts.repair_worker.run_cmd")
     def test_create_pr_node(self, mock_run_cmd):

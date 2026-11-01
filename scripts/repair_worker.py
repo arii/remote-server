@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -28,10 +29,16 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-# Allow local imports from scripts directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ast_validator import validate_source_syntax  # noqa: E402
-from parse_task_spec import parse_task_spec  # noqa: E402
+# Ensure scripts directory is on path whether run directly or as a module
+try:
+    from .ast_validator import validate_source_syntax
+    from .parse_task_spec import parse_task_spec
+except ImportError:
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from ast_validator import validate_source_syntax  # type: ignore
+    from parse_task_spec import parse_task_spec  # type: ignore
 
 logger = logging.getLogger("repair_worker")
 
@@ -54,6 +61,14 @@ class AgentState(TypedDict):
     branch_name: str
 
 
+def sanitize_relative_path(path_str: str) -> str:
+    """Sanitize path to ensure it cannot escape working tree directory."""
+    clean = os.path.normpath(path_str.strip()).lstrip("/\\")
+    if clean.startswith("..") or ".." in clean.split(os.sep):
+        raise ValueError(f"Unsafe path traversal detected: {path_str}")
+    return clean
+
+
 def run_cmd(
     cmd: list[str] | str,
     cwd: str | None = None,
@@ -62,7 +77,7 @@ def run_cmd(
     timeout: int = 300,
 ) -> subprocess.CompletedProcess[str]:
     """Execute command and capture output."""
-    logger.debug("Executing: %s (cwd=%s)", cmd, cwd)
+    logger.debug("Executing: %s (cwd=%s, shell=%s)", cmd, cwd, shell)
     result = subprocess.run(
         cmd,
         cwd=cwd,
@@ -109,12 +124,18 @@ def query_ollama(
         raise
 
 
-def extract_code_fence(text: str, file_path: str) -> str:
-    """Extract code from markdown code fences if present; otherwise return raw text."""
+def extract_code_fence(text: str, file_path: str = "") -> str:
+    """Extract code from markdown code fences if present; otherwise return raw text.
+
+    If multiple code blocks exist (e.g. text preamble code block + rewritten code),
+    select the largest block by content length.
+    """
     pattern = r"```(?:[a-zA-Z0-9_\-+]*\n)?(.*?)```"
     matches = re.findall(pattern, text, re.DOTALL)
     if matches:
-        return matches[0].strip()
+        # Choose the largest code block to avoid preamble or short note blocks
+        largest = max(matches, key=len)
+        return largest.strip()
     return text.strip()
 
 
@@ -123,11 +144,12 @@ def parse_issue_node(state: AgentState) -> dict[str, Any]:
     logger.info("Node [parse_issue_node]: Parsing task spec for issue #%s", state.get("issue_number"))
     parsed = parse_task_spec(state.get("issue_body", ""))
 
-    target_files = state.get("target_files") or parsed.get("target_files", [])
+    raw_targets = state.get("target_files") or parsed.get("target_files", [])
+    sanitized_targets = [sanitize_relative_path(t) for t in raw_targets]
     verification_cmd = state.get("verification_cmd") or parsed.get("verification_cmd", "")
 
     return {
-        "target_files": target_files,
+        "target_files": sanitized_targets,
         "verification_cmd": verification_cmd,
     }
 
@@ -140,7 +162,6 @@ def setup_worktree_node(state: AgentState) -> dict[str, Any]:
 
     logger.info("Node [setup_worktree_node]: Creating worktree at %s on branch %s", worktree_dir, branch_name)
 
-    # Check if branch already exists; recreate or add
     try:
         run_cmd(["git", "worktree", "add", "-b", branch_name, worktree_dir, "HEAD"])
     except subprocess.CalledProcessError:
@@ -152,12 +173,13 @@ def setup_worktree_node(state: AgentState) -> dict[str, Any]:
 
     file_contents: dict[str, str] = {}
     for rel_path in state.get("target_files", []):
-        full_path = os.path.join(worktree_dir, rel_path)
+        clean_rel = sanitize_relative_path(rel_path)
+        full_path = os.path.join(worktree_dir, clean_rel)
         if os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
-                file_contents[rel_path] = f.read()
+                file_contents[clean_rel] = f.read()
         else:
-            file_contents[rel_path] = ""
+            file_contents[clean_rel] = ""
 
     return {
         "worktree_dir": worktree_dir,
@@ -192,16 +214,17 @@ def edit_file_node(state: AgentState) -> dict[str, Any]:
     updated_contents: dict[str, str] = {}
 
     for file_path in target_files:
-        original_content = file_contents.get(file_path, "")
+        clean_rel = sanitize_relative_path(file_path)
+        original_content = file_contents.get(clean_rel, "")
         prompt = (
             f"Task Objective and Issue Description:\n"
             f"{state.get('issue_body', '')}\n\n"
-            f"File to modify: {file_path}\n"
+            f"File to modify: {clean_rel}\n"
         )
         if original_content:
-            prompt += f"Existing Content of {file_path}:\n```\n{original_content}\n```\n\n"
+            prompt += f"Existing Content of {clean_rel}:\n```\n{original_content}\n```\n\n"
         else:
-            prompt += f"The file {file_path} is currently empty or does not exist yet. Create its full content.\n\n"
+            prompt += f"The file {clean_rel} is currently empty or does not exist yet. Create its full content.\n\n"
 
         if current_errors:
             prompt += (
@@ -211,16 +234,16 @@ def edit_file_node(state: AgentState) -> dict[str, Any]:
             )
 
         prompt += (
-            f"Rewrite the ENTIRE file `{file_path}` cleanly. "
+            f"Rewrite the ENTIRE file `{clean_rel}` cleanly. "
             f"Output only the full replacement code enclosed in a ``` code block."
         )
 
         response = query_ollama(prompt, system_prompt=system_prompt)
-        rewritten = extract_code_fence(response, file_path)
-        updated_contents[file_path] = rewritten
+        rewritten = extract_code_fence(response, clean_rel)
+        updated_contents[clean_rel] = rewritten
 
         if worktree_dir:
-            full_path = os.path.join(worktree_dir, file_path)
+            full_path = os.path.join(worktree_dir, clean_rel)
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(rewritten)
@@ -261,8 +284,8 @@ def ast_check_node(state: AgentState) -> dict[str, Any]:
 
 
 def verify_code_node(state: AgentState) -> dict[str, Any]:
-    """Execute verification command in worktree directory."""
-    verification_cmd = state.get("verification_cmd", "")
+    """Execute verification command safely without shell=True in worktree directory."""
+    verification_cmd = state.get("verification_cmd", "").strip()
     worktree_dir = state.get("worktree_dir", "")
 
     logger.info("Node [verify_code_node]: Running verification '%s' in %s", verification_cmd, worktree_dir)
@@ -275,10 +298,11 @@ def verify_code_node(state: AgentState) -> dict[str, Any]:
         }
 
     try:
+        cmd_args = shlex.split(verification_cmd)
         proc = run_cmd(
-            verification_cmd,
+            cmd_args,
             cwd=worktree_dir,
-            shell=True,
+            shell=False,
             check=False,
             timeout=300,
         )
@@ -373,7 +397,6 @@ def build_repair_graph() -> Any:
     """Build and compile the LangGraph repair state machine."""
     workflow = StateGraph(AgentState)
 
-    # Add nodes
     workflow.add_node("parse_issue_node", parse_issue_node)
     workflow.add_node("setup_worktree_node", setup_worktree_node)
     workflow.add_node("edit_file_node", edit_file_node)
@@ -382,15 +405,12 @@ def build_repair_graph() -> Any:
     workflow.add_node("create_pr_node", create_pr_node)
     workflow.add_node("cleanup_node", cleanup_node)
 
-    # Set entry point
     workflow.set_entry_point("parse_issue_node")
 
-    # Linear edges
     workflow.add_edge("parse_issue_node", "setup_worktree_node")
     workflow.add_edge("setup_worktree_node", "edit_file_node")
     workflow.add_edge("edit_file_node", "ast_check_node")
 
-    # Conditional edge from ast_check_node
     workflow.add_conditional_edges(
         "ast_check_node",
         route_ast_check,
@@ -401,7 +421,6 @@ def build_repair_graph() -> Any:
         },
     )
 
-    # Conditional edge from verify_code_node
     workflow.add_conditional_edges(
         "verify_code_node",
         route_verification,
@@ -412,7 +431,6 @@ def build_repair_graph() -> Any:
         },
     )
 
-    # Terminal paths
     workflow.add_edge("create_pr_node", "cleanup_node")
     workflow.add_edge("cleanup_node", END)
 

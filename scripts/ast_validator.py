@@ -13,6 +13,14 @@ import os
 import sys
 
 
+def sanitize_relative_path(path_str: str) -> str:
+    """Sanitize path to ensure safe relative access."""
+    clean = os.path.normpath(path_str.strip()).lstrip("/\\")
+    if clean.startswith("..") or ".." in clean.split(os.sep):
+        raise ValueError(f"Unsafe path traversal detected: {path_str}")
+    return clean
+
+
 def validate_source_syntax(file_path: str, content: str) -> tuple[bool, str]:
     """Validate syntax of code content for a given file.
 
@@ -20,24 +28,29 @@ def validate_source_syntax(file_path: str, content: str) -> tuple[bool, str]:
         (is_valid, error_message): Tuple where is_valid is True if syntax passes,
         False otherwise with error_message detailing the parse issue.
     """
-    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        clean_path = sanitize_relative_path(file_path)
+    except ValueError as e:
+        return False, str(e)
+
+    ext = os.path.splitext(clean_path)[1].lower()
 
     if ext == ".py":
         try:
-            ast.parse(content, filename=file_path)
+            ast.parse(content, filename=clean_path)
             return True, ""
         except SyntaxError as e:
-            msg = f"SyntaxError in {file_path} at line {e.lineno}, col {e.offset}: {e.msg}\n{e.text or ''}"
+            msg = f"SyntaxError in {clean_path} at line {e.lineno}, col {e.offset}: {e.msg}\n{e.text or ''}"
             return False, msg.strip()
         except Exception as e:
-            return False, f"AST parse error in {file_path}: {e}"
+            return False, f"AST parse error in {clean_path}: {e}"
 
     if ext == ".json":
         try:
             json.loads(content)
             return True, ""
         except json.JSONDecodeError as e:
-            return False, f"JSONDecodeError in {file_path} at line {e.lineno}, col {e.colno}: {e.msg}"
+            return False, f"JSONDecodeError in {clean_path} at line {e.lineno}, col {e.colno}: {e.msg}"
 
     # Default pass for other file extensions
     return True, ""
