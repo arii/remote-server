@@ -4915,8 +4915,8 @@ function initInteractiveChat(prefix) {
   function appendStreamingToken(container, chunk) {
     if (!chunk) return;
 
-    // If a code block delimiter is encountered, re-parse structured markdown blocks
-    if (chunk.includes("```") || rawTextBuffer.includes("```")) {
+    // If a code block delimiter is encountered in the chunk, re-parse structured markdown blocks
+    if (chunk.includes("```")) {
       renderFullMarkdown(container, rawTextBuffer);
       return;
     }
