@@ -522,12 +522,18 @@ def _suggest_context(brief):
     lines.append("Open PRs:")
     for pr in prs[:20]:
         if isinstance(pr, dict):
-            lines.append(
+            pr_line = (
                 f"- #{pr.get('number')} "
                 f"{str(pr.get('title') or '?')[:80]} | "
                 f"CI {pr.get('ci')} | merge {pr.get('merge')} | "
                 f"conflicted {bool(pr.get('conflicted'))} | "
                 f"review {pr.get('review')}")
+            # If PR has raw diff attached, filter and include concise summary
+            if pr.get("diff"):
+                filtered_diff = context_filter.filter_diff(str(pr.get("diff")), max_file_lines=50)
+                if filtered_diff:
+                    pr_line += f"\n  diff summary:\n{filtered_diff[:300]}"
+            lines.append(pr_line)
     fr = brief.get("failing_runs") or []
     if fr:
         lines.append("Failing runs:")
@@ -549,6 +555,12 @@ def _suggest_context(brief):
                             parts.append(s)
                     if parts:
                         line += f" — failed: {'; '.join(parts[:3])}"
+                # If failing run carries raw error logs or traces, extract high-signal trace
+                raw_log = r.get("log") or r.get("raw_log")
+                if raw_log and isinstance(raw_log, str):
+                    trace = context_filter.extract_ci_error_traces(raw_log, max_lines=20)
+                    if trace:
+                        line += f"\n  CI error trace:\n{trace[:400]}"
                 lines.append(line)
     j = brief.get("jules") or {}
     if isinstance(j, dict):

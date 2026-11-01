@@ -137,5 +137,62 @@ class TestContextBudgetEnforcement(unittest.TestCase):
         self.assertLessEqual(len(ctx), 14000)
 
 
+class TestContextFilterHelpersAndIntegration(unittest.TestCase):
+    def test_estimate_tokens_accuracy(self):
+        self.assertEqual(context_filter.estimate_tokens(""), 0)
+        self.assertEqual(context_filter.estimate_tokens("hello"), 2)
+        text_100_chars = "x" * 100
+        # 100 chars // 4 = 25 tokens
+        self.assertEqual(context_filter.estimate_tokens(text_100_chars), 25)
+
+    def test_is_excluded_path(self):
+        self.assertTrue(context_filter.is_excluded_path("pnpm-lock.yaml"))
+        self.assertTrue(context_filter.is_excluded_path("src/vendor/app.min.js"))
+        self.assertTrue(context_filter.is_excluded_path("assets/icon.svg"))
+        self.assertTrue(context_filter.is_excluded_path("buttons/__pycache__/server.cpython-312.pyc"))
+        self.assertFalse(context_filter.is_excluded_path("src/index.ts"))
+        self.assertFalse(context_filter.is_excluded_path("buttons/server.py"))
+
+    def test_suggest_context_with_ci_traces_and_diff(self):
+        brief = {
+            "repo": "remote-server",
+            "attention": ["PR #42 needs attention"],
+            "prs": [{
+                "number": 42,
+                "title": "Fix something",
+                "ci": "failing",
+                "merge": "clean",
+                "conflicted": False,
+                "review": "PENDING",
+                "diff": """diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1 +1 @@
+-old: 1.0.0
++new: 1.0.1
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-print(1)
++print(2)
+"""
+            }],
+            "failing_runs": [{
+                "name": "CI",
+                "branch": "main",
+                "failed": [{"job": "test", "steps": ["run pytest"]}],
+                "log": "\n".join([f"setup line {i}" for i in range(100)]) + "\nAssertionError: expected True but got False\nexit 1\n"
+            }],
+        }
+        ctx = server._suggest_context(brief)
+        self.assertIn("diff summary:", ctx)
+        self.assertIn("excluded generated/binary/lockfile 'pnpm-lock.yaml'", ctx)
+        self.assertIn("+print(2)", ctx)
+        self.assertIn("CI error trace:", ctx)
+        self.assertIn("AssertionError: expected True but got False", ctx)
+        self.assertNotIn("setup line 10\n", ctx)
+
+
 if __name__ == "__main__":
     unittest.main()
