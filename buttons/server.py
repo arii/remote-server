@@ -4850,82 +4850,84 @@ function initInteractiveChat(prefix) {
     badgeEl.textContent = label || phase || "Ready";
   }
 
-  let renderScheduled = false;
-  function renderStreamingContent(container, text, forceImmediate) {
-    const doRender = () => {
-      renderScheduled = false;
-      container.innerHTML = "";
-      if (!text) return;
+  let activeTextNode = null;
 
-      // Split markdown code blocks: ```[lang]\n...\n```
-      const parts = text.split(/(```[\s\S]*?```)/g);
-      parts.forEach(part => {
-        if (part.startsWith("```") && part.endsWith("```")) {
-          const wrap = document.createElement("div");
-          wrap.className = "code-block-wrap";
+  function renderFullMarkdown(container, text) {
+    container.innerHTML = "";
+    activeTextNode = null;
+    if (!text) return;
 
-          // Remove opening/closing ticks and extract code
-          const lines = part.slice(3, -3).split("\n");
-          let lang = "";
-          let codeContent = part.slice(3, -3);
-          if (lines.length > 1 && !lines[0].includes(" ")) {
-            lang = lines[0].trim();
-            codeContent = lines.slice(1).join("\n");
-          }
+    // Split markdown code blocks: ```[lang]\n...\n```
+    const parts = text.split(/(```[\s\S]*?```)/g);
+    parts.forEach(part => {
+      if (part.startsWith("```") && part.endsWith("```")) {
+        const wrap = document.createElement("div");
+        wrap.className = "code-block-wrap";
 
-          const copyBtn = document.createElement("button");
-          copyBtn.type = "button";
-          copyBtn.className = "code-copy-btn";
-          copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
-          copyBtn.onclick = async (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            try {
-              await navigator.clipboard.writeText(codeContent);
-              copyBtn.textContent = "Copied! ✓";
-              copyBtn.classList.add("copied");
-              setTimeout(() => {
-                copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
-                copyBtn.classList.remove("copied");
-              }, 2000);
-            } catch (err) {
-              copyBtn.textContent = "Failed";
-            }
-          };
-
-          const pre = document.createElement("pre");
-          pre.className = "ok";
-          const code = document.createElement("code");
-          code.textContent = codeContent;
-          pre.appendChild(code);
-
-          wrap.appendChild(copyBtn);
-          wrap.appendChild(pre);
-          container.appendChild(wrap);
-        } else {
-          const textSpan = document.createElement("span");
-          textSpan.textContent = part;
-          container.appendChild(textSpan);
+        // Remove opening/closing ticks and extract code
+        const lines = part.slice(3, -3).split("\n");
+        let lang = "";
+        let codeContent = part.slice(3, -3);
+        if (lines.length > 1 && !lines[0].includes(" ")) {
+          lang = lines[0].trim();
+          codeContent = lines.slice(1).join("\n");
         }
-      });
 
-      // Auto-scroll to bottom of stream container
-      container.scrollTop = container.scrollHeight;
-    };
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "code-copy-btn";
+        copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+        copyBtn.onclick = async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            await navigator.clipboard.writeText(codeContent);
+            copyBtn.textContent = "Copied! ✓";
+            copyBtn.classList.add("copied");
+            setTimeout(() => {
+              copyBtn.textContent = lang ? "Copy " + lang : "Copy code";
+              copyBtn.classList.remove("copied");
+            }, 2000);
+          } catch (err) {
+            copyBtn.textContent = "Failed";
+          }
+        };
 
-    if (forceImmediate) {
-      renderScheduled = false;
-      doRender();
+        const pre = document.createElement("pre");
+        pre.className = "ok";
+        const code = document.createElement("code");
+        code.textContent = codeContent;
+        pre.appendChild(code);
+
+        wrap.appendChild(copyBtn);
+        wrap.appendChild(pre);
+        container.appendChild(wrap);
+      } else {
+        const textSpan = document.createElement("span");
+        textSpan.textContent = part;
+        container.appendChild(textSpan);
+      }
+    });
+
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function appendStreamingToken(container, chunk) {
+    if (!chunk) return;
+
+    // If a code block delimiter is encountered, re-parse structured markdown blocks
+    if (chunk.includes("```") || rawTextBuffer.includes("```")) {
+      renderFullMarkdown(container, rawTextBuffer);
       return;
     }
 
-    if (renderScheduled) return;
-    renderScheduled = true;
-    if (typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(doRender);
-    } else {
-      setTimeout(doRender, 16);
+    // Fast path: append directly to active text node to avoid DOM teardown O(N^2) churn
+    if (!activeTextNode) {
+      activeTextNode = document.createTextNode("");
+      container.appendChild(activeTextNode);
     }
+    activeTextNode.nodeValue += chunk;
+    container.scrollTop = container.scrollHeight;
   }
 
   async function abortChat() {
@@ -4998,7 +5000,7 @@ function initInteractiveChat(prefix) {
           const payload = JSON.parse(e.data);
           const chunk = payload.token || "";
           rawTextBuffer += chunk;
-          renderStreamingContent(streamBox, rawTextBuffer);
+          appendStreamingToken(streamBox, chunk);
         } catch (ex) {}
       });
 
@@ -5007,7 +5009,7 @@ function initInteractiveChat(prefix) {
           activeEventSource.close();
           activeEventSource = null;
         }
-        renderStreamingContent(streamBox, rawTextBuffer, true);
+        renderFullMarkdown(streamBox, rawTextBuffer);
         sendBtn.disabled = false;
         if (abortBtn) abortBtn.style.display = "none";
         activeSessionId = null;
@@ -5037,6 +5039,7 @@ function initInteractiveChat(prefix) {
   if (clearBtn) {
     clearBtn.onclick = () => {
       rawTextBuffer = "";
+      activeTextNode = null;
       streamBox.innerHTML = "";
       inputEl.value = "";
       if (errEl) errEl.textContent = "";
