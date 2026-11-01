@@ -46,6 +46,11 @@ install_one "$ROOT/hooks/post-merge" "$ROOT/.git/hooks"
 install_one "$ROOT/hooks/post-merge-tech-dancer" "$TD_DIR/.git/hooks"
 install_one "$ROOT/hooks/post-merge-tech-dancer" "$BT_DIR/.git/hooks"
 
+# Ensure all repo scripts have executable permissions
+if [ -d "$ROOT/scripts" ]; then
+  chmod +x "$ROOT"/scripts/*.sh 2>/dev/null || true
+fi
+
 if [ "$CHECK" = 0 ]; then
   echo "Done. Notes:"
   echo "- Automated pulls (webhook, Deploy buttons) skip hooks by design (-c core.hooksPath=/dev/null); hooks run only for interactive host pulls."
