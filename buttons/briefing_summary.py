@@ -511,13 +511,6 @@ def analyze(data):
         elif stale:
             attention.append((3, f"{label} — stale (updated {updated_day})",
                              f"<!-- action:review pr:{num} -->"))
-    # Rank order, not PR-list order: conflicts before CI before
-    # reviews before stale, regardless of which PR came first.
-    attention_ranked = sorted(attention, key=lambda x: x[0])
-    attention = [t[1] for t in attention_ranked]
-    attention_with_markers = [(t[1], t[2] if len(t) > 2 else "")
-                              for t in attention_ranked]
-
     reviews_lines = []
     reviews = data["reviews"]
     reviews_err = data["reviews_err"]
@@ -636,6 +629,30 @@ def analyze(data):
             })
         if not raw_failing:
             workflow_lines.append("No failing runs in the recent list.")
+
+    for fr in failing_runs:
+        run_name = fr.get("name", "workflow")
+        branch_name = fr.get("branch", "main")
+        event_name = fr.get("event", "push")
+        failed_parts = []
+        for j in fr.get("failed", []):
+            jname = j.get("job", "")
+            steps = j.get("steps", [])
+            if steps:
+                failed_parts.append(f"{jname} ({', '.join(steps)})")
+            elif jname:
+                failed_parts.append(jname)
+        cause_summary = "; ".join(failed_parts) if failed_parts else "workflow failed"
+        attention_text = f"Failing run: {run_name} on {branch_name} ({event_name}) — likely cause: {cause_summary}"
+        marker = f"<!-- action:diagnose-run workflow:{run_name} branch:{branch_name} -->"
+        attention.append((1, attention_text, marker))
+
+    # Rank order, not PR-list order: conflicts (0) before CI / failing runs (1)
+    # before reviews (2) before stale (3), regardless of which arrived first.
+    attention_ranked = sorted(attention, key=lambda x: x[0])
+    attention = [t[1] for t in attention_ranked]
+    attention_with_markers = [(t[1], t[2] if len(t) > 2 else "")
+                              for t in attention_ranked]
 
     sessions = data["jules"]
     jules_items = []
