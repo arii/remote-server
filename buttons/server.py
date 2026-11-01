@@ -2711,18 +2711,63 @@ let lastRenderedOutput = null;
 // lines, but the tail usually ends with our own "step failed"
 // trailer and the echoed "$ ..." command line, neither of which
 // says anything about the cause — and the pane sits below the
-// fold on a phone, so the cause was never visible. Noise is
-// filtered first, then the most error-like line wins: a JSON
-// "message"/"error" field, a traceback, or an Error/failed line.
-// Falls back to the raw last line when nothing looks like an
-// error. One line, truncated: a banner is a pointer, not a log.
+// fold on a phone, so the cause was never visible.
+// Error banner extraction: extracts JSON "message" or "error" values,
+// preflight check failures (✗ / : FAIL), tracebacks, or Error lines directly.
+// Falls back to the raw last line when nothing looks like an error.
+// One line, truncated: a banner is a pointer, not a log.
 function lastErrorLines() {
-  const lines = outEl.textContent.split("\n").map(l => {
+  const rawText = outEl.textContent || "";
+  const lines = rawText.split("\n").map(l => {
     const i = l.lastIndexOf("\r");
     return (i >= 0 ? l.slice(i + 1) : l).trim();
   }).filter(l => l && !l.startsWith("$ ") &&
     !/^step failed with exit code \d+; aborting$/.test(l));
   if (!lines.length) return "";
+
+  // 1. Try extracting structured message/error from a JSON block in the output
+  const jsonStart = rawText.indexOf("{");
+  const jsonEnd = rawText.lastIndexOf("}");
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    try {
+      const obj = JSON.parse(rawText.slice(jsonStart, jsonEnd + 1));
+      function findMsg(node) {
+        if (!node) return null;
+        if (typeof node === "string") return node;
+        if (typeof node.message === "string" && node.message.trim()) return node.message.trim();
+        if (typeof node.error === "string" && node.error.trim()) return node.error.trim();
+        if (node.error && typeof node.error === "object") return findMsg(node.error);
+        if (typeof node.detail === "string" && node.detail.trim()) return node.detail.trim();
+        return null;
+      }
+      const msg = findMsg(obj);
+      if (msg) return "\n" + msg.split("\n")[0].slice(0, 220);
+    } catch (e) {}
+  }
+
+  // 2. Try regex extraction of JSON "message" or "error" lines
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    const m = l.match(/"(?:message|error|detail)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/i);
+    if (m) {
+      try {
+        const val = JSON.parse('"' + m[1] + '"');
+        if (val && typeof val === "string") return "\n" + val.split("\n")[0].slice(0, 220);
+      } catch (e) {
+        return "\n" + m[1].split("\n")[0].slice(0, 220);
+      }
+    }
+  }
+
+  // 3. Preflight check failures or compact checklist failure line (e.g. ✗ CheckName: FAIL)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (l.startsWith("✗") || /:\s*FAIL\b/i.test(l)) {
+      return "\n" + l.slice(0, 220);
+    }
+  }
+
+  // 4. Traceback or error-like line
   const isErr = l =>
     /"(message|error)"\s*:|traceback|error|failed|exception/i.test(l);
   let pick = -1;
