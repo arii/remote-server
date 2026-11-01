@@ -2467,6 +2467,18 @@ a { color: #8bf; }
 @media (max-width: 520px) {
   #tabbar .tab { font-size: 0.72em; padding: 0.6em 0.1em; }
 }
+/* slide-up chat drawer */
+#chatDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1050;
+  background: var(--bg-app); border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.8);
+  transform: translateY(105%); transition: transform 0.25s ease-out;
+  max-height: 85vh; display: flex; flex-direction: column; }
+#chatDrawer.open { transform: none; }
+#chatDrawerHead { display: flex; align-items: center; justify-content: space-between;
+  padding: 0.5em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; background: var(--bg-card); }
+#chatDrawerHead .dbactions { display: flex; align-items: center; gap: 0.5em; }
+#chatDrawerHead button { width: auto; margin: 0; padding: 0.4em 0.8em; font-size: 0.85em; }
+.chat-drawer-body { padding: 0.8em; overflow-y: auto; flex: 1; }
 /* slide-up output drawer */
 #outputDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
   background: #050811; border-top: 1px solid var(--border);
@@ -2667,23 +2679,6 @@ below are still visible, but they need JavaScript to start a run.</div>
 </div>
 <div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
 </div>
-<div class="chat-card" id="actionsChatCard">
-  <div class="chat-head">
-    <div class="chat-title">💬 Ask Pi / Interactive Agent Chat <span class="forrepo" data-forrepo></span></div>
-    <span id="actionsPhaseBadge" class="phase-badge">Ready</span>
-  </div>
-  <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
-  <div class="chat-input-wrap">
-    <textarea id="actionsChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
-    <div class="chat-ctrls">
-      <button id="actionsChatSendBtn" class="btn-primary">Send Prompt</button>
-      <button id="actionsChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
-      <button id="actionsChatClearBtn" class="btn-ghost">Clear</button>
-    </div>
-  </div>
-  <div id="actionsChatStream" class="chat-stream-box"></div>
-  <div id="actionsChatErr" class="repair-err" style="margin-top:0.4em;"></div>
-</div>
 <div id="repairCard" class="health-card">
 <div class="health-head">Agent / Tools: Local Repair Worker</div>
 <div class="bsub" style="margin-bottom: 0.5em;">Trigger a local repair run by passing an issue number or issue URL.</div>
@@ -2702,23 +2697,6 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
-<div class="chat-card" id="briefingChatCard">
-  <div class="chat-head">
-    <div class="chat-title">💬 Ask Pi / Quick Agent Prompt <span class="forrepo" data-forrepo></span></div>
-    <span id="briefingPhaseBadge" class="phase-badge">Ready</span>
-  </div>
-  <div class="bsub" style="margin-bottom:0.5em;">Ask ad-hoc questions or task requests. Streams tokens live with phase status.</div>
-  <div class="chat-input-wrap">
-    <textarea id="briefingChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, CI status, recent commits, or task requests…"></textarea>
-    <div class="chat-ctrls">
-      <button id="briefingChatSendBtn" class="btn-primary">Send Prompt</button>
-      <button id="briefingChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
-      <button id="briefingChatClearBtn" class="btn-ghost">Clear</button>
-    </div>
-  </div>
-  <div id="briefingChatStream" class="chat-stream-box"></div>
-  <div id="briefingChatErr" class="repair-err" style="margin-top:0.4em;"></div>
-</div>
 <h2>Briefing</h2>
 <details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
@@ -2730,23 +2708,6 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
-<div class="chat-card" id="piChatCard">
-  <div class="chat-head">
-    <div class="chat-title">🤖 Interactive Agent Chat & Streaming <span class="forrepo" data-forrepo></span></div>
-    <span id="piPhaseBadge" class="phase-badge">Ready</span>
-  </div>
-  <div class="bsub" style="margin-bottom:0.5em;">Interactive chat prompt with local LLM & Pi agent. Tap-to-copy code blocks, real-time token streaming, and cancellation.</div>
-  <div class="chat-input-wrap">
-    <textarea id="piChatInput" class="chat-textarea" rows="3" placeholder="Ask ad-hoc questions or task requests (e.g. 'Summarize failing CI runs in main' or 'Where are webhook handlers defined?')..."></textarea>
-    <div class="chat-ctrls">
-      <button id="piChatSendBtn" class="btn-primary">Send Prompt</button>
-      <button id="piChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
-      <button id="piChatClearBtn" class="btn-ghost">Clear</button>
-    </div>
-  </div>
-  <div id="piChatStream" class="chat-stream-box"></div>
-  <div id="piChatErr" class="repair-err" style="margin-top:0.4em;"></div>
-</div>
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -2760,19 +2721,13 @@ minutes on the local model.</p>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
-<h2>Ask Pi</h2>
+<h2>Ask Agent / Chat</h2>
 <details><summary>How this works</summary>
-<p>Open-ended instructions for this repo, in your own words —
-e.g. "draft an issue for the flaky briefing refresh" or "where
-does the webhook worker live?". Pi investigates read-only and
-replies here. If you asked for a write (like creating an issue),
-Pi proposes the exact change and nothing runs until you confirm
-it. Takes minutes on the local model.</p>
+<p>Open-ended questions and instructions for this repo. Access the interactive agent chat via the topbar button or below to chat, stream tool actions, or dispatch tasks.</p>
 </details>
-<textarea id="askBox" rows="3" placeholder="Ask Pi anything about this repo…"></textarea>
-<button id="askBtn">Ask Pi</button>
-<div id="askOut"></div>
-<div id="askErr"></div>
+<div style="margin: 0.6em 0;">
+  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
+</div>
 
 <h2>Pi sessions</h2>
 <details><summary>How this works</summary>
@@ -2929,6 +2884,30 @@ entries but leaves a 'ledger cleared' record.</p>
 <div id="ledgerErr"></div>
 </details>
 </section>
+<div id="chatDrawer">
+<div id="chatDrawerHead">
+  <span style="display:flex;align-items:center;gap:0.4em;">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
+  <span class="dbactions">
+    <span id="globalPhaseBadge" class="phase-badge">Ready</span>
+    <button id="chatDrawerClose" type="button" class="btn-ghost">✕ Close</button>
+  </span>
+</div>
+<div class="chat-drawer-body">
+  <div class="chat-card" id="globalChatCard" style="margin:0;">
+    <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+    <div class="chat-input-wrap">
+      <textarea id="globalChatInput" class="chat-textarea" rows="3" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
+      <div class="chat-ctrls">
+        <button id="globalChatSendBtn" class="btn-primary">Send Prompt</button>
+        <button id="globalChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+        <button id="globalChatClearBtn" class="btn-ghost">Clear</button>
+      </div>
+    </div>
+    <div id="globalChatStream" class="chat-stream-box"></div>
+    <div id="globalChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+  </div>
+</div>
+</div>
 <div id="outputDrawer">
 <div id="drawerHead"><span>Output</span><span class="dbactions"><button id="bugBtn" title="File the failed run as a GitHub issue">Report bug</button><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
 <div id="state"></div>
@@ -5049,10 +5028,9 @@ async function refreshWorkflowHealth() {
       askPiBtn.style.width = "auto"; askPiBtn.style.margin = "0";
       askPiBtn.textContent = "Ask Pi to diagnose";
       askPiBtn.onclick = () => {
-        const piTab = document.querySelector('[data-tab="pi"]');
-        const piInp = document.getElementById("piPrompt");
-        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wf.name}' on branch '${wf.branch}'. Cause: ${wf.diagnosed_cause}`;
-        if (piTab) piTab.click();
+        const chatInp = document.getElementById("globalChatInput");
+        if (chatInp) chatInp.value = `Diagnose and suggest fix for failing workflow '${wf.name}' on branch '${wf.branch}'. Cause: ${wf.diagnosed_cause}`;
+        openChatDrawer();
       };
       actions.appendChild(askPiBtn);
 
@@ -5522,10 +5500,9 @@ function pollPlanJob(jid, container) {
   if (askPiBtn) askPiBtn.onclick = () => {
     const tBox = document.getElementById("prPromptText");
     if (!tBox || !tBox.value) return;
-    const piTab = document.querySelector('[data-tab="pi"]');
-    const piInp = document.getElementById("piPrompt");
-    if (piInp) piInp.value = tBox.value;
-    if (piTab) piTab.click();
+    const chatInp = document.getElementById("globalChatInput");
+    if (chatInp) chatInp.value = tBox.value;
+    openChatDrawer();
   };
   const draftPrBtn = document.getElementById("draftIssueFromPrBtn");
   if (draftPrBtn) draftPrBtn.onclick = () => {
@@ -6011,34 +5988,35 @@ function initInteractiveChat(prefix) {
   });
 }
 
-initInteractiveChat("actions");
-initInteractiveChat("briefing");
-initInteractiveChat("pi");
+initInteractiveChat("global");
 
-// Global Chat button click handler: navigate to Actions tab or current tab chat and focus input
+const chatDrawerEl = document.getElementById("chatDrawer");
+function openChatDrawer() {
+  if (chatDrawerEl) {
+    chatDrawerEl.classList.add("open");
+    const inp = document.getElementById("globalChatInput");
+    if (inp) setTimeout(() => inp.focus(), 150);
+  }
+}
+function closeChatDrawer() {
+  if (chatDrawerEl) chatDrawerEl.classList.remove("open");
+}
+const chatDrawerCloseBtn = document.getElementById("chatDrawerClose");
+if (chatDrawerCloseBtn) chatDrawerCloseBtn.onclick = closeChatDrawer;
+
 const globalChatBtn = document.getElementById("globalChatBtn");
 if (globalChatBtn) {
   globalChatBtn.onclick = () => {
-    const activeTab = document.querySelector("#tabbar .tab.active");
-    const activeTabName = activeTab ? activeTab.dataset.tab : "actions";
-    let targetPrefix = "actions";
-    if (activeTabName === "briefing" || activeTabName === "pi") {
-      targetPrefix = activeTabName;
-    } else if (activeTabName !== "actions") {
-      const actionsTabBtn = document.querySelector('#tabbar .tab[data-tab="actions"]');
-      if (actionsTabBtn) actionsTabBtn.click();
-      targetPrefix = "actions";
-    }
-    const targetCard = document.getElementById(targetPrefix + "ChatCard");
-    const targetInput = document.getElementById(targetPrefix + "ChatInput");
-    if (targetCard) {
-      targetCard.scrollIntoView({behavior: "smooth", block: "start"});
-    }
-    if (targetInput) {
-      setTimeout(() => targetInput.focus(), 150);
+    if (chatDrawerEl && chatDrawerEl.classList.contains("open")) {
+      closeChatDrawer();
+    } else {
+      openChatDrawer();
     }
   };
 }
+
+const piOpenChatBtn = document.getElementById("piOpenChatBtn");
+if (piOpenChatBtn) piOpenChatBtn.onclick = openChatDrawer;
 </script>
 </body>
 </html>
