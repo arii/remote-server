@@ -905,9 +905,9 @@ ACTIONS = {
         "confirm": True,
         "risk": "danger",
         "steps": [
-            EXEC + ["git -c safe.directory=/srv/remote-server -C /srv/remote-server pull --ff-only && chmod +x /srv/remote-server/scripts/*.sh 2>/dev/null || true"],
-            EXEC + ["HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml up -d --build buttons"],
-            EXEC + ["for i in $(seq 1 30); do if curl -sf http://buttons:8000/buttons/api/status >/dev/null; then echo buttons up; exit 0; fi; sleep 2; done; HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml ps buttons; exit 1"],
+            EXEC + ["git -c safe.directory=/srv/remote-server -c core.hooksPath=/dev/null -C /srv/remote-server pull --ff-only && chmod +x /srv/remote-server/scripts/*.sh 2>/dev/null || true"],
+            EXEC + ["HOST_HOME=/home/ari HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml up -d --build buttons"],
+            EXEC + ["for i in $(seq 1 30); do if curl -sf http://buttons:8000/buttons/api/status >/dev/null; then echo buttons up; exit 0; fi; sleep 2; done; HOST_HOME=/home/ari HOME=/home/ari docker compose -f /srv/remote-server/docker-compose.yml ps buttons; exit 1"],
         ],
     },
     "recreate": {

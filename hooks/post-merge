@@ -43,7 +43,13 @@ if printf '%s\n' "$changed" | grep -Eq '^(buttons/|docker-compose\.yml|caddy/Cad
     echo "[post-merge] buttons changed, but refusing to rebuild from inside the buttons container — press Deploy buttons or run: docker compose up -d --build buttons"
   elif command -v docker >/dev/null 2>&1; then
     echo "[post-merge] buttons changed — rebuilding buttons container..."
-    docker compose up -d --build buttons \
+    COMPOSE_FILE="docker-compose.yml"
+    if [ -f /srv/remote-server/docker-compose.yml ]; then
+      COMPOSE_FILE="/srv/remote-server/docker-compose.yml"
+    elif [ -f /home/ari/remote-server/docker-compose.yml ]; then
+      COMPOSE_FILE="/home/ari/remote-server/docker-compose.yml"
+    fi
+    HOST_HOME=/home/ari HOME=/home/ari docker compose -f "$COMPOSE_FILE" up -d --build buttons \
       || echo "[post-merge] buttons rebuild failed (page may be stale)"
   else
     echo "[post-merge] buttons changed — docker not found; rebuild manually: docker compose up -d --build buttons"

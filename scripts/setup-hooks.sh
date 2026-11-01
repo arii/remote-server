@@ -14,8 +14,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TD_DIR="${TECH_DANCER_DIR:-$HOME/repos/tech-dancer}"
-BT_DIR="${BOOMTICK_DIR:-$HOME/repos/boomtick}"
+TD_DIR="${TECH_DANCER_DIR:-${HOST_HOME:-/home/ari}/repos/tech-dancer}"
+[ ! -d "$TD_DIR" ] && [ -d "/srv/repos/tech-dancer" ] && TD_DIR="/srv/repos/tech-dancer"
+BT_DIR="${BOOMTICK_DIR:-${HOST_HOME:-/home/ari}/repos/boomtick}"
+[ ! -d "$BT_DIR" ] && [ -d "/srv/repos/boomtick" ] && BT_DIR="/srv/repos/boomtick"
 CHECK=0
 [ "${1:-}" = "--check" ] && CHECK=1
 
