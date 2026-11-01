@@ -2139,6 +2139,11 @@ a { color: #8bf; }
 .jobtmpl .blabel { font-weight: 600; }
 .jobtmpl .bsub { font-size: 0.85em; color: var(--text-muted); margin: 0.2em 0 0.4em; }
 .jobtmpl button { width: auto; margin: 0.2em 0 0; }
+.jules-card-head { display: flex; justify-content: space-between; align-items: center; }
+.jules-card-body { font-size: 0.92em; margin-top: 0.3em; }
+.jules-session-row { border-top: 1px solid var(--border); padding: 0.4em 0; display: flex; flex-direction: column; gap: 0.2em; }
+.jules-session-head { display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
+.jules-session-meta { font-size: 0.85em; color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -2174,12 +2179,12 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="healthContainers" class="chips"><span class="spinner"></span> Checking containers…</div>
 </div>
 <div id="attention"><div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div><div id="attentionBody"><span class="spinner"></span> Loading briefing…</div></div>
-<div id="julesStatusSection" class="health-card" style="margin: 0.5em 0;">
-<div class="health-head" style="display:flex; justify-content:space-between; align-items:center;">
+<div id="julesStatusSection" class="health-card">
+<div class="health-head jules-card-head">
 <span>Agent Status: Jules <span class="forrepo" data-forrepo></span></span>
 <button id="refreshJulesCardBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.2em 0.6em;font-size:0.8em;">Refresh</button>
 </div>
-<div id="julesCardBody" style="font-size:0.92em; margin-top:0.3em;"><span class="spinner"></span> Loading Jules status…</div>
+<div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
 </div>
 <div id="buttons"><!--BUTTONS--></div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
@@ -3911,17 +3916,10 @@ async function refreshJulesStatusCard() {
   }
   ss.forEach(s => {
     const row = document.createElement("div");
-    row.style.borderTop = "1px solid var(--border)";
-    row.style.padding = "0.4em 0";
-    row.style.display = "flex";
-    row.style.flexDirection = "column";
-    row.style.gap = "0.2em";
+    row.className = "jules-session-row";
 
     const head = document.createElement("div");
-    head.style.display = "flex";
-    head.style.alignItems = "center";
-    head.style.gap = "0.5em";
-    head.style.flexWrap = "wrap";
+    head.className = "jules-session-head";
 
     const badge = document.createElement("span");
     const st = (s.state || "").toLowerCase();
@@ -3950,8 +3948,7 @@ async function refreshJulesStatusCard() {
     row.appendChild(head);
 
     const meta = document.createElement("div");
-    meta.style.fontSize = "0.85em";
-    meta.style.color = "var(--text-muted)";
+    meta.className = "jules-session-meta";
     let when = "";
     try { if (s.updated) when = new Date(s.updated).toLocaleString(); } catch (e) {}
     meta.textContent = (s.source ? s.source + " · " : "") +
