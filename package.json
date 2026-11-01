@@ -23,7 +23,11 @@
     "update:buttons": "git pull --ff-only && docker compose up -d --build buttons",
     "webhooks:check": "docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh --check",
     "webhooks:setup": "docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh",
-    "models:pull": "bash scripts/pull-models.sh"
+    "models:pull": "bash scripts/pull-models.sh",
+    "audit:fallow": "fallow"
+  },
+  "devDependencies": {
+    "fallow": "^3.35.0"
   },
   "version": "0.1.0"
 }
