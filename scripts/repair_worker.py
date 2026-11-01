@@ -327,6 +327,10 @@ def route_after_verify(state: AgentState) -> str:
 
 def build_repair_graph():
     """Construct and compile the LangGraph factory line state machine."""
+    if StateGraph is None:
+        logging.warning("langgraph is not installed. Full LangGraph factory line repair worker requires langgraph.")
+        return None
+
     workflow = StateGraph(AgentState)
 
     workflow.add_node("parse_issue_node", parse_issue_node)
@@ -386,6 +390,13 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
     }
 
     graph = build_repair_graph()
+    if graph is None:
+        print(
+            "Repair worker stub: langgraph is not installed on this system.\n"
+            "Full LangGraph factory line repair worker requires langgraph and ollama.",
+            file=sys.stderr,
+        )
+        return False
     try:
         final_state = graph.invoke(initial_state)
         return final_state.get("tests_passed", False)

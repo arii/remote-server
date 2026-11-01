@@ -130,6 +130,21 @@ def run_json(cmd, timeout):
         return None, raw, "output was not JSON"
 
 
+def fetch_pr_diff(pr_number: int, max_file_lines: int = 200) -> str:
+    """Fetch PR diff via gh CLI and pre-filter using context_filter.filter_diff()."""
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "diff", str(pr_number)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, text=True
+        )
+        if proc.returncode == 0 and proc.stdout:
+            return context_filter.filter_diff(proc.stdout, max_file_lines=max_file_lines)
+    except Exception:
+        pass
+    return ""
+
+
 def ci_summary(rollup):
     """(label, failing check names) from a gh statusCheckRollup list."""
     if rollup is None:
@@ -662,7 +677,6 @@ def analyze(data):
     return {
         "repo": REPO_KEY,
         "attention": attention, "prs": pr_infos,
-        "pr_list": [{"number": p["number"], "title": p["title"]} for p in pr_infos],
         "prs_err": data["prs_err"], "reviews_lines": reviews_lines,
         "reviews_err": {str(k): v for k, v in reviews_err.items()},
         "board": board_items, "board_lines": board_lines,
@@ -718,6 +732,8 @@ def build(data):
                       ("workflow-runs", "runs_raw")):
         raw = data[key]
         if raw:
+            if key == "runs_raw":
+                raw = context_filter.extract_ci_error_traces(raw)
             cleaned = context_filter.enforce_context_budget(raw, max_tokens=2000)
             raw_parts.append(f"### {name}\n{cleaned[:RAW_CAP]}")
     if data["reviews_raw_parts"]:
