@@ -202,6 +202,13 @@ services:
       # GitHub webhook HMAC secret (see .env.example). Empty/unset =
       # webhook endpoint refuses everything (fail closed).
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      NOTIFICATION_WEBHOOK_URL: ${NOTIFICATION_WEBHOOK_URL:-}
+      DIGEST_INTERVAL_HOURS: ${DIGEST_INTERVAL_HOURS:-12}
+      NOTIFY_EVENTS: ${NOTIFY_EVENTS:-ci_fail,jules,conflict}
+      NOTIFIER_INTERVAL_SECONDS: ${NOTIFIER_INTERVAL_SECONDS:-300}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
     restart: unless-stopped
