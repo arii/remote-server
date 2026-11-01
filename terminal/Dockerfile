@@ -70,6 +70,17 @@ RUN apt-get update \
 # System gitconfig: safe.directory = * for bind-mounted host checkouts (/srv/remote-server, /srv/repos/*).
 COPY gitconfig /etc/gitconfig
 
+# Custom ttyd index.html with takeover button: extract base index.html from ttyd source and inject takeover widget
+COPY takeover.html /tmp/takeover.html
+RUN mkdir -p /etc/ttyd \
+ && python3 -c "import urllib.request, gzip, re; \
+    data = urllib.request.urlopen('https://raw.githubusercontent.com/tsl0922/ttyd/${TTYD_VERSION}/src/html.h').read().decode('utf-8'); \
+    raw = bytes(int(b, 16) for b in re.findall(r'0x([0-9a-fA-F]{2})', data)); \
+    html = gzip.decompress(raw).decode('utf-8'); \
+    widget = open('/tmp/takeover.html').read(); \
+    open('/etc/ttyd/index.html', 'w').write(html.replace('</body>', widget + '</body>'))" \
+ && rm -f /tmp/takeover.html
+
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
 COPY config.kdl /root/.config/zellij/config.kdl
