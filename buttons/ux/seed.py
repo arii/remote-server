@@ -35,6 +35,9 @@ for name, files in (("demo-app", ["README.md", "main.py"]),
             ["git", "-c", "user.email=ux@example.com",
              "-c", "user.name=ux", "commit", "-qm", "seed"],
             cwd=d, check=False)
+        subprocess.run(
+            ["git", "remote", "add", "origin", f"https://github.com/example/{name}.git"],
+            cwd=d, check=False)
 
 entries = [
     {"kind": "system", "at": time.time() - 3600,

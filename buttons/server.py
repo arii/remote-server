@@ -2139,6 +2139,11 @@ a { color: #8bf; }
 .jobtmpl .blabel { font-weight: 600; }
 .jobtmpl .bsub { font-size: 0.85em; color: var(--text-muted); margin: 0.2em 0 0.4em; }
 .jobtmpl button { width: auto; margin: 0.2em 0 0; }
+.jules-card-head { display: flex; justify-content: space-between; align-items: center; }
+.jules-card-body { font-size: 0.92em; margin-top: 0.3em; }
+.jules-session-row { border-top: 1px solid var(--border); padding: 0.4em 0; display: flex; flex-direction: column; gap: 0.2em; }
+.jules-session-head { display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
+.jules-session-meta { font-size: 0.85em; color: var(--text-muted); }
 </style>
 </head>
 <body>
@@ -2174,6 +2179,13 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="healthContainers" class="chips"><span class="spinner"></span> Checking containers…</div>
 </div>
 <div id="attention"><div id="staleBar" style="display:none">Stack code updated since this page was built — tap Deploy buttons below to rebuild.</div><div id="attentionBody"><span class="spinner"></span> Loading briefing…</div></div>
+<div id="julesStatusSection" class="health-card">
+<div class="health-head jules-card-head">
+<span>Agent Status: Jules <span class="forrepo" data-forrepo></span></span>
+<button id="refreshJulesCardBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.2em 0.6em;font-size:0.8em;">Refresh</button>
+</div>
+<div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
+</div>
 <div id="buttons"><!--BUTTONS--></div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
@@ -2366,6 +2378,7 @@ function refreshProject() {
   });
   if (typeof refreshIssues === "function") refreshIssues();
   if (typeof refreshJulesSessions === "function") refreshJulesSessions();
+  if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 }
 const _pickerEl = document.getElementById("briefingRepo");
 if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
@@ -3362,13 +3375,21 @@ const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
 refreshBriefing();
 
-// Pi background runs: the POST returns an id immediately; this
-// polls /buttons/api/pi-progress/<id> and streams the live tail
-// into a <pre>, then calls onDone(result) once. One poll loop at
-// a time per button — starting a new run abandons the old loop.
+// Pi background runs: streams output directly into the slide-up
+// drawer (the way Jobs does) while updating inline status.
 let piPollToken = 0;
-async function pollPiProgress(id, pre, errEl, onDone, label) {
+let activePiRunId = null;
+async function pollPiProgress(id, pre, errEl, onDone, label, repo) {
   const token = ++piPollToken;
+  activePiRunId = id;
+  currentId = id;
+  lastRenderedOutput = null;
+  openDrawer();
+  stateEl.className = "running";
+  outEl.className = "running";
+  stateEl.textContent = "running: pi " + (label || "agent") + (repo ? " (" + repo + ")" : "");
+  setBusy(true);
+
   const tick = async () => {
     if (token !== piPollToken) return;
     let res;
@@ -3379,20 +3400,42 @@ async function pollPiProgress(id, pre, errEl, onDone, label) {
     }
     if (token !== piPollToken) return;
     if (!res || !res.ok) {
-      setErrorEl(errEl, (res && res.data && res.data.error) || "unreachable", label + " failed");
-      pre.remove();
+      setBusy(false);
+      activePiRunId = null;
+      stateEl.className = "fail";
+      outEl.className = "fail";
+      stateEl.textContent = "failed — " + label + " unreachable";
+      if (errEl) setErrorEl(errEl, (res && res.data && res.data.error) || "unreachable", label + " failed");
+      if (pre) pre.remove();
       return;
     }
     const d = res.data || {};
-    pre.textContent = d.output || "";
-    pre.scrollTop = pre.scrollHeight;
+    const text = d.output || "";
+    if (pre) {
+      pre.textContent = text;
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (text !== lastRenderedOutput) {
+      outEl.innerHTML = ansiToHtml(text);
+      lastRenderedOutput = text;
+    }
+    outEl.scrollTop = outEl.scrollHeight;
     if (d.done) {
-      pre.remove();
+      setBusy(false);
+      activePiRunId = null;
+      if (pre) pre.remove();
       if (d.error) {
-        setErrorEl(errEl, d.error, label + " failed");
+        stateEl.className = "fail";
+        outEl.className = "fail";
+        stateEl.textContent = "failed — " + d.error;
+        if (errEl) setErrorEl(errEl, d.error, label + " failed");
         return;
       }
-      onDone(d.result || {});
+      stateEl.className = "ok";
+      outEl.className = "";
+      stateEl.textContent = "done ✓ — pi " + (label || "agent");
+      if (typeof refreshLedger === "function") refreshLedger();
+      if (typeof onDone === "function") onDone(d.result || {});
       return;
     }
     setTimeout(tick, 2000);
@@ -3468,7 +3511,7 @@ if (suggestBtn) suggestBtn.onclick = async () => {
     return;
   }
   pollPiProgress(res.data.id, pre, suggestErrEl,
-    (result) => renderSuggestions(result, repo), "suggest");
+    (result) => renderSuggestions(result, repo), "suggest", repo);
 };
 
 // Ask Pi: open-ended instruction text box. Pi investigates
@@ -3557,7 +3600,7 @@ if (askBtn) askBtn.onclick = async () => {
   pollPiProgress(res.data.id, pre, askErr, (result) => {
     askBtn.disabled = false;
     renderAskResult({result: result}, repo);
-  }, "ask");
+  }, "ask", repo);
 };
 
 // Ledger view. Entry data is rendered with textContent only —
@@ -3846,7 +3889,80 @@ async function createProjectIssue() {
     btn.disabled = false;
   }
 }
+async function refreshJulesStatusCard() {
+  const el = document.getElementById("julesCardBody");
+  if (!el) return;
+  const repo = (typeof projectRepo === "function") ? projectRepo() : "tech-dancer";
+  const res = await fetchJson("/buttons/api/jules-sessions?repo=" + encodeURIComponent(repo));
+  const data = res.data || {};
+  if (!res.ok) {
+    el.innerHTML = '<span style="color:var(--danger)">Unavailable: ' + (data.error || res.status) + '</span>';
+    return;
+  }
+  el.innerHTML = "";
+  if (data.notice) {
+    const p = document.createElement("div");
+    p.style.color = "var(--text-muted)";
+    p.textContent = data.notice;
+    el.appendChild(p);
+  }
+  const ss = data.sessions || [];
+  if (!ss.length) {
+    const p = document.createElement("div");
+    p.style.color = "var(--text-muted)";
+    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
+    el.appendChild(p);
+    return;
+  }
+  ss.forEach(s => {
+    const row = document.createElement("div");
+    row.className = "jules-session-row";
+
+    const head = document.createElement("div");
+    head.className = "jules-session-head";
+
+    const badge = document.createElement("span");
+    const st = (s.state || "").toLowerCase();
+    let cls = "chip";
+    if (st.includes("progress") || st.includes("active") || st.includes("running")) {
+      cls += " chip-warn";
+    } else if (st.includes("complete") || st.includes("done") || st.includes("success")) {
+      cls += " chip-ok";
+    } else if (st.includes("fail") || st.includes("error")) {
+      cls += " chip-fail";
+    }
+    badge.className = cls;
+    badge.textContent = s.state || "unknown";
+    head.appendChild(badge);
+
+    const titleWrap = document.createElement("strong");
+    if (s.url) {
+      const a = document.createElement("a");
+      a.href = s.url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = s.title || s.id;
+      titleWrap.appendChild(a);
+    } else {
+      titleWrap.textContent = s.title || s.id;
+    }
+    head.appendChild(titleWrap);
+    row.appendChild(head);
+
+    const meta = document.createElement("div");
+    meta.className = "jules-session-meta";
+    let when = "";
+    try { if (s.updated) when = new Date(s.updated).toLocaleString(); } catch (e) {}
+    meta.textContent = (s.source ? s.source + " · " : "") +
+      (when ? "last updated " + when : "");
+    if (s.pr_url) {
+      meta.textContent += " · PR: " + s.pr_url.split("/").pop();
+    }
+    row.appendChild(meta);
+    el.appendChild(row);
+  });
+}
+
 async function refreshJulesSessions() {
+  refreshJulesStatusCard();
   const el = document.getElementById("julesSessions");
   const err = document.getElementById("julesErr");
   if (!el) return;
@@ -3937,6 +4053,8 @@ async function runPlan(plan, extra) {
   if (ci) ci.onclick = createProjectIssue;
   const rj = document.getElementById("refreshJules");
   if (rj) rj.onclick = refreshJulesSessions;
+  const rjc = document.getElementById("refreshJulesCardBtn");
+  if (rjc) rjc.onclick = refreshJulesStatusCard;
   const pia = document.getElementById("planIssueAuditBtn");
   if (pia) pia.onclick = () => runPlan("issue-audit");
   const pwa = document.getElementById("planWorkflowAuditBtn");
@@ -3986,6 +4104,8 @@ async function refreshStatus() {
     if (s.active && liveAttachedRun !== s.active) {
       liveAttachedRun = s.active;
       poll(s.active);
+    } else if (s.active_pi && activePiRunId !== s.active_pi.id) {
+      pollPiProgress(s.active_pi.id, null, null, null, s.active_pi.kind, s.active_pi.repo);
     }
     const upd = document.getElementById("liveUpdated");
     const pend = document.getElementById("livePending");
@@ -4082,6 +4202,7 @@ function renderHealth(h) {
   liveFetching = false;
 }
 refreshStatus();
+if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
@@ -4322,7 +4443,14 @@ class Handler(BaseHTTPRequestHandler):
             ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
             webhook_url = os.environ.get("NOTIFICATION_WEBHOOK_URL", "").strip()
             state = _load_notifier_state()
-            self._json({"active": active_id, "runs": recent,
+            active_pi = None
+            with pi_runs_lock:
+                for k, v in pi_runs.items():
+                    if not v.get("done"):
+                        active_pi = {"id": k, "kind": v.get("kind"), "repo": v.get("repo"),
+                                     "started_at": v.get("started_at")}
+                        break
+            self._json({"active": active_id, "active_pi": active_pi, "runs": recent,
                         "webhooks": hooks, "webhooks_pending": pending,
                         "stale_buttons": stale,
                         "health": _get_system_health(),
