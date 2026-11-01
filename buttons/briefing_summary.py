@@ -662,6 +662,7 @@ def analyze(data):
     return {
         "repo": REPO_KEY,
         "attention": attention, "prs": pr_infos,
+        "pr_list": [{"number": p["number"], "title": p["title"]} for p in pr_infos],
         "prs_err": data["prs_err"], "reviews_lines": reviews_lines,
         "reviews_err": {str(k): v for k, v in reviews_err.items()},
         "board": board_items, "board_lines": board_lines,

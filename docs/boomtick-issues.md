@@ -26,6 +26,9 @@ Verified against BoomTick `main` on 2026-10-29.
 - **Why it matters here:** the buttons preflight digest surfaces these as
   failures; after the patch, remote-server preflight degrades to the checks
   that exist (doctor, overlaps, merge simulation).
+- **Workaround in remote-server:** added `type-check` and `lint` scripts to
+  `package.json` and implemented `scripts/detect-antipatterns.mjs` so that
+  `td preflight` passes on `remote-server` with 0 failures.
 
 ### #1025 — Clarify repo override param description, surface errors, and make branch/event optional with null-safety in `repo_get_workflow_runs` & CI-logs tools
 - **State:** OPEN ([Issue #1025](https://github.com/arii/boomtick/issues/1025)).
@@ -51,6 +54,43 @@ Verified against BoomTick `main` on 2026-10-29.
 - **State:** OPEN ([Issue #1026](https://github.com/arii/boomtick/issues/1026)).
 - **Symptom:** Antigravity CLI and standard MCP clients reject 17 dot-notated tool registrations at startup (`violates ^[a-zA-Z0-9_-]{1,64}$`).
 - **Fix:** Canonicalize tool registrations to underscores or sanitize manifests.
+
+### #1027 — `td agent run-feedback-check` / `JulesFeedbackDaemon` fails on cross-repo sessions (GitHub 404) & >5 session batch search (Validation Failed)
+- **State:** OPEN ([Issue #1027](https://github.com/arii/boomtick/issues/1027)).
+- **Symptom:**
+  Running `td --json agent run-feedback-check` in `/srv/repos/tech-dancer` (triggered by the S5 buttons `nudge-agents` action) crashes with exit code 1:
+  ```
+  INFO:dev_tools.daemon:Starting Jules Feedback Daemon
+  INFO:dev_tools.daemon:Found 10 sessions
+  INFO:dev_tools.daemon:Performing batch PR search for 10 session IDs
+  WARNING:dev_tools.daemon:Batch PR search failed, will fallback to individual lookups: GitHub API Error: Validation Failed: [{"message": "More than five AND / OR / NOT operators were used.", "field": "q", "resource": "Search", "code": "invalid"}]
+  ...
+  INFO:dev_tools.daemon:Processing session 3095905648412883634
+  {
+    "status": "error",
+    "message": "Unexpected error in agent run-feedback-check: GitHub API Error: Not Found",
+    "code": 1
+  }
+  ```
+- **Causes:**
+  1. **Cross-repository PR lookup 404 (`cli/dev_tools/daemon.py` & `cli/dev_tools/orchestrator.py`):**
+     - `JulesClient.list_sessions()` lists all user Jules sessions globally across all repositories (e.g. `arii/remote-server`, `arii/tech-dancer`).
+     - In `Orchestrator.get_pr_for_session`, if a session has PR URL output (e.g., `https://github.com/arii/remote-server/pull/63`), it extracts only the numeric PR ID (`match.group(1)` -> `63`) without capturing the repository.
+     - `JulesFeedbackDaemon._get_pr_for_session` and `Orchestrator.trigger_jules_feedback` call `self.github.fetch_pr_details(prNumber)`. Since `fetch_pr_details` defaults to `target_repo = repo or self.repo`, and `td` was run from `tech-dancer` (`self.repo == "arii/tech-dancer"`), it calls `GET /repos/arii/tech-dancer/pulls/63`.
+     - PR #63 belongs to `arii/remote-server` and does not exist in `arii/tech-dancer`, returning HTTP 404 (`GitHub API Error: Not Found`).
+     - Furthermore, `daemon._process_session` does not catch or handle exceptions during `_get_pr_for_session` or when processing foreign-repo sessions, causing unhandled exceptions to crash the daemon command.
+  2. **GitHub Search API limit on boolean operators (`cli/dev_tools/daemon.py`):**
+     - `_pre_match_sessions_batch` builds `id_query = " OR ".join([f'"{sid}"' for sid in session_ids])`.
+     - When `len(session_ids) > 5` (default `limit=10` fetches 10 sessions), the query contains 9 `OR` operators. GitHub Search API strictly enforces a maximum of 5 boolean operators (`AND`, `OR`, `NOT`) per query, causing `GitHub API Error: Validation Failed: [{"message": "More than five AND / OR / NOT operators were used."}]`.
+- **Fix:**
+  1. In `cli/dev_tools/daemon.py`, chunk `session_ids` into batches of at most 5 IDs (e.g., `for chunk in [session_ids[i:i+5] for i in range(0, len(session_ids), 5)]`), and construct search queries with at most 4 `OR` operators each.
+  2. In `cli/dev_tools/orchestrator.py`, update `get_pr_for_session(session)` to extract both the repository and PR number:
+     ```python
+     # Extract repo and PR from output URL: https://github.com/owner/repo/pull/123
+     match = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", output["pullRequest"]["url"])
+     ```
+     Or filter sessions in `_process_session` so that only sessions belonging to the current `self.github.repo` (matching `sourceContext.source` or `outputs.pullRequest.url`) are processed by `fetch_pr_details` and `trigger_jules_feedback`.
+  3. In `cli/dev_tools/daemon.py`, wrap `_get_pr_for_session` and `trigger_jules_feedback` per-session lookups in try/except blocks, logging a warning and skipping foreign or deleted PRs rather than aborting the entire feedback check.
 
 ## Resolved (verified 2026-10-29)
 
