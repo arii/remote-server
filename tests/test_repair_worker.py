@@ -345,6 +345,7 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         s6 = {"tests_passed": False, "retry_count": 3}
         self.assertEqual(rw.route_after_verify(s6), "cleanup_node")
 
+    @unittest.skipIf(rw.StateGraph is None, "langgraph is not installed")
     @patch("scripts.repair_worker.create_pr_node")
     @patch("scripts.repair_worker.verify_code_node")
     @patch("scripts.repair_worker.ast_check_node")
@@ -407,6 +408,7 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         mock_verify.assert_called_once()
         mock_pr.assert_called_once()
 
+    @unittest.skipIf(rw.StateGraph is None, "langgraph is not installed")
     @patch("scripts.repair_worker.create_pr_node")
     @patch("scripts.repair_worker.verify_code_node")
     @patch("scripts.repair_worker.ast_check_node")
@@ -482,6 +484,7 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         mock_verify.assert_called_once()
         mock_pr.assert_called_once()
 
+    @unittest.skipIf(rw.StateGraph is None, "langgraph is not installed")
     @patch("scripts.repair_worker.create_pr_node")
     @patch("scripts.repair_worker.verify_code_node")
     @patch("scripts.repair_worker.ast_check_node")
