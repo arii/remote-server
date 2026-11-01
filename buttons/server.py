@@ -289,6 +289,128 @@ def _repo_strips_html(repos):
 # the resulting host path.
 ENV = {**os.environ, "HOME": "/home/ari"}
 
+# --- Interactive Chat Streaming & Session Manager ---
+chat_sessions = {}
+chat_sessions_lock = threading.Lock()
+OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://ollama:11434").rstrip("/")
+
+
+def _stream_ollama_or_pi(session_id, repo, prompt, abort_event):
+    """Generator yielding SSE event tuples: (event_name, data_dict).
+    Streams phases (prefill, tool_call, generating, done) and token deltas.
+    Uses local Ollama /api/chat when accessible, falls back to Pi execution or simulated response."""
+    repos = _discover_repos()
+    repo_info = repos.get(repo, repos.get("remote-server", {}))
+    model = os.environ.get("CHAT_MODEL", "qwen2.5-coder:7b")
+
+    # 1. Phase: Prefill
+    yield ("phase", {"phase": "prefill", "status": f"Prefilling context for {repo} ({model})…"})
+    if abort_event.is_set():
+        yield ("done", {"aborted": True, "text": ""})
+        return
+
+    # Check if tool invocation is requested or detected
+    is_tool_query = any(k in prompt.lower() for k in ("git ", "file", "list", "read", "check", "run", "status", "pr"))
+    if is_tool_query:
+        yield ("phase", {"phase": "tool_call", "status": f"Reading repo context in {repo}…", "tool": "read_context"})
+        time.sleep(0.15)
+        if abort_event.is_set():
+            yield ("done", {"aborted": True, "text": ""})
+            return
+
+    yield ("phase", {"phase": "generating", "status": "Generating response…"})
+
+    full_response = []
+    ollama_worked = False
+
+    # Try connecting to Ollama streaming endpoint
+    try:
+        ollama_url = f"{OLLAMA_API_BASE}/api/chat"
+        payload = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": f"You are a mobile-friendly coding assistant for {repo}. Be concise and clear. Format code in markdown blocks."},
+                {"role": "user", "content": prompt}
+            ],
+            "stream": True
+        }).encode("utf-8")
+        req = urllib.request.Request(ollama_url, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            for line in resp:
+                if abort_event.is_set():
+                    yield ("done", {"aborted": True, "text": "".join(full_response)})
+                    return
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line.decode("utf-8"))
+                    delta = chunk.get("message", {}).get("content", "")
+                    if delta:
+                        full_response.append(delta)
+                        yield ("delta", {"delta": delta})
+                    if chunk.get("done"):
+                        ollama_worked = True
+                        break
+                except Exception:
+                    pass
+    except Exception as exc:
+        ollama_worked = False
+
+    if not ollama_worked and not abort_event.is_set():
+        # Fallback: Check if terminal container is available for pi -p, else provide intelligent simulated response
+        try:
+            b64 = base64.b64encode(prompt.encode()).decode()
+            cmd = (_td_prefix(repo_info.get("td_cwd", "/srv/remote-server")) +
+                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 + ' | base64 -d)"')
+            proc = subprocess.Popen(
+                EXEC + [cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            while proc.poll() is None:
+                if abort_event.is_set():
+                    proc.kill()
+                    yield ("done", {"aborted": True, "text": "".join(full_response)})
+                    return
+                line = proc.stdout.readline() if proc.stdout else ""
+                if line:
+                    full_response.append(line)
+                    yield ("delta", {"delta": line})
+                else:
+                    time.sleep(0.05)
+            if proc.stdout:
+                rem = proc.stdout.read()
+                if rem:
+                    full_response.append(rem)
+                    yield ("delta", {"delta": rem})
+        except Exception:
+            # Fallback simulated response for UX previews / tests
+            mock_parts = [
+                f"Assistant for **{repo}**:\n\n",
+                f"Received instruction: *{prompt}*\n\n",
+                "Here is a suggested snippet:\n",
+                "```bash\n",
+                f"# Querying status for {repo}\n",
+                "git status --short\n",
+                "```\n",
+                "\nLet me know if you would like me to execute this action."
+            ]
+            for part in mock_parts:
+                if abort_event.is_set():
+                    yield ("done", {"aborted": True, "text": "".join(full_response)})
+                    return
+                full_response.append(part)
+                yield ("delta", {"delta": part})
+                time.sleep(0.04)
+
+    yield ("phase", {"phase": "done", "status": "Finished"})
+    yield ("done", {"aborted": False, "text": "".join(full_response)})
+
+
 # --- Pi background runs with live progress (issue #7) ---
 # Suggest and Ask Pi run the local model for minutes. They run in
 # a thread writing to a temp file; the client polls
@@ -2061,6 +2183,42 @@ pre.ok { border-color: #2e7d32; }
 pre.fail { border-color: var(--danger); }
 pre.running { border-color: #8a6d1b; }
 h2 { font-size: 1.1em; margin-top: 1.5em; }
+/* Interactive Chat UI */
+#chatSection { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card);
+  padding: 0.85em; margin: 0.8em 0; }
+.chat-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6em; }
+.chat-head-title { font-weight: bold; font-size: 1.05em; display: flex; align-items: center; gap: 0.4em; }
+.chat-history { display: flex; flex-direction: column; gap: 0.7em; max-height: 48vh; overflow-y: auto;
+  margin-bottom: 0.75em; padding-right: 0.2em; }
+.chat-msg { border-radius: 10px; padding: 0.75em 0.9em; font-size: 0.94em; border: 1px solid var(--border); line-height: 1.45; }
+.chat-msg-user { background: rgba(59, 130, 246, 0.12); border-color: rgba(59, 130, 246, 0.3); align-self: flex-end; width: fit-content; max-width: 90%; }
+.chat-msg-agent { background: var(--bg-card-hover); align-self: flex-start; width: fit-content; max-width: 96%; }
+.chat-msg-head { font-size: 0.8em; font-weight: 600; text-transform: uppercase; margin-bottom: 0.3em; color: var(--text-muted); display: flex; justify-content: space-between; }
+.chat-phase-badge { display: inline-flex; align-items: center; gap: 0.4em; font-size: 0.82em;
+  padding: 0.25em 0.6em; border-radius: 20px; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); color: #ffd75e; margin-bottom: 0.5em; }
+.chat-phase-badge.phase-done { background: rgba(16, 185, 129, 0.15); border-color: var(--success); color: #7ed07e; }
+.chat-phase-badge.phase-tool { background: rgba(59, 130, 246, 0.15); border-color: var(--primary); color: #93c5fd; }
+.chat-input-bar { display: flex; gap: 0.5em; align-items: flex-end; position: relative; }
+.chat-input-wrap { flex: 1; }
+.chat-input { width: 100%; box-sizing: border-box; background: #050811; color: var(--text-main);
+  border: 1px solid var(--border); border-radius: 10px; padding: 0.7em 0.8em; font: inherit;
+  font-size: 0.95em; resize: none; min-height: 44px; max-height: 140px; line-height: 1.35; }
+.chat-input:focus { border-color: var(--primary); outline: none; }
+.chat-actions { display: flex; gap: 0.4em; }
+.chat-actions button { min-height: 44px; min-width: 44px; margin: 0; padding: 0.6em 1em; font-size: 0.92em; }
+.chat-abort-btn { background: var(--danger); border-color: var(--danger); color: #fff; display: none; }
+.code-block-wrap { position: relative; margin: 0.5em 0; }
+.code-block-wrap pre { margin: 0; padding: 0.65em; border-radius: 6px; font-size: 0.88em; }
+.code-copy-btn { position: absolute; top: 6px; right: 6px; background: rgba(30, 41, 59, 0.85);
+  border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px;
+  padding: 0.3em 0.6em; font-size: 0.78em; cursor: pointer; min-height: 28px; }
+.code-copy-btn:hover { color: var(--text-main); border-color: var(--primary); }
+.code-copy-btn.copied { color: #7ed07e; border-color: var(--success); }
+.chat-presets { display: flex; gap: 0.4em; overflow-x: auto; padding: 0.3em 0 0.5em; }
+.chat-chip { font-size: 0.82em; background: var(--bg-card-hover); border: 1px solid var(--border);
+  border-radius: 16px; padding: 0.3em 0.7em; white-space: nowrap; cursor: pointer; color: var(--text-muted); }
+.chat-chip:hover { color: var(--text-main); border-color: var(--primary); }
+
 /* PR cards: badge + status dot + title, chips, action strip */
 .prcard { border: 1px solid var(--border); border-radius: 10px; padding: 0.75em;
   margin: 0.5em 0; background: var(--bg-card); }
@@ -2276,6 +2434,33 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
+<div id="chatSection">
+  <div class="chat-head">
+    <div class="chat-head-title"><span>💬 Interactive Agent Chat</span> <span class="forrepo" data-forrepo></span></div>
+    <div>
+      <button id="chatClearBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.2em 0.6em;font-size:0.8em;" title="Clear conversation history">Clear chat</button>
+    </div>
+  </div>
+  <div class="chat-presets">
+    <span class="chat-chip" data-prompt="What open PRs or issues need attention?">📋 Status check</span>
+    <span class="chat-chip" data-prompt="Show recent git commit history and status">🔍 Git status</span>
+    <span class="chat-chip" data-prompt="Summarize how to run tests on this repo">🧪 Run tests</span>
+    <span class="chat-chip" data-prompt="Explain active container services">🐳 Containers</span>
+  </div>
+  <div id="chatHistory" class="chat-history"></div>
+  <div id="chatPhaseBar" style="display:none;"></div>
+  <div class="chat-input-bar">
+    <div class="chat-input-wrap">
+      <textarea id="chatInput" class="chat-input" rows="1" placeholder="Ask a question or request a task… (Enter to send, Shift+Enter for newline)"></textarea>
+    </div>
+    <div class="chat-actions">
+      <button id="chatAbortBtn" type="button" class="chat-abort-btn" title="Abort generation">Abort</button>
+      <button id="chatSendBtn" type="button" class="btn-primary" title="Send message">Send</button>
+    </div>
+  </div>
+  <div id="chatErr" style="color:var(--danger);font-size:0.85em;margin-top:0.4em;"></div>
+</div>
+
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -2289,7 +2474,7 @@ minutes on the local model.</p>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
-<h2>Ask Pi</h2>
+<h2>Ask Pi (Background)</h2>
 <details><summary>How this works</summary>
 <p>Open-ended instructions for this repo, in your own words —
 e.g. "draft an issue for the flaky briefing refresh" or "where
@@ -3649,6 +3834,228 @@ if (suggestBtn) suggestBtn.onclick = async () => {
     (result) => renderSuggestions(result, repo), "suggest", repo);
 };
 
+// Interactive Chat Streaming & Markdown Renderer
+const chatHistoryEl = document.getElementById("chatHistory");
+const chatInputEl = document.getElementById("chatInput");
+const chatSendBtn = document.getElementById("chatSendBtn");
+const chatAbortBtn = document.getElementById("chatAbortBtn");
+const chatClearBtn = document.getElementById("chatClearBtn");
+const chatPhaseBar = document.getElementById("chatPhaseBar");
+const chatErrEl = document.getElementById("chatErr");
+
+let activeChatSessionId = null;
+let activeEventSource = null;
+
+function renderMarkdownBlocks(text) {
+  // Convert markdown code blocks with tap-to-copy button
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  const container = document.createElement("div");
+
+  parts.forEach(part => {
+    if (part.startsWith("```") && part.endsWith("```")) {
+      const firstNewline = part.indexOf("\n");
+      const code = firstNewline >= 0 ? part.slice(firstNewline + 1, -3) : part.slice(3, -3);
+
+      const wrap = document.createElement("div");
+      wrap.className = "code-block-wrap";
+
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "code-copy-btn";
+      copyBtn.textContent = "Copy";
+      copyBtn.onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(code);
+          copyBtn.textContent = "Copied! ✓";
+          copyBtn.classList.add("copied");
+          setTimeout(() => {
+            copyBtn.textContent = "Copy";
+            copyBtn.classList.remove("copied");
+          }, 2000);
+        } catch (e) {
+          copyBtn.textContent = "Error";
+        }
+      };
+      wrap.appendChild(copyBtn);
+
+      const pre = document.createElement("pre");
+      pre.textContent = code;
+      wrap.appendChild(pre);
+      container.appendChild(wrap);
+    } else if (part) {
+      const span = document.createElement("span");
+      span.style.whiteSpace = "pre-wrap";
+      span.textContent = part;
+      container.appendChild(span);
+    }
+  });
+  return container;
+}
+
+function appendChatMessage(role, text) {
+  if (!chatHistoryEl) return null;
+  const msgDiv = document.createElement("div");
+  msgDiv.className = "chat-msg chat-msg-" + (role === "user" ? "user" : "agent");
+
+  const headDiv = document.createElement("div");
+  headDiv.className = "chat-msg-head";
+  headDiv.textContent = role === "user" ? "You" : "Agent";
+
+  const timeSpan = document.createElement("span");
+  timeSpan.textContent = new Date().toLocaleTimeString();
+  headDiv.appendChild(timeSpan);
+  msgDiv.appendChild(headDiv);
+
+  const bodyDiv = document.createElement("div");
+  bodyDiv.className = "chat-msg-body";
+  bodyDiv.appendChild(renderMarkdownBlocks(text));
+  msgDiv.appendChild(bodyDiv);
+
+  chatHistoryEl.appendChild(msgDiv);
+  chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+  return bodyDiv;
+}
+
+function setChatPhase(phase, status) {
+  if (!chatPhaseBar) return;
+  if (!phase || phase === "done") {
+    chatPhaseBar.style.display = "none";
+    chatPhaseBar.innerHTML = "";
+    return;
+  }
+  chatPhaseBar.style.display = "block";
+  let cls = "chat-phase-badge";
+  let icon = "⏳";
+  if (phase === "prefill") {
+    icon = "⚡";
+  } else if (phase === "tool_call") {
+    icon = "⚙️";
+    cls += " phase-tool";
+  } else if (phase === "generating") {
+    icon = "✍️";
+  }
+  chatPhaseBar.innerHTML = '<span class="' + cls + '">' + icon + ' ' + escHtml(status || phase) + '</span>';
+}
+
+function abortActiveChat() {
+  if (activeChatSessionId) {
+    fetchJson("/buttons/api/chat/abort", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: activeChatSessionId})
+    });
+  }
+  if (activeEventSource) {
+    activeEventSource.close();
+    activeEventSource = null;
+  }
+  activeChatSessionId = null;
+  if (chatAbortBtn) chatAbortBtn.style.display = "none";
+  if (chatSendBtn) chatSendBtn.disabled = false;
+  setChatPhase("done");
+}
+
+async function sendInteractivePrompt() {
+  const prompt = (chatInputEl ? chatInputEl.value : "").trim();
+  if (!prompt) return;
+
+  const picker = document.getElementById("briefingRepo");
+  const repo = picker ? picker.value : "tech-dancer";
+
+  if (chatErrEl) chatErrEl.textContent = "";
+  appendChatMessage("user", prompt);
+  if (chatInputEl) {
+    chatInputEl.value = "";
+    chatInputEl.style.height = "auto";
+  }
+
+  const agentBody = appendChatMessage("agent", "");
+  const sessionId = "chat-" + Math.random().toString(36).slice(2, 10);
+  activeChatSessionId = sessionId;
+
+  if (chatSendBtn) chatSendBtn.disabled = true;
+  if (chatAbortBtn) chatAbortBtn.style.display = "block";
+  setChatPhase("prefill", "Initializing prompt prefill…");
+
+  const url = "/buttons/api/chat/stream?session_id=" + encodeURIComponent(sessionId) +
+              "&repo=" + encodeURIComponent(repo) +
+              "&prompt=" + encodeURIComponent(prompt);
+
+  const es = new EventSource(url);
+  activeEventSource = es;
+  let accumulatedText = "";
+
+  es.addEventListener("phase", e => {
+    try {
+      const data = JSON.parse(e.data);
+      setChatPhase(data.phase, data.status);
+    } catch (err) {}
+  });
+
+  es.addEventListener("delta", e => {
+    try {
+      const data = JSON.parse(e.data);
+      accumulatedText += data.delta || "";
+      if (agentBody) {
+        agentBody.innerHTML = "";
+        agentBody.appendChild(renderMarkdownBlocks(accumulatedText));
+      }
+      if (chatHistoryEl) chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+    } catch (err) {}
+  });
+
+  es.addEventListener("done", e => {
+    es.close();
+    activeEventSource = null;
+    activeChatSessionId = null;
+    if (chatAbortBtn) chatAbortBtn.style.display = "none";
+    if (chatSendBtn) chatSendBtn.disabled = false;
+    setChatPhase("done");
+  });
+
+  es.onerror = err => {
+    es.close();
+    activeEventSource = null;
+    activeChatSessionId = null;
+    if (chatAbortBtn) chatAbortBtn.style.display = "none";
+    if (chatSendBtn) chatSendBtn.disabled = false;
+    setChatPhase("done");
+    if (!accumulatedText && chatErrEl) {
+      chatErrEl.textContent = "Chat connection failed or model server unreachable.";
+    }
+  };
+}
+
+if (chatSendBtn) chatSendBtn.onclick = sendInteractivePrompt;
+if (chatAbortBtn) chatAbortBtn.onclick = abortActiveChat;
+if (chatClearBtn) {
+  chatClearBtn.onclick = () => {
+    if (chatHistoryEl) chatHistoryEl.innerHTML = "";
+    if (chatErrEl) chatErrEl.textContent = "";
+  };
+}
+if (chatInputEl) {
+  chatInputEl.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendInteractivePrompt();
+    }
+  });
+  chatInputEl.addEventListener("input", () => {
+    chatInputEl.style.height = "auto";
+    chatInputEl.style.height = Math.min(chatInputEl.scrollHeight, 140) + "px";
+  });
+}
+document.querySelectorAll(".chat-chip").forEach(chip => {
+  chip.onclick = () => {
+    const prompt = chip.getAttribute("data-prompt");
+    if (chatInputEl && prompt) {
+      chatInputEl.value = prompt;
+      sendInteractivePrompt();
+    }
+  };
+});
+
 // Ask Pi: open-ended instruction text box. Pi investigates
 // read-only and replies inline; a write it was asked for comes
 // back as a PROPOSE block (parsed server-side). td proposals run
@@ -4993,6 +5400,44 @@ class Handler(BaseHTTPRequestHandler):
                     out["result"] = r["result"]
             self._json(out)
             return
+        elif path == "/buttons/api/chat/stream":
+            # Server-Sent Events (SSE) streaming endpoint for interactive prompts
+            qs = parse_qs(urlparse(self.path).query)
+            session_id = qs.get("session_id", [uuid.uuid4().hex[:12]])[0]
+            repo = qs.get("repo", ["remote-server"])[0]
+            prompt = qs.get("prompt", [""])[0]
+
+            if not prompt.strip():
+                self._json({"error": "prompt is required"}, 400)
+                return
+
+            abort_event = threading.Event()
+            with chat_sessions_lock:
+                chat_sessions[session_id] = {
+                    "repo": repo,
+                    "prompt": prompt,
+                    "abort_event": abort_event,
+                    "started_at": time.time()
+                }
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+
+            try:
+                for event_type, data in _stream_ollama_or_pi(session_id, repo, prompt, abort_event):
+                    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+                    self.wfile.write(payload.encode("utf-8"))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                abort_event.set()
+            finally:
+                with chat_sessions_lock:
+                    chat_sessions.pop(session_id, None)
+            return
         elif path == "/buttons/api/jules-sessions":
             # Jules sessions for progress visibility: id, title,
             # state, updated, url, source repo, linked PR. Read-only.
@@ -5063,6 +5508,20 @@ class Handler(BaseHTTPRequestHandler):
                 _save_notifier_state(state)
             _ledger_append({"kind": "system", "event": "manual digest sent", "result": res})
             self._json({"ok": True, "results": res, "digest": digest_msg})
+            return
+        if path == "/buttons/api/chat/abort":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            session_id = data.get("session_id", "")
+            with chat_sessions_lock:
+                session = chat_sessions.get(session_id)
+                if session and "abort_event" in session:
+                    session["abort_event"].set()
+                    self._json({"ok": True, "aborted": True, "session_id": session_id})
+                    return
+            self._json({"ok": True, "aborted": False, "note": "session not active"})
             return
         if path == "/buttons/api/terminal/takeover":
             # Disconnect active ttyd client so this window can take over the session

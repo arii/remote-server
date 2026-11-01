@@ -63,7 +63,7 @@ Zero regressions. All tests must pass with returncode 0.
 
         # Once filled in, it parses cleanly
         filled = template_content.replace(
-            "- \n", "- `scripts/foo.py`\n"
+            "-\n", "- `scripts/foo.py`\n"
         ).replace(
             "```bash\n\n```", "```bash\npytest tests/\n```"
         )
