@@ -2722,6 +2722,8 @@ function friendlyError(msg) {
     return "td command failed in terminal container — check the terminal container logs or tap Refresh.";
   if (/JULES_API_KEY/.test(msg))
     return "JULES_API_KEY is not set — add it to .env to enable Jules features.";
+  if (/No such command ['"]?(?:jules|agent)['"]?/i.test(msg))
+    return "this td version can't list Jules sessions — rebuild the terminal for a newer td.";
   if (/Traceback \(most recent call last\)/i.test(msg) || /\[Errno \d+\]/.test(msg))
     return "server error encountered — check terminal container or tap Refresh.";
   return msg;
@@ -5892,6 +5894,7 @@ class Handler(BaseHTTPRequestHandler):
                    "echo '{\"sessions\": [], "
                    "\"notice\": \"JULES_API_KEY is unset — add it to "
                    ".env to see Jules sessions\"}'; else "
+                   "td --json agent list-sessions || "
                    "td --json jules list-sessions; fi")
             try:
                 out = _td_run(cmd, timeout=120,
@@ -5918,7 +5921,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"repo": repo, "sessions": sessions,
                             "notice": data.get("notice", "")})
             except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
+                err_msg = str(exc)
+                if "No such command" in err_msg:
+                    self._json({
+                        "repo": repo,
+                        "sessions": [],
+                        "notice": "this td version can't list Jules sessions — rebuild the terminal for a newer td"
+                    })
+                else:
+                    self._json({"error": err_msg[:500]}, 500)
             return
         else:
             self._json({"error": "not found"}, 404)
