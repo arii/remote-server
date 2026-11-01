@@ -1539,6 +1539,13 @@ JOB_TEMPLATES = {
         "needs_issues": True,
         "steps": [],
     },
+    # Local autonomous repair worker ("Local Jules"): fixes issues
+    # via local Ollama models in isolated git worktrees.
+    "local-repair": {
+        "goal": "Local autonomous repair on issues: {issues} ({repo})",
+        "needs_issues": True,
+        "steps": [],
+    },
     # Nudge is a job, not a button: the read-only session list
     # (the preview of what would be nudged) runs first, and the
     # write step waits for Approve. No blind-nudge path.
@@ -1734,9 +1741,11 @@ def _job_create(template, repo, pr=None, issues=None):
     plan = []
     if spec.get("needs_issues"):
         for n in issues:
+            label_text = f"Local repair on #{n}" if template == "local-repair" else f"Dispatch Jules on #{n} (label 'jules')"
+            kind_type = "local-repair" if template == "local-repair" else "label-issue"
             plan.append({
-                "label": f"Dispatch Jules on #{n} (label 'jules')",
-                "kind": "label-issue", "issue": n,
+                "label": label_text,
+                "kind": kind_type, "issue": n,
                 "write": True, "state": "pending",
                 "approved_at": None, "auto": False, "run_id": None,
                 "finished_at": None, "exit_code": None, "note": None,
@@ -3269,6 +3278,9 @@ const JOB_TEMPLATES = {
   "fix-issues": {label: "Fix issues via Jules",
     desc: "Pick issues; each gets one Approve tap, which labels it " +
       "'jules' and starts a Jules session. Sequential.",
+    needsIssues: true},
+  "local-repair": {label: "Local autonomous repair (Local Jules)",
+    desc: "Autonomous triage and repair for well-specified issues via local Ollama models in isolated worktrees.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -5474,6 +5486,62 @@ class Handler(BaseHTTPRequestHandler):
                                     "ok": ok})
                     self._json({"ok": ok, "state": st["state"],
                                 "error": err})
+                    return
+                if kind == "local-repair":
+                    # Synchronous execution of local repair worker in terminal container
+                    repos = _discover_repos()
+                    info = repos.get(job["repo"])
+                    if not info:
+                        self._json({"error": "unknown repo"}, 400)
+                        return
+                    repair_cmd = (
+                        f"python3 /srv/remote-server/scripts/repair_worker.py "
+                        f"--repo-dir {shlex.quote(info['td_cwd'])} "
+                        f"--issue {shlex.quote(str(st['issue']))} "
+                        f"--repo-gh {shlex.quote(info['gh'])} "
+                        f"--publish-pr"
+                    )
+                    # Run repair worker asynchronously via allowlisted run runner with live output
+                    step_cmd = EXEC + [_td_prefix(info["td_cwd"]) + repair_cmd]
+                    with runs_lock:
+                        if active_id is not None:
+                            self._json({"error": "a run is already in progress"}, 409)
+                            return
+                        run_id = uuid.uuid4().hex[:12]
+                        now = time.time()
+                        run = {"id": run_id, "action": "local-repair", "repo": job["repo"], "done": False,
+                               "exit_code": None, "output": "",
+                               "seq": len(runs), "started_at": now,
+                               "finished_at": None, "last_output_at": now,
+                               "step_index": 1, "step_total": 1,
+                               "current_step": "local-repair"}
+                        runs[run_id] = run
+                        active_id = run_id
+                        st["state"] = "running"
+                        st["run_id"] = run_id
+                        _jobs_save()
+
+                    def _run_repair_job(r_id=run_id, r_spec=step_cmd, r_repo=job["repo"]):
+                        r_run = runs[r_id]
+                        def _cb(text):
+                            with runs_lock:
+                                _append(r_run, text)
+                        try:
+                            code = _run_step(r_spec, _cb)
+                        except Exception as exc:
+                            with runs_lock:
+                                _append(r_run, f"error: {exc}\n")
+                            code = 1
+                        with runs_lock:
+                            r_run["exit_code"] = code
+                            r_run["done"] = True
+                            r_run["finished_at"] = time.time()
+                        _finish_run(r_id, "local-repair", r_repo, r_run)
+
+                    threading.Thread(target=_run_repair_job, daemon=True).start()
+                    _ledger_append({"kind": "job", "job": jid, "step": step,
+                                    "event": "local repair started", "run": run_id})
+                    self._json({"run_id": run_id})
                     return
                 if kind == "label-issue":
                     # Synchronous: label the issue 'jules' to start
