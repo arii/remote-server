@@ -494,10 +494,12 @@ def analyze(data):
         if draft:
             continue
         if is_conflict:
-            attention.append((0, f"{label} — conflicted with base"))
+            attention.append((0, f"{label} — conflicted with base",
+                             f"<!-- action:update pr:{num} -->"))
         elif ci == "failing":
             attention.append((1, f"{label} — CI failing"
-                             + (f": {', '.join(failing[:3])}" if failing else "")))
+                             + (f": {', '.join(failing[:3])}" if failing else ""),
+                             f"<!-- action:fix-ci pr:{num} -->"))
         elif review == "CHANGES_REQUESTED":
             item = f"{label} — changes requested"
             if requested:
@@ -505,12 +507,16 @@ def analyze(data):
                 item += f" by @{user}"
                 if body:
                     item += f": '{body}'"
-            attention.append((2, item))
+            attention.append((2, item, f"<!-- action:review pr:{num} -->"))
         elif stale:
-            attention.append((3, f"{label} — stale (updated {updated_day})"))
+            attention.append((3, f"{label} — stale (updated {updated_day})",
+                             f"<!-- action:review pr:{num} -->"))
     # Rank order, not PR-list order: conflicts before CI before
     # reviews before stale, regardless of which PR came first.
-    attention = [text for _, text in sorted(attention)]
+    attention_ranked = sorted(attention, key=lambda x: x[0])
+    attention = [t[1] for t in attention_ranked]
+    attention_with_markers = [(t[1], t[2] if len(t) > 2 else "")
+                              for t in attention_ranked]
 
     reviews_lines = []
     reviews = data["reviews"]
@@ -676,7 +682,9 @@ def analyze(data):
 
     return {
         "repo": REPO_KEY,
-        "attention": attention, "prs": pr_infos,
+        "attention": attention,
+        "attention_with_markers": attention_with_markers,
+        "prs": pr_infos,
         "prs_err": data["prs_err"], "reviews_lines": reviews_lines,
         "reviews_err": {str(k): v for k, v in reviews_err.items()},
         "board": board_items, "board_lines": board_lines,
@@ -692,9 +700,9 @@ def analyze(data):
     }
 
 
-def build(data):
+def build(data, analysis=None):
     """Return (briefing text, attention items, raw appendix text)."""
-    a = analyze(data)
+    a = analysis if analysis is not None else analyze(data)
     lines = [f"# Briefing {REPO_GH} {date.today().isoformat()}", ""]
     lines.append("## Needs attention")
     if a["attention"]:
@@ -777,11 +785,12 @@ def main(argv):
               file=sys.stderr)
         return 2
     data = fetch()
+    analysis = analyze(data)
     if briefing_json:
-        print(json.dumps(analyze(data)))
+        print(json.dumps(analysis))
         # Same exit rule as --briefing: 0 if a main source worked.
         return 0 if (data["pr_list"] or data["board"]) else 1
-    text, attention, raw_text = build(data)
+    text, attention, raw_text = build(data, analysis=analysis)
     if briefing:
         print(text)
         # Exit 0 if at least one main source worked; 1 if nothing did.
@@ -789,18 +798,20 @@ def main(argv):
     import os
     os.makedirs(plan_dir, exist_ok=True)
     path = os.path.join(plan_dir, f"{date.today().isoformat()}-briefing-plan.md")
+    attn_items = analysis.get("attention_with_markers") or [(it, "") for it in attention]
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
         if not text.endswith("\n\n"):
             f.write("\n")
         f.write("## Next actions\n")
-        if attention:
-            for item in attention:
-                f.write(f"- [ ] {item}\n")
+        if attn_items:
+            for item, marker in attn_items:
+                marker_str = f" {marker}" if marker else ""
+                f.write(f"- [ ] {item}{marker_str}\n")
         else:
             f.write("- [ ] No action needed — re-run the briefing "
                     "after the next change\n")
-        f.write("- [ ] Re-run the briefing after acting\n")
+        f.write("- [ ] Re-run the briefing after acting <!-- action:briefing-td -->\n")
         f.write("\n## Raw output\n\n")
         f.write(raw_text)
         f.write("\n")

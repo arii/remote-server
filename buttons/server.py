@@ -1180,9 +1180,7 @@ ACTIONS = {
         "steps": [
             EXEC + [TD + "mkdir -p .agents/plans && "
                     "python3 /srv/remote-server/buttons/briefing_summary.py "
-                    "--briefing > .agents/plans/$(date +%F)-briefing-plan.md "
-                    "2>&1; "
-                    "echo \"wrote .agents/plans/$(date +%F)-briefing-plan.md\"; "
+                    "--plan-dir .agents/plans && "
                     "git status --short .agents/plans/"],
         ],
     },
@@ -1738,10 +1736,83 @@ def _job_after_step(job):
     """End the job if the plan reached a terminal state.
     jobs_lock held."""
     states = [s["state"] for s in job["plan"]]
-    if all(s == "done" for s in states):
-        _job_end(job, "done")
+    if all(s in ("done", "declined") for s in states):
+        if all(s == "declined" for s in states):
+            _job_end(job, "declined")
+        else:
+            _job_end(job, "done")
     elif any(s == "failed" for s in states):
         _job_end(job, "failed")
+
+
+def _execute_job_step(job, idx, st):
+    """Execute a single job step synchronously or start async run.
+    Called with jobs_lock NOT held."""
+    kind = st.get("kind")
+    action = st.get("action")
+    pr_num = st.get("pr", job.get("pr"))
+    if kind == "pr-action":
+        try:
+            _pr_action(pr_num, action, job["repo"], _discover_repos())
+            ok, err = True, None
+        except ValueError as exc:
+            ok, err = False, str(exc)
+        except Exception as exc:
+            ok, err = False, str(exc)[:500]
+        with jobs_lock:
+            st["state"] = "done" if ok else "failed"
+            st["finished_at"] = time.time()
+            st["exit_code"] = 0 if ok else 1
+            st["note"] = None if ok else err
+            _job_after_step(job)
+            _jobs_save()
+        _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                        "event": "step " + ("done" if ok else "failed"),
+                        "ok": ok})
+        return ok, None
+    elif kind == "label-issue":
+        try:
+            _label_issue_jules(job["repo"], st["issue"], _discover_repos())
+            ok, err = True, None
+        except ValueError as exc:
+            ok, err = False, str(exc)
+        except Exception as exc:
+            ok, err = False, str(exc)[:500]
+        with jobs_lock:
+            st["state"] = "done" if ok else "failed"
+            st["finished_at"] = time.time()
+            st["exit_code"] = 0 if ok else 1
+            st["note"] = None if ok else err
+            _job_after_step(job)
+            _jobs_save()
+        _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                        "event": "dispatched Jules on #" + str(st.get("issue"))
+                        if ok else "dispatch failed", "ok": ok})
+        return ok, None
+    elif kind == "info":
+        with jobs_lock:
+            st["state"] = "done"
+            st["finished_at"] = time.time()
+            st["exit_code"] = 0
+            _job_after_step(job)
+            _jobs_save()
+        _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                        "event": "step info-done", "ok": True})
+        return True, None
+    else:  # action
+        run_id, err = _start_run(action, job["repo"])
+        with jobs_lock:
+            if err:
+                st["state"] = "pending"
+                st["auto"] = False
+                st["note"] = err
+                _jobs_save()
+                return False, err
+            st["run_id"] = run_id
+            _jobs_save()
+        _ledger_append({"kind": "job", "job": job["id"], "step": idx,
+                        "event": "step started", "run": run_id})
+        return True, run_id
 
 
 def _job_advance(job):
@@ -1755,50 +1826,109 @@ def _job_advance(job):
                         if s["state"] == "pending"), None)
             if idx is None:
                 return
-            if any(s["state"] != "done" for s in job["plan"][:idx]):
+            if any(s["state"] not in ("done", "declined") for s in job["plan"][:idx]):
                 return
             st = job["plan"][idx]
-            if st.get("write"):
+            if st.get("write") and not st.get("approved"):
                 return  # approval gate: waits for a tap
             st["state"] = "running"
-            st["auto"] = True
-            kind, action = st["kind"], st["action"]
-        if kind == "pr-action":
-            # Synchronous: runs inline, then advance to the next step.
-            try:
-                _pr_action(job["pr"], action, job["repo"],
-                           _discover_repos())
-                ok, err = True, None
-            except ValueError as exc:
-                ok, err = False, str(exc)
-            except Exception as exc:
-                ok, err = False, str(exc)[:500]
-            with jobs_lock:
-                st["state"] = "done" if ok else "failed"
-                st["finished_at"] = time.time()
-                st["exit_code"] = 0 if ok else 1
-                st["note"] = None if ok else err
-                _job_after_step(job)
-                _jobs_save()
-            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
-                            "event": "step auto-" + ("done" if ok else "failed"),
-                            "ok": ok})
-        else:
-            # Async action: start the run; the client polls it and
-            # reports step-done, which advances the plan again.
-            run_id, err = _start_run(action, job["repo"])
-            with jobs_lock:
-                if err:
-                    st["state"] = "pending"
-                    st["auto"] = False
-                    st["note"] = err
-                    _jobs_save()
-                    return
-                st["run_id"] = run_id
-                _jobs_save()
-            _ledger_append({"kind": "job", "job": job["id"], "step": idx,
-                            "event": "step auto-started", "run": run_id})
+            st["auto"] = not st.get("approved")
+        ok, res = _execute_job_step(job, idx, st)
+        if not ok or isinstance(res, str):
+            # Async run started or step failed; stop advance loop
             return
+
+
+def _parse_plan_markdown(content, repo):
+    """Parse markdown plan content into job steps.
+    Extracts checklist items (- [ ] ...) and machine-readable markers:
+    <!-- action:<act> [pr:<num>] [issue:<num>] -->
+    Returns list of step dicts."""
+    steps = []
+    # Marker regex: <!-- action:(\S+)(?:\s+pr:(\d+))?(?:\s+issue:(\d+))? -->
+    marker_re = re.compile(r"<!--\s*action:([A-Za-z0-9_-]+)(?:\s+pr:(\d+))?(?:\s+issue:(\d+))?\s*-->")
+    for line in content.splitlines():
+        line = line.strip()
+        if not (line.startswith("- [ ]") or line.startswith("- [x]")):
+            continue
+        text = line[5:].strip()
+        m = marker_re.search(text)
+        action_name = None
+        pr_num = None
+        issue_num = None
+        if m:
+            action_name = m.group(1)
+            if m.group(2):
+                pr_num = int(m.group(2))
+            if m.group(3):
+                issue_num = int(m.group(3))
+            clean_label = marker_re.sub("", text).strip()
+        else:
+            clean_label = text
+
+        step = {
+            "label": clean_label or "Step",
+            "state": "pending",
+            "approved_at": None,
+            "auto": False,
+            "run_id": None,
+            "finished_at": None,
+            "exit_code": None,
+            "note": None,
+        }
+
+        if action_name in ("fix-ci", "update", "merge"):
+            step["kind"] = "pr-action"
+            step["action"] = action_name
+            step["pr"] = pr_num
+            step["write"] = True
+        elif action_name == "label-issue" or issue_num is not None:
+            step["kind"] = "label-issue"
+            step["issue"] = issue_num
+            step["write"] = True
+        elif action_name in ("nudge-agents",):
+            step["kind"] = "action"
+            step["action"] = action_name
+            step["write"] = True
+        elif action_name in ("briefing-td", "warm-context", "preflight", "sync-agents"):
+            step["kind"] = "action"
+            step["action"] = action_name
+            step["write"] = False
+        elif action_name == "review" and pr_num:
+            step["kind"] = "action"
+            step["action"] = "briefing-td"
+            step["write"] = False
+        else:
+            # Informational / read-only step without a dedicated executable action
+            step["kind"] = "info"
+            step["action"] = None
+            step["write"] = False
+        steps.append(step)
+    return steps
+
+
+def _job_create_from_plan(content, repo, plan_path=""):
+    """Create a job directly from markdown plan content."""
+    repos = _discover_repos()
+    if repo not in repos:
+        return None, "unknown repo"
+    plan_steps = _parse_plan_markdown(content, repo)
+    if not plan_steps:
+        return None, "no checklist items found in plan"
+    jid = uuid.uuid4().hex[:12]
+    now = time.time()
+    goal = f"Execute plan {plan_path} ({repo})".strip() if plan_path else f"Execute plan ({repo})"
+    job = {"id": jid, "template": "plan", "goal": goal,
+           "repo": repo, "plan_path": plan_path, "plan": plan_steps,
+           "approvals": [], "state": "active", "outcome": None,
+           "created_at": now, "ended_at": None}
+    with jobs_lock:
+        jobs[jid] = job
+        _jobs_save()
+    _ledger_append({"kind": "job", "job": jid, "template": "plan",
+                    "repo": repo, "event": "created"})
+    _job_advance(job)
+    return job, None
 
 
 def _job_create(template, repo, pr=None, issues=None):
@@ -1997,16 +2127,16 @@ def run_action(run_id, action, repo="tech-dancer"):
             if len(step) == len(EXEC) + 1 and step[:len(EXEC)] == EXEC \
                     and step[-1].startswith(TD):
                 cmd = step[-1][len(TD):]
-                if action in ("briefing-td", "create-plan"):
-                    # The cwd alone does not pick the repo: the
-                    # summarizer's gh api paths need --repo and
-                    # --gh (it no longer carries a repo table).
-                    # Insert into the python invocation (not the
-                    # end: create-plan's command continues after it).
+                if action == "briefing-td":
                     cmd = cmd.replace(
                         "briefing_summary.py --briefing",
                         f"briefing_summary.py --briefing --repo {repo} "
                         f"--gh {repos[repo]['gh']}", 1)
+                elif action == "create-plan":
+                    if "briefing_summary.py --plan-dir .agents/plans" in cmd:
+                        cmd = cmd.replace(
+                            "briefing_summary.py --plan-dir .agents/plans",
+                            f"briefing_summary.py --plan-dir .agents/plans --repo {repo} --gh {repos[repo]['gh']}", 1)
                 rewritten.append(EXEC + [prefix + cmd])
             else:
                 rewritten.append(step)
@@ -3614,6 +3744,31 @@ function renderJobCard(j) {
   m.textContent = j.repo + " · " + done + "/" + j.steps.length + " steps" +
     (j.state === "terminal" ? " · " + j.outcome : " · active");
   card.appendChild(m);
+
+  // Consolidated approval card for write steps if multiple or write steps present
+  const pendingWrites = j.steps.map((s, idx) => ({s, idx}))
+    .filter(item => item.s.write && item.s.state === "pending");
+  if (j.state === "active" && pendingWrites.length > 0) {
+    const banner = document.createElement("div");
+    banner.className = "consolidated-approval";
+    banner.style.padding = "0.5em 0.8em";
+    banner.style.margin = "0.5em 0";
+    banner.style.border = "1px solid var(--primary)";
+    banner.style.borderRadius = "6px";
+    banner.style.background = "#14223d";
+    const btext = document.createElement("span");
+    btext.style.fontWeight = "bold";
+    btext.textContent = `${pendingWrites.length} write action${pendingWrites.length > 1 ? 's' : ''} require approval: `;
+    const bbtn = document.createElement("button");
+    bbtn.textContent = "Approve all write steps";
+    bbtn.style.width = "auto";
+    bbtn.style.margin = "0 0 0 0.5em";
+    bbtn.onclick = () => jobApproveAll(j.id);
+    banner.appendChild(btext);
+    banner.appendChild(bbtn);
+    card.appendChild(banner);
+  }
+
   j.steps.forEach((s, i) => {
     const row = document.createElement("div");
     row.className = "jobstep";
@@ -3625,7 +3780,7 @@ function renderJobCard(j) {
     row.appendChild(badge);
     row.appendChild(lab);
     if (j.state === "active" && s.state === "pending" &&
-        j.steps.slice(0, i).every(p => p.state === "done")) {
+        j.steps.slice(0, i).every(p => p.state === "done" || p.state === "declined")) {
       const acts = document.createElement("span");
       acts.className = "sactions";
       const ok = document.createElement("button");
@@ -3637,10 +3792,31 @@ function renderJobCard(j) {
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(ok); acts.appendChild(no);
       row.appendChild(acts);
+    } else if (j.state === "active" && s.state === "pending" && s.write) {
+      // Allow declining individual write steps even ahead of turn
+      const acts = document.createElement("span");
+      acts.className = "sactions";
+      const no = document.createElement("button");
+      no.textContent = "Decline";
+      no.className = "btn-ghost";
+      no.onclick = () => jobDecline(j.id, i);
+      acts.appendChild(no);
+      row.appendChild(acts);
     }
     card.appendChild(row);
   });
   return card;
+}
+async function jobApproveAll(id) {
+  jobErr("");
+  const res = await fetchJson("/buttons/api/jobs/" + id + "/approve",
+    {method: "POST", headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({approve_all: true})});
+  if (!res.ok) {
+    jobErr("Approve all failed: " + (res.data.error || res.status));
+    return;
+  }
+  refreshJobs();
 }
 async function jobApprove(id, step) {
   jobErr("");
@@ -4873,9 +5049,94 @@ async function runPlan(plan, extra) {
     p.textContent = "Plan written to: " + data.plan_path;
     out.appendChild(p);
   }
+  if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
+    const runBtn = document.createElement("button");
+    runBtn.textContent = "Run as job";
+    runBtn.style.margin = "0.5em 0";
+    runBtn.onclick = async () => {
+      runBtn.disabled = true;
+      runBtn.textContent = "Starting job…";
+      const jres = await fetchJson("/buttons/api/jobs", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          repo: projectRepo(),
+          plan_content: data.output,
+          plan_path: data.plan_path || ""
+        })
+      });
+      if (!jres.ok) {
+        setErrorEl(err, jres.data.error || jres.status, "could not start job");
+        runBtn.disabled = false;
+        runBtn.textContent = "Run as job";
+        return;
+      }
+      const job = jres.data.job;
+      runBtn.textContent = "Job started!";
+      // Render live interactive checklist and start polling
+      renderPlanLiveChecklist(job, out);
+      pollPlanJob(job.id, out);
+      if (typeof refreshJobs === "function") refreshJobs();
+    };
+    out.appendChild(runBtn);
+  }
   const pre = document.createElement("pre");
+  pre.id = "planRawOutput";
   pre.textContent = data.output || "(empty)";
   out.appendChild(pre);
+}
+function renderPlanLiveChecklist(job, container) {
+  let box = document.getElementById("planLiveBox");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "planLiveBox";
+    box.style.border = "1px solid var(--border)";
+    box.style.borderRadius = "8px";
+    box.style.padding = "0.8em";
+    box.style.margin = "0.5em 0";
+    box.style.background = "#0e1726";
+    container.insertBefore(box, container.querySelector("pre"));
+  }
+  box.innerHTML = "";
+  const h = document.createElement("div");
+  h.style.fontWeight = "bold";
+  h.style.marginBottom = "0.4em";
+  h.textContent = `Job ${job.id} (${job.state}${job.outcome ? ' - ' + job.outcome : ''}):`;
+  box.appendChild(h);
+  (job.plan || []).forEach(st => {
+    const item = document.createElement("div");
+    item.style.display = "flex";
+    item.style.alignItems = "center";
+    item.style.gap = "0.5em";
+    item.style.padding = "0.2em 0";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.disabled = true;
+    cb.checked = st.state === "done";
+    const badge = document.createElement("span");
+    badge.className = "st " + st.state;
+    badge.textContent = st.state;
+    const txt = document.createElement("span");
+    txt.textContent = st.label;
+    item.appendChild(cb);
+    item.appendChild(badge);
+    item.appendChild(txt);
+    box.appendChild(item);
+  });
+}
+function pollPlanJob(jid, container) {
+  let timer = null;
+  const tick = async () => {
+    const res = await fetchJson("/buttons/api/jobs/" + jid);
+    if (res.ok && res.data && res.data.job) {
+      renderPlanLiveChecklist(res.data.job, container);
+      if (res.data.job.state === "terminal") {
+        clearInterval(timer);
+        return;
+      }
+    }
+  };
+  timer = setInterval(tick, 2000);
 }
 (function wireProjectTab() {
   const rwh = document.getElementById("refreshWorkflowHealthBtn");
@@ -6357,17 +6618,32 @@ class Handler(BaseHTTPRequestHandler):
             return
         # --- Agent jobs ---
         if path == "/buttons/api/jobs":
-            # POST: create a job from a template.
+            # POST: create a job from a template or from a plan.
             try:
                 data = json.loads(body) if body else {}
             except Exception:
                 data = {}
             repos = _discover_repos()
             repo = data.get("repo", _default_repo(repos))
-            pr = data.get("pr")
-            issues = data.get("issues")
-            job, err = _job_create(data.get("template"), repo, pr,
-                                   issues)
+            if data.get("plan_content"):
+                job, err = _job_create_from_plan(
+                    data["plan_content"], repo, data.get("plan_path", ""))
+            elif data.get("plan_path"):
+                plan_p = data["plan_path"]
+                # Resolve relative to repo dir if needed
+                full_path = plan_p if os.path.isabs(plan_p) else os.path.join(repos.get(repo, {}).get("path", ""), plan_p)
+                try:
+                    with open(full_path, "r", encoding="utf-8") as pf:
+                        pcontent = pf.read()
+                    job, err = _job_create_from_plan(pcontent, repo, plan_p)
+                except Exception as exc:
+                    self._json({"error": f"could not read plan file: {exc}"}, 400)
+                    return
+            else:
+                pr = data.get("pr")
+                issues = data.get("issues")
+                job, err = _job_create(data.get("template"), repo, pr,
+                                       issues)
             if err:
                 self._json({"error": err}, 400)
                 return
@@ -6387,7 +6663,25 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 data = {}
             step = data.get("step")
+            approve_all = data.get("approve_all", False)
             if sub == "approve":
+                if approve_all:
+                    # Approve all write steps that are pending (or will become pending)
+                    with jobs_lock:
+                        if job["state"] != "active":
+                            self._json({"error": "job not active"}, 409)
+                            return
+                        now = time.time()
+                        for i, st in enumerate(job["plan"]):
+                            if st.get("write") and st["state"] == "pending":
+                                st["approved"] = True
+                                job["approvals"].append(
+                                    {"step": i, "decision": "approved", "at": now})
+                        _jobs_save()
+                    _job_advance(job)
+                    self._json({"ok": True, "approved_all": True})
+                    return
+
                 with jobs_lock:
                     if not isinstance(step, int) or isinstance(step, bool) \
                             or not 0 <= step < len(job["plan"]):
@@ -6398,7 +6692,7 @@ class Handler(BaseHTTPRequestHandler):
                             or st["state"] != "pending":
                         self._json({"error": "step not pending"}, 409)
                         return
-                    if any(p["state"] != "done"
+                    if any(p["state"] not in ("done", "declined")
                            for p in job["plan"][:step]):
                         self._json({"error": "earlier steps not done"},
                                    409)
@@ -6408,76 +6702,15 @@ class Handler(BaseHTTPRequestHandler):
                     job["approvals"].append(
                         {"step": step, "decision": "approved",
                          "at": st["approved_at"]})
-                    kind = st["kind"]
-                if kind == "pr-action":
-                    # Synchronous: gates re-checked inside _pr_action.
-                    try:
-                        _pr_action(job["pr"], st["action"], job["repo"],
-                                   _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step, "event": "step done"
-                                    if ok else "step failed",
-                                    "ok": ok})
-                    self._json({"ok": ok, "state": st["state"],
-                                "error": err})
+                ok, res = _execute_job_step(job, step, st)
+                if not ok and isinstance(res, str):
+                    self._json({"error": res}, 409)
                     return
-                if kind == "label-issue":
-                    # Synchronous: label the issue 'jules' to start
-                    # a Jules session on it (Jules GitHub
-                    # integration). Gates re-checked in
-                    # _label_issue_jules.
-                    try:
-                        _label_issue_jules(job["repo"], st["issue"],
-                                           _discover_repos())
-                        ok, err = True, None
-                    except ValueError as exc:
-                        ok, err = False, str(exc)
-                    except Exception as exc:
-                        ok, err = False, str(exc)[:500]
-                    with jobs_lock:
-                        st["state"] = "done" if ok else "failed"
-                        st["finished_at"] = time.time()
-                        st["exit_code"] = 0 if ok else 1
-                        st["note"] = None if ok else err
-                        _job_after_step(job)
-                        _jobs_save()
-                    _ledger_append({"kind": "job", "job": jid,
-                                    "step": step,
-                                    "event": "dispatched Jules on #"
-                                    + str(st["issue"]) if ok
-                                    else "dispatch failed",
-                                    "ok": ok})
-                    self._json({"ok": ok, "state": st["state"],
-                                "error": err})
+                if isinstance(res, str):  # run_id
+                    self._json({"run_id": res})
                     return
-                # kind == "action": async run, client polls it.
-                run_id, err = _start_run(st["action"], job["repo"])
-                with jobs_lock:
-                    if err:
-                        st["state"] = "pending"
-                        st["approved_at"] = None
-                        job["approvals"].pop()
-                        _jobs_save()
-                        self._json({"error": err}, 409)
-                        return
-                    st["state"] = "running"
-                    st["run_id"] = run_id
-                    _jobs_save()
-                _ledger_append({"kind": "job", "job": jid, "step": step,
-                                "event": "step approved", "run": run_id})
-                self._json({"run_id": run_id})
+                _job_advance(job)
+                self._json({"ok": ok, "state": st["state"]})
                 return
             if sub == "decline":
                 with jobs_lock:
@@ -6491,11 +6724,16 @@ class Handler(BaseHTTPRequestHandler):
                         self._json({"error": "step not pending"}, 409)
                         return
                     st["state"] = "declined"
+                    st["finished_at"] = time.time()
                     job["approvals"].append(
                         {"step": step, "decision": "declined",
                          "at": time.time()})
-                    _job_end(job, "declined")
-                self._json({"ok": True})
+                    _ledger_append({"kind": "job", "job": jid, "step": step,
+                                    "event": "step declined", "ok": True})
+                    _job_after_step(job)
+                    _jobs_save()
+                _job_advance(job)
+                self._json({"ok": True, "state": "declined"})
                 return
             if sub == "step-done":
                 # Client reports the polled run finished.
