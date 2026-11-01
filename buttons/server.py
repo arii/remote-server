@@ -350,9 +350,10 @@ def _pi_start(kind, repo, instruction=None):
             except Exception:
                 pass
             del pi_runs[k]
-        pi_runs[rid] = {"kind": kind, "repo": repo, "done": False,
-                        "started_at": now, "result": None,
-                        "error": None}
+        pi_runs[rid] = {"id": rid, "kind": kind, "repo": repo, "done": False,
+                        "started_at": now, "finished_at": None,
+                        "instruction": instruction or ("Suggest next actions" if kind == "suggest" else ""),
+                        "result": None, "error": None}
     open(_pi_progress_path(rid), "w").write("")
     t = threading.Thread(target=_pi_thread,
                          args=(rid, kind, repo, instruction),
@@ -3782,6 +3783,16 @@ async function pollPiProgress(id, pre, errEl, onDone, label, repo) {
       outEl.className = "";
       stateEl.textContent = "done ✓ — pi " + (label || "agent");
       if (typeof refreshLedger === "function") refreshLedger();
+      if (typeof fetchJson === "function") {
+        fetchJson("/buttons/api/pi-sessions").then(res => {
+          if (res && res.ok && res.data && res.data.sessions) {
+            loadedPiSessions = res.data.sessions;
+            if (typeof renderSessionList === "function" && piSessionListEl && piSessionListEl.style.display !== "none") {
+              renderSessionList();
+            }
+          }
+        }).catch(() => {});
+      }
       if (typeof onDone === "function") onDone(d.result || {});
       return;
     }
@@ -4209,6 +4220,15 @@ function renderSessionList() {
     badge.className = "pirow-badge";
     badge.textContent = repoName;
     meta.appendChild(badge);
+
+    if (s.source === "background" || (s.file && s.file.startsWith("bg-"))) {
+      const bgBadge = document.createElement("span");
+      bgBadge.className = "pirow-badge";
+      bgBadge.style.background = "#3b4252";
+      bgBadge.style.color = "#88c0d0";
+      bgBadge.textContent = s.kind ? "bg:" + s.kind : "background";
+      meta.appendChild(bgBadge);
+    }
 
     if (s.mtime) {
       const timeSpan = document.createElement("span");
@@ -5665,32 +5685,115 @@ class Handler(BaseHTTPRequestHandler):
             limit = max(1, min(200, limit))
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
-            # List Pi session files (newest first) as JSON. No TD
-            # prefix: pi_logs reads /root/.pi directly, it needs
-            # no repo cwd and no .env.
+            # List Pi session files (newest first) as JSON, unified with
+            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
+            sessions = []
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
                             "pi_logs.py --list-json"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=60, text=True)
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        (proc.stderr or "").strip().splitlines()[-1]
-                        if proc.stderr.strip() else "pi sessions failed")
-                self._json(json.loads(proc.stdout))
-            except Exception as exc:
-                self._json({"error": str(exc)[:500]}, 500)
+                if proc.returncode == 0:
+                    data = json.loads(proc.stdout)
+                    sessions = data.get("sessions", [])
+            except Exception:
+                pass
+
+            # Merge background runs from in-memory pi_runs
+            with pi_runs_lock:
+                for rid, r in pi_runs.items():
+                    mtime = r.get("finished_at") or r.get("started_at") or 0
+                    title = (r.get("instruction") or ("Suggest next actions" if r.get("kind") == "suggest" else "")).strip()
+                    if not title:
+                        title = f"Background Pi run ({r.get('kind', 'run')})"
+                    if len(title) > 80:
+                        title = title[:77] + "…"
+                    sessions.append({
+                        "file": f"bg-{rid}.jsonl",
+                        "id": f"bg-{rid}",
+                        "mtime": mtime,
+                        "cwd": f"/srv/repos/{r.get('repo', '')}",
+                        "repo": r.get("repo", ""),
+                        "title": title,
+                        "kind": r.get("kind", "ask"),
+                        "source": "background",
+                        "done": r.get("done", False)
+                    })
+
+            sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
+            self._json({"sessions": sessions})
         elif path == "/buttons/api/pi-session":
             # Render one Pi session by filename query. Returns structured
             # turns (and raw formatted output for fallback/toggle).
-            # The query is interpolated into a bash -c string, so it must
-            # match a strict allowlist — anything else is rejected.
+            # If the session is a background run (bg-<rid>.jsonl or bg-<rid>),
+            # serve directly from the background run state and progress log.
             qs = parse_qs(urlparse(self.path).query)
             query = qs.get("session", [""])[0]
             if not re.fullmatch(r"[A-Za-z0-9._-]+", query):
                 self._json({"error": "bad session query"}, 400)
                 return
+
+            if query.startswith("bg-"):
+                clean_id = query[3:]
+                if clean_id.endswith(".jsonl"):
+                    clean_id = clean_id[:-6]
+                with pi_runs_lock:
+                    r = pi_runs.get(clean_id)
+                if r is None:
+                    self._json({"error": f"No background run matching '{query}'"}, 404)
+                    return
+
+                # Read raw output from the progress file
+                raw_output = ""
+                try:
+                    with open(_pi_progress_path(clean_id), "r", encoding="utf-8", errors="replace") as pf:
+                        raw_output = pf.read()
+                except Exception:
+                    pass
+
+                user_prompt = r.get("instruction") or ("Suggest next actions" if r.get("kind") == "suggest" else "")
+                res = r.get("result") or {}
+                reply = res.get("reply") or ""
+                if not reply and res.get("suggestions") is not None:
+                    suggs = res.get("suggestions", [])
+                    if suggs:
+                        reply = "\n".join(f"- {s.get('command')}: {s.get('reason')}" for s in suggs)
+                    else:
+                        reply = res.get("raw") or "No suggestions."
+                if not reply and r.get("error"):
+                    reply = f"Run failed: {r.get('error')}"
+                if not reply and not r.get("done"):
+                    reply = "Run in progress…"
+
+                turns = []
+                if user_prompt:
+                    turns.append({
+                        "role": "user",
+                        "text": user_prompt,
+                        "timestamp": r.get("started_at")
+                    })
+                if reply or raw_output:
+                    turns.append({
+                        "role": "assistant",
+                        "text": reply or raw_output,
+                        "timestamp": r.get("finished_at") or r.get("started_at")
+                    })
+
+                self._json({
+                    "file": f"bg-{clean_id}.jsonl",
+                    "id": f"bg-{clean_id}",
+                    "cwd": f"/srv/repos/{r.get('repo', '')}",
+                    "repo": r.get("repo", ""),
+                    "started": r.get("started_at"),
+                    "source": "background",
+                    "turns": turns,
+                    "raw_output": raw_output or reply,
+                    "output": raw_output or reply
+                })
+                return
+
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -6313,10 +6416,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/buttons/api/pi-sessions/clear":
             # Bulk-delete Pi session transcripts in the terminal
-            # container. File discovery lives in pi_logs.py (the
-            # same _list_files as the browser), never in the page,
-            # and --clear takes no argument, so nothing from the
-            # request reaches a shell string.
+            # container and in-memory background runs.
+            with pi_runs_lock:
+                for k in list(pi_runs.keys()):
+                    try:
+                        os.remove(_pi_progress_path(k))
+                    except Exception:
+                        pass
+                    del pi_runs[k]
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
@@ -6346,6 +6453,27 @@ class Handler(BaseHTTPRequestHandler):
                                 session):
                 self._json({"error": "bad session name"}, 400)
                 return
+
+            if session.startswith("bg-"):
+                clean_id = session[3:]
+                if clean_id.endswith(".jsonl"):
+                    clean_id = clean_id[:-6]
+                with pi_runs_lock:
+                    if clean_id in pi_runs:
+                        del pi_runs[clean_id]
+                        try:
+                            os.remove(_pi_progress_path(clean_id))
+                        except Exception:
+                            pass
+                        _ledger_append({"kind": "system", "action": "pi-session-delete",
+                                        "session": session[:120],
+                                        "output": f"Deleted background run {clean_id}."})
+                        self._json({"ok": True, "output": f"Deleted background run {clean_id}."})
+                        return
+                    else:
+                        self._json({"error": f"No background run matching '{session}'"}, 404)
+                        return
+
             try:
                 proc = subprocess.run(
                     EXEC + ["python3 /srv/remote-server/buttons/"
