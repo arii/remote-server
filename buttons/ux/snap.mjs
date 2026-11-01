@@ -28,53 +28,47 @@ const WIDTHS = [
   { name: "desktop", width: 1440, height: 900 },
 ];
 
+function scanPlaywrightDir(pwDir) {
+  if (!existsSync(pwDir)) return undefined;
+  let entries = [];
+  try {
+    entries = readdirSync(pwDir);
+  } catch {
+    return undefined;
+  }
+
+  for (const entry of entries) {
+    if (entry.startsWith("chromium_headless_shell-")) {
+      const p = join(pwDir, entry, "chrome-headless-shell-linux64", "chrome-headless-shell");
+      if (existsSync(p)) return p;
+    }
+  }
+
+  for (const entry of entries) {
+    if (entry.startsWith("chromium-")) {
+      const p = join(pwDir, entry, "chrome-linux64", "chrome");
+      if (existsSync(p)) return p;
+    }
+  }
+
+  return undefined;
+}
+
 function findChromiumExecutable() {
   if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH && existsSync(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH)) {
     return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
   }
 
-  // Search standard cache directories without external dependencies
-  const searchRoots = ["/home", "/root"];
-  for (const root of searchRoots) {
-    if (!existsSync(root)) continue;
-    let users = [];
-    if (root === "/root") {
-      users = ["root"];
-    } else {
-      try {
-        users = readdirSync(root);
-      } catch (e) {
-        users = [];
-      }
-    }
+  const rootCheck = scanPlaywrightDir("/root/.cache/ms-playwright");
+  if (rootCheck) return rootCheck;
 
-    for (const u of users) {
-      const pwDir = root === "/root" ? "/root/.cache/ms-playwright" : join(root, u, ".cache/ms-playwright");
-      if (!existsSync(pwDir)) continue;
-
-      let entries = [];
-      try {
-        entries = readdirSync(pwDir);
-      } catch (e) {
-        entries = [];
+  if (existsSync("/home")) {
+    try {
+      for (const u of readdirSync("/home")) {
+        const p = scanPlaywrightDir(join("/home", u, ".cache/ms-playwright"));
+        if (p) return p;
       }
-
-      // Check headless shell first (fastest and leanest)
-      for (const entry of entries) {
-        if (entry.startsWith("chromium_headless_shell-")) {
-          const p = join(pwDir, entry, "chrome-headless-shell-linux64", "chrome-headless-shell");
-          if (existsSync(p)) return p;
-        }
-      }
-
-      // Fall back to standard chromium build
-      for (const entry of entries) {
-        if (entry.startsWith("chromium-")) {
-          const p = join(pwDir, entry, "chrome-linux64", "chrome");
-          if (existsSync(p)) return p;
-        }
-      }
-    }
+    } catch {}
   }
   return undefined;
 }

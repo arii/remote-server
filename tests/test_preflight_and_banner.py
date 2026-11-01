@@ -106,6 +106,15 @@ class TestPreflightDigest(unittest.TestCase):
         data = json.loads(proc_anti.stdout)
         self.assertEqual(data.get("status"), "ok")
 
+        # Verify fallow audit runs successfully
+        proc_fallow = subprocess.run(
+            ["pnpm", "run", "audit:fallow"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(proc_fallow.returncode, 0, f"pnpm run audit:fallow failed: {proc_fallow.stderr}")
+
 
 class TestBannerExtraction(unittest.TestCase):
     def extract_error_line_js(self, output_text):
