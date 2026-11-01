@@ -2441,6 +2441,9 @@ h2 { font-size: 1.1em; margin-top: 1.5em; }
 #issues .prcard, #julesSessions .prcard { margin: 0.4em 0; }
 #issues details { margin-top: 0.4em; }
 #issues input { margin-right: 0.4em; }
+.issue-section-title { font-weight: bold; margin-top: 0.5em; }
+.issue-assign-row { margin-top: 0.4em; }
+.issue-assign-err { color: #ff8a8a; margin-top: 0.3em; font-size: 0.9em; }
 .prcard .prresult { font-size: 0.9em; margin-top: 0.4em; }
 .practions { margin-top: 0.5em; display: flex; gap: 0.5em; flex-wrap: wrap; }
 .practions button { margin: 0; }
@@ -5198,8 +5201,7 @@ async function refreshIssues() {
 
     // Labels section
     const labelsHead = document.createElement("div");
-    labelsHead.style.fontWeight = "bold";
-    labelsHead.style.marginTop = "0.5em";
+    labelsHead.className = "issue-section-title";
     labelsHead.textContent = "Labels:";
     det.appendChild(labelsHead);
     const labChips = document.createElement("div");
@@ -5221,8 +5223,7 @@ async function refreshIssues() {
 
     // Body section
     const bodyHead = document.createElement("div");
-    bodyHead.style.fontWeight = "bold";
-    bodyHead.style.marginTop = "0.5em";
+    bodyHead.className = "issue-section-title";
     bodyHead.textContent = "Description:";
     det.appendChild(bodyHead);
     const pre = document.createElement("pre");
@@ -5231,8 +5232,7 @@ async function refreshIssues() {
 
     // Assignees section
     const assignHead = document.createElement("div");
-    assignHead.style.fontWeight = "bold";
-    assignHead.style.marginTop = "0.5em";
+    assignHead.className = "issue-section-title";
     assignHead.textContent = "Assignee:";
     det.appendChild(assignHead);
     const whoChips = document.createElement("div");
@@ -5254,7 +5254,7 @@ async function refreshIssues() {
 
     // Assignment input and action
     const row = document.createElement("div");
-    row.style.marginTop = "0.4em";
+    row.className = "issue-assign-row";
     const inp = document.createElement("input");
     inp.placeholder = "assignee username";
     inp.size = 18;
@@ -5262,9 +5262,7 @@ async function refreshIssues() {
     const btn = document.createElement("button");
     btn.textContent = "Assign";
     const cardErr = document.createElement("div");
-    cardErr.style.color = "#ff8a8a";
-    cardErr.style.marginTop = "0.3em";
-    cardErr.style.fontSize = "0.9em";
+    cardErr.className = "issue-assign-err";
 
     btn.onclick = async () => {
       cardErr.textContent = "";
