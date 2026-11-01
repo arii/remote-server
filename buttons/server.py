@@ -2284,7 +2284,7 @@ deletes all transcripts.</p>
 <button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
 </div>
 <input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
-<div id="piSessionList"></div>
+<div id="piSessionList" style="display:none;"></div>
 <div id="piSessionViewer">
   <div class="pisession-head">
     <div id="piSessionHeadInfo" class="pisession-head-info"></div>
@@ -3941,14 +3941,13 @@ function renderSessionList() {
   });
 
   if (!filtered.length) {
-    const notice = document.createElement("div");
-    notice.style.padding = "0.75em";
-    notice.style.color = "var(--text-muted)";
-    notice.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
-    piSessionListEl.appendChild(notice);
+    piSessionListEl.style.display = "none";
+    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
     return;
   }
 
+  piSessionErrEl.textContent = "";
+  piSessionListEl.style.display = "";
   filtered.forEach(s => {
     const row = document.createElement("div");
     row.className = "pirow";
@@ -4033,18 +4032,22 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   piSessionViewerEl.classList.remove("open");
   if (piSessionFilterEl) piSessionFilterEl.style.display = "none";
   piSessionListEl.textContent = "";
+  piSessionListEl.style.display = "none";
   piSessionOutEl.textContent = "";
   piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
 };
 
 const listPiSessionsBtn = document.getElementById("listPiSessions");
 if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
-  piSessionListEl.textContent = "Loading sessions…";
+  piSessionListEl.textContent = "";
+  piSessionListEl.style.display = "none";
+  piSessionErrEl.textContent = "Loading sessions…";
   try {
     const res = await fetchJson("/buttons/api/pi-sessions");
     const data = res.data || {};
     if (!res.ok) {
       piSessionListEl.textContent = "";
+      piSessionListEl.style.display = "none";
       setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "sessions unavailable");
       return;
     }
@@ -4057,6 +4060,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     renderSessionList();
   } catch (e) {
     piSessionListEl.textContent = "";
+    piSessionListEl.style.display = "none";
     setErrorEl(piSessionErrEl, e, "sessions unavailable");
   }
 };
