@@ -89,10 +89,14 @@ Run the following checks:
 
 ## 4. End-to-End Verification
 
-1. **Phone-Browser Path**:
+1. **Code Discipline & Workaround Chain Check**:
+   - Verify that no workaround chains exist in PR diffs or shell scripts (`cmd || slightly-different cmd`, try/except ladders dodging root cause failures, or fallback ladders).
+   - In code reviews, enforce that any workaround chain is treated as a **review-blocking finding, not a nit**.
+   - Demand a single canonical command path addressing the root failure. Fallbacks are only allowed if documented with reasons for platform variance.
+2. **Phone-Browser Path**:
    - Connect phone to Tailscale network.
    - Navigate to `https://<tailscale-ip-or-host>/buttons` and `https://<tailscale-ip-or-host>/terminal` via oauth2-proxy authentication.
    - Confirm Google OAuth login succeeds and redirects to the web app.
    - Test terminal takeover button (`/buttons/api/terminal/takeover`) from phone browser.
-2. **CI Status**:
+3. **CI Status**:
    - Check GitHub Actions workflow status on repository `main` branch to ensure all automated checks are green.
