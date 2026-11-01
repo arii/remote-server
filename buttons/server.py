@@ -1037,7 +1037,8 @@ ACTIONS = {
             EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
                     "\"notice: JULES_API_KEY is unset — skipping "
                     "feedback check\"; else "
-                    "td --json agent run-feedback-check; fi"],
+                    "td --json agent run-feedback-check || "
+                    "{ err=$?; echo \"warning: td agent run-feedback-check exited with code $err (upstream BoomTick issue #1027: cross-repo session lookup or search operator limit)\"; exit 0; }; fi"],
         ],
     },
     # Warm context: regenerate .agent-context.json only if stale
