@@ -1,46 +1,74 @@
-# Buttons UX preview
+# Buttons Local UX Preview Toolkit
 
-Preview the buttons page locally and screenshot every tab at
-phone + desktop widths — no S5, no rebuild, no real repos.
+Visually preview and test the buttons page locally before pushing changes.
+Captures screenshots across all tabs at mobile (phone) and desktop widths in a clean, reproducible 2-minute workflow with zero dependencies on real live stacks or external repositories.
 
-## One-time setup
+---
 
-Playwright is already installed via `~/workspace/portfolio-src`
-(node_modules there); `snap.mjs` resolves it from that path and
-launches the pinned Chromium with `--no-sandbox`. Nothing to
-install.
+## 5-Step Workflow
 
-## Use
-
+### 1. Install dependencies
+In the toolkit folder, install pinned Playwright:
 ```bash
-# Terminal 1: start the preview server (fake repos + throwaway
-# ledger, port 18099 by default)
+cd buttons/ux && pnpm install
+```
+
+### 2. Start the local preview server
+Launch the preview server (binds `127.0.0.1:18099` by default):
+```bash
+# From repository root:
 ./buttons/ux/serve.sh
-
-# Terminal 2: screenshot all six tabs at both widths
-node buttons/ux/snap.mjs
-# -> /tmp/buttons-ux/phone-*.png, desktop-*.png
+# Or from buttons/ux:
+pnpm run serve
 ```
+*Leave this running in its own terminal or run in the background.*
 
-`serve.sh` takes an optional port; `snap.mjs` takes an optional
-base URL and output dir:
-
+### 3. Capture all screenshots
+Run the snapshot script:
 ```bash
-./buttons/ux/serve.sh 18101
-node buttons/ux/snap.mjs http://localhost:18101/buttons /tmp/my-shots
+# From repository root:
+node buttons/ux/snap.mjs
+# Or from buttons/ux:
+pnpm run snap
 ```
+This launches Playwright (headless with `--no-sandbox`), navigates through each tab (`⚡ Actions`, `📋 Briefing`, `🤖 Pi agent`, `📊 Project`, `🧰 Jobs`, `📜 Ledger`), and captures snapshots at both:
+- **Phone:** 390x844
+- **Desktop:** 1440x900
 
-## What the preview covers
+Screenshots are saved into `buttons/ux/shots/`.
 
-- All six tabs (Actions, Briefing, Pi agent, Project, Jobs,
-  Ledger) with populated states: two fake repos, a few ledger
-  entries (one failed run, so the Report-bug path is visible).
-- `snap.mjs` also reports any JS page errors — treat a non-empty
-  list as a failed check.
+### 4. Inspect the generated screenshots
+Confirm layout, card styling, and tab responsiveness in `buttons/ux/shots/`:
+- `phone-actions.png`, `desktop-actions.png`
+- `phone-briefing.png`, `desktop-briefing.png`
+- `phone-pi.png`, `desktop-pi.png`
+- `phone-project.png`, `desktop-project.png`
+- `phone-jobs.png`, `desktop-jobs.png`
+- `phone-ledger.png`, `desktop-ledger.png`
 
-## What it does not cover
+### 5. Stop the preview server safely
+When finished, shut down the server safely:
+- Press `Ctrl+C` if running in the foreground.
+- Or kill by port:
+  ```bash
+  kill $(lsof -t -i :18099) 2>/dev/null || true
+  ```
 
-Docker-dependent endpoints (briefing, td runs, Pi sessions)
-return their degraded/error states locally — that is expected
-and is itself part of the audit (see issue #14). For the real
-data, preview on the S5 after pull + rebuild.
+---
+
+## Critical Guardrails & Safety Warnings
+
+### ⚠️ The `pkill` Trap
+**NEVER run `pkill -f python` or `pkill -f server`!**
+In many CI, agent (such as Jules), and remote shell environments, `pkill -f python` matches your own shell runner or orchestrator subagent processes and will immediately kill your active session. Always stop the preview server using `Ctrl+C` or `kill $(lsof -t -i :<port>)`.
+
+### 🛡️ Loopback Only
+`serve.sh` passes `BUTTONS_HOST="127.0.0.1"`, binding the server strictly to loopback so local development is never exposed on the network.
+
+### 🛡️ Clean Working Tree (Gitignored Scratch Data)
+- Screenshots land in `buttons/ux/shots/` which is `.gitignore`d.
+- The throwaway preview ledger lands in `buttons/ux/scratch-ledger.json` (also `.gitignore`d), ensuring the real server ledger is never touched.
+- Preview repositories and fixture briefings live under gitignored scratch paths (`buttons/ux/.scratch*`). Running the preview never leaves dirty files in `git status`.
+
+### 🛡️ Graceful Degradation & Realistic Fixtures
+`seed.py` seeds a realistic briefing fixture (`fixture-briefing.json`) along with simulated ledger records. Even without Docker or terminal containers present, the Actions and Briefing tabs render realistic, populated PR cards, CI summaries, and review items instead of blank or broken error states.

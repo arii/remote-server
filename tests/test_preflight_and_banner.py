@@ -76,6 +76,45 @@ class TestPreflightDigest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Not valid json", out)
 
+    def test_package_scripts_and_antipatterns(self):
+        # Verify npm run type-check passes
+        proc_tc = subprocess.run(
+            ["npm", "run", "type-check"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(proc_tc.returncode, 0, f"npm run type-check failed: {proc_tc.stderr}")
+
+        # Verify npm run lint passes
+        proc_lint = subprocess.run(
+            ["npm", "run", "lint"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(proc_lint.returncode, 0, f"npm run lint failed: {proc_lint.stderr}")
+
+        # Verify detect-antipatterns script returns valid JSON and exits 0
+        proc_anti = subprocess.run(
+            ["node", "scripts/detect-antipatterns.mjs", "--json", "src/features", "src/pages", "src/components", "src/layouts", "src/App.tsx"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(proc_anti.returncode, 0, f"detect-antipatterns failed: {proc_anti.stderr}")
+        data = json.loads(proc_anti.stdout)
+        self.assertEqual(data.get("status"), "ok")
+
+        # Verify fallow audit runs successfully
+        proc_fallow = subprocess.run(
+            ["pnpm", "run", "audit:fallow"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(proc_fallow.returncode, 0, f"pnpm run audit:fallow failed: {proc_fallow.stderr}")
+
 
 class TestBannerExtraction(unittest.TestCase):
     def extract_error_line_js(self, output_text):

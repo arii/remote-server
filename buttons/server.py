@@ -994,6 +994,89 @@ def _webhook_worker(repo, info):
         threading.Thread(target=_webhook_warm,
                          args=(old_head, new_head, info),
                          daemon=True).start()
+
+# --- Repair worker execution & state ------------------------------
+repair_state = {
+    "status": "idle",
+    "timestamp": None,
+    "log_buffer": "",
+    "issue": None,
+    "exit_code": None,
+}
+repair_state_lock = threading.Lock()
+
+
+def _parse_issue_number(val):
+    """Parse an issue number from int, string ('123', '#123'), or issue URL."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val if val > 0 else None
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+        if val.startswith("#"):
+            val = val[1:].strip()
+        if val.isdigit():
+            n = int(val)
+            return n if n > 0 else None
+        m = re.search(r"/issues/(\d+)(?:[/?#]|$)", val)
+        if m:
+            n = int(m.group(1))
+            return n if n > 0 else None
+    return None
+
+
+def _repair_worker_thread(issue_number):
+    """Background thread to run the repair worker and record state and logs."""
+    with repair_state_lock:
+        repair_state["status"] = "running"
+        repair_state["timestamp"] = time.time()
+        repair_state["issue"] = issue_number
+        repair_state["log_buffer"] = f"Dispatched repair worker for issue #{issue_number}\n"
+        repair_state["exit_code"] = None
+
+    _ledger_append({"kind": "repair", "issue": issue_number, "event": "repair started"})
+
+    cmd = ["python3", "scripts/repair_worker.py", "--issue", str(issue_number)]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                with repair_state_lock:
+                    repair_state["log_buffer"] += line
+                    if len(repair_state["log_buffer"]) > MAX_OUTPUT:
+                        repair_state["log_buffer"] = repair_state["log_buffer"][-MAX_OUTPUT:]
+        code = proc.wait()
+        with repair_state_lock:
+            repair_state["status"] = "done" if code == 0 else "failed"
+            repair_state["exit_code"] = code
+            repair_state["log_buffer"] += f"\nProcess exited with code {code}\n"
+    except Exception as exc:
+        with repair_state_lock:
+            repair_state["status"] = "failed"
+            repair_state["exit_code"] = 1
+            repair_state["log_buffer"] += f"\nFailed to spawn repair worker: {exc}\n"
+
+    with repair_state_lock:
+        final_status = repair_state["status"]
+        final_code = repair_state["exit_code"]
+    _ledger_append({"kind": "repair", "issue": issue_number, "event": "repair " + final_status, "exit": final_code})
+
+
+def _trigger_repair(issue_number):
+    """Trigger background repair worker thread for the issue."""
+    t = threading.Thread(target=_repair_worker_thread, args=(issue_number,), daemon=True)
+    t.start()
+    return t
+
 # Steps run under a PTY (see _run_step): commands then emit the
 # ANSI colours they would show in the terminal, and the page renders
 # them. A TTY stdout also makes some tools page their output (git
@@ -2377,6 +2460,14 @@ a { color: #8bf; }
 .jules-session-row { border-top: 1px solid var(--border); padding: 0.4em 0; display: flex; flex-direction: column; gap: 0.2em; }
 .jules-session-head { display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
 .jules-session-meta { font-size: 0.85em; color: var(--text-muted); }
+.repair-control-row { display: flex; gap: 0.5em; flex-wrap: wrap; align-items: center; margin-bottom: 0.5em; }
+.repair-input { flex: 1; min-width: 180px; padding: 0.6em; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.repair-btn { width: auto; margin: 0; padding: 0.6em 1em; }
+.repair-status-badge { font-size: 0.9em; margin: 0.3em 0; }
+.repair-err { color: var(--danger); font-size: 0.9em; }
+.repair-details { margin-top: 0.4em; }
+.repair-details summary { cursor: pointer; font-size: 0.85em; color: var(--text-muted); }
+.repair-log { max-height: 200px; overflow-y: auto; font-size: 0.85em; margin-top: 0.3em; }
 </style>
 </head>
 <body>
@@ -2418,6 +2509,20 @@ below are still visible, but they need JavaScript to start a run.</div>
 <button id="refreshJulesCardBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.2em 0.6em;font-size:0.8em;">Refresh</button>
 </div>
 <div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
+</div>
+<div id="repairCard" class="health-card">
+<div class="health-head">Agent / Tools: Local Repair Worker</div>
+<div class="bsub" style="margin-bottom: 0.5em;">Trigger a local repair run by passing an issue number or issue URL.</div>
+<div class="repair-control-row">
+  <input id="repairIssueInput" class="repair-input" type="text" placeholder="Issue number (e.g. 42) or URL">
+  <button id="dispatchRepairBtn" class="btn-primary repair-btn">Dispatch repair</button>
+</div>
+<div id="repairStatusBadge" class="repair-status-badge">Repair Status: <span id="repairStatusText" class="chip">idle</span></div>
+<div id="repairErr" class="repair-err"></div>
+<details id="repairDetails" class="repair-details">
+  <summary>Repair progress and log</summary>
+  <pre id="repairLog" class="repair-log">(no repair runs yet)</pre>
+</details>
 </div>
 <div id="buttons"><!--BUTTONS--></div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
@@ -2500,7 +2605,7 @@ deletes all transcripts.</p>
 <button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
 </div>
 <input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
-<div id="piSessionList"></div>
+<div id="piSessionList" style="display:none;"></div>
 <div id="piSessionViewer">
   <div class="pisession-head">
     <div id="piSessionHeadInfo" class="pisession-head-info"></div>
@@ -2803,7 +2908,11 @@ async function fetchJson(url, options) {
 
 async function startRun(name, label, confirmFlag, dangerFlag) {
   userStartedRun = true;
-  if (confirmFlag && !(await confirmDialog("Run action", label + " — run it?", !!dangerFlag))) return;
+  let confirmBody = label + " — run it?";
+  if (name === "sync-nudge" || name === "sync-agents" || /sync.*nudge/i.test(label)) {
+    confirmBody = label + " — run it?\n\nStep 2 posts feedback to stalled Jules sessions.";
+  }
+  if (confirmFlag && !(await confirmDialog("Run action", confirmBody, !!dangerFlag))) return;
   openDrawer();
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
@@ -4379,14 +4488,13 @@ function renderSessionList() {
   });
 
   if (!filtered.length) {
-    const notice = document.createElement("div");
-    notice.style.padding = "0.75em";
-    notice.style.color = "var(--text-muted)";
-    notice.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
-    piSessionListEl.appendChild(notice);
+    piSessionListEl.style.display = "none";
+    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
     return;
   }
 
+  piSessionErrEl.textContent = "";
+  piSessionListEl.style.display = "";
   filtered.forEach(s => {
     const row = document.createElement("div");
     row.className = "pirow";
@@ -4471,18 +4579,22 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   piSessionViewerEl.classList.remove("open");
   if (piSessionFilterEl) piSessionFilterEl.style.display = "none";
   piSessionListEl.textContent = "";
+  piSessionListEl.style.display = "none";
   piSessionOutEl.textContent = "";
   piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
 };
 
 const listPiSessionsBtn = document.getElementById("listPiSessions");
 if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
-  piSessionListEl.textContent = "Loading sessions…";
+  piSessionListEl.textContent = "";
+  piSessionListEl.style.display = "none";
+  piSessionErrEl.textContent = "Loading sessions…";
   try {
     const res = await fetchJson("/buttons/api/pi-sessions");
     const data = res.data || {};
     if (!res.ok) {
       piSessionListEl.textContent = "";
+      piSessionListEl.style.display = "none";
       setErrorEl(piSessionErrEl, data.error || ("HTTP " + res.status), "sessions unavailable");
       return;
     }
@@ -4495,6 +4607,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
     renderSessionList();
   } catch (e) {
     piSessionListEl.textContent = "";
+    piSessionListEl.style.display = "none";
     setErrorEl(piSessionErrEl, e, "sessions unavailable");
   }
 };
@@ -4951,6 +5064,69 @@ function renderHealth(h) {
   }
   liveFetching = false;
 }
+function renderRepairState(rep) {
+  if (!rep) return;
+  const statusEl = document.getElementById("repairStatusText");
+  const logEl = document.getElementById("repairLog");
+  const st = rep.status || "idle";
+  if (statusEl) {
+    statusEl.textContent = st + (rep.issue ? " (#" + rep.issue + ")" : "");
+    let cls = "chip";
+    if (st === "running") cls += " chip-warn";
+    else if (st === "done") cls += " chip-ok";
+    else if (st === "failed") cls += " chip-fail";
+    statusEl.className = cls;
+  }
+  if (logEl && rep.log_buffer) {
+    logEl.textContent = rep.log_buffer;
+  }
+}
+
+const dispatchRepairBtn = document.getElementById("dispatchRepairBtn");
+if (dispatchRepairBtn) {
+  dispatchRepairBtn.onclick = async () => {
+    const input = document.getElementById("repairIssueInput");
+    const errEl = document.getElementById("repairErr");
+    const val = input ? input.value.trim() : "";
+    if (errEl) errEl.textContent = "";
+    if (!val) {
+      if (errEl) errEl.textContent = "Please enter an issue number or URL.";
+      return;
+    }
+    dispatchRepairBtn.disabled = true;
+    try {
+      const res = await fetchJson("/buttons/api/repair/dispatch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({issue: val})
+      });
+      if (!res.ok) {
+        if (errEl) errEl.textContent = (res.data && res.data.error) || ("HTTP " + res.status);
+      } else {
+        if (input) input.value = "";
+        const details = document.getElementById("repairDetails");
+        if (details) details.open = true;
+        refreshStatus();
+      }
+    } finally {
+      dispatchRepairBtn.disabled = false;
+    }
+  };
+}
+
+// In refreshStatus: update repair state
+const origRefreshStatus = refreshStatus;
+refreshStatus = async function() {
+  await origRefreshStatus();
+  try {
+    const res = await fetch("/buttons/api/repair/status");
+    if (res.ok) {
+      const rep = await res.json();
+      renderRepairState(rep);
+    }
+  } catch (e) {}
+};
+
 refreshStatus();
 if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 setInterval(refreshStatus, 10000);
@@ -5144,6 +5320,24 @@ class Handler(BaseHTTPRequestHandler):
                                          daemon=True).start()
             self._json({"ok": True, "msg": "pong"})
             return
+
+        # Handle labeled issue events for automated repair trigger
+        action = payload.get("action")
+        label = payload.get("label") or {}
+        label_name = label.get("name") if isinstance(label, dict) else None
+        if action == "labeled" and label_name in ("agent:repair", "auto-repair"):
+            issue_val = payload.get("issue")
+            if isinstance(issue_val, dict):
+                issue_val = issue_val.get("number")
+            issue_num = _parse_issue_number(issue_val)
+            if issue_num is not None:
+                _trigger_repair(issue_num)
+                self._json({"queued": True, "repair": True, "issue": issue_num}, 202)
+                return
+            else:
+                self._json({"error": "invalid or missing issue in payload"}, 400)
+                return
+
         if event != "push":
             self._json({"ignored": event})
             return
@@ -5200,16 +5394,23 @@ class Handler(BaseHTTPRequestHandler):
                         active_pi = {"id": k, "kind": v.get("kind"), "repo": v.get("repo"),
                                      "started_at": v.get("started_at")}
                         break
+            with repair_state_lock:
+                rep = dict(repair_state)
             self._json({"active": active_id, "active_pi": active_pi, "runs": recent,
                         "webhooks": hooks, "webhooks_pending": pending,
                         "stale_buttons": stale,
                         "health": _get_system_health(),
+                        "repair": rep,
                         "notifications": {
                             "ntfy": bool(ntfy_topic),
                             "webhook": bool(webhook_url),
                             "topic": ntfy_topic,
                             "last_digest": state.get("last_digest", 0)
                         }})
+        elif path == "/buttons/api/repair/status":
+            with repair_state_lock:
+                rep = dict(repair_state)
+            self._json(rep)
         elif path == "/buttons/api/health":
             self._json(_get_system_health())
         elif path == "/buttons/api/notifications/status":
@@ -5242,6 +5443,24 @@ class Handler(BaseHTTPRequestHandler):
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
                 return
+
+            # Preview / fixture override: if BUTTONS_FIXTURE_BRIEFING or
+            # a fixture file exists in the seed/repos directory, serve it.
+            fixture_path = os.environ.get("BUTTONS_FIXTURE_BRIEFING")
+            if not fixture_path and os.path.exists(os.path.join(REPOS_DIR, "fixture-briefing.json")):
+                fixture_path = os.path.join(REPOS_DIR, "fixture-briefing.json")
+            if fixture_path and os.path.exists(fixture_path):
+                try:
+                    with open(fixture_path, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    if isinstance(data, dict):
+                        data["repo"] = repo
+                    self._json(data)
+                    return
+                except Exception as exc:
+                    self._json({"error": f"fixture briefing failed: {exc}"}, 500)
+                    return
+
             try:
                 proc = subprocess.run(
                     EXEC + [_td_prefix(repos[repo]["td_cwd"])
@@ -5492,6 +5711,19 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         if path == WEBHOOK_PATH:
             self._handle_webhook(body)
+            return
+        if path == "/buttons/api/repair/dispatch":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            raw_issue = data.get("issue")
+            issue_number = _parse_issue_number(raw_issue)
+            if issue_number is None:
+                self._json({"error": "invalid issue number or url"}, 400)
+                return
+            _trigger_repair(issue_number)
+            self._json({"ok": True, "issue": issue_number, "status": "running"}, 200)
             return
         if path == "/buttons/api/notifications/test":
             res = send_notification("Test Notification", "Test push from S5 Buttons server.", priority="default", tags=["test"], event_type="test")
@@ -6058,7 +6290,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("BUTTONS_PORT", "8000"))
+    host = os.environ.get("BUTTONS_HOST", "0.0.0.0" if os.path.exists("/.dockerenv") else "127.0.0.1")
     _ledger_append({"kind": "system", "event": "buttons started"})
     _jobs_load()
     threading.Thread(target=_notifier_loop, daemon=True).start()
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
