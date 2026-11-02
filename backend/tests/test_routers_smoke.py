@@ -28,8 +28,8 @@ class RouterSmokeTest(unittest.TestCase):
             ]
             self.assertIn(f"/api/{name}", prefixes, name)
             self.assertIn("/health", prefixes, name)
-            self.assertIn('{"ok": True}', src.replace('{"ok": True}', '{"ok": True}'))
-            self.assertIn('"ok"', src)
+            if name != "system":
+                self.assertIn('"ok"', src)
         server_src = (root / "server.py").read_text()
         for name in ("agents", "repo", "system", "jobs"):
             self.assertIn(name, server_src)
@@ -43,12 +43,18 @@ class RouterSmokeTest(unittest.TestCase):
             "/health",
             "/api/agents/health",
             "/api/repo/health",
-            "/api/system/health",
             "/api/jobs/health",
         ):
             resp = client.get(path)
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), {"ok": True})
+        # /api/system/health serves the real SystemHealth model.
+        resp = client.get("/api/system/health")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("disk", body)
+        self.assertIn("memory", body)
+        self.assertIn("containers", body)
 
     def test_core_routines(self):
         from backend.core import resolve_repo_path, to_json
