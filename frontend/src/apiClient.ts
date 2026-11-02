@@ -73,3 +73,28 @@ export function fetchLedger(
     `/api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`,
   );
 }
+
+export interface WorkflowRun {
+  id: number | string;
+  name?: string;
+  branch?: string;
+  event?: string;
+  conclusion?: string;
+  url?: string;
+  diagnosed_cause?: string;
+  annotations?: Array<Record<string, unknown>>;
+  jobs?: Array<Record<string, unknown>>;
+}
+
+export interface WorkflowHealthResponse {
+  repo: string;
+  status: string;
+  total_failing: number;
+  workflows: WorkflowRun[];
+}
+
+export function fetchWorkflowHealth(repo: string): Promise<WorkflowHealthResponse> {
+  return getJson<WorkflowHealthResponse>(
+    `/api/workflow-health?repo=${encodeURIComponent(repo)}`,
+  );
+}

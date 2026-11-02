@@ -1,69 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import SessionList from './components/SessionList';
-import SessionDetail from './components/SessionDetail';
-import SystemHealth from './components/SystemHealth';
 import App from './App';
-import { loadHealth, loadSessionDetail, loadSessionList } from './mockLoader';
+import { loadHistory, loadWorkflowHealth } from './views/mockViews';
+import { plainLanguage, toHistoryRows } from './views/historyUtils';
 
-describe('mock loader (exact fixture shapes)', () => {
-  it('loads 3 sessions with pi-file, background, ledger rows', () => {
-    const list = loadSessionList();
-    expect(list.sessions).toHaveLength(3);
-    expect(list.sessions[0]).toMatchObject({ file: '20240101_abcdef.jsonl' });
-    expect(list.sessions[1]).toMatchObject({ source: 'background', done: true });
-    expect(list.sessions[2]).toMatchObject({ source: 'ledger', kind: 'ledger' });
+describe('history utils', () => {
+  it('uses plain language, never raw stderr', () => {
+    expect(plainLanguage('FAILED stderr: Traceback blah', 'webhook')).not.toContain('stderr');
+    expect(plainLanguage('non-fast-forward rejected', 'webhook')).toContain('remote has new commits');
   });
 
-  it('loads empty + error shapes', () => {
-    expect(loadSessionList(true)).toEqual({ sessions: [] });
-    expect(loadSessionDetail('missing.jsonl')).toHaveProperty('error');
-  });
-
-  it('loads detail turns for the background session', () => {
-    const d = loadSessionDetail('bg-1234567890ab.jsonl');
-    expect('turns' in d && d.turns).toHaveLength(2);
+  it('collapses repeat failures into one incident row with recovery', () => {
+    const h = loadHistory();
+    const rows = toHistoryRows(h.jobs, h.entries);
+    const incident = rows.find((r) => r.repeat > 1);
+    expect(incident).toBeDefined();
+    expect(incident!.summary).toMatch(/×\d+/);
+    expect(incident!.recovery).toBeTruthy();
+    expect(incident!.recoveryHref).toBeTruthy();
   });
 });
 
-describe('components', () => {
-  it('SessionList renders rows and empty state', () => {
-    const list = loadSessionList();
-    const html = renderToStaticMarkup(
-      <SessionList sessions={list.sessions} selected={null} onSelect={() => {}} />,
-    );
-    expect(html).toContain('Fix login bug');
-    expect(html).toContain('data-testid="session-list"');
-    const empty = renderToStaticMarkup(
-      <SessionList sessions={[]} selected={null} onSelect={() => {}} />,
-    );
-    expect(empty).toContain('data-testid="session-empty"');
+describe('history fixtures (?mock=1)', () => {
+  it('history fixture includes the incident-collapse case', () => {
+    const h = loadHistory();
+    expect(h.entries.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('SessionDetail renders placeholder, turns, and error', () => {
-    expect(
-      renderToStaticMarkup(<SessionDetail detail={null} />),
-    ).toContain('data-testid="detail-placeholder"');
-    const detail = loadSessionDetail('bg-1234567890ab.jsonl');
-    const html = renderToStaticMarkup(<SessionDetail detail={detail} />);
-    expect(html).toContain('How does server work?');
-    expect(html).toContain('It serves HTTP requests.');
-    const err = renderToStaticMarkup(
-      <SessionDetail detail={{ error: 'No session matching' }} />,
-    );
-    expect(err).toContain('data-testid="detail-error"');
+  it('workflow-health fixture carries run traces', () => {
+    const w = loadWorkflowHealth();
+    expect(w.workflows.length).toBeGreaterThanOrEqual(1);
+    expect(w.workflows[0].diagnosed_cause).toBeTruthy();
   });
+});
 
-  it('App renders loading state before live fetch resolves', () => {
+describe('app', () => {
+  it('App renders Now/History nav only', () => {
     const html = renderToStaticMarkup(<App />);
-    expect(html).toContain('data-testid="app-loading"');
-  });
-
-  it('SystemHealth reflects session count', () => {
-    const html = renderToStaticMarkup(
-      <SystemHealth health={loadHealth(3)} />,
-    );
-    expect(html).toContain('3 sessions');
-    expect(html).toContain('Healthy');
+    expect(html).toContain('Now');
+    expect(html).toContain('History');
+    expect(html).not.toContain('sessions');
+    expect(html).not.toContain('briefing');
   });
 });

@@ -8,8 +8,10 @@ export interface BriefingResponse {
 
 export interface JobRecord {
   id: string;
-  title: string;
-  status: string;
+  title?: string;
+  status?: string;
+  kind?: string;
+  repo?: string;
   done?: boolean;
 }
 
