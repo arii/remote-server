@@ -6116,22 +6116,8 @@ async function refreshJulesStatusCard() {
     el.appendChild(p);
   }
   const ss = data.sessions || [];
-  if (!ss.length) {
-    const p = document.createElement("div");
-    p.style.color = "var(--text-muted)";
-    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
-    el.appendChild(p);
-    if (data.other) {
-      const pOther = document.createElement("div");
-      pOther.style.color = "var(--text-muted)";
-      pOther.style.fontSize = "0.88em";
-      pOther.style.marginTop = "0.3em";
-      pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
-      el.appendChild(pOther);
-    }
-    return;
-  }
-  ss.forEach(s => {
+  const unk = data.unknown || [];
+  const renderRow = (s) => {
     const row = document.createElement("div");
     row.className = "jules-session-row";
 
@@ -6174,8 +6160,29 @@ async function refreshJulesStatusCard() {
       meta.textContent += " · PR: " + s.pr_url.split("/").pop();
     }
     row.appendChild(meta);
-    el.appendChild(row);
-  });
+    return row;
+  };
+
+  if (!ss.length) {
+    const p = document.createElement("div");
+    p.style.color = "var(--text-muted)";
+    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
+    el.appendChild(p);
+  } else {
+    ss.forEach(s => el.appendChild(renderRow(s)));
+  }
+
+  if (unk.length) {
+    const uHeader = document.createElement("div");
+    uHeader.style.marginTop = "0.6em";
+    uHeader.style.fontWeight = "bold";
+    uHeader.style.fontSize = "0.9em";
+    uHeader.style.color = "var(--text-muted)";
+    uHeader.textContent = "Unknown / global sessions (" + unk.length + "):";
+    el.appendChild(uHeader);
+    unk.forEach(s => el.appendChild(renderRow(s)));
+  }
+
   if (data.other) {
     const pOther = document.createElement("div");
     pOther.style.color = "var(--text-muted)";
@@ -6208,18 +6215,8 @@ async function refreshJulesSessions() {
     el.appendChild(n);
   }
   const ss = data.sessions || [];
-  if (!ss.length) {
-    el.appendChild(document.createTextNode("No Jules sessions."));
-    if (data.other) {
-      const p = document.createElement("p");
-      p.style.color = "var(--text-muted)";
-      p.style.fontSize = "0.9em";
-      p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
-      el.appendChild(p);
-    }
-    return;
-  }
-  ss.forEach(s => {
+  const unk = data.unknown || [];
+  const renderCard = (s) => {
     const card = document.createElement("div");
     card.className = "prcard";
     const title = document.createElement("div");
@@ -6249,8 +6246,28 @@ async function refreshJulesSessions() {
       pr.appendChild(a);
       card.appendChild(pr);
     }
-    el.appendChild(card);
-  });
+    return card;
+  };
+
+  if (!ss.length) {
+    el.appendChild(document.createTextNode("No Jules sessions."));
+  } else {
+    ss.forEach(s => el.appendChild(renderCard(s)));
+  }
+
+  if (unk.length) {
+    const uSection = document.createElement("div");
+    uSection.style.marginTop = "0.8em";
+    const uHeader = document.createElement("div");
+    uHeader.style.fontWeight = "bold";
+    uHeader.style.color = "var(--text-muted)";
+    uHeader.style.marginBottom = "0.3em";
+    uHeader.textContent = "Unknown / global sessions (" + unk.length + "):";
+    uSection.appendChild(uHeader);
+    unk.forEach(s => uSection.appendChild(renderCard(s)));
+    el.appendChild(uSection);
+  }
+
   if (data.other) {
     const p = document.createElement("p");
     p.style.color = "var(--text-muted)";
@@ -8171,6 +8188,7 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
+                unknown_sessions = []
                 other_count = 0
                 seen_session_ids = set()
                 target_gh = (info.get("gh") or "").lower()
@@ -8223,25 +8241,17 @@ class Handler(BaseHTTPRequestHandler):
                                 s_repo = p[-1].lower()
 
                     matches_repo = False
+                    is_unknown = False
                     if s_repo:
                         if target_gh and (s_repo == target_gh or s_repo.endswith("/" + target_repo)):
                             matches_repo = True
                         elif s_repo == target_repo:
                             matches_repo = True
                     else:
-                        # Fallback: check display name / title, or default to current repo if no repo info
-                        dname = str(s.get("displayName") or s.get("display_name") or "").lower()
-                        title = str(s.get("title") or "").lower()
-                        if target_repo and (target_repo in dname or target_repo in title):
-                            matches_repo = True
-                        elif not dname and not s.get("sourceContext") and not s.get("source"):
-                            matches_repo = True
+                        is_unknown = True
 
-                    if not matches_repo:
+                    if not matches_repo and not is_unknown:
                         other_count += 1
-                        continue
-
-                    if len(sessions) >= 30:
                         continue
 
                     pr_url = ""
@@ -8250,7 +8260,7 @@ class Handler(BaseHTTPRequestHandler):
                         if pr.get("url"):
                             pr_url = pr["url"]
                             break
-                    sessions.append({
+                    item = {
                         "id": s.get("id"), "title": s.get("title"),
                         "state": s.get("state"),
                         "updated": s.get("updateTime"),
@@ -8259,8 +8269,16 @@ class Handler(BaseHTTPRequestHandler):
                                    .get("source", "")
                                    .split("/")[-1]),
                         "pr_url": pr_url,
-                    })
+                    }
+                    if is_unknown:
+                        if len(unknown_sessions) < 30:
+                            unknown_sessions.append(item)
+                    else:
+                        if len(sessions) < 30:
+                            sessions.append(item)
+
                 self._json({"repo": repo, "sessions": sessions,
+                            "unknown": unknown_sessions,
                             "other": other_count,
                             "notice": data.get("notice", "")})
             except Exception as exc:
