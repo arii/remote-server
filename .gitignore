@@ -60,6 +60,7 @@ deep-agent/*
 !deep-agent/trace_view.py
 !deep-agent/OBSERVABILITY.md
 !deep-agent/tests/
+!deep-agent/EXECUTOR_PROMPT.md
 !deep-agent/deep_chat.py
 !deep-agent/API_CONTRACT_PROPOSAL.md
 !deep-agent/eval_lib.py
