@@ -27,6 +27,55 @@ function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
 }
 
+function JobListItem({ job, repo }: { job: JobRecord; repo: string }) {
+  return (
+    <li key={job.id} className="detail" data-testid={`job-${job.id}`}>
+      <span className="row-title">{labelOf(job)}</span>
+      <p className="row-meta">
+        {job.id} · {job.repo || repo} · {job.done ? 'done' : 'active'}
+        {typeof job.exit_code === 'number' ? ` · exit ${job.exit_code}` : ''}
+      </p>
+      {(job.error || job.detail) && <p>{job.error || job.detail}</p>}
+    </li>
+  );
+}
+
+interface DispatchBarProps {
+  action: string;
+  onAction: (action: string) => void;
+  onDispatch: () => void;
+  onClear: (all: boolean) => void;
+  onTakeover: () => void;
+}
+
+function DispatchBar({ action, onAction, onDispatch, onClear, onTakeover }: DispatchBarProps) {
+  return (
+    <div className="actions">
+      <label className="row-meta" htmlFor="jobs-action">
+        Action{' '}
+        <select
+          id="jobs-action"
+          data-testid="jobs-action"
+          value={action}
+          onChange={(e) => onAction(e.target.value)}
+        >
+          {ACTIONS.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </select>
+      </label>
+      <button type="button" data-testid="jobs-dispatch" onClick={onDispatch}>
+        Dispatch
+      </button>
+      <HoldToConfirm label="Clear jobs" onFire={() => onClear(false)} />
+      <HoldToConfirm label="Clear all" onFire={() => onClear(true)} />
+      <HoldToConfirm label="Take over terminal" onFire={onTakeover} />
+    </div>
+  );
+}
+
 export default function JobsView({ repo }: { repo: string }) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,22 +85,27 @@ export default function JobsView({ repo }: { repo: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  const load = useCallback(async () => {
+  async function guarded(fn: () => Promise<void>) {
     setError(null);
     try {
-      if (useMock()) {
-        setJobs(loadJobs().jobs);
-      } else {
-        const live = await fetchJobs();
-        setJobs(live.jobs);
-      }
+      await fn();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  const load = useCallback(async () => {
+    if (useMock()) {
+      setJobs(loadJobs().jobs);
+      return;
+    }
+    const live = await fetchJobs();
+    setJobs(live.jobs);
   }, []);
 
   useEffect(() => {
-    void load();
+    void guarded(load);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
   function stopPoll() {
@@ -63,60 +117,45 @@ export default function JobsView({ repo }: { repo: string }) {
 
   useEffect(() => stopPoll, []);
 
+  function startPolling(rid: string) {
+    stopPoll();
+    void pollOnce(rid);
+    pollRef.current = window.setInterval(() => void pollOnce(rid), 2000);
+  }
+
   async function pollOnce(rid: string) {
     try {
       const p = await fetchPiProgress(rid);
       setTail(p.output);
-      if (p.done) {
-        stopPoll();
-        void load();
-      }
+      if (!p.done) return;
+      stopPoll();
+      await load();
     } catch {
       // No pi-progress entry for plain job runs; fall back to job list refresh.
       stopPoll();
-      void load();
+      await load();
     }
   }
 
   async function onDispatch() {
-    setError(null);
     setNotice(null);
-    try {
-      const started = await startJobRun(action, repo);
-      setRunId(started.id);
-      setNotice(`Started ${action}: ${started.id}`);
-      if (useMock()) return;
-      if (/^[0-9a-f]{12}$/.test(started.id)) {
-        stopPoll();
-        void pollOnce(started.id);
-        pollRef.current = window.setInterval(() => void pollOnce(started.id), 2000);
-      } else {
-        void load();
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    const started = await startJobRun(action, repo);
+    setRunId(started.id);
+    setNotice(`Started ${action}: ${started.id}`);
+    if (useMock()) return;
+    if (/^[0-9a-f]{12}$/.test(started.id)) startPolling(started.id);
+    else await load();
   }
 
   async function onClear(all: boolean) {
-    setError(null);
-    try {
-      const r = await clearJobs(all);
-      setNotice(`Cleared ${r.cleared} job(s).`);
-      void load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    const r = await clearJobs(all);
+    setNotice(`Cleared ${r.cleared} job(s).`);
+    await load();
   }
 
   async function onTakeover() {
-    setError(null);
-    try {
-      await requestTakeover();
-      setNotice('Takeover requested.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    await requestTakeover();
+    setNotice('Takeover requested.');
   }
 
   if (error) {
@@ -135,7 +174,7 @@ export default function JobsView({ repo }: { repo: string }) {
           <h2>Jobs</h2>
           <p className="row-meta">{jobs.length} approved job(s)</p>
         </div>
-        <button type="button" data-testid="jobs-refresh" onClick={() => void load()}>
+        <button type="button" data-testid="jobs-refresh" onClick={() => void guarded(load)}>
           Refresh
         </button>
       </header>
@@ -144,29 +183,13 @@ export default function JobsView({ repo }: { repo: string }) {
           {notice}
         </p>
       )}
-      <div className="actions">
-        <label className="row-meta" htmlFor="jobs-action">
-          Action{' '}
-          <select
-            id="jobs-action"
-            data-testid="jobs-action"
-            value={action}
-            onChange={(e) => setAction(e.target.value)}
-          >
-            {ACTIONS.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button type="button" data-testid="jobs-dispatch" onClick={() => void onDispatch()}>
-          Dispatch
-        </button>
-        <HoldToConfirm label="Clear jobs" onFire={() => void onClear(false)} />
-        <HoldToConfirm label="Clear all" onFire={() => void onClear(true)} />
-        <HoldToConfirm label="Take over terminal" onFire={() => void onTakeover()} />
-      </div>
+      <DispatchBar
+        action={action}
+        onAction={setAction}
+        onDispatch={() => void guarded(onDispatch)}
+        onClear={(all) => void guarded(() => onClear(all))}
+        onTakeover={() => void guarded(onTakeover)}
+      />
       {jobs.length === 0 ? (
         <div data-testid="jobs-empty">
           <h3>No approved jobs</h3>
@@ -175,14 +198,7 @@ export default function JobsView({ repo }: { repo: string }) {
       ) : (
         <ul className="session-list" data-testid="jobs-list">
           {jobs.map((j) => (
-            <li key={j.id} className="detail" data-testid={`job-${j.id}`}>
-              <span className="row-title">{labelOf(j)}</span>
-              <p className="row-meta">
-                {j.id} · {j.repo || repo} · {j.done ? 'done' : 'active'}
-                {typeof j.exit_code === 'number' ? ` · exit ${j.exit_code}` : ''}
-              </p>
-              {(j.error || j.detail) && <p>{j.error || j.detail}</p>}
-            </li>
+            <JobListItem key={j.id} job={j} repo={repo} />
           ))}
         </ul>
       )}

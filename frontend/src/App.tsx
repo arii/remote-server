@@ -1,19 +1,21 @@
 import { useEffect, useState } from 'react';
 import NowView from './views/NowView';
 import ReviewView from './views/ReviewView';
+import JobsView from './views/JobsView';
+import ChatView from './views/ChatView';
 import HistoryView from './views/HistoryView';
 import RepoPicker from './components/RepoPicker';
 import { fetchRepos } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
 import { loadRepos, useMock } from './views/mockViews';
 
-// Nav is intentionally extensible: Jobs/Chat land as separate views later
-// by adding one entry here plus a branch in the body below.
-type Tab = 'now' | 'review' | 'history';
+type Tab = 'now' | 'review' | 'jobs' | 'chat' | 'history';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'now', label: 'Now' },
   { id: 'review', label: 'Review' },
+  { id: 'jobs', label: 'Jobs' },
+  { id: 'chat', label: 'Chat' },
   { id: 'history', label: 'History' },
 ];
 
@@ -79,6 +81,8 @@ export default function App() {
       </nav>
       {tab === 'now' && <NowView repo={repo} />}
       {tab === 'review' && <ReviewView repo={repo} />}
+      {tab === 'jobs' && <JobsView repo={repo} />}
+      {tab === 'chat' && <ChatView repo={repo} />}
       {tab === 'history' && <HistoryView repo={repo} />}
     </main>
   );

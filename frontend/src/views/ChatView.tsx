@@ -9,16 +9,52 @@ function newSessionId(): string {
   return Math.random().toString(16).slice(2, 14).padEnd(12, '0');
 }
 
-function parseSse(buffer: string): { events: Array<{ name: string; data: string }>; rest: string } {
-  const events: Array<{ name: string; data: string }> = [];
+interface SseEvent {
+  name: string;
+  data: string;
+}
+
+function parseSsePart(part: string): SseEvent | null {
+  const name = (part.match(/^event:\s*(.*)$/m)?.[1] ?? '').trim();
+  const dataMatch = part.match(/^data:\s*(.*)$/m);
+  if (!name || !dataMatch) return null;
+  return { name, data: dataMatch[1] };
+}
+
+function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
   const parts = buffer.split('\n\n');
   const rest = parts.pop() ?? '';
-  for (const part of parts) {
-    const name = (part.match(/^event:\s*(.*)$/m)?.[1] ?? '').trim();
-    const dataMatch = part.match(/^data:\s*(.*)$/m);
-    if (name && dataMatch) events.push({ name, data: dataMatch[1] });
-  }
+  const events = parts
+    .map(parseSsePart)
+    .filter((e): e is SseEvent => e !== null);
   return { events, rest };
+}
+
+function tokenOf(data: string): string {
+  try {
+    return (JSON.parse(data) as { token?: string }).token ?? '';
+  } catch {
+    return '';
+  }
+}
+
+async function pumpStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onToken: (token: string) => void,
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const { events, rest } = parseSse(buf);
+    buf = rest;
+    for (const ev of events) {
+      if (ev.name === 'error') throw new Error(ev.data);
+      if (ev.name === 'token') onToken(tokenOf(ev.data));
+    }
+  }
 }
 
 export default function ChatView({ repo }: { repo: string }) {
@@ -33,6 +69,35 @@ export default function ChatView({ repo }: { repo: string }) {
     if (useMock()) setMessages(loadChat().messages);
   }, []);
 
+  function appendToken(token: string) {
+    if (!token) return;
+    setMessages((m) => {
+      const next = [...m];
+      const last = next[next.length - 1];
+      next[next.length - 1] = { role: 'assistant', text: last.text + token };
+      return next;
+    });
+  }
+
+  async function streamLive(text: string, sessionId: string) {
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const resp = await fetch(chatStreamUrl(text, repo, sessionId), { signal: ctrl.signal });
+      if (!resp.ok || !resp.body) throw new Error(`Chat stream failed: ${resp.status}`);
+      await pumpStream(resp.body.getReader(), appendToken);
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') throw err;
+    } finally {
+      abortRef.current = null;
+    }
+  }
+
+  function mockReply() {
+    const text = loadChat().messages.find((x) => x.role === 'assistant')?.text ?? 'Mock reply.';
+    setMessages((m) => [...m, { role: 'assistant', text }]);
+  }
+
   async function onSend(e?: React.FormEvent) {
     e?.preventDefault();
     const text = prompt.trim();
@@ -43,52 +108,17 @@ export default function ChatView({ repo }: { repo: string }) {
     setMessages((m) => [...m, { role: 'user', text }]);
     setPrompt('');
     if (useMock()) {
-      setMessages((m) => [...m, { role: 'assistant', text: loadChat().messages.find((x) => x.role === 'assistant')?.text ?? 'Mock reply.' }]);
+      mockReply();
       return;
     }
     setStreaming(true);
     setMessages((m) => [...m, { role: 'assistant', text: '' }]);
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
     try {
-      const resp = await fetch(chatStreamUrl(text, repo, sessionId), { signal: ctrl.signal });
-      if (!resp.ok || !resp.body) throw new Error(`Chat stream failed: ${resp.status}`);
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const { events, rest } = parseSse(buf);
-        buf = rest;
-        for (const ev of events) {
-          if (ev.name === 'token') {
-            try {
-              const tok = (JSON.parse(ev.data) as { token?: string }).token ?? '';
-              setMessages((m) => {
-                const next = [...m];
-                next[next.length - 1] = {
-                  role: 'assistant',
-                  text: next[next.length - 1].text + tok,
-                };
-                return next;
-              });
-            } catch {
-              /* ignore malformed token frame */
-            }
-          } else if (ev.name === 'error') {
-            throw new Error(ev.data);
-          }
-        }
-      }
+      await streamLive(text, sessionId);
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStreaming(false);
-      abortRef.current = null;
     }
   }
 
