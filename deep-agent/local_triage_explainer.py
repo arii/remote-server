@@ -1,0 +1,116 @@
+"""Minimal-context triage explainer: local 8b model, 2 tools, tiny prompt."""
+
+import re
+import subprocess
+import time
+
+from langchain.agents import create_agent
+from langchain_chroma import Chroma
+from langchain_core.tools import tool
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+
+import ledger
+
+REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+DB_DIR = "/srv/remote-server/deep-agent/chroma_db"
+MODEL_ID = "qwen3:8b"
+THREAD_ID = "local-explainer-1"
+
+_embeddings = OllamaEmbeddings(
+    model="nomic-embed-text", base_url="http://ollama:11434"
+)
+_retriever = Chroma(
+    persist_directory=DB_DIR,
+    embedding_function=_embeddings,
+    collection_name="s5-docs",
+).as_retriever(search_kwargs={"k": 2})
+
+
+@tool
+def triage_counts(repo: str) -> str:
+    """Get deterministic triage counts for a repository.
+
+    Use this first, before answering anything about triage state.
+
+    Args:
+        repo: Repository in owner/name format, e.g. arii/tech-dancer.
+    """
+    if not REPO_RE.match(repo):
+        return "REJECTED: repo must look like owner/name"
+    proc = subprocess.run(
+        ["td", "agent", "suggest", "-r", repo],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return (proc.stdout + proc.stderr).strip()[:1500]
+
+
+@tool
+def search_docs(query: str) -> str:
+    """Search S5 runbooks for triage guidance.
+
+    Use this after triage_counts if you need runbook context for the
+    explanation.
+
+    Args:
+        query: Short question about triage process or commands.
+    """
+    hits = _retriever.invoke(query)
+    parts = [
+        f"[{h.metadata.get('source')}] {h.page_content[:700]}" for h in hits
+    ]
+    return "\n\n".join(parts)[:1600]
+
+
+def main() -> None:
+    started = time.time()
+    # qwen3:8b emits valid tool calls; qwen2.5-coder:7b narrates them
+    # as JSON text under LangChain on both native and OpenAI-compat
+    # routes (see diag_local_tools.py).
+    model = ChatOllama(
+        model=MODEL_ID,
+        base_url="http://ollama:11434",
+        temperature=0,
+    )
+    agent = create_agent(
+        model=model,
+        tools=[triage_counts, search_docs],
+        system_prompt=(
+            "You are a triage explainer. Call the triage_counts tool "
+            "once for the requested repo, optionally call search_docs "
+            "once for runbook context, then reply in at most 3 "
+            "sentences: state the counts, then name the single next "
+            "action. Always invoke tools through the function-calling "
+            "interface. Never write a tool call out as JSON text."
+        ),
+    )
+    result = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain the triage state of arii/tech-dancer "
+                    "and the single next action.",
+                }
+            ]
+        },
+        config={"recursion_limit": 10},
+    )
+    calls = sum(
+        len(getattr(m, "tool_calls", []) or [])
+        for m in result["messages"]
+    )
+    ledger.record(
+        "local_triage_explainer.py",
+        f"ollama:{MODEL_ID}",
+        THREAD_ID,
+        result["messages"],
+        started,
+    )
+    print(f"tool_calls_made: {calls}")
+    print("FINAL:", result["messages"][-1].content)
+
+
+if __name__ == "__main__":
+    main()

@@ -39,6 +39,11 @@ buttons/ux/scratch-ledger.json
 .pnpm-store/
 .fallow/
 
+# Deep Agents spikes: track scripts + requirements, never env/index/logs.
+deep-agent/.venv/
+deep-agent/chroma_db/
+deep-agent/ledger.jsonl
+
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),
 # absent from git. Re-provision by reinstalling from
