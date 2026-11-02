@@ -1825,6 +1825,37 @@ def _job_after_step(job):
         _job_end(job, "failed")
 
 
+def _jobs_clear(all_jobs=False):
+    """Clear past / terminal jobs (or all if all_jobs=True).
+    Returns count of jobs removed."""
+    removed = 0
+    with jobs_lock:
+        to_del = []
+        for jid, job in jobs.items():
+            if all_jobs or job.get("state") == "terminal":
+                to_del.append(jid)
+        for jid in to_del:
+            del jobs[jid]
+            removed += 1
+        if removed:
+            _jobs_save()
+    if removed:
+        _ledger_append({"kind": "job", "event": "jobs cleared",
+                        "cleared": removed, "all": all_jobs})
+    return removed
+
+
+def _job_delete(jid):
+    """Delete a single job by id. Returns True if deleted, False if not found."""
+    with jobs_lock:
+        if jid not in jobs:
+            return False
+        del jobs[jid]
+        _jobs_save()
+    _ledger_append({"kind": "job", "job": jid, "event": "job deleted"})
+    return True
+
+
 def _execute_job_step(job, step_idx, step_obj, repos=None, event_prefix=""):
     """Execute a synchronous job step (pr-action, repair-issue, label-issue, info),
     updating step state, exit_code, finished_at, saving jobs, and logging to ledger.
@@ -2582,7 +2613,10 @@ a { color: #8bf; }
 /* jobs */
 .jobcard { border: 1px solid var(--border); border-radius: 10px;
   background: var(--bg-card); padding: 0.75em; margin: 0.5em 0; }
-.jobcard .jobgoal { font-weight: bold; margin-bottom: 0.4em; }
+.jobcard-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5em; margin-bottom: 0.4em; }
+.jobcard .jobgoal { font-weight: bold; flex: 1; }
+.jobcard-del { flex: none; width: auto; padding: 0.2em 0.5em; border-radius: 6px; font-size: 0.85em; color: var(--text-muted); }
+.jobcard-del:hover { color: #ff8a8a; border-color: var(--danger); }
 .jobcard .jobmeta { font-size: 0.85em; color: var(--text-muted); margin-bottom: 0.4em; }
 .jobstep { display: flex; align-items: center; gap: 0.5em; padding: 0.35em 0;
   border-top: 1px solid var(--border); font-size: 0.92em; }
@@ -2875,7 +2909,10 @@ writable.</p>
 </details>
 <div id="jobNew"></div>
 <div id="jobErr"></div>
-<h2>Active and past jobs</h2>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5em;margin-bottom:0.5em;">
+  <h2 style="margin:0;">Active and past jobs</h2>
+  <button id="clearJobsBtn" type="button" class="btn-ghost" style="width:auto;margin:0;padding:0.3em 0.7em;font-size:0.85em;">Clear past jobs</button>
+</div>
 <div id="jobList"></div>
 <div id="jobListErr"></div>
 </section>
@@ -4227,14 +4264,36 @@ async function refreshJobs() {
 function renderJobCard(j) {
   const card = document.createElement("div");
   card.className = "jobcard";
+  const head = document.createElement("div");
+  head.className = "jobcard-head";
   const g = document.createElement("div");
   g.className = "jobgoal";
   g.textContent = j.goal;
-  card.appendChild(g);
+  head.appendChild(g);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "jobcard-del";
+  del.textContent = "✕";
+  del.title = "Delete this job";
+  del.onclick = async (e) => {
+    e.stopPropagation();
+    if (!(await confirmDialog("Delete Job", "Remove job record from the list? (Audit ledger entry will be preserved)", true))) return;
+    const r = await fetchJson("/buttons/api/jobs/" + encodeURIComponent(j.id) + "/delete", {method: "POST"});
+    if (!r.ok) {
+      jobErr("Delete job failed: " + (r.data.error || r.status));
+      return;
+    }
+    refreshJobs();
+    if (typeof refreshLedger === "function") refreshLedger();
+  };
+  head.appendChild(del);
+  card.appendChild(head);
+
   const m = document.createElement("div");
   m.className = "jobmeta";
-  const done = j.steps.filter(s => s.state === "done").length;
-  m.textContent = j.repo + " · " + done + "/" + j.steps.length + " steps" +
+  const done = (j.steps || []).filter(s => s.state === "done").length;
+  m.textContent = j.repo + " · " + done + "/" + (j.steps || []).length + " steps" +
     (j.state === "terminal" ? " · " + j.outcome : " · active");
   card.appendChild(m);
 
@@ -4356,6 +4415,18 @@ async function jobStepDone(run) {
   if (typeof refreshLedger === "function") refreshLedger();
 }
 renderJobNew();
+const clearJobsBtn = document.getElementById("clearJobsBtn");
+if (clearJobsBtn) clearJobsBtn.onclick = async () => {
+  if (!(await confirmDialog("Clear past jobs", "Clear all finished/past jobs from the list? Active jobs will remain.", false))) return;
+  const res = await fetchJson("/buttons/api/jobs/clear", {method: "POST"});
+  if (!res.ok) {
+    jobErr("Clear jobs failed: " + (res.data.error || res.status));
+    return;
+  }
+  jobErr("");
+  refreshJobs();
+  if (typeof refreshLedger === "function") refreshLedger();
+};
 refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
@@ -7888,14 +7959,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({"job": job})
             return
+        if path == "/buttons/api/jobs/clear":
+            # Clear past / terminal jobs from jobs list
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            all_jobs = bool(data.get("all", False))
+            count = _jobs_clear(all_jobs=all_jobs)
+            self._json({"ok": True, "cleared": count})
+            return
         if path.startswith("/buttons/api/jobs/"):
-            # /buttons/api/jobs/<id>/{approve|decline|step-done} (POST)
+            # /buttons/api/jobs/<id>/{approve|decline|step-done|delete} (POST)
             rest = path[len("/buttons/api/jobs/"):]
             jid, _, sub = rest.partition("/")
             with jobs_lock:
                 job = jobs.get(jid)
             if job is None:
                 self._json({"error": "unknown job"}, 404)
+                return
+            if sub == "delete":
+                _job_delete(jid)
+                self._json({"ok": True, "deleted": jid})
                 return
             try:
                 data = json.loads(body) if body else {}
