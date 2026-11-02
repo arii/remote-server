@@ -95,10 +95,23 @@ See `docs/remote-access.md` for the threat model.
 - `docs/setup-plan.md` — phased Ubuntu install, hardening, Docker,
   DDNS/certbot wiring, VPN, backups, repeatability. Every phase has a
   verification step.
+- `docs/workstation-onboarding.md` — workstation configuration and
+  multi-agent onboarding guide: Antigravity multi-agent toolset,
+  Boomtick MCP, and Browser MCP (v2.3.0).
 - `docs/usb-install-and-network.md` — bootable USB from your Linux box
   (exact ISO link + `dd`/Disks/Etcher), S5 install notes, Nest Wifi DHCP
   reservation + port forward (Google Home app path), No-IP DUC install,
   certbot.
+- `docs/agent-guide.md` — agent GitHub identity (`onasafari`):
+  attribution vs authentication, GPG verified commits.
+- `docs/media.md` — media asset pipeline: YouTube-to-GIF/WebP, ffmpeg,
+  WebM/MP4 for the web.
+- `docs/ux-evaluation-and-redesign-guide.md` — S5 Buttons UX evaluation
+  & enhancement guide (design input; the as-built state is `docs/buttons.md`).
+- `docs/autonomous-triage-runbook.md` — autonomous multi-repo triage
+  loop protocol (20-minute cycle across the three repos).
+- `docs/deepagents.md` — DeepAgents direction: LangChain skills,
+  Nebius-then-Ollama route, Pi succession plan.
 
 ## Repo layout
 
@@ -108,9 +121,9 @@ docker-compose.yml        services: oauth2-proxy (TLS+OAuth, public port),
                           tailscale (VPN), ollama (local LLM, CPU-only).
                           openclaw / actions-runner commented out
                           under profiles: ["agents"] (decision deferred).
-terminal/                 Dockerfile (pinned ttyd + zellij + Node 22 + Pi
-                          + docker CLI), config.kdl (phone-tuned zellij
-                          config), pi-config/ (Pi Ollama provider + defaults)
+terminal/                 Dockerfile (pinned ttyd + zellij + Node 24 + Pi
+                          + docker CLI + Muse), config.kdl (phone-tuned
+                          zellij config), pi-config/ (Pi Ollama provider + defaults)
 config/                   oauth2-proxy.cfg (no secrets)
 scripts/                  bootstrap.sh, install-docker.sh,
                           tailscale-entrypoint.sh,
@@ -119,7 +132,7 @@ scripts/                  bootstrap.sh, install-docker.sh,
                           (pull-models.sh is dormant until the agents profile
                           is enabled)
 .env.example              every variable, no values (copy to .env)
-docs/                     the three research/plan docs
+docs/                     guides & runbooks (see Docs above)
 ```
 
 ## Security notes

@@ -13,25 +13,29 @@ class TestInteractiveChat(unittest.TestCase):
             server.chat_sessions.clear()
 
     def test_ui_contains_chat_components(self):
-        """Ensure UI HTML contains chat card, prompt inputs, phase badges, and buttons across tabs."""
+        """Ensure UI HTML contains single consolidated chat drawer and entry points, without duplicates."""
         # Global topbar trigger
         self.assertIn('id="globalChatBtn"', server.HTML)
 
-        # Actions tab chat card
-        self.assertIn('id="actionsChatCard"', server.HTML)
-        self.assertIn('id="actionsChatInput"', server.HTML)
-        self.assertIn('id="actionsChatSendBtn"', server.HTML)
-        self.assertIn('id="actionsChatAbortBtn"', server.HTML)
-        self.assertIn('id="actionsPhaseBadge"', server.HTML)
-        self.assertIn('id="actionsChatStream"', server.HTML)
+        # Unified chat drawer and components
+        self.assertIn('id="chatDrawer"', server.HTML)
+        self.assertIn('id="chatDrawerClose"', server.HTML)
+        self.assertIn('id="globalChatCard"', server.HTML)
+        self.assertIn('id="globalChatInput"', server.HTML)
+        self.assertIn('id="globalChatSendBtn"', server.HTML)
+        self.assertIn('id="globalChatAbortBtn"', server.HTML)
+        self.assertIn('id="globalChatClearBtn"', server.HTML)
+        self.assertIn('id="globalPhaseBadge"', server.HTML)
+        self.assertIn('id="globalChatStream"', server.HTML)
 
-# Pi tab chat card
-        self.assertIn('id="piChatCard"', server.HTML)
-        self.assertIn('id="piChatInput"', server.HTML)
-        self.assertIn('id="piChatSendBtn"', server.HTML)
-        self.assertIn('id="piChatAbortBtn"', server.HTML)
-        self.assertIn('id="piPhaseBadge"', server.HTML)
-        self.assertIn('id="piChatStream"', server.HTML)
+        # Removed redundant duplicate per-tab chat cards and askBox
+        self.assertNotIn('id="actionsChatCard"', server.HTML)
+        self.assertNotIn('id="briefingChatCard"', server.HTML)
+        self.assertNotIn('id="piChatCard"', server.HTML)
+        self.assertNotIn('id="askBox"', server.HTML)
+
+        # Pi tab has deep-link button to open the consolidated chat drawer
+        self.assertIn('id="piOpenChatBtn"', server.HTML)
 
         self.assertIn("initInteractiveChat", server.HTML)
         self.assertIn("code-copy-btn", server.HTML)

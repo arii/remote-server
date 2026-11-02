@@ -2387,10 +2387,23 @@ summary.grouphead { cursor: pointer; }
 .repo[data-repo-pick]:hover { border-color: var(--primary); }
 .forrepo { font-size: 0.6em; font-weight: normal; color: var(--text-muted); }
 .repo.selected { border-color: var(--primary); background: #1a2744; box-shadow: 0 0 0 1px var(--primary); }
-.issuepick { max-height: 12em; overflow-y: auto; margin: 0.5em 0;
+.issuepick { max-height: 14em; overflow-y: auto; margin: 0.5em 0;
   border: 1px solid var(--border); border-radius: 8px; padding: 0.5em; }
-.issuepick label { display: block; padding: 0.3em 0; cursor: pointer; }
-.issuepick input { margin-right: 0.5em; }
+.issuepick-item { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 0.4em; padding: 0.35em 0.2em; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.issuepick-item:last-child { border-bottom: none; }
+.issuepick-label { display: flex; align-items: flex-start; gap: 0.4em; cursor: pointer;
+  flex: 1; min-width: 0; }
+.issuepick-label input[type="checkbox"] { margin-top: 0.25em; flex: none; }
+.issuepick-num { font-weight: 600; flex: none; color: var(--primary); }
+.issuepick-title { font-size: 0.92em; word-break: break-word; line-height: 1.35;
+  white-space: normal; }
+.issuepick-title.compact { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+  overflow: hidden; text-overflow: ellipsis; }
+.issuepick-expand { flex: none; width: auto; margin: 0; padding: 0.1em 0.45em;
+  font-size: 0.78em; line-height: 1.2; border-radius: 4px; background: transparent;
+  border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+.issuepick-expand:hover { color: var(--text-main); border-color: var(--primary); }
 .reponame { font-weight: bold; }
 .reponame a { color: inherit; text-decoration: underline; }
 .reposcope { font-size: 0.9em; color: var(--text-muted); }
@@ -2441,6 +2454,9 @@ h2 { font-size: 1.1em; margin-top: 1.5em; }
 #issues .prcard, #julesSessions .prcard { margin: 0.4em 0; }
 #issues details { margin-top: 0.4em; }
 #issues input { margin-right: 0.4em; }
+.issue-section-title { font-weight: bold; margin-top: 0.5em; }
+.issue-assign-row { margin-top: 0.4em; }
+.issue-assign-err { color: #ff8a8a; margin-top: 0.3em; font-size: 0.9em; }
 .prcard .prresult { font-size: 0.9em; margin-top: 0.4em; }
 .practions { margin-top: 0.5em; display: flex; gap: 0.5em; flex-wrap: wrap; }
 .practions button { margin: 0; }
@@ -2467,6 +2483,19 @@ a { color: #8bf; }
 @media (max-width: 520px) {
   #tabbar .tab { font-size: 0.72em; padding: 0.6em 0.1em; }
 }
+/* slide-up chat drawer */
+#chatDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1050;
+  background: var(--bg-app); border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 20px rgba(0,0,0,0.8);
+  transform: translateY(105%); transition: transform 0.25s ease-out;
+  max-height: 85vh; display: flex; flex-direction: column; }
+#chatDrawer.open { transform: none; }
+#chatDrawerHead { display: flex; align-items: center; justify-content: space-between;
+  padding: 0.5em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; background: var(--bg-card); }
+#chatDrawerHead .dbactions { display: flex; align-items: center; gap: 0.5em; }
+#chatDrawerHead button { width: auto; margin: 0; padding: 0.4em 0.8em; font-size: 0.85em; }
+.chat-drawer-title { display: flex; align-items: center; gap: 0.4em; }
+.chat-drawer-body { padding: 0.8em; overflow-y: auto; flex: 1; }
 /* slide-up output drawer */
 #outputDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
   background: #050811; border-top: 1px solid var(--border);
@@ -2667,23 +2696,6 @@ below are still visible, but they need JavaScript to start a run.</div>
 </div>
 <div id="julesCardBody" class="jules-card-body"><span class="spinner"></span> Loading Jules status…</div>
 </div>
-<div class="chat-card" id="actionsChatCard">
-  <div class="chat-head">
-    <div class="chat-title">💬 Ask Pi / Interactive Agent Chat <span class="forrepo" data-forrepo></span></div>
-    <span id="actionsPhaseBadge" class="phase-badge">Ready</span>
-  </div>
-  <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
-  <div class="chat-input-wrap">
-    <textarea id="actionsChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
-    <div class="chat-ctrls">
-      <button id="actionsChatSendBtn" class="btn-primary">Send Prompt</button>
-      <button id="actionsChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
-      <button id="actionsChatClearBtn" class="btn-ghost">Clear</button>
-    </div>
-  </div>
-  <div id="actionsChatStream" class="chat-stream-box"></div>
-  <div id="actionsChatErr" class="repair-err" style="margin-top:0.4em;"></div>
-</div>
 <div id="repairCard" class="health-card">
 <div class="health-head">Agent / Tools: Local Repair Worker</div>
 <div class="bsub" style="margin-bottom: 0.5em;">Trigger a local repair run by passing an issue number or issue URL.</div>
@@ -2702,7 +2714,6 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
-
 <h2>Briefing</h2>
 <details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
@@ -2714,7 +2725,6 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
-
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -2728,19 +2738,13 @@ minutes on the local model.</p>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
-<h2>Ask Pi</h2>
+<h2>Ask Agent / Chat</h2>
 <details><summary>How this works</summary>
-<p>Open-ended instructions for this repo, in your own words —
-e.g. "draft an issue for the flaky briefing refresh" or "where
-does the webhook worker live?". Pi investigates read-only and
-replies here. If you asked for a write (like creating an issue),
-Pi proposes the exact change and nothing runs until you confirm
-it. Takes minutes on the local model.</p>
+<p>Open-ended questions and instructions for this repo. Access the interactive agent chat via the topbar button or below to chat, stream tool actions, or dispatch tasks.</p>
 </details>
-<textarea id="askBox" rows="3" placeholder="Ask Pi anything about this repo…"></textarea>
-<button id="askBtn">Ask Pi</button>
-<div id="askOut"></div>
-<div id="askErr"></div>
+<div style="margin: 0.6em 0;">
+  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
+</div>
 
 <h2>Pi sessions</h2>
 <details><summary>How this works</summary>
@@ -2897,6 +2901,30 @@ entries but leaves a 'ledger cleared' record.</p>
 <div id="ledgerErr"></div>
 </details>
 </section>
+<div id="chatDrawer">
+<div id="chatDrawerHead">
+  <span class="chat-drawer-title">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
+  <span class="dbactions">
+    <span id="globalPhaseBadge" class="phase-badge">Ready</span>
+    <button id="chatDrawerClose" type="button" class="btn-ghost">✕ Close</button>
+  </span>
+</div>
+<div class="chat-drawer-body">
+  <div class="chat-card" id="globalChatCard" style="margin:0;">
+    <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+    <div class="chat-input-wrap">
+      <textarea id="globalChatInput" class="chat-textarea" rows="3" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
+      <div class="chat-ctrls">
+        <button id="globalChatSendBtn" class="btn-primary">Send Prompt</button>
+        <button id="globalChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
+        <button id="globalChatClearBtn" class="btn-ghost">Clear</button>
+      </div>
+    </div>
+    <div id="globalChatStream" class="chat-stream-box"></div>
+    <div id="globalChatErr" class="repair-err" style="margin-top:0.4em;"></div>
+  </div>
+</div>
+</div>
 <div id="outputDrawer">
 <div id="drawerHead"><span>Output</span><span class="dbactions"><button id="bugBtn" title="File the failed run as a GitHub issue">Report bug</button><button id="clearBtn">Clear output</button><button id="drawerClose">Close</button></span></div>
 <div id="state"></div>
@@ -4008,8 +4036,8 @@ const JOB_TEMPLATES = {
   "fix-ci": {label: "Fix CI on a PR",
     desc: "Dispatch a Jules session to fix a failing PR.", needsPr: true},
   "fix-issues": {label: "Fix issues via repair worker",
-    desc: "Pick issues; each gets one Approve tap, which dispatches " +
-      "the autonomous repair worker. Sequential.",
+    desc: "Pick issues with checkboxes and tap Start job to dispatch " +
+      "the autonomous repair worker sequentially.",
     needsIssues: true},
   "nudge-agents": {label: "Nudge agents",
     desc: "Preview the session list, then Approve to post feedback " +
@@ -4085,13 +4113,49 @@ function renderJobNew() {
             return;
           }
           issues.forEach(i => {
+            const item = document.createElement("div");
+            item.className = "issuepick-item";
+            const fullTitle = "#" + i.number + " — " + (i.title || "");
             const lab = document.createElement("label");
+            lab.className = "issuepick-label";
+            lab.title = fullTitle;
+
             const cb = document.createElement("input");
             cb.type = "checkbox"; cb.value = i.number;
             lab.appendChild(cb);
-            lab.appendChild(document.createTextNode(
-              " #" + i.number + " — " + (i.title || "")));
-            issueBox.appendChild(lab);
+
+            const numSpan = document.createElement("span");
+            numSpan.className = "issuepick-num";
+            numSpan.textContent = "#" + i.number;
+            lab.appendChild(numSpan);
+
+            const titleSpan = document.createElement("span");
+            titleSpan.className = "issuepick-title compact";
+            titleSpan.textContent = i.title || "";
+            lab.appendChild(titleSpan);
+
+            item.appendChild(lab);
+
+            const expBtn = document.createElement("button");
+            expBtn.type = "button";
+            expBtn.className = "issuepick-expand";
+            expBtn.textContent = "expand";
+            expBtn.title = "Toggle full title";
+            expBtn.onclick = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const isCompact = titleSpan.classList.contains("compact");
+              if (isCompact) {
+                titleSpan.classList.remove("compact");
+                expBtn.textContent = "collapse";
+              } else {
+                titleSpan.classList.add("compact");
+                expBtn.textContent = "expand";
+              }
+            };
+            item.appendChild(expBtn);
+
+            issueBox.appendChild(item);
           });
         });
     }
@@ -5202,10 +5266,9 @@ async function refreshWorkflowHealth() {
       askPiBtn.style.width = "auto"; askPiBtn.style.margin = "0";
       askPiBtn.textContent = "Ask Pi to diagnose";
       askPiBtn.onclick = () => {
-        const piTab = document.querySelector('[data-tab="pi"]');
-        const piInp = document.getElementById("piPrompt");
-        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wf.name}' on branch '${wf.branch}'. Cause: ${wf.diagnosed_cause}`;
-        if (piTab) piTab.click();
+        const chatInp = document.getElementById("globalChatInput");
+        if (chatInp) chatInp.value = `Diagnose and suggest fix for failing workflow '${wf.name}' on branch '${wf.branch}'. Cause: ${wf.diagnosed_cause}`;
+        openChatDrawer();
       };
       actions.appendChild(askPiBtn);
 
@@ -5348,37 +5411,110 @@ async function refreshIssues() {
     const sum = document.createElement("summary");
     sum.textContent = "Details / assign";
     det.appendChild(sum);
+
+    // Labels section
+    const labelsHead = document.createElement("div");
+    labelsHead.className = "issue-section-title";
+    labelsHead.textContent = "Labels:";
+    det.appendChild(labelsHead);
+    const labChips = document.createElement("div");
+    labChips.className = "chips";
+    if (iss.labels && iss.labels.length) {
+      iss.labels.forEach(l => {
+        const c = document.createElement("span");
+        c.className = "chip";
+        c.textContent = l.name || l;
+        labChips.appendChild(c);
+      });
+    } else {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = "none";
+      labChips.appendChild(c);
+    }
+    det.appendChild(labChips);
+
+    // Body section
+    const bodyHead = document.createElement("div");
+    bodyHead.className = "issue-section-title";
+    bodyHead.textContent = "Description:";
+    det.appendChild(bodyHead);
     const pre = document.createElement("pre");
     pre.textContent = iss.body || "(no body)";
     det.appendChild(pre);
+
+    // Assignees section
+    const assignHead = document.createElement("div");
+    assignHead.className = "issue-section-title";
+    assignHead.textContent = "Assignee:";
+    det.appendChild(assignHead);
+    const whoChips = document.createElement("div");
+    whoChips.className = "chips";
+    if (iss.assignees && iss.assignees.length) {
+      iss.assignees.forEach(u => {
+        const c = document.createElement("span");
+        c.className = "chip chip-ok";
+        c.textContent = "@" + (u.login || u);
+        whoChips.appendChild(c);
+      });
+    } else {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = "unassigned";
+      whoChips.appendChild(c);
+    }
+    det.appendChild(whoChips);
+
+    // Assignment input and action
     const row = document.createElement("div");
+    row.className = "issue-assign-row";
     const inp = document.createElement("input");
     inp.placeholder = "assignee username";
     inp.size = 18;
     inp.maxLength = 39;
     const btn = document.createElement("button");
     btn.textContent = "Assign";
+    const cardErr = document.createElement("div");
+    cardErr.className = "issue-assign-err";
+
     btn.onclick = async () => {
+      cardErr.textContent = "";
       const name = inp.value.trim();
-      if (!name) return;
+      if (!name) {
+        cardErr.textContent = "Please enter a username to assign.";
+        return;
+      }
+      if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(name)) {
+        cardErr.textContent = "Invalid GitHub username format.";
+        return;
+      }
       if (!(await confirmDialog("Assign issue",
           "Assign #" + iss.number + " to " + name + "?", false))) return;
       btn.disabled = true;
-      const r = await fetchJson("/buttons/api/assign-issue", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({repo: projectRepo(), issue: iss.number,
-                              assignee: name})});
-      btn.disabled = false;
-      if (!r.ok) {
-        setErrorEl(err, ((r.data || {}).error) || r.status, "assign failed");
-        return;
+      try {
+        const r = await fetchJson("/buttons/api/assign-issue", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({repo: projectRepo(), issue: iss.number,
+                                assignee: name})});
+        btn.disabled = false;
+        if (!r.ok) {
+          const errMsg = ((r.data || {}).error) || ("HTTP " + r.status);
+          cardErr.textContent = "Assign failed: " + errMsg;
+          setErrorEl(err, errMsg, "assign failed");
+          return;
+        }
+        await refreshIssues();
+      } catch (e) {
+        btn.disabled = false;
+        cardErr.textContent = "Assign request failed: " + (e.message || e);
+        setErrorEl(err, e.message || e, "assign request failed");
       }
-      refreshIssues();
     };
     row.appendChild(inp);
     row.appendChild(btn);
     det.appendChild(row);
+    det.appendChild(cardErr);
     card.appendChild(det);
     el.appendChild(card);
   });
@@ -5675,10 +5811,9 @@ function pollPlanJob(jid, container) {
   if (askPiBtn) askPiBtn.onclick = () => {
     const tBox = document.getElementById("prPromptText");
     if (!tBox || !tBox.value) return;
-    const piTab = document.querySelector('[data-tab="pi"]');
-    const piInp = document.getElementById("piPrompt");
-    if (piInp) piInp.value = tBox.value;
-    if (piTab) piTab.click();
+    const chatInp = document.getElementById("globalChatInput");
+    if (chatInp) chatInp.value = tBox.value;
+    openChatDrawer();
   };
   const draftPrBtn = document.getElementById("draftIssueFromPrBtn");
   if (draftPrBtn) draftPrBtn.onclick = () => {
@@ -5983,10 +6118,7 @@ function initInteractiveChat(prefix) {
 
           // Render inline buttons
           const actionsWrap = document.createElement("div");
-          actionsWrap.style.marginTop = "1em";
-          actionsWrap.style.display = "flex";
-          actionsWrap.style.gap = "0.5em";
-          actionsWrap.style.flexWrap = "wrap";
+          actionsWrap.className = "chat-actions-container"; // Uses CSS class instead of inline styles
 
           parsed.actions.forEach(actionName => {
              const btn = document.createElement("button");
@@ -5994,6 +6126,7 @@ function initInteractiveChat(prefix) {
              btn.className = "btn-primary";
              btn.textContent = "⚡ " + actionName;
              btn.onclick = () => {
+                 if (!actionName || typeof actionName !== "string") return;
                  fetchJson("/buttons/api/run", {
                      method: "POST",
                      body: JSON.stringify({ action: actionName, repo: STATE.selectedRepo })
@@ -6214,34 +6347,38 @@ function initInteractiveChat(prefix) {
   });
 }
 
-initInteractiveChat("actions");
-initInteractiveChat("briefing");
-initInteractiveChat("pi");
+initInteractiveChat("global");
 
-// Global Chat button click handler: navigate to Actions tab or current tab chat and focus input
+const chatDrawerEl = document.getElementById("chatDrawer");
+function openChatDrawer() {
+  if (chatDrawerEl) {
+    chatDrawerEl.classList.add("open");
+    const inp = document.getElementById("globalChatInput");
+    if (inp) {
+      chatDrawerEl.addEventListener("transitionend", () => inp.focus(), { once: true });
+      setTimeout(() => inp.focus(), 150);
+    }
+  }
+}
+function closeChatDrawer() {
+  if (chatDrawerEl) chatDrawerEl.classList.remove("open");
+}
+const chatDrawerCloseBtn = document.getElementById("chatDrawerClose");
+if (chatDrawerCloseBtn) chatDrawerCloseBtn.onclick = closeChatDrawer;
+
 const globalChatBtn = document.getElementById("globalChatBtn");
 if (globalChatBtn) {
   globalChatBtn.onclick = () => {
-    const activeTab = document.querySelector("#tabbar .tab.active");
-    const activeTabName = activeTab ? activeTab.dataset.tab : "actions";
-    let targetPrefix = "actions";
-    if (activeTabName === "briefing" || activeTabName === "pi") {
-      targetPrefix = activeTabName;
-    } else if (activeTabName !== "actions") {
-      const actionsTabBtn = document.querySelector('#tabbar .tab[data-tab="actions"]');
-      if (actionsTabBtn) actionsTabBtn.click();
-      targetPrefix = "actions";
-    }
-    const targetCard = document.getElementById(targetPrefix + "ChatCard");
-    const targetInput = document.getElementById(targetPrefix + "ChatInput");
-    if (targetCard) {
-      targetCard.scrollIntoView({behavior: "smooth", block: "start"});
-    }
-    if (targetInput) {
-      setTimeout(() => targetInput.focus(), 150);
+    if (chatDrawerEl && chatDrawerEl.classList.contains("open")) {
+      closeChatDrawer();
+    } else {
+      openChatDrawer();
     }
   };
 }
+
+const piOpenChatBtn = document.getElementById("piOpenChatBtn");
+if (piOpenChatBtn) piOpenChatBtn.onclick = openChatDrawer;
 </script>
 </body>
 </html>
@@ -7251,7 +7388,15 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
-                for s in data.get("sessions", [])[:30]:
+                seen_session_ids = set()
+                for s in data.get("sessions", []):
+                    if len(sessions) >= 30:
+                        break
+                    sid = s.get("id") or s.get("sessionId") or s.get("name")
+                    if sid:
+                        if sid in seen_session_ids:
+                            continue
+                        seen_session_ids.add(sid)
                     pr_url = ""
                     for o in s.get("outputs", []) or []:
                         pr = o.get("pullRequest") or {}

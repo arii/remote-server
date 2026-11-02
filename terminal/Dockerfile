@@ -54,6 +54,11 @@ RUN apt-get update \
  && npm install -g "pnpm@10.28.2" "@arii/boomtick-mcp@${BOOMTICK_MCP_VERSION}" \
  && pnpm --version \
  && test -x /usr/local/bin/boomtick-mcp \
+ && curl -fsSL -o /tmp/muse-install.sh https://dev.meta.ai/install.sh \
+ && MUSE_NO_MODIFY_PATH=1 bash /tmp/muse-install.sh \
+ && rm -f /tmp/muse-install.sh \
+ && test -x /root/.local/bin/muse \
+ && /root/.local/bin/muse --version \
  && python3 --version \
  && python3 -m venv /tmp/venv-smoke \
  && /tmp/venv-smoke/bin/python --version \
