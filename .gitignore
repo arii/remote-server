@@ -38,3 +38,11 @@ buttons/ux/scratch-ledger.json
 # Dependencies and cache
 .pnpm-store/
 .fallow/
+
+# Agent skills (Untracked) — provisioned per-machine, never committed.
+# Present on disk (host bind mount, safe across container recreates),
+# absent from git. Re-provision by reinstalling from
+# langchain-ai/langchain-skills (see docs/deepagents.md). Note: plain
+# `git clean -fd` preserves these; `git clean -fdx` would remove them.
+.agents/
+skills-lock.json

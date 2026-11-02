@@ -70,8 +70,9 @@ should be replaced with the real number.
 ## BoomTick MCP tools (active 2026-10-27)
 
 Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
-0.7.2 in `terminal/pi-config/mcp.json` and globally installed in the
-terminal image), configured with `"exposure": "direct"` and
+0.7.2 in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION` and run from
+the baked `/usr/local/bin/boomtick-mcp` binary declared in
+`terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
 `"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
 declared directly to the model without duplicate dot-alias collisions or
 QuickJS `codemode` indirection. It adds structured tools Pi's built-ins
@@ -138,8 +139,8 @@ docker cp terminal/pi-config/mcp.json remote-terminal-1:/root/.pi/agent/mcp.json
 
 Then in Pi: `/mcp` should list `boomtick` as connected. Verify with a
 read-only ask, e.g. "use boomtick to search tech-dancer PRs needing
-rescue." First run downloads the npm package via `npx` (needs network;
-Node 22 satisfies the server's stated Node >= 22).
+rescue." The server runs from the image-baked binary, so there is no
+first-run `npx` download.
 
 ## Agent brief
 
@@ -194,8 +195,8 @@ installed with `apt` inside the running container vanishes on the next
 recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
-- **Baked into the terminal image** (CI smoke-tested; versions pinned except `td`, which tracks BoomTick main):
-  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.7.2,
+- **Baked into the terminal image** (CI smoke-tested; versions pinned except `td` and Muse, which track latest):
+  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.7.2, Muse CLI,
   Python 3 + venv/pip, `td` (`boomtick-cli` from the BoomTick repo main branch in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
   `safe.directory = *`), Docker CLI. This covers the interpreters and
@@ -213,8 +214,8 @@ persists.
   image.
 
 After a CI rebuild, verify the base layer on the S5 with:
-`python3 --version`, `pnpm --version`, `gh --version`, `td --help`
-(`td` needs no checkout install — it's baked in).
+`python3 --version`, `pnpm --version`, `gh --version`, `td --help`, `muse --version`
+(`td` and `muse` need no checkout install — they're baked in).
 
 ## Config changes
 
@@ -239,4 +240,5 @@ evaluation and is the first thing to re-verify.
 
 OpenClaw, Copilot code review automation, and the Gemini route stay
 deferred (see `docs/agent-harness.md`). Pi + Ollama is step one; the
-others get revisited only if Pi's limits start to bite.
+others get revisited only if Pi's limits start to bite. DeepAgents is
+the active next step — see `docs/deepagents.md`.
