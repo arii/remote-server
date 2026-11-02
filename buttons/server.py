@@ -2943,44 +2943,22 @@ below are still visible, but they need JavaScript to start a run.</div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
-<details><summary>How this works</summary>
-<p>Live briefing — open PRs, CI, conflicts, reviews, Jules
-sessions. Runs on load; the Refresh briefing button re-runs it
-from td. Tap a repo card above to select the repo for the cards,
-their action buttons, and the repo buttons.</p>
-</details>
 <div id="briefing"></div>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
 <h2>Suggested next actions</h2>
-<details><summary>How this works</summary>
-<p>Pi reads the briefing context and suggests td commands, then
-runs only what you approve: each suggestion has its own Run
-button with a confirm dialog. Pi runs read-only here;
-suggestions are validated against a fixed td-command list,
-anything else is shown as text, never run. Asking Pi takes
-minutes on the local model.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Pi runs read-only; each suggestion requires confirmation before running allowlisted commands.</div>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
 <h2>Ask Agent / Chat</h2>
-<details><summary>How this works</summary>
-<p>Open-ended questions and instructions for this repo. Access the interactive agent chat via the topbar button or below to chat, stream tool actions, or dispatch tasks.</p>
-</details>
 <div style="margin: 0.6em 0;">
   <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
 </div>
 
 <h2>Agent sessions</h2>
-<details><summary>How this works</summary>
-<p>Browse agent transcripts on disk (pi-data volume). List shows the
-newest sessions with date, repo, and first prompt — tap one to
-render it readably. The full JSONL stays on disk. Clearing
-deletes all transcripts.</p>
-</details>
 <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center;">
 <button id="listPiSessions" style="width:auto; margin:0;">List sessions</button>
 <button id="clearPiSessions" style="width:auto; margin:0;">Clear Agent sessions</button>
@@ -3002,9 +2980,6 @@ deletes all transcripts.</p>
 </section>
 <section class="tabpanel" id="tab-project" style="display:none">
 <h2>Enriched PR Review <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>RepoAuditor-grade review surface: inspect PR status, CI checks, mergeability, full changed files tree with diff counts, and trigger structured AI review flows.</p>
-</details>
 <div class="planrow">
 <label>Pick PR: <select id="reviewPrSelect"><option value="">— Loading PRs —</option></select></label>
 <button id="loadPrDetailsBtn" type="button" class="btn-primary" style="width:auto;margin:0;">Inspect PR</button>
@@ -3034,18 +3009,11 @@ deletes all transcripts.</p>
 <div id="prDetailsErr"></div>
 
 <h2>Workflow Health Analysis <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>RepoAuditor-grade workflow diagnostics: inspection across recent runs, failing jobs, steps, and check-run annotations to isolate the likely failure cause.</p>
-</details>
 <button id="refreshWorkflowHealthBtn" type="button" class="btn-ghost" style="width:auto;margin:0 0 0.5em 0;">Refresh workflow health</button>
 <div id="workflowHealthView"></div>
 <div id="workflowHealthErr"></div>
 
 <h2>Issues <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>Open issues for the picked repo — status, assignees, labels.
-Tap one to expand, assign, or open it in GitHub.</p>
-</details>
 <button id="refreshIssues">Refresh issues</button>
 <div id="issues"></div>
 <div id="issuesErr"></div>
@@ -3056,10 +3024,6 @@ Tap one to expand, assign, or open it in GitHub.</p>
 <button id="createIssueBtn">Create issue</button>
 <div id="newIssueErr"></div>
 <h2>Jules sessions & Agent Handoff <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>What Jules is doing — state, what it's working on, link.
-Needs JULES_API_KEY in .env.</p>
-</details>
 <div class="health-card" style="margin-bottom:0.8em;">
   <div class="health-head">Agent Handoff (Jules Branch-Based Work)</div>
   <div class="bsub">Dispatch Jules sessions for branch tasks, PR reviews, or workflow fixes beyond fix-ci.</div>
@@ -3074,10 +3038,7 @@ Needs JULES_API_KEY in .env.</p>
 <div id="julesSessions"></div>
 <div id="julesErr"></div>
 <h2>Plans <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>Deterministic td planning guides. They read repo state and
-write a markdown plan file; nothing executes or pushes.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Generates markdown plan files from repo state; nothing executes or pushes automatically.</div>
 <div class="planrow"><button id="planIssueAuditBtn">Audit open issues</button>
 <button id="planWorkflowAuditBtn">Audit workflows</button></div>
 <div class="planrow"><label>Review plan for PR
@@ -3094,16 +3055,7 @@ write a markdown plan file; nothing executes or pushes.</p>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
 <h2>Jobs</h2>
-<details><summary>How this works</summary>
-<p>Multi-step tasks with a visible plan. Read-only steps run on
-their own once the job starts; only steps that act outside the box
-wait for your Approve or Decline tap. Output streams to the drawer;
-declining ends the job. Every job writes an audit record — goal,
-plan, approvals with timestamps, run ids, outcome — to the Ledger
-tab and a JSON file on the buttons volume. Jobs only run the same
-allowlisted actions the buttons already offer; nothing new becomes
-writable.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Multi-step tasks where external actions pause for approval before executing allowlisted commands.</div>
 <div id="jobNew"></div>
 <div id="jobErr"></div>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5em;margin-bottom:0.5em;">
@@ -3115,12 +3067,6 @@ writable.</p>
 </section>
 <section class="tabpanel" id="tab-ledger" style="display:none">
 <details open><summary class="grouphead">Ledger</summary>
-<details><summary>How this works</summary>
-<p>Durable audit log — every run, webhook pull, and PR-action tap,
-newest first. Survives container restarts (named volume, not the
-checkout). Briefing reads are not logged. Clearing deletes all
-entries but leaves a 'ledger cleared' record.</p>
-</details>
 <label>Kind: <select id="ledgerKind">
 <option value="all">All</option>
 <option value="run">Runs</option>
@@ -3145,7 +3091,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </div>
 <div class="chat-drawer-body">
   <div class="chat-card" id="globalChatCard" style="margin:0;">
-    <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+    <div class="bsub" style="margin-bottom:0.5em;">Ask about this repo or dispatch a task.</div>
     <div class="chat-input-wrap">
       <textarea id="globalChatInput" class="chat-textarea" rows="3" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
       <div class="chat-ctrls">
