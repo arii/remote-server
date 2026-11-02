@@ -9,6 +9,7 @@ Every run is recorded to the ledger with tool results.
 """
 
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -122,25 +123,38 @@ def pr_state(number: str) -> str:
         number: PR number as digits, e.g. "153".
     """
     # String type: the tool wrapper coerces True to 1 for int args,
-    # which would smuggle a bool past validation into gh.
+    # which would smuggle a bool past validation into the command.
     if not isinstance(number, str) or not number.isdigit() \
             or int(number) <= 0:
         return "REJECTED: bad PR number"
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", str(number), "--repo", _repo,
-             "--json", "state,isDraft,reviewDecision,mergeable,title",
-             "--jq", "{state, draft: .isDraft, review: .reviewDecision, "
-                     "mergeable, title}"],
+            ["td", "--json", "gh", "pr-view", "--pr", str(number),
+             "--repo", _repo],
             capture_output=True,
             text=True,
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"gh failed: {exc}"
+        return f"td failed: {exc}"
     if proc.returncode != 0:
-        return f"gh error: {(proc.stderr or '').strip()[:200]}"
-    return (proc.stdout or "").strip()[:800]
+        return f"td error: {(proc.stderr or '').strip()[:200]}"
+    try:
+        snap = json.loads(proc.stdout or "")
+    except json.JSONDecodeError:
+        return f"td error: bad json: {(proc.stdout or '').strip()[:200]}"
+    if not isinstance(snap, dict) or snap.get("status") == "error":
+        msg = snap.get("message", "") if isinstance(snap, dict) else ""
+        return f"td error: {msg or (proc.stdout or '').strip()[:200]}"
+    summary = snap.get("checksSummary") or {}
+    return _short_line(
+        f"{snap.get('state')} draft={snap.get('draft')} "
+        f"review={snap.get('reviewDecision')} "
+        f"mergeable={snap.get('mergeable')} "
+        f"checks={summary.get('passed')}/{summary.get('total')} "
+        f"failed={summary.get('failed')} "
+        f"pending={summary.get('pending')} "
+        f"title={snap.get('title')}", limit=400)
 
 
 SYSTEM = (
