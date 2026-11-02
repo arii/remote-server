@@ -8,10 +8,13 @@ parity on those flows; nothing here retires Pi yet.
 
 ## What's installed
 
-- `.agents/skills/` — 22 LangChain skills vendored from
-  `langchain-ai/langchain-skills`, with integrity hashes pinned in
-  `skills-lock.json`. Covers Deep Agents, LangChain, LangGraph,
+- `.agents/skills/` — 22 LangChain skills provisioned from
+  `langchain-ai/langchain-skills` (integrity hashes in
+  `skills-lock.json`). Covers Deep Agents, LangChain, LangGraph,
   middleware/memory/persistence, RAG, eval engineering, and quickstarts.
+- Both are **untracked by design** (see `.gitignore`): they live on the
+  host checkout, so container recreates are safe, but a fresh clone
+  needs them reinstalled from the source repo. Never commit them.
 - Start with the `ecosystem-primer` skill (framework selection), then a
   language quickstart (`langchain-python-quickstart`,
   `deepagents-python-quickstart`, or the TypeScript equivalents).
