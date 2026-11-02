@@ -6852,23 +6852,35 @@ function initInteractiveChat(prefix) {
           const actionsWrap = document.createElement("div");
           actionsWrap.className = "chat-actions-container"; // Uses CSS class instead of inline styles
 
-          parsed.actions.forEach(actionName => {
+          const allowedActionNames = ["health", "status", "deploy-buttons", "recreate", "recreate-code", "logs", "briefing-td", "sync-agents", "warm-context", "preflight", "create-plan", "merge-approved"];
+          parsed.actions.forEach(actionItem => {
+             const actionName = (typeof actionItem === "string") ? actionItem : (actionItem && actionItem.id);
+             const actionLabel = (actionItem && actionItem.label) || actionName;
+             if (!actionName || !allowedActionNames.includes(actionName)) return;
+
              const btn = document.createElement("button");
              btn.type = "button";
              btn.className = "btn-primary";
-             btn.textContent = actionName;
-             btn.onclick = () => {
-                 if (!actionName || typeof actionName !== "string") return;
-                 fetchJson("/buttons/api/run", {
-                     method: "POST",
-                     body: JSON.stringify({ action: actionName, repo: STATE.selectedRepo })
-                 }).then(res => {
-                     if (res.id) {
-                         alert("Action triggered: " + res.id);
+             btn.textContent = actionLabel;
+             btn.onclick = async () => {
+                 const picker = document.getElementById("briefingRepo");
+                 const repo = picker ? picker.value : DEFAULT_REPO;
+                 if (typeof startRun === "function") {
+                     const isDanger = ["deploy-buttons", "recreate", "recreate-code"].includes(actionName);
+                     const needsConfirm = isDanger || ["create-plan", "merge-approved"].includes(actionName);
+                     startRun(actionName, actionLabel, needsConfirm, isDanger);
+                 } else {
+                     const res = await fetchJson("/buttons/api/run", {
+                         method: "POST",
+                         headers: {"Content-Type": "application/json"},
+                         body: JSON.stringify({ action: actionName, repo: repo })
+                     });
+                     if (res.ok && res.data && res.data.id) {
+                         if (typeof poll === "function") poll(res.data.id, actionName);
                      } else {
-                         alert("Error: " + (res.error || "Unknown error"));
+                         alert("Error: " + ((res.data && res.data.error) || "Run failed"));
                      }
-                 });
+                 }
              };
              actionsWrap.appendChild(btn);
           });
