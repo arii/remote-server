@@ -119,6 +119,24 @@ class TestS5Tools(unittest.TestCase):
             self.assertNotIn("boomtick", out)
             self.assertNotIn("ledger.jsonl", out)
 
+    def test_grep_repo_skips_all_index_and_cache_dirs(self):
+        # Every excluded dir on its own: one flood (>20 matches) per
+        # dir must never bury the single real hit. This is the exact
+        # shape of the code-locate 4/5 live failure (grep-noise).
+        import tempfile
+
+        for dirname in (".git", "node_modules", ".venv", "__pycache__",
+                        ".boomtick", "chroma_db", ".claude"):
+            with tempfile.TemporaryDirectory() as d:
+                os.mkdir(os.path.join(d, dirname))
+                with open(os.path.join(d, dirname, "n.txt"), "w") as f:
+                    f.write("needle noise\n" * 30)
+                with open(os.path.join(d, "real.py"), "w") as f:
+                    f.write("needle here\n")
+                out = s5tools.grep_repo(d, "needle")
+                self.assertIn("real.py", out, dirname)
+                self.assertNotIn(dirname.strip("."), out, dirname)
+
 
 if __name__ == "__main__":
     unittest.main()

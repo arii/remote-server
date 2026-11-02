@@ -90,6 +90,6 @@ Note: reconciled 2026-11-02 — #1024–#1026 moved to Resolved; no open BoomTic
 
 ## Filed 2026-11-02 (td-first gaps from S5 audit)
 
-- [arii/boomtick#1082](https://github.com/arii/boomtick/issues/1082) — `td gh pr-view`: single PR state snapshot (state, reviews, checks, mergeable). Unblocks dropping raw `gh pr view` from `ask_investigator.pr_state` and briefing rollup.
-- [arii/boomtick#1083](https://github.com/arii/boomtick/issues/1083) — `td gh run-jobs`: list jobs for a workflow run. Unblocks dropping raw `gh api repos/.../actions/runs/.../jobs` from briefing.
+- [arii/boomtick#1082](https://github.com/arii/boomtick/issues/1082) — `td gh pr-view`: single PR state snapshot (state, reviews, checks, mergeable). Unblocks dropping raw `gh pr view` from `ask_investigator.pr_state` and briefing rollup. ✅ CLOSED via [boomtick#1085](https://github.com/arii/boomtick/pull/1085) (`64bc1c4`); S5 adoption pending terminal image rebuild (installed td predates the merge).
+- [arii/boomtick#1083](https://github.com/arii/boomtick/issues/1083) — `td gh run-jobs`: list jobs for a workflow run. Unblocks dropping raw `gh api repos/.../actions/runs/.../jobs` from briefing. ✅ CLOSED via [boomtick#1085](https://github.com/arii/boomtick/pull/1085) (`64bc1c4`); S5 adoption pending terminal image rebuild.
 - Switched same day (td already covered): `fetch_pr_diff` now uses `td --json gh pr-diff` instead of `gh pr diff`. Deleted dead `deep-agent/pr_triage_agent.py` (399 lines, zero references; merge path already superseded by released td gate).
