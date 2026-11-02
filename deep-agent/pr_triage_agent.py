@@ -28,7 +28,7 @@ BRANCH_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
 WORKTREE_RE = re.compile(r"^/tmp/pr\d+fix$")
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHECKOUT = os.path.dirname(HERE)
-MODEL_ID = "zai-org/GLM-5.3-Flash"
+MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 
 
@@ -249,10 +249,14 @@ def resolve_conflicts(worktree: str) -> str:
     if not WORKTREE_RE.match(worktree or ""):
         return "REJECTED: worktree must look like /tmp/prNfix"
     exe = os.path.join(HERE, ".venv", "bin", "python")
-    proc = _run(
-        [exe, os.path.join(HERE, "resolve_conflicts.py"), worktree],
-        timeout=900,
-    )
+    try:
+        proc = _run(
+            [exe, os.path.join(HERE, "resolve_conflicts.py"), worktree],
+            # Large server.py conflicts need many sequential model calls.
+            timeout=2400,
+        )
+    except subprocess.TimeoutExpired:
+        return "FAIL: resolver timed out after 2400s; worktree left for retry"
     out = (proc.stdout + proc.stderr).strip()[-1500:]
     return f"exit={proc.returncode}\n{out}"
 
