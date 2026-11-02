@@ -188,7 +188,9 @@ def main() -> int:
                         text_parts.append(chunk.content)
             elif mode == "updates":
                 for update in payload.values():
-                    for m in (update or {}).get("messages", []):
+                    if not isinstance(update, dict):
+                        continue
+                    for m in update.get("messages", []):
                         if m.__class__.__name__ == "ToolMessage" or getattr(
                             m, "tool_calls", None
                         ):
