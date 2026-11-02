@@ -715,13 +715,12 @@ def analyze(data):
             item = f"- {title} — {state.lower()}"
             if created:
                 item += f" — {created}"
-            if repo == REPO_GH:
+            if repo == REPO_GH or (repo and (repo == REPO_KEY or repo.endswith("/" + REPO_KEY))):
                 matched.append(item)
             elif repo is not None:
                 jules_other += 1
             else:
-                jules_unscoped += 1
-                matched.append(item + " (repo unscoped)")
+                jules_other += 1
         if matched:
             jules_lines.extend(matched)
         else:
