@@ -1,4 +1,9 @@
 import type { DetailResponse, ListResponse } from './types';
+import type {
+  BriefingResponse,
+  JobsResponse,
+  LedgerResponse,
+} from './apiTypes';
 
 export interface SystemHealthResponse {
   disk: Record<string, unknown>;
@@ -39,5 +44,32 @@ export function fetchSystemHealth(): Promise<SystemHealthResponse> {
 export function fetchRepoStatus(repo: string): Promise<RepoStatusResponse> {
   return getJson<RepoStatusResponse>(
     `/api/repo/status?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export function fetchBriefing(repo: string): Promise<BriefingResponse> {
+  return getJson<BriefingResponse>(
+    `/api/briefing?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export function fetchJobs(): Promise<JobsResponse> {
+  return getJson<JobsResponse>('/api/jobs');
+}
+
+export function clearJobs(): Promise<{ ok: boolean }> {
+  return getJson<{ ok: boolean }>('/api/jobs/clear');
+}
+
+export function runJob(id: string): Promise<{ ok: boolean }> {
+  return getJson<{ ok: boolean }>(`/api/jobs/run?id=${encodeURIComponent(id)}`);
+}
+
+export function fetchLedger(
+  kind = 'all',
+  limit = 50,
+): Promise<LedgerResponse> {
+  return getJson<LedgerResponse>(
+    `/api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`,
   );
 }
