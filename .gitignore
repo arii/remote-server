@@ -47,6 +47,7 @@ deep-agent/*
 !deep-agent/requirements.txt
 !deep-agent/triage_explainer.py
 !deep-agent/triage_fanout.py
+!deep-agent/triage_common.py
 !deep-agent/resolve_conflicts.py
 !deep-agent/build_index.py
 !deep-agent/s5tools.py
