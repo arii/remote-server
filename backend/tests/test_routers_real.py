@@ -78,30 +78,6 @@ class RealRoutersTest(unittest.TestCase):
         self.assertTrue(jobs[0]["done"])
         self.assertEqual(jobs[0]["exit_code"], 0)
 
-    def test_agent_sessions_list_shape(self):
-        import tempfile
-        tmp = tempfile.mkdtemp()
-        sess = os.path.join(tmp, "t1.jsonl")
-        with open(sess, "w") as f:
-            f.write('{"type": "session", "id": "s1", "cwd": "/srv/repos/demo",'
-                    ' "timestamp": "2024-01-01"}\n')
-            f.write('{"message": {"role": "user", "content": "hello world"}}\n')
-        os.environ["PI_CODING_AGENT_SESSION_DIR"] = tmp
-        try:
-            resp = self.client.get("/api/agents/sessions")
-        finally:
-            del os.environ["PI_CODING_AGENT_SESSION_DIR"]
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        self.assertIn("sessions", body)
-        self.assertEqual(len(body["sessions"]), 1)
-        row = body["sessions"][0]
-        for field in ("file", "mtime", "cwd", "repo", "title"):
-            self.assertIn(field, row)
-        self.assertEqual(row["file"], "t1.jsonl")
-        self.assertEqual(row["repo"], "demo")
-        self.assertEqual(row["title"], "hello world")
-
     def test_agent_runs_shapes(self):
         from backend.api.routers import agents
         real_list = agents.runs.list_runs

@@ -232,29 +232,63 @@ export function fetchRepairStatus(): Promise<RepairStatusResponse> {
   return getJson<RepairStatusResponse>('/api/repair/status');
 }
 
-export interface AgentSession {
-  file: string;
-  mtime: number;
-  cwd: string;
-  repo: string;
-  title: string;
+export interface AgentRun {
+  id: string;
+  script: string;
+  model: string;
+  thread: string;
+  started_ts: number;
+  duration_s: number;
+  ok: boolean;
+  tools: string[];
+  tokens: number;
+  preview: string;
 }
 
-export interface AgentSessionDetail {
-  file: string;
-  cwd: string;
-  repo: string;
-  started?: number | string;
-  turns: Array<{ role: string; text: string }>;
-  total_entries?: number;
+export interface TraceEvent {
+  ts: number;
+  type: string;
+  [key: string]: unknown;
 }
 
-export function fetchAgentSessions(): Promise<{ sessions: AgentSession[] }> {
-  return getJson<{ sessions: AgentSession[] }>('/api/agents/sessions');
+export interface AgentRunDetail {
+  id: string;
+  entry: Record<string, unknown>;
+  trace: TraceEvent[];
 }
 
-export function fetchAgentSessionDetail(file: string): Promise<AgentSessionDetail> {
-  return getJson<AgentSessionDetail>(
-    `/api/agents/sessions/${encodeURIComponent(file)}`,
-  );
+export function fetchAgentRuns(limit = 50): Promise<{ runs: AgentRun[] }> {
+  return getJson<{ runs: AgentRun[] }>(`/api/agents/runs?limit=${limit}`);
+}
+
+export function fetchAgentRun(runId: string): Promise<AgentRunDetail> {
+  return getJson<AgentRunDetail>(`/api/agents/runs/${encodeURIComponent(runId)}`);
+}
+
+export interface ApprovalPayload {
+  session_id: string;
+  action_requests?: Array<{ args?: Record<string, unknown> } & Record<string, unknown>>;
+  proposals?: string[];
+  [key: string]: unknown;
+}
+
+export interface ResumeResponse {
+  ok: boolean;
+  resumed: boolean;
+  session_id: string;
+  text: string;
+  exit: number;
+  approval?: ApprovalPayload;
+}
+
+export function resumeChat(
+  sessionId: string,
+  decision: 'approve' | 'reject',
+  message = '',
+): Promise<ResumeResponse> {
+  return postJson<ResumeResponse>('/api/chat/resume', {
+    session_id: sessionId,
+    decision,
+    message,
+  });
 }

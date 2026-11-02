@@ -1,79 +1,168 @@
 import { useEffect, useRef, useState } from 'react';
+import HoldToConfirm from '../components/HoldToConfirm';
 import {
   abortChat,
   chatStreamUrl,
-  fetchAgentSessionDetail,
-  fetchAgentSessions,
+  fetchAgentRun,
+  fetchAgentRuns,
+  resumeChat,
 } from '../apiClient';
-import type { AgentSession, AgentSessionDetail } from '../apiClient';
+import type {
+  AgentRun,
+  AgentRunDetail,
+  ApprovalPayload,
+  TraceEvent,
+} from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
 
-function SessionPane({
-  sessions,
+// Streamed tokens carry raw agent stdout, which ends with the
+// INTERRUPT blob on approval turns. The backend strips markers
+// from done.text; strip them here too so the chat log stays human.
+export function cleanAgentText(text: string): string {
+  return text
+    .split('\n')
+    .filter((ln) => !ln.startsWith('INTERRUPT:') && !ln.startsWith('trace:'))
+    .join('\n')
+    .trim();
+}
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function num(v: unknown): number {
+  return typeof v === 'number' ? v : 0;
+}
+
+// One trace event as a terse timeline line (mirrors trace_view text).
+export function traceLine(ev: TraceEvent, t0: number): string {
+  const dt = num(ev.ts) - t0;
+  const at = `+${dt >= 0 ? dt.toFixed(1) : '0.0'}s`;
+  switch (ev.type) {
+    case 'run_start':
+      return `${at} START ${str(ev.script)} thread=${str(ev.thread)} model=${str(ev.model)}`;
+    case 'model_request':
+      return `${at} LLM req n_msgs=${num(ev.n_messages)}`;
+    case 'model_response': {
+      const u = (ev.usage ?? {}) as Record<string, unknown>;
+      return `${at} LLM resp in=${num(u.input_tokens)} out=${num(u.output_tokens)} tot=${num(u.total_tokens)}`;
+    }
+    case 'tool_call': {
+      const dur = num(ev.duration_s).toFixed(2);
+      if (ev.ok) {
+        return `${at} ok ${str(ev.name)} ${dur}s ${str(ev.args_preview)} -> ${str(ev.result_preview)}`.slice(0, 200);
+      }
+      return `${at} ERR ${str(ev.name)} ${dur}s err=${str(ev.error)}`.slice(0, 200);
+    }
+    case 'run_end':
+      return `${at} END ok=${String(ev.ok)} dur=${num(ev.duration_s).toFixed(2)}s`;
+    default:
+      return `${at} ? ${ev.type}`;
+  }
+}
+
+function runMeta(run: AgentRun): string {
+  const when = run.started_ts
+    ? new Date(run.started_ts * 1000).toLocaleString()
+    : 'unknown time';
+  const tools = run.tools.length > 0 ? ` · tools ${run.tools.join(',')}` : '';
+  return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok${tools} · ${when}`;
+}
+
+function RunsPane({
+  runs,
   selected,
   detail,
   onSelect,
 }: {
-  sessions: AgentSession[];
+  runs: AgentRun[];
   selected: string | null;
-  detail: AgentSessionDetail | null;
-  onSelect: (file: string) => void;
+  detail: AgentRunDetail | null;
+  onSelect: (id: string) => void;
 }) {
-  if (sessions.length === 0) return null;
+  if (runs.length === 0) return null;
+  const t0 = detail && detail.trace.length > 0 ? num(detail.trace[0].ts) : 0;
   return (
-    <section data-testid="chat-sessions">
-      <h3>Past sessions</h3>
+    <section data-testid="chat-runs">
+      <h3>Past runs</h3>
       <ul className="session-list">
-        {sessions.map((s) => (
-          <li key={s.file} className="detail">
+        {runs.map((r) => (
+          <li key={r.id} className="detail">
             <button
               type="button"
-              data-testid={`chat-session-${s.file}`}
-              aria-pressed={selected === s.file}
-              onClick={() => onSelect(s.file)}
+              data-testid={`chat-run-${r.id}`}
+              aria-pressed={selected === r.id}
+              onClick={() => onSelect(r.id)}
             >
-              <span className="row-title">{s.title || s.file}</span>{' '}
+              <span className="row-title">{r.preview || r.id}</span>{' '}
               <span className="row-meta">
-                {s.repo} · {new Date(s.mtime * 1000).toLocaleString()}
+                {r.id} · {runMeta(r)}
               </span>
             </button>
           </li>
         ))}
       </ul>
       {selected && detail && (
-        <div className="detail" data-testid="chat-session-detail">
-          <span className="row-title">
-            {sessionDetailTitle(detail)}
-          </span>
-          <ul className="session-list">
-            {detail.turns.slice(0, 20).map((t, i) => (
-              // eslint-disable-next-line react/no-array-index-key
-              <li key={i} className="detail">
-                <span className="row-title">{t.role}</span>
-                <p>{t.text}</p>
-              </li>
-            ))}
-          </ul>
+        <div className="detail" data-testid="chat-run-detail">
+          <span className="row-title">{detail.id}</span>
+          <pre className="row-meta">
+            {detail.trace.length > 0
+              ? detail.trace.map((ev) => traceLine(ev, t0)).join('\n')
+              : 'No trace events recorded.'}
+          </pre>
         </div>
       )}
     </section>
   );
 }
 
-function formatStarted(started: unknown): string {
-  if (typeof started === 'number') {
-    return new Date(started > 1e12 ? started : started * 1000).toLocaleString();
-  }
-  if (typeof started === 'string' && started) {
-    const parsed = new Date(started);
-    return Number.isNaN(parsed.getTime()) ? started : parsed.toLocaleString();
-  }
-  return '';
+function requestSummary(args: Record<string, unknown>): string {
+  if (args.kind === 'td') return `Run: ${str(args.command)}`;
+  if (args.kind === 'issue') return `File issue: ${str(args.title)}`;
+  return 'Proposed write';
 }
 
-function sessionDetailTitle(detail: AgentSessionDetail): string {
-  const when = formatStarted(detail.started);
-  return `${detail.repo} · ${detail.turns.length} turn(s)${when ? ` · ${when}` : ''}`;
+function ApprovalCard({
+  approval,
+  decided,
+  onDecide,
+}: {
+  approval: ApprovalPayload;
+  decided: string | null;
+  onDecide: (decision: 'approve' | 'reject') => void;
+}) {
+  const reqs = approval.action_requests ?? [];
+  return (
+    <div className="detail" data-testid="chat-approval" role="alert">
+      <span className="row-title">Approval needed</span>
+      <ul className="session-list">
+        {reqs.map((r, i) => (
+          // eslint-disable-next-line react/no-array-index-key
+          <li key={i} className="row-meta">
+            {requestSummary(r.args ?? {})}
+          </li>
+        ))}
+      </ul>
+      {(approval.proposals ?? []).map((p, i) => (
+        // eslint-disable-next-line react/no-array-index-key
+        <pre key={i} className="row-meta">
+          {p}
+        </pre>
+      ))}
+      {decided ? (
+        <p className="row-meta" data-testid="chat-approval-decided">
+          {decided}
+        </p>
+      ) : (
+        <div className="actions">
+          <HoldToConfirm label="Approve" onFire={() => onDecide('approve')} />
+          <button type="button" data-testid="chat-reject" onClick={() => onDecide('reject')}>
+            Reject
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function newSessionId(): string {
@@ -104,17 +193,18 @@ function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
   return { events, rest };
 }
 
-function tokenOf(data: string): string {
+function parseJson<T>(data: string): T | null {
   try {
-    return (JSON.parse(data) as { token?: string }).token ?? '';
+    return JSON.parse(data) as T;
   } catch {
-    return '';
+    return null;
   }
 }
 
 async function pumpStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
+  onApproval: (payload: ApprovalPayload) => void,
 ): Promise<void> {
   const decoder = new TextDecoder();
   let buf = '';
@@ -126,7 +216,13 @@ async function pumpStream(
     buf = rest;
     for (const ev of events) {
       if (ev.name === 'error') throw new Error(ev.data);
-      if (ev.name === 'token') onToken(tokenOf(ev.data));
+      if (ev.name === 'token') {
+        onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
+      }
+      if (ev.name === 'approval') {
+        const payload = parseJson<ApprovalPayload>(ev.data);
+        if (payload) onApproval(payload);
+      }
     }
   }
 }
@@ -136,9 +232,11 @@ export default function ChatView({ repo }: { repo: string }) {
   const [prompt, setPrompt] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AgentSessionDetail | null>(null);
+  const [detail, setDetail] = useState<AgentRunDetail | null>(null);
+  const [approval, setApproval] = useState<ApprovalPayload | null>(null);
+  const [decided, setDecided] = useState<string | null>(null);
   const sessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -149,19 +247,19 @@ export default function ChatView({ repo }: { repo: string }) {
     }
     (async () => {
       try {
-        const live = await fetchAgentSessions();
-        setSessions(live.sessions);
+        const live = await fetchAgentRuns();
+        setRuns(live.runs);
       } catch {
-        // Past sessions stay hidden; live chat still works.
+        // Past runs stay hidden; live chat still works.
       }
     })();
   }, []);
 
-  async function onSelectSession(file: string) {
-    setSelected(file);
+  async function onSelectRun(id: string) {
+    setSelected(id);
     setDetail(null);
     try {
-      setDetail(await fetchAgentSessionDetail(file));
+      setDetail(await fetchAgentRun(id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -183,7 +281,14 @@ export default function ChatView({ repo }: { repo: string }) {
     try {
       const resp = await fetch(chatStreamUrl(text, repo, sessionId), { signal: ctrl.signal });
       if (!resp.ok || !resp.body) throw new Error(`Chat stream failed: ${resp.status}`);
-      await pumpStream(resp.body.getReader(), appendToken);
+      await pumpStream(
+        resp.body.getReader(),
+        appendToken,
+        (payload) => {
+          setApproval(payload);
+          setDecided(null);
+        },
+      );
     } catch (err) {
       if ((err as Error).name !== 'AbortError') throw err;
     } finally {
@@ -201,6 +306,8 @@ export default function ChatView({ repo }: { repo: string }) {
     const text = prompt.trim();
     if (!text || streaming) return;
     setError(null);
+    setApproval(null);
+    setDecided(null);
     const sessionId = newSessionId();
     sessionRef.current = sessionId;
     setMessages((m) => [...m, { role: 'user', text }]);
@@ -232,6 +339,27 @@ export default function ChatView({ repo }: { repo: string }) {
     }
   }
 
+  async function onDecide(decision: 'approve' | 'reject') {
+    if (!approval || decided) return;
+    setDecided(decision === 'approve' ? 'Approved — running…' : 'Rejected.');
+    try {
+      const result = await resumeChat(approval.session_id, decision);
+      setMessages((m) => [...m, { role: 'assistant', text: result.text }]);
+      if (result.approval) {
+        setApproval(result.approval);
+        setDecided(null);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/: 409\b/.test(msg)) {
+        setDecided('Already decided.');
+      } else {
+        setError(msg);
+        setDecided(null);
+      }
+    }
+  }
+
   return (
     <section data-testid="chat-view">
       <header className="page-head">
@@ -254,7 +382,7 @@ export default function ChatView({ repo }: { repo: string }) {
         {messages.map((m, i) => (
           <li key={i} className="detail" data-testid={`chat-msg-${m.role}-${i}`}>
             <span className="row-title">{m.role === 'user' ? 'You' : 'Assistant'}</span>
-            <p>{m.text}</p>
+            <p>{m.role === 'assistant' ? cleanAgentText(m.text) : m.text}</p>
           </li>
         ))}
       </ul>
@@ -263,11 +391,14 @@ export default function ChatView({ repo }: { repo: string }) {
           Ask anything about this repo.
         </p>
       )}
-      <SessionPane
-        sessions={sessions}
+      {approval && (
+        <ApprovalCard approval={approval} decided={decided} onDecide={(d) => void onDecide(d)} />
+      )}
+      <RunsPane
+        runs={runs}
         selected={selected}
         detail={detail}
-        onSelect={(file) => void onSelectSession(file)}
+        onSelect={(id) => void onSelectRun(id)}
       />
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">

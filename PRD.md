@@ -36,7 +36,7 @@ Five views, one job each. Global header: product title, repo picker (sticky, res
 | Now | Attention queue: failing runs, failed jobs/webhooks, approvals — one primary action each; calm all-clear empty state; single Report-bug | `GET /api/attention` (shipped #226); `POST /api/create-issue` |
 | Review | PR list → details (file stats, AI prompts) → merge/update via hold-to-confirm; issues list/assign/create/draft | M4 routers (shipped #224) |
 | Jobs | Approved-job cards + dispatch + live progress tail; repair worker dispatch + progress; agent command runner (approved td/agent commands + known audits, single + multi-repo, output tail); Stack section: per-container status + redeploy / recreate terminal+VS Code / merge-approved-PRs (all confirmed, with dry-run text) | jobs router + `POST /api/repair/dispatch` (shipped); Stack + agent-run + multi-repo-audit endpoints: **to add** |
-| Chat | Session list + active agent prompt + SSE token stream + abort + ask/suggest + history | M5 chat router (shipped #222); sessions list endpoint: **to add** |
+| Chat | Run list + active agent prompt + SSE token stream + abort + approval card + ask/suggest + history | M5 chat router (shipped #222); runs endpoints + approval/resume (shipped, Pi sessions retired) |
 | History | Unified jobs + ledger (plain language, incident collapse, recovery links only on failures), Kind filter, system observability (stack health, auto-run traces) | jobs/ledger/system/workflow-health routers (shipped) |
 
 Machine work (zero UI, scheduled/evented, visible in History): briefing refresh, warm-context (both shipped #227), preflight triggers (editor/API-only), digest sends, refresh polling (one shared store).
@@ -54,7 +54,7 @@ Machine work (zero UI, scheduled/evented, visible in History): briefing refresh,
 
 ## 6. API contract (owner: Vite side; agent team builds against it)
 
-Committed shapes: `GET /api/attention?repo=` → `{updated_at, items[]}` (epoch floats; severity `crit|warn|info`); destructive POSTs require `{intent, confirmed: true}`; `GET /api/repos` → `{repos: [{name, full, branch, clean}]}`; M4/M5 shapes as implemented. `/api/agents*` runs-based shape to be defined next; Pi-shaped `/api/agents/sessions` will be replaced, not extended.
+Committed shapes: `GET /api/attention?repo=` → `{updated_at, items[]}` (epoch floats; severity `crit|warn|info`); destructive POSTs require `{intent, confirmed: true}`; `GET /api/repos` → `{repos: [{name, full, branch, clean}]}`; M4/M5 shapes as implemented. `/api/agents/runs` → `{runs: [{id, script, model, thread, ok, duration_s, tools, tokens, preview}]}`; `/api/agents/runs/{id}` → `{id, entry, trace}`; Pi-shaped `/api/agents/sessions` retired.
 
 ## 7. UX / design requirements
 

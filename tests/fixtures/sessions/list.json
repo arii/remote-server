@@ -1,5 +1,0 @@
-{"sessions": [
-  {"file": "20240101_abcdef.jsonl", "mtime": 1720000001.0, "cwd": "/srv/repos/remote-server", "repo": "remote-server", "title": "Fix login bug"},
-  {"file": "bg-1234567890ab.jsonl", "id": "bg-1234567890ab", "mtime": 1720000000.0, "cwd": "/srv/repos/remote-server", "repo": "remote-server", "title": "How does server work?", "kind": "ask", "source": "background", "done": true},
-  {"file": "ledger-42.jsonl", "id": "ledger-42", "mtime": 1719999999.0, "cwd": "", "repo": "", "title": "agent · model-x · 2 tool calls", "kind": "ledger", "source": "ledger", "done": true}
-]}

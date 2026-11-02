@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
 import { cleanBriefingLine } from './views/BriefingView';
+import { cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
 
@@ -134,6 +135,34 @@ describe('briefing sanitation', () => {
     expect(clean).not.toContain('<!--');
     expect(clean).not.toContain('eyJmaW5kaW5ncyI6W10');
     expect(clean).toContain('APPROVED');
+  });
+});
+
+describe('chat agent text', () => {
+  it('strips INTERRUPT blobs and trace paths from replies', () => {
+    const text = cleanAgentText(
+      'Looking into it…\nINTERRUPT: {"thread_id":"x"}\ntrace: /tmp/t.jsonl',
+    );
+    expect(text).toBe('Looking into it…');
+  });
+
+  it('renders trace events as terse timeline lines', () => {
+    expect(
+      traceLine({ ts: 100, type: 'run_start', script: 's.py', thread: 't', model: 'm' }, 100),
+    ).toContain('START s.py');
+    expect(traceLine({ ts: 101.5, type: 'model_request', n_messages: 3 }, 100)).toContain(
+      'LLM req n_msgs=3',
+    );
+    expect(
+      traceLine({ ts: 102, type: 'tool_call', name: 'g', duration_s: 0.4, ok: true }, 100),
+    ).toMatch(/ok g/);
+    expect(
+      traceLine({ ts: 103, type: 'tool_call', name: 'p', duration_s: 0.8, ok: false, error: 'nope' }, 100),
+    ).toMatch(/ERR p/);
+    expect(traceLine({ ts: 104, type: 'run_end', duration_s: 2, ok: true }, 100)).toContain(
+      'END ok=true',
+    );
+    expect(traceLine({ ts: 105, type: 'future_thing' }, 100)).toContain('? future_thing');
   });
 });
 
