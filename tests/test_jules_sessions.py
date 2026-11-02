@@ -12,11 +12,11 @@ class TestJulesSessions(unittest.TestCase):
             content = f.read()
         self.assertIn("No such command ['\"]?(?:jules|agent)['\"]?", content)
 
-    def test_jules_sessions_command_has_fallback(self):
+    def test_jules_sessions_command_canonical(self):
         with open("buttons/server.py", "r", encoding="utf-8") as f:
             content = f.read()
-        self.assertIn('"td --json agent list-sessions || "', content)
-        self.assertIn('"td --json jules list-sessions; fi"', content)
+        self.assertIn('"td --json agent list-sessions; fi"', content)
+        self.assertNotIn("jules list-sessions", content)
 
     @patch("buttons.server._discover_repos")
     @patch("buttons.server._td_run")

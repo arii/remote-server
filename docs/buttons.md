@@ -57,7 +57,7 @@ recreate containers, unlike the read-only actions.
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Agent session audit, see below |
 | Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
-| Sync agent sessions | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses) — list active Jules sessions, read-only (global across repos, not picker-scoped). Nudging moved to the Nudge agents job: the session list is the preview, and the feedback post waits for an Approve tap. A missing JULES_API_KEY is not a failure: the step prints a notice and exits 0, so the run stays green instead of turning the banner red for config you haven't done |
+| Sync agent sessions | `td agent list-sessions` — list active Jules sessions, read-only (global across repos, not picker-scoped). Nudging moved to the Nudge agents job: the session list is the preview, and the feedback post waits for an Approve tap. A missing JULES_API_KEY is not a failure: the step prints a notice and exits 0, so the run stays green instead of turning the banner red for config you haven't done |
 | Merge approved PRs | `td --json agent merge-approved -r <gh> --execute` inside the terminal container: upstream BoomTick agent triages open PRs and merges each approved + green + mergeable one (drafts refused). Repo follows the picker above; confirm tap first |
 | System health | `df -h`, `free -m`, `docker compose ps` — disk, memory, container states, read-only |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
@@ -251,7 +251,7 @@ repo picked above.
   validated `/buttons/api/create-issue` as Ask Pi proposals and
   Report bug.
 - **Jules sessions:** `GET /buttons/api/jules-sessions` runs
-  `td --json jules list-sessions` with the JULES_API_KEY guard
+  `td --json agent list-sessions` with the JULES_API_KEY guard
   (notice + empty list when unset, same as sync-nudge). Cards
   show title (linked), state, source repo, updated time, and the
   linked PR when the session produced one — this is the "how is
@@ -378,7 +378,7 @@ suggest td commands, then runs only what you approve:
    allowlist (exact token shapes: `fix-ci --execute`,
    `read-pr-reviews`, `read-pr-comments`, `resolve-conflicts`,
    `context-warm` without `--force`, `preflight`,
-   `list-sessions` in both spellings, `run-feedback-check`).
+   `agent list-sessions`, `run-feedback-check`).
    Anything else — extra flags, pipes, other verbs — is
    dropped and shown as text, never run.
 5. Each surviving suggestion renders with its reason and a
@@ -618,10 +618,8 @@ attention item quotes what was asked for instead of just naming
 the objector. Failing runs gain their failed job and step names
 from `gh api .../actions/runs/<id>/jobs` — the likely cause,
 not just the run name. Jules sessions come from
-`td --json agent list-sessions` (falling back to
-`td --json jules list-sessions`, since td registers the group
-under either name); only sessions whose source context names
-tech-dancer are listed as such, other repos' active sessions are
+`td --json agent list-sessions`; only sessions whose source context
+names the repo are listed as such, other repos' active sessions are
 counted, and sessions with no repo info are listed as unscoped
 rather than claimed. If Jules is unavailable (no
 `JULES_API_KEY`, no agent group), that section degrades to a

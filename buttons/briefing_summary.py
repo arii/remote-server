@@ -53,14 +53,11 @@ one section, never the whole briefing):
       read existing expert work, not redo it.
   gh api repos/<repo>/actions/runs/ID/jobs   failing
       job + step names for each failing run (the likely cause).
-  td --json agent list-sessions   Jules sessions (falls back to
-      `jules list-sessions` if the group name differs; both are
-      tried because td registers the group under either name in
-      different versions). Needs JULES_API_KEY in the terminal
-      environment; any failure degrades to an unavailable note.
-      Sessions are repo-scoped defensively: only sessions whose
-      source context names tech-dancer are listed as such; others
-      are counted, never claimed.
+  td --json agent list-sessions   Jules sessions. Needs JULES_API_KEY
+      in the terminal environment; any failure degrades to an
+      unavailable note. Sessions are repo-scoped defensively: only
+      sessions whose source context names the repo are listed as such;
+      others are counted, never claimed.
 
 Attention ranking (first match wins per PR, in this order):
   conflicted > CI failing > changes requested > overlaps > stale (>30 days).
@@ -387,24 +384,23 @@ def fetch():
                          and getf(s, "conclusion") == "failure"]
                 failed.append((getf(job, "name", default="?"), steps[:3]))
         data["jobs"][str(run_id)] = failed[:3]
-    # Jules sessions (background agent work). The group name varies
-    # by td version, so try both; any failure degrades the section.
+    # Jules sessions (background agent work). One canonical command path:
+    # td --json agent list-sessions.
     data["jules"] = None
     data["jules_err"] = ""
     data["jules_raw"] = ""
-    for group in ("agent", "jules"):
-        payload, raw, err = run_json(
-            ["td", "--json", group, "list-sessions"], 60)
-        if payload is not None:
-            found = _deep_list(payload, "sessions")
-            if isinstance(found, list):
-                data["jules"] = found
-                data["jules_raw"] = raw
-                break
-            data["jules_err"] = "list-sessions returned no sessions list"
+    payload, raw, err = run_json(
+        ["td", "--json", "agent", "list-sessions"], 60)
+    if payload is not None:
+        found = _deep_list(payload, "sessions")
+        if isinstance(found, list):
+            data["jules"] = found
+            data["jules_raw"] = raw
         else:
-            data["jules_err"] = err
-    # A td without the agent/jules group (e.g. the pinned
+            data["jules_err"] = "list-sessions returned no sessions list"
+    else:
+        data["jules_err"] = err
+    # A td without the agent group (e.g. the pinned
     # cli-v0.14.2) fails with Click's "No such command" — the
     # raw wording reads as a page bug, so say what it means
     # and what fixes it instead.
