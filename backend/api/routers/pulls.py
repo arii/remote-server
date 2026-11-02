@@ -81,6 +81,8 @@ class PrActionRequest(BaseModel):
     repo: str = "remote-server"
     pr_number: object = 0
     action: str = ""
+    intent: str = ""
+    confirmed: bool = False
 
 
 class PrActionResult(BaseModel):
@@ -263,6 +265,10 @@ def pr_details(repo: str = "remote-server", pr: int = 0,
 
 @router.post("/pr-action", response_model=PrActionResult)
 def pr_action(body: PrActionRequest) -> dict:
+    from backend.core import require_confirm
+
+    if body.action == "merge":
+        require_confirm(body, "pr-merge")
     # Strict validation, same as legacy: int PR number only (bools
     # are ints in Python, so excluded), allowlisted action.
     if (not isinstance(body.pr_number, int)

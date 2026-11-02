@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from backend.api.routers import agents, briefing, chat, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import agents, attention, briefing, chat, issues, jobs, notify, ops, pulls, repo, system
 
 app = FastAPI(title="remote-server backend")
 
@@ -16,6 +16,7 @@ app.include_router(chat.router)
 app.include_router(ops.router)
 app.include_router(pulls.router)
 app.include_router(issues.router)
+app.include_router(attention.router)
 
 
 @app.get("/health")

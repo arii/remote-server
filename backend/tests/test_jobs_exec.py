@@ -138,6 +138,10 @@ class RouterTest(unittest.TestCase):
         # list + clear jobs
         self.assertEqual(self.client.get("/api/jobs").status_code, 200)
         resp3 = self.client.post("/api/jobs/clear", json={})
+        self.assertEqual(resp3.status_code, 400)
+        resp3 = self.client.post(
+            "/api/jobs/clear",
+            json={"intent": "jobs-clear", "confirmed": True})
         self.assertEqual(resp3.json(), {"ok": True, "cleared": 0})
         jobs_router.registry.finish_run(rid, 0)
 
