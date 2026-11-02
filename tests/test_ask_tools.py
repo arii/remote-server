@@ -6,6 +6,7 @@ failed live when the tool shelled to `rg`, which is not installed).
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import tempfile
@@ -82,26 +83,51 @@ class TestAskTools(unittest.TestCase):
             )
 
     def test_pr_state_success_and_failures(self):
+        # Payload mirrors `td --json gh pr-view` (boomtick cli-v0.18.0).
+        payload = json.dumps({
+            "status": "success", "prNumber": 153, "title": "x",
+            "state": "OPEN", "draft": False,
+            "reviewDecision": "APPROVED", "mergeable": "MERGEABLE",
+            "checksSummary": {"total": 2, "passed": 1, "failed": 0,
+                              "pending": 1, "skipped": 0},
+        })
         ok = subprocess.CompletedProcess(
-            args=["gh"], returncode=0,
-            stdout='{state: OPEN, title: x}\n', stderr="")
-        with mock.patch.object(ai.subprocess, "run", return_value=ok):
+            args=["td"], returncode=0, stdout=payload + "\n", stderr="")
+        with mock.patch.object(ai.subprocess, "run", return_value=ok) \
+                as run_mock:
             out = ai.pr_state.invoke({"number": "153"})
+        self.assertEqual(
+            run_mock.call_args[0][0][:5],
+            ["td", "--json", "gh", "pr-view", "--pr"])
         self.assertIn("OPEN", out)
+        self.assertIn("APPROVED", out)
+        self.assertIn("checks=1/2", out)
         err = subprocess.CompletedProcess(
-            args=["gh"], returncode=1, stdout="", stderr="not found")
+            args=["td"], returncode=1, stdout="", stderr="not found")
         with mock.patch.object(ai.subprocess, "run", return_value=err):
             self.assertIn(
-                "gh error", ai.pr_state.invoke({"number": "999999"}))
+                "td error", ai.pr_state.invoke({"number": "999999"}))
+        bad = subprocess.CompletedProcess(
+            args=["td"], returncode=0, stdout="not json\n", stderr="")
+        with mock.patch.object(ai.subprocess, "run", return_value=bad):
+            self.assertIn(
+                "td error", ai.pr_state.invoke({"number": "153"}))
+        failed = subprocess.CompletedProcess(
+            args=["td"], returncode=0,
+            stdout=json.dumps({"status": "error",
+                               "message": "boom"}), stderr="")
+        with mock.patch.object(ai.subprocess, "run", return_value=failed):
+            self.assertIn(
+                "td error", ai.pr_state.invoke({"number": "153"}))
         with mock.patch.object(
                 ai.subprocess, "run",
-                side_effect=subprocess.TimeoutExpired("gh", 60)):
+                side_effect=subprocess.TimeoutExpired("td", 60)):
             self.assertIn(
-                "gh failed", ai.pr_state.invoke({"number": "153"}))
+                "td failed", ai.pr_state.invoke({"number": "153"}))
         with mock.patch.object(
-                ai.subprocess, "run", side_effect=OSError("no gh")):
+                ai.subprocess, "run", side_effect=OSError("no td")):
             self.assertIn(
-                "gh failed", ai.pr_state.invoke({"number": "153"}))
+                "td failed", ai.pr_state.invoke({"number": "153"}))
 
     def test_search_docs_rejects_bad_query(self):
         # Validation runs before the retriever is touched: no model.
