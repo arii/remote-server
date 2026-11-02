@@ -2478,6 +2478,7 @@ a { color: #8bf; }
   padding: 0.5em 0.8em; border-bottom: 1px solid var(--border); font-weight: bold; background: var(--bg-card); }
 #chatDrawerHead .dbactions { display: flex; align-items: center; gap: 0.5em; }
 #chatDrawerHead button { width: auto; margin: 0; padding: 0.4em 0.8em; font-size: 0.85em; }
+.chat-drawer-title { display: flex; align-items: center; gap: 0.4em; }
 .chat-drawer-body { padding: 0.8em; overflow-y: auto; flex: 1; }
 /* slide-up output drawer */
 #outputDrawer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
@@ -2886,7 +2887,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </section>
 <div id="chatDrawer">
 <div id="chatDrawerHead">
-  <span style="display:flex;align-items:center;gap:0.4em;">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
+  <span class="chat-drawer-title">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
   <span class="dbactions">
     <span id="globalPhaseBadge" class="phase-badge">Ready</span>
     <button id="chatDrawerClose" type="button" class="btn-ghost">✕ Close</button>
