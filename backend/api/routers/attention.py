@@ -133,22 +133,34 @@ def attention(repo: str = "remote-server") -> dict:
     except Exception as exc:
         logger.warning("attention: workflow-health read failed: %s", exc)
         health = {}
+    seen_runs: dict[tuple[str, str], dict] = {}
     for wf in (health.get("workflows") or []):
         if not isinstance(wf, dict):
             continue
         rid = wf.get("id", "?")
-        items.append({
+        title = f"Failing workflow: {wf.get('name', 'Workflow')}"
+        detail = wf.get("diagnosed_cause", "Workflow failed.")
+        key = (title, detail)
+        if key in seen_runs:
+            seen_runs[key]["runs"] += 1
+            continue
+        item = {
             "id": f"run-{rid}",
             "kind": "failing-run",
-            "title": f"Failing workflow: {wf.get('name', 'Workflow')}",
-            "detail": wf.get("diagnosed_cause", "Workflow failed."),
+            "title": title,
+            "detail": detail,
             "repo": name,
             "severity": "crit",
             "action": {"label": "View health", "method": "GET",
                        "href": f"/api/workflow-health?repo={name}",
                        "destructive": False, "intent": ""},
             "created_at": now,
-        })
+        }
+        seen_runs[key] = {"item": item, "runs": 1}
+        items.append(item)
+    for entry in seen_runs.values():
+        if entry["runs"] > 1:
+            entry["item"]["title"] += f" ×{entry['runs']}"
     for job in list_failed_jobs():
         jid = job.get("id", "?")
         items.append({

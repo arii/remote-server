@@ -83,6 +83,23 @@ class AttentionShapeTest(unittest.TestCase):
         with self.assertRaises(HTTPException):
             attention.attention("a/b/c")
 
+    def test_identical_failing_runs_collapse(self):
+        wfs = [{"id": i, "name": "CI", "diagnosed_cause": "boom"}
+               for i in (1, 2, 3)]
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": wfs},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_pending_approvals=lambda: [],
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        runs = [i for i in body["items"] if i["kind"] == "failing-run"]
+        self.assertEqual(len(runs), 1)
+        self.assertIn("×3", runs[0]["title"])
+
 
 class WorkflowHealthCacheTest(unittest.TestCase):
     def test_second_call_served_from_cache(self):
