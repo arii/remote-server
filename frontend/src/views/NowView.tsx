@@ -1,41 +1,104 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
+import { createIssue, fetchAttention } from '../apiClient';
 import type { AttentionItem, AttentionResponse } from '../attentionTypes';
-import { loadAttention, loadAttentionEmpty, shouldUseMock } from '../mocks/attention';
+import { loadAttention, loadAttentionEmpty } from '../mocks/attention';
+import { useMock } from './mockViews';
 
-async function fetchAttention(repo: string): Promise<AttentionResponse> {
-  const resp = await fetch(`/api/attention?repo=${encodeURIComponent(repo)}`);
-  if (!resp.ok) throw new Error(`GET /api/attention failed: ${resp.status}`);
-  return (await resp.json()) as AttentionResponse;
+function isGetAction(item: AttentionItem): boolean {
+  return item.action.method.toUpperCase() === 'GET';
 }
 
-async function fireAction(item: AttentionItem): Promise<void> {
-  const { action } = item;
-  const method = action.method.toUpperCase();
-  if (method === 'GET') {
-    window.location.href = action.href;
-    return;
-  }
-  const resp = await fetch(action.href, {
-    method,
+async function firePostAction(item: AttentionItem): Promise<void> {
+  const resp = await fetch(item.action.href, {
+    method: item.action.method,
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intent: action.intent, confirmed: true }),
+    body: JSON.stringify({ intent: item.action.intent, confirmed: true }),
   });
   if (!resp.ok) throw new Error(`Action failed: ${resp.status}`);
 }
 
-async function reportBug(repo: string): Promise<string> {
-  const title = window.prompt('Bug title', '')?.trim() ?? '';
-  if (!title) throw new Error('cancelled');
-  const body = window.prompt('Bug details (optional)', '') ?? '';
-  const resp = await fetch('/api/create-issue', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repo, title, body }),
-  });
-  if (!resp.ok) throw new Error(`Report failed: ${resp.status}`);
-  const data = (await resp.json()) as { url?: string };
-  return data.url ?? '';
+function formatStamp(epochSeconds: number): string {
+  if (!epochSeconds) return 'unknown time';
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+function ReportDialog({
+  onSubmit,
+  onCancel,
+}: {
+  onSubmit: (title: string, body: string) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  return (
+    <form
+      data-testid="report-dialog"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit(title.trim(), body);
+      }}
+    >
+      <label className="row-meta" htmlFor="report-title">
+        Bug title{' '}
+        <input
+          id="report-title"
+          data-testid="report-title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          required
+        />
+      </label>
+      <label className="row-meta" htmlFor="report-body">
+        Details (optional){' '}
+        <textarea
+          id="report-body"
+          data-testid="report-body"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+        />
+      </label>
+      <div className="actions">
+        <button type="submit" data-testid="report-submit">
+          File bug
+        </button>
+        <button type="button" data-testid="report-cancel" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ActionControl({
+  item,
+  onDone,
+  onError,
+}: {
+  item: AttentionItem;
+  onDone: (title: string) => void;
+  onError: (message: string) => void;
+}) {
+  async function handlePost() {
+    try {
+      await firePostAction(item);
+      onDone(item.title);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (isGetAction(item)) {
+    return <a href={item.action.href}>{item.action.label}</a>;
+  }
+  if (item.action.destructive) {
+    return <HoldToConfirm label={item.action.label} onFire={() => void handlePost()} />;
+  }
+  return (
+    <button type="button" onClick={() => void handlePost()}>
+      {item.action.label}
+    </button>
+  );
 }
 
 export default function NowView({ repo }: { repo: string }) {
@@ -43,17 +106,27 @@ export default function NowView({ repo }: { repo: string }) {
   const [error, setError] = useState<string | null>(null);
   const [fired, setFired] = useState<string | null>(null);
   const [reported, setReported] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  async function refresh() {
+    try {
+      const live = await fetchAttention(repo);
+      setData(live);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
+    if (useMock()) {
+      const params = new URLSearchParams(window.location.search);
+      const empty = params.get('empty') === '1';
+      setData(empty ? loadAttentionEmpty() : loadAttention());
+      return;
+    }
     (async () => {
       try {
-        if (shouldUseMock()) {
-          const params = new URLSearchParams(window.location.search);
-          const empty = params.get('empty') === '1';
-          if (!cancelled) setData(empty ? loadAttentionEmpty() : loadAttention());
-          return;
-        }
         const live = await fetchAttention(repo);
         if (!cancelled) setData(live);
       } catch (err) {
@@ -65,14 +138,14 @@ export default function NowView({ repo }: { repo: string }) {
     };
   }, [repo]);
 
-  async function onReport() {
+  async function onSubmitReport(title: string, body: string) {
     setError(null);
     try {
-      const url = await reportBug(repo);
-      setReported(url || 'created');
+      const result = await createIssue(repo, title, body);
+      setReported(result.url || 'created');
+      setDialogOpen(false);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg !== 'cancelled') setError(msg);
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -90,12 +163,18 @@ export default function NowView({ repo }: { repo: string }) {
       <header className="page-head">
         <div>
           <h2>Now</h2>
-          <p className="row-meta">Updated {data.updated_at}</p>
+          <p className="row-meta">Updated {formatStamp(data.updated_at)}</p>
         </div>
-        <button type="button" data-testid="report-bug" onClick={onReport}>
+        <button type="button" data-testid="report-bug" onClick={() => setDialogOpen(true)}>
           Report a bug
         </button>
       </header>
+      {dialogOpen && (
+        <ReportDialog
+          onSubmit={(t, b) => void onSubmitReport(t, b)}
+          onCancel={() => setDialogOpen(false)}
+        />
+      )}
       {reported && (
         <p className="row-meta" data-testid="report-done">
           Thanks — filed{reported !== 'created' ? `: ${reported}` : '.'}
@@ -117,34 +196,17 @@ export default function NowView({ repo }: { repo: string }) {
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
               <span className="row-title">{item.title}</span>
               <p className="row-meta">
-                {item.kind} · {item.severity} · {item.created_at}
+                {item.kind} · {item.severity} · {formatStamp(item.created_at)}
               </p>
               <p>{item.detail}</p>
-              {item.action.destructive ? (
-                <HoldToConfirm
-                  label={item.action.label}
-                  onFire={() => {
-                    fireAction(item)
-                      .then(() => setFired(item.title))
-                      .catch((e: unknown) =>
-                        setError(e instanceof Error ? e.message : String(e)),
-                      );
-                  }}
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    fireAction(item)
-                      .then(() => setFired(item.title))
-                      .catch((e: unknown) =>
-                        setError(e instanceof Error ? e.message : String(e)),
-                      );
-                  }}
-                >
-                  {item.action.label}
-                </button>
-              )}
+              <ActionControl
+                item={item}
+                onDone={(title) => {
+                  setFired(title);
+                  void refresh();
+                }}
+                onError={setError}
+              />
             </li>
           ))}
         </ul>

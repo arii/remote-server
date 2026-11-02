@@ -1,19 +1,11 @@
 import { useState } from 'react';
 import NowView from './views/NowView';
+import HistoryView from './views/HistoryView';
 
 type Tab = 'now' | 'history';
 
 const TABS: Tab[] = ['now', 'history'];
 const ACTIVE_REPO = 'remote-server';
-
-function HistoryPlaceholder() {
-  return (
-    <section data-testid="history-placeholder">
-      <h2>History</h2>
-      <p className="row-meta">Coming soon.</p>
-    </section>
-  );
-}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('now');
@@ -27,7 +19,7 @@ export default function App() {
         </div>
         <span
           data-testid="repo-chip"
-          style={{ position: 'sticky', top: 0 }}
+          className="repo-chip"
           aria-label={`Active repo: ${ACTIVE_REPO}`}
         >
           {ACTIVE_REPO}
@@ -45,7 +37,7 @@ export default function App() {
           </button>
         ))}
       </nav>
-      {tab === 'now' ? <NowView repo={ACTIVE_REPO} /> : <HistoryPlaceholder />}
+      {tab === 'now' ? <NowView repo={ACTIVE_REPO} /> : <HistoryView repo={ACTIVE_REPO} />}
     </main>
   );
 }

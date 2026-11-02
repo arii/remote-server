@@ -30,6 +30,7 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
 
   function start(e: React.PointerEvent | React.KeyboardEvent) {
     if (disabled || armed) return;
+    if ('repeat' in e && e.repeat) return;
     if ('key' in e && e.key !== ' ' && e.key !== 'Enter') return;
     if (reduced) {
       setArmed(true);

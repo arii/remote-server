@@ -1,11 +1,14 @@
-import briefingFixture from '../mocks/briefing.json';
-import jobsFixture from '../mocks/jobs.json';
-import ledgerFixture from '../mocks/ledger.json';
+import historyFixture from '../mocks/history.json';
+import systemHealthFixture from '../mocks/system-health.json';
+import workflowHealthFixture from '../mocks/workflow-health.json';
 import type {
-  BriefingResponse,
   JobsResponse,
   LedgerResponse,
 } from '../apiTypes';
+import type {
+  SystemHealthResponse,
+  WorkflowHealthResponse,
+} from '../apiClient';
 
 // Offline dev override: append ?mock=1 to use bundled fixtures instead of
 // live endpoints. Views always attempt the live fetch first and fail visibly
@@ -17,16 +20,18 @@ export function useMock(): boolean {
   );
 }
 
-export function loadBriefing(): BriefingResponse {
-  return { ...(briefingFixture as BriefingResponse) };
+// Unified history fixture: includes a repeat-failure incident run
+// (webhook fast-forward conflict ×3) so ?mock=1 exercises collapse.
+export function loadHistory(): { jobs: JobsResponse['jobs']; entries: LedgerResponse['entries'] } {
+  const h = historyFixture as unknown as { jobs: JobsResponse['jobs']; entries: LedgerResponse['entries'] };
+  return { jobs: [...h.jobs], entries: [...h.entries] };
 }
 
-export function loadJobs(): JobsResponse {
-  const j = jobsFixture as JobsResponse;
-  return { jobs: [...j.jobs] };
+export function loadSystemHealth(): SystemHealthResponse {
+  return { ...(systemHealthFixture as SystemHealthResponse) };
 }
 
-export function loadLedger(): LedgerResponse {
-  const l = ledgerFixture as LedgerResponse;
-  return { entries: [...l.entries] };
+export function loadWorkflowHealth(): WorkflowHealthResponse {
+  const w = workflowHealthFixture as WorkflowHealthResponse;
+  return { ...w, workflows: [...w.workflows] };
 }
