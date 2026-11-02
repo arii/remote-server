@@ -131,7 +131,15 @@ function RepairSection() {
   );
 }
 
-function JobListItem({ job, repo }: { job: JobRecord; repo: string }) {
+function JobListItem({
+  job,
+  repo,
+  onSelect,
+}: {
+  job: JobRecord;
+  repo: string;
+  onSelect: (id: string) => void;
+}) {
   return (
     <li key={job.id} className="detail" data-testid={`job-${job.id}`}>
       <span className="row-title">{labelOf(job)}</span>
@@ -140,6 +148,11 @@ function JobListItem({ job, repo }: { job: JobRecord; repo: string }) {
         {typeof job.exit_code === 'number' ? ` · exit ${job.exit_code}` : ''}
       </p>
       {(job.error || job.detail) && <p>{job.error || job.detail}</p>}
+      <div className="actions">
+        <button type="button" onClick={() => onSelect(job.id)}>
+          View output
+        </button>
+      </div>
     </li>
   );
 }
@@ -254,6 +267,12 @@ export default function JobsView({ repo }: { repo: string }) {
     }
   }
 
+  async function onSelectRun(id: string) {
+    const r = await fetchJobRun(id);
+    setRunId(id);
+    setTail(r.output || 'No output yet.');
+  }
+
   async function onDispatch() {
     setNotice(null);
     const started = await startJobRun(action, repo, DESTRUCTIVE_ACTIONS.has(action));
@@ -315,7 +334,12 @@ export default function JobsView({ repo }: { repo: string }) {
       ) : (
         <ul className="session-list" data-testid="jobs-list">
           {jobs.map((j) => (
-            <JobListItem key={j.id} job={j} repo={repo} />
+            <JobListItem
+              key={j.id}
+              job={j}
+              repo={repo}
+              onSelect={(id) => void guarded(() => onSelectRun(id))}
+            />
           ))}
         </ul>
       )}

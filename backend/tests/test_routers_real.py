@@ -53,9 +53,30 @@ class RealRoutersTest(unittest.TestCase):
             self.assertIn("clean", body)
 
     def test_jobs_honest_empty(self):
+        import backend.api.routers.jobs as jobs_router
+        from backend.exec.engine import RunRegistry
+
+        jobs_router.registry = RunRegistry()
         resp = self.client.get("/api/jobs")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"jobs": []})
+
+    def test_jobs_lists_runs(self):
+        import backend.api.routers.jobs as jobs_router
+        from backend.exec.engine import RunRegistry
+
+        jobs_router.registry = RunRegistry()
+        rid, err = jobs_router.registry.start_run("logs")
+        self.assertIsNone(err)
+        jobs_router.registry.finish_run(rid, 0)
+        resp = self.client.get("/api/jobs")
+        self.assertEqual(resp.status_code, 200)
+        jobs = resp.json()["jobs"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["id"], rid)
+        self.assertEqual(jobs[0]["kind"], "logs")
+        self.assertTrue(jobs[0]["done"])
+        self.assertEqual(jobs[0]["exit_code"], 0)
 
     def test_agent_sessions_list_shape(self):
         import tempfile

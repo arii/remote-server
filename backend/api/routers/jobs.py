@@ -40,8 +40,10 @@ registry = RunRegistry()
 class JobRecord(BaseModel):
     id: str
     kind: str = ""
+    name: str = ""
     repo: str = ""
     done: bool = False
+    exit_code: int | None = None
 
 
 class JobList(BaseModel):
@@ -100,7 +102,14 @@ def health() -> dict:
 
 @router.get("", response_model=JobList)
 def list_jobs() -> dict:
-    return {"jobs": registry.list_jobs()}
+    with registry._lock:
+        ordered = sorted(registry.runs.values(),
+                         key=lambda r: r.get("seq", 0), reverse=True)
+        rows = [{"id": r["id"], "kind": r.get("action", ""),
+                 "name": r.get("action", ""), "repo": r.get("repo", ""),
+                 "done": r["done"], "exit_code": r.get("exit_code")}
+                for r in ordered]
+    return {"jobs": rows}
 
 
 @router.post("/clear", response_model=ClearResult)
