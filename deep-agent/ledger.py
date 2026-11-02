@@ -26,10 +26,16 @@ def record(script, model, thread_id, messages, started, extra=None):
     """Append one run entry; returns it. Never raises on odd inputs."""
     try:
         calls = []
+        results = []
         for m in messages:
             for tc in getattr(m, "tool_calls", []) or []:
                 calls.append(
                     {"name": tc.get("name"), "args": str(tc.get("args"))[:300]}
+                )
+            if m.__class__.__name__ == "ToolMessage":
+                results.append(
+                    {"name": getattr(m, "name", "?"),
+                     "result": str(m.content)[:500]}
                 )
         entry = {
             "kind": "deep-agent-run",
@@ -39,6 +45,7 @@ def record(script, model, thread_id, messages, started, extra=None):
             "thread_id": thread_id,
             "duration_s": round(time.time() - started, 1),
             "tool_calls": calls,
+            "tool_results": results,
             "usage": _usage_total(messages),
             "final_preview": str(messages[-1].content)[:500] if messages else "",
             "extra": extra or {},
@@ -72,6 +79,8 @@ def main() -> int:
             f"tok={u.get('total_tokens')} "
             f"final={e.get('final_preview', '')[:120]!r}"
         )
+        for r in e.get("tool_results", [])[:8]:
+            print(f"    = {r.get('name')}: {r.get('result', '')[:150]}")
     return 0
 
 
