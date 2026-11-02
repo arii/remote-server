@@ -20,6 +20,13 @@
 
 name: remote
 
+# Shared log rotation: every service keeps 3x10MB of json-file logs.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # TLS edge + GitHub OAuth gate. Terminates TLS itself with Ari's existing
   # Let's Encrypt certs (mounted read-only from the host certbot dir).
@@ -56,7 +63,9 @@ services:
     ports:
       - "${TERMINAL_PORT}:${TERMINAL_PORT}" # public: DDNS + router forward land here
     depends_on:
-      - caddy
+      caddy:
+        condition: service_healthy
+    logging: *default-logging
     restart: unless-stopped
 
   # Browser terminal: ttyd (xterm.js) running zellij (phone-friendly multiplexer).
@@ -119,6 +128,10 @@ services:
     environment:
       TERM: xterm-256color
       PATH: /root/.local/bin:/opt/venvs/td/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # Durability: shell history and caches (zellij sessions, pip) live on
+      # the local-data volume instead of the ephemeral container layer.
+      HISTFILE: /root/.local/share/bash_history
+      XDG_CACHE_HOME: /root/.local/cache
       # Fine-grained GitHub PAT (repo scope) + GitHub App credentials from .env,
       # for boomtick-mcp, td, and gh. Empty/unset = public read-only GitHub ops only.
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
@@ -130,15 +143,19 @@ services:
       APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
+      NEBIUS_MODEL: ${NEBIUS_MODEL:-}
+      NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7681/ > /dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
+    logging: *default-logging
     restart: unless-stopped
 
   # Local LLM inference, CPU-only. Loopback-published only.
@@ -153,6 +170,16 @@ services:
       - "127.0.0.1:11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    # Box has 26GB RAM; a 14b model needs ~10GB. Cap keeps a big pull from
+    # starving the rest of the stack (OOM-kill here beats box-wide thrash).
+    mem_limit: 16g
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s # model load into RAM takes a while on CPU
+    logging: *default-logging
     restart: unless-stopped
 
   # VPN mesh for admin access (SSH, future services). Outbound only.
@@ -172,6 +199,7 @@ services:
       TS_AUTHKEY: ${TS_AUTHKEY} # reusable auth key from Tailscale admin console
       TS_HOSTNAME: ${TS_HOSTNAME:-s5}
     entrypoint: ["/usr/local/bin/tailscale-entrypoint.sh"]
+    logging: *default-logging
     restart: unless-stopped
 
   # Phone UI: fixed action buttons (status, deploy, recreate, pull
@@ -219,6 +247,14 @@ services:
       NOTIFIER_INTERVAL_SECONDS: ${NOTIFIER_INTERVAL_SECONDS:-300}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
+    healthcheck:
+      # Plain python stdlib (image has no curl/wget): 200 on /buttons.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/buttons')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
     restart: unless-stopped
 
   # Internal router: oauth2-proxy -> caddy -> terminal (/) / buttons (/buttons) / code-server (/code).
@@ -232,10 +268,21 @@ services:
       - ./caddy:/etc/caddy:ro
     expose:
       - "8080" # compose network only; ingress is via oauth2-proxy
+    # Admin-API liveness (not :8080, which also depends on the backends).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:2019/config/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
-      - terminal
-      - buttons
-      - code-server
+      terminal:
+        condition: service_healthy
+      buttons:
+        condition: service_healthy
+      code-server:
+        condition: service_healthy
+    logging: *default-logging
     restart: unless-stopped
 
   # BrowserMCP pairing relay: the daemon's relay is loopback-only inside
@@ -254,6 +301,7 @@ services:
       - ./config/browser-relay:/etc/caddy:ro
     depends_on:
       - terminal
+    logging: *default-logging
     restart: unless-stopped
 
   # Browser-based VS Code: code-server.
@@ -283,8 +331,16 @@ services:
       ENTRYPOINTD: /seed/entrypoint.d
     expose:
       - "8080" # compose network only; ingress is via oauth2-proxy -> caddy (/code)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s # extension installs run on fresh volumes
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
+    logging: *default-logging
     restart: unless-stopped
 
 volumes:

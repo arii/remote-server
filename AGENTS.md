@@ -4,7 +4,7 @@ This machine runs the S5 remote server stack. You are running inside the termina
 
 Always determine your target repository from your current working directory (`cwd`):
 - `/srv/remote-server` (or subdirectories) → Repository is `arii/remote-server` (short name: `remote-server`).
-- `/srv/repos/<name>` (or subdirectories) → Repository is `arii/<name>` (short name: `<name>`, e.g. `/srv/repos/tech-dancer` → `arii/tech-dancer`).
+- `/srv/repos/<name>` (or subdirectories) → Repository is `arii/<name>` (short name: `<name>`, e.g. `/srv/repos/boomtick` → `arii/boomtick`).
 - If in another directory, check `git remote get-url origin` or `git rev-parse --show-toplevel`.
 
 **Do not ask the user for the repository name (e.g. org/repo).** The current repository is always established by your working directory.

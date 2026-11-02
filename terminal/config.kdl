@@ -6,3 +6,11 @@ simplified_ui true   // plain glyphs; no nerd-font needed on the phone
 mouse_mode true      // tap-to-focus panes, touch scrolling — no prefix key required
 pane_frames false    // every row counts on a small screen
 default_shell "bash"
+
+// Serialize sessions (tabs/panes, cwds, running commands + viewport) to the
+// cache dir so they resurrect after container restarts. Requires XDG_CACHE_HOME
+// on a persisted volume (see docker-compose.yml). Layout and content come
+// back; live processes do not — their commands re-run fresh.
+session_serialization true
+serialize_pane_viewport true
+scrollback_lines_to_serialize 10000

@@ -49,6 +49,16 @@ deep-agent/*
 !deep-agent/triage_fanout.py
 !deep-agent/resolve_conflicts.py
 !deep-agent/build_index.py
+!deep-agent/s5tools.py
+!deep-agent/model_router.py
+!deep-agent/retrieval.py
+!deep-agent/chat_agent.py
+!deep-agent/observe.py
+!deep-agent/runs.py
+!deep-agent/deep_chat.py
+!deep-agent/API_CONTRACT_PROPOSAL.md
+!deep-agent/eval_lib.py
+!deep-agent/eval_chat.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),

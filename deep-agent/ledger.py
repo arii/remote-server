@@ -13,41 +13,101 @@ import time
 LEDGER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.jsonl")
 
 
+def _as_dict(obj):
+    return obj if isinstance(obj, dict) else None
+
+
 def _usage_total(messages):
     total = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-    for m in messages:
-        u = getattr(m, "usage_metadata", None) or {}
+    for m in messages or []:
+        if m is None:
+            continue
+        d = _as_dict(m)
+        u = (d.get("usage_metadata") if d else
+             getattr(m, "usage_metadata", None)) or {}
+        if not isinstance(u, dict):
+            u = {}
         for k in total:
             total[k] += u.get(k, 0) or 0
+        if not any(u.get(k) for k in total):
+            # Fallback: Ollama-style counts surfaced via
+            # response_metadata/generation_info instead of
+            # usage_metadata (streaming chunks, older versions).
+            r = (d.get("response_metadata") if d else
+                 getattr(m, "response_metadata", None)) or {}
+            if not isinstance(r, dict):
+                continue
+            prompt_n = r.get("prompt_eval_count") or 0
+            eval_n = r.get("eval_count") or 0
+            total["input_tokens"] += prompt_n
+            total["output_tokens"] += eval_n
+            total["total_tokens"] += prompt_n + eval_n
     return total
 
 
-def record(script, model, thread_id, messages, started, extra=None):
-    """Append one run entry; returns it. Never raises on odd inputs."""
+def record(script, model, thread_id, messages, started, extra=None,
+           usage=None):
+    """Append one run entry; returns it. Never raises on odd inputs.
+
+    usage: optional pre-aggregated {"input_tokens", "output_tokens",
+    "total_tokens"} mapping. Streaming callers that discard message
+    chunks (so _usage_total would see zeros) pass their own totals.
+    """
     try:
         calls = []
         results = []
-        for m in messages:
-            for tc in getattr(m, "tool_calls", []) or []:
+        for m in messages or []:
+            if m is None:
+                continue
+            d = _as_dict(m)
+            tool_calls = (d.get("tool_calls") if d else
+                          getattr(m, "tool_calls", [])) or []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
                 calls.append(
                     {"name": tc.get("name"), "args": str(tc.get("args"))[:300]}
                 )
-            if m.__class__.__name__ == "ToolMessage":
+            cls = d.get("type", "") if d else m.__class__.__name__
+            if cls in ("ToolMessage", "tool"):
+                name = d.get("name", "?") if d else getattr(m, "name", "?")
+                content = d.get("content", "") if d else getattr(
+                    m, "content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        str(p.get("text", "")) if isinstance(p, dict)
+                        else str(p) for p in content)
                 results.append(
-                    {"name": getattr(m, "name", "?"),
-                     "result": str(m.content)[:500]}
+                    {"name": name, "result": str(content)[:500]}
                 )
+        try:
+            duration = round(time.time() - float(started), 1)
+        except (TypeError, ValueError):
+            duration = -1
+        final = ""
+        if messages:
+            last = messages[-1]
+            if last is not None:
+                d = _as_dict(last)
+                content = (d.get("content", "") if d else
+                           getattr(last, "content", ""))
+                if isinstance(content, list):
+                    content = " ".join(
+                        str(p.get("text", "")) if isinstance(p, dict)
+                        else str(p) for p in content)
+                final = str(content)[:500]
         entry = {
             "kind": "deep-agent-run",
             "ts": time.time(),
             "script": script,
             "model": model,
             "thread_id": thread_id,
-            "duration_s": round(time.time() - started, 1),
+            "duration_s": duration,
             "tool_calls": calls,
             "tool_results": results,
-            "usage": _usage_total(messages),
-            "final_preview": str(messages[-1].content)[:500] if messages else "",
+            "usage": dict(usage) if isinstance(usage, dict)
+            else _usage_total(messages),
+            "final_preview": final,
             "extra": extra or {},
         }
         with open(LEDGER, "a", encoding="utf-8") as f:
@@ -69,18 +129,35 @@ def main() -> int:
         return 0
     with open(LEDGER, encoding="utf-8") as f:
         lines = f.readlines()
-    for line in lines[-n:]:
-        e = json.loads(line)
-        u = e.get("usage", {})
+    shown = 0
+    for line in lines[-n:] if n > 0 else []:
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            print("(skipping corrupt ledger line)", file=sys.stderr)
+            continue
+        if not isinstance(e, dict):
+            continue
+        u = e.get("usage", {}) or {}
+        tools = [c.get("name") for c in e.get("tool_calls", []) or []
+                 if isinstance(c, dict)]
         print(
             f"{e.get('script')} thread={e.get('thread_id')} "
             f"dur={e.get('duration_s')}s "
-            f"tools={[c['name'] for c in e.get('tool_calls', [])]} "
-            f"tok={u.get('total_tokens')} "
-            f"final={e.get('final_preview', '')[:120]!r}"
+            f"tools={tools} "
+            f"tok={u.get('total_tokens') if isinstance(u, dict) else '?'} "
+            f"final={str(e.get('final_preview', ''))[:120]!r}"
         )
-        for r in e.get("tool_results", [])[:8]:
-            print(f"    = {r.get('name')}: {r.get('result', '')[:150]}")
+        for r in (e.get("tool_results", []) or [])[:8]:
+            if not isinstance(r, dict):
+                continue
+            print(f"    = {r.get('name')}: "
+                  f"{str(r.get('result', ''))[:150]}")
+        shown += 1
+    if shown == 0:
+        print("ledger empty")
     return 0
 
 

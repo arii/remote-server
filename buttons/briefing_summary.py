@@ -69,6 +69,8 @@ briefing shout. Drafts are listed, never attention items.
 """
 
 import json
+import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -90,7 +92,6 @@ RAW_CAP = 20_000  # raw appendix cap, chars
 # that repo's project config; the gh api paths must name the
 # same repo, which is why --repo without --gh is an error: the
 # default gh path would silently brief the wrong repo.
-import re
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPO_KEY = "tech-dancer"
@@ -129,18 +130,16 @@ def run_json(cmd, timeout):
 
 
 def fetch_pr_diff(pr_number: int, max_file_lines: int = 200) -> str:
-    """Fetch PR diff via gh CLI and pre-filter using context_filter.filter_diff()."""
+    """Fetch PR diff via td and pre-filter using context_filter.filter_diff()."""
+    data, _, _ = run_json(
+        ["td", "--json", "gh", "pr-diff", "--pr", str(pr_number)], 30)
+    text = (data or {}).get("diffText") or ""
+    if not text:
+        return ""
     try:
-        proc = subprocess.run(
-            ["gh", "pr", "diff", str(pr_number)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=30, text=True
-        )
-        if proc.returncode == 0 and proc.stdout:
-            return context_filter.filter_diff(proc.stdout, max_file_lines=max_file_lines)
+        return context_filter.filter_diff(text, max_file_lines=max_file_lines)
     except Exception:
-        pass
-    return ""
+        return ""
 
 
 def ci_summary(rollup):
@@ -710,8 +709,6 @@ def analyze(data):
                 item += f" — {created}"
             if repo == REPO_GH or (repo and (repo == REPO_KEY or repo.endswith("/" + REPO_KEY))):
                 matched.append(item)
-            elif repo is not None:
-                jules_other += 1
             else:
                 jules_other += 1
         if matched:
@@ -847,7 +844,6 @@ def main(argv):
         print(text)
         # Exit 0 if at least one main source worked; 1 if nothing did.
         return 0 if (data["pr_list"] or data["board"]) else 1
-    import os
     os.makedirs(plan_dir, exist_ok=True)
     path = os.path.join(plan_dir, f"{date.today().isoformat()}-briefing-plan.md")
     attn_items = analysis.get("attention_with_markers") or [(it, "") for it in attention]

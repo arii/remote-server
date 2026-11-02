@@ -64,6 +64,11 @@ Status: ✅ proven live · ⚙️ partial · 🔬 mapped, unrun · ⏸ stays on 
 | Steering + skills (APPEND_SYSTEM.md, skills/) | `system_prompt` + `skills=[...]` with FilesystemBackend | 🔬 skills-on-agent unrun; custom subagents need explicit `skills` |
 | Jobs approval gates (Approve/Decline taps) | `interrupt_on` + `Command(resume=...)` approve/reject/edit | ✅ mechanics proven on Nebius; buttons-tap bridge still open |
 | Merge-conflict repair (runbook manual path) | Repair worktree + resolver agent + verify + replacement PR | ✅ proven E2E on #148 → #149; now the runbook's canonical path |
+| Ask replacement (`/api/ask`) | `ask_investigator.py` (LangChain `create_agent`, local qwen3:8b, Chroma RAG, every run ledgered) | ✅ CUT OVER + LIVE + COMMITTED: `_pi_thread` ask branch Popen-streams `ask_investigator.py` (same live-tail UX), parses FINAL + PROPOSE; dead `_ask_prompt` removed; live POST E2E ~20s (`reply: hi`, `proposal: null`); in tree at 34986ea. Eval 4/5 stands; code-locate rerun still open to confirm the grep fix |
+| Suggest Pi-removal | Already deterministic: `_suggest_from_briefing` + explainer note, no Pi spawned | ✅ done — keep parsers in sync with model quirks |
+| Chat sessions | `_handle_chat_stream` now runs `ask_investigator.py` per turn (peer's Phase 4, in tree at 34986ea) — zero `pi -p` spawns left in `server.py` | ⚙️ code in tree, NOT yet live: baked container predates it (rebuild + live SSE verify pending). Note: this supersedes the unwired `chat_agent.py` spike (still proven, now unused — delete or keep as reference) |
+| Model routing | `deep-agent/model_router.py` (stdlib-only, tested): explicit prefer → Ollama default → Nebius cheap-model fallback; NEBIUS_MODEL/BASE_URL wired into terminal env | ✅ done, adoption in progress |
+| Shared tool library (gh/td/repo/retriever) | `deep-agent/s5tools.py` (stdlib-only, 10 tests) + `deep-agent/retrieval.py` (venv-only get_retriever/format_hits, 3 tests) | ✅ adopted where it matters: `ask_investigator.grep_repo` delegates to s5tools (c6a630a, generated-dir exclusions); retriever factory available for new slices |
 
 ## Open questions
 

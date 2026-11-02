@@ -49,6 +49,19 @@ class TestPiProfiles(unittest.TestCase):
         self.assertIn("COPY bin/ /usr/local/bin/", content)
         self.assertIn("chmod +x /usr/local/bin/pi-*", content)
 
+    def test_dockerfile_installs_tmux_and_vim(self):
+        dockerfile_path = os.path.join(self.repo_root, "terminal", "Dockerfile")
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("tmux", content)
+        self.assertIn(" vim ", content)
+
+    def test_dockerfile_installs_vimrc(self):
+        dockerfile_path = os.path.join(self.repo_root, "terminal", "Dockerfile")
+        with open(dockerfile_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("COPY vimrc.local /etc/vim/vimrc.local", content)
+
     def test_mcp_config_valid_and_selective_exposure(self):
         mcp_path = os.path.join(self.repo_root, "terminal", "pi-config", "mcp.json")
         with open(mcp_path, "r", encoding="utf-8") as f:

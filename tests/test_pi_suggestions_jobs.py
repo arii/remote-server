@@ -6,6 +6,7 @@ from unittest.mock import patch
 from buttons.server import (
     _parse_suggestions,
     _parse_proposal,
+    _extract_final,
     _extract_suggestion_note,
     _job_create,
     _validate_td_command,
@@ -63,6 +64,20 @@ Investigate why briefing times out on slow disks.
         self.assertEqual(prop_issue["kind"], "issue")
         self.assertEqual(prop_issue["title"], "Fix briefing race condition")
         self.assertIn("Investigate why briefing times out", prop_issue["body"])
+
+    def test_extract_final(self):
+        self.assertEqual(_extract_final(""), "")
+        self.assertEqual(_extract_final("no marker here"), "")
+        # rfind: quoted occurrences in tool output lose to the real print.
+        raw = ("tool_calls_made: 2\n"
+               "grep hit: if eline.startswith(\"FINAL:\")\n"
+               "FINAL: the answer\nsecond line\n")
+        self.assertEqual(_extract_final(raw), "the answer\nsecond line")
+        # PROPOSE block survives inside FINAL for _parse_proposal.
+        raw_prop = "Investigating…\nFINAL: done\nPROPOSE td\nCOMMAND: td context-warm\nEND PROPOSE\n"
+        final = _extract_final(raw_prop)
+        self.assertIn("PROPOSE td", final)
+        self.assertIsNotNone(_parse_proposal(final))
 
     def test_create_job_from_suggestions(self):
         with tempfile.TemporaryDirectory() as tmpdir:

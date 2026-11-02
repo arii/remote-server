@@ -20,6 +20,7 @@ unreadable file, or an unknown entry shape all degrade to a
 plain note, exit 0. Stdlib only, like briefing_summary.py.
 """
 
+import datetime
 import glob
 import json
 import os
@@ -389,8 +390,8 @@ def main(argv):
         _render_file(matches[0])
         return 0
     if argv:
-        print("usage: pi_logs.py [--list-json | --session QUERY | "
-              "--delete QUERY | --clear]")
+        print("usage: pi_logs.py [--list-json | --session-json QUERY | "
+              "--session QUERY | --delete QUERY | --clear]")
         return 0
     print("=== Agent sessions ===")
     files = _list_files()
@@ -400,7 +401,6 @@ def main(argv):
     print(f"{len(files)} session file(s) under {ROOT}")
     for path in files[:SHOW_SESSIONS]:
         mtime = os.path.getmtime(path)
-        import datetime
         when = datetime.datetime.fromtimestamp(
             mtime).strftime("%Y-%m-%d %H:%M")
         print(f"- {when} {os.path.basename(os.path.dirname(path))}/"
