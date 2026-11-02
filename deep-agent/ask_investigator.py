@@ -22,6 +22,7 @@ from langchain_core.tools import tool  # noqa: E402
 from langchain_ollama import ChatOllama  # noqa: E402
 
 import ledger  # noqa: E402
+import s5tools  # noqa: E402
 
 MODEL_ID = os.environ.get("ASK_MODEL", "qwen3:8b")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
@@ -119,22 +120,10 @@ def grep_repo(pattern: str) -> str:
     Args:
         pattern: Literal search text.
     """
-    if not pattern or len(pattern) > 120:
-        return "REJECTED: bad pattern"
-    try:
-        proc = subprocess.run(
-            ["grep", "-rn", "-m", "20", "--exclude-dir=.git",
-             "--exclude-dir=node_modules", "--exclude-dir=.venv",
-             "--exclude-dir=__pycache__", "--", pattern, "."],
-            cwd=_checkout,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"grep failed: {exc}"
-    out = (proc.stdout or "").strip()
-    return out[:2000] or "no matches"
+    # Delegate to the shared helper so log/index/ledger noise
+    # (.boomtick/, chroma_db/, .claude/, ledger.jsonl) never floods
+    # the -m 20 window and buries real hits like server.py.
+    return s5tools.grep_repo(_checkout, pattern)
 
 
 @tool
