@@ -146,7 +146,9 @@ It links the live schemas, resolves the server binary (global install
 preferred, checkout build as fallback), and writes both
 `mcp_config.json` files. `GITHUB_TOKEN` is read from the environment
 when set and never written otherwise. The manual steps below remain as
-fallback.
+fallback. If Antigravity already lists a working `boomtick` plugin,
+skip this — a second `boomtick-mcp` server entry would only duplicate
+its tools.
 
 > **Important — Avoid Static Caches:** Never leave a static directory named `mcp/boomtick`. Always use a live symlink named `boomtick-mcp` pointing directly to `~/boomtick/mcp/.mcp/schemas`. This ensures tool schemas automatically update when contracts in boomtick change without schema drift or duplicate server registrations.
 

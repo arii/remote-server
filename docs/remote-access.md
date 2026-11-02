@@ -33,7 +33,8 @@ phone browser ──https://TERMINAL_DOMAIN:TERMINAL_PORT──▶ oauth2-proxy
 - Reuses the existing Let's Encrypt certificate and GitHub OAuth single-user allowlist on `TERMINAL_PORT` (cookie path `/` covers `/code`).
 - Caddy strips the `/code` prefix (`uri strip_prefix /code`) and reverse proxies requests and websocket upgrades to `code-server:8080`.
 - Runs `code-server` with `--auth none` inside the private compose network, treating oauth2-proxy as the sole security boundary.
-- Persists user extensions and settings across container recreates via named volumes `code-server-data` and `code-server-config`.
+- Persists user extensions and settings across container recreates via named volumes `code-server-data` and `code-server-config`. Workspace files such as `User/Workspaces/*.code-workspace` live on `code-server-data`, and the folders they point at (`/srv/repos`, `/srv/remote-server`) are host bind mounts — so both the workspace and its trees survive recreates.
+- Installs the declarative extension set in `config/code-server/entrypoint.d/extensions.txt` on every start (idempotent boot hook via `$ENTRYPOINTD`; edit the list, then `docker compose up -d --no-deps code-server`).
 - Preconfigures the Continue extension in `config/continue/config.yaml` pointing to local Ollama at `http://ollama:11434` with `qwen3:8b` for offline, zero-external-call in-IDE assistance.
 - Buttons dashboard provides launcher tiles to quickly switch between the terminal (`/`) and VS Code (`/code`).
 

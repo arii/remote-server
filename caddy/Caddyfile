@@ -8,6 +8,14 @@
 		reverse_proxy buttons:8000
 	}
 
+	# Exact /code (no trailing slash) must redirect to /code/ FIRST:
+	# code-server answers / with a relative redirect (./?folder=...),
+	# which a browser sitting on /code would resolve to / (the terminal).
+	handle /code {
+		# Explicit * matcher: this caddy build requires matcher+target form.
+		redir * /code/
+	}
+
 	handle /code* {
 		uri strip_prefix /code
 		reverse_proxy code-server:8080

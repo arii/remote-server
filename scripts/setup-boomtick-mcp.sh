@@ -62,33 +62,26 @@ BOOMTICK_REPO_PATH="${BOOMTICK_REPO_PATH:-${BOOMTICK_DIR:-${TARGET_HOME}/boomtic
 GITHUB_TOKEN_VALUE="${GITHUB_TOKEN:-${BOOMTICK_GITHUB_TOKEN:-}}"
 export TARGET_HOME CONFIG_DIR AGY_CLI_DIR SERVER_COMMAND
 export BOOMTICK_REPO_PATH GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN_VALUE
-if [ -n "${BOOMTICK_DIR}" ]; then
-  BOOMTICK_VENV_BIN="${BOOMTICK_DIR}/.venv/bin"
-else
-  BOOMTICK_VENV_BIN=""
+# PATH for the server: start from this shell's live PATH (on the S5 that
+# already includes /opt/venvs/td/bin where `td` lives — never replace it
+# with a static list or the server fails with `td ENOENT`), then prepend
+# the checkout venv when one exists.
+SERVER_PATH="${PATH}"
+if [ -n "${BOOMTICK_DIR}" ] && [ -d "${BOOMTICK_DIR}/.venv/bin" ]; then
+  SERVER_PATH="${BOOMTICK_DIR}/.venv/bin:${SERVER_PATH}"
 fi
-export BOOMTICK_VENV_BIN
+export SERVER_PATH
 
 python3 - <<'EOF'
 import json
 import os
 
 command = os.environ["SERVER_COMMAND"]
-home = os.environ["TARGET_HOME"]
-path_parts = [
-    p for p in [
-        os.environ.get("BOOMTICK_VENV_BIN", ""),
-        os.path.join(home, ".local/bin"),
-        "/usr/local/bin",
-        "/usr/bin",
-        "/bin",
-    ] if p
-]
 env = {
     "BOOMTICK_REPO_PATH": os.environ["BOOMTICK_REPO_PATH"],
     "GITHUB_OWNER": os.environ["GITHUB_OWNER"],
     "GITHUB_REPO": os.environ["GITHUB_REPO"],
-    "PATH": ":".join(path_parts),
+    "PATH": os.environ["SERVER_PATH"],
 }
 token = os.environ.get("GITHUB_TOKEN_VALUE", "")
 if token:

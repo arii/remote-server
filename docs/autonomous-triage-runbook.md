@@ -112,15 +112,12 @@ Once a PR satisfies all safety gates:
    ```
 
 #### Handling Merge Conflicts
-If a PR is marked `"CONFLICTING"`:
-1. Fetch latest `origin/main`.
-2. Check out the PR branch locally:
-   ```bash
-   git checkout <pr_branch> && git rebase origin/main
-   ```
-3. Resolve conflicts according to the project's root cause discipline (no workaround chains).
-4. Run validation tests (`npm test` / `pytest`).
-5. Force push the rebased branch: `git push --force-with-lease origin <pr_branch>`.
+Proven agent flow (used for remote-server #148 → #149); prefer over manual:
+1. Create an isolated repair worktree via BoomTick MCP (`repo_create_repair_branch`), then verify it is on the PR head SHA — never assume the base.
+2. Run the resolver: `deep-agent/.venv/bin/python deep-agent/resolve_pr148.py <worktree-path>` (merges base, resolves on real disk, verifies zero markers).
+3. Human review: confirm marker-free (`git diff --check`), read every resolved hunk, sanity-check (py_compile/lint for code).
+4. Commit via `repo_commit_patch` (exact file allowlist), open a draft replacement PR (`open_replacement_pr`, pushMode) linking the original, comment the pointer on the original.
+5. Manual fallback (rebase + hand resolve + force-with-lease) only if the agent flow fails twice.
 
 ---
 

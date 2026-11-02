@@ -27,6 +27,7 @@
     "audit:fallow": "fallow",
     "setup:boomtick-mcp": "bash scripts/setup-boomtick-mcp.sh",
     "setup:browser-mcp": "bash scripts/setup-browser-mcp.sh",
+    "setup:gh-auth": "bash scripts/setup-gh-auth.sh",
     "permissions:update": "bash scripts/update-permissions.sh"
   },
   "devDependencies": {

@@ -22,6 +22,8 @@ mkdir -p "${BROWSER_MCP_DIR}"
 LAUNCHER="${BIN_DIR}/start_browsermcp.sh"
 cat > "${LAUNCHER}" <<'EOF'
 #!/bin/bash
+# Persisted daemon home (survives terminal recreates, unlike ~/.browsermcp).
+export BROWSER_MCP_HOME="${BROWSER_MCP_HOME:-/root/.local/share/browsermcp}"
 exec npx -y @browsermcp/mcp@latest "$@"
 EOF
 chmod +x "${LAUNCHER}"
@@ -96,10 +98,11 @@ Browser MCP v2.3.0 uses a single unified browser batch command interface rather 
   - Capture visual state with `screenshot`.
 
 ## Troubleshooting Browser MCP
-- **"No connection to browser extension":** Click extension icon in Chrome -> Disconnect -> Connect.
+- **"No connection to browser extension":** the relay is loopback-only: the daemon binds the first free port of 9010-9012 (see `~/.browsermcp/daemon.json` next to the agent) and the extension dials that port on localhost. A remote Chrome needs the SSH tunnel + `browser-relay` from `docs/browser-mcp-pairing.md` — without it, "no connection" is expected.
+- **First use asks to click Allow:** match the six-digit code in the extension popup and click Allow, then ask the agent to try again.
 - **Cannot attach to tab:** Restricted internal page (`chrome://*`, blank New Tab). Navigate to HTTP/HTTPS first.
-- **Port 9009 unavailable:** Stale node process. Check with `ss -tulpn | grep 9009`. Kill with `fuser -k 9009/tcp`.
 - **Snapshot refs fail (e12 not found):** Re-run `snapshot -i` to refresh element references.
+- **One browser at a time:** a second Chrome replaces the first; the replaced one reconnects when the other goes away.
 EOF
 echo "Created rules: ${TROUBLESHOOTING_MD}"
 

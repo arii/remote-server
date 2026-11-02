@@ -106,6 +106,9 @@ services:
       # Muse CLI auth/settings persist across recreates (the binary is
       # baked into the image; /root/.local already persists via local-data).
       - muse-data:/root/.config/muse
+      # gh CLI login (hosts.yml) persists across recreates so MCP
+      # servers and agents find authenticated gh on every boot.
+      - gh-data:/root/.config/gh
       # Other checkouts, cloned on the host (see docs/pi-setup.md § repos).
       # HOST_HOME defaults to /home/ari (host user path).
       - ${HOST_HOME:-/home/ari}/repos:/srv/repos
@@ -223,13 +226,34 @@ services:
     image: caddy:2-alpine
     command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Directory mount (not the single file): git replaces files by rename
+      # on pull, which would leave a file bind pointing at the deleted old
+      # inode (caddy would keep serving the previous config until recreated).
+      - ./caddy:/etc/caddy:ro
     expose:
       - "8080" # compose network only; ingress is via oauth2-proxy
     depends_on:
       - terminal
       - buttons
       - code-server
+    restart: unless-stopped
+
+  # BrowserMCP pairing relay: the daemon's relay is loopback-only inside
+  # terminal's network namespace, so this shares that namespace (no terminal
+  # recreate needed) and forwards the laptop to the daemon. Listens on 19010
+  # (not 9010) because the daemon already holds 127.0.0.1:9010 here. Path:
+  # laptop extension -> localhost:9010 -> ssh -L -> host -> terminal:19010
+  # -> daemon 127.0.0.1:9010. No published ports (forbidden with this
+  # network mode); the host reaches terminal:19010 over the compose network.
+  # See docs/browser-mcp-pairing.md.
+  browser-relay:
+    image: caddy:2-alpine
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    network_mode: service:terminal
+    volumes:
+      - ./config/browser-relay:/etc/caddy:ro
+    depends_on:
+      - terminal
     restart: unless-stopped
 
   # Browser-based VS Code: code-server.
@@ -251,6 +275,12 @@ services:
       - code-server-config:/home/coder/.config/code-server
       # Continue extension configuration pre-pointed to local Ollama (qwen3:8b):
       - ./config/continue:/home/coder/.continue:ro
+      # Boot hooks (ENTRYPOINTD): install-extensions.sh converges the
+      # declarative set in extensions.txt on every start. Directory mount
+      # so list edits apply on the next recreate without stale inodes.
+      - ./config/code-server/entrypoint.d:/seed/entrypoint.d:ro
+    environment:
+      ENTRYPOINTD: /seed/entrypoint.d
     expose:
       - "8080" # compose network only; ingress is via oauth2-proxy -> caddy (/code)
     depends_on:
@@ -264,6 +294,7 @@ volumes:
   gemini-data:
   local-data:
   muse-data:
+  gh-data:
   buttons-data:
   code-server-data:
   code-server-config:
