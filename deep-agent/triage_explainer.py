@@ -5,8 +5,6 @@ Uses deterministic `td agent suggest` counts plus RAG runbook context,
 explained by the local 8b model in at most 3 sentences.
 """
 
-import re
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -17,8 +15,8 @@ from langchain_core.tools import tool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 import ledger
+import triage_common
 
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 DB_DIR = str(Path(__file__).resolve().parent / "chroma_db")
 MODEL_ID = "qwen3:8b"
 
@@ -41,15 +39,7 @@ def triage_counts(repo: str) -> str:
     Args:
         repo: Repository in owner/name format, e.g. arii/tech-dancer.
     """
-    if not REPO_RE.match(repo):
-        return "REJECTED: repo must look like owner/name"
-    proc = subprocess.run(
-        ["td", "agent", "suggest", "-r", repo],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    return (proc.stdout + proc.stderr).strip()[:1500]
+    return triage_common.fetch_triage_counts(repo)
 
 
 @tool
@@ -70,7 +60,7 @@ def search_docs(query: str) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) < 2 or not REPO_RE.match(sys.argv[1]):
+    if len(sys.argv) < 2 or not triage_common.valid_repo(sys.argv[1]):
         print("usage: triage_explainer.py owner/repo", file=sys.stderr)
         return 2
     repo = sys.argv[1]
@@ -107,10 +97,7 @@ def main() -> int:
         },
         config={"recursion_limit": 10},
     )
-    calls = sum(
-        len(getattr(m, "tool_calls", []) or [])
-        for m in result["messages"]
-    )
+    calls = triage_common.count_tool_calls(result["messages"])
     ledger.record(
         "triage_explainer.py",
         f"ollama:{MODEL_ID}",
