@@ -1,13 +1,15 @@
-"""Merge approved PRs: triage open PRs and merge the ready ones.
+"""Merge approved PRs: triage open PRs, then merge via released td gate.
 
 Usage: merge_approved.py owner/repo
 The agent lists open PRs, checks each one's review/CI/merge state,
-and merges via merge_pr — which re-validates deterministically and
-refuses anything not (approved + green + mergeable + not draft).
-Local 8b model; every run is recorded to the ledger.
+marks approved/green/mergeable drafts ready, and merges via the
+released `td agent merge-approved` gate (boomtick-cli >= 0.17.0) —
+the harness keeps NO local merge gate. Every run is recorded to the
+ledger with tool results.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -21,6 +23,7 @@ import ledger
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MODEL_ID = "qwen3:8b"
+TD_BIN = os.environ.get("TD_BIN", "td")
 FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 
 
@@ -30,15 +33,27 @@ def _gh(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:
     )
 
 
+def _td(*args: str, timeout: int = 300) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [TD_BIN, *args], capture_output=True, text=True, timeout=timeout
+    )
+
+
 def _valid_repo(repo: str) -> bool:
     return bool(REPO_RE.match(repo))
 
 
-def _valid_number(number: int) -> bool:
-    return isinstance(number, int) and not isinstance(number, bool) and number > 0
+def _valid_number(number) -> bool:
+    # String type: the tool wrapper coerces True to 1 for int args,
+    # which would smuggle a bool past validation into gh.
+    return (
+        isinstance(number, str)
+        and number.isdigit()
+        and int(number) > 0
+    )
 
 
-def _pr_json(repo: str, number: int):
+def _pr_json(repo: str, number: str):
     proc = _gh(
         "pr", "view", str(number), "--repo", repo, "--json",
         "number,title,isDraft,reviewDecision,mergeable,mergeStateStatus,"
@@ -80,13 +95,13 @@ def list_prs(repo: str) -> str:
 
 
 @tool
-def pr_status(repo: str, number: int) -> str:
+def pr_status(repo: str, number: str) -> str:
     """Get merge-readiness state for one PR: draft, review decision,
     failing checks, mergeable flag.
 
     Args:
         repo: Repository in owner/name format.
-        number: PR number.
+        number: PR number as digits, e.g. "184".
     """
     if not _valid_repo(repo) or not _valid_number(number):
         return "REJECTED: bad repo or number"
@@ -103,21 +118,21 @@ def pr_status(repo: str, number: int) -> str:
 
 
 @tool
-def merge_pr(repo: str, number: int) -> str:
-    """Merge one PR after re-validating it is approved, green,
-    mergeable, and not a draft. Refuses anything else.
+def mark_ready(repo: str, number: str) -> str:
+    """Mark an approved, green, mergeable draft PR ready for review.
+    Refuses anything else. The td merge gate still re-validates.
 
     Args:
         repo: Repository in owner/name format.
-        number: PR number.
+        number: PR number as digits, e.g. "184".
     """
     if not _valid_repo(repo) or not _valid_number(number):
         return "REJECTED: bad repo or number"
     pr, err = _pr_json(repo, number)
     if pr is None:
         return f"REFUSED: {err}"
-    if pr.get("isDraft"):
-        return f"REFUSED: PR #{number} is a draft"
+    if not pr.get("isDraft"):
+        return f"REFUSED: PR #{number} is not a draft"
     if pr.get("reviewDecision") != "APPROVED":
         return f"REFUSED: PR #{number} review={pr.get('reviewDecision')}"
     failing = _check_failures(pr)
@@ -125,14 +140,60 @@ def merge_pr(repo: str, number: int) -> str:
         return f"REFUSED: PR #{number} failing checks: {failing}"
     if pr.get("mergeable") != "MERGEABLE":
         return f"REFUSED: PR #{number} mergeable={pr.get('mergeable')}"
-    proc = _gh(
-        "pr", "merge", str(number), "--repo", repo, "--merge",
-        timeout=180,
-    )
-    out = (proc.stdout + proc.stderr).strip()[:500]
+    proc = _gh("pr", "ready", str(number), "--repo", repo, timeout=120)
     if proc.returncode != 0:
-        return f"FAILED: PR #{number} merge error: {out}"
-    return f"MERGED: PR #{number} ({pr.get('title')}). {out}"
+        out = (proc.stdout + proc.stderr).strip()[:300]
+        return f"FAILED: PR #{number} ready error: {out}"
+    time.sleep(5)
+    pr2, err2 = _pr_json(repo, number)
+    if pr2 is None:
+        return f"READY (unverified): PR #{number}: {err2}"
+    return (
+        f"READY: PR #{number} draft={pr2.get('isDraft')} "
+        f"mergeable={pr2.get('mergeable')} "
+        f"state={pr2.get('mergeStateStatus')}"
+    )
+
+
+@tool
+def merge_approved_td(repo: str) -> str:
+    """Merge every eligible PR via the released td gate
+    (`td agent merge-approved -r repo --execute`), which re-validates
+    approved + green + non-draft + mergeable deterministically.
+    Returns one line per PR with MERGED, REFUSED, or FAILED.
+
+    Args:
+        repo: Repository in owner/name format.
+    """
+    if not _valid_repo(repo):
+        return "REJECTED: repo must look like owner/name"
+    proc = _td(
+        "agent", "merge-approved", "-r", repo, "--execute", timeout=600
+    )
+    raw = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        err = ((proc.stderr or "") + "\n" + raw).strip()[:500]
+        return f"FAILED: td merge-approved error: {err}"
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return f"FAILED: td returned non-JSON output: {raw[:300]}"
+    lines = []
+    for item in data.get("results", []) or []:
+        n = item.get("pr_number", "?")
+        if item.get("merged"):
+            lines.append(f"MERGED: PR #{n} ({item.get('title', '')})")
+        elif item.get("is_eligible"):
+            lines.append(
+                f"FAILED: PR #{n} eligible but not merged "
+                f"({item.get('reason') or 'no reason'})"
+            )
+        else:
+            lines.append(
+                f"REFUSED: PR #{n} ({item.get('title', '')}) — "
+                f"{item.get('reason') or 'not eligible'}"
+            )
+    return "\n".join(lines) if lines else "(no PRs evaluated)"
 
 
 def main() -> int:
@@ -141,28 +202,35 @@ def main() -> int:
         return 2
     repo = sys.argv[1]
     started = time.time()
+    # No-think is the production setting: think traces on CPU-only
+    # Ollama stretch a 5-PR triage past an hour.
+    # Set MERGE_THINK=1 to re-enable for eval.
+    think = os.environ.get("MERGE_THINK", "") == "1"
     model = ChatOllama(
         model=MODEL_ID,
         base_url="http://ollama:11434",
         temperature=0,
+        model_kwargs={} if think else {"think": False},
     )
     agent = create_agent(
         model=model,
-        tools=[list_prs, pr_status, merge_pr],
+        tools=[list_prs, pr_status, mark_ready, merge_approved_td],
         system_prompt=(
             "You triage and merge approved PRs. Call list_prs once "
             "for the requested repo, then pr_status once per EVERY "
             "open PR number in the list output (skip none, check "
-            "all), then merge_pr once per PR that "
-            "looks ready — the tool re-validates and refuses the "
-            "rest, which is a normal outcome, not an error. Never "
-            "write MERGED for a PR unless the merge_pr tool "
-            "actually returned MERGED for it; the report is "
-            "verified against tool results. "
+            "all). For a PR that is a draft but otherwise ready "
+            "(approved, green, mergeable), call mark_ready once. "
+            "Then call merge_approved_td once — the released td "
+            "gate re-validates and merges the eligible ones, and "
+            "refuses the rest, which is a normal outcome, not an "
+            "error. Never write MERGED for a PR unless the "
+            "merge_approved_td tool result actually says MERGED "
+            "for it; the report is verified against tool results. "
             "Always invoke tools through the function-calling "
             "interface. Never write a tool call out as JSON text. "
-            "Final message: one line per PR with MERGED, REFUSED, "
-            "or FAILED plus the reason."
+            "Final message: one line per PR with MERGED, READY, "
+            "REFUSED, or FAILED plus the reason."
         ),
     )
     thread_id = "merge-" + repo.replace("/", "-")
@@ -186,7 +254,7 @@ def main() -> int:
         str(m.content).strip().splitlines()[0][:200]
         for m in result["messages"]
         if m.__class__.__name__ == "ToolMessage"
-        and getattr(m, "name", "") == "merge_pr"
+        and getattr(m, "name", "") in ("merge_approved_td", "mark_ready")
         and str(m.content).strip()
     ]
     ledger.record(
@@ -197,12 +265,12 @@ def main() -> int:
         started,
     )
     print(f"tool_calls_made: {calls}")
-    print("REPORT (authoritative, from merge_pr tool results):")
+    print("REPORT (authoritative, from merge tool results):")
     if outcomes:
         for line in outcomes:
             print(f"  {line}")
     else:
-        print("  (no merge attempted)")
+        print("  (no merge or ready attempted)")
     print("FINAL:", result["messages"][-1].content)
     return 0
 
