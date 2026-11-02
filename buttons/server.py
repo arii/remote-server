@@ -4303,13 +4303,6 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
-  // Long job/step strings (a Dependabot run dumps dozens of
-  // package names) blow out the card height: cap one segment
-  // and the whole line.
-  function shorten(s, n) {
-    s = String(s || "");
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
   const j = b.jules || {};
   const js = document.createElement("div");
   const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
