@@ -347,6 +347,52 @@ def _pi_progress_path(rid):
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
 
 
+HARNESS_LEDGER_PATH = "/srv/remote-server/deep-agent/ledger.jsonl"
+LEDGER_TAIL = 100
+
+
+def _ledger_sessions():
+    """Harness ledger runs as session rows (newest 100). Never
+    raises: a missing/unreadable ledger degrades to no rows. Row
+    ids are ledger line numbers, stable as the file grows."""
+    try:
+        proc = subprocess.run(
+            EXEC + [f"cat -n {HARNESS_LEDGER_PATH} | tail -n {LEDGER_TAIL}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True)
+        if proc.returncode != 0:
+            return []
+    except Exception:
+        return []
+    rows = []
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            n = int(parts[0])
+            e = json.loads(parts[1])
+        except Exception:
+            continue
+        if not isinstance(e, dict):
+            continue
+        calls = e.get("tool_calls") or []
+        title = (f"{e.get('script') or 'agent'} · "
+                 f"{e.get('model') or '?'} · {len(calls)} tool calls")
+        rows.append({
+            "file": f"ledger-{n}.jsonl",
+            "id": f"ledger-{n}",
+            "mtime": e.get("ts") or 0,
+            "cwd": "",
+            "repo": "",
+            "title": title[:80],
+            "kind": "ledger",
+            "source": "ledger",
+            "done": True,
+        })
+    return rows
+
+
 def _pi_start(kind, repo, instruction=None):
     """Validate, start the thread, return (rid, error)."""
     repos = _discover_repos()
@@ -427,7 +473,46 @@ def _pi_thread(rid, kind, repo, instruction):
                             r["finished_at"] = time.time()
                     return
 
-                prompt = _suggest_prompt(repo, _suggest_context(brief))
+                # Harness engine: deterministic suggestions mapped
+                # from the briefing plus a local-model explanation.
+                # No Pi process is spawned on this path.
+                f.write("Running deterministic triage…\n")
+                f.flush()
+                suggest_text = _suggest_from_briefing(brief)
+                f.write(suggest_text)
+                f.flush()
+                f.write("Explaining with local model…\n")
+                f.flush()
+                estdout = ""
+                try:
+                    eproc = subprocess.run(
+                        EXEC + ["cd /srv/remote-server/deep-agent && "
+                                ".venv/bin/python triage_explainer.py "
+                                f"{info['gh']}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=600, text=True)
+                    estdout = eproc.stdout or ""
+                except Exception as exc:
+                    estdout = f"Explainer unavailable: {exc}\n"
+                note = ""
+                for eline in estdout.splitlines():
+                    if eline.startswith("FINAL:"):
+                        note = eline[len("FINAL:"):].strip()
+                        break
+                f.write(estdout[-1000:])
+                f.flush()
+                with pi_runs_lock:
+                    r = pi_runs.get(rid)
+                    if r is not None:
+                        r["result"] = {
+                            "repo": repo,
+                            "suggestions": _parse_suggestions(suggest_text),
+                            "note": note[:1000],
+                            "raw": (suggest_text + estdout)[-2000:],
+                        }
+                        r["done"] = True
+                        r["finished_at"] = time.time()
+                return
             else:
                 prompt = _ask_prompt(repo, instruction)
 
@@ -538,6 +623,40 @@ def _validate_td_command(text):
         if ok:
             return tokens
     return None
+
+
+def _suggest_from_briefing(brief):
+    """SUGGEST lines mapped deterministically from briefing data.
+    Same runnable shapes Pi was allowed to emit, in triage
+    priority: conflicts first (they block everything), then
+    failing CI, then requested changes. The allowlist in
+    _parse_suggestions re-validates every line, so this mapping
+    can never smuggle a bad command into a Run button."""
+    lines = []
+    prs = [p for p in (brief.get("prs") or []) if isinstance(p, dict)]
+    for pr in prs[:20]:
+        num = pr.get("number")
+        if not isinstance(num, int) or num <= 0:
+            continue
+        if pr.get("conflicted"):
+            lines.append(
+                f"SUGGEST: td gh resolve-conflicts --pr {num} :: "
+                f"PR #{num} has merge conflicts")
+        elif pr.get("ci") == "failing":
+            lines.append(
+                f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
+                f"PR #{num} CI is failing")
+        elif pr.get("review") == "CHANGES_REQUESTED":
+            lines.append(
+                f"SUGGEST: td gh read-pr-reviews --pr {num} :: "
+                f"PR #{num} has requested changes")
+    if not lines and (brief.get("attention") or brief.get("failing_runs")):
+        lines.append(
+            "SUGGEST: td --json preflight :: attention items remain; "
+            "run the diagnostic sweep")
+    if not lines:
+        lines.append("SUGGEST: none :: All queues clear and checks green.")
+    return "\n".join(lines) + "\n"
 
 
 def _suggest_context(brief):
@@ -1149,7 +1268,7 @@ ACTIONS = {
         # calls. The full JSONL stays on disk; pi_logs.py never
         # fails the run, so a missing sessions dir degrades to a
         # note instead of turning Logs red.
-        "sub": "Terminal + Ollama logs, latest Pi session",
+        "sub": "Terminal + Ollama logs, latest Agent session",
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
@@ -2780,16 +2899,16 @@ minutes on the local model.</p>
   <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
 </div>
 
-<h2>Pi sessions</h2>
+<h2>Agent sessions</h2>
 <details><summary>How this works</summary>
-<p>Browse Pi transcripts on disk (pi-data volume). List shows the
+<p>Browse agent transcripts on disk (pi-data volume). List shows the
 newest sessions with date, repo, and first prompt — tap one to
 render it readably. The full JSONL stays on disk. Clearing
 deletes all transcripts.</p>
 </details>
 <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center;">
 <button id="listPiSessions" style="width:auto; margin:0;">List sessions</button>
-<button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
+<button id="clearPiSessions" style="width:auto; margin:0;">Clear Agent sessions</button>
 </div>
 <input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
 <div id="piSessionList" style="display:none;"></div>
@@ -4519,16 +4638,24 @@ const suggestErrEl = document.getElementById("suggestErr");
 function renderSuggestions(data, repo) {
   suggestionsEl.textContent = "";
   if (!data.suggestions || !data.suggestions.length) {
-    const note = data.note || data.raw || "Pi suggested nothing runnable.";
+    const note = data.note || data.raw || "Agent suggested nothing runnable.";
     const noteDiv = document.createElement("div");
     noteDiv.className = "prmeta";
     noteDiv.style.marginBottom = "0.5em";
-    noteDiv.textContent = "Pi note (no runnable commands):";
+    noteDiv.textContent = "Agent note (no runnable commands):";
     suggestionsEl.appendChild(noteDiv);
     const pre = document.createElement("pre");
     pre.textContent = note;
     suggestionsEl.appendChild(pre);
     return;
+  }
+
+  if (data.note) {
+    const noteDiv = document.createElement("div");
+    noteDiv.className = "prmeta";
+    noteDiv.style.marginBottom = "0.8em";
+    noteDiv.textContent = data.note;
+    suggestionsEl.appendChild(noteDiv);
   }
 
   // Batch action: Turn all approved suggestions into a tracked job
@@ -4975,7 +5102,7 @@ function renderSessionList() {
 
   if (!filtered.length) {
     piSessionListEl.style.display = "none";
-    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
+    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Agent sessions found.";
     return;
   }
 
@@ -5009,6 +5136,15 @@ function renderSessionList() {
       meta.appendChild(bgBadge);
     }
 
+    if (s.source === "ledger") {
+      const ledgerBadge = document.createElement("span");
+      ledgerBadge.className = "pirow-badge";
+      ledgerBadge.style.background = "#3b4252";
+      ledgerBadge.style.color = "#a3be8c";
+      ledgerBadge.textContent = "ledger";
+      meta.appendChild(ledgerBadge);
+    }
+
     if (s.mtime) {
       const timeSpan = document.createElement("span");
       timeSpan.className = "pirow-time";
@@ -5032,7 +5168,7 @@ function renderSessionList() {
     del.title = "Delete this session";
     del.onclick = async (e) => {
       e.stopPropagation();
-      if (!(await confirmDialog("Delete Pi session",
+      if (!(await confirmDialog("Delete Agent session",
           "Delete this transcript? It cannot be undone.", true)))
         return;
       const r = await fetchJson("/buttons/api/pi-sessions/delete",
@@ -5052,7 +5188,7 @@ function renderSessionList() {
     };
 
     row.appendChild(b);
-    row.appendChild(del);
+    if (s.source !== "ledger") row.appendChild(del);
     piSessionListEl.appendChild(row);
   });
 }
@@ -5065,7 +5201,7 @@ if (piSessionFilterEl) {
 
 const clearPiSessionsBtn = document.getElementById("clearPiSessions");
 if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
-  if (!(await confirmDialog("Clear Pi sessions", "This deletes the transcripts and cannot be undone.", true))) return;
+  if (!(await confirmDialog("Clear Agent sessions", "This deletes the transcripts and cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { setErrorEl(piSessionErrEl, data.error || r.status, "clear failed"); return; }
@@ -5076,7 +5212,7 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   piSessionListEl.textContent = "";
   piSessionListEl.style.display = "none";
   piSessionOutEl.textContent = "";
-  piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
+  piSessionErrEl.textContent = data.output || "Agent sessions cleared.";
 };
 
 const listPiSessionsBtn = document.getElementById("listPiSessions");
@@ -6963,6 +7099,7 @@ class Handler(BaseHTTPRequestHandler):
                         "done": r.get("done", False)
                     })
 
+            sessions.extend(_ledger_sessions())
             sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
             self._json({"sessions": sessions})
         elif path == "/buttons/api/pi-session":
@@ -7032,6 +7169,52 @@ class Handler(BaseHTTPRequestHandler):
                     "turns": turns,
                     "raw_output": raw_output or reply,
                     "output": raw_output or reply
+                })
+                return
+
+            if query.startswith("ledger-"):
+                m = re.fullmatch(r"ledger-(\d+)\.jsonl", query)
+                if not m:
+                    self._json({"error": "bad ledger query"}, 400)
+                    return
+                lineno = int(m.group(1))
+                try:
+                    lproc = subprocess.run(
+                        EXEC + [f"sed -n '{lineno}p' {HARNESS_LEDGER_PATH}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=60, text=True)
+                    entry = json.loads(lproc.stdout)
+                    if not isinstance(entry, dict):
+                        raise ValueError("not an entry")
+                except Exception:
+                    self._json(
+                        {"error": f"No ledger entry matching '{query}'"},
+                        404)
+                    return
+                calls = entry.get("tool_calls") or []
+                call_lines = "\n".join(
+                    f"- {c.get('name')}: {str(c.get('args'))[:200]}"
+                    for c in calls if isinstance(c, dict))
+                usage = entry.get("usage") or {}
+                summary = (
+                    f"{entry.get('script')} · {entry.get('model')}\n"
+                    f"thread {entry.get('thread_id')} · "
+                    f"{entry.get('duration_s')}s\n"
+                    f"tokens in/out: {usage.get('input_tokens')}/"
+                    f"{usage.get('output_tokens')}\n"
+                    f"tool calls:\n{call_lines or '(no tool calls)'}\n"
+                    f"final: {entry.get('final_preview') or ''}")
+                self._json({
+                    "file": query,
+                    "id": query[:-6],
+                    "cwd": "",
+                    "repo": "",
+                    "started": entry.get("ts"),
+                    "source": "ledger",
+                    "turns": [{"role": "assistant", "text": summary,
+                               "timestamp": entry.get("ts")}],
+                    "raw_output": lproc.stdout,
+                    "output": summary,
                 })
                 return
 
@@ -7779,10 +7962,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/suggest":
-            # Pi suggests, in the background (see _pi_start): the
-            # local-model run takes minutes, so the POST returns
-            # an id immediately and the client polls
-            # /buttons/api/pi-progress/<id> for live output.
+            # Harness suggest, in the background (see _pi_start):
+            # deterministic briefing mapping plus a local-model
+            # explanation. The POST returns an id immediately and
+            # the client polls /buttons/api/pi-progress/<id> for
+            # live output.
             # Reads only: suggestions are not ledger entries,
             # exactly like briefing reads.
             try:

@@ -9,7 +9,7 @@ An in-depth user experience (UX) and interface (UI) evaluation of **S5 Buttons**
 **S5 Buttons** was designed as an operational command deck for a Trigkey S5 home server to execute frequent developer operations (`td`, `docker compose`, `jules`, `preflight`) without typing on a mobile keyboard.
 
 While its **underlying infrastructure is powerful, deterministic, and safe** (server-side rendering, allowlisted command dispatch, PTY streaming, OAuth gate), its **front-end presentation currently suffers from raw utility / wireframe syndrome**:
-- **Monolithic Single-Column Feed:** All features (stack controls, repo actions, PR briefings, Pi suggestions, ledger audit logs, Pi sessions) are stacked in a single vertical scroll.
+- **Monolithic Single-Column Feed:** All features (stack controls, repo actions, PR briefings, Pi suggestions, ledger audit logs, Agent sessions) are stacked in a single vertical scroll.
 - **Visual Monotony:** Full-width gray rectangular buttons with centered, unformatted text lack visual weight distinction (safe read actions look identical to container-recreating actions).
 - **Mobile Ergonomics Friction:** The terminal output pane sits below the buttons, forcing constant scrolling; blocking native `window.confirm()` modals disrupt flow; and unformatted text dumps (such as Dependabot runs with 30+ package names) blow out vertical height.
 - **Fragile State Feedback:** Repos returning unexpected responses or timeouts produce raw client-side JavaScript crashes (e.g. `SyntaxError: Failed to execute 'json' on 'Response'`).
@@ -39,7 +39,7 @@ In contrast, **RepoAuditor AI** demonstrates a modern, cohesive DevAI dashboard 
    - Below the Server buttons sits a second dropdown: `Repo for the buttons and briefing below:`.
    - On mobile, when scrolled down, the user loses track of which repo is currently targeted by repo-scoped actions (`Preflight check`, `Warm repo context`, `Briefing`).
 2. **Monolithic Vertical Stacking:**
-   - On a phone viewport, the page requires excessive scrolling to reach the **Ledger** or **Pi Sessions**.
+   - On a phone viewport, the page requires excessive scrolling to reach the **Ledger** or **Agent Sessions**.
    - Important actions and output logs compete for the same cramped vertical space.
 
 ### B. Visual Design & Button Ergonomics
@@ -395,7 +395,7 @@ Based on your live interface (`S5 buttons` running on `remote-server`) and the e
 * **Promote Active Repo to a Sticky Header:** As seen in your screenshots, repo cards sit at the very top, while the dropdown picker (`Repo for the buttons and briefing below: boomtick`) is buried below the server buttons. Make the active repo a sticky header chip with a dropdown so context is never lost when scrolling.
 
 
-* **Convert the Single-Page Scroll into Segmented Views:** You currently stack **Server Actions**, **Briefing**, **Pi Suggestions**, **Pi Sessions**, and **Ledger** in a single vertical column. Keep the 4 tabs (`⚡ Actions`, `📋 Briefing`, `🤖 Pi Agent`, `📜 Ledger`) permanently mounted at the top or bottom as a sticky segmented bar rather than an in-page scroll anchor.
+* **Convert the Single-Page Scroll into Segmented Views:** You currently stack **Server Actions**, **Briefing**, **Pi Suggestions**, **Agent Sessions**, and **Ledger** in a single vertical column. Keep the 4 tabs (`⚡ Actions`, `📋 Briefing`, `🤖 Pi Agent`, `📜 Ledger`) permanently mounted at the top or bottom as a sticky segmented bar rather than an in-page scroll anchor.
 
 
 
