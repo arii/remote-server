@@ -50,8 +50,17 @@ SYSTEM = (
     "Always invoke tools through the function-calling interface. "
     "Never write a tool call out as JSON text. "
     "If a grep pattern has no matches, retry with a shorter distinctive "
-    "fragment."
+    "fragment. "
+    "Keep replies readable on a phone: short paragraphs or a short "
+    "list, no wide tables."
 )
+
+
+def _short_err(exc, limit=160):
+    """Cap exception detail for Sorry lines (the prefix is kept verbatim,
+    so eval gates still classify the run as invalid, not failed)."""
+    text = str(exc)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 @tool
@@ -144,7 +153,7 @@ def main() -> int:
     try:
         spec = model_router.resolve_llm()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {exc}")
+        print(f"Sorry, no model is available right now: {_short_err(exc)}")
         return 1
     print(f"chat via {spec['provider']}:{spec['model']}", file=sys.stderr)
     kwargs = model_router.chat_kwargs(spec)
@@ -198,7 +207,7 @@ def main() -> int:
         print("", flush=True)
         reply = "".join(text_parts).strip()
     except Exception as exc:
-        reply = f"Sorry, the assistant failed: {exc}"
+        reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         print(reply, flush=True)
         messages = history + [HumanMessage(content=prompt)]
         ledger.record(

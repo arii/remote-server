@@ -159,8 +159,20 @@ SYSTEM = (
     f"Allowed td commands (exact shapes):\n" + "\n".join(ALLOWED_TD) + "\n"
     "If no write is needed, just answer — no PROPOSE block. "
     "Always invoke tools through the function-calling interface. "
-    "Never write a tool call out as JSON text."
+    "Never write a tool call out as JSON text. "
+    "Keep replies readable on a phone: short paragraphs or a short "
+    "list, no wide tables."
 )
+
+
+def _short_line(content, limit=160):
+    """First line of a tool result, capped for phone-sized tails.
+
+    The REPORT block streams live to the phone; a visible ellipsis
+    marks truncation so a cut line never reads as complete.
+    """
+    line = content.strip().splitlines()[0]
+    return line if len(line) <= limit else line[:limit] + "…"
 
 
 def main() -> int:
@@ -230,7 +242,7 @@ def main() -> int:
     )
     print(f"tool_calls_made: {calls}")
     outcomes = [
-        str(m.content).strip().splitlines()[0][:200]
+        _short_line(str(m.content))
         for m in result["messages"]
         if isinstance(m, ToolMessage)
         and str(m.content).strip()
