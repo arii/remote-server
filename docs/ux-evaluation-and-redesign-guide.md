@@ -6,7 +6,7 @@ An in-depth user experience (UX) and interface (UI) evaluation of **S5 Buttons**
 
 ## 1. Executive Summary & Core Diagnosis
 
-**S5 Buttons** was designed as an operational command deck for a Trigkey S5 home server to execute frequent developer operations (`td`, `docker compose`, `jules`, `preflight`) without typing on a mobile keyboard. 
+**S5 Buttons** was designed as an operational command deck for a Trigkey S5 home server to execute frequent developer operations (`td`, `docker compose`, `jules`, `preflight`) without typing on a mobile keyboard.
 
 While its **underlying infrastructure is powerful, deterministic, and safe** (server-side rendering, allowlisted command dispatch, PTY streaming, OAuth gate), its **front-end presentation currently suffers from raw utility / wireframe syndrome**:
 - **Monolithic Single-Column Feed:** All features (stack controls, repo actions, PR briefings, Pi suggestions, ledger audit logs, Pi sessions) are stacked in a single vertical scroll.
@@ -79,7 +79,7 @@ flowchart TD
     Nav --> Tab2["📋 Briefing & PRs (PR Cards, CI Health, Jules Feedback)"]
     Nav --> Tab3["🤖 Pi Agent (AI Suggestions, Session Browser)"]
     Nav --> Tab4["📜 Audit Ledger (Webhooks, Runs, System Events)"]
-    
+
     Tab1 -.-> Drawer["Floating Output Terminal Drawer (Slide-up)"]
     Tab2 -.-> Drawer
 ```
@@ -274,7 +274,7 @@ body {
    - Introduce a sticky top bar with active repository switcher.
    - Add a segmented control or tab system (`Actions` | `Briefing` | `Pi` | `Ledger`).
    - Implement an expandable bottom drawer for the terminal output so it stays accessible across all views.
-   
+
    ### Why BoomTick / The Session Failed
 
 The issue is not that the `boomtick` MCP server crashed or failed to boot; rather, **the model entered a hallucination and tool-calling loop** due to missing agent instructions, improper tool selection, and misconfiguration:

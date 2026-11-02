@@ -6174,6 +6174,54 @@ function initInteractiveChat(prefix) {
     activeTextNode = null;
     if (!text) return;
 
+    // Check if the text contains a JSON block with actions
+    const jsonMatch = text.match(/```(?:json)?\n([\s\S]*?)\n```/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1]);
+        if (parsed.actions && Array.isArray(parsed.actions)) {
+          // Render text part
+          if (parsed.text) {
+             const t = document.createElement("div");
+             t.textContent = parsed.text;
+             container.appendChild(t);
+          }
+
+          // Render inline buttons
+          const actionsWrap = document.createElement("div");
+          actionsWrap.className = "chat-actions-container"; // Uses CSS class instead of inline styles
+
+          parsed.actions.forEach(actionName => {
+             const btn = document.createElement("button");
+             btn.type = "button";
+             btn.className = "btn-primary";
+             btn.textContent = "⚡ " + actionName;
+             btn.onclick = () => {
+                 if (!actionName || typeof actionName !== "string") return;
+                 fetchJson("/buttons/api/run", {
+                     method: "POST",
+                     body: JSON.stringify({ action: actionName, repo: STATE.selectedRepo })
+                 }).then(res => {
+                     if (res.id) {
+                         alert("Action triggered: " + res.id);
+                     } else {
+                         alert("Error: " + (res.error || "Unknown error"));
+                     }
+                 });
+             };
+             actionsWrap.appendChild(btn);
+          });
+          container.appendChild(actionsWrap);
+          return;
+        }
+      } catch (e) {
+          // Fall back to normal rendering if JSON is invalid
+      }
+    }
+    container.innerHTML = "";
+    activeTextNode = null;
+    if (!text) return;
+
     // Split markdown code blocks: ```[lang]\n...\n```
     const parts = text.split(/(```[\s\S]*?```)/g);
     parts.forEach(part => {
