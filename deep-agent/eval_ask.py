@@ -39,7 +39,10 @@ SCRIPT_NAME = "ask_investigator.py"
 PROMPTS = [
     {
         "name": "docs-howto",
-        "prompt": "How do I run the buttons server locally?",
+        # "Locally" alone retrieves the mock UX-preview toolkit
+        # (docs/ux-preview.md: serve.sh on :18099, no live stack);
+        # the intent is the real server via compose, so ask for it.
+        "prompt": "How do I run the real buttons server with docker compose?",
         "tools": ["*"],
         # "buttons" alone is near-guaranteed (it names the subject);
         # the real answer is a compose/docker invocation.
