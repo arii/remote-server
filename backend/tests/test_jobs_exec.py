@@ -197,6 +197,25 @@ class RouterTest(unittest.TestCase):
             "/api/jobs/run", json={"action": "sync-agents"})
         self.assertEqual(resp.status_code, 400)
 
+    def test_compose_env_file_resolution(self):
+        import os
+
+        old = os.environ.get("BUTTONS_ENV_FILE")
+        os.environ["BUTTONS_ENV_FILE"] = "/tmp/probe.env"
+        try:
+            argv = engine.compose_argv("ps")
+            self.assertIn("--env-file", argv)
+            self.assertIn("/tmp/probe.env", argv)
+        finally:
+            if old is None:
+                del os.environ["BUTTONS_ENV_FILE"]
+            else:
+                os.environ["BUTTONS_ENV_FILE"] = old
+        argv = engine.compose_argv("ps")
+        if "--env-file" in argv:
+            path = argv[argv.index("--env-file") + 1]
+            self.assertTrue(os.path.isfile(path))
+
 
 class ExecuteRunTest(unittest.TestCase):
     def _reg(self, action="logs"):

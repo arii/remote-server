@@ -233,24 +233,22 @@ export default function JobsView({ repo }: { repo: string }) {
 
   async function pollOnce(rid: string) {
     try {
-      const p = await fetchPiProgress(rid);
-      setTail(p.output);
-      if (!p.done) return;
+      const r = await fetchJobRun(rid);
+      setTail(r.output);
+      if (!r.done) return;
+      if (r.exit_code !== 0 && r.exit_code !== null) {
+        setNotice(`Run ${rid} failed (exit ${r.exit_code}).`);
+      }
       stopPoll();
       await load();
     } catch {
-      let done = true;
       try {
-        const r = await fetchJobRun(rid);
-        setTail(r.output);
-        done = r.done;
-        if (done && r.exit_code !== 0 && r.exit_code !== null) {
-          setNotice(`Run ${rid} failed (exit ${r.exit_code}).`);
-        }
+        const p = await fetchPiProgress(rid);
+        setTail(p.output);
+        if (!p.done) return;
       } catch {
         // No progress entry at all; fall back to job list refresh.
       }
-      if (!done) return;
       stopPoll();
       await load();
     }

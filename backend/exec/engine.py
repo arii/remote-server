@@ -94,8 +94,25 @@ def compose_file() -> str:
                            os.path.join(stack_dir(), "docker-compose.yml"))
 
 
+def compose_env_file() -> str | None:
+    """Compose --env-file: explicit override, else the stack .env,
+    else the primary checkout .env (dev worktrees have no .env)."""
+    override = os.environ.get("BUTTONS_ENV_FILE")
+    if override:
+        return override
+    for cand in (os.path.join(stack_dir(), ".env"),
+                 "/srv/remote-server/.env"):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
 def compose_argv(*args: str) -> list:
-    return ["docker", "compose", "-f", compose_file(), *args]
+    argv = ["docker", "compose", "-f", compose_file()]
+    env_file = compose_env_file()
+    if env_file:
+        argv += ["--env-file", env_file]
+    return argv + list(args)
 
 
 def exec_argv(shell: str) -> list:

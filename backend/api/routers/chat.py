@@ -108,11 +108,16 @@ def get_repo_info(repo: str) -> dict:
 
 
 def spawn_chat_process(argv: list):
-    """Spawn the chat agent subprocess. Injectable for tests."""
+    """Spawn the chat agent subprocess. Injectable for tests.
+
+    Stdout only: the agent contract keeps banners and trace paths
+    on stderr, and merging them would leak machine lines into the
+    streamed reply tokens.
+    """
     return subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
     )
@@ -123,7 +128,7 @@ def spawn_pipeline_process(argv: list):
     return subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
     )
