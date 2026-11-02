@@ -125,5 +125,96 @@ class TestPiSessionBrowserBackground(unittest.TestCase):
             self.assertNotIn(rid, server.pi_runs)
 
 
+    def test_ledger_detail_shape(self):
+        entry = {"script": "agent", "model": "model-x", "ts": 1719999999.0,
+                 "thread_id": "t1", "duration_s": 3,
+                 "usage": {"input_tokens": 1, "output_tokens": 2},
+                 "tool_calls": [{"name": "a", "args": {}}],
+                 "final_preview": "done"}
+        mock_handler = MagicMock()
+        mock_handler.path = "/buttons/api/pi-session?session=ledger-42.jsonl"
+        sent = {}
+
+        def mock_json(obj, code=200):
+            sent["obj"] = obj
+            sent["code"] = code
+
+        mock_handler._json = mock_json
+        m = MagicMock(returncode=0, stdout=json.dumps(entry), stderr="")
+        with patch("subprocess.run", return_value=m):
+            server.Handler.do_GET(mock_handler)
+        self.assertEqual(sent["code"], 200)
+        self.assertEqual(sent["obj"]["file"], "ledger-42.jsonl")
+        self.assertEqual(sent["obj"]["id"], "ledger-42")
+        self.assertEqual(sent["obj"]["source"], "ledger")
+        self.assertEqual(len(sent["obj"]["turns"]), 1)
+        self.assertEqual(sent["obj"]["turns"][0]["role"], "assistant")
+        self.assertIn("raw_output", sent["obj"])
+
+    def test_bad_ledger_query_400(self):
+        mock_handler = MagicMock()
+        mock_handler.path = "/buttons/api/pi-session?session=ledger-abc.jsonl"
+        sent = {}
+
+        def mock_json(obj, code=200):
+            sent["obj"] = obj
+            sent["code"] = code
+
+        mock_handler._json = mock_json
+        server.Handler.do_GET(mock_handler)
+        self.assertEqual(sent["code"], 400)
+        self.assertEqual(sent["obj"]["error"], "bad ledger query")
+
+    def test_bad_session_query_400(self):
+        mock_handler = MagicMock()
+        mock_handler.path = "/buttons/api/pi-session?session=../evil"
+        sent = {}
+
+        def mock_json(obj, code=200):
+            sent["obj"] = obj
+            sent["code"] = code
+
+        mock_handler._json = mock_json
+        server.Handler.do_GET(mock_handler)
+        self.assertEqual(sent["code"], 400)
+        self.assertEqual(sent["obj"]["error"], "bad session query")
+
+    def test_missing_pi_file_404(self):
+        mock_handler = MagicMock()
+        mock_handler.path = "/buttons/api/pi-session?session=missing.jsonl"
+        sent = {}
+
+        def mock_json(obj, code=200):
+            sent["obj"] = obj
+            sent["code"] = code
+
+        mock_handler._json = mock_json
+        payload = {"error": "No session matching 'missing.jsonl' under /root/.pi"}
+        raw = MagicMock(returncode=0, stdout="", stderr="")
+        calls = [MagicMock(returncode=0, stdout=json.dumps(payload), stderr=""), raw]
+        with patch("subprocess.run", side_effect=calls):
+            server.Handler.do_GET(mock_handler)
+        self.assertEqual(sent["code"], 404)
+        self.assertIn("error", sent["obj"])
+
+    def test_delete_bad_name_400(self):
+        mock_handler = MagicMock()
+        mock_handler.path = "/buttons/api/pi-sessions/delete"
+        body = json.dumps({"session": "../evil.jsonl"}).encode("utf-8")
+        mock_handler.headers = {"Content-Length": str(len(body))}
+        mock_handler.rfile = MagicMock()
+        mock_handler.rfile.read.return_value = body
+        sent = {}
+
+        def mock_json(obj, code=200):
+            sent["obj"] = obj
+            sent["code"] = code
+
+        mock_handler._json = mock_json
+        server.Handler.do_POST(mock_handler)
+        self.assertEqual(sent["code"], 400)
+        self.assertEqual(sent["obj"]["error"], "bad session name")
+
+
 if __name__ == "__main__":
     unittest.main()
