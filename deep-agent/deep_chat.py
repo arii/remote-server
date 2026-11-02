@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
 import ledger  # noqa: E402
+import observe  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
@@ -294,18 +295,22 @@ def open_checkpointer(path=THREAD_DB):
     return cm.__enter__(), True, cm
 
 
-def build_agent(repo, checkpointer, model=None):
+def build_agent(repo, checkpointer, model=None, recorder=None):
     """create_deep_agent chat slice. Venv-only. Model injectable."""
     from deepagents import create_deep_agent  # noqa: E402
 
     if model is None:
         model, _ = build_model()
+    kwargs = {}
+    if recorder is not None:
+        kwargs["middleware"] = observe.trace_middleware(recorder)
     return create_deep_agent(
         model=model,
         tools=build_tools(s5tools.checkout_for(repo)),
         system_prompt=f"Repo: {repo}. " + SYSTEM,
         interrupt_on=dict(INTERRUPT_ON),
         checkpointer=checkpointer,
+        **kwargs,
     )
 
 
@@ -327,7 +332,9 @@ def _stream(agent, first_input, config):
     last_ai = ""
     stream = agent.stream(
         first_input,
-        config={**config, "recursion_limit": 12},
+        # 20: trace middleware nodes consume budget (~4 steps per
+        # tool call, measured); preserves room for ~4 tool calls.
+        config={**config, "recursion_limit": 20},
         stream_mode=["messages", "updates"],
     )
     for mode, payload in stream:
@@ -403,8 +410,12 @@ def _cmd_turn(repo, thread_id, raw_prompt):
           file=sys.stderr)
     from langchain_core.messages import HumanMessage  # noqa: E402
 
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("deep_chat", thread_id))
+    recorder.run_start("deep_chat.py", thread_id,
+                       f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
-    agent = build_agent(repo, saver, model=model)
+    agent = build_agent(repo, saver, model=model, recorder=recorder)
     config = {"configurable": {"thread_id": thread_id}}
     messages = [HumanMessage(content=prompt)]
     try:
@@ -413,19 +424,25 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {exc}"
         print(reply, flush=True)
+        recorder.run_end(False)
+        recorder.close()
         ledger.record(
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, messages, started,
-            extra={"repo": repo, "mode": "turn",
+            extra={"repo": repo, "mode": "turn", "trace": recorder.path,
                    "error": str(exc)[:200]},
         )
         return 1
     from langchain_core.messages import AIMessage  # noqa: E402
 
+    recorder.run_end(True)
+    recorder.close()
+    print(f"trace: {recorder.path}", file=sys.stderr)
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, messages + tool_msgs + [AIMessage(content=reply)],
-        started, extra={"repo": repo, "mode": "turn"},
+        started, extra={"repo": repo, "mode": "turn",
+                        "trace": recorder.path},
     )
     pending = _pending_interrupts(agent, config)
     if pending:
@@ -466,13 +483,19 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     from langgraph.types import Command  # noqa: E402
     from langchain_core.messages import AIMessage  # noqa: E402
 
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("deep_chat", thread_id))
+    recorder.run_start("deep_chat.py", thread_id,
+                       f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
-    agent = build_agent(repo, saver, model=model)
+    agent = build_agent(repo, saver, model=model, recorder=recorder)
     config = {"configurable": {"thread_id": thread_id}}
     pending = _pending_interrupts(agent, config)
     if not pending:
         print(f"no pending approval for thread {thread_id!r}",
               file=sys.stderr)
+        recorder.run_end(False)
+        recorder.close()
         return 1
     # Batched mode: one decision per action_request, by position.
     first = pending[0].get("value") or {}
@@ -484,17 +507,23 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {exc}"
         print(reply, flush=True)
+        recorder.run_end(False)
+        recorder.close()
         ledger.record(
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, [AIMessage(content=reply)], started,
             extra={"repo": repo, "mode": "resume", "verdict": verdict,
-                   "error": str(exc)[:200]},
+                   "trace": recorder.path, "error": str(exc)[:200]},
         )
         return 1
+    recorder.run_end(True)
+    recorder.close()
+    print(f"trace: {recorder.path}", file=sys.stderr)
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, tool_msgs + [AIMessage(content=reply)], started,
-        extra={"repo": repo, "mode": "resume", "verdict": verdict},
+        extra={"repo": repo, "mode": "resume", "verdict": verdict,
+               "trace": recorder.path},
     )
     pending = _pending_interrupts(agent, config)
     if pending:

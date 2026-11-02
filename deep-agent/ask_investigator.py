@@ -22,6 +22,7 @@ from langchain_core.tools import tool  # noqa: E402
 from langchain_ollama import ChatOllama  # noqa: E402
 
 import ledger  # noqa: E402
+import observe  # noqa: E402
 import s5tools  # noqa: E402
 
 MODEL_ID = os.environ.get("ASK_MODEL", "qwen3:8b")
@@ -189,16 +190,32 @@ def main() -> int:
         temperature=0,
         model_kwargs={} if think else {"think": False},
     )
+    thread = "ask-" + _repo.replace("/", "-")
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("ask_investigator", thread))
+    recorder.run_start("ask_investigator.py", thread,
+                       f"ollama:{MODEL_ID}")
     agent = create_agent(
         model=model,
         tools=[search_docs, read_repo_file, grep_repo, pr_state],
         system_prompt=f"Repo: {_repo}. " + SYSTEM,
+        middleware=observe.trace_middleware(recorder),
     )
     print(f"Investigating {_repo} (local model)…", flush=True)
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": instruction}]},
-        config={"recursion_limit": 12},
-    )
+    try:
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": instruction}]},
+            # 20: trace middleware nodes consume budget (~4 steps per
+            # tool call, measured); preserves room for ~4 tool calls.
+            config={"recursion_limit": 20},
+        )
+    except Exception:
+        recorder.run_end(False)
+        recorder.close()
+        raise
+    recorder.run_end(True)
+    recorder.close()
+    print(f"trace: {recorder.path}", file=sys.stderr)
     calls = sum(
         len(getattr(m, "tool_calls", []) or [])
         for m in result["messages"]
@@ -206,9 +223,10 @@ def main() -> int:
     ledger.record(
         "ask_investigator.py",
         f"ollama:{MODEL_ID}",
-        "ask-" + _repo.replace("/", "-"),
+        thread,
         result["messages"],
         started,
+        extra={"trace": recorder.path},
     )
     print(f"tool_calls_made: {calls}")
     outcomes = [
