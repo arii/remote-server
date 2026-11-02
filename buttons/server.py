@@ -2883,8 +2883,8 @@ a { color: #8bf; }
 <body>
 <h1>S5 Control Panel</h1>
 <div class="launcher-bar">
-  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
-  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+  <a class="launcher-tile" href="/" title="Open Browser Terminal">Terminal</a>
+  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">VS Code</a>
 </div>
 <p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
@@ -2898,13 +2898,13 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="stickyHead">
 <div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><span>Active repo: <strong id="selectedRepoName">...</strong></span><select id="briefingRepo" style="display:none">
 <!--REPO_OPTIONS-->
-</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">💬 Chat / Ask Agent</button></div>
+</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">Chat / Ask Agent</button></div>
 <div id="tabbar" role="tablist">
-<button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
-<button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
-<button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
-<button class="tab" data-tab="project" role="tab">📊 Project</button>
-<button class="tab" data-tab="jobs" role="tab">🧰 Jobs</button><button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
+<button class="tab active" data-tab="actions" role="tab">Actions</button>
+<button class="tab" data-tab="briefing" role="tab">Briefing</button>
+<button class="tab" data-tab="pi" role="tab">Pi agent</button>
+<button class="tab" data-tab="project" role="tab">Project</button>
+<button class="tab" data-tab="jobs" role="tab">Jobs</button><button class="tab" data-tab="ledger" role="tab">Ledger</button>
 </div>
 </div>
 <section class="tabpanel" id="tab-actions">
@@ -2955,7 +2955,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 
 <h2>Ask Agent / Chat</h2>
 <div style="margin: 0.6em 0;">
-  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
+  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">Open Agent Chat</button>
 </div>
 
 <h2>Agent sessions</h2>
@@ -3083,7 +3083,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 </section>
 <div id="chatDrawer">
 <div id="chatDrawerHead">
-  <span class="chat-drawer-title">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
+  <span class="chat-drawer-title">Agent Chat <span class="forrepo" data-forrepo></span></span>
   <span class="dbactions">
     <span id="globalPhaseBadge" class="phase-badge">Ready</span>
     <button id="chatDrawerClose" type="button" class="btn-ghost">✕ Close</button>
@@ -5303,7 +5303,7 @@ function renderConversation(sessionData) {
       turn.tool_calls.forEach(tc => {
         const pill = document.createElement("span");
         pill.className = "pi-tool-pill";
-        pill.textContent = "⚙ " + (tc.name || "tool");
+        pill.textContent = tc.name || "tool";
         tcContainer.appendChild(pill);
       });
       turnEl.appendChild(tcContainer);
@@ -5314,7 +5314,7 @@ function renderConversation(sessionData) {
         const details = document.createElement("details");
         details.className = "pi-tool-result-details";
         const sum = document.createElement("summary");
-        sum.textContent = "⚙ Output: " + (tr.name || "tool result");
+        sum.textContent = "Output: " + (tr.name || "tool result");
         const pre = document.createElement("pre");
         pre.textContent = tr.content || "";
         details.appendChild(sum);
@@ -6822,7 +6822,7 @@ function initInteractiveChat(prefix) {
              const btn = document.createElement("button");
              btn.type = "button";
              btn.className = "btn-primary";
-             btn.textContent = "⚡ " + actionName;
+             btn.textContent = actionName;
              btn.onclick = () => {
                  if (!actionName || typeof actionName !== "string") return;
                  fetchJson("/buttons/api/run", {
@@ -6977,7 +6977,7 @@ function initInteractiveChat(prefix) {
           const payload = JSON.parse(e.data);
           const ph = payload.phase || "";
           if (ph === "prefill") setPhase("prefill", "Analyzing Context...");
-          else if (ph === "tool_call") setPhase("tool_call", "Running Tool ⚙...");
+          else if (ph === "tool_call") setPhase("tool_call", "Running Tool...");
           else if (ph === "generating") setPhase("generating", "Generating Response...");
           else if (ph === "done") setPhase("done", "Complete ✓" + (payload.elapsed ? " (" + payload.elapsed + "s)" : ""));
           else if (ph === "aborted") setPhase("aborted", "Aborted ⏹");
