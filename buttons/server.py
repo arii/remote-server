@@ -2473,10 +2473,10 @@ def run_action(run_id, action, repo="remote-server"):
         steps = rewritten
     if action == "merge-approved":
         # Steps are built from the picked repo's discovered gh path
-        # (charset-validated, never from the client), like run-td.
-        prefix = _td_prefix("/srv/remote-server/deep-agent")
-        steps = [EXEC + [prefix + ".venv/bin/python merge_approved.py "
-                         f"{repos[repo]['gh']}"]]
+        # (charset-validated, never from the client), running upstream td agent merge-approved.
+        prefix = _td_prefix(repos[repo]["td_cwd"])
+        steps = [EXEC + [prefix + "td --json agent merge-approved -r "
+                         f"{repos[repo]['gh']} --execute"]]
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
