@@ -4317,7 +4317,7 @@ function renderBriefing(b) {
 
   const j = b.jules || {};
   const js = document.createElement("div");
-  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
+  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)" + (b.repo ? " — " + b.repo : ""); js.appendChild(jHead);
   if (j.unavailable) {
     const p = document.createElement("p"); p.textContent = "Jules sessions unavailable: " + j.unavailable; js.appendChild(p);
   } else if (j.items && j.items.length) {
@@ -6137,6 +6137,14 @@ async function refreshJulesStatusCard() {
     p.style.color = "var(--text-muted)";
     p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
     el.appendChild(p);
+    if (data.other) {
+      const pOther = document.createElement("div");
+      pOther.style.color = "var(--text-muted)";
+      pOther.style.fontSize = "0.88em";
+      pOther.style.marginTop = "0.3em";
+      pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+      el.appendChild(pOther);
+    }
     return;
   }
   ss.forEach(s => {
@@ -6184,6 +6192,14 @@ async function refreshJulesStatusCard() {
     row.appendChild(meta);
     el.appendChild(row);
   });
+  if (data.other) {
+    const pOther = document.createElement("div");
+    pOther.style.color = "var(--text-muted)";
+    pOther.style.fontSize = "0.88em";
+    pOther.style.marginTop = "0.4em";
+    pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+    el.appendChild(pOther);
+  }
 }
 
 async function refreshJulesSessions() {
@@ -6210,6 +6226,13 @@ async function refreshJulesSessions() {
   const ss = data.sessions || [];
   if (!ss.length) {
     el.appendChild(document.createTextNode("No Jules sessions."));
+    if (data.other) {
+      const p = document.createElement("p");
+      p.style.color = "var(--text-muted)";
+      p.style.fontSize = "0.9em";
+      p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+      el.appendChild(p);
+    }
     return;
   }
   ss.forEach(s => {
@@ -6244,6 +6267,13 @@ async function refreshJulesSessions() {
     }
     el.appendChild(card);
   });
+  if (data.other) {
+    const p = document.createElement("p");
+    p.style.color = "var(--text-muted)";
+    p.style.fontSize = "0.9em";
+    p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+    el.appendChild(p);
+  }
 }
 function renderIssueAuditOutput(data, container, repo) {
   renderStructuredAuditOutput(data, container, repo, "issues");
@@ -8134,15 +8164,79 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
+                other_count = 0
                 seen_session_ids = set()
+                target_gh = (info.get("gh") or "").lower()
+                target_repo = repo.lower()
                 for s in data.get("sessions", []):
-                    if len(sessions) >= 30:
-                        break
                     sid = s.get("id") or s.get("sessionId") or s.get("name")
                     if sid:
                         if sid in seen_session_ids:
                             continue
                         seen_session_ids.add(sid)
+
+                    # Extract session repo candidate
+                    s_repo = ""
+                    ctx = s.get("sourceContext") or s.get("source_context") or {}
+                    if isinstance(ctx, dict):
+                        repo_ctx = ctx.get("githubRepoContext") or ctx.get("github_repo_context") or {}
+                        if isinstance(repo_ctx, dict):
+                            owner = repo_ctx.get("owner")
+                            r = repo_ctx.get("repo")
+                            if owner and r:
+                                s_repo = f"{owner}/{r}".lower()
+                        if not s_repo:
+                            src_val = ctx.get("source") or ""
+                            if src_val:
+                                s_clean = src_val.strip("/")
+                                p = s_clean.split("/")
+                                if len(p) >= 2 and ("repositories" in p or "/" in s_clean):
+                                    s_repo = f"{p[-2]}/{p[-1]}".lower()
+                                elif p:
+                                    s_repo = p[-1].lower()
+                    if not s_repo:
+                        src = s.get("source") or {}
+                        if isinstance(src, dict):
+                            gh_repo = src.get("githubRepo") or src.get("github_repo") or {}
+                            if isinstance(gh_repo, dict):
+                                owner = gh_repo.get("owner")
+                                r = gh_repo.get("repo")
+                                if owner and r:
+                                    s_repo = f"{owner}/{r}".lower()
+                            if not s_repo:
+                                full = src.get("full_name") or src.get("fullName") or ""
+                                if full:
+                                    s_repo = str(full).lower()
+                        elif isinstance(src, str) and src:
+                            s_clean = src.strip("/")
+                            p = s_clean.split("/")
+                            if len(p) >= 2 and ("repositories" in p or "/" in s_clean):
+                                s_repo = f"{p[-2]}/{p[-1]}".lower()
+                            elif p:
+                                s_repo = p[-1].lower()
+
+                    matches_repo = False
+                    if s_repo:
+                        if target_gh and (s_repo == target_gh or s_repo.endswith("/" + target_repo)):
+                            matches_repo = True
+                        elif s_repo == target_repo:
+                            matches_repo = True
+                    else:
+                        # Fallback: check display name / title, or default to current repo if no repo info
+                        dname = str(s.get("displayName") or s.get("display_name") or "").lower()
+                        title = str(s.get("title") or "").lower()
+                        if target_repo and (target_repo in dname or target_repo in title):
+                            matches_repo = True
+                        elif not dname and not s.get("sourceContext") and not s.get("source"):
+                            matches_repo = True
+
+                    if not matches_repo:
+                        other_count += 1
+                        continue
+
+                    if len(sessions) >= 30:
+                        continue
+
                     pr_url = ""
                     for o in s.get("outputs", []) or []:
                         pr = o.get("pullRequest") or {}
@@ -8160,6 +8254,7 @@ class Handler(BaseHTTPRequestHandler):
                         "pr_url": pr_url,
                     })
                 self._json({"repo": repo, "sessions": sessions,
+                            "other": other_count,
                             "notice": data.get("notice", "")})
             except Exception as exc:
                 err_msg = str(exc)
