@@ -3117,6 +3117,14 @@ let timer = null;
 // across tabs.
 let userStartedRun = false;
 
+// Long job/step strings (a Dependabot run dumps dozens of
+// package names) blow out the card height: cap one segment
+// and the whole line.
+function shorten(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
 // Repo cards are tap-to-select: clicking a card (outside its
 // GitHub link) sets the picker and refreshes the briefing. The
 // picker remains as the explicit control.
@@ -3954,12 +3962,6 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
   return b;
 }
 
-// Long job/step strings blow out card height: cap one segment and the whole line.
-function shorten(s, n) {
-  s = String(s || "");
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
-}
-
 // Deduplicate attention items and failing runs into a single list of actionable items.
 function dedupeAttention(b) {
   const items = [];
@@ -4289,6 +4291,7 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
+
   const j = b.jules || {};
   const js = document.createElement("div");
   const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)" + (b.repo ? " — " + b.repo : ""); js.appendChild(jHead);
