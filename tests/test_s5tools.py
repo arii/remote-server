@@ -126,7 +126,7 @@ class TestS5Tools(unittest.TestCase):
         import tempfile
 
         for dirname in (".git", "node_modules", ".venv", "__pycache__",
-                        ".boomtick", "chroma_db", ".claude"):
+                        ".boomtick", "chroma_db", ".claude", ".muse"):
             with tempfile.TemporaryDirectory() as d:
                 os.mkdir(os.path.join(d, dirname))
                 with open(os.path.join(d, dirname, "n.txt"), "w") as f:
