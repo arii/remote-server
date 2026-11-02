@@ -84,5 +84,23 @@ class AttentionShapeTest(unittest.TestCase):
             attention.attention("a/b/c")
 
 
+class WorkflowHealthCacheTest(unittest.TestCase):
+    def test_second_call_served_from_cache(self):
+        calls = []
+        orig = attention.ops.fetch_workflow_health
+        attention.ops.fetch_workflow_health = (
+            lambda repo, gh: calls.append((repo, gh)) or {"ok": True})
+        attention._WF_CACHE.clear()
+        try:
+            first = attention.get_workflow_health("remote-server")
+            second = attention.get_workflow_health("remote-server")
+            self.assertEqual(first, {"ok": True})
+            self.assertEqual(second, {"ok": True})
+            self.assertEqual(len(calls), 1)
+        finally:
+            attention.ops.fetch_workflow_health = orig
+            attention._WF_CACHE.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

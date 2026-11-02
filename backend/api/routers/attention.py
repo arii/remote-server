@@ -54,9 +54,21 @@ class AttentionList(BaseModel):
     items: list[AttentionItem] = Field(default_factory=list)
 
 
+# TTL cache: the gh subprocess chain behind workflow-health takes
+# seconds; the Now queue polls it on every view. Freshness of a minute
+# is plenty for an attention list. Tests reset _WF_CACHE directly.
+WF_CACHE_TTL = 60.0
+_WF_CACHE: dict[str, tuple[float, dict]] = {}
+
+
 def get_workflow_health(repo: str) -> dict:
     """Injectable seam: failing-run diagnosis via workflow-health logic."""
-    return ops.fetch_workflow_health(repo, f"arii/{repo}")
+    hit = _WF_CACHE.get(repo)
+    if hit is not None and time.time() - hit[0] < WF_CACHE_TTL:
+        return hit[1]
+    data = ops.fetch_workflow_health(repo, f"arii/{repo}") or {}
+    _WF_CACHE[repo] = (time.time(), data)
+    return data
 
 
 def list_failed_jobs() -> list:
