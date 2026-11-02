@@ -52,7 +52,7 @@ STACK = "/home/ari/remote-server"
 COMPOSE = ["docker", "compose", "-f", f"{STACK}/docker-compose.yml"]
 # Run a command inside the terminal container (where td and Pi live).
 EXEC = COMPOSE + ["exec", "-T", "terminal", "bash", "-c"]
-TD = "set -a && [ -f /srv/remote-server/.env ] && . /srv/remote-server/.env; set +a && cd /srv/repos/tech-dancer && "
+REPO_PREFIX_MARKER = "__REPO_PREFIX__ "
 
 # Repos the page's repo-work UI can cover — discovered, not
 # hardcoded. The picker, the repo-scoped buttons, the briefing
@@ -186,8 +186,6 @@ def _discover_repos(force=False):
 def _default_repo(repos):
     if "remote-server" in repos:
         return "remote-server"
-    if "tech-dancer" in repos:
-        return "tech-dancer"
     return sorted(repos)[0]
 
 
@@ -347,7 +345,13 @@ def _pi_progress_path(rid):
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
 
 
-HARNESS_LEDGER_PATH = "/srv/remote-server/deep-agent/ledger.jsonl"
+def _harness_ledger_path():
+    """Derive the harness ledger path from the discovered remote-server repo."""
+    repos = _discover_repos()
+    base = repos.get("remote-server", {}).get("td_cwd", "/srv/remote-server")
+    return os.path.join(base, "deep-agent/ledger.jsonl")
+
+
 LEDGER_TAIL = 100
 
 
@@ -356,8 +360,9 @@ def _ledger_sessions():
     raises: a missing/unreadable ledger degrades to no rows. Row
     ids are ledger line numbers, stable as the file grows."""
     try:
+        harness_path = _harness_ledger_path()
         proc = subprocess.run(
-            EXEC + [f"cat -n {HARNESS_LEDGER_PATH} | tail -n {LEDGER_TAIL}"],
+            EXEC + [f"cat -n {harness_path} | tail -n {LEDGER_TAIL}"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=60, text=True)
         if proc.returncode != 0:
@@ -589,7 +594,6 @@ ALLOWED_TD_COMMANDS = [
     "td context-warm",
     "td --json preflight",
     "td --json agent list-sessions",
-    "td --json jules list-sessions",
     "td --json agent run-feedback-check",
 ]
 ALLOWED_TD_COMMANDS_TEXT = "\n".join(ALLOWED_TD_COMMANDS)
@@ -1305,10 +1309,8 @@ ACTIONS = {
     # enrichment into a readable briefing — raw td output is NOT
     # shown here, because td defaults to JSON and its human mode
     # drops per-PR detail. The script lives in the checkout, which
-    # the terminal container sees at /srv/remote-server (the same
-    # mount the TD prefix uses for .env), so a git pull updates it
-    # with no container rebuild. tech-dancer has project_config.json,
-    # so td passes config validation there. gh is authed in the
+    # the terminal container sees at /srv/remote-server, so a git pull updates it
+    # with no container rebuild. gh is authed in the
     # terminal container; if a gh call fails, that PR's CI reads
     # "unknown" instead of failing the whole briefing.
     "briefing-td": {
@@ -1317,17 +1319,15 @@ ACTIONS = {
         "sub": "Open PRs, CI, conflicts from td (repo from picker above)",
         "confirm": False,
         "steps": [
-            EXEC + [TD + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
+            EXEC + [REPO_PREFIX_MARKER + "python3 /srv/remote-server/buttons/briefing_summary.py --briefing"],
         ],
     },
     # Sync & nudge: first list active Jules sessions (td's agent
     # sync is the list-sessions command, not a verb called sync),
     # then run the one-shot feedback check that posts CI failure
     # and review feedback to stalled sessions. Confirm first: the
-    # second step writes to live agent sessions. The list step
-    # falls back to the jules group (same fallback the briefing's
-    # Jules section uses): a group-name difference must not make
-    # the whole button fail silently. A missing JULES_API_KEY is
+    # second step writes to live agent sessions.
+    # A missing JULES_API_KEY is
     # NOT a failure: both steps notice and exit 0, so the run
     # stays green with an explanatory note instead of turning the
     # whole banner red for a config step the user hasn't done.
@@ -1342,11 +1342,10 @@ ACTIONS = {
         "sub": "List Jules sessions (read-only)",
         "confirm": False,
         "steps": [
-            EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
+            EXEC + [REPO_PREFIX_MARKER + "if [ -z \"$JULES_API_KEY\" ]; then echo "
                     "\"notice: JULES_API_KEY is unset — add it to .env "
                     "to enable Jules session sync\"; else "
-                    "td --json agent list-sessions || "
-                    "td --json jules list-sessions; fi"],
+                    "td --json agent list-sessions; fi"],
         ],
     },
     "nudge-agents": {
@@ -1356,7 +1355,7 @@ ACTIONS = {
         "confirm": False,
         "hidden": True,
         "steps": [
-            EXEC + [TD + "if [ -z \"$JULES_API_KEY\" ]; then echo "
+            EXEC + [REPO_PREFIX_MARKER + "if [ -z \"$JULES_API_KEY\" ]; then echo "
                     "\"notice: JULES_API_KEY is unset — skipping "
                     "feedback check\"; else "
                     "td --json agent run-feedback-check; fi"],
@@ -1372,7 +1371,7 @@ ACTIONS = {
         "sub": "Regenerate .agent-context.json if stale",
         "confirm": False,
         "steps": [
-            EXEC + [TD + "td context-warm"],
+            EXEC + [REPO_PREFIX_MARKER + "td context-warm"],
         ],
     },
     # Preflight: doctor + typecheck + lint + overlap detection +
@@ -1389,7 +1388,7 @@ ACTIONS = {
         "sub": "doctor + typecheck + lint + overlap + merge simulation (compact digest)",
         "confirm": False,
         "steps": [
-            EXEC + [TD + "set -o pipefail; td --json preflight | "
+            EXEC + [REPO_PREFIX_MARKER + "set -o pipefail; td --json preflight | "
                     "python3 /srv/remote-server/buttons/preflight_digest.py"],
         ],
     },
@@ -1405,7 +1404,7 @@ ACTIONS = {
         "sub": "Save briefing to .agents/plans/<date>-briefing-plan.md (repo from picker)",
         "confirm": True,
         "steps": [
-            EXEC + [TD + "mkdir -p .agents/plans && "
+            EXEC + [REPO_PREFIX_MARKER + "mkdir -p .agents/plans && "
                     "python3 /srv/remote-server/buttons/briefing_summary.py "
                     "--plan-dir .agents/plans && "
                     "git status --short .agents/plans/"],
@@ -2412,11 +2411,11 @@ def run_action(run_id, action, repo="remote-server"):
     global active_id
     run = runs[run_id]
     repos = _discover_repos()
-    if (action in REPO_SCOPED_ACTIONS or action == "run-td") \
+    if (action in REPO_SCOPED_ACTIONS or action in ("run-td", "sync-agents", "nudge-agents")) \
             and repo not in repos:
         # The repo vanished between validation and run start (or
-        # was never valid): fail visibly rather than running the
-        # steps against tech-dancer's checkout by default.
+        # was never valid): fail visibly rather than running against
+        # an invalid checkout.
         with runs_lock:
             _append(run, f"error: unknown repo {repo}\n")
             run["exit_code"] = 1
@@ -2426,12 +2425,6 @@ def run_action(run_id, action, repo="remote-server"):
         return
     steps = ACTIONS[action]["steps"]
     if action == "run-td":
-        # The command arrives attached to the run record (from
-        # /api/run-td, which validated it); a bare /api/run
-        # naming run-td attaches nothing and must fail visibly
-        # rather than running an empty step. Tokens are
-        # re-validated here and shlex-quoted, so even a
-        # tampered record cannot smuggle shell text in.
         tokens = run.get("td_argv")
         if not tokens or _validate_td_command(" ".join(tokens)) != tokens:
             with runs_lock:
@@ -2445,18 +2438,13 @@ def run_action(run_id, action, repo="remote-server"):
         prefix = _td_prefix(repos[repo]["td_cwd"])
         steps = [EXEC + [prefix + " ".join(shlex.quote(t)
                                          for t in tokens)]]
-    elif repo in repos and action in REPO_SCOPED_ACTIONS \
-            and repo != "tech-dancer":
-        # Repo-scoped steps run td in the repo checkout: rewrite
-        # the TD prefix (the step's last element) to that repo.
-        # The step shape is fixed (EXEC + [TD + cmd]), so the
-        # rewrite is exact, never string surgery on free text.
+    elif repo in repos:
         prefix = _td_prefix(repos[repo]["td_cwd"])
         rewritten = []
         for step in steps:
             if len(step) == len(EXEC) + 1 and step[:len(EXEC)] == EXEC \
-                    and step[-1].startswith(TD):
-                cmd = step[-1][len(TD):]
+                    and step[-1].startswith(REPO_PREFIX_MARKER):
+                cmd = step[-1][len(REPO_PREFIX_MARKER):]
                 if action == "briefing-td":
                     cmd = cmd.replace(
                         "briefing_summary.py --briefing",
@@ -3342,7 +3330,7 @@ function friendlyError(msg) {
     return "terminal container or Docker daemon unreachable — check the terminal container and tap Refresh.";
   if (/\[Errno 2\] No such file or directory/i.test(msg) || /fatal: not a git repository/i.test(msg) || /checkout missing/i.test(msg))
     return "required repo checkout or file is missing on the server — check the terminal container and tap Refresh.";
-  if (/td: command not found/i.test(msg) || /tech-dancer/i.test(msg) && /command failed|failed with exit/i.test(msg) || /briefing failed/i.test(msg))
+  if (/td: command not found/i.test(msg) || /command failed|failed with exit/i.test(msg) || /briefing failed/i.test(msg))
     return "td command failed in terminal container — check the terminal container logs or tap Refresh.";
   if (/JULES_API_KEY/.test(msg))
     return "JULES_API_KEY is not set — add it to .env to enable Jules features.";
@@ -7142,7 +7130,10 @@ def _td_run(cmd, timeout=120, prefix=None):
     stdout. Raises RuntimeError with the last stderr line on
     failure. The command is a fixed string built from validated
     values only — never from free text."""
-    proc = subprocess.run(EXEC + [(prefix or TD) + cmd],
+    if prefix is None:
+        repos = _discover_repos()
+        prefix = _td_prefix(repos[_default_repo(repos)]["td_cwd"])
+    proc = subprocess.run(EXEC + [prefix + cmd],
                           stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=timeout,
                           text=True)
@@ -7552,7 +7543,7 @@ class Handler(BaseHTTPRequestHandler):
             # transport as the briefing button) and its JSON is
             # passed through. Slow (td + gh calls), so the page
             # shows a spinner while it loads. ?repo= picks the
-            # repo (discovered set; default tech-dancer).
+            # repo (discovered set; default canonical repo).
             repo, repos = self._get_request_repo()
             if repo not in repos:
                 self._json({"error": "unknown repo"}, 400)
@@ -7722,8 +7713,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 lineno = int(m.group(1))
                 try:
+                    harness_path = _harness_ledger_path()
                     lproc = subprocess.run(
-                        EXEC + [f"sed -n '{lineno}p' {HARNESS_LEDGER_PATH}"],
+                        EXEC + [f"sed -n '{lineno}p' {harness_path}"],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         timeout=60, text=True)
                     entry = json.loads(lproc.stdout)
@@ -8179,8 +8171,7 @@ class Handler(BaseHTTPRequestHandler):
                    "echo '{\"sessions\": [], "
                    "\"notice\": \"JULES_API_KEY is unset — add it to "
                    ".env to see Jules sessions\"}'; else "
-                   "td --json agent list-sessions || "
-                   "td --json jules list-sessions; fi")
+                   "td --json agent list-sessions; fi")
             try:
                 out = _td_run(cmd, timeout=120,
                               prefix=_td_prefix(info["td_cwd"]))
@@ -8310,7 +8301,7 @@ class Handler(BaseHTTPRequestHandler):
             title = data.get("title") or "Issue report from findings"
             cause = data.get("cause", "")
             details = data.get("details", "")
-            repo = data.get("repo", "tech-dancer")
+            repo, _ = self._get_request_repo(data)
 
             md_body = f"### Summary\nReported from {source} findings on {repo}.\n\n"
             if cause:
