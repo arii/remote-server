@@ -1,0 +1,11 @@
+trace demo_run (8 events)
++0.0s START ask_investigator.py thread=ask-a-b model=ollama:qwen3:8b
++0.1s LLM req n_msgs=3
++0.9s LLM resp in=120 out=45 tot=165
++1.0s ok grep_repo 0.42s {"pattern": "chat"} -> server.py: match
++1.5s ERR pr_state 0.1s err=boom
++1.6s LLM req n_msgs=5
++2.4s LLM resp in=200 out=60 tot=260
++2.5s END ok=True dur=2.0s
+tokens in=320 out=105 tot=425 | tools ok=1 err=1 | dur=2.0s
+skipped 1 malformed line

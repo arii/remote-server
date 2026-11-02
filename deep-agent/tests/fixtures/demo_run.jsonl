@@ -1,0 +1,9 @@
+{"type": "run_start", "script": "ask_investigator.py", "thread": "ask-a-b", "model": "ollama:qwen3:8b", "ts": 1762000000.0}
+{"type": "model_request", "n_messages": 3, "ts": 1762000000.1}
+{"type": "model_response", "usage": {"input_tokens": 120, "output_tokens": 45, "total_tokens": 165}, "ts": 1762000000.9}
+{"type": "tool_call", "name": "grep_repo", "args_preview": "{\"pattern\": \"chat\"}", "duration_s": 0.42, "ok": true, "result_preview": "server.py: match", "ts": 1762000001.0}
+{"type": "tool_call", "name": "pr_state", "args_preview": "{\"n\": 7}", "duration_s": 0.1, "ok": false, "error": "boom", "ts": 1762000001.5}
+this line is not json {
+{"type": "model_request", "n_messages": 5, "ts": 1762000001.6}
+{"type": "model_response", "usage": {"input_tokens": 200, "output_tokens": 60, "total_tokens": 260}, "ts": 1762000002.4}
+{"type": "run_end", "duration_s": 2.0, "ok": true, "ts": 1762000002.5}

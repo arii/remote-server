@@ -55,6 +55,9 @@ deep-agent/*
 !deep-agent/chat_agent.py
 !deep-agent/observe.py
 !deep-agent/runs.py
+!deep-agent/trace_view.py
+!deep-agent/OBSERVABILITY.md
+!deep-agent/tests/
 !deep-agent/deep_chat.py
 !deep-agent/API_CONTRACT_PROPOSAL.md
 !deep-agent/eval_lib.py
