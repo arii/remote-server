@@ -20,6 +20,17 @@ Env contract:
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
   NEBIUS_ONLY=1 (force cloud), OLLAMA_STRICT=1 (fail instead of falling back).
+
+Routing ladder (policy, 2026-11-02):
+  deterministic command -> Ollama qwen3:8b -> Ollama qwen3:14b ->
+  API-token LLM. The 14b tier is selected today by setting
+  ASK_MODEL=qwen3:14b (no separate code path); it becomes the
+  default significant-local tier once tok/s is measured on the
+  5850U after the terminal rebuild (#246).
+  Route to the API-token model only when the task needs
+  write-mode multi-step execution, context the 8b window cannot
+  hold, or judged output the 8b eval gate does not cover.
+  OLLAMA_STRICT=1 keeps the box usable offline (fail, never cloud).
 """
 
 import os
