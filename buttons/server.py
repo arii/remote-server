@@ -3008,6 +3008,7 @@ deletes all transcripts.</p>
 <div class="planrow">
 <label>Pick PR: <select id="reviewPrSelect"><option value="">— Loading PRs —</option></select></label>
 <button id="loadPrDetailsBtn" type="button" class="btn-primary" style="width:auto;margin:0;">Inspect PR</button>
+<span id="reviewPrReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span>
 </div>
 <div id="prDetailsView" class="health-card" style="display:none;margin-top:0.6em;">
   <div class="health-head" id="prDetailsHead">PR #--</div>
@@ -3081,11 +3082,13 @@ write a markdown plan file; nothing executes or pushes.</p>
 <button id="planWorkflowAuditBtn">Audit workflows</button></div>
 <div class="planrow"><label>Review plan for PR
 <select id="planPrSelect"><option value="">—</option></select></label>
-<button id="planReviewBtn">Generate</button></div>
+<button id="planReviewBtn">Generate</button>
+<span id="planReviewReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span></div>
 <div class="planrow"><span>Aggregate PRs</span>
 <select id="planAggPrs" multiple size="4" style="min-width:9em"><option value="">—</option></select>
 <label>into <input id="planAggTarget" value="main" size="12" maxlength="64"></label>
-<button id="planAggBtn">Generate</button></div>
+<button id="planAggBtn">Generate</button>
+<span id="planAggReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span></div>
 <div id="planOut"><p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p></div>
 <div id="planErr"></div>
 </section>
@@ -3218,7 +3221,14 @@ function refreshProject() {
   document.querySelectorAll("[data-forrepo]").forEach(el => {
     el.textContent = "— " + repo;
   });
-  if (typeof renderReviewPrSelect === "function") renderReviewPrSelect();
+  const planOut = document.getElementById("planOut");
+  const planErr = document.getElementById("planErr");
+  if (planOut && !planOut.querySelector(".spinner")) {
+    planOut.innerHTML = '<p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p>';
+  }
+  if (planErr) planErr.textContent = "";
+  if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
+  else if (typeof renderReviewPrSelect === "function") renderReviewPrSelect();
   if (typeof refreshWorkflowHealth === "function") refreshWorkflowHealth();
   if (typeof refreshIssues === "function") refreshIssues();
   if (typeof refreshJulesSessions === "function") refreshJulesSessions();
@@ -5520,14 +5530,37 @@ let currentPrDetails = null;
 
 function renderReviewPrSelect() {
   const sel = document.getElementById("reviewPrSelect");
+  const btn = document.getElementById("loadPrDetailsBtn");
+  const reasonEl = document.getElementById("reviewPrReason");
   if (!sel) return;
+  const prs = briefingPrs || [];
+  if (!prs.length) {
+    sel.innerHTML = '<option value="">No open PRs</option>';
+    if (btn) {
+      btn.disabled = true;
+      btn.title = "No open PRs";
+    }
+    if (reasonEl) {
+      reasonEl.textContent = "No open PRs";
+      reasonEl.style.display = "inline";
+    }
+    return;
+  }
   sel.innerHTML = '<option value="">— Pick open PR —</option>';
-  (briefingPrs || []).forEach(pr => {
+  prs.forEach(pr => {
     const o = document.createElement("option");
     o.value = pr.number;
     o.textContent = "#" + pr.number + " — " + String(pr.title || "").slice(0, 60);
     sel.appendChild(o);
   });
+  if (btn) {
+    btn.disabled = !sel.value;
+    btn.title = "";
+  }
+  if (reasonEl) {
+    reasonEl.textContent = "";
+    reasonEl.style.display = "none";
+  }
 }
 
 async function loadEnrichedPrDetails(prNum) {
@@ -5820,26 +5853,78 @@ async function dispatchJulesHandoff() {
 function renderPlanPrSelects() {
   renderReviewPrSelect();
   const single = document.getElementById("planPrSelect");
-  if (single) {
-    single.innerHTML = '<option value="">—</option>';
-    (briefingPrs || []).forEach(pr => {
-      const o = document.createElement("option");
-      o.value = pr.number;
-      o.textContent = "#" + pr.number + " — " +
-        String(pr.title || "").slice(0, 60);
-      single.appendChild(o);
-    });
-  }
+  const reviewBtn = document.getElementById("planReviewBtn");
+  const reviewReasonEl = document.getElementById("planReviewReason");
   const multi = document.getElementById("planAggPrs");
+  const aggBtn = document.getElementById("planAggBtn");
+  const aggReasonEl = document.getElementById("planAggReason");
+  const prs = briefingPrs || [];
+
+  if (single) {
+    if (!prs.length) {
+      single.innerHTML = '<option value="">No open PRs</option>';
+      if (reviewBtn) {
+        reviewBtn.disabled = true;
+        reviewBtn.title = "No open PRs";
+      }
+      if (reviewReasonEl) {
+        reviewReasonEl.textContent = "No open PRs";
+        reviewReasonEl.style.display = "inline";
+      }
+    } else {
+      single.innerHTML = '<option value="">—</option>';
+      prs.forEach(pr => {
+        const o = document.createElement("option");
+        o.value = pr.number;
+        o.textContent = "#" + pr.number + " — " +
+          String(pr.title || "").slice(0, 60);
+        single.appendChild(o);
+      });
+      if (reviewBtn) {
+        reviewBtn.disabled = !single.value;
+        reviewBtn.title = "";
+      }
+      if (reviewReasonEl) {
+        reviewReasonEl.textContent = "";
+        reviewReasonEl.style.display = "none";
+      }
+    }
+  }
+
   if (multi) {
     multi.innerHTML = "";
-    (briefingPrs || []).forEach(pr => {
+    if (!prs.length) {
       const o = document.createElement("option");
-      o.value = pr.number;
-      o.textContent = "#" + pr.number + " — " +
-        String(pr.title || "").slice(0, 40);
+      o.value = "";
+      o.disabled = true;
+      o.textContent = "No open PRs";
       multi.appendChild(o);
-    });
+      if (aggBtn) {
+        aggBtn.disabled = true;
+        aggBtn.title = "No open PRs";
+      }
+      if (aggReasonEl) {
+        aggReasonEl.textContent = "No open PRs";
+        aggReasonEl.style.display = "inline";
+      }
+    } else {
+      prs.forEach(pr => {
+        const o = document.createElement("option");
+        o.value = pr.number;
+        o.textContent = "#" + pr.number + " — " +
+          String(pr.title || "").slice(0, 40);
+        multi.appendChild(o);
+      });
+      if (aggBtn) {
+        const selected = Array.from(multi.selectedOptions).map(o => o.value).filter(Boolean);
+        aggBtn.disabled = !selected.length;
+        aggBtn.title = "";
+      }
+      if (aggReasonEl) {
+        aggReasonEl.textContent = "";
+        aggReasonEl.style.display = "none";
+      }
+    }
   }
 }
 async function refreshIssues() {
@@ -6157,6 +6242,14 @@ async function refreshJulesSessions() {
   });
 }
 function renderIssueAuditOutput(data, container, repo) {
+  renderStructuredAuditOutput(data, container, repo, "issues");
+}
+
+function renderWorkflowAuditOutput(data, container, repo) {
+  renderStructuredAuditOutput(data, container, repo, "workflows");
+}
+
+function renderStructuredAuditOutput(data, container, repo, auditType) {
   let parsed = null;
   const rawText = data.output || "";
   try {
@@ -6169,47 +6262,52 @@ function renderIssueAuditOutput(data, container, repo) {
     }
   }
 
-  const items = (parsed && (parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
+  const items = (parsed && (parsed.workflows || parsed.runs || parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
   const totalCount = parsed ? (parsed.count !== undefined ? parsed.count : (parsed.total !== undefined ? parsed.total : (items ? items.length : 0))) : 0;
+  const label = auditType === "workflows" ? "Audited workflows" : "Audited issues";
 
   const countDiv = document.createElement("div");
   countDiv.className = "audit-counts";
-  countDiv.textContent = `Audited issues: ${totalCount}`;
+  countDiv.textContent = `${label}: ${totalCount}`;
   container.appendChild(countDiv);
 
   if (items && items.length > 0) {
     const table = document.createElement("table");
     table.className = "audit-table";
-    table.innerHTML = "<thead><tr><th># / ID</th><th>Title / Finding</th><th>Path / Plan</th></tr></thead><tbody></tbody>";
+    const head1 = auditType === "workflows" ? "Workflow / Run" : "# / ID";
+    const head2 = auditType === "workflows" ? "Status / Event" : "Title / Finding";
+    const head3 = auditType === "workflows" ? "Path / Plan" : "Path / Plan";
+    table.innerHTML = `<thead><tr><th>${head1}</th><th>${head2}</th><th>${head3}</th></tr></thead><tbody></tbody>`;
     const tbody = table.querySelector("tbody");
     items.forEach(it => {
       const tr = document.createElement("tr");
       const num = it.number || it.id || it.issue || "";
-      const title = it.title || it.name || it.summary || "";
+      const name = it.name || it.title || it.workflow || (num ? `#${num}` : "");
       let rawPath = it.plan_path || it.path || it.file || "";
       let relPath = relativizePath(rawPath, repo);
-      const url = it.url || it.html_url || (num && repo ? `https://github.com/${repo}/issues/${num}` : "");
+      const url = it.url || it.html_url || ((num && repo && auditType !== "workflows") ? `https://github.com/${repo}/issues/${num}` : "");
 
-      const tdNum = document.createElement("td");
+      const tdCol1 = document.createElement("td");
       if (url) {
-        tdNum.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">#${escHtml(String(num))}</a>`;
+        tdCol1.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">${escHtml(String(name || num))}</a>`;
       } else {
-        tdNum.textContent = num ? `#${num}` : "—";
+        tdCol1.textContent = name || (num ? `#${num}` : "—");
       }
 
-      const tdTitle = document.createElement("td");
-      tdTitle.textContent = title || "(no title)";
+      const tdCol2 = document.createElement("td");
+      const subInfo = it.conclusion || it.status || it.event || it.summary || it.diagnosed_cause || (auditType === "workflows" ? "—" : "(no title)");
+      tdCol2.textContent = subInfo;
 
-      const tdPath = document.createElement("td");
+      const tdCol3 = document.createElement("td");
       if (relPath) {
-        tdPath.innerHTML = `<code>${escHtml(relPath)}</code>`;
+        tdCol3.innerHTML = `<code>${escHtml(relPath)}</code>`;
       } else {
-        tdPath.textContent = "—";
+        tdCol3.textContent = "—";
       }
 
-      tr.appendChild(tdNum);
-      tr.appendChild(tdTitle);
-      tr.appendChild(tdPath);
+      tr.appendChild(tdCol1);
+      tr.appendChild(tdCol2);
+      tr.appendChild(tdCol3);
       tbody.appendChild(tr);
     });
     container.appendChild(table);
@@ -6235,15 +6333,22 @@ async function runPlan(plan, extra) {
   out.innerHTML = '<span class="spinner"></span> Generating plan…';
   err.textContent = "";
   const repo = projectRepo();
-  const res = await fetchJson("/buttons/api/run-plan", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({repo: repo, plan: plan},
-                                      extra || {}))});
-  const data = res.data || {};
-  if (!res.ok) {
+  let res;
+  try {
+    res = await fetchJson("/buttons/api/run-plan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(Object.assign({repo: repo, plan: plan},
+                                        extra || {}))});
+  } catch (e) {
     out.innerHTML = "";
-    setErrorEl(err, data.error || res.status, "plan failed");
+    setErrorEl(err, e, "plan failed");
+    return;
+  }
+  const data = (res && res.data) || {};
+  if (!res || !res.ok) {
+    out.innerHTML = "";
+    setErrorEl(err, data.error || (res ? res.status : "network error"), "plan failed");
     return;
   }
   out.innerHTML = "";
@@ -6287,6 +6392,8 @@ async function runPlan(plan, extra) {
 
   if (plan === "issue-audit") {
     renderIssueAuditOutput(data, out, repo);
+  } else if (plan === "workflow-audit") {
+    renderWorkflowAuditOutput(data, out, repo);
   } else {
     const pre = document.createElement("pre");
     pre.id = "planRawOutput";
@@ -6409,7 +6516,7 @@ function pollPlanJob(jid, container) {
   const pab = document.getElementById("planAggBtn");
   if (pab) pab.onclick = () => {
     const sel = document.getElementById("planAggPrs");
-    const prs = Array.from(sel.selectedOptions).map(o => o.value);
+    const prs = Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
     const target =
       (document.getElementById("planAggTarget").value || "").trim() ||
       "main";
@@ -6420,6 +6527,29 @@ function pollPlanJob(jid, container) {
     }
     runPlan("aggregation", {prs: prs, target: target});
   };
+
+  const revSel = document.getElementById("reviewPrSelect");
+  if (revSel) {
+    revSel.onchange = () => {
+      const btn = document.getElementById("loadPrDetailsBtn");
+      if (btn) btn.disabled = !revSel.value;
+    };
+  }
+  const planSel = document.getElementById("planPrSelect");
+  if (planSel) {
+    planSel.onchange = () => {
+      const btn = document.getElementById("planReviewBtn");
+      if (btn) btn.disabled = !planSel.value;
+    };
+  }
+  const aggSel = document.getElementById("planAggPrs");
+  if (aggSel) {
+    aggSel.onchange = () => {
+      const btn = document.getElementById("planAggBtn");
+      const selected = Array.from(aggSel.selectedOptions).map(o => o.value).filter(Boolean);
+      if (btn) btn.disabled = !selected.length;
+    };
+  }
 })();
 
 // Live updates: re-fetch status every 10s (skipped while the tab
