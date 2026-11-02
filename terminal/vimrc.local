@@ -1,0 +1,4 @@
+" System vimrc for the S5 terminal image.
+" Keep vim state (jumps, registers, command history) on the local-data
+" volume so it survives container recreates.
+set viminfofile=/root/.local/share/vim/viminfo

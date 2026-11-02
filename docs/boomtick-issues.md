@@ -3,12 +3,12 @@
 Separation of concerns: fixes in `arii/BoomTick` (MCP server `mcp/` + `td` CLI
 `cli/`) cannot be pushed by the GitHub connector (403 on that repo — writes go
 through Ari or his local agent). This file tracks them here so nothing is lost.
-Verified against BoomTick `main` on 2026-10-29.
+Verified against BoomTick `main` on 2026-10-29; states reconciled with live GitHub on 2026-11-02.
 
-## Open
+## Resolved (closed on GitHub — verified 2026-11-02)
 
 ### #1024 — `td preflight` runs BoomTick-repo checks on every repo
-- **State:** OPEN ([Issue #1024](https://github.com/arii/boomtick/issues/1024)).
+- **State:** RESOLVED / CLOSED ([Issue #1024](https://github.com/arii/boomtick/issues/1024); fixed via [PR #1028](https://github.com/arii/boomtick/pull/1028), merged 2026-10-29).
 - **Symptom:** `td --json preflight` in `/srv/remote-server` fails: `pnpm run
   type-check` → `ERR_PNPM_NO_SCRIPT`, `pnpm run lint` → `ERR_PNPM_NO_SCRIPT`,
   `node scripts/detect-antipatterns.mjs` → `MODULE_NOT_FOUND`. The buttons
@@ -28,7 +28,7 @@ Verified against BoomTick `main` on 2026-10-29.
   that exist (doctor, overlaps, merge simulation).
 
 ### #1025 — Clarify repo override param description, surface errors, and make branch/event optional with null-safety in `repo_get_workflow_runs` & CI-logs tools
-- **State:** OPEN ([Issue #1025](https://github.com/arii/boomtick/issues/1025)).
+- **State:** RESOLVED / CLOSED ([Issue #1025](https://github.com/arii/boomtick/issues/1025); closed 2026-11-01).
 - **Symptom:**
   1. Passing `branch: null` or `event: null` to `repo.get_workflow_runs` (or other CI-logs / workflow tools) causes Zod validation errors: `Invalid input: expected string, received null`, surfaced to agents as `Failed to fetch workflow runs: Unknown error`.
   2. LLMs (e.g. Pi) literally pass `{"repo": "org/repo"}` and receive `Failed to fetch workflow runs: Unknown error`.
@@ -48,7 +48,7 @@ Verified against BoomTick `main` on 2026-10-29.
   3. Ensure stderr details from `td repo workflow-runs` (such as 404 / repo not found) are preserved and surfaced cleanly instead of collapsing into `Unknown error`.
 
 ### #1026 — Sanitize dot-notated tool names to conform with MCP client tool naming regex
-- **State:** OPEN ([Issue #1026](https://github.com/arii/boomtick/issues/1026)).
+- **State:** RESOLVED / CLOSED ([Issue #1026](https://github.com/arii/boomtick/issues/1026); closed 2026-11-01).
 - **Symptom:** Antigravity CLI and standard MCP clients reject 17 dot-notated tool registrations at startup (`violates ^[a-zA-Z0-9_-]{1,64}$`).
 - **Fix:** Canonicalize tool registrations to underscores or sanitize manifests.
 
@@ -78,3 +78,12 @@ All items were filed and resolved in `arii/boomtick`:
 ## Watch list
 - Import-time config crash draft (from 2026-10-28 notes): never verified, never
   filed. Re-check if `td` cold-start failures appear in buttons logs.
+
+## Pending (audited 2026-11-02 — duplicate check against live GitHub state)
+
+- P1 (boomtick preflight per-repo detection): NOT filed — duplicate of boomtick #1024, fixed via PR #1028 (merged 2026-10-29) and closed.
+- P2 (boomtick null-safe inputs + surfaced errors): NOT filed — duplicate of boomtick #1025, closed 2026-11-01.
+- Dot-notated tool names: NOT filed — duplicate of boomtick #1026, closed 2026-11-01.
+- P3 (remote-server canonical repo path): FILED as [arii/remote-server#192](https://github.com/arii/remote-server/issues/192).
+
+Note: reconciled 2026-11-02 — #1024–#1026 moved to Resolved; no open BoomTick-side items remain in this file.

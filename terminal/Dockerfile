@@ -16,7 +16,8 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-ARG BOOMTICK_MCP_VERSION=0.7.2
+# Tracks latest so rebuilds pick up new tools/fixes; pin to an x.y.z to freeze.
+ARG BOOMTICK_MCP_VERSION=latest
 # Tracks BoomTick main so td updates flow on every terminal rebuild; pin to a cli-vX.Y.Z tag to freeze.
 ARG BOOMTICK_CLI_REF=main
 
@@ -28,7 +29,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bash ca-certificates curl gh git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv xz-utils \
+      bash ca-certificates curl gh git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv tmux vim xz-utils \
  && install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
       | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
@@ -70,10 +71,15 @@ RUN apt-get update \
  && mkdir -p /home/ari && ln -sfn /srv/remote-server /home/ari/remote-server \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /root/.local/share/vim /root/.local/cache
 
 # System gitconfig: safe.directory = * for bind-mounted host checkouts (/srv/remote-server, /srv/repos/*).
 COPY gitconfig /etc/gitconfig
+
+# System vimrc: viminfo (jumps/registers/history) on the local-data volume.
+COPY vimrc.local /etc/vim/vimrc.local
+RUN (grep -q "vimrc.local" /etc/vim/vimrc || echo "source /etc/vim/vimrc.local" >> /etc/vim/vimrc) && test -f /etc/vim/vimrc.local
 
 # Custom ttyd index.html with takeover button: extract base index.html from ttyd source and inject takeover widget
 COPY takeover.html /tmp/takeover.html

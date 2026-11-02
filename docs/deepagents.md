@@ -64,6 +64,11 @@ Status: ✅ proven live · ⚙️ partial · 🔬 mapped, unrun · ⏸ stays on 
 | Steering + skills (APPEND_SYSTEM.md, skills/) | `system_prompt` + `skills=[...]` with FilesystemBackend | 🔬 skills-on-agent unrun; custom subagents need explicit `skills` |
 | Jobs approval gates (Approve/Decline taps) | `interrupt_on` + `Command(resume=...)` approve/reject/edit | ✅ mechanics proven on Nebius; buttons-tap bridge still open |
 | Merge-conflict repair (runbook manual path) | Repair worktree + resolver agent + verify + replacement PR | ✅ proven E2E on #148 → #149; now the runbook's canonical path |
+| Ask replacement (`/api/ask`) | `ask_investigator.py` (LangChain `create_agent`, local qwen3:8b, Chroma RAG, every run ledgered) | ✅ CUT OVER + LIVE: `_pi_thread` ask branch now Popen-streams `ask_investigator.py` (same live-tail UX), parses FINAL + PROPOSE; dead `_ask_prompt` removed; buttons rebuilt, live POST E2E ~20s (`reply: hi`, `proposal: null`). Peer adopted the grep fix (c6a630a). Eval 4/5 stands; code-locate needs a rerun to confirm the fix |
+| Suggest Pi-removal | Already deterministic: `_suggest_from_briefing` + explainer note, no Pi spawned | ✅ done — keep parsers in sync with model quirks |
+| Chat sessions | Unwired `deep-agent/chat_agent.py` spike (stateless per-turn create_agent, s5tools read-only tools, model_router, raw-stdout-for-SSE, ledgered) — proven live on Ollama (plain + tool-use turns); server cutover + envelope decision sequenced after peer Ask cutover | ⚙️ spike proven, unwired by lane agreement; Phase 4 pending |
+| Model routing | `deep-agent/model_router.py` (stdlib-only, tested): explicit prefer → Ollama default → Nebius cheap-model fallback; NEBIUS_MODEL/BASE_URL wired into terminal env | ✅ done, adoption in progress |
+| Shared tool library (gh/td/repo/retriever) | `deep-agent/s5tools.py` (stdlib-only, 9 tests) + `deep-agent/retrieval.py` (venv-only get_retriever/format_hits, 3 tests) | ⚙️ both halves exist + tested; existing slices predate them — adopt when touching a slice for other reasons |
 
 ## Open questions
 

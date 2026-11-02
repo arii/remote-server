@@ -135,8 +135,8 @@ Pi flags can also override tool visibility on demand:
 
 ## BoomTick MCP tools (active 2026-10-27)
 
-Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
-0.7.2 in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION` and run from
+Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, tracking latest
+in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION=latest` and run from
 the baked `/usr/local/bin/boomtick-mcp` binary declared in
 `terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
 `"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
@@ -263,12 +263,12 @@ installed with `apt` inside the running container vanishes on the next
 recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
-- **Baked into the terminal image** (CI smoke-tested; versions pinned except `td` and Muse, which track latest):
-  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.7.2, Muse CLI,
+- **Baked into the terminal image** (CI smoke-tested; versions pinned except `td`, `boomtick-mcp` and Muse, which track latest):
+  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` (tracks latest), Muse CLI,
   Python 3 + venv/pip, `td` (`boomtick-cli` from the BoomTick repo main branch in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
-  `safe.directory = *`), Docker CLI. This covers the interpreters and
-  package managers every repo needs before its own setup can run.
+  `safe.directory = *`), Docker CLI, `tmux`, `vim`. This covers the
+  interpreters and package managers every repo needs before its own setup can run.
 - **Installed per checkout** (persists in the bind mount):
   - JS repos (e.g. tech-dancer): `pnpm install` in the checkout;
     `node_modules` persists the same way. The boomtick-mcp

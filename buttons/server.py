@@ -514,26 +514,33 @@ def _pi_thread(rid, kind, repo, instruction):
                         r["finished_at"] = time.time()
                 return
             else:
-                prompt = _ask_prompt(repo, instruction)
-
-            # Enforce context budget on prompt payload before passing to local LLM
-            prompt = context_filter.enforce_context_budget(prompt, max_tokens=4000)
-
-            b64 = base64.b64encode(prompt.encode()).decode()
-            # The prompt travels base64-encoded: its alphabet is
-            # shell-safe, so briefing titles or free-text
-            # instructions carrying quotes or $ cannot break out
-            # of the pi argument.
-            cmd = (_td_prefix(info["td_cwd"]) +
-                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-                   ' | base64 -d)"')
-            f.write("Asking Pi (local model, may take minutes)…\n")
-            f.flush()
-        # stdout+stderr go to the file so the progress endpoint
-        # streams them live; nothing is parsed until done.
-        proc = subprocess.run(
-            EXEC + [cmd], stdout=open(path, "a"),
-            stderr=subprocess.STDOUT, timeout=600, text=True)
+                # LangChain cutover: ask_investigator.py replaces `pi -p`
+                # for Ask. Stdout streams to the progress file live (the
+                # client polls the same tail endpoint); FINAL + PROPOSE
+                # are parsed at completion below.
+                b64 = base64.b64encode(instruction.encode()).decode()
+                # The prompt travels base64-encoded: its alphabet is
+                # shell-safe, so free-text instructions carrying quotes
+                # or $ cannot break out of the argument.
+                aproc = subprocess.Popen(
+                    EXEC + ["cd /srv/remote-server/deep-agent && "
+                            ".venv/bin/python ask_investigator.py "
+                            f"{info['gh']} {b64}"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1)
+                f.write("Asking local model (may take minutes)…\n")
+                f.flush()
+                for aline in aproc.stdout:
+                    f.write(aline)
+                    f.flush()
+                try:
+                    aproc.wait(timeout=900)
+                except subprocess.TimeoutExpired:
+                    aproc.kill()
+                    raise RuntimeError("ask_investigator timed out")
+                if aproc.returncode != 0:
+                    raise RuntimeError(
+                        f"ask_investigator exit {aproc.returncode}")
         raw = open(path).read()
         with pi_runs_lock:
             r = pi_runs.get(rid)
@@ -547,7 +554,9 @@ def _pi_thread(rid, kind, repo, instruction):
                                "note": note,
                                "raw": raw[-2000:]}
             else:
-                r["result"] = {"repo": repo, "reply": raw[-6000:],
+                final = _extract_final(raw)
+                r["result"] = {"repo": repo,
+                               "reply": final or raw[-6000:],
                                "proposal": _parse_proposal(raw)}
             r["done"] = True
             r["finished_at"] = time.time()
@@ -829,40 +838,14 @@ def _extract_suggestion_note(raw, suggestions):
 ASK_MAX_CHARS = 2000
 
 
-def _ask_prompt(repo, instruction):
-    """Prompt wrapper for the Ask Pi text box. Pi investigates
-    read-only; a write the user asked for (create an issue, run a
-    td command) comes back as a PROPOSE block, never executed —
-    the page shows it with a confirm dialog and the server
-    re-validates before running anything."""
-    return (
-        f"You are helping Ari from his phone. Repo: {repo}. "
-        "Be terse, no filler.\n"
-        "The user instruction follows. Investigate read-only using "
-        "the files in this repo's checkout (do not run any tools).\n"
-        "Code discipline & review rule: Workaround chains (such as "
-        "`cmd || variant-cmd`, retry ladders, or chaining fallbacks to dodge "
-        "failures) are review-blocking findings, not nits. Diagnose the root cause "
-        "and maintain ONE canonical command path.\n"
-        "If the instruction asks for a write action, do the "
-        "read-only investigation first, then propose the exact "
-        "change and STOP — do not execute it. Allowed proposal "
-        "kinds: creating a GitHub issue, or running one allowlisted "
-        "td command.\n"
-        "Emit a proposal ONLY in exactly this form, on its own lines:\n"
-        "PROPOSE issue\n"
-        "TITLE: <issue title, one line>\n"
-        "BODY:\n"
-        "<issue body, markdown>\n"
-        "END PROPOSE\n"
-        "or\n"
-        "PROPOSE td\n"
-        "COMMAND: <exact td command>\n"
-        "END PROPOSE\n"
-        f"Allowed td commands (exact shapes):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
-        "If no write is needed, just answer the instruction — no "
-        "PROPOSE block.\n"
-        "Instruction:\n" + instruction)
+def _extract_final(raw):
+    """FINAL-line payload from ask_investigator output. rfind, not find:
+    tool results may quote the word (eval prompts, ledger rows), while
+    the script's own FINAL print is always last. Empty when absent."""
+    idx = (raw or "").rfind("FINAL:")
+    if idx < 0:
+        return ""
+    return raw[idx + len("FINAL:"):].strip()
 
 
 def _parse_proposal(raw):
@@ -2473,10 +2456,10 @@ def run_action(run_id, action, repo="remote-server"):
         steps = rewritten
     if action == "merge-approved":
         # Steps are built from the picked repo's discovered gh path
-        # (charset-validated, never from the client), like run-td.
-        prefix = _td_prefix("/srv/remote-server/deep-agent")
-        steps = [EXEC + [prefix + ".venv/bin/python merge_approved.py "
-                         f"{repos[repo]['gh']}"]]
+        # (charset-validated, never from the client), running upstream td agent merge-approved.
+        prefix = _td_prefix(repos[repo]["td_cwd"])
+        steps = [EXEC + [prefix + "td --json agent merge-approved -r "
+                         f"{repos[repo]['gh']} --execute"]]
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
@@ -7312,10 +7295,9 @@ class Handler(BaseHTTPRequestHandler):
         budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
         b64 = base64.b64encode(budgeted_prompt.encode()).decode()
 
-        # Build command: pi in print mode with read-only tools
-        cmd = (_td_prefix(info["td_cwd"]) +
-               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-               ' | base64 -d)"')
+        # Build command: ask_investigator agent in deep-agent venv
+        cmd = ("cd /srv/remote-server/deep-agent && "
+               f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
 
         # Check for tool calling heuristics in the request
         tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
@@ -7606,7 +7588,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
             # List Pi session files (newest first) as JSON, unified with
-            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # background agent runs (Ask / Suggest). No TD prefix:
             # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
             sessions = []
             try:
