@@ -2992,6 +2992,14 @@ let timer = null;
 // across tabs.
 let userStartedRun = false;
 
+// Long job/step strings (a Dependabot run dumps dozens of
+// package names) blow out the card height: cap one segment
+// and the whole line.
+function shorten(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
 // Repo cards are tap-to-select: clicking a card (outside its
 // GitHub link) sets the picker and refreshes the briefing. The
 // picker remains as the explicit control.
@@ -3011,7 +3019,7 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     const picker = document.getElementById("briefingRepo");
     if (!picker) return;
     picker.value = el.getAttribute("data-repo-pick");
-    markSelectedRepo();
+    picker.dispatchEvent(new Event("change"));
     if (typeof refreshBriefing === "function") refreshBriefing();
   });
 });
@@ -3857,13 +3865,6 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
-  // Long job/step strings (a Dependabot run dumps dozens of
-  // package names) blow out the card height: cap one segment
-  // and the whole line.
-  function shorten(s, n) {
-    s = String(s || "");
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
   if (b.failing_runs && b.failing_runs.length) {
     const w = document.createElement("div");
     const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
