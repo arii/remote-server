@@ -114,6 +114,70 @@ class TestJobsClearAndDelete(unittest.TestCase):
         self.assertEqual(sent_code, 404)
         self.assertEqual(sent_json.get("error"), "unknown job")
 
+    def test_job_public_includes_step_failure_reason_and_exit_code(self):
+        job = {
+            "id": "job-fail-1",
+            "template": "fix-issues",
+            "goal": "Fix issue",
+            "repo": "arii/test",
+            "state": "terminal",
+            "outcome": "failed",
+            "created_at": 1000.0,
+            "plan": [
+                {
+                    "label": "Step 1",
+                    "state": "failed",
+                    "run_id": "r-123",
+                    "note": "Fatal error: connection timed out",
+                    "exit_code": 1
+                },
+                {
+                    "label": "Step 2",
+                    "state": "pending",
+                    "run_id": None,
+                    "note": None,
+                    "exit_code": None
+                }
+            ]
+        }
+        pub = server._job_public(job)
+        self.assertEqual(len(pub["steps"]), 2)
+        self.assertEqual(pub["steps"][0]["state"], "failed")
+        self.assertEqual(pub["steps"][0]["note"], "Fatal error: connection timed out")
+        self.assertEqual(pub["steps"][0]["exit_code"], 1)
+        self.assertIsNone(pub["steps"][1]["note"])
+        self.assertIsNone(pub["steps"][1]["exit_code"])
+
+    def test_job_step_failure_reason_extraction(self):
+        # Stderr / error trace extraction
+        out1 = "$ td preflight\nTraceback (most recent call last):\n  File 'a.py', line 1\nTypeError: bad\nstep failed with exit code 1; aborting"
+        reason1 = server._job_step_failure_reason(out1, 1)
+        self.assertIn("Traceback", reason1)
+
+        # Fallback to exit code
+        out2 = ""
+        reason2 = server._job_step_failure_reason(out2, 2)
+        self.assertEqual(reason2, "exit 2")
+
+    def test_html_ui_has_inline_failure_reasons_collapse_and_cap_20(self):
+        html = server.HTML
+        # 1. Inline failure reason render path
+        self.assertIn("jobstep-reason", html)
+        self.assertIn("s.state === \"failed\"", html)
+        self.assertIn("reasonEl.textContent = reasonText", html)
+
+        # 2. Terminal collapse logic (terminal older than newest terminal collapsed)
+        self.assertIn("newestTerminalIdx", html)
+        self.assertIn("isOlderTerminal = j.state === \"terminal\" && idx > newestTerminalIdx", html)
+        self.assertIn("jobcard-expander", html)
+        self.assertIn("Show steps", html)
+
+        # 3. Cap at 20 with show more
+        self.assertIn("jobsShowAll", html)
+        self.assertIn("limit = jobsShowAll ? jobs.length : 20", html)
+        self.assertIn("jobsShowMoreBtn", html)
+        self.assertIn("Show more (", html)
+
 
 if __name__ == "__main__":
     unittest.main()
