@@ -1,11 +1,3 @@
-export interface BriefingResponse {
-  repo: string;
-  summary?: string;
-  open_prs?: Array<Record<string, unknown>>;
-  ci?: Record<string, unknown>;
-  error?: string;
-}
-
 export interface JobRecord {
   id: string;
   title?: string;

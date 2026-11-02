@@ -54,18 +54,19 @@ function isFailure(kind: string, raw: string, summary: string): boolean {
   return kind === 'pr-action' && /failed/i.test(summary);
 }
 
+const RECOVERY_RULES: Array<[RegExp, string]> = [
+  [/fast-forward|remote has new/, 'How to recover: pull, resolve, push'],
+  [/browser|playwright/, 'How to recover: reinstall browsers and rerun'],
+  [/network|could not be reached/, 'How to recover: retry when the service is reachable'],
+  [/not permitted|check access/, 'How to recover: check access and retry'],
+  [/conflict/, 'How to recover: review and resolve conflicts'],
+];
+
 function recoveryFor(kind: string, summary: string): string {
   const s = `${kind} ${summary}`.toLowerCase();
-  if (s.includes('fast-forward') || s.includes('remote has new'))
-    return 'How to recover: pull, resolve, push';
-  if (s.includes('browser') || s.includes('playwright'))
-    return 'How to recover: reinstall browsers and rerun';
-  if (s.includes('network') || s.includes('could not be reached'))
-    return 'How to recover: retry when the service is reachable';
-  if (s.includes('not permitted') || s.includes('access'))
-    return 'How to recover: check access and retry';
-  if (s.includes('conflict'))
-    return 'How to recover: review and resolve conflicts';
+  for (const [re, label] of RECOVERY_RULES) {
+    if (re.test(s)) return label;
+  }
   return 'How to recover: check status and retry';
 }
 
@@ -113,19 +114,21 @@ function jobToEntry(j: JobRecord): FlatEntry {
   };
 }
 
+function entryFailed(e: LedgerEntry, raw: string, summary: string): boolean {
+  if (e.ok === false) return true;
+  if (e.status !== undefined && /fail|error/i.test(String(e.status))) return true;
+  return isFailure(e.kind, raw, summary);
+}
+
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
   const raw = e.event ?? e.action ?? e.kind;
   const summary = plainLanguage(raw ?? '', e.kind);
-  const failed =
-    e.ok === false ||
-    (e.status !== undefined && /fail|error/i.test(String(e.status))) ||
-    isFailure(e.kind, raw ?? '', summary);
   return {
     kind: e.kind,
     summary,
     at: rowTime(e.ts ?? e.at),
     rawAt: epochOf(e.ts ?? e.at),
-    failed,
+    failed: entryFailed(e, raw ?? '', summary),
     routine: ROUTINE_RE.test(summary),
   };
 }

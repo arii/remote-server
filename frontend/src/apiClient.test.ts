@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  fetchRepoStatus,
-  fetchSessionDetail,
-  fetchSessionList,
+  fetchAttention,
+  fetchJobs,
+  fetchLedger,
   fetchSystemHealth,
+  fetchWorkflowHealth,
 } from './apiClient';
-import listFixture from './mocks/list.json';
-import detailFixture from './mocks/detail.json';
 
 function mockFetchJson(body: unknown, ok = true, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -21,22 +20,26 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('apiClient (fetch with fixture JSON)', () => {
-  it('fetches the session list shape', async () => {
-    vi.stubGlobal('fetch', mockFetchJson(listFixture));
-    const list = await fetchSessionList();
-    expect(list.sessions).toHaveLength(3);
-    expect(fetch).toHaveBeenCalledWith('/api/agents/sessions');
+describe('apiClient (fetch with inline shapes)', () => {
+  it('fetches the attention queue', async () => {
+    const queue = { updated_at: 1, items: [] };
+    vi.stubGlobal('fetch', mockFetchJson(queue));
+    expect(await fetchAttention('remote-server')).toEqual(queue);
+    expect(fetch).toHaveBeenCalledWith('/api/attention?repo=remote-server');
   });
 
-  it('fetches session detail by file', async () => {
-    vi.stubGlobal('fetch', mockFetchJson(detailFixture));
-    const detail = await fetchSessionDetail('bg-1234567890ab.jsonl');
-    expect(detail.file).toBe('bg-1234567890ab.jsonl');
-    expect(detail.turns).toHaveLength(2);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/agents/sessions/bg-1234567890ab.jsonl',
-    );
+  it('fetches jobs', async () => {
+    const jobs = { jobs: [] };
+    vi.stubGlobal('fetch', mockFetchJson(jobs));
+    expect(await fetchJobs()).toEqual(jobs);
+    expect(fetch).toHaveBeenCalledWith('/api/jobs');
+  });
+
+  it('fetches ledger entries', async () => {
+    const ledger = { entries: [] };
+    vi.stubGlobal('fetch', mockFetchJson(ledger));
+    expect(await fetchLedger('all', 10)).toEqual(ledger);
+    expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=10');
   });
 
   it('fetches system health', async () => {
@@ -46,17 +49,15 @@ describe('apiClient (fetch with fixture JSON)', () => {
     expect(fetch).toHaveBeenCalledWith('/api/system/health');
   });
 
-  it('fetches repo status', async () => {
-    const repo = { repo: 'demo', branch: 'main', short: '', clean: true };
-    vi.stubGlobal('fetch', mockFetchJson(repo));
-    expect(await fetchRepoStatus('demo')).toEqual(repo);
-    expect(fetch).toHaveBeenCalledWith('/api/repo/status?repo=demo');
+  it('fetches workflow health', async () => {
+    const health = { repo: 'demo', status: 'ok', total_failing: 0, workflows: [] };
+    vi.stubGlobal('fetch', mockFetchJson(health));
+    expect(await fetchWorkflowHealth('demo')).toEqual(health);
+    expect(fetch).toHaveBeenCalledWith('/api/workflow-health?repo=demo');
   });
 
   it('throws visibly on HTTP errors (no silent fallback)', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
-    await expect(fetchSessionList()).rejects.toThrow(
-      'GET /api/agents/sessions failed: 500',
-    );
+    await expect(fetchJobs()).rejects.toThrow('GET /api/jobs failed: 500');
   });
 });
