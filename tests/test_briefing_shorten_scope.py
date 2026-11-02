@@ -32,7 +32,7 @@ class TestBriefingShortenScope(unittest.TestCase):
             content = f.read()
 
         self.assertIn("function renderBriefing(", content)
-        self.assertIn("function renderAttention(", content)
+        self.assertIn("function renderAttentionList(", content)
 
 
 if __name__ == "__main__":

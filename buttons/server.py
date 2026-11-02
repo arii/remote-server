@@ -514,43 +514,29 @@ def _pi_thread(rid, kind, repo, instruction):
                         r["finished_at"] = time.time()
                 return
             else:
-                prompt = _ask_prompt(repo, instruction)
-
-            # Enforce context budget on prompt payload before passing to local LLM
-            prompt = context_filter.enforce_context_budget(prompt, max_tokens=4000)
-
-            b64 = base64.b64encode(prompt.encode()).decode()
-            # The prompt travels base64-encoded: its alphabet is
-            # shell-safe, so briefing titles or free-text
-            # instructions carrying quotes or $ cannot break out
-            # of the pi argument.
-            cmd = (_td_prefix(info["td_cwd"]) +
-                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-                   ' | base64 -d)"')
-            f.write("Asking Pi (local model, may take minutes)…\n")
-            f.flush()
-        # stdout+stderr go to the file so the progress endpoint
-        # streams them live; nothing is parsed until done.
-        proc = subprocess.run(
-            EXEC + [cmd], stdout=open(path, "a"),
-            stderr=subprocess.STDOUT, timeout=600, text=True)
-        raw = open(path).read()
-        with pi_runs_lock:
-            r = pi_runs.get(rid)
-            if r is None:
+                # Ask agent path: runs ask_investigator.py in deep-agent venv
+                f.write("Investigating with local agent…\n")
+                f.flush()
+                b64 = base64.b64encode(instruction.encode()).decode()
+                cmd = ("cd /srv/remote-server/deep-agent && "
+                       f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
+                proc = subprocess.run(
+                    EXEC + [cmd], stdout=open(path, "a"),
+                    stderr=subprocess.STDOUT, timeout=600, text=True)
+                raw = open(path).read()
+                with pi_runs_lock:
+                    r = pi_runs.get(rid)
+                    if r is None:
+                        return
+                    reply = raw
+                    idx = raw.find("FINAL:")
+                    if idx >= 0:
+                        reply = raw[idx + len("FINAL:"):].strip()
+                    r["result"] = {"repo": repo, "reply": reply[-6000:],
+                                   "proposal": _parse_proposal(raw)}
+                    r["done"] = True
+                    r["finished_at"] = time.time()
                 return
-            if kind == "suggest":
-                parsed_suggs = _parse_suggestions(raw)
-                note = _extract_suggestion_note(raw, parsed_suggs)
-                r["result"] = {"repo": repo,
-                               "suggestions": parsed_suggs,
-                               "note": note,
-                               "raw": raw[-2000:]}
-            else:
-                r["result"] = {"repo": repo, "reply": raw[-6000:],
-                               "proposal": _parse_proposal(raw)}
-            r["done"] = True
-            r["finished_at"] = time.time()
     except Exception as exc:
         with pi_runs_lock:
             r = pi_runs.get(rid)
@@ -7312,10 +7298,9 @@ class Handler(BaseHTTPRequestHandler):
         budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
         b64 = base64.b64encode(budgeted_prompt.encode()).decode()
 
-        # Build command: pi in print mode with read-only tools
-        cmd = (_td_prefix(info["td_cwd"]) +
-               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-               ' | base64 -d)"')
+        # Build command: ask_investigator agent in deep-agent venv
+        cmd = ("cd /srv/remote-server/deep-agent && "
+               f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
 
         # Check for tool calling heuristics in the request
         tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
@@ -7606,7 +7591,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
             # List Pi session files (newest first) as JSON, unified with
-            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # background agent runs (Ask / Suggest). No TD prefix:
             # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
             sessions = []
             try:

@@ -1,4 +1,4 @@
-"""Ask investigator: LangChain agent replacing `pi -p` for /buttons/api/ask.
+"""Ask investigator: LangChain agent for /buttons/api/ask.
 
 Usage: ask_investigator.py owner/repo <base64-instruction>
 Prints progress lines, then a FINAL: line with the reply (same shape the
@@ -227,6 +227,18 @@ def main() -> int:
         started,
     )
     print(f"tool_calls_made: {calls}")
+    outcomes = [
+        str(m.content).strip().splitlines()[0][:200]
+        for m in result["messages"]
+        if m.__class__.__name__ == "ToolMessage"
+        and str(m.content).strip()
+    ]
+    print("REPORT (authoritative, from tool results):")
+    if outcomes:
+        for line in outcomes:
+            print(f"  {line}")
+    else:
+        print("  (no tools called)")
     print("FINAL:", result["messages"][-1].content)
     return 0
 
