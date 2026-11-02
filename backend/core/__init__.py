@@ -140,6 +140,32 @@ def validate_repo_name(repo: str) -> str:
     return name
 
 
+def require_confirm(body, intent: str) -> None:
+    """Confirm-tap guard for destructive routes.
+
+    Raises HTTPException(400) unless the body carries
+    {"intent": <intent>, "confirmed": True}. Accepts a dict or a
+    pydantic model (or any object with intent/confirmed attrs).
+    """
+    from fastapi import HTTPException
+
+    if hasattr(body, "model_dump"):
+        try:
+            data = body.model_dump()
+        except Exception:
+            data = {}
+    elif isinstance(body, dict):
+        data = body
+    else:
+        data = {
+            "intent": getattr(body, "intent", None),
+            "confirmed": getattr(body, "confirmed", None),
+        }
+    if not isinstance(data, dict) or data.get("intent") != intent \
+            or data.get("confirmed") is not True:
+        raise HTTPException(status_code=400, detail="confirmation required")
+
+
 def get_repo_status(repo: str) -> dict[str, Any]:
     """Read-only git status for one repo checkout.
 

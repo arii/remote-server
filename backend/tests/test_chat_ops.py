@@ -226,7 +226,11 @@ class ChatOpsTest(unittest.TestCase):
 
     def test_takeover(self):
         ops.run_takeover = lambda: "takeover ok\n"
-        resp = self.client.post("/api/terminal/takeover")
+        resp = self.client.post("/api/terminal/takeover", json={})
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.post(
+            "/api/terminal/takeover",
+            json={"intent": "terminal-takeover", "confirmed": True})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ok": True,
                                        "output": "takeover ok\n"})
@@ -270,9 +274,13 @@ class ChatOpsTest(unittest.TestCase):
 
     def test_clear(self):
         resp = self.client.post("/api/clear", json={})
+        self.assertEqual(resp.status_code, 400)
+        confirm = {"intent": "run-clear", "confirmed": True}
+        resp = self.client.post("/api/clear", json=dict(confirm))
         self.assertEqual(resp.status_code, 404)
         import backend.api.routers.jobs as jobs
-        resp = self.client.post("/api/clear", json={"id": "nope"})
+        resp = self.client.post(
+            "/api/clear", json={"id": "nope", **confirm})
         self.assertEqual(resp.status_code, 404)
         # Seed the record shape the registry itself manages.
         with jobs.registry._lock:
@@ -282,7 +290,7 @@ class ChatOpsTest(unittest.TestCase):
                 "seq": 9999, "started_at": 0, "finished_at": 0,
                 "last_output_at": 0}
         try:
-            resp = self.client.post("/api/clear", json={})
+            resp = self.client.post("/api/clear", json=dict(confirm))
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), {"ok": True,
                                            "id": "clearprobe00"})

@@ -45,6 +45,8 @@ class JobsHealth(BaseModel):
 
 class ClearRequest(BaseModel):
     all: bool = False
+    intent: str = ""
+    confirmed: bool = False
 
 
 class ClearResult(BaseModel):
@@ -92,6 +94,9 @@ def list_jobs() -> dict:
 
 @router.post("/clear", response_model=ClearResult)
 def clear_jobs(body: ClearRequest) -> dict:
+    from backend.core import require_confirm
+
+    require_confirm(body, "jobs-clear")
     count = registry.clear_jobs(all_jobs=bool(body.all))
     return {"ok": True, "cleared": count}
 

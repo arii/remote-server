@@ -184,6 +184,13 @@ class WorkflowHealth(BaseModel):
 
 class ClearRequest(BaseModel):
     id: str | None = None
+    intent: str = ""
+    confirmed: bool = False
+
+
+class TakeoverRequest(BaseModel):
+    intent: str = ""
+    confirmed: bool = False
 
 
 class ClearResult(BaseModel):
@@ -198,7 +205,10 @@ class SystemHealth(BaseModel):
 
 
 @router.post("/terminal/takeover", response_model=TakeoverResult)
-def takeover() -> dict:
+def takeover(body: TakeoverRequest | None = None) -> dict:
+    from backend.core import require_confirm
+
+    require_confirm(body or {}, "terminal-takeover")
     try:
         out = run_takeover()
     except Exception as exc:
@@ -232,6 +242,9 @@ def workflow_health(repo: str = "remote-server") -> dict:
 @router.post("/clear", response_model=ClearResult)
 def clear(body: ClearRequest) -> dict:
     from backend.api.routers.jobs import registry
+    from backend.core import require_confirm
+
+    require_confirm(body, "run-clear")
 
     run_id, err = registry.clear_run(body.id)
     if err:
