@@ -195,10 +195,15 @@ def main() -> int:
         print("bad instruction", file=sys.stderr)
         return 2
     started = time.time()
+    # No-think is the production setting: on this CPU-only box a
+    # qwen3 thinking trace takes 15+ min per prompt, unshippable for
+    # a phone assistant. Set ASK_THINK=1 to re-enable for eval.
+    think = os.environ.get("ASK_THINK", "") == "1"
     model = ChatOllama(
         model=MODEL_ID,
         base_url=OLLAMA_URL,
         temperature=0,
+        model_kwargs={} if think else {"think": False},
     )
     agent = create_agent(
         model=model,
