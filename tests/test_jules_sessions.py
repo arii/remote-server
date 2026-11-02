@@ -96,6 +96,44 @@ class TestJulesSessions(unittest.TestCase):
         self.assertEqual([s["id"] for s in res_rs["sessions"]], ["sess-rs-1", "sess-rs-2"])
         self.assertEqual(res_rs["other"], 1)
 
+    @patch("buttons.server._discover_repos")
+    @patch("buttons.server._td_run")
+    def test_jules_sessions_unknown_provenance_bucketed_not_claimed(self, mock_td_run, mock_discover_repos):
+        mock_discover_repos.return_value = {
+            "remote-server": {"gh": "arii/remote-server", "td_cwd": "/srv/remote-server", "host_path": "/home/ari/remote-server"},
+            "boomtick": {"gh": "arii/boomtick", "td_cwd": "/srv/repos/boomtick", "host_path": "/home/ari/repos/boomtick"}
+        }
+        sessions_payload = {
+            "sessions": [
+                {
+                    "id": "sess-no-repo",
+                    "title": "boomtick coincidental title but no repo info",
+                    "state": "IN_PROGRESS",
+                },
+                {
+                    "id": "sess-rs",
+                    "title": "Legit remote-server fix",
+                    "state": "IN_PROGRESS",
+                    "sourceContext": {"githubRepoContext": {"owner": "arii", "repo": "remote-server"}}
+                }
+            ]
+        }
+        mock_td_run.return_value = json.dumps(sessions_payload)
+
+        # Query for boomtick: sess-no-repo should be in unknown, not sessions
+        handler = server.Handler.__new__(server.Handler)
+        handler.path = "/buttons/api/jules-sessions?repo=boomtick"
+        handler._json = MagicMock()
+        handler.do_GET()
+
+        handler._json.assert_called_once()
+        res = handler._json.call_args[0][0]
+        self.assertEqual(res["repo"], "boomtick")
+        self.assertEqual(len(res["sessions"]), 0)
+        self.assertEqual(len(res["unknown"]), 1)
+        self.assertEqual(res["unknown"][0]["id"], "sess-no-repo")
+        self.assertEqual(res["other"], 1)
+
     def test_section_header_labels_include_repo(self):
         with open("buttons/server.py", "r", encoding="utf-8") as f:
             content = f.read()

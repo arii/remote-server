@@ -108,18 +108,21 @@ class TestBriefingJulesDedup(unittest.TestCase):
                     "title": "Task 1",
                     "state": "IN_PROGRESS",
                     "updateTime": "2026-11-01T10:00:00Z",
+                    "sourceContext": {"githubRepoContext": {"owner": "arii", "repo": "tech-dancer"}},
                 },
                 {
                     "id": "sess-1",
                     "title": "Task 1",
                     "state": "IN_PROGRESS",
                     "updateTime": "2026-11-01T10:00:00Z",
+                    "sourceContext": {"githubRepoContext": {"owner": "arii", "repo": "tech-dancer"}},
                 },
                 {
                     "id": "sess-2",
                     "title": "Task 1",
                     "state": "IN_PROGRESS",
                     "updateTime": "2026-11-01T11:00:00Z",
+                    "sourceContext": {"githubRepoContext": {"owner": "arii", "repo": "tech-dancer"}},
                 },
             ]
         }
