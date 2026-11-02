@@ -2849,7 +2849,7 @@ Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
 </div>
-<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Proactive Notifications">Notifications: off</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
+<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Notifications: off (enable via NTFY_* in .env; see docs/buttons.md#proactive-notifications--scheduled-digest)">Notifications: off (set NTFY_* in .env; see docs/buttons.md)</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -6431,9 +6431,11 @@ async function refreshStatus() {
       if (badge) {
         if (n.ntfy || n.webhook) {
           badge.textContent = "Notifications: " + (n.ntfy ? "ntfy(" + (n.topic || "active") + ")" : "webhook");
+          badge.title = "Proactive Notifications active (" + (n.ntfy ? "ntfy" : "webhook") + ")";
           badge.style.color = "#7ed07e";
         } else {
-          badge.textContent = "Notifications: off";
+          badge.textContent = "Notifications: off (set NTFY_* in .env; see docs/buttons.md)";
+          badge.title = "Notifications: off (enable via NTFY_* in .env; see docs/buttons.md#proactive-notifications--scheduled-digest)";
           badge.style.color = "var(--text-muted)";
         }
       }
@@ -6552,13 +6554,20 @@ setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
 if (testNotifyBtn) testNotifyBtn.onclick = async () => {
+  if (typeof confirmDialog === "function") {
+    const ok = await confirmDialog("Notification Test", "Send a test notification via the configured ntfy/webhook?", false);
+    if (!ok) return;
+  }
   testNotifyBtn.disabled = true;
-  const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
-  testNotifyBtn.disabled = false;
-  if (!res.ok) {
-    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
-  } else {
-    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+  try {
+    const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
+    if (!res.ok) {
+      if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
+    } else {
+      if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+    }
+  } finally {
+    testNotifyBtn.disabled = false;
   }
 };
 
