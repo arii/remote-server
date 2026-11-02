@@ -4303,13 +4303,6 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
-  // Long job/step strings (a Dependabot run dumps dozens of
-  // package names) blow out the card height: cap one segment
-  // and the whole line.
-  function shorten(s, n) {
-    s = String(s || "");
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
   const j = b.jules || {};
   const js = document.createElement("div");
   const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
@@ -4353,17 +4346,10 @@ async function refreshBriefing() {
   updateTabBadges();
   if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
   if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
-  if (typeof renderAttention === "function") renderAttention(res.data);
-}
-
-// Status-first: the Actions tab leads with what needs attention —
-// failing runs and attention items from the latest briefing. Runs
-// whenever the briefing refreshes, so the top of the default tab
-// always reflects the freshest state.
-function renderAttention(b) {
-  const el = document.getElementById("attentionBody");
-  if (!el) return;
-  renderAttentionList(b, el, {limit: 8, cleanMessage: "No failing runs ✓"});
+  if (typeof renderAttentionList === "function") {
+    const el = document.getElementById("attentionBody");
+    if (el) renderAttentionList(res.data, el, {limit: 8, cleanMessage: "No failing runs ✓"});
+  }
 }
 
 // Agent jobs: multi-step tasks with a visible plan. Read-only
