@@ -39,10 +39,15 @@ buttons/ux/scratch-ledger.json
 .pnpm-store/
 .fallow/
 
-# Deep Agents spikes: track scripts + requirements, never env/index/logs.
-deep-agent/.venv/
-deep-agent/chroma_db/
-deep-agent/ledger.jsonl
+# Deep Agents: track only reusable tools + requirements. Spikes, env,
+# index, and logs stay on disk, out of git.
+deep-agent/*
+!deep-agent/search_docs.py
+!deep-agent/ledger.py
+!deep-agent/requirements.txt
+!deep-agent/triage_explainer.py
+!deep-agent/triage_fanout.py
+!deep-agent/resolve_conflicts.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),

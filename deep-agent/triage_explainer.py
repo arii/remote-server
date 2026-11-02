@@ -1,8 +1,15 @@
-"""Minimal-context triage explainer: local 8b model, 2 tools, tiny prompt."""
+"""Triage explainer: minimal-context local agent for one repo.
+
+Usage: triage_explainer.py owner/repo
+Uses deterministic `td agent suggest` counts plus RAG runbook context,
+explained by the local 8b model in at most 3 sentences.
+"""
 
 import re
 import subprocess
+import sys
 import time
+from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain_chroma import Chroma
@@ -12,9 +19,8 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 import ledger
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-DB_DIR = "/srv/remote-server/deep-agent/chroma_db"
+DB_DIR = str(Path(__file__).resolve().parent / "chroma_db")
 MODEL_ID = "qwen3:8b"
-THREAD_ID = "local-explainer-1"
 
 _embeddings = OllamaEmbeddings(
     model="nomic-embed-text", base_url="http://ollama:11434"
@@ -63,11 +69,14 @@ def search_docs(query: str) -> str:
     return "\n\n".join(parts)[:1600]
 
 
-def main() -> None:
+def main() -> int:
+    if len(sys.argv) < 2 or not REPO_RE.match(sys.argv[1]):
+        print("usage: triage_explainer.py owner/repo", file=sys.stderr)
+        return 2
+    repo = sys.argv[1]
     started = time.time()
     # qwen3:8b emits valid tool calls; qwen2.5-coder:7b narrates them
-    # as JSON text under LangChain on both native and OpenAI-compat
-    # routes (see diag_local_tools.py).
+    # as JSON text under LangChain (see diag_local_tools.py).
     model = ChatOllama(
         model=MODEL_ID,
         base_url="http://ollama:11434",
@@ -85,12 +94,13 @@ def main() -> None:
             "interface. Never write a tool call out as JSON text."
         ),
     )
+    thread_id = "explainer-" + repo.replace("/", "-")
     result = agent.invoke(
         {
             "messages": [
                 {
                     "role": "user",
-                    "content": "Explain the triage state of arii/tech-dancer "
+                    "content": f"Explain the triage state of {repo} "
                     "and the single next action.",
                 }
             ]
@@ -102,15 +112,16 @@ def main() -> None:
         for m in result["messages"]
     )
     ledger.record(
-        "local_triage_explainer.py",
+        "triage_explainer.py",
         f"ollama:{MODEL_ID}",
-        THREAD_ID,
+        thread_id,
         result["messages"],
         started,
     )
     print(f"tool_calls_made: {calls}")
     print("FINAL:", result["messages"][-1].content)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

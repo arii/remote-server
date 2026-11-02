@@ -1,4 +1,9 @@
-"""Spike: per-repo fan-out via task delegation (one scout, two repos)."""
+"""Per-repo triage fan-out: orchestrator + one scout subagent per repo.
+
+Usage: triage_fanout.py [owner/repo ...]
+Defaults to arii/tech-dancer + arii/boomtick. Each scout is stateless:
+complete instructions go in its single task call.
+"""
 
 import os
 import re
@@ -16,7 +21,7 @@ import ledger
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MODEL_ID = "zai-org/GLM-5.3-Flash"
-THREAD_ID = "fanout-spike-1"
+DEFAULT_REPOS = ["arii/tech-dancer", "arii/boomtick"]
 
 
 @tool
@@ -43,6 +48,11 @@ def main() -> int:
     if not os.environ.get("NEBIUS_API_KEY"):
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
         return 1
+    repos = sys.argv[1:] or DEFAULT_REPOS
+    bad = [r for r in repos if not REPO_RE.match(r)]
+    if bad:
+        print(f"bad repo(s): {bad}", file=sys.stderr)
+        return 2
     model = ChatOpenAI(
         model=MODEL_ID,
         base_url="https://api.studio.nebius.com/v1",
@@ -50,15 +60,16 @@ def main() -> int:
         temperature=0,
         max_tokens=2000,
     )
+    repo_list = ", ".join(repos)
     agent = create_deep_agent(
         model=model,
         system_prompt=(
             "You coordinate per-repo triage scouts. Delegate with the "
-            "task tool: one call for arii/tech-dancer, one for "
-            "arii/boomtick, each instructing the scout to return the "
-            "raw triage_counts output plus one line naming the top "
-            "action. Subagents are stateless: put complete instructions "
-            "in each call. Then merge both reports into at most 4 lines."
+            f"task tool: one call each for {repo_list}, each "
+            "instructing the scout to return the raw triage_counts "
+            "output plus one line naming the top action. Subagents are "
+            "stateless: put complete instructions in each call. Then "
+            "merge the reports into at most 2 lines per repo."
         ),
         subagents=[
             {
@@ -75,13 +86,10 @@ def main() -> int:
     result = agent.invoke(
         {
             "messages": [
-                {
-                    "role": "user",
-                    "content": "Triage arii/tech-dancer and arii/boomtick.",
-                }
+                {"role": "user", "content": f"Triage {repo_list}."}
             ]
         },
-        config={"configurable": {"thread_id": THREAD_ID}},
+        config={"configurable": {"thread_id": "fanout-run"}},
     )
     tasks = sum(
         1
@@ -90,12 +98,12 @@ def main() -> int:
         if tc.get("name") == "task"
     )
     ledger.record(
-        "fanout_spike.py",
+        "triage_fanout.py",
         f"nebius:{MODEL_ID}",
-        THREAD_ID,
+        "fanout-run",
         result["messages"],
         started,
-        extra={"task_delegations": tasks},
+        extra={"task_delegations": tasks, "repos": repos},
     )
     print(f"task_delegations: {tasks}")
     print("FINAL:", result["messages"][-1].content)

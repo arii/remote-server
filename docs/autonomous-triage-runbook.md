@@ -114,7 +114,7 @@ Once a PR satisfies all safety gates:
 #### Handling Merge Conflicts
 Proven agent flow (used for remote-server #148 → #149); prefer over manual:
 1. Create an isolated repair worktree via BoomTick MCP (`repo_create_repair_branch`), then verify it is on the PR head SHA — never assume the base.
-2. Run the resolver: `deep-agent/.venv/bin/python deep-agent/resolve_pr148.py <worktree-path>` (merges base, resolves on real disk, verifies zero markers).
+2. Run the resolver: `deep-agent/.venv/bin/python deep-agent/resolve_conflicts.py <worktree-path>` (merges base, resolves on real disk, verifies zero markers).
 3. Human review: confirm marker-free (`git diff --check`), read every resolved hunk, sanity-check (py_compile/lint for code).
 4. Commit via `repo_commit_patch` (exact file allowlist), open a draft replacement PR (`open_replacement_pr`, pushMode) linking the original, comment the pointer on the original.
 5. Manual fallback (rebase + hand resolve + force-with-lease) only if the agent flow fails twice.

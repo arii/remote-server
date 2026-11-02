@@ -8,7 +8,7 @@ parity on those flows; nothing here retires Pi yet. End state:
 headless task flows move to the harness; Pi keeps the interactive
 terminal product (TUI, streaming chat, session browser). Execution
 pattern: per-repo subagent fan-out under a thin orchestrator, one
-repo per context (proven `deep-agent/fanout_spike.py`).
+repo per context (proven `deep-agent/triage_fanout.py`).
 
 ## What's installed
 
@@ -71,7 +71,7 @@ Status: ✅ proven live · ⚙️ partial · 🔬 mapped, unrun · ⏸ stays on 
   each slice). Measured 2026-11-02: `qwen3:8b` makes valid tool calls
   via LangChain; `qwen2.5-coder:7b` narrates calls as JSON text
   instead — use 8b+ for agent loops. Minimal triage explainer
-  (`deep-agent/local_triage_explainer.py`: 2 tools, k=2 RAG) answers
+  (`deep-agent/triage_explainer.py`: 2 tools, k=2 RAG) answers
   correctly, fully local.
 - Bridge design from HITL interrupts to the buttons Approve taps.
 - Where DeepAgent services run long-term (terminal container vs own
