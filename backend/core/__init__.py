@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException
+
 
 def get_env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -147,13 +149,8 @@ def require_confirm(body, intent: str) -> None:
     {"intent": <intent>, "confirmed": True}. Accepts a dict or a
     pydantic model (or any object with intent/confirmed attrs).
     """
-    from fastapi import HTTPException
-
     if hasattr(body, "model_dump"):
-        try:
-            data = body.model_dump()
-        except Exception:
-            data = {}
+        data = body.model_dump()
     elif isinstance(body, dict):
         data = body
     else:

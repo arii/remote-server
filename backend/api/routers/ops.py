@@ -24,7 +24,7 @@ import subprocess
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.core import get_system_health, validate_repo_name
+from backend.core import get_system_health, require_confirm, validate_repo_name
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["ops"])
@@ -205,10 +205,8 @@ class SystemHealth(BaseModel):
 
 
 @router.post("/terminal/takeover", response_model=TakeoverResult)
-def takeover(body: TakeoverRequest | None = None) -> dict:
-    from backend.core import require_confirm
-
-    require_confirm(body or {}, "terminal-takeover")
+def takeover(body: TakeoverRequest) -> dict:
+    require_confirm(body, "terminal-takeover")
     try:
         out = run_takeover()
     except Exception as exc:

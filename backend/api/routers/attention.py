@@ -14,10 +14,18 @@ functions so tests can monkeypatch them (injectable seams).
 
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from backend import ledger
+from backend.api.routers import ops
+from backend.api.routers.jobs import registry
+from backend.core import validate_repo_name
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["attention"])
 
@@ -48,15 +56,11 @@ class AttentionList(BaseModel):
 
 def get_workflow_health(repo: str) -> dict:
     """Injectable seam: failing-run diagnosis via workflow-health logic."""
-    from backend.api.routers import ops
-
     return ops.fetch_workflow_health(repo, f"arii/{repo}")
 
 
 def list_failed_jobs() -> list:
     """Injectable seam: failed jobs from the jobs registry."""
-    from backend.api.routers.jobs import registry
-
     out = []
     for job in registry.list_jobs():
         if not isinstance(job, dict):
@@ -72,8 +76,6 @@ def list_failed_jobs() -> list:
 
 def list_failed_webhooks() -> list:
     """Injectable seam: failed webhooks from ledger kinds."""
-    from backend import ledger
-
     entries = ledger.read(kind="webhook", limit=50)
     out = []
     for e in entries:
@@ -89,8 +91,6 @@ def list_failed_webhooks() -> list:
 
 def list_pending_approvals() -> list:
     """Injectable seam: pending approvals (ledger + jobs registry)."""
-    from backend import ledger
-
     out = []
     for e in ledger.read(kind="all", limit=100):
         if not isinstance(e, dict):
@@ -100,20 +100,16 @@ def list_pending_approvals() -> list:
                     "approval requested", "approval pending", "awaiting approval"):
             out.append(e)
     try:
-        from backend.api.routers.jobs import registry
-
         for job in registry.list_jobs():
             if isinstance(job, dict) and job.get("awaiting_approval") is True:
                 out.append(job)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("attention: jobs registry read failed: %s", exc)
     return out
 
 
 @router.get("/attention", response_model=AttentionList)
 def attention(repo: str = "remote-server") -> dict:
-    from backend.core import validate_repo_name
-
     try:
         name = validate_repo_name(repo)
     except ValueError as exc:
@@ -122,7 +118,8 @@ def attention(repo: str = "remote-server") -> dict:
     items: list[dict] = []
     try:
         health = get_workflow_health(name) or {}
-    except Exception:
+    except Exception as exc:
+        logger.warning("attention: workflow-health read failed: %s", exc)
         health = {}
     for wf in (health.get("workflows") or []):
         if not isinstance(wf, dict):

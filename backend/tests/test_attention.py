@@ -6,10 +6,6 @@ from backend.core import require_confirm
 from backend.api.routers import attention
 
 
-class FakeResp:
-    pass
-
-
 class RequireConfirmTest(unittest.TestCase):
     def test_accept(self):
         require_confirm({"intent": "x", "confirmed": True}, "x")

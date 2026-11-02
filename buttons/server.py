@@ -1011,19 +1011,22 @@ def _webhook_warm(old_head, new_head, info):
         _ledger_append(_auto_refresh_entry(
             "warm-context", info.get("gh", "?"), False, str(exc)))
     try:
+        warm_cwd = info.get("td_cwd") or ""
+        if not warm_cwd:
+            raise RuntimeError("no td_cwd for briefing refresh")
+        warm_repo = shlex.quote(warm_cwd.rsplit("/", 1)[-1])
+        warm_gh = shlex.quote(info.get("gh", ""))
         proc = subprocess.run(
-            EXEC + [_td_prefix(info["td_cwd"])
+            EXEC + [_td_prefix(warm_cwd)
                     + "python3 /srv/remote-server/buttons/"
                     "briefing_summary.py --briefing-json "
-                    f"--repo {info.get('td_cwd', '').rsplit('/', 1)[-1]} "
-                    f"--gh {info.get('gh', '')}"],
+                    f"--repo {warm_repo} --gh {warm_gh}"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=180, text=True)
         if proc.returncode != 0:
+            err = (proc.stderr or "").strip()
             raise RuntimeError(
-                (proc.stderr or "").strip().splitlines()[-1]
-                if (proc.stderr or "").strip() else "briefing failed")
-        json.loads(proc.stdout)
+                err.splitlines()[-1] if err else "briefing failed")
         print("webhook warm: briefing refresh done", flush=True)
         _ledger_append(_auto_refresh_entry(
             "briefing", info.get("gh", "?"), True, "briefing refresh done"))
