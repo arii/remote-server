@@ -955,6 +955,17 @@ def _verify_signature(secret, body, header):
     return hmac.compare_digest(expect, header)
 
 
+def _auto_refresh_entry(action, repo, ok, detail=""):
+    """Ledger entry for an automated (no-human-UI) refresh run.
+
+    Every automated run — warm-context, briefing — records one of
+    these under kind "job" so the History/Ledger view surfaces it
+    (what ran, when via ts, outcome). Pure constructor, no I/O."""
+    return {"kind": "job", "event": f"auto-{action}", "repo": repo,
+            "ok": ok, "detail": (detail or "")[:200],
+            "trigger": "webhook-post-pull"}
+
+
 def _webhook_warm(old_head, new_head, info):
     """Best-effort post-pull warming for any repo. Runs in the
     terminal container (same transport as the briefing buttons):
@@ -993,8 +1004,33 @@ def _webhook_warm(old_head, new_head, info):
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=300, text=True)
         print("webhook warm: context-warm done", flush=True)
+        _ledger_append(_auto_refresh_entry(
+            "warm-context", info.get("gh", "?"), True, "context-warm done"))
     except Exception as exc:
         print(f"webhook warm: context-warm skipped: {exc}", flush=True)
+        _ledger_append(_auto_refresh_entry(
+            "warm-context", info.get("gh", "?"), False, str(exc)))
+    try:
+        proc = subprocess.run(
+            EXEC + [_td_prefix(info["td_cwd"])
+                    + "python3 /srv/remote-server/buttons/"
+                    "briefing_summary.py --briefing-json "
+                    f"--repo {info.get('td_cwd', '').rsplit('/', 1)[-1]} "
+                    f"--gh {info.get('gh', '')}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=180, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                (proc.stderr or "").strip().splitlines()[-1]
+                if (proc.stderr or "").strip() else "briefing failed")
+        json.loads(proc.stdout)
+        print("webhook warm: briefing refresh done", flush=True)
+        _ledger_append(_auto_refresh_entry(
+            "briefing", info.get("gh", "?"), True, "briefing refresh done"))
+    except Exception as exc:
+        print(f"webhook warm: briefing refresh skipped: {exc}", flush=True)
+        _ledger_append(_auto_refresh_entry(
+            "briefing", info.get("gh", "?"), False, str(exc)))
 
 
 def _webhook_worker(repo, info):

@@ -111,6 +111,11 @@ def start_run(body: RunRequest) -> dict:
 
 @router.post("/run-td", response_model=RunStarted)
 def start_run_td(body: RunTdRequest) -> dict:
+    # EDITOR-ONLY API: `td --json preflight` is reachable here
+    # ({"command": "td --json preflight", "repo": "<name>"}) -> run id;
+    # poll GET /api/jobs for output. Shape: preflight_digest one-line
+    # summary + per-check pass/fail. Caller: editors/agents only — no
+    # SPA view references preflight; do not add one.
     tokens = validate_td_command(body.command)
     if not tokens:
         raise HTTPException(status_code=400, detail="bad repo or command")
