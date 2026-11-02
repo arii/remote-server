@@ -1,4 +1,4 @@
-"""Ask investigator: LangChain agent replacing `pi -p` for /buttons/api/ask.
+"""Ask investigator: LangChain agent for /buttons/api/ask.
 
 Usage: ask_investigator.py owner/repo <base64-instruction>
 Prints progress lines, then a FINAL: line with the reply (same shape the
@@ -110,7 +110,11 @@ def read_repo_file(path: str) -> str:
 
 @tool
 def grep_repo(pattern: str) -> str:
-    """Search file contents in the repo checkout (read-only ripgrep).
+    """Search file contents in the repo checkout (read-only grep).
+
+    If a long pattern has no matches, retry with a shorter
+    distinctive fragment (e.g. '/buttons/api/ask' instead of
+    'POST /buttons/api/ask').
 
     Args:
         pattern: Literal search text.
@@ -119,7 +123,9 @@ def grep_repo(pattern: str) -> str:
         return "REJECTED: bad pattern"
     try:
         proc = subprocess.run(
-            ["rg", "--no-heading", "-n", "-m", "20", "--", pattern, "."],
+            ["grep", "-rn", "-m", "20", "--exclude-dir=.git",
+             "--exclude-dir=node_modules", "--exclude-dir=.venv",
+             "--exclude-dir=__pycache__", "--", pattern, "."],
             cwd=_checkout,
             capture_output=True,
             text=True,
@@ -132,17 +138,16 @@ def grep_repo(pattern: str) -> str:
 
 
 @tool
-def pr_state(number: int) -> str:
+def pr_state(number: str) -> str:
     """Summarize a GitHub PR: state, reviews, checks (read-only).
 
     Args:
-        number: PR number (digits only).
+        number: PR number as digits, e.g. "153".
     """
-    if (
-        not isinstance(number, int)
-        or isinstance(number, bool)
-        or number <= 0
-    ):
+    # String type: the tool wrapper coerces True to 1 for int args,
+    # which would smuggle a bool past validation into gh.
+    if not isinstance(number, str) or not number.isdigit() \
+            or int(number) <= 0:
         return "REJECTED: bad PR number"
     try:
         proc = subprocess.run(
@@ -171,6 +176,9 @@ SYSTEM = (
     "Emit a proposal ONLY in exactly this form, on its own lines:\n"
     "PROPOSE issue\nTITLE: <one line>\nBODY:\n<markdown>\nEND PROPOSE\n"
     "or\nPROPOSE td\nCOMMAND: <exact td command>\nEND PROPOSE\n"
+    "A PROPOSE td COMMAND must be one of the allowed shapes "
+    "verbatim, changing only N to digits — never invent td "
+    "subcommands or flags.\n"
     f"Allowed td commands (exact shapes):\n" + "\n".join(ALLOWED_TD) + "\n"
     "If no write is needed, just answer — no PROPOSE block. "
     "Always invoke tools through the function-calling interface. "
@@ -227,6 +235,18 @@ def main() -> int:
         started,
     )
     print(f"tool_calls_made: {calls}")
+    outcomes = [
+        str(m.content).strip().splitlines()[0][:200]
+        for m in result["messages"]
+        if m.__class__.__name__ == "ToolMessage"
+        and str(m.content).strip()
+    ]
+    print("REPORT (authoritative, from tool results):")
+    if outcomes:
+        for line in outcomes:
+            print(f"  {line}")
+    else:
+        print("  (no tools called)")
     print("FINAL:", result["messages"][-1].content)
     return 0
 

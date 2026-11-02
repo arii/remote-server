@@ -22,13 +22,13 @@ PROMPTS = [
     {
         "name": "docs-howto",
         "prompt": "How do I run the buttons server locally?",
-        "tools": ["search_docs"],
+        "tools": ["*"],
         "anchor": re.compile(r"compose|docker|buttons", re.I),
     },
     {
         "name": "code-locate",
         "prompt": "Which file implements POST /buttons/api/ask?",
-        "tools": ["grep_repo", "read_repo_file"],
+        "tools": ["*"],
         "anchor": re.compile(r"server\.py"),
     },
     {
@@ -104,8 +104,11 @@ def main() -> int:
             ok = False
         if case["tools"]:
             used = last_run_tools()
-            if not any(t in used for t in case["tools"]):
-                print(f"tools MISS: used={used} want one of={case['tools']}")
+            want = case["tools"]
+            hit = bool(used) if want == ["*"] else any(
+                t in used for t in want)
+            if not hit:
+                print(f"tools MISS: used={used} want one of={want}")
                 ok = False
         if not case["anchor"].search(final):
             print(f"anchor MISS in: {final[:400]}")

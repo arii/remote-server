@@ -519,43 +519,29 @@ def _pi_thread(rid, kind, repo, instruction):
                         r["finished_at"] = time.time()
                 return
             else:
-                prompt = _ask_prompt(repo, instruction)
-
-            # Enforce context budget on prompt payload before passing to local LLM
-            prompt = context_filter.enforce_context_budget(prompt, max_tokens=4000)
-
-            b64 = base64.b64encode(prompt.encode()).decode()
-            # The prompt travels base64-encoded: its alphabet is
-            # shell-safe, so briefing titles or free-text
-            # instructions carrying quotes or $ cannot break out
-            # of the pi argument.
-            cmd = (_td_prefix(info["td_cwd"]) +
-                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-                   ' | base64 -d)"')
-            f.write("Asking Pi (local model, may take minutes)…\n")
-            f.flush()
-        # stdout+stderr go to the file so the progress endpoint
-        # streams them live; nothing is parsed until done.
-        proc = subprocess.run(
-            EXEC + [cmd], stdout=open(path, "a"),
-            stderr=subprocess.STDOUT, timeout=600, text=True)
-        raw = open(path).read()
-        with pi_runs_lock:
-            r = pi_runs.get(rid)
-            if r is None:
+                # Ask agent path: runs ask_investigator.py in deep-agent venv
+                f.write("Investigating with local agent…\n")
+                f.flush()
+                b64 = base64.b64encode(instruction.encode()).decode()
+                cmd = ("cd /srv/remote-server/deep-agent && "
+                       f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
+                proc = subprocess.run(
+                    EXEC + [cmd], stdout=open(path, "a"),
+                    stderr=subprocess.STDOUT, timeout=600, text=True)
+                raw = open(path).read()
+                with pi_runs_lock:
+                    r = pi_runs.get(rid)
+                    if r is None:
+                        return
+                    reply = raw
+                    idx = raw.find("FINAL:")
+                    if idx >= 0:
+                        reply = raw[idx + len("FINAL:"):].strip()
+                    r["result"] = {"repo": repo, "reply": reply[-6000:],
+                                   "proposal": _parse_proposal(raw)}
+                    r["done"] = True
+                    r["finished_at"] = time.time()
                 return
-            if kind == "suggest":
-                parsed_suggs = _parse_suggestions(raw)
-                note = _extract_suggestion_note(raw, parsed_suggs)
-                r["result"] = {"repo": repo,
-                               "suggestions": parsed_suggs,
-                               "note": note,
-                               "raw": raw[-2000:]}
-            else:
-                r["result"] = {"repo": repo, "reply": raw[-6000:],
-                               "proposal": _parse_proposal(raw)}
-            r["done"] = True
-            r["finished_at"] = time.time()
     except Exception as exc:
         with pi_runs_lock:
             r = pi_runs.get(rid)
@@ -2461,10 +2447,10 @@ def run_action(run_id, action, repo="remote-server"):
         steps = rewritten
     if action == "merge-approved":
         # Steps are built from the picked repo's discovered gh path
-        # (charset-validated, never from the client), like run-td.
-        prefix = _td_prefix("/srv/remote-server/deep-agent")
-        steps = [EXEC + [prefix + ".venv/bin/python merge_approved.py "
-                         f"{repos[repo]['gh']}"]]
+        # (charset-validated, never from the client), running upstream td agent merge-approved.
+        prefix = _td_prefix(repos[repo]["td_cwd"])
+        steps = [EXEC + [prefix + "td --json agent merge-approved -r "
+                         f"{repos[repo]['gh']} --execute"]]
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
@@ -6118,22 +6104,8 @@ async function refreshJulesStatusCard() {
     el.appendChild(p);
   }
   const ss = data.sessions || [];
-  if (!ss.length) {
-    const p = document.createElement("div");
-    p.style.color = "var(--text-muted)";
-    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
-    el.appendChild(p);
-    if (data.other) {
-      const pOther = document.createElement("div");
-      pOther.style.color = "var(--text-muted)";
-      pOther.style.fontSize = "0.88em";
-      pOther.style.marginTop = "0.3em";
-      pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
-      el.appendChild(pOther);
-    }
-    return;
-  }
-  ss.forEach(s => {
+  const unk = data.unknown || [];
+  const renderRow = (s) => {
     const row = document.createElement("div");
     row.className = "jules-session-row";
 
@@ -6176,8 +6148,29 @@ async function refreshJulesStatusCard() {
       meta.textContent += " · PR: " + s.pr_url.split("/").pop();
     }
     row.appendChild(meta);
-    el.appendChild(row);
-  });
+    return row;
+  };
+
+  if (!ss.length) {
+    const p = document.createElement("div");
+    p.style.color = "var(--text-muted)";
+    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
+    el.appendChild(p);
+  } else {
+    ss.forEach(s => el.appendChild(renderRow(s)));
+  }
+
+  if (unk.length) {
+    const uHeader = document.createElement("div");
+    uHeader.style.marginTop = "0.6em";
+    uHeader.style.fontWeight = "bold";
+    uHeader.style.fontSize = "0.9em";
+    uHeader.style.color = "var(--text-muted)";
+    uHeader.textContent = "Unknown / global sessions (" + unk.length + "):";
+    el.appendChild(uHeader);
+    unk.forEach(s => el.appendChild(renderRow(s)));
+  }
+
   if (data.other) {
     const pOther = document.createElement("div");
     pOther.style.color = "var(--text-muted)";
@@ -6210,18 +6203,8 @@ async function refreshJulesSessions() {
     el.appendChild(n);
   }
   const ss = data.sessions || [];
-  if (!ss.length) {
-    el.appendChild(document.createTextNode("No Jules sessions."));
-    if (data.other) {
-      const p = document.createElement("p");
-      p.style.color = "var(--text-muted)";
-      p.style.fontSize = "0.9em";
-      p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
-      el.appendChild(p);
-    }
-    return;
-  }
-  ss.forEach(s => {
+  const unk = data.unknown || [];
+  const renderCard = (s) => {
     const card = document.createElement("div");
     card.className = "prcard";
     const title = document.createElement("div");
@@ -6251,8 +6234,28 @@ async function refreshJulesSessions() {
       pr.appendChild(a);
       card.appendChild(pr);
     }
-    el.appendChild(card);
-  });
+    return card;
+  };
+
+  if (!ss.length) {
+    el.appendChild(document.createTextNode("No Jules sessions."));
+  } else {
+    ss.forEach(s => el.appendChild(renderCard(s)));
+  }
+
+  if (unk.length) {
+    const uSection = document.createElement("div");
+    uSection.style.marginTop = "0.8em";
+    const uHeader = document.createElement("div");
+    uHeader.style.fontWeight = "bold";
+    uHeader.style.color = "var(--text-muted)";
+    uHeader.style.marginBottom = "0.3em";
+    uHeader.textContent = "Unknown / global sessions (" + unk.length + "):";
+    uSection.appendChild(uHeader);
+    unk.forEach(s => uSection.appendChild(renderCard(s)));
+    el.appendChild(uSection);
+  }
+
   if (data.other) {
     const p = document.createElement("p");
     p.style.color = "var(--text-muted)";
@@ -7303,10 +7306,9 @@ class Handler(BaseHTTPRequestHandler):
         budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
         b64 = base64.b64encode(budgeted_prompt.encode()).decode()
 
-        # Build command: pi in print mode with read-only tools
-        cmd = (_td_prefix(info["td_cwd"]) +
-               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-               ' | base64 -d)"')
+        # Build command: ask_investigator agent in deep-agent venv
+        cmd = ("cd /srv/remote-server/deep-agent && "
+               f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
 
         # Check for tool calling heuristics in the request
         tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
@@ -7597,7 +7599,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
             # List Pi session files (newest first) as JSON, unified with
-            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # background agent runs (Ask / Suggest). No TD prefix:
             # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
             sessions = []
             try:
@@ -8177,6 +8179,7 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
+                unknown_sessions = []
                 other_count = 0
                 seen_session_ids = set()
                 target_gh = (info.get("gh") or "").lower()
@@ -8229,25 +8232,17 @@ class Handler(BaseHTTPRequestHandler):
                                 s_repo = p[-1].lower()
 
                     matches_repo = False
+                    is_unknown = False
                     if s_repo:
                         if target_gh and (s_repo == target_gh or s_repo.endswith("/" + target_repo)):
                             matches_repo = True
                         elif s_repo == target_repo:
                             matches_repo = True
                     else:
-                        # Fallback: check display name / title, or default to current repo if no repo info
-                        dname = str(s.get("displayName") or s.get("display_name") or "").lower()
-                        title = str(s.get("title") or "").lower()
-                        if target_repo and (target_repo in dname or target_repo in title):
-                            matches_repo = True
-                        elif not dname and not s.get("sourceContext") and not s.get("source"):
-                            matches_repo = True
+                        is_unknown = True
 
-                    if not matches_repo:
+                    if not matches_repo and not is_unknown:
                         other_count += 1
-                        continue
-
-                    if len(sessions) >= 30:
                         continue
 
                     pr_url = ""
@@ -8256,7 +8251,7 @@ class Handler(BaseHTTPRequestHandler):
                         if pr.get("url"):
                             pr_url = pr["url"]
                             break
-                    sessions.append({
+                    item = {
                         "id": s.get("id"), "title": s.get("title"),
                         "state": s.get("state"),
                         "updated": s.get("updateTime"),
@@ -8265,8 +8260,16 @@ class Handler(BaseHTTPRequestHandler):
                                    .get("source", "")
                                    .split("/")[-1]),
                         "pr_url": pr_url,
-                    })
+                    }
+                    if is_unknown:
+                        if len(unknown_sessions) < 30:
+                            unknown_sessions.append(item)
+                    else:
+                        if len(sessions) < 30:
+                            sessions.append(item)
+
                 self._json({"repo": repo, "sessions": sessions,
+                            "unknown": unknown_sessions,
                             "other": other_count,
                             "notice": data.get("notice", "")})
             except Exception as exc:

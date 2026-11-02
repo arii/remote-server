@@ -4,7 +4,7 @@
 Regression: merge-approved ran against tech-dancer regardless of the
 picked repo because the client only forwarded the picker value for a
 hardcoded subset of REPO_SCOPED_ACTIONS (observed live: a
-remote-server run executed merge_approved.py arii/tech-dancer).
+remote-server run executed td agent merge-approved against arii/tech-dancer).
 """
 
 import re

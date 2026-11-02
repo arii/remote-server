@@ -49,7 +49,6 @@ deep-agent/*
 !deep-agent/triage_fanout.py
 !deep-agent/resolve_conflicts.py
 !deep-agent/build_index.py
-!deep-agent/merge_approved.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),

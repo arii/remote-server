@@ -136,7 +136,7 @@ Pi flags can also override tool visibility on demand:
 ## BoomTick MCP tools (active 2026-10-27)
 
 Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
-0.7.2 in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION` and run from
+0.8.1 in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION` and run from
 the baked `/usr/local/bin/boomtick-mcp` binary declared in
 `terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
 `"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
@@ -264,7 +264,7 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (CI smoke-tested; versions pinned except `td` and Muse, which track latest):
-  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.7.2, Muse CLI,
+  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.8.1, Muse CLI,
   Python 3 + venv/pip, `td` (`boomtick-cli` from the BoomTick repo main branch in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
   `safe.directory = *`), Docker CLI. This covers the interpreters and

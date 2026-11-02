@@ -230,9 +230,6 @@ def _session_repo(session):
         full = cand.get("full_name") or cand.get("fullName")
         if isinstance(full, str) and "/" in full:
             return full
-        name = cand.get("displayName") or cand.get("display_name") or ""
-        if isinstance(name, str) and REPO_KEY.lower() in name.lower():
-            return REPO_GH
     return None
 
 
