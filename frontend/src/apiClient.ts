@@ -65,6 +65,22 @@ export function runJob(id: string): Promise<{ ok: boolean }> {
   return getJson<{ ok: boolean }>(`/api/jobs/run?id=${encodeURIComponent(id)}`);
 }
 
+export function fetchAttention(repo: string): Promise<import('./attentionTypes').AttentionResponse> {
+  return getJson<import('./attentionTypes').AttentionResponse>(
+    `/api/attention?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
+  const resp = await fetch('/api/create-issue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repo, title, body }),
+  });
+  if (!resp.ok) throw new Error(`POST /api/create-issue failed: ${resp.status}`);
+  return (await resp.json()) as { ok: boolean; url: string };
+}
+
 export function fetchLedger(
   kind = 'all',
   limit = 50,
