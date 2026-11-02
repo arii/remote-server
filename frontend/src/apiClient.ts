@@ -9,13 +9,16 @@ export interface SystemHealthResponse {
   containers: Array<Record<string, unknown>>;
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const resp = await fetch(path);
+async function readJson<T>(resp: Response, method: string, path: string): Promise<T> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
-    throw new Error(`GET ${path} failed: ${resp.status} ${text}`.trim());
+    throw new Error(`${method} ${path} failed: ${resp.status} ${text}`.trim());
   }
   return (await resp.json()) as T;
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  return readJson<T>(await fetch(path), 'GET', path);
 }
 
 export function fetchSystemHealth(): Promise<SystemHealthResponse> {
@@ -76,14 +79,20 @@ export function fetchWorkflowHealth(repo: string): Promise<WorkflowHealthRespons
   );
 }
 
+export interface PiProgressResponse {
+  done: boolean;
+  output: string;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const resp = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!resp.ok) throw new Error(`POST ${path} failed: ${resp.status}`);
-  return (await resp.json()) as T;
+  return readJson<T>(resp, 'POST', path);
 }
 
 export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
@@ -112,6 +121,18 @@ export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; 
   });
 }
 
+export function startJobRun(action: string, repo: string): Promise<{ id: string }> {
+  return postJson<{ id: string }>('/api/jobs/run', { action, repo });
+}
+
+export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number }> {
+  return postJson<{ ok: boolean; cleared: number }>('/api/jobs/clear', {
+    all,
+    intent: 'jobs-clear',
+    confirmed: true,
+  });
+}
+
 export function fetchIssues(repo: string): Promise<import('./reviewTypes').IssueListResponse> {
   return getJson<import('./reviewTypes').IssueListResponse>(
     `/api/issues?repo=${encodeURIComponent(repo)}`,
@@ -129,5 +150,27 @@ export function draftIssue(repo: string, title: string, cause: string, details: 
     title,
     cause,
     details,
+  });
+}
+
+export function fetchPiProgress(rid: string): Promise<PiProgressResponse> {
+  return getJson<PiProgressResponse>(`/api/pi-progress/${encodeURIComponent(rid)}`);
+}
+
+export function chatStreamUrl(prompt: string, repo: string, sessionId: string): string {
+  const q = new URLSearchParams({ prompt, repo, session_id: sessionId });
+  return `/api/chat/stream?${q.toString()}`;
+}
+
+export function abortChat(sessionId: string): Promise<{ ok: boolean; session_id: string }> {
+  return postJson<{ ok: boolean; session_id: string }>('/api/chat/abort', {
+    session_id: sessionId,
+  });
+}
+
+export function requestTakeover(): Promise<{ ok: boolean; output: string }> {
+  return postJson<{ ok: boolean; output: string }>('/api/terminal/takeover', {
+    intent: 'terminal-takeover',
+    confirmed: true,
   });
 }
