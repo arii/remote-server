@@ -2273,6 +2273,20 @@ def _job_create(template, repo, pr=None, issues=None, suggestions=None):
     return job, None
 
 
+def _job_step_failure_reason(output, exit_code=None):
+    """Extract a concise one-line failure reason from output or fall back to exit N."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    filtered = [l for l in lines if not l.startswith("$ ") and not re.match(r"^step failed with exit code \d+; aborting$", l)]
+    err_re = re.compile(r"(?:traceback|error|failed|failure|exception|stderr|fatal)", re.IGNORECASE)
+    for l in filtered:
+        if err_re.search(l):
+            return l[:200]
+    if filtered:
+        return filtered[0][:200]
+    return f"exit {exit_code}" if exit_code is not None else "failed"
+
+
 def _job_public(job):
     """Summary shape for the job list (no step internals)."""
     return {"id": job["id"], "template": job["template"],
@@ -2280,7 +2294,9 @@ def _job_public(job):
             "state": job["state"], "outcome": job.get("outcome"),
             "created_at": job["created_at"],
             "steps": [{"label": s["label"], "state": s["state"],
-                       "run_id": s.get("run_id")}
+                       "run_id": s.get("run_id"),
+                       "note": s.get("note"),
+                       "exit_code": s.get("exit_code")}
                       for s in job["plan"]]}
 
 
@@ -2748,8 +2764,9 @@ a { color: #8bf; }
 .jobcard-del { flex: none; width: auto; padding: 0.2em 0.5em; border-radius: 6px; font-size: 0.85em; color: var(--text-muted); }
 .jobcard-del:hover { color: #ff8a8a; border-color: var(--danger); }
 .jobcard .jobmeta { font-size: 0.85em; color: var(--text-muted); margin-bottom: 0.4em; }
-.jobstep { display: flex; align-items: center; gap: 0.5em; padding: 0.35em 0;
+.jobstep { display: flex; flex-direction: column; gap: 0.25em; padding: 0.35em 0;
   border-top: 1px solid var(--border); font-size: 0.92em; }
+.jobstep-row { display: flex; align-items: center; gap: 0.5em; width: 100%; }
 .jobstep .st { font-size: 0.78em; border-radius: 20px; padding: 0.15em 0.6em;
   border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
 .jobstep .st.done { color: #7ed07e; border-color: #2e7d32; }
@@ -2759,6 +2776,11 @@ a { color: #8bf; }
 .jobstep .st.declined { color: var(--text-muted); }
 .jobstep .sactions { margin-left: auto; display: flex; gap: 0.4em; }
 .jobstep .sactions button { width: auto; margin: 0; padding: 0.35em 0.7em; font-size: 0.85em; }
+.jobstep-reason { font-size: 0.82em; color: #ff8a8a; margin-left: 1.8em; word-break: break-word; font-family: monospace; }
+.jobcard-expander { cursor: pointer; font-size: 0.85em; color: var(--primary); margin-top: 0.4em; user-select: none; }
+.jobcard-expander:hover { text-decoration: underline; }
+.jobs-show-more-wrap { text-align: center; margin: 1em 0; }
+.jobs-show-more-btn { width: auto !important; padding: 0.4em 1.2em; font-size: 0.9em; }
 .jobtmpl { border: 1px solid var(--border); border-radius: 10px; padding: 0.6em;
   margin: 0.4em 0; background: var(--bg-card); }
 .jobtmpl .blabel { font-weight: 600; }
@@ -4460,6 +4482,8 @@ function renderJobNew() {
     el.appendChild(d);
   });
 }
+let jobsShowAll = false;
+
 async function refreshJobs() {
   const listEl = document.getElementById("jobList");
   const errEl = document.getElementById("jobListErr");
@@ -4476,7 +4500,39 @@ async function refreshJobs() {
     listEl.textContent = "No jobs yet. Start one above.";
     return;
   }
-  jobs.forEach(j => listEl.appendChild(renderJobCard(j)));
+
+  let newestTerminalIdx = -1;
+  for (let i = 0; i < jobs.length; i++) {
+    if (jobs[i].state === "terminal") {
+      newestTerminalIdx = i;
+      break;
+    }
+  }
+
+  const limit = jobsShowAll ? jobs.length : 20;
+  const visibleJobs = jobs.slice(0, limit);
+
+  visibleJobs.forEach((j, idx) => {
+    const isOlderTerminal = j.state === "terminal" && idx > newestTerminalIdx;
+    listEl.appendChild(renderJobCard(j, isOlderTerminal));
+  });
+
+  if (jobs.length > 20 && !jobsShowAll) {
+    const wrap = document.createElement("div");
+    wrap.className = "jobs-show-more-wrap";
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "btn-ghost jobs-show-more-btn";
+    moreBtn.id = "jobsShowMoreBtn";
+    moreBtn.textContent = `Show more (${jobs.length - 20} remaining)`;
+    moreBtn.onclick = () => {
+      jobsShowAll = true;
+      refreshJobs();
+    };
+    wrap.appendChild(moreBtn);
+    listEl.appendChild(wrap);
+  }
+
   // Read-only steps start on the server without a tap. If one is
   // running and we aren't polling its run yet, pick it up so its
   // output streams to the drawer and step-done gets reported.
@@ -4495,7 +4551,7 @@ async function refreshJobs() {
     }
   }
 }
-function renderJobCard(j) {
+function renderJobCard(j, collapsed = false) {
   const card = document.createElement("div");
   card.className = "jobcard";
   const head = document.createElement("div");
@@ -4531,6 +4587,13 @@ function renderJobCard(j) {
     (j.state === "terminal" ? " · " + j.outcome : " · active");
   card.appendChild(m);
 
+  // Steps container (can be hidden if collapsed)
+  const stepsContainer = document.createElement("div");
+  stepsContainer.className = "jobcard-steps";
+  if (collapsed) {
+    stepsContainer.style.display = "none";
+  }
+
   // Consolidated approval card for write steps if multiple or write steps present
   const pendingWrites = j.steps.map((s, idx) => ({s, idx}))
     .filter(item => item.s.write && item.s.state === "pending");
@@ -4552,19 +4615,22 @@ function renderJobCard(j) {
     bbtn.onclick = () => jobApproveAll(j.id);
     banner.appendChild(btext);
     banner.appendChild(bbtn);
-    card.appendChild(banner);
+    stepsContainer.appendChild(banner);
   }
 
   j.steps.forEach((s, i) => {
     const row = document.createElement("div");
     row.className = "jobstep";
+    const rowTop = document.createElement("div");
+    rowTop.className = "jobstep-row";
+
     const badge = document.createElement("span");
     badge.className = "st " + s.state;
     badge.textContent = s.state;
     const lab = document.createElement("span");
     lab.textContent = s.label;
-    row.appendChild(badge);
-    row.appendChild(lab);
+    rowTop.appendChild(badge);
+    rowTop.appendChild(lab);
     if (j.state === "active" && s.state === "pending" &&
         j.steps.slice(0, i).every(p => p.state === "done" || p.state === "declined")) {
       const acts = document.createElement("span");
@@ -4577,7 +4643,7 @@ function renderJobCard(j) {
       no.className = "btn-ghost";
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(ok); acts.appendChild(no);
-      row.appendChild(acts);
+      rowTop.appendChild(acts);
     } else if (j.state === "active" && s.state === "pending" && s.write) {
       // Allow declining individual write steps even ahead of turn
       const acts = document.createElement("span");
@@ -4587,10 +4653,42 @@ function renderJobCard(j) {
       no.className = "btn-ghost";
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(no);
-      row.appendChild(acts);
+      rowTop.appendChild(acts);
     }
-    card.appendChild(row);
+    row.appendChild(rowTop);
+
+    // One-line failure reason under failed step
+    if (s.state === "failed") {
+      const reasonEl = document.createElement("div");
+      reasonEl.className = "jobstep-reason";
+      let reasonText = "";
+      if (s.note && typeof s.note === "string" && s.note.trim()) {
+        reasonText = s.note.trim().split("\n")[0].trim();
+      } else if (s.exit_code !== undefined && s.exit_code !== null) {
+        reasonText = `exit ${s.exit_code}`;
+      } else {
+        reasonText = "exit 1";
+      }
+      reasonEl.textContent = reasonText;
+      row.appendChild(reasonEl);
+    }
+
+    stepsContainer.appendChild(row);
   });
+
+  if (collapsed) {
+    const expander = document.createElement("div");
+    expander.className = "jobcard-expander";
+    expander.textContent = "▸ Show steps";
+    expander.onclick = () => {
+      const isHidden = stepsContainer.style.display === "none";
+      stepsContainer.style.display = isHidden ? "block" : "none";
+      expander.textContent = isHidden ? "▾ Hide steps" : "▸ Show steps";
+    };
+    card.appendChild(expander);
+  }
+
+  card.appendChild(stepsContainer);
   return card;
 }
 async function jobApproveAll(id) {
@@ -8545,6 +8643,8 @@ class Handler(BaseHTTPRequestHandler):
                         if run_exit == 0 else "failed"
                     st["finished_at"] = time.time()
                     st["exit_code"] = run_exit
+                    if st["state"] == "failed" and not st.get("note"):
+                        st["note"] = _job_step_failure_reason(run.get("output", "") if run else "", run_exit)
                     _job_after_step(job)
                     _jobs_save()
                     state = st["state"]
