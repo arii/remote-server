@@ -26,7 +26,7 @@ repo per context (proven `deep-agent/triage_fanout.py`).
 ## Model route: Nebius first (sparingly), then local Ollama
 
 1. **Verify the harness on Nebius.** ✅ Done 2026-11-02
-   (`deep-agent/harness_check.py`: one stub-tool call on
+   (one stub-tool call on
    `zai-org/GLM-5.3-Flash`, exact tool result returned). Keep using
    `NEBIUS_API_KEY` (in `.env`, never committed) for bring-up only —
    every call is metered: minimal prompts, minimal iterations.
@@ -60,7 +60,7 @@ Status: ✅ proven live · ⚙️ partial · 🔬 mapped, unrun · ⏸ stays on 
 | Ask Pi (read-only investigate → PROPOSE → confirm → validated endpoints) | Read-only investigator subagent → structured proposal → HITL approve → validated run tool | 🔬 open-ended small-model Q&A unproven; server-side validation stays regardless |
 | Agent briefing (`pi -p` slow path) | Deterministic briefing (already `td`+Python) + optional summarizer subagent | 🔬 summarizer unrun; briefing data stays deterministic |
 | BoomTick MCP tools (PR/CI/Jules ops) | Python tools wrapping the same `td`/`gh` binaries | ✅ proven pattern (harness check, resolver, explainer all use it) |
-| Sessions + `/model` switching | `checkpointer` + `thread_id`; model chosen per agent instance | ✅ mechanics proven (HITL spike, resolver); cross-thread Store memory proven (`memory_spike.py`) |
+| Sessions + `/model` switching | `checkpointer` + `thread_id`; model chosen per agent instance | ✅ mechanics proven (HITL spike, resolver); cross-thread Store memory proven |
 | Steering + skills (APPEND_SYSTEM.md, skills/) | `system_prompt` + `skills=[...]` with FilesystemBackend | 🔬 skills-on-agent unrun; custom subagents need explicit `skills` |
 | Jobs approval gates (Approve/Decline taps) | `interrupt_on` + `Command(resume=...)` approve/reject/edit | ✅ mechanics proven on Nebius; buttons-tap bridge still open |
 | Merge-conflict repair (runbook manual path) | Repair worktree + resolver agent + verify + replacement PR | ✅ proven E2E on #148 → #149; now the runbook's canonical path |

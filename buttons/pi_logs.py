@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pi_logs — readable Pi session audit for the S5 buttons page.
+"""pi_logs — readable Agent session audit for the S5 buttons page.
 
 Pi keeps its full transcript (user prompts, assistant replies,
 tool calls and results) as JSONL under ~/.pi/agent/sessions/
@@ -347,7 +347,7 @@ def main(argv):
             except Exception as exc:
                 print(f"Could not delete "
                       f"{os.path.basename(path)}: {exc}")
-        print(f"Deleted {deleted} Pi session(s).")
+        print(f"Deleted {deleted} Agent session(s).")
         return 0
     if len(argv) == 2 and argv[0] == "--delete":
         # Delete ONE session transcript. The query must match
@@ -392,10 +392,10 @@ def main(argv):
         print("usage: pi_logs.py [--list-json | --session QUERY | "
               "--delete QUERY | --clear]")
         return 0
-    print("=== Pi sessions ===")
+    print("=== Agent sessions ===")
     files = _list_files()
     if not files:
-        print(f"No Pi sessions found under {ROOT}")
+        print(f"No Agent sessions found under {ROOT}")
         return 0
     print(f"{len(files)} session file(s) under {ROOT}")
     for path in files[:SHOW_SESSIONS]:
