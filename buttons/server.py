@@ -184,6 +184,8 @@ def _discover_repos(force=False):
 
 
 def _default_repo(repos):
+    if "remote-server" in repos:
+        return "remote-server"
     if "tech-dancer" in repos:
         return "tech-dancer"
     return sorted(repos)[0]
@@ -2406,7 +2408,7 @@ def _finish_run(run_id, action, repo, run):
             active_id = None
 
 
-def run_action(run_id, action, repo="tech-dancer"):
+def run_action(run_id, action, repo="remote-server"):
     global active_id
     run = runs[run_id]
     repos = _discover_repos()
@@ -3194,6 +3196,7 @@ let userStartedRun = false;
 function markSelectedRepo() {
   const picker = document.getElementById("briefingRepo");
   const cur = picker ? picker.value : "";
+  try { if (cur) localStorage.setItem("buttons_selected_repo", cur); } catch (e) {}
   const nameEl = document.getElementById("selectedRepoName");
   if (nameEl && cur) nameEl.textContent = cur;
   document.querySelectorAll("[data-repo-pick]").forEach(el => {
@@ -3206,8 +3209,15 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     if (e.target.closest("a")) return;
     const picker = document.getElementById("briefingRepo");
     if (!picker) return;
-    picker.value = el.getAttribute("data-repo-pick");
-    picker.dispatchEvent(new Event("change"));
+    const pickedRepo = el.getAttribute("data-repo-pick");
+    if (picker.value !== pickedRepo) {
+      picker.value = pickedRepo;
+      picker.dispatchEvent(new Event("change"));
+    } else {
+      markSelectedRepo();
+      if (typeof refreshBriefing === "function") refreshBriefing();
+      if (typeof refreshProject === "function") refreshProject();
+    }
   });
 });
 // Project tab: repo context lives where the work happens. The
@@ -4358,6 +4368,7 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
+
   const j = b.jules || {};
   const js = document.createElement("div");
   const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
@@ -4860,7 +4871,16 @@ if (clearJobsBtn) clearJobsBtn.onclick = async () => {
 };
 refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
-if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
+if (briefingRepoPicker) {
+  try {
+    const savedRepo = localStorage.getItem("buttons_selected_repo");
+    if (savedRepo && Array.from(briefingRepoPicker.options).some(o => o.value === savedRepo)) {
+      briefingRepoPicker.value = savedRepo;
+      markSelectedRepo();
+    }
+  } catch (e) {}
+  briefingRepoPicker.onchange = refreshBriefing;
+}
 refreshBriefing();
 
 // Pi background runs: streams output directly into the slide-up
@@ -6435,7 +6455,7 @@ async function runPlan(plan, extra) {
   } else {
     const pre = document.createElement("pre");
     pre.id = "planRawOutput";
-    pre.textContent = data.output || "(empty)";
+    pre.textContent = (data.output || "(empty)").replace(/\/srv\/[^\s'"]+/g, "[server path]");
     out.appendChild(pre);
   }
 }
@@ -6616,6 +6636,7 @@ async function refreshStatus() {
     const pend = document.getElementById("livePending");
     const w = s.webhooks || {};
     const pending = s.webhooks_pending || [];
+
     // Stale page: a remote-server pull landed after this container
     // started, so the served page predates the checkout. Show the
     // banner and highlight the rebuild button — the pull alone
@@ -6764,6 +6785,18 @@ setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
 if (testNotifyBtn) testNotifyBtn.onclick = async () => {
+  const badge = document.getElementById("notifyBadge");
+  const isOff = badge && badge.textContent.includes("off");
+  if (isOff) {
+    if (typeof confirmDialog === "function") {
+      await confirmDialog(
+        "Notifications Disabled",
+        "Notifications are currently off (set NTFY_* in .env; see docs/buttons.md).",
+        false
+      );
+    }
+    return;
+  }
   if (typeof confirmDialog === "function") {
     const ok = await confirmDialog("Notification Test", "Send a test notification via the configured ntfy/webhook?", false);
     if (!ok) return;
