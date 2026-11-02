@@ -87,3 +87,9 @@ All items were filed and resolved in `arii/boomtick`:
 - P3 (remote-server canonical repo path): FILED as [arii/remote-server#192](https://github.com/arii/remote-server/issues/192).
 
 Note: reconciled 2026-11-02 — #1024–#1026 moved to Resolved; no open BoomTick-side items remain in this file.
+
+## Filed 2026-11-02 (td-first gaps from S5 audit)
+
+- [arii/boomtick#1082](https://github.com/arii/boomtick/issues/1082) — `td gh pr-view`: single PR state snapshot (state, reviews, checks, mergeable). Unblocks dropping raw `gh pr view` from `ask_investigator.pr_state` and briefing rollup.
+- [arii/boomtick#1083](https://github.com/arii/boomtick/issues/1083) — `td gh run-jobs`: list jobs for a workflow run. Unblocks dropping raw `gh api repos/.../actions/runs/.../jobs` from briefing.
+- Switched same day (td already covered): `fetch_pr_diff` now uses `td --json gh pr-diff` instead of `gh pr diff`. Deleted dead `deep-agent/pr_triage_agent.py` (399 lines, zero references; merge path already superseded by released td gate).

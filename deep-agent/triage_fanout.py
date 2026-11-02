@@ -83,13 +83,16 @@ def main() -> int:
         ],
         checkpointer=MemorySaver(),
     )
+    # Unique per run: the constant "fanout-run" collided across runs
+    # and repos in the ledger; each process is one checkpoint sequence.
+    thread = "fanout-" + time.strftime("%Y%m%d-%H%M%S")
     result = agent.invoke(
         {
             "messages": [
                 {"role": "user", "content": f"Triage {repo_list}."}
             ]
         },
-        config={"configurable": {"thread_id": "fanout-run"}},
+        config={"configurable": {"thread_id": thread}},
     )
     tasks = sum(
         1
@@ -100,7 +103,7 @@ def main() -> int:
     ledger.record(
         "triage_fanout.py",
         f"nebius:{MODEL_ID}",
-        "fanout-run",
+        thread,
         result["messages"],
         started,
         extra={"task_delegations": tasks, "repos": repos},
