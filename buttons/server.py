@@ -184,6 +184,8 @@ def _discover_repos(force=False):
 
 
 def _default_repo(repos):
+    if "remote-server" in repos:
+        return "remote-server"
     if "tech-dancer" in repos:
         return "tech-dancer"
     return sorted(repos)[0]
@@ -2406,7 +2408,7 @@ def _finish_run(run_id, action, repo, run):
             active_id = None
 
 
-def run_action(run_id, action, repo="tech-dancer"):
+def run_action(run_id, action, repo="remote-server"):
     global active_id
     run = runs[run_id]
     repos = _discover_repos()
@@ -2881,8 +2883,8 @@ a { color: #8bf; }
 <body>
 <h1>S5 Control Panel</h1>
 <div class="launcher-bar">
-  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
-  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+  <a class="launcher-tile" href="/" title="Open Browser Terminal">Terminal</a>
+  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">VS Code</a>
 </div>
 <p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
@@ -2896,13 +2898,13 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div id="stickyHead">
 <div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><span>Active repo: <strong id="selectedRepoName">...</strong></span><select id="briefingRepo" style="display:none">
 <!--REPO_OPTIONS-->
-</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">💬 Chat / Ask Agent</button></div>
+</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">Chat / Ask Agent</button></div>
 <div id="tabbar" role="tablist">
-<button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
-<button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
-<button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
-<button class="tab" data-tab="project" role="tab">📊 Project</button>
-<button class="tab" data-tab="jobs" role="tab">🧰 Jobs</button><button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
+<button class="tab active" data-tab="actions" role="tab">Actions</button>
+<button class="tab" data-tab="briefing" role="tab">Briefing</button>
+<button class="tab" data-tab="pi" role="tab">Pi agent</button>
+<button class="tab" data-tab="project" role="tab">Project</button>
+<button class="tab" data-tab="jobs" role="tab">Jobs</button><button class="tab" data-tab="ledger" role="tab">Ledger</button>
 </div>
 </div>
 <section class="tabpanel" id="tab-actions">
@@ -2941,44 +2943,22 @@ below are still visible, but they need JavaScript to start a run.</div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
-<details><summary>How this works</summary>
-<p>Live briefing — open PRs, CI, conflicts, reviews, Jules
-sessions. Runs on load; the Refresh briefing button re-runs it
-from td. Tap a repo card above to select the repo for the cards,
-their action buttons, and the repo buttons.</p>
-</details>
 <div id="briefing"></div>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
 <h2>Suggested next actions</h2>
-<details><summary>How this works</summary>
-<p>Pi reads the briefing context and suggests td commands, then
-runs only what you approve: each suggestion has its own Run
-button with a confirm dialog. Pi runs read-only here;
-suggestions are validated against a fixed td-command list,
-anything else is shown as text, never run. Asking Pi takes
-minutes on the local model.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Pi runs read-only; each suggestion requires confirmation before running allowlisted commands.</div>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
 <h2>Ask Agent / Chat</h2>
-<details><summary>How this works</summary>
-<p>Open-ended questions and instructions for this repo. Access the interactive agent chat via the topbar button or below to chat, stream tool actions, or dispatch tasks.</p>
-</details>
 <div style="margin: 0.6em 0;">
-  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
+  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">Open Agent Chat</button>
 </div>
 
 <h2>Agent sessions</h2>
-<details><summary>How this works</summary>
-<p>Browse agent transcripts on disk (pi-data volume). List shows the
-newest sessions with date, repo, and first prompt — tap one to
-render it readably. The full JSONL stays on disk. Clearing
-deletes all transcripts.</p>
-</details>
 <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center;">
 <button id="listPiSessions" style="width:auto; margin:0;">List sessions</button>
 <button id="clearPiSessions" style="width:auto; margin:0;">Clear Agent sessions</button>
@@ -3000,9 +2980,6 @@ deletes all transcripts.</p>
 </section>
 <section class="tabpanel" id="tab-project" style="display:none">
 <h2>Enriched PR Review <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>RepoAuditor-grade review surface: inspect PR status, CI checks, mergeability, full changed files tree with diff counts, and trigger structured AI review flows.</p>
-</details>
 <div class="planrow">
 <label>Pick PR: <select id="reviewPrSelect"><option value="">— Loading PRs —</option></select></label>
 <button id="loadPrDetailsBtn" type="button" class="btn-primary" style="width:auto;margin:0;">Inspect PR</button>
@@ -3032,18 +3009,11 @@ deletes all transcripts.</p>
 <div id="prDetailsErr"></div>
 
 <h2>Workflow Health Analysis <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>RepoAuditor-grade workflow diagnostics: inspection across recent runs, failing jobs, steps, and check-run annotations to isolate the likely failure cause.</p>
-</details>
 <button id="refreshWorkflowHealthBtn" type="button" class="btn-ghost" style="width:auto;margin:0 0 0.5em 0;">Refresh workflow health</button>
 <div id="workflowHealthView"></div>
 <div id="workflowHealthErr"></div>
 
 <h2>Issues <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>Open issues for the picked repo — status, assignees, labels.
-Tap one to expand, assign, or open it in GitHub.</p>
-</details>
 <button id="refreshIssues">Refresh issues</button>
 <div id="issues"></div>
 <div id="issuesErr"></div>
@@ -3054,10 +3024,6 @@ Tap one to expand, assign, or open it in GitHub.</p>
 <button id="createIssueBtn">Create issue</button>
 <div id="newIssueErr"></div>
 <h2>Jules sessions & Agent Handoff <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>What Jules is doing — state, what it's working on, link.
-Needs JULES_API_KEY in .env.</p>
-</details>
 <div class="health-card" style="margin-bottom:0.8em;">
   <div class="health-head">Agent Handoff (Jules Branch-Based Work)</div>
   <div class="bsub">Dispatch Jules sessions for branch tasks, PR reviews, or workflow fixes beyond fix-ci.</div>
@@ -3072,10 +3038,7 @@ Needs JULES_API_KEY in .env.</p>
 <div id="julesSessions"></div>
 <div id="julesErr"></div>
 <h2>Plans <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>Deterministic td planning guides. They read repo state and
-write a markdown plan file; nothing executes or pushes.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Generates markdown plan files from repo state; nothing executes or pushes automatically.</div>
 <div class="planrow"><button id="planIssueAuditBtn">Audit open issues</button>
 <button id="planWorkflowAuditBtn">Audit workflows</button></div>
 <div class="planrow"><label>Review plan for PR
@@ -3092,16 +3055,7 @@ write a markdown plan file; nothing executes or pushes.</p>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
 <h2>Jobs</h2>
-<details><summary>How this works</summary>
-<p>Multi-step tasks with a visible plan. Read-only steps run on
-their own once the job starts; only steps that act outside the box
-wait for your Approve or Decline tap. Output streams to the drawer;
-declining ends the job. Every job writes an audit record — goal,
-plan, approvals with timestamps, run ids, outcome — to the Ledger
-tab and a JSON file on the buttons volume. Jobs only run the same
-allowlisted actions the buttons already offer; nothing new becomes
-writable.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Multi-step tasks where external actions pause for approval before executing allowlisted commands.</div>
 <div id="jobNew"></div>
 <div id="jobErr"></div>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5em;margin-bottom:0.5em;">
@@ -3113,12 +3067,6 @@ writable.</p>
 </section>
 <section class="tabpanel" id="tab-ledger" style="display:none">
 <details open><summary class="grouphead">Ledger</summary>
-<details><summary>How this works</summary>
-<p>Durable audit log — every run, webhook pull, and PR-action tap,
-newest first. Survives container restarts (named volume, not the
-checkout). Briefing reads are not logged. Clearing deletes all
-entries but leaves a 'ledger cleared' record.</p>
-</details>
 <label>Kind: <select id="ledgerKind">
 <option value="all">All</option>
 <option value="run">Runs</option>
@@ -3135,7 +3083,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </section>
 <div id="chatDrawer">
 <div id="chatDrawerHead">
-  <span class="chat-drawer-title">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
+  <span class="chat-drawer-title">Agent Chat <span class="forrepo" data-forrepo></span></span>
   <span class="dbactions">
     <span id="globalPhaseBadge" class="phase-badge">Ready</span>
     <button id="chatDrawerClose" type="button" class="btn-ghost">✕ Close</button>
@@ -3143,7 +3091,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </div>
 <div class="chat-drawer-body">
   <div class="chat-card" id="globalChatCard" style="margin:0;">
-    <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+    <div class="bsub" style="margin-bottom:0.5em;">Ask about this repo or dispatch a task.</div>
     <div class="chat-input-wrap">
       <textarea id="globalChatInput" class="chat-textarea" rows="3" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
       <div class="chat-ctrls">
@@ -3174,6 +3122,13 @@ entries but leaves a 'ledger cleared' record.</p>
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
 const DEFAULT_REPO = "remote-server";
+
+// Project tab: issues, Jules sessions, td planning guides.
+// Reads the repo from the picker at tap time, like the other tabs.
+function projectRepo() {
+  const p = document.getElementById("briefingRepo");
+  return p ? p.value : DEFAULT_REPO;
+}
 const codeLauncher = document.getElementById("codeLauncher");
 if (codeLauncher) {
   codeLauncher.href = window.location.origin + "/code";
@@ -3194,6 +3149,7 @@ let userStartedRun = false;
 function markSelectedRepo() {
   const picker = document.getElementById("briefingRepo");
   const cur = picker ? picker.value : "";
+  try { if (cur) localStorage.setItem("buttons_selected_repo", cur); } catch (e) {}
   const nameEl = document.getElementById("selectedRepoName");
   if (nameEl && cur) nameEl.textContent = cur;
   document.querySelectorAll("[data-repo-pick]").forEach(el => {
@@ -3206,8 +3162,15 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     if (e.target.closest("a")) return;
     const picker = document.getElementById("briefingRepo");
     if (!picker) return;
-    picker.value = el.getAttribute("data-repo-pick");
-    picker.dispatchEvent(new Event("change"));
+    const pickedRepo = el.getAttribute("data-repo-pick");
+    if (picker.value !== pickedRepo) {
+      picker.value = pickedRepo;
+      picker.dispatchEvent(new Event("change"));
+    } else {
+      markSelectedRepo();
+      if (typeof refreshBriefing === "function") refreshBriefing();
+      if (typeof refreshProject === "function") refreshProject();
+    }
   });
 });
 // Project tab: repo context lives where the work happens. The
@@ -3249,9 +3212,6 @@ try {
     _pickerEl.value = savedRepo;
   }
 } catch (_) {}
-markSelectedRepo();
-refreshProject();
-
 // Tab bar badges and state tracking
 let lastLedgerViewTs = Date.now() / 1000;
 let tabBadgeCounts = {briefing: 0, jobs: 0, ledger: false};
@@ -3981,10 +3941,7 @@ document.getElementById("bugBtn").onclick = reportBug;
 const actionsBugBtn = document.getElementById("actionsBugBtn");
 if (actionsBugBtn) actionsBugBtn.onclick = reportBug;
 
-</script>
-<script>
-// Briefing view (script block 2, separate from the core block
-// above, so a Briefing failure cannot take the core buttons down).
+// Briefing view
 // Renders the structured briefing from /buttons/api/briefing as
 // PR cards. Auto-runs on load and after a Refresh briefing run;
 // changing the picker above re-fetches.
@@ -4358,9 +4315,10 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
+
   const j = b.jules || {};
   const js = document.createElement("div");
-  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
+  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)" + (b.repo ? " — " + b.repo : ""); js.appendChild(jHead);
   if (j.unavailable) {
     const p = document.createElement("p"); p.textContent = "Jules sessions unavailable: " + j.unavailable; js.appendChild(p);
   } else if (j.items && j.items.length) {
@@ -4371,26 +4329,40 @@ function renderBriefing(b) {
   if (j.other) { const p = document.createElement("p"); p.textContent = "(" + j.other + " active session(s) for other repos, not listed.)"; js.appendChild(p); }
   briefingEl.appendChild(js);
 }
+function renderBriefingUnavailable(errMsg) {
+  if (briefingEl) briefingEl.textContent = "";
+  if (briefingErrEl) setErrorEl(briefingErrEl, errMsg || "briefing unavailable", "briefing unavailable");
+  const att = document.getElementById("attentionBody");
+  if (att) {
+    att.textContent = "";
+    const span = document.createElement("span");
+    span.textContent = "Briefing unavailable — ";
+    att.appendChild(span);
+    const rb = document.createElement("button");
+    rb.className = "btn-ghost btn-retry";
+    rb.textContent = "Retry";
+    rb.onclick = () => refreshBriefing();
+    att.appendChild(rb);
+  }
+}
+
 async function refreshBriefing() {
   const picker = document.getElementById("briefingRepo");
   const repo = picker ? picker.value : DEFAULT_REPO;
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
-  const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  let res;
+  try {
+    res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo), {signal: controller.signal});
+  } catch (err) {
+    clearTimeout(timeoutId);
+    renderBriefingUnavailable(err && err.name === "AbortError" ? "Briefing request timed out" : (err && err.message) || String(err));
+    return;
+  }
+  clearTimeout(timeoutId);
   if (!res.ok) {
-    briefingEl.textContent = "";
-    setErrorEl(briefingErrEl, res.data.error || ("HTTP " + res.status), "briefing unavailable");
-    const att = document.getElementById("attentionBody");
-    if (att) {
-      att.textContent = "";
-      const span = document.createElement("span");
-      span.textContent = "Briefing unavailable — ";
-      att.appendChild(span);
-      const rb = document.createElement("button");
-      rb.className = "btn-ghost btn-retry";
-      rb.textContent = "Retry";
-      rb.onclick = () => refreshBriefing();
-      att.appendChild(rb);
-    }
+    renderBriefingUnavailable(res.data && res.data.error ? res.data.error : ("HTTP " + res.status));
     return;
   }
   briefingErrEl.textContent = "";
@@ -4858,10 +4830,17 @@ if (clearJobsBtn) clearJobsBtn.onclick = async () => {
   refreshJobs();
   if (typeof refreshLedger === "function") refreshLedger();
 };
-refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
-if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
-refreshBriefing();
+if (briefingRepoPicker) {
+  try {
+    const savedRepo = localStorage.getItem("buttons_selected_repo");
+    if (savedRepo && Array.from(briefingRepoPicker.options).some(o => o.value === savedRepo)) {
+      briefingRepoPicker.value = savedRepo;
+      markSelectedRepo();
+    }
+  } catch (e) {}
+  briefingRepoPicker.onchange = refreshBriefing;
+}
 
 // Pi background runs: streams output directly into the slide-up
 // drawer (the way Jobs does) while updating inline status.
@@ -5248,7 +5227,6 @@ if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
   refreshLedger();
 };
 if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
-refreshLedger();
 
 // Pi session browser. List renders each session file as a compact
 // card showing date/time, repo, and first prompt snippet.
@@ -5337,7 +5315,7 @@ function renderConversation(sessionData) {
       turn.tool_calls.forEach(tc => {
         const pill = document.createElement("span");
         pill.className = "pi-tool-pill";
-        pill.textContent = "⚙ " + (tc.name || "tool");
+        pill.textContent = tc.name || "tool";
         tcContainer.appendChild(pill);
       });
       turnEl.appendChild(tcContainer);
@@ -5348,7 +5326,7 @@ function renderConversation(sessionData) {
         const details = document.createElement("details");
         details.className = "pi-tool-result-details";
         const sum = document.createElement("summary");
-        sum.textContent = "⚙ Output: " + (tr.name || "tool result");
+        sum.textContent = "Output: " + (tr.name || "tool result");
         const pre = document.createElement("pre");
         pre.textContent = tr.content || "";
         details.appendChild(sum);
@@ -5558,12 +5536,6 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   }
 };
 
-// Project tab: issues, Jules sessions, td planning guides.
-// Reads the repo from the picker at tap time, like the other tabs.
-function projectRepo() {
-  const p = document.getElementById("briefingRepo");
-  return p ? p.value : DEFAULT_REPO;
-}
 let currentPrDetails = null;
 
 function renderReviewPrSelect() {
@@ -6171,6 +6143,14 @@ async function refreshJulesStatusCard() {
     p.style.color = "var(--text-muted)";
     p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
     el.appendChild(p);
+    if (data.other) {
+      const pOther = document.createElement("div");
+      pOther.style.color = "var(--text-muted)";
+      pOther.style.fontSize = "0.88em";
+      pOther.style.marginTop = "0.3em";
+      pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+      el.appendChild(pOther);
+    }
     return;
   }
   ss.forEach(s => {
@@ -6218,6 +6198,14 @@ async function refreshJulesStatusCard() {
     row.appendChild(meta);
     el.appendChild(row);
   });
+  if (data.other) {
+    const pOther = document.createElement("div");
+    pOther.style.color = "var(--text-muted)";
+    pOther.style.fontSize = "0.88em";
+    pOther.style.marginTop = "0.4em";
+    pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+    el.appendChild(pOther);
+  }
 }
 
 async function refreshJulesSessions() {
@@ -6244,6 +6232,13 @@ async function refreshJulesSessions() {
   const ss = data.sessions || [];
   if (!ss.length) {
     el.appendChild(document.createTextNode("No Jules sessions."));
+    if (data.other) {
+      const p = document.createElement("p");
+      p.style.color = "var(--text-muted)";
+      p.style.fontSize = "0.9em";
+      p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+      el.appendChild(p);
+    }
     return;
   }
   ss.forEach(s => {
@@ -6278,6 +6273,13 @@ async function refreshJulesSessions() {
     }
     el.appendChild(card);
   });
+  if (data.other) {
+    const p = document.createElement("p");
+    p.style.color = "var(--text-muted)";
+    p.style.fontSize = "0.9em";
+    p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+    el.appendChild(p);
+  }
 }
 function renderIssueAuditOutput(data, container, repo) {
   renderStructuredAuditOutput(data, container, repo, "issues");
@@ -6435,7 +6437,7 @@ async function runPlan(plan, extra) {
   } else {
     const pre = document.createElement("pre");
     pre.id = "planRawOutput";
-    pre.textContent = data.output || "(empty)";
+    pre.textContent = (data.output || "(empty)").replace(/\/srv\/[^\s'"]+/g, "[server path]");
     out.appendChild(pre);
   }
 }
@@ -6616,6 +6618,7 @@ async function refreshStatus() {
     const pend = document.getElementById("livePending");
     const w = s.webhooks || {};
     const pending = s.webhooks_pending || [];
+
     // Stale page: a remote-server pull landed after this container
     // started, so the served page predates the checkout. Show the
     // banner and highlight the rebuild button — the pull alone
@@ -6758,12 +6761,22 @@ refreshStatus = async function() {
   } catch (e) {}
 };
 
-refreshStatus();
-if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
 if (testNotifyBtn) testNotifyBtn.onclick = async () => {
+  const badge = document.getElementById("notifyBadge");
+  const isOff = badge && badge.textContent.includes("off");
+  if (isOff) {
+    if (typeof confirmDialog === "function") {
+      await confirmDialog(
+        "Notifications Disabled",
+        "Notifications are currently off (set NTFY_* in .env; see docs/buttons.md).",
+        false
+      );
+    }
+    return;
+  }
   if (typeof confirmDialog === "function") {
     const ok = await confirmDialog("Notification Test", "Send a test notification via the configured ntfy/webhook?", false);
     if (!ok) return;
@@ -7010,7 +7023,7 @@ function initInteractiveChat(prefix) {
           const payload = JSON.parse(e.data);
           const ph = payload.phase || "";
           if (ph === "prefill") setPhase("prefill", "Analyzing Context...");
-          else if (ph === "tool_call") setPhase("tool_call", "Running Tool ⚙...");
+          else if (ph === "tool_call") setPhase("tool_call", "Running Tool...");
           else if (ph === "generating") setPhase("generating", "Generating Response...");
           else if (ph === "done") setPhase("done", "Complete ✓" + (payload.elapsed ? " (" + payload.elapsed + "s)" : ""));
           else if (ph === "aborted") setPhase("aborted", "Aborted ⏹");
@@ -7110,6 +7123,20 @@ if (globalChatBtn) {
 
 const piOpenChatBtn = document.getElementById("piOpenChatBtn");
 if (piOpenChatBtn) piOpenChatBtn.onclick = openChatDrawer;
+
+// Initial execution sequence wrapped in try/catch to render Retry UI on sync throws
+try {
+  markSelectedRepo();
+  refreshProject();
+  refreshJobs();
+  refreshBriefing();
+  if (typeof refreshLedger === "function") refreshLedger();
+  if (typeof refreshStatus === "function") refreshStatus();
+  if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
+} catch (err) {
+  console.error("Initialization error:", err);
+  renderBriefingUnavailable(err && err.message ? err.message : String(err));
+}
 </script>
 </body>
 </html>
@@ -8167,15 +8194,79 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
+                other_count = 0
                 seen_session_ids = set()
+                target_gh = (info.get("gh") or "").lower()
+                target_repo = repo.lower()
                 for s in data.get("sessions", []):
-                    if len(sessions) >= 30:
-                        break
                     sid = s.get("id") or s.get("sessionId") or s.get("name")
                     if sid:
                         if sid in seen_session_ids:
                             continue
                         seen_session_ids.add(sid)
+
+                    # Extract session repo candidate
+                    s_repo = ""
+                    ctx = s.get("sourceContext") or s.get("source_context") or {}
+                    if isinstance(ctx, dict):
+                        repo_ctx = ctx.get("githubRepoContext") or ctx.get("github_repo_context") or {}
+                        if isinstance(repo_ctx, dict):
+                            owner = repo_ctx.get("owner")
+                            r = repo_ctx.get("repo")
+                            if owner and r:
+                                s_repo = f"{owner}/{r}".lower()
+                        if not s_repo:
+                            src_val = ctx.get("source") or ""
+                            if src_val:
+                                s_clean = src_val.strip("/")
+                                p = s_clean.split("/")
+                                if len(p) >= 2 and ("repositories" in p or "/" in s_clean):
+                                    s_repo = f"{p[-2]}/{p[-1]}".lower()
+                                elif p:
+                                    s_repo = p[-1].lower()
+                    if not s_repo:
+                        src = s.get("source") or {}
+                        if isinstance(src, dict):
+                            gh_repo = src.get("githubRepo") or src.get("github_repo") or {}
+                            if isinstance(gh_repo, dict):
+                                owner = gh_repo.get("owner")
+                                r = gh_repo.get("repo")
+                                if owner and r:
+                                    s_repo = f"{owner}/{r}".lower()
+                            if not s_repo:
+                                full = src.get("full_name") or src.get("fullName") or ""
+                                if full:
+                                    s_repo = str(full).lower()
+                        elif isinstance(src, str) and src:
+                            s_clean = src.strip("/")
+                            p = s_clean.split("/")
+                            if len(p) >= 2 and ("repositories" in p or "/" in s_clean):
+                                s_repo = f"{p[-2]}/{p[-1]}".lower()
+                            elif p:
+                                s_repo = p[-1].lower()
+
+                    matches_repo = False
+                    if s_repo:
+                        if target_gh and (s_repo == target_gh or s_repo.endswith("/" + target_repo)):
+                            matches_repo = True
+                        elif s_repo == target_repo:
+                            matches_repo = True
+                    else:
+                        # Fallback: check display name / title, or default to current repo if no repo info
+                        dname = str(s.get("displayName") or s.get("display_name") or "").lower()
+                        title = str(s.get("title") or "").lower()
+                        if target_repo and (target_repo in dname or target_repo in title):
+                            matches_repo = True
+                        elif not dname and not s.get("sourceContext") and not s.get("source"):
+                            matches_repo = True
+
+                    if not matches_repo:
+                        other_count += 1
+                        continue
+
+                    if len(sessions) >= 30:
+                        continue
+
                     pr_url = ""
                     for o in s.get("outputs", []) or []:
                         pr = o.get("pullRequest") or {}
@@ -8193,6 +8284,7 @@ class Handler(BaseHTTPRequestHandler):
                         "pr_url": pr_url,
                     })
                 self._json({"repo": repo, "sessions": sessions,
+                            "other": other_count,
                             "notice": data.get("notice", "")})
             except Exception as exc:
                 err_msg = str(exc)
