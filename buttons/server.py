@@ -73,7 +73,7 @@ STACK_GH = "arii/remote-server"
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight",
-                       "create-plan"}
+                       "create-plan", "merge-approved"}
 
 
 def _td_prefix(cwd):
@@ -348,6 +348,52 @@ def _pi_progress_path(rid):
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
 
 
+HARNESS_LEDGER_PATH = "/srv/remote-server/deep-agent/ledger.jsonl"
+LEDGER_TAIL = 100
+
+
+def _ledger_sessions():
+    """Harness ledger runs as session rows (newest 100). Never
+    raises: a missing/unreadable ledger degrades to no rows. Row
+    ids are ledger line numbers, stable as the file grows."""
+    try:
+        proc = subprocess.run(
+            EXEC + [f"cat -n {HARNESS_LEDGER_PATH} | tail -n {LEDGER_TAIL}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True)
+        if proc.returncode != 0:
+            return []
+    except Exception:
+        return []
+    rows = []
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            n = int(parts[0])
+            e = json.loads(parts[1])
+        except Exception:
+            continue
+        if not isinstance(e, dict):
+            continue
+        calls = e.get("tool_calls") or []
+        title = (f"{e.get('script') or 'agent'} · "
+                 f"{e.get('model') or '?'} · {len(calls)} tool calls")
+        rows.append({
+            "file": f"ledger-{n}.jsonl",
+            "id": f"ledger-{n}",
+            "mtime": e.get("ts") or 0,
+            "cwd": "",
+            "repo": "",
+            "title": title[:80],
+            "kind": "ledger",
+            "source": "ledger",
+            "done": True,
+        })
+    return rows
+
+
 def _pi_start(kind, repo, instruction=None):
     """Validate, start the thread, return (rid, error)."""
     repos = _discover_repos()
@@ -428,7 +474,46 @@ def _pi_thread(rid, kind, repo, instruction):
                             r["finished_at"] = time.time()
                     return
 
-                prompt = _suggest_prompt(repo, _suggest_context(brief))
+                # Harness engine: deterministic suggestions mapped
+                # from the briefing plus a local-model explanation.
+                # No Pi process is spawned on this path.
+                f.write("Running deterministic triage…\n")
+                f.flush()
+                suggest_text = _suggest_from_briefing(brief)
+                f.write(suggest_text)
+                f.flush()
+                f.write("Explaining with local model…\n")
+                f.flush()
+                estdout = ""
+                try:
+                    eproc = subprocess.run(
+                        EXEC + ["cd /srv/remote-server/deep-agent && "
+                                ".venv/bin/python triage_explainer.py "
+                                f"{info['gh']}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=600, text=True)
+                    estdout = eproc.stdout or ""
+                except Exception as exc:
+                    estdout = f"Explainer unavailable: {exc}\n"
+                note = ""
+                for eline in estdout.splitlines():
+                    if eline.startswith("FINAL:"):
+                        note = eline[len("FINAL:"):].strip()
+                        break
+                f.write(estdout[-1000:])
+                f.flush()
+                with pi_runs_lock:
+                    r = pi_runs.get(rid)
+                    if r is not None:
+                        r["result"] = {
+                            "repo": repo,
+                            "suggestions": _parse_suggestions(suggest_text),
+                            "note": note[:1000],
+                            "raw": (suggest_text + estdout)[-2000:],
+                        }
+                        r["done"] = True
+                        r["finished_at"] = time.time()
+                return
             else:
                 prompt = _ask_prompt(repo, instruction)
 
@@ -539,6 +624,65 @@ def _validate_td_command(text):
         if ok:
             return tokens
     return None
+
+
+def _suggest_from_briefing(brief):
+    """SUGGEST lines mapped deterministically from briefing data.
+    Same runnable shapes Pi was allowed to emit, in triage
+    priority: conflicts first (they block everything), then
+    failing CI, then requested changes. Failing CI runs are
+    matched to their PR by branch. The allowlist in
+    _parse_suggestions re-validates every line, so this mapping
+    can never smuggle a bad command into a Run button. Preflight
+    is deliberately never suggested: it is a pre-submit check
+    for coding agents, not a triage action — triage relies on
+    CI state instead."""
+    lines = []
+    done = set()
+    prs = [p for p in (brief.get("prs") or []) if isinstance(p, dict)]
+    for pr in prs[:20]:
+        num = pr.get("number")
+        if not isinstance(num, int) or num <= 0:
+            continue
+        if pr.get("conflicted"):
+            lines.append(
+                f"SUGGEST: td gh resolve-conflicts --pr {num} :: "
+                f"PR #{num} has merge conflicts")
+            done.add(num)
+        elif pr.get("ci") == "failing":
+            lines.append(
+                f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
+                f"PR #{num} CI is failing")
+            done.add(num)
+        elif pr.get("review") == "CHANGES_REQUESTED":
+            lines.append(
+                f"SUGGEST: td gh read-pr-reviews --pr {num} :: "
+                f"PR #{num} has requested changes")
+            done.add(num)
+    by_branch = {}
+    for pr in prs:
+        num = pr.get("number")
+        branch = pr.get("branch")
+        if isinstance(num, int) and num > 0 and branch \
+                and num not in done:
+            by_branch.setdefault(str(branch), num)
+    for run in brief.get("failing_runs") or []:
+        if not isinstance(run, dict):
+            continue
+        num = by_branch.get(str(run.get("branch") or ""))
+        if num and num not in done:
+            lines.append(
+                f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
+                f"CI failing on {run.get('branch')} (PR #{num})")
+            done.add(num)
+    if not lines:
+        if brief.get("attention") or brief.get("failing_runs"):
+            lines.append(
+                "SUGGEST: none :: open items need CI/attention first; "
+                "see note.")
+        else:
+            lines.append("SUGGEST: none :: All queues clear and checks green.")
+    return "\n".join(lines) + "\n"
 
 
 def _suggest_context(brief):
@@ -1150,7 +1294,7 @@ ACTIONS = {
         # calls. The full JSONL stays on disk; pi_logs.py never
         # fails the run, so a missing sessions dir degrades to a
         # note instead of turning Logs red.
-        "sub": "Terminal + Ollama logs, latest Pi session",
+        "sub": "Terminal + Ollama logs, latest Agent session",
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
@@ -1280,6 +1424,13 @@ ACTIONS = {
         "sub": "Runs one validated td command from the suggestions below.",
         "confirm": False,
         "hidden": True,
+        "steps": [],
+    },
+    "merge-approved": {
+        "label": "Merge approved PRs",
+        "group": "Briefing",
+        "sub": "Agent merges approved, green, mergeable PRs (repo from picker above)",
+        "confirm": True,
         "steps": [],
     },
 }
@@ -2155,6 +2306,20 @@ def _job_create(template, repo, pr=None, issues=None, suggestions=None):
     return job, None
 
 
+def _job_step_failure_reason(output, exit_code=None):
+    """Extract a concise one-line failure reason from output or fall back to exit N."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    filtered = [l for l in lines if not l.startswith("$ ") and not re.match(r"^step failed with exit code \d+; aborting$", l)]
+    err_re = re.compile(r"(?:traceback|error|failed|failure|exception|stderr|fatal)", re.IGNORECASE)
+    for l in filtered:
+        if err_re.search(l):
+            return l[:200]
+    if filtered:
+        return filtered[0][:200]
+    return f"exit {exit_code}" if exit_code is not None else "failed"
+
+
 def _job_public(job):
     """Summary shape for the job list (no step internals)."""
     return {"id": job["id"], "template": job["template"],
@@ -2162,7 +2327,9 @@ def _job_public(job):
             "state": job["state"], "outcome": job.get("outcome"),
             "created_at": job["created_at"],
             "steps": [{"label": s["label"], "state": s["state"],
-                       "run_id": s.get("run_id")}
+                       "run_id": s.get("run_id"),
+                       "note": s.get("note"),
+                       "exit_code": s.get("exit_code")}
                       for s in job["plan"]]}
 
 
@@ -2305,6 +2472,12 @@ def run_action(run_id, action, repo="remote-server"):
             else:
                 rewritten.append(step)
         steps = rewritten
+    if action == "merge-approved":
+        # Steps are built from the picked repo's discovered gh path
+        # (charset-validated, never from the client), like run-td.
+        prefix = _td_prefix("/srv/remote-server/deep-agent")
+        steps = [EXEC + [prefix + ".venv/bin/python merge_approved.py "
+                         f"{repos[repo]['gh']}"]]
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
@@ -2509,9 +2682,13 @@ a { color: #8bf; }
 #tabbar { display: flex; gap: 0.4em; background: var(--bg-app); padding: 0.5em 0;
   border-bottom: 1px solid var(--border); }
 #tabbar .tab { flex: 1; width: auto; margin: 0; padding: 0.6em 0.2em; font-size: 0.9em;
-  text-align: center; }
+  text-align: center; position: relative; }
 #tabbar .tab.active { border-color: var(--primary); background: var(--bg-card-hover);
   font-weight: bold; }
+.tab-badge { display: inline-block; background: var(--primary); color: #fff; font-size: 0.75em;
+  padding: 0.1em 0.45em; border-radius: 10px; margin-left: 0.35em; font-weight: bold; vertical-align: middle; }
+.tab-dot { display: inline-block; width: 8px; height: 8px; background: var(--primary);
+  border-radius: 50%; margin-left: 0.35em; vertical-align: middle; }
 @media (max-width: 520px) {
   #tabbar .tab { font-size: 0.72em; padding: 0.6em 0.1em; }
 }
@@ -2589,6 +2766,17 @@ a { color: #8bf; }
 .pi-tool-result-details pre { margin: 0.3em 0 0; max-height: 250px; overflow-y: auto;
   font-size: 0.85em; background: #0d1117; }
 #outputDrawer pre { border: none; border-radius: 0; max-height: 45vh; margin: 0; }
+.run-cmd-details { margin: 0.5em 0 0.2em; font-size: 0.85em; opacity: 0.8; }
+.run-cmd-details summary { cursor: pointer; color: var(--text-muted); }
+.run-cmd-details pre { margin-top: 0.2em; background: rgba(0,0,0,0.3); font-size: 0.85em; }
+.run-summary-list { margin: 0.4em 0; }
+.run-summary-row { padding: 0.35em 0.5em; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 0.9em; display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
+.run-summary-row:last-child { border-bottom: none; }
+.run-summary-details { margin-top: 0.6em; }
+.run-summary-details summary { cursor: pointer; color: var(--text-muted); font-size: 0.88em; }
+.audit-counts { margin: 0.4em 0 0.6em; font-size: 0.95em; font-weight: 500; }
+.audit-table { width: 100%; border-collapse: collapse; margin-top: 0.4em; font-size: 0.88em; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid var(--border); }
 /* confirm modal (replaces window.confirm) */
 #confirmModal { position: fixed; inset: 0; z-index: 2000; display: none;
   align-items: center; justify-content: center; background: rgba(0,0,0,0.6); padding: 1em; }
@@ -2619,8 +2807,9 @@ a { color: #8bf; }
 .jobcard-del { flex: none; width: auto; padding: 0.2em 0.5em; border-radius: 6px; font-size: 0.85em; color: var(--text-muted); }
 .jobcard-del:hover { color: #ff8a8a; border-color: var(--danger); }
 .jobcard .jobmeta { font-size: 0.85em; color: var(--text-muted); margin-bottom: 0.4em; }
-.jobstep { display: flex; align-items: center; gap: 0.5em; padding: 0.35em 0;
+.jobstep { display: flex; flex-direction: column; gap: 0.25em; padding: 0.35em 0;
   border-top: 1px solid var(--border); font-size: 0.92em; }
+.jobstep-row { display: flex; align-items: center; gap: 0.5em; width: 100%; }
 .jobstep .st { font-size: 0.78em; border-radius: 20px; padding: 0.15em 0.6em;
   border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
 .jobstep .st.done { color: #7ed07e; border-color: #2e7d32; }
@@ -2630,6 +2819,11 @@ a { color: #8bf; }
 .jobstep .st.declined { color: var(--text-muted); }
 .jobstep .sactions { margin-left: auto; display: flex; gap: 0.4em; }
 .jobstep .sactions button { width: auto; margin: 0; padding: 0.35em 0.7em; font-size: 0.85em; }
+.jobstep-reason { font-size: 0.82em; color: #ff8a8a; margin-left: 1.8em; word-break: break-word; font-family: monospace; }
+.jobcard-expander { cursor: pointer; font-size: 0.85em; color: var(--primary); margin-top: 0.4em; user-select: none; }
+.jobcard-expander:hover { text-decoration: underline; }
+.jobs-show-more-wrap { text-align: center; margin: 1em 0; }
+.jobs-show-more-btn { width: auto !important; padding: 0.4em 1.2em; font-size: 0.9em; }
 .jobtmpl { border: 1px solid var(--border); border-radius: 10px; padding: 0.6em;
   margin: 0.4em 0; background: var(--bg-card); }
 .jobtmpl .blabel { font-weight: 600; }
@@ -2698,7 +2892,7 @@ Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
 </div>
-<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Proactive Notifications">Notifications: off</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
+<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Notifications: off (enable via NTFY_* in .env; see docs/buttons.md#proactive-notifications--scheduled-digest)">Notifications: off (set NTFY_* in .env; see docs/buttons.md)</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
@@ -2781,16 +2975,16 @@ minutes on the local model.</p>
   <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
 </div>
 
-<h2>Pi sessions</h2>
+<h2>Agent sessions</h2>
 <details><summary>How this works</summary>
-<p>Browse Pi transcripts on disk (pi-data volume). List shows the
+<p>Browse agent transcripts on disk (pi-data volume). List shows the
 newest sessions with date, repo, and first prompt — tap one to
 render it readably. The full JSONL stays on disk. Clearing
 deletes all transcripts.</p>
 </details>
 <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center;">
 <button id="listPiSessions" style="width:auto; margin:0;">List sessions</button>
-<button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
+<button id="clearPiSessions" style="width:auto; margin:0;">Clear Agent sessions</button>
 </div>
 <input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
 <div id="piSessionList" style="display:none;"></div>
@@ -2893,7 +3087,7 @@ write a markdown plan file; nothing executes or pushes.</p>
 <select id="planAggPrs" multiple size="4" style="min-width:9em"><option value="">—</option></select>
 <label>into <input id="planAggTarget" value="main" size="12" maxlength="64"></label>
 <button id="planAggBtn">Generate</button></div>
-<div id="planOut"></div>
+<div id="planOut"><p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p></div>
 <div id="planErr"></div>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
@@ -3050,6 +3244,34 @@ if (_pickerEl) _pickerEl.addEventListener("change", () => {
 });
 markSelectedRepo();
 
+// Tab bar badges and state tracking
+let lastLedgerViewTs = Date.now() / 1000;
+let tabBadgeCounts = {briefing: 0, jobs: 0, ledger: false};
+
+function updateTabBadges() {
+  document.querySelectorAll("#tabbar .tab").forEach(tab => {
+    const tabName = tab.dataset.tab;
+    const existingBadge = tab.querySelector(".tab-badge, .tab-dot");
+    if (existingBadge) existingBadge.remove();
+
+    if (tabName === "briefing" && tabBadgeCounts.briefing > 0) {
+      const badge = document.createElement("span");
+      badge.className = "tab-badge";
+      badge.textContent = tabBadgeCounts.briefing;
+      tab.appendChild(badge);
+    } else if (tabName === "jobs" && tabBadgeCounts.jobs > 0) {
+      const badge = document.createElement("span");
+      badge.className = "tab-badge";
+      badge.textContent = tabBadgeCounts.jobs;
+      tab.appendChild(badge);
+    } else if (tabName === "ledger" && tabBadgeCounts.ledger) {
+      const dot = document.createElement("span");
+      dot.className = "tab-dot";
+      tab.appendChild(dot);
+    }
+  });
+}
+
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
 function selectTab(tabName) {
@@ -3067,6 +3289,11 @@ function selectTab(tabName) {
 document.querySelectorAll("#tabbar .tab").forEach(t => {
   t.onclick = () => {
     selectTab(t.dataset.tab);
+    if (t.dataset.tab === "ledger") {
+      lastLedgerViewTs = Date.now() / 1000;
+      tabBadgeCounts.ledger = false;
+      updateTabBadges();
+    }
   };
 });
 
@@ -3217,7 +3444,7 @@ async function startRun(name, label, confirmFlag, dangerFlag) {
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
   const body = {action: name};
-  if (name === "briefing-td" || name === "warm-context" || name === "preflight") {
+  if (name === "briefing-td" || name === "warm-context" || name === "preflight" || name === "create-plan" || name === "merge-approved") {
     const picker = document.getElementById("briefingRepo");
     if (picker) body.repo = picker.value;
   }
@@ -3330,6 +3557,110 @@ function ansiToHtml(text) {
   lines.push(cur);
   return lines.map(ansiLineToHtml).join("\n");
 }
+
+function relativizePath(path, repo) {
+  if (!path || typeof path !== "string") return "";
+  let p = path.trim();
+  p = p.replace(/^\/srv\/repos\/[^\/]+\//, "");
+  p = p.replace(/^\/srv\/remote-server\//, "");
+  p = p.replace(/^\/srv\//, "");
+  p = p.replace(/^\/home\/[^\/]+\/repos\/[^\/]+\//, "");
+  p = p.replace(/^\/home\/[^\/]+\/remote-server\//, "");
+  p = p.replace(/^\/home\/[^\/]+\//, "");
+  return p;
+}
+
+function splitRunCommand(rawText) {
+  const lines = (rawText || "").split("\n");
+  const cmdLines = [];
+  const bodyLines = [];
+  let pastLeadingCmd = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!pastLeadingCmd && (l.startsWith("$ ") || l.startsWith("docker compose exec"))) {
+      cmdLines.push(l);
+    } else {
+      if (cmdLines.length > 0) pastLeadingCmd = true;
+      bodyLines.push(l);
+    }
+  }
+  return {
+    command: cmdLines.join("\n").trim(),
+    body: bodyLines.join("\n")
+  };
+}
+
+function renderSyncAgentsSummary(bodyText, fullText, repo) {
+  let parsed = null;
+  const jsonStart = bodyText.indexOf("[");
+  const objStart = bodyText.indexOf("{");
+  let startIdx = -1;
+  let isArray = false;
+  if (jsonStart >= 0 && (objStart < 0 || jsonStart < objStart)) {
+    startIdx = jsonStart;
+    isArray = true;
+  } else if (objStart >= 0) {
+    startIdx = objStart;
+  }
+  if (startIdx >= 0) {
+    try {
+      const slice = bodyText.slice(startIdx);
+      parsed = JSON.parse(slice);
+    } catch (e) {
+      const endIdx = isArray ? bodyText.lastIndexOf("]") : bodyText.lastIndexOf("}");
+      if (endIdx > startIdx) {
+        try {
+          parsed = JSON.parse(bodyText.slice(startIdx, endIdx + 1));
+        } catch (e2) {}
+      }
+    }
+  }
+  let sessions = [];
+  if (Array.isArray(parsed)) {
+    sessions = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    sessions = parsed.sessions || parsed.agent_sessions || parsed.items || [];
+  }
+  if (!sessions || !sessions.length) {
+    return ansiToHtml(bodyText);
+  }
+  let html = '<div class="run-summary-list">';
+  sessions.forEach(s => {
+    const title = escHtml(s.title || s.id || "Untitled session");
+    const st = (s.state || "unknown").toLowerCase();
+    let badgeCls = "chip";
+    if (st.includes("stall") || st.includes("wait") || st.includes("pend")) badgeCls += " chip-warn";
+    else if (st.includes("done") || st.includes("complete") || st.includes("success")) badgeCls += " chip-ok";
+    else if (st.includes("fail") || st.includes("error")) badgeCls += " chip-fail";
+    let when = "";
+    try { if (s.updated) when = new Date(s.updated).toLocaleString(); } catch (e) {}
+    const sRepo = escHtml(s.repo || repo || projectRepo());
+    let link = "";
+    if (s.url) {
+      link = ` · <a href="${escHtml(s.url)}" target="_blank" rel="noopener">view</a>`;
+    }
+    html += `<div class="run-summary-row"><span class="${badgeCls}">${escHtml(s.state || "?")}</span> <strong>${title}</strong> · <span>${sRepo}</span>${when ? ' · <span>updated ' + escHtml(when) + '</span>' : ''}${link}</div>`;
+  });
+  html += '</div>';
+  html += `<details class="run-summary-details"><summary>Full JSON output (${Math.round((fullText || "").length / 1024)} KB)</summary><pre>${escHtml(fullText)}</pre></details>`;
+  return html;
+}
+
+function renderRunOutput(run) {
+  const raw = run.output || "";
+  const parts = splitRunCommand(raw);
+  let html = "";
+  if (run.action === "sync-agents" || run.action === "sync-nudge") {
+    html = renderSyncAgentsSummary(parts.body, raw, run.repo);
+  } else {
+    html = ansiToHtml(parts.body);
+  }
+  if (parts.command) {
+    html += `<details class="run-cmd-details"><summary>command</summary><pre class="cmd-run">${escHtml(parts.command)}</pre></details>`;
+  }
+  return html;
+}
+
 let lastRenderedOutput = null;
 
 // Last error line for the failure banner, read from the output
@@ -3520,7 +3851,7 @@ async function poll(id, action) {
     // Re-render only on change: re-parsing a 200KB tail every poll
     // would churn on a phone for no visible difference.
     if (run.output !== lastRenderedOutput) {
-      outEl.innerHTML = ansiToHtml(run.output);
+      outEl.innerHTML = renderRunOutput(run);
       lastRenderedOutput = run.output;
     }
     outEl.scrollTop = outEl.scrollHeight;
@@ -3666,67 +3997,188 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
   };
   return b;
 }
-function renderBriefing(b) {
-  briefingErrEl.textContent = "";
-  briefingEl.textContent = "";
-  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
-  const att = document.createElement("div");
-  const attHead = document.createElement("b");
-  attHead.textContent = "Needs attention";
-  att.appendChild(attHead);
-  // Collect attention items, ensuring failing runs are always included.
-  const attentionItems = [];
-  const seenAtt = new Set();
+
+// Long job/step strings blow out card height: cap one segment and the whole line.
+function shorten(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+// Deduplicate attention items and failing runs into a single list of actionable items.
+function dedupeAttention(b) {
+  const items = [];
   (b.attention || []).forEach(a => {
-    attentionItems.push({text: a, raw: a});
-    seenAtt.add(a);
+    items.push({text: a, raw: a});
   });
-  // Guarantee each failing run is surfaced as an actionable item with likely cause
   (b.failing_runs || []).forEach(run => {
     const runName = run.name || "CI";
     const branchName = run.branch || "main";
     const eventName = run.event || "push";
     const failedParts = (run.failed || []).map(f =>
-      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-    ).join("; ");
+      shorten((f.job || "") + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
+    ).filter(Boolean).join("; ");
     const causeSummary = failedParts || "workflow failed";
     const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
-    // Check if an equivalent item was already in b.attention
-    let alreadyPresent = false;
-    for (const item of attentionItems) {
-      if (item.text.includes(runName) && item.text.includes(branchName)) {
-        alreadyPresent = true;
-        item.run = run;
-        item.cause = causeSummary;
+    let found = false;
+    for (const it of items) {
+      if (it.text.includes(runName) && it.text.includes(branchName)) {
+        found = true;
+        it.run = run;
+        it.cause = causeSummary;
         break;
       }
     }
-    if (!alreadyPresent) {
-      attentionItems.push({
-        text: runText,
-        raw: runText,
-        run: run,
-        cause: causeSummary
-      });
+    if (!found) {
+      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
     }
   });
+  return items;
+}
 
+// Render the unified deduped attention list component
+function renderAttentionList(b, container, options) {
+  const limit = (options && options.limit) || 0;
+  container.textContent = "";
+  const items = dedupeAttention(b);
   const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
   const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
 
-  if (attentionItems.length) {
-    const ul = document.createElement("ul");
-    attentionItems.forEach(item => {
-      const li = document.createElement("li");
+  if (!items.length && !hasFailingRuns && !hasConflicts) {
+    const p = document.createElement("p");
+    p.style.color = "var(--text-muted)";
+    p.textContent = (options && options.cleanMessage) || "All clear — nothing needs attention.";
+    container.appendChild(p);
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "attn-head";
+  head.style.fontWeight = "bold";
+  head.style.marginBottom = "0.4em";
+  head.textContent = "Needs attention";
+  container.appendChild(head);
+
+  const listItems = limit > 0 ? items.slice(0, limit) : items;
+  const ul = document.createElement("ul");
+  ul.style.listStyle = "none";
+  ul.style.paddingLeft = "0";
+
+  listItems.forEach(item => {
+    const li = document.createElement("li");
+    li.style.marginBottom = "0.5em";
+    li.style.padding = "0.4em 0.6em";
+    li.style.background = "var(--bg-card)";
+    li.style.border = "1px solid var(--border)";
+    li.style.borderRadius = "6px";
+
+    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
+    let wfName = item.run ? (item.run.name || "CI") : "";
+    let wfBranch = item.run ? (item.run.branch || "main") : "";
+    let wfCause = item.cause || "";
+    if (isRun) {
+      if (!wfName) {
+        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
+        if (matchRun) {
+          wfName = matchRun[1].trim();
+          wfBranch = matchRun[2].trim();
+        } else {
+          wfName = "Workflow";
+          wfBranch = "main";
+        }
+      }
+      if (!wfCause) {
+        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
+        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
+      }
+    }
+
+    if (item.run) {
+      const topRow = document.createElement("div");
+      topRow.style.display = "flex";
+      topRow.style.alignItems = "center";
+      topRow.style.gap = "0.4em";
+      topRow.style.flexWrap = "wrap";
+
+      const cWf = document.createElement("span");
+      cWf.className = "chip chip-fail";
+      cWf.textContent = wfName;
+      topRow.appendChild(cWf);
+
+      const cBr = document.createElement("span");
+      cBr.className = "chip";
+      cBr.textContent = wfBranch;
+      topRow.appendChild(cBr);
+
+      if (wfCause) {
+        const cCause = document.createElement("span");
+        cCause.className = "chip chip-warn";
+        cCause.textContent = shorten(wfCause, 80);
+        cCause.title = wfCause;
+        topRow.appendChild(cCause);
+      }
+
+      li.appendChild(topRow);
+
+      const det = document.createElement("details");
+      det.style.marginTop = "0.3em";
+      det.style.fontSize = "0.9em";
+      const sum = document.createElement("summary");
+      sum.textContent = "Details & actions";
+      sum.style.cursor = "pointer";
+      sum.style.color = "var(--text-muted)";
+      det.appendChild(sum);
+
+      const bodyDiv = document.createElement("div");
+      bodyDiv.style.marginTop = "0.4em";
+      const desc = document.createElement("div");
+      desc.textContent = item.text;
+      bodyDiv.appendChild(desc);
+
+      const actionsSpan = document.createElement("div");
+      actionsSpan.style.cssText = "display:flex;gap:0.4em;align-items:center;margin-top:0.4em;flex-wrap:wrap;";
+
+      const draftBtn = document.createElement("button");
+      draftBtn.type = "button";
+      draftBtn.className = "btn-ghost";
+      draftBtn.style.cssText = "width:auto;margin:0;padding:0.2em 0.5em;font-size:0.85em;";
+      draftBtn.textContent = "Draft issue from failure";
+      draftBtn.onclick = () => {
+        if (typeof draftIssueFromFinding === "function") {
+          draftIssueFromFinding({
+            source: "workflow",
+            id: (item.run && item.run.id) || wfName,
+            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
+            cause: wfCause,
+            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+          });
+        }
+      };
+      actionsSpan.appendChild(draftBtn);
+
+      const askPiBtn = document.createElement("button");
+      askPiBtn.type = "button";
+      askPiBtn.className = "btn-primary";
+      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.2em 0.5em;font-size:0.85em;";
+      askPiBtn.textContent = "Ask Pi to diagnose";
+      askPiBtn.onclick = () => {
+        const piTab = document.querySelector('[data-tab="pi"]');
+        const piInp = document.getElementById("piPrompt");
+        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
+        if (piTab) piTab.click();
+      };
+      actionsSpan.appendChild(askPiBtn);
+
+      bodyDiv.appendChild(actionsSpan);
+      det.appendChild(bodyDiv);
+      li.appendChild(det);
+    } else {
       const span = document.createElement("span");
       span.textContent = item.text;
       li.appendChild(span);
 
-      // Actions container for attention item
       const actionsSpan = document.createElement("span");
       actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
 
-      // Repair button if linked to issue
       const m = item.text.match(/(?:^|\s)#(\d+)/);
       if (m) {
         const btn = document.createElement("button");
@@ -3751,27 +4203,7 @@ function renderBriefing(b) {
         actionsSpan.appendChild(btn);
       }
 
-      // If item is a failing run, surface "Draft issue from failure" and "Ask Pi to diagnose"
-      const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
       if (isRun) {
-        let wfName = item.run ? (item.run.name || "CI") : "";
-        let wfBranch = item.run ? (item.run.branch || "main") : "";
-        let wfCause = item.cause || "";
-        if (!wfName) {
-          const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
-          if (matchRun) {
-            wfName = matchRun[1].trim();
-            wfBranch = matchRun[2].trim();
-          } else {
-            wfName = "Workflow";
-            wfBranch = "main";
-          }
-        }
-        if (!wfCause) {
-          const matchCause = item.text.match(/likely cause:\s*(.+)$/);
-          wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
-        }
-
         const draftBtn = document.createElement("button");
         draftBtn.type = "button";
         draftBtn.className = "btn-ghost";
@@ -3781,10 +4213,10 @@ function renderBriefing(b) {
           if (typeof draftIssueFromFinding === "function") {
             draftIssueFromFinding({
               source: "workflow",
-              id: (item.run && item.run.id) || wfName,
+              id: wfName,
               title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
               cause: wfCause,
-              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ""`
             });
           }
         };
@@ -3807,14 +4239,27 @@ function renderBriefing(b) {
       if (actionsSpan.children.length > 0) {
         li.appendChild(actionsSpan);
       }
-      ul.appendChild(li);
-    });
-    att.appendChild(ul);
-  } else if (!hasFailingRuns && !hasConflicts) {
-    const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
-  }
+    }
+    ul.appendChild(li);
+  });
+  container.appendChild(ul);
+}
+
+function renderBriefing(b) {
+  briefingErrEl.textContent = "";
+  briefingEl.textContent = "";
+  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
+  const att = document.createElement("div");
+  renderAttentionList(b, att, {cleanMessage: "No failing runs ✓"});
   briefingEl.appendChild(att);
-  (b.prs || []).forEach(pr => {
+  const prList = b.prs || [];
+  if (!prList.length && !b.prs_err) {
+    const noPr = document.createElement("p");
+    noPr.style.color = "var(--text-muted)";
+    noPr.textContent = "No open PRs ✓";
+    briefingEl.appendChild(noPr);
+  }
+  prList.forEach(pr => {
     const card = document.createElement("div");
     card.className = "prcard";
     const head = document.createElement("div");
@@ -3848,6 +4293,7 @@ function renderBriefing(b) {
     chip("CI " + pr.ci, pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
     chip("merge " + pr.merge, pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
     if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.overlaps && pr.overlaps.with && pr.overlaps.with.length) chip("overlaps #" + pr.overlaps.with.join(", #"), "chip-warn");
     if (pr.draft) chip("draft");
     if (pr.stale) chip("stale", "chip-warn");
     chip(pr.updated);
@@ -3940,6 +4386,9 @@ async function refreshBriefing() {
   briefingErrEl.textContent = "";
   renderBriefing(res.data);
   briefingPrs = res.data.pr_list || [];
+  const failingCount = (res.data.failing_runs || []).length;
+  tabBadgeCounts.briefing = failingCount;
+  updateTabBadges();
   if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
   if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
   if (typeof renderAttention === "function") renderAttention(res.data);
@@ -3952,137 +4401,7 @@ async function refreshBriefing() {
 function renderAttention(b) {
   const el = document.getElementById("attentionBody");
   if (!el) return;
-  el.textContent = "";
-  const items = [];
-  (b.attention || []).forEach(a => {
-    items.push({text: a, raw: a});
-  });
-  (b.failing_runs || []).forEach(run => {
-    const runName = run.name || "CI";
-    const branchName = run.branch || "main";
-    const eventName = run.event || "push";
-    const failedParts = (run.failed || []).map(f =>
-      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-    ).join("; ");
-    const causeSummary = failedParts || "workflow failed";
-    const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
-    let found = false;
-    for (const it of items) {
-      if (it.text.includes(runName) && it.text.includes(branchName)) {
-        found = true;
-        it.run = run;
-        it.cause = causeSummary;
-        break;
-      }
-    }
-    if (!found) {
-      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
-    }
-  });
-
-  const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
-  const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
-
-  if (!items.length && !hasFailingRuns && !hasConflicts) {
-    el.textContent = "All clear — nothing needs attention.";
-    return;
-  }
-  const head = document.createElement("div");
-  head.className = "attn-head";
-  head.textContent = "Needs attention";
-  el.appendChild(head);
-  const ul = document.createElement("ul");
-  items.slice(0, 8).forEach(item => {
-    const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = item.text;
-    li.appendChild(span);
-
-    const actionsSpan = document.createElement("span");
-    actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
-
-    const m = item.text.match(/(?:^|\s)#(\d+)/);
-    if (m) {
-      const btn = document.createElement("button");
-      btn.textContent = "Repair";
-      btn.className = "btn-ghost";
-      btn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        try {
-          await fetchJson("/buttons/api/repair/dispatch", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({issue: parseInt(m[1], 10)})
-          });
-          const details = document.getElementById("repairDetails");
-          if (details) details.open = true;
-          if (typeof refreshStatus === "function") refreshStatus();
-        } finally {
-          btn.disabled = false;
-        }
-      };
-      actionsSpan.appendChild(btn);
-    }
-
-    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
-    if (isRun) {
-      let wfName = item.run ? (item.run.name || "CI") : "";
-      let wfBranch = item.run ? (item.run.branch || "main") : "";
-      let wfCause = item.cause || "";
-      if (!wfName) {
-        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
-        if (matchRun) {
-          wfName = matchRun[1].trim();
-          wfBranch = matchRun[2].trim();
-        } else {
-          wfName = "Workflow";
-          wfBranch = "main";
-        }
-      }
-      if (!wfCause) {
-        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
-        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
-      }
-
-      const draftBtn = document.createElement("button");
-      draftBtn.type = "button";
-      draftBtn.className = "btn-ghost";
-      draftBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      draftBtn.textContent = "Draft issue from failure";
-      draftBtn.onclick = () => {
-        if (typeof draftIssueFromFinding === "function") {
-          draftIssueFromFinding({
-            source: "workflow",
-            id: (item.run && item.run.id) || wfName,
-            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
-            cause: wfCause,
-            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
-          });
-        }
-      };
-      actionsSpan.appendChild(draftBtn);
-
-      const askPiBtn = document.createElement("button");
-      askPiBtn.type = "button";
-      askPiBtn.className = "btn-primary";
-      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      askPiBtn.textContent = "Ask Pi to diagnose";
-      askPiBtn.onclick = () => {
-        const piTab = document.querySelector('[data-tab="pi"]');
-        const piInp = document.getElementById("piPrompt");
-        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
-        if (piTab) piTab.click();
-      };
-      actionsSpan.appendChild(askPiBtn);
-    }
-
-    if (actionsSpan.children.length > 0) {
-      li.appendChild(actionsSpan);
-    }
-    ul.appendChild(li);
-  });
-  el.appendChild(ul);
+  renderAttentionList(b, el, {limit: 8, cleanMessage: "No failing runs ✓"});
 }
 
 // Agent jobs: multi-step tasks with a visible plan. Read-only
@@ -4249,6 +4568,8 @@ function renderJobNew() {
     el.appendChild(d);
   });
 }
+let jobsShowAll = false;
+
 async function refreshJobs() {
   const listEl = document.getElementById("jobList");
   const errEl = document.getElementById("jobListErr");
@@ -4261,11 +4582,46 @@ async function refreshJobs() {
   if (errEl) errEl.textContent = "";
   listEl.textContent = "";
   const jobs = res.data.jobs || [];
+  const failedJobsCount = jobs.filter(j => j.outcome === "failed" || (j.steps || []).some(s => s.state === "failed")).length;
+  tabBadgeCounts.jobs = failedJobsCount;
+  updateTabBadges();
   if (!jobs.length) {
     listEl.textContent = "No jobs yet. Start one above.";
     return;
   }
-  jobs.forEach(j => listEl.appendChild(renderJobCard(j)));
+
+  let newestTerminalIdx = -1;
+  for (let i = 0; i < jobs.length; i++) {
+    if (jobs[i].state === "terminal") {
+      newestTerminalIdx = i;
+      break;
+    }
+  }
+
+  const limit = jobsShowAll ? jobs.length : 20;
+  const visibleJobs = jobs.slice(0, limit);
+
+  visibleJobs.forEach((j, idx) => {
+    const isOlderTerminal = j.state === "terminal" && idx > newestTerminalIdx;
+    listEl.appendChild(renderJobCard(j, isOlderTerminal));
+  });
+
+  if (jobs.length > 20 && !jobsShowAll) {
+    const wrap = document.createElement("div");
+    wrap.className = "jobs-show-more-wrap";
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "btn-ghost jobs-show-more-btn";
+    moreBtn.id = "jobsShowMoreBtn";
+    moreBtn.textContent = `Show more (${jobs.length - 20} remaining)`;
+    moreBtn.onclick = () => {
+      jobsShowAll = true;
+      refreshJobs();
+    };
+    wrap.appendChild(moreBtn);
+    listEl.appendChild(wrap);
+  }
+
   // Read-only steps start on the server without a tap. If one is
   // running and we aren't polling its run yet, pick it up so its
   // output streams to the drawer and step-done gets reported.
@@ -4284,7 +4640,7 @@ async function refreshJobs() {
     }
   }
 }
-function renderJobCard(j) {
+function renderJobCard(j, collapsed = false) {
   const card = document.createElement("div");
   card.className = "jobcard";
   const head = document.createElement("div");
@@ -4320,6 +4676,13 @@ function renderJobCard(j) {
     (j.state === "terminal" ? " · " + j.outcome : " · active");
   card.appendChild(m);
 
+  // Steps container (can be hidden if collapsed)
+  const stepsContainer = document.createElement("div");
+  stepsContainer.className = "jobcard-steps";
+  if (collapsed) {
+    stepsContainer.style.display = "none";
+  }
+
   // Consolidated approval card for write steps if multiple or write steps present
   const pendingWrites = j.steps.map((s, idx) => ({s, idx}))
     .filter(item => item.s.write && item.s.state === "pending");
@@ -4341,19 +4704,22 @@ function renderJobCard(j) {
     bbtn.onclick = () => jobApproveAll(j.id);
     banner.appendChild(btext);
     banner.appendChild(bbtn);
-    card.appendChild(banner);
+    stepsContainer.appendChild(banner);
   }
 
   j.steps.forEach((s, i) => {
     const row = document.createElement("div");
     row.className = "jobstep";
+    const rowTop = document.createElement("div");
+    rowTop.className = "jobstep-row";
+
     const badge = document.createElement("span");
     badge.className = "st " + s.state;
     badge.textContent = s.state;
     const lab = document.createElement("span");
     lab.textContent = s.label;
-    row.appendChild(badge);
-    row.appendChild(lab);
+    rowTop.appendChild(badge);
+    rowTop.appendChild(lab);
     if (j.state === "active" && s.state === "pending" &&
         j.steps.slice(0, i).every(p => p.state === "done" || p.state === "declined")) {
       const acts = document.createElement("span");
@@ -4366,7 +4732,7 @@ function renderJobCard(j) {
       no.className = "btn-ghost";
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(ok); acts.appendChild(no);
-      row.appendChild(acts);
+      rowTop.appendChild(acts);
     } else if (j.state === "active" && s.state === "pending" && s.write) {
       // Allow declining individual write steps even ahead of turn
       const acts = document.createElement("span");
@@ -4376,10 +4742,42 @@ function renderJobCard(j) {
       no.className = "btn-ghost";
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(no);
-      row.appendChild(acts);
+      rowTop.appendChild(acts);
     }
-    card.appendChild(row);
+    row.appendChild(rowTop);
+
+    // One-line failure reason under failed step
+    if (s.state === "failed") {
+      const reasonEl = document.createElement("div");
+      reasonEl.className = "jobstep-reason";
+      let reasonText = "";
+      if (s.note && typeof s.note === "string" && s.note.trim()) {
+        reasonText = s.note.trim().split("\n")[0].trim();
+      } else if (s.exit_code !== undefined && s.exit_code !== null) {
+        reasonText = `exit ${s.exit_code}`;
+      } else {
+        reasonText = "exit 1";
+      }
+      reasonEl.textContent = reasonText;
+      row.appendChild(reasonEl);
+    }
+
+    stepsContainer.appendChild(row);
   });
+
+  if (collapsed) {
+    const expander = document.createElement("div");
+    expander.className = "jobcard-expander";
+    expander.textContent = "▸ Show steps";
+    expander.onclick = () => {
+      const isHidden = stepsContainer.style.display === "none";
+      stepsContainer.style.display = isHidden ? "block" : "none";
+      expander.textContent = isHidden ? "▾ Hide steps" : "▸ Show steps";
+    };
+    card.appendChild(expander);
+  }
+
+  card.appendChild(stepsContainer);
   return card;
 }
 async function jobApproveAll(id) {
@@ -4555,16 +4953,24 @@ const suggestErrEl = document.getElementById("suggestErr");
 function renderSuggestions(data, repo) {
   suggestionsEl.textContent = "";
   if (!data.suggestions || !data.suggestions.length) {
-    const note = data.note || data.raw || "Pi suggested nothing runnable.";
+    const note = data.note || data.raw || "Agent suggested nothing runnable.";
     const noteDiv = document.createElement("div");
     noteDiv.className = "prmeta";
     noteDiv.style.marginBottom = "0.5em";
-    noteDiv.textContent = "Pi note (no runnable commands):";
+    noteDiv.textContent = "Agent note (no runnable commands):";
     suggestionsEl.appendChild(noteDiv);
     const pre = document.createElement("pre");
     pre.textContent = note;
     suggestionsEl.appendChild(pre);
     return;
+  }
+
+  if (data.note) {
+    const noteDiv = document.createElement("div");
+    noteDiv.className = "prmeta";
+    noteDiv.style.marginBottom = "0.8em";
+    noteDiv.textContent = data.note;
+    suggestionsEl.appendChild(noteDiv);
   }
 
   // Batch action: Turn all approved suggestions into a tracked job
@@ -4807,6 +5213,9 @@ async function refreshLedger() {
     ledgerErrEl.textContent = "";
     ledgerEl.textContent = "";
     const entries = data.entries || [];
+    const hasNewEntries = entries.some(e => e.ts && e.ts > lastLedgerViewTs);
+    tabBadgeCounts.ledger = hasNewEntries;
+    updateTabBadges();
     if (!entries.length) { ledgerEl.textContent = "No ledger entries yet."; return; }
     entries.forEach(e => {
       const row = document.createElement("div");
@@ -5011,7 +5420,7 @@ function renderSessionList() {
 
   if (!filtered.length) {
     piSessionListEl.style.display = "none";
-    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
+    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Agent sessions found.";
     return;
   }
 
@@ -5045,6 +5454,15 @@ function renderSessionList() {
       meta.appendChild(bgBadge);
     }
 
+    if (s.source === "ledger") {
+      const ledgerBadge = document.createElement("span");
+      ledgerBadge.className = "pirow-badge";
+      ledgerBadge.style.background = "#3b4252";
+      ledgerBadge.style.color = "#a3be8c";
+      ledgerBadge.textContent = "ledger";
+      meta.appendChild(ledgerBadge);
+    }
+
     if (s.mtime) {
       const timeSpan = document.createElement("span");
       timeSpan.className = "pirow-time";
@@ -5068,7 +5486,7 @@ function renderSessionList() {
     del.title = "Delete this session";
     del.onclick = async (e) => {
       e.stopPropagation();
-      if (!(await confirmDialog("Delete Pi session",
+      if (!(await confirmDialog("Delete Agent session",
           "Delete this transcript? It cannot be undone.", true)))
         return;
       const r = await fetchJson("/buttons/api/pi-sessions/delete",
@@ -5088,7 +5506,7 @@ function renderSessionList() {
     };
 
     row.appendChild(b);
-    row.appendChild(del);
+    if (s.source !== "ledger") row.appendChild(del);
     piSessionListEl.appendChild(row);
   });
 }
@@ -5101,7 +5519,7 @@ if (piSessionFilterEl) {
 
 const clearPiSessionsBtn = document.getElementById("clearPiSessions");
 if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
-  if (!(await confirmDialog("Clear Pi sessions", "This deletes the transcripts and cannot be undone.", true))) return;
+  if (!(await confirmDialog("Clear Agent sessions", "This deletes the transcripts and cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { setErrorEl(piSessionErrEl, data.error || r.status, "clear failed"); return; }
@@ -5112,7 +5530,7 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   piSessionListEl.textContent = "";
   piSessionListEl.style.display = "none";
   piSessionOutEl.textContent = "";
-  piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
+  piSessionErrEl.textContent = data.output || "Agent sessions cleared.";
 };
 
 const listPiSessionsBtn = document.getElementById("listPiSessions");
@@ -5222,6 +5640,7 @@ function renderEnrichedPrDetails(pr) {
     chip("CI: " + (pr.ci || "unknown"), pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
     chip("Merge: " + (pr.merge || "unknown"), pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
     if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.overlaps && pr.overlaps.with && pr.overlaps.with.length) chip("overlaps #" + pr.overlaps.with.join(", #"), "chip-warn");
     if (pr.draft) chip("Draft");
   }
 
@@ -5788,15 +6207,89 @@ async function refreshJulesSessions() {
     el.appendChild(card);
   });
 }
+function renderIssueAuditOutput(data, container, repo) {
+  let parsed = null;
+  const rawText = data.output || "";
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (e) {
+    const s1 = rawText.indexOf("{");
+    const s2 = rawText.lastIndexOf("}");
+    if (s1 >= 0 && s2 > s1) {
+      try { parsed = JSON.parse(rawText.slice(s1, s2 + 1)); } catch (e2) {}
+    }
+  }
+
+  const items = (parsed && (parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
+  const totalCount = parsed ? (parsed.count !== undefined ? parsed.count : (parsed.total !== undefined ? parsed.total : (items ? items.length : 0))) : 0;
+
+  const countDiv = document.createElement("div");
+  countDiv.className = "audit-counts";
+  countDiv.textContent = `Audited issues: ${totalCount}`;
+  container.appendChild(countDiv);
+
+  if (items && items.length > 0) {
+    const table = document.createElement("table");
+    table.className = "audit-table";
+    table.innerHTML = "<thead><tr><th># / ID</th><th>Title / Finding</th><th>Path / Plan</th></tr></thead><tbody></tbody>";
+    const tbody = table.querySelector("tbody");
+    items.forEach(it => {
+      const tr = document.createElement("tr");
+      const num = it.number || it.id || it.issue || "";
+      const title = it.title || it.name || it.summary || "";
+      let rawPath = it.plan_path || it.path || it.file || "";
+      let relPath = relativizePath(rawPath, repo);
+      const url = it.url || it.html_url || (num && repo ? `https://github.com/${repo}/issues/${num}` : "");
+
+      const tdNum = document.createElement("td");
+      if (url) {
+        tdNum.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">#${escHtml(String(num))}</a>`;
+      } else {
+        tdNum.textContent = num ? `#${num}` : "—";
+      }
+
+      const tdTitle = document.createElement("td");
+      tdTitle.textContent = title || "(no title)";
+
+      const tdPath = document.createElement("td");
+      if (relPath) {
+        tdPath.innerHTML = `<code>${escHtml(relPath)}</code>`;
+      } else {
+        tdPath.textContent = "—";
+      }
+
+      tr.appendChild(tdNum);
+      tr.appendChild(tdTitle);
+      tr.appendChild(tdPath);
+      tbody.appendChild(tr);
+    });
+    container.appendChild(table);
+  }
+
+  // Full output remains accessible via collapsed details
+  const details = document.createElement("details");
+  details.className = "run-summary-details";
+  details.style.marginTop = "0.8em";
+  const summary = document.createElement("summary");
+  summary.textContent = "Full raw output";
+  const pre = document.createElement("pre");
+  pre.id = "planRawOutput";
+  pre.textContent = rawText || "(empty)";
+  details.appendChild(summary);
+  details.appendChild(pre);
+  container.appendChild(details);
+}
+
 async function runPlan(plan, extra) {
   const out = document.getElementById("planOut");
   const err = document.getElementById("planErr");
   out.innerHTML = '<span class="spinner"></span> Generating plan…';
   err.textContent = "";
+  const repo = projectRepo();
   const res = await fetchJson("/buttons/api/run-plan", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({repo: projectRepo(), plan: plan},
+    body: JSON.stringify(Object.assign({repo: repo, plan: plan},
                                       extra || {}))});
   const data = res.data || {};
   if (!res.ok) {
@@ -5805,69 +6298,47 @@ async function runPlan(plan, extra) {
     return;
   }
   out.innerHTML = "";
-  let parsedJson = null;
-  if (data.output) {
-    try {
-      parsedJson = JSON.parse(data.output);
-    } catch (e) {}
+  if (data.plan_path) {
+    const p = document.createElement("p");
+    const rel = relativizePath(data.plan_path, repo);
+    p.innerHTML = "Plan written to: <code>" + escHtml(rel) + "</code>";
+    out.appendChild(p);
+  }
+  if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
+    const runBtn = document.createElement("button");
+    runBtn.textContent = "Run as job";
+    runBtn.style.margin = "0.5em 0";
+    runBtn.onclick = async () => {
+      runBtn.disabled = true;
+      runBtn.textContent = "Starting job…";
+      const jres = await fetchJson("/buttons/api/jobs", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          repo: repo,
+          plan_content: data.output,
+          plan_path: data.plan_path || ""
+        })
+      });
+      if (!jres.ok) {
+        setErrorEl(err, jres.data.error || jres.status, "could not start job");
+        runBtn.disabled = false;
+        runBtn.textContent = "Run as job";
+        return;
+      }
+      const job = jres.data.job;
+      runBtn.textContent = "Job started!";
+      // Render live interactive checklist and start polling
+      renderPlanLiveChecklist(job, out);
+      pollPlanJob(job.id, out);
+      if (typeof refreshJobs === "function") refreshJobs();
+    };
+    out.appendChild(runBtn);
   }
 
-  if (parsedJson && (parsedJson.issues || Array.isArray(parsedJson))) {
-    const issues = parsedJson.issues || parsedJson;
-    const count = issues.length;
-    const summaryP = document.createElement("p");
-    summaryP.innerHTML = `<strong>Audit found ${count} issue${count === 1 ? '' : 's'}:</strong>`;
-    out.appendChild(summaryP);
-    const list = document.createElement("ul");
-    list.style.paddingLeft = "1.2em";
-    list.style.fontSize = "0.9em";
-    issues.forEach(it => {
-      const li = document.createElement("li");
-      if (it.url || it.html_url) {
-        const a = document.createElement("a");
-        a.href = it.url || it.html_url;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.textContent = `#${it.number || '?'}: ${it.title || 'Issue'}`;
-        li.appendChild(a);
-      } else {
-        li.textContent = `#${it.number || '?'}: ${it.title || 'Issue'}`;
-      }
-      list.appendChild(li);
-    });
-    out.appendChild(list);
+  if (plan === "issue-audit") {
+    renderIssueAuditOutput(data, out, repo);
   } else {
-    if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
-      const runBtn = document.createElement("button");
-      runBtn.textContent = "Run as job";
-      runBtn.style.margin = "0.5em 0";
-      runBtn.onclick = async () => {
-        runBtn.disabled = true;
-        runBtn.textContent = "Starting job…";
-        const jres = await fetchJson("/buttons/api/jobs", {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({
-            repo: projectRepo(),
-            plan_content: data.output,
-            plan_path: data.plan_path || ""
-          })
-        });
-        if (!jres.ok) {
-          setErrorEl(err, jres.data.error || jres.status, "could not start job");
-          runBtn.disabled = false;
-          runBtn.textContent = "Run as job";
-          return;
-        }
-        const job = jres.data.job;
-        runBtn.textContent = "Job started!";
-        // Render live interactive checklist and start polling
-        renderPlanLiveChecklist(job, out);
-        pollPlanJob(job.id, out);
-        if (typeof refreshJobs === "function") refreshJobs();
-      };
-      out.appendChild(runBtn);
-    }
     const pre = document.createElement("pre");
     pre.id = "planRawOutput";
     pre.textContent = (data.output || "(empty)").replace(/\/srv\/[^\s'"]+/g, "[server path]");
@@ -6071,9 +6542,11 @@ async function refreshStatus() {
       if (badge) {
         if (n.ntfy || n.webhook) {
           badge.textContent = "Notifications: " + (n.ntfy ? "ntfy(" + (n.topic || "active") + ")" : "webhook");
+          badge.title = "Proactive Notifications active (" + (n.ntfy ? "ntfy" : "webhook") + ")";
           badge.style.color = "#7ed07e";
         } else {
-          badge.textContent = "Notifications: off";
+          badge.textContent = "Notifications: off (set NTFY_* in .env; see docs/buttons.md)";
+          badge.title = "Notifications: off (enable via NTFY_* in .env; see docs/buttons.md#proactive-notifications--scheduled-digest)";
           badge.style.color = "var(--text-muted)";
         }
       }
@@ -6198,23 +6671,26 @@ if (testNotifyBtn) testNotifyBtn.onclick = async () => {
     if (typeof confirmDialog === "function") {
       await confirmDialog(
         "Notifications Disabled",
-        "Notifications are currently off. To enable push alerts, set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL in /srv/remote-server/.env.",
+        "Notifications are currently off (set NTFY_* in .env; see docs/buttons.md).",
         false
       );
     }
     return;
   }
   if (typeof confirmDialog === "function") {
-    const ok = await confirmDialog("Send Test Notification", "Send a test notification to configured endpoints (ntfy / webhook)?", false);
+    const ok = await confirmDialog("Notification Test", "Send a test notification via the configured ntfy/webhook?", false);
     if (!ok) return;
   }
   testNotifyBtn.disabled = true;
-  const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
-  testNotifyBtn.disabled = false;
-  if (!res.ok) {
-    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
-  } else {
-    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+  try {
+    const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
+    if (!res.ok) {
+      if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
+    } else {
+      if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+    }
+  } finally {
+    testNotifyBtn.disabled = false;
   }
 };
 
@@ -7048,6 +7524,7 @@ class Handler(BaseHTTPRequestHandler):
                         "done": r.get("done", False)
                     })
 
+            sessions.extend(_ledger_sessions())
             sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
             self._json({"sessions": sessions})
         elif path == "/buttons/api/pi-session":
@@ -7117,6 +7594,52 @@ class Handler(BaseHTTPRequestHandler):
                     "turns": turns,
                     "raw_output": raw_output or reply,
                     "output": raw_output or reply
+                })
+                return
+
+            if query.startswith("ledger-"):
+                m = re.fullmatch(r"ledger-(\d+)\.jsonl", query)
+                if not m:
+                    self._json({"error": "bad ledger query"}, 400)
+                    return
+                lineno = int(m.group(1))
+                try:
+                    lproc = subprocess.run(
+                        EXEC + [f"sed -n '{lineno}p' {HARNESS_LEDGER_PATH}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=60, text=True)
+                    entry = json.loads(lproc.stdout)
+                    if not isinstance(entry, dict):
+                        raise ValueError("not an entry")
+                except Exception:
+                    self._json(
+                        {"error": f"No ledger entry matching '{query}'"},
+                        404)
+                    return
+                calls = entry.get("tool_calls") or []
+                call_lines = "\n".join(
+                    f"- {c.get('name')}: {str(c.get('args'))[:200]}"
+                    for c in calls if isinstance(c, dict))
+                usage = entry.get("usage") or {}
+                summary = (
+                    f"{entry.get('script')} · {entry.get('model')}\n"
+                    f"thread {entry.get('thread_id')} · "
+                    f"{entry.get('duration_s')}s\n"
+                    f"tokens in/out: {usage.get('input_tokens')}/"
+                    f"{usage.get('output_tokens')}\n"
+                    f"tool calls:\n{call_lines or '(no tool calls)'}\n"
+                    f"final: {entry.get('final_preview') or ''}")
+                self._json({
+                    "file": query,
+                    "id": query[:-6],
+                    "cwd": "",
+                    "repo": "",
+                    "started": entry.get("ts"),
+                    "source": "ledger",
+                    "turns": [{"role": "assistant", "text": summary,
+                               "timestamp": entry.get("ts")}],
+                    "raw_output": lproc.stdout,
+                    "output": summary,
                 })
                 return
 
@@ -7456,6 +7979,7 @@ class Handler(BaseHTTPRequestHandler):
                             "ci": found_pr.get("ci", "passing"),
                             "merge": found_pr.get("merge", "clean"),
                             "conflicted": found_pr.get("conflicted", False),
+                            "overlaps": found_pr.get("overlaps", {"with": [], "files": []}),
                             "draft": found_pr.get("draft", False),
                             "verdicts": found_pr.get("verdicts", []),
                             "reviews": found_pr.get("reviews_picked", []),
@@ -7864,10 +8388,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/suggest":
-            # Pi suggests, in the background (see _pi_start): the
-            # local-model run takes minutes, so the POST returns
-            # an id immediately and the client polls
-            # /buttons/api/pi-progress/<id> for live output.
+            # Harness suggest, in the background (see _pi_start):
+            # deterministic briefing mapping plus a local-model
+            # explanation. The POST returns an id immediately and
+            # the client polls /buttons/api/pi-progress/<id> for
+            # live output.
             # Reads only: suggestions are not ledger entries,
             # exactly like briefing reads.
             try:
@@ -8251,6 +8776,8 @@ class Handler(BaseHTTPRequestHandler):
                         if run_exit == 0 else "failed"
                     st["finished_at"] = time.time()
                     st["exit_code"] = run_exit
+                    if st["state"] == "failed" and not st.get("note"):
+                        st["note"] = _job_step_failure_reason(run.get("output", "") if run else "", run_exit)
                     _job_after_step(job)
                     _jobs_save()
                     state = st["state"]

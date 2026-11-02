@@ -12,7 +12,7 @@ command path (see Ask Pi below).
 
 Five tabs share one sticky header: **Actions** (stack buttons),
 **Briefing** (briefing + PR cards), **Pi agent** (suggestions + Ask Pi
-+ Pi sessions), **Jobs** (multi-step tasks, see below), **Ledger**
++ Agent sessions), **Jobs** (multi-step tasks, see below), **Ledger**
 (audit log). The header holds the repo picker
 (the repo chip — every repo-scoped button and the briefing follow
 it) plus a server status dot, green while the status endpoint
@@ -55,9 +55,10 @@ recreate containers, unlike the read-only actions.
 | Status | `git status` + `git log -3` in the checkout, `docker compose ps`, terminal image tags |
 | Deploy buttons (rebuild this page) | Runs in the TERMINAL container, not buttons itself: `git pull --ff-only`, `docker compose up -d --build buttons`, then a verify loop curling the new container's status endpoint (60s, fails visibly with `compose ps` output on timeout) — rebuilds the buttons container from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
-| Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Pi session audit, see below |
+| Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Agent session audit, see below |
 | Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
 | Sync agent sessions | `td agent list-sessions` (falling back to `td jules list-sessions`, same fallback the briefing's Jules section uses) — list active Jules sessions, read-only (global across repos, not picker-scoped). Nudging moved to the Nudge agents job: the session list is the preview, and the feedback post waits for an Approve tap. A missing JULES_API_KEY is not a failure: the step prints a notice and exits 0, so the run stays green instead of turning the banner red for config you haven't done |
+| Merge approved PRs | `deep-agent/merge_approved.py <gh>` inside the terminal container: local-model agent triages open PRs and merges each approved + green + mergeable one (drafts refused). Repo follows the picker above; confirm tap first |
 | System health | `df -h`, `free -m`, `docker compose ps` — disk, memory, container states, read-only |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
 | Preflight check | `td --json preflight` piped through `buttons/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code. Note: td's preflight currently hardcodes the BoomTick repo's checks — on other repos the pnpm/audit checks fail spuriously (tracked in `docs/boomtick-issues.md`, patch ready); the digest surfaces the first stderr line as the failure detail |
@@ -76,7 +77,7 @@ finishes. Output streams into the slide-up drawer (polled every
 2s); the drawer opens when a run starts and stays reachable from
 every tab. Reloading mid-run re-attaches to it. Recreating the
 terminal kills any running
-Pi session in it — that is the point of Recreate, but do not press
+Agent session in it — that is the point of Recreate, but do not press
 it mid-conversation.
 
 There is deliberately no Deploy-latest-for-terminal button anymore.
@@ -472,7 +473,7 @@ should unlock currently-unavailable writes. v1 deliberately
 changes none of the approval boundaries.
 
 
-## Pi session audit
+## Agent session audit
 
 The Logs button now shows more than container logs. Container
 logs show the terminal process, not what the agent did — so
@@ -538,9 +539,9 @@ like an untouched empty one. The output pane's Clear output
 button is separate and older: it clears only the displayed run
 output, not the ledger.
 
-## Pi sessions (browser)
+## Agent sessions (browser)
 
-The Logs button renders only the latest session. The Pi
+The Logs button renders only the latest session. The Agent
 sessions block under the Pi tab browses all of them: List sessions
 fetches `GET /buttons/api/pi-sessions`, which runs
 `pi_logs.py --list-json` in the terminal container (no TD

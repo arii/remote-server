@@ -76,7 +76,7 @@ def main() -> int:
     repo = sys.argv[1]
     started = time.time()
     # qwen3:8b emits valid tool calls; qwen2.5-coder:7b narrates them
-    # as JSON text under LangChain (see diag_local_tools.py).
+    # as JSON text under LangChain, so 8b is the proven floor.
     model = ChatOllama(
         model=MODEL_ID,
         base_url="http://ollama:11434",
