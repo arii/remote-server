@@ -3122,6 +3122,13 @@ below are still visible, but they need JavaScript to start a run.</div>
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
 const DEFAULT_REPO = "remote-server";
+
+// Project tab: issues, Jules sessions, td planning guides.
+// Reads the repo from the picker at tap time, like the other tabs.
+function projectRepo() {
+  const p = document.getElementById("briefingRepo");
+  return p ? p.value : DEFAULT_REPO;
+}
 const codeLauncher = document.getElementById("codeLauncher");
 if (codeLauncher) {
   codeLauncher.href = window.location.origin + "/code";
@@ -3205,9 +3212,6 @@ try {
     _pickerEl.value = savedRepo;
   }
 } catch (_) {}
-markSelectedRepo();
-refreshProject();
-
 // Tab bar badges and state tracking
 let lastLedgerViewTs = Date.now() / 1000;
 let tabBadgeCounts = {briefing: 0, jobs: 0, ledger: false};
@@ -3937,10 +3941,7 @@ document.getElementById("bugBtn").onclick = reportBug;
 const actionsBugBtn = document.getElementById("actionsBugBtn");
 if (actionsBugBtn) actionsBugBtn.onclick = reportBug;
 
-</script>
-<script>
-// Briefing view (script block 2, separate from the core block
-// above, so a Briefing failure cannot take the core buttons down).
+// Briefing view
 // Renders the structured briefing from /buttons/api/briefing as
 // PR cards. Auto-runs on load and after a Refresh briefing run;
 // changing the picker above re-fetches.
@@ -4328,26 +4329,40 @@ function renderBriefing(b) {
   if (j.other) { const p = document.createElement("p"); p.textContent = "(" + j.other + " active session(s) for other repos, not listed.)"; js.appendChild(p); }
   briefingEl.appendChild(js);
 }
+function renderBriefingUnavailable(errMsg) {
+  if (briefingEl) briefingEl.textContent = "";
+  if (briefingErrEl) setErrorEl(briefingErrEl, errMsg || "briefing unavailable", "briefing unavailable");
+  const att = document.getElementById("attentionBody");
+  if (att) {
+    att.textContent = "";
+    const span = document.createElement("span");
+    span.textContent = "Briefing unavailable — ";
+    att.appendChild(span);
+    const rb = document.createElement("button");
+    rb.className = "btn-ghost btn-retry";
+    rb.textContent = "Retry";
+    rb.onclick = () => refreshBriefing();
+    att.appendChild(rb);
+  }
+}
+
 async function refreshBriefing() {
   const picker = document.getElementById("briefingRepo");
   const repo = picker ? picker.value : DEFAULT_REPO;
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
-  const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  let res;
+  try {
+    res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo), {signal: controller.signal});
+  } catch (err) {
+    clearTimeout(timeoutId);
+    renderBriefingUnavailable(err && err.name === "AbortError" ? "Briefing request timed out" : (err && err.message) || String(err));
+    return;
+  }
+  clearTimeout(timeoutId);
   if (!res.ok) {
-    briefingEl.textContent = "";
-    setErrorEl(briefingErrEl, res.data.error || ("HTTP " + res.status), "briefing unavailable");
-    const att = document.getElementById("attentionBody");
-    if (att) {
-      att.textContent = "";
-      const span = document.createElement("span");
-      span.textContent = "Briefing unavailable — ";
-      att.appendChild(span);
-      const rb = document.createElement("button");
-      rb.className = "btn-ghost btn-retry";
-      rb.textContent = "Retry";
-      rb.onclick = () => refreshBriefing();
-      att.appendChild(rb);
-    }
+    renderBriefingUnavailable(res.data && res.data.error ? res.data.error : ("HTTP " + res.status));
     return;
   }
   briefingErrEl.textContent = "";
@@ -4815,7 +4830,6 @@ if (clearJobsBtn) clearJobsBtn.onclick = async () => {
   refreshJobs();
   if (typeof refreshLedger === "function") refreshLedger();
 };
-refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
 if (briefingRepoPicker) {
   try {
@@ -4827,7 +4841,6 @@ if (briefingRepoPicker) {
   } catch (e) {}
   briefingRepoPicker.onchange = refreshBriefing;
 }
-refreshBriefing();
 
 // Pi background runs: streams output directly into the slide-up
 // drawer (the way Jobs does) while updating inline status.
@@ -5214,7 +5227,6 @@ if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
   refreshLedger();
 };
 if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
-refreshLedger();
 
 // Pi session browser. List renders each session file as a compact
 // card showing date/time, repo, and first prompt snippet.
@@ -5524,12 +5536,6 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   }
 };
 
-// Project tab: issues, Jules sessions, td planning guides.
-// Reads the repo from the picker at tap time, like the other tabs.
-function projectRepo() {
-  const p = document.getElementById("briefingRepo");
-  return p ? p.value : DEFAULT_REPO;
-}
 let currentPrDetails = null;
 
 function renderReviewPrSelect() {
@@ -6755,8 +6761,6 @@ refreshStatus = async function() {
   } catch (e) {}
 };
 
-refreshStatus();
-if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
@@ -7107,6 +7111,20 @@ if (globalChatBtn) {
 
 const piOpenChatBtn = document.getElementById("piOpenChatBtn");
 if (piOpenChatBtn) piOpenChatBtn.onclick = openChatDrawer;
+
+// Initial execution sequence wrapped in try/catch to render Retry UI on sync throws
+try {
+  markSelectedRepo();
+  refreshProject();
+  refreshJobs();
+  refreshBriefing();
+  if (typeof refreshLedger === "function") refreshLedger();
+  if (typeof refreshStatus === "function") refreshStatus();
+  if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
+} catch (err) {
+  console.error("Initialization error:", err);
+  renderBriefingUnavailable(err && err.message ? err.message : String(err));
+}
 </script>
 </body>
 </html>
