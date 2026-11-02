@@ -9,7 +9,9 @@ this backend owns no runs and adds no Jules surface).
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from backend.agents.sessions import list_sessions
+from fastapi import HTTPException
+
+from backend.agents.sessions import get_session_detail, list_sessions
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -42,3 +44,13 @@ def health() -> dict:
 @router.get("/sessions", response_model=SessionList)
 def sessions() -> dict:
     return {"sessions": list_sessions()}
+
+
+@router.get("/sessions/{name}")
+def session_detail(name: str) -> dict:
+    try:
+        return get_session_detail(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

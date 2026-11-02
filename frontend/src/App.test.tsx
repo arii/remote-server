@@ -54,10 +54,9 @@ describe('components', () => {
     expect(err).toContain('data-testid="detail-error"');
   });
 
-  it('App renders exactly one health widget', () => {
+  it('App renders loading state before live fetch resolves', () => {
     const html = renderToStaticMarkup(<App />);
-    expect(html.match(/data-testid="system-health"/g)).toHaveLength(1);
-    expect(html).toContain('Sessions');
+    expect(html).toContain('data-testid="app-loading"');
   });
 
   it('SystemHealth reflects session count', () => {

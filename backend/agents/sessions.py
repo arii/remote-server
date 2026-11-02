@@ -87,6 +87,78 @@ def _session_meta(path: str) -> tuple[str, str, str]:
     return cwd, title or "Untitled session", _repo_from_path(path, cwd)
 
 
+FILE_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _find_session_file(name: str, root: str | None = None) -> str | None:
+    base = root or sessions_root()
+    try:
+        matches = glob.glob(os.path.join(base, "**", name), recursive=True)
+    except Exception:
+        return None
+    return matches[0] if matches else None
+
+
+def get_session_detail(name: str, root: str | None = None) -> dict:
+    """Pi-file session detail per docs/session-record-contract.md.
+
+    Returns a detail dict with file/cwd/repo/turns (possibly []) or
+    {"error": ...} on failure. Raises ValueError on a bad name,
+    FileNotFoundError when no transcript matches.
+    """
+    if not name or not FILE_NAME_RE.match(name) or "/" in name:
+        raise ValueError(f"bad session query: {name!r}")
+    path = _find_session_file(name, root)
+    if not path:
+        raise FileNotFoundError(f"No session matching {name!r}")
+    cwd, title, repo = _session_meta(path)
+    turns: list[dict] = []
+    total = 0
+    started: object = ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("type") == "session" and not started:
+                    started = obj.get("timestamp") or obj.get("started") or ""
+                    continue
+                msg = obj.get("message") if isinstance(
+                    obj.get("message"), dict) else obj
+                role = msg.get("role") or obj.get("role") or ""
+                if role not in ("user", "assistant"):
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str):
+                    text = _clean(content)
+                elif isinstance(content, list):
+                    text = " ".join(
+                        _clean(b.get("text")) for b in content
+                        if isinstance(b, dict) and b.get("text"))
+                else:
+                    text = _clean(content or "")
+                turn: dict = {"role": role, "text": text}
+                ts = msg.get("timestamp") or obj.get("timestamp")
+                if ts is not None:
+                    turn["timestamp"] = ts
+                turns.append(turn)
+    except FileNotFoundError:
+        raise
+    except Exception as exc:
+        return {"error": str(exc)}
+    _ = title
+    return {"file": name, "cwd": cwd, "repo": repo, "started": started,
+            "turns": turns, "total_entries": total}
+
+
 def list_sessions(root: str | None = None) -> list[dict]:
     """Newest-first pi-file session rows; [] on any failure."""
     base = root or sessions_root()
