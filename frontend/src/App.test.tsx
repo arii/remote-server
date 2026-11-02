@@ -19,6 +19,34 @@ describe('history utils', () => {
     expect(incident!.recovery).toBeTruthy();
   });
 
+  it('renders ledger ts timestamps and gates recovery to failures', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'chat', event: 'chat finished', ts: 1793652000 },
+        { kind: 'webhook', event: 'Push was rejected — the remote has new commits', ts: 1793652100, ok: false },
+      ],
+    );
+    expect(rows[0].summary).toContain('rejected');
+    expect(rows[0].at).not.toContain('unknown time');
+    expect(rows[0].recovery).toBeTruthy();
+    expect(rows[1].recovery).toBe('');
+  });
+
+  it('collapses consecutive chat lifecycle chatter into one activity row', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'chat', event: 'chat started', ts: 3 },
+        { kind: 'chat', event: 'chat finished', ts: 2 },
+        { kind: 'chat', event: 'chat aborted', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toMatch(/Chat session activity ×3/);
+    expect(rows[0].recovery).toBe('');
+  });
+
   it('sorts newest first using real job timestamps', () => {
     const rows = toHistoryRows(
       [

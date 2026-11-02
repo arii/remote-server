@@ -40,6 +40,18 @@ interface FlatEntry {
   summary: string;
   at: string;
   rawAt: number;
+  failed: boolean;
+  routine: boolean;
+}
+
+// Routine lifecycle chatter (chat start/finish/abort): true but noisy.
+// Consecutive runs collapse into one "activity" row (see toHistoryRows).
+const ROUTINE_RE = /^chat (started|finished|aborted)/i;
+
+function isFailure(kind: string, raw: string, summary: string): boolean {
+  if (/fail|error|refus|reject|conflict|not permitted|aborted/i.test(raw)) return true;
+  if (/fail|error|refused|rejected|conflict|not permitted|aborted/i.test(summary)) return true;
+  return kind === 'pr-action' && /failed/i.test(summary);
 }
 
 function recoveryFor(kind: string, summary: string): string {
@@ -90,21 +102,31 @@ function jobTime(j: JobRecord): number {
 
 function jobToEntry(j: JobRecord): FlatEntry {
   const status = jobStatus(j);
+  const summary = plainLanguage(`${jobTitle(j)}: ${status}`, 'Job');
   return {
     kind: j.kind || 'job',
-    summary: plainLanguage(`${jobTitle(j)}: ${status}`, 'Job'),
+    summary,
     at: status,
     rawAt: jobTime(j),
+    failed: /fail|error/i.test(status),
+    routine: false,
   };
 }
 
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
-  const raw = e.event ?? e.kind;
+  const raw = e.event ?? e.action ?? e.kind;
+  const summary = plainLanguage(raw ?? '', e.kind);
+  const failed =
+    e.ok === false ||
+    (e.status !== undefined && /fail|error/i.test(String(e.status))) ||
+    isFailure(e.kind, raw ?? '', summary);
   return {
     kind: e.kind,
-    summary: plainLanguage(raw ?? '', e.kind),
-    at: rowTime(e.at),
-    rawAt: epochOf(e.at),
+    summary,
+    at: rowTime(e.ts ?? e.at),
+    rawAt: epochOf(e.ts ?? e.at),
+    failed,
+    routine: ROUTINE_RE.test(summary),
   };
 }
 
@@ -113,16 +135,18 @@ function sameFailure(a: FlatEntry, b: FlatEntry): boolean {
 }
 
 function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
+  const routineRun = entry.routine && count > 1;
   return {
     key: `${entry.kind}-${entry.summary}-${index}`,
     kind: entry.kind,
-    summary:
-      count > 1
+    summary: routineRun
+      ? `Chat session activity ×${count}`
+      : count > 1
         ? `${entry.summary} ×${count} — same failure repeated`
         : entry.summary,
     at: entry.at,
     repeat: count,
-    recovery: recoveryFor(entry.kind, entry.summary),
+    recovery: entry.failed && !entry.routine ? recoveryFor(entry.kind, entry.summary) : '',
   };
 }
 
@@ -133,6 +157,8 @@ function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
  * same kind + summary that sit next to each other in newest-first order
  * fold into one "×N" row. Equal failures separated by other rows stay
  * separate, so the count reflects one continuous incident, not a total.
+ * Consecutive routine lifecycle rows (chat started/finished/aborted) fold
+ * into one "Chat session activity ×N" row regardless of exact mix.
  */
 export function toHistoryRows(
   jobs: JobRecord[],
@@ -147,7 +173,11 @@ export function toHistoryRows(
   let i = 0;
   while (i < flat.length) {
     let count = 1;
-    while (i + count < flat.length && sameFailure(flat[i + count], flat[i])) {
+    while (
+      i + count < flat.length &&
+      (sameFailure(flat[i + count], flat[i]) ||
+        (flat[i].routine && flat[i + count].routine))
+    ) {
       count++;
     }
     rows.push(toRow(flat[i], count, i));

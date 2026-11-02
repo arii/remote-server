@@ -30,7 +30,12 @@ export interface LedgerEntry {
   kind: string;
   repo?: string;
   event?: string;
+  action?: string;
   at?: number | string;
+  ts?: number;
+  ok?: boolean;
+  status?: string;
+  error?: string;
 }
 
 export interface LedgerResponse {
