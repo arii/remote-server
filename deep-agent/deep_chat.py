@@ -96,8 +96,17 @@ SYSTEM = (
     "Always invoke tools through the function-calling interface. "
     "Never write a tool call out as JSON text. "
     "If a grep pattern has no matches, retry with a shorter distinctive "
-    "fragment."
+    "fragment. "
+    "Keep replies readable on a phone: short paragraphs or a short "
+    "list, no wide tables."
 )
+
+
+def _short_err(exc, limit=160):
+    """Cap exception detail for Sorry lines (the prefix is kept verbatim,
+    so eval gates still classify the run as invalid, not failed)."""
+    text = str(exc)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 DECISION_TYPES = ("approve", "edit", "reject", "respond")
 
@@ -400,11 +409,12 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     try:
         model, spec = build_model()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {exc}")
+        print(f"Sorry, no model is available right now: {_short_err(exc)}")
         return 1
     except ImportError as exc:
-        print(f"Sorry, the chat backend is not installed: {exc}",
-              file=sys.stderr)
+        # Stdout, like every other Sorry line: exit 1 promises the
+        # reply on stdout so the SSE chunk reader shows it on the phone.
+        print(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
         return 1
     print(f"deep_chat via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
@@ -422,7 +432,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
         reply, tool_msgs, _ = _stream(
             agent, {"messages": messages}, config)
     except Exception as exc:
-        reply = f"Sorry, the assistant failed: {exc}"
+        reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         print(reply, flush=True)
         recorder.run_end(False)
         recorder.close()
@@ -472,11 +482,12 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     try:
         model, spec = build_model()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {exc}")
+        print(f"Sorry, no model is available right now: {_short_err(exc)}")
         return 1
     except ImportError as exc:
-        print(f"Sorry, the chat backend is not installed: {exc}",
-              file=sys.stderr)
+        # Stdout, like every other Sorry line: exit 1 promises the
+        # reply on stdout so the SSE chunk reader shows it on the phone.
+        print(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
         return 1
     print(f"deep_chat resume via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
@@ -505,7 +516,7 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
             agent, Command(resume=resume_payload([decision] * count)),
             config)
     except Exception as exc:
-        reply = f"Sorry, the assistant failed: {exc}"
+        reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         print(reply, flush=True)
         recorder.run_end(False)
         recorder.close()

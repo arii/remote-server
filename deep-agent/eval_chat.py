@@ -122,6 +122,11 @@ def check_usage_entry(entries):
     return True, ""
 
 
+def _preview(text, limit=200):
+    """Evidence excerpt capped for narrow screens; an ellipsis marks cuts."""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def check_chat_case(case, code, out, answer, used, entries, timed_out):
     """Pure verdict for one finished (possibly two-turn) case.
 
@@ -149,11 +154,11 @@ def check_chat_case(case, code, out, answer, used, entries, timed_out):
         if not hit:
             reasons.append(f"tools MISS: used={used} want one of={want}")
     if not case["anchor"].search(answer):
-        reasons.append(f"anchor MISS in: {answer[:400]}")
+        reasons.append(f"anchor MISS in: {_preview(answer)}")
     for i, pattern in enumerate(case.get("must", [])):
         if not pattern.search(answer):
             reasons.append(
-                f"must[{i}] MISS ({pattern.pattern!r}) in: {answer[:400]}"
+                f"must[{i}] MISS ({pattern.pattern!r}) in: {_preview(answer)}"
             )
     absent = case.get("absent")
     if absent is not None and absent.search(answer):
@@ -260,7 +265,7 @@ def main(argv=None) -> int:
         results.append(res)
         for reason in res["reasons"]:
             print(f"  {reason}")
-        print(f"{res['verdict'].upper()} ({res['seconds']}s)")
+        print(f"{res['verdict'].upper()} {res['name']} ({res['seconds']}s)")
     gating = [r for r in results if r["gating"]]
     extra = [r for r in results if not r["gating"]]
     g_pass = sum(1 for r in gating if r["verdict"] == "pass")

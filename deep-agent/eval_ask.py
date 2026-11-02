@@ -140,6 +140,11 @@ def propose_blocks(final):
     return PROPOSE_BLOCK_RE.findall(final or "")
 
 
+def _preview(text, limit=200):
+    """Evidence excerpt capped for narrow screens; an ellipsis marks cuts."""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def check_case(case, code, out, final, used, ledger_hit, timed_out):
     """Pure verdict for one finished case.
 
@@ -164,11 +169,11 @@ def check_case(case, code, out, final, used, ledger_hit, timed_out):
         if not hit:
             reasons.append(f"tools MISS: used={used} want one of={want}")
     if not case["anchor"].search(final):
-        reasons.append(f"anchor MISS in: {final[:400]}")
+        reasons.append(f"anchor MISS in: {_preview(final)}")
     for i, pattern in enumerate(case.get("must", [])):
         if not pattern.search(final):
             reasons.append(
-                f"must[{i}] MISS ({pattern.pattern!r}) in: {final[:400]}"
+                f"must[{i}] MISS ({pattern.pattern!r}) in: {_preview(final)}"
             )
     absent = case.get("absent")
     if absent is not None and absent.search(final):
@@ -251,7 +256,7 @@ def main(argv=None) -> int:
         results.append(res)
         for reason in res["reasons"]:
             print(f"  {reason}")
-        print(f"{res['verdict'].upper()} ({res['seconds']}s)")
+        print(f"{res['verdict'].upper()} {res['name']} ({res['seconds']}s)")
     gating = [r for r in results if r["gating"]]
     extra = [r for r in results if not r["gating"]]
     g_pass = sum(1 for r in gating if r["verdict"] == "pass")

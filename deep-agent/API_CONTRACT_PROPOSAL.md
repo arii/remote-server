@@ -25,6 +25,9 @@ no server wiring exists yet.
 - The Ask flow (`POST /buttons/api/ask`, PROPOSE text protocol) is
   untouched. `propose_action` output reuses the exact PROPOSE block
   shape the server already parses, so the peer can share parsers.
+  Ask `REPORT` outcome lines are capped at 160 chars (ellipsis marks
+  cuts) for phone-sized progress tails; `FINAL:`/`PROPOSE` shapes are
+  unchanged.
 
 ## 2. New endpoint: resume a paused turn
 
@@ -124,7 +127,12 @@ Turn:
   `approval` event (adding `session_id`). Interrupt `id`s are
   LangGraph-internal; the server never sends them back.
 - exit `0` turn complete; `1` model/runtime failure (stdout holds a
-  `Sorry, ...` line); `2` bad argv; `3` needs approval.
+  `Sorry, ...` line — every failure branch prints it to stdout, never
+  stderr, with the exception detail capped at ~160 chars and the
+  `Sorry, ...` prefix kept verbatim so eval gates still classify the
+  run as invalid); `2` bad argv; `3` needs approval.
+- Replies are written for a phone-sized screen: the agent prompts ask
+  for short paragraphs or a short list, no wide tables.
 
 Resume:
 
