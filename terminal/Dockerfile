@@ -86,6 +86,10 @@ RUN mkdir -p /etc/ttyd \
     open('/etc/ttyd/index.html', 'w').write(html.replace('</body>', widget + '</body>'))" \
  && rm -f /tmp/takeover.html
 
+# Task-scoped Pi profile scripts (pi-code, pi-review, pi-triage)
+COPY bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/pi-*
+
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
 COPY config.kdl /root/.config/zellij/config.kdl
