@@ -2588,6 +2588,17 @@ a { color: #8bf; }
 .pi-tool-result-details pre { margin: 0.3em 0 0; max-height: 250px; overflow-y: auto;
   font-size: 0.85em; background: #0d1117; }
 #outputDrawer pre { border: none; border-radius: 0; max-height: 45vh; margin: 0; }
+.run-cmd-details { margin: 0.5em 0 0.2em; font-size: 0.85em; opacity: 0.8; }
+.run-cmd-details summary { cursor: pointer; color: var(--text-muted); }
+.run-cmd-details pre { margin-top: 0.2em; background: rgba(0,0,0,0.3); font-size: 0.85em; }
+.run-summary-list { margin: 0.4em 0; }
+.run-summary-row { padding: 0.35em 0.5em; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 0.9em; display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
+.run-summary-row:last-child { border-bottom: none; }
+.run-summary-details { margin-top: 0.6em; }
+.run-summary-details summary { cursor: pointer; color: var(--text-muted); font-size: 0.88em; }
+.audit-counts { margin: 0.4em 0 0.6em; font-size: 0.95em; font-weight: 500; }
+.audit-table { width: 100%; border-collapse: collapse; margin-top: 0.4em; font-size: 0.88em; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid var(--border); }
 /* confirm modal (replaces window.confirm) */
 #confirmModal { position: fixed; inset: 0; z-index: 2000; display: none;
   align-items: center; justify-content: center; background: rgba(0,0,0,0.6); padding: 1em; }
@@ -3300,6 +3311,110 @@ function ansiToHtml(text) {
   lines.push(cur);
   return lines.map(ansiLineToHtml).join("\n");
 }
+
+function relativizePath(path, repo) {
+  if (!path || typeof path !== "string") return "";
+  let p = path.trim();
+  p = p.replace(/^\/srv\/repos\/[^\/]+\//, "");
+  p = p.replace(/^\/srv\/remote-server\//, "");
+  p = p.replace(/^\/srv\//, "");
+  p = p.replace(/^\/home\/[^\/]+\/repos\/[^\/]+\//, "");
+  p = p.replace(/^\/home\/[^\/]+\/remote-server\//, "");
+  p = p.replace(/^\/home\/[^\/]+\//, "");
+  return p;
+}
+
+function splitRunCommand(rawText) {
+  const lines = (rawText || "").split("\n");
+  const cmdLines = [];
+  const bodyLines = [];
+  let pastLeadingCmd = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!pastLeadingCmd && (l.startsWith("$ ") || l.startsWith("docker compose exec"))) {
+      cmdLines.push(l);
+    } else {
+      if (cmdLines.length > 0) pastLeadingCmd = true;
+      bodyLines.push(l);
+    }
+  }
+  return {
+    command: cmdLines.join("\n").trim(),
+    body: bodyLines.join("\n")
+  };
+}
+
+function renderSyncAgentsSummary(bodyText, fullText, repo) {
+  let parsed = null;
+  const jsonStart = bodyText.indexOf("[");
+  const objStart = bodyText.indexOf("{");
+  let startIdx = -1;
+  let isArray = false;
+  if (jsonStart >= 0 && (objStart < 0 || jsonStart < objStart)) {
+    startIdx = jsonStart;
+    isArray = true;
+  } else if (objStart >= 0) {
+    startIdx = objStart;
+  }
+  if (startIdx >= 0) {
+    try {
+      const slice = bodyText.slice(startIdx);
+      parsed = JSON.parse(slice);
+    } catch (e) {
+      const endIdx = isArray ? bodyText.lastIndexOf("]") : bodyText.lastIndexOf("}");
+      if (endIdx > startIdx) {
+        try {
+          parsed = JSON.parse(bodyText.slice(startIdx, endIdx + 1));
+        } catch (e2) {}
+      }
+    }
+  }
+  let sessions = [];
+  if (Array.isArray(parsed)) {
+    sessions = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    sessions = parsed.sessions || parsed.agent_sessions || parsed.items || [];
+  }
+  if (!sessions || !sessions.length) {
+    return ansiToHtml(bodyText);
+  }
+  let html = '<div class="run-summary-list">';
+  sessions.forEach(s => {
+    const title = escHtml(s.title || s.id || "Untitled session");
+    const st = (s.state || "unknown").toLowerCase();
+    let badgeCls = "chip";
+    if (st.includes("stall") || st.includes("wait") || st.includes("pend")) badgeCls += " chip-warn";
+    else if (st.includes("done") || st.includes("complete") || st.includes("success")) badgeCls += " chip-ok";
+    else if (st.includes("fail") || st.includes("error")) badgeCls += " chip-fail";
+    let when = "";
+    try { if (s.updated) when = new Date(s.updated).toLocaleString(); } catch (e) {}
+    const sRepo = escHtml(s.repo || repo || projectRepo());
+    let link = "";
+    if (s.url) {
+      link = ` · <a href="${escHtml(s.url)}" target="_blank" rel="noopener">view</a>`;
+    }
+    html += `<div class="run-summary-row"><span class="${badgeCls}">${escHtml(s.state || "?")}</span> <strong>${title}</strong> · <span>${sRepo}</span>${when ? ' · <span>updated ' + escHtml(when) + '</span>' : ''}${link}</div>`;
+  });
+  html += '</div>';
+  html += `<details class="run-summary-details"><summary>Full JSON output (${Math.round((fullText || "").length / 1024)} KB)</summary><pre>${escHtml(fullText)}</pre></details>`;
+  return html;
+}
+
+function renderRunOutput(run) {
+  const raw = run.output || "";
+  const parts = splitRunCommand(raw);
+  let html = "";
+  if (run.action === "sync-agents" || run.action === "sync-nudge") {
+    html = renderSyncAgentsSummary(parts.body, raw, run.repo);
+  } else {
+    html = ansiToHtml(parts.body);
+  }
+  if (parts.command) {
+    html += `<details class="run-cmd-details"><summary>command</summary><pre class="cmd-run">${escHtml(parts.command)}</pre></details>`;
+  }
+  return html;
+}
+
 let lastRenderedOutput = null;
 
 // Last error line for the failure banner, read from the output
@@ -3490,7 +3605,7 @@ async function poll(id, action) {
     // Re-render only on change: re-parsing a 200KB tail every poll
     // would churn on a phone for no visible difference.
     if (run.output !== lastRenderedOutput) {
-      outEl.innerHTML = ansiToHtml(run.output);
+      outEl.innerHTML = renderRunOutput(run);
       lastRenderedOutput = run.output;
     }
     outEl.scrollTop = outEl.scrollHeight;
@@ -5752,15 +5867,89 @@ async function refreshJulesSessions() {
     el.appendChild(card);
   });
 }
+function renderIssueAuditOutput(data, container, repo) {
+  let parsed = null;
+  const rawText = data.output || "";
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (e) {
+    const s1 = rawText.indexOf("{");
+    const s2 = rawText.lastIndexOf("}");
+    if (s1 >= 0 && s2 > s1) {
+      try { parsed = JSON.parse(rawText.slice(s1, s2 + 1)); } catch (e2) {}
+    }
+  }
+
+  const items = (parsed && (parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
+  const totalCount = parsed ? (parsed.count !== undefined ? parsed.count : (parsed.total !== undefined ? parsed.total : (items ? items.length : 0))) : 0;
+
+  const countDiv = document.createElement("div");
+  countDiv.className = "audit-counts";
+  countDiv.textContent = `Audited issues: ${totalCount}`;
+  container.appendChild(countDiv);
+
+  if (items && items.length > 0) {
+    const table = document.createElement("table");
+    table.className = "audit-table";
+    table.innerHTML = "<thead><tr><th># / ID</th><th>Title / Finding</th><th>Path / Plan</th></tr></thead><tbody></tbody>";
+    const tbody = table.querySelector("tbody");
+    items.forEach(it => {
+      const tr = document.createElement("tr");
+      const num = it.number || it.id || it.issue || "";
+      const title = it.title || it.name || it.summary || "";
+      let rawPath = it.plan_path || it.path || it.file || "";
+      let relPath = relativizePath(rawPath, repo);
+      const url = it.url || it.html_url || (num && repo ? `https://github.com/${repo}/issues/${num}` : "");
+
+      const tdNum = document.createElement("td");
+      if (url) {
+        tdNum.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">#${escHtml(String(num))}</a>`;
+      } else {
+        tdNum.textContent = num ? `#${num}` : "—";
+      }
+
+      const tdTitle = document.createElement("td");
+      tdTitle.textContent = title || "(no title)";
+
+      const tdPath = document.createElement("td");
+      if (relPath) {
+        tdPath.innerHTML = `<code>${escHtml(relPath)}</code>`;
+      } else {
+        tdPath.textContent = "—";
+      }
+
+      tr.appendChild(tdNum);
+      tr.appendChild(tdTitle);
+      tr.appendChild(tdPath);
+      tbody.appendChild(tr);
+    });
+    container.appendChild(table);
+  }
+
+  // Full output remains accessible via collapsed details
+  const details = document.createElement("details");
+  details.className = "run-summary-details";
+  details.style.marginTop = "0.8em";
+  const summary = document.createElement("summary");
+  summary.textContent = "Full raw output";
+  const pre = document.createElement("pre");
+  pre.id = "planRawOutput";
+  pre.textContent = rawText || "(empty)";
+  details.appendChild(summary);
+  details.appendChild(pre);
+  container.appendChild(details);
+}
+
 async function runPlan(plan, extra) {
   const out = document.getElementById("planOut");
   const err = document.getElementById("planErr");
   out.innerHTML = '<span class="spinner"></span> Generating plan…';
   err.textContent = "";
+  const repo = projectRepo();
   const res = await fetchJson("/buttons/api/run-plan", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({repo: projectRepo(), plan: plan},
+    body: JSON.stringify(Object.assign({repo: repo, plan: plan},
                                       extra || {}))});
   const data = res.data || {};
   if (!res.ok) {
@@ -5771,7 +5960,8 @@ async function runPlan(plan, extra) {
   out.innerHTML = "";
   if (data.plan_path) {
     const p = document.createElement("p");
-    p.textContent = "Plan written to: " + data.plan_path;
+    const rel = relativizePath(data.plan_path, repo);
+    p.innerHTML = "Plan written to: <code>" + escHtml(rel) + "</code>";
     out.appendChild(p);
   }
   if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
@@ -5785,7 +5975,7 @@ async function runPlan(plan, extra) {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
-          repo: projectRepo(),
+          repo: repo,
           plan_content: data.output,
           plan_path: data.plan_path || ""
         })
@@ -5805,10 +5995,15 @@ async function runPlan(plan, extra) {
     };
     out.appendChild(runBtn);
   }
-  const pre = document.createElement("pre");
-  pre.id = "planRawOutput";
-  pre.textContent = data.output || "(empty)";
-  out.appendChild(pre);
+
+  if (plan === "issue-audit") {
+    renderIssueAuditOutput(data, out, repo);
+  } else {
+    const pre = document.createElement("pre");
+    pre.id = "planRawOutput";
+    pre.textContent = data.output || "(empty)";
+    out.appendChild(pre);
+  }
 }
 function renderPlanLiveChecklist(job, container) {
   let box = document.getElementById("planLiveBox");
