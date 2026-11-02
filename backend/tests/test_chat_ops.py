@@ -1,0 +1,305 @@
+"""Tests for the chat + ops routers (stdlib unittest only)."""
+
+import io
+import json
+import os
+import tempfile
+import threading
+import time
+import unittest
+
+try:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.api.routers import chat, ops
+
+    HAS_CLIENT = True
+except ImportError:
+    HAS_CLIENT = False
+
+
+class FakeStdout(io.StringIO):
+    def __init__(self, text, block=None):
+        super().__init__(text)
+        self._block = block
+
+    def read(self, n=-1):
+        if self._block is not None:
+            self._block.wait(timeout=10)
+        return super().read(n)
+
+
+class FakeProc:
+    def __init__(self, text="", block=None):
+        self.stdout = FakeStdout(text, block)
+        self.returncode = 0
+        self.terminated = False
+        self._block = block
+
+    def wait(self):
+        if self._block is not None:
+            self._block.wait(timeout=10)
+        return 0
+
+    def terminate(self):
+        self.terminated = True
+        if self._block is not None:
+            self._block.set()
+
+
+def make_client():
+    app = FastAPI()
+    app.include_router(chat.router)
+    app.include_router(ops.router)
+    return TestClient(app)
+
+
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class ChatOpsTest(unittest.TestCase):
+    def setUp(self):
+        self.client = make_client()
+        self._orig_repo = chat.get_repo_info
+        self._orig_spawn = chat.spawn_chat_process
+        self._orig_pipeline = chat.run_pi_pipeline
+        self._orig_takeover = ops.run_takeover
+        self._orig_wf = ops.fetch_workflow_health
+        chat.get_repo_info = lambda repo: {"gh": "arii/remote-server",
+                                           "td_cwd": "/srv/remote-server"}
+        from backend.core import get_repo_status as _real_status
+        self._orig_status = _real_status
+        import backend.core as _core
+        _core.get_repo_status = lambda name: {"repo": name}
+        import backend.api.routers.ops as _opsmod
+        _opsmod.get_repo_status = lambda name: {"repo": name}
+
+    def tearDown(self):
+        chat.get_repo_info = self._orig_repo
+        chat.spawn_chat_process = self._orig_spawn
+        chat.run_pi_pipeline = self._orig_pipeline
+        ops.run_takeover = self._orig_takeover
+        ops.fetch_workflow_health = self._orig_wf
+        import backend.core as _core
+        _core.get_repo_status = self._orig_status
+        import backend.api.routers.ops as _opsmod
+        del _opsmod.get_repo_status
+
+    def _sse_events(self, resp):
+        events = []
+        cur = None
+        data = []
+        for line in resp.text.splitlines():
+            if line.startswith("event:"):
+                cur = line[len("event:"):].strip()
+                data = []
+            elif line.startswith("data:"):
+                data.append(line[len("data:"):].strip())
+            elif line == "" and cur is not None:
+                events.append((cur, json.loads("".join(data))))
+                cur = None
+        return events
+
+    def test_chat_stream_post_to_completion(self):
+        chat.spawn_chat_process = lambda cmd: FakeProc("hello world")
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "read the logs",
+                                     "repo": "remote-server",
+                                     "session_id": "abc123def456"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/event-stream", resp.headers["content-type"])
+        events = self._sse_events(resp)
+        kinds = [e for e, _ in events]
+        self.assertIn("phase", kinds)
+        self.assertIn("token", kinds)
+        self.assertIn("done", kinds)
+        phases = [p["phase"] for e, p in events if e == "phase"]
+        self.assertEqual(phases[0], "prefill")
+        self.assertIn("tool_call", phases)  # "read the logs" hints tools
+        self.assertEqual(phases[-1], "done")
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertEqual(done["text"], "hello world")
+        self.assertFalse(done["aborted"])
+
+    def test_chat_stream_get_and_empty_prompt(self):
+        chat.spawn_chat_process = lambda cmd: FakeProc("x")
+        resp = self.client.get("/api/chat/stream",
+                               params={"prompt": "hi there",
+                                       "repo": "remote-server",
+                                       "session_id": "get123get123"})
+        self.assertEqual(resp.status_code, 200)
+        events = self._sse_events(resp)
+        self.assertTrue(any(e == "done" for e, _ in events))
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "   ",
+                                     "repo": "remote-server"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[0][0], "error")
+        self.assertEqual(events[0][1], {"error": "empty prompt"})
+
+    def test_chat_abort_flow(self):
+        block = threading.Event()
+        procs = []
+        chat.spawn_chat_process = lambda cmd: procs.append(
+            FakeProc("partial", block)) or procs[-1]
+        result = {}
+
+        def _stream():
+            with self.client.stream(
+                    "POST", "/api/chat/stream",
+                    json={"prompt": "keep going",
+                          "repo": "remote-server",
+                          "session_id": "abortme00001"}) as resp:
+                result["status"] = resp.status_code
+                chunks = []
+                for chunk in resp.iter_text():
+                    chunks.append(chunk)
+                    if len(chunks) == 1:
+                        # First flush arrived: abort while blocked.
+                        abort = self.client.post(
+                            "/api/chat/abort",
+                            json={"session_id": "abortme00001"})
+                        result["abort"] = abort.json()
+                        block.set()
+                result["text"] = "".join(chunks)
+
+        t = threading.Thread(target=_stream, daemon=True)
+        t.start()
+        t.join(timeout=30)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["abort"],
+                         {"ok": True, "session_id": "abortme00001"})
+        self.assertTrue(procs[0].terminated)
+        events = self._sse_events(type("R", (), {"text": result["text"]})())
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertTrue(done["aborted"])
+        phases = [p["phase"] for e, p in events if e == "phase"]
+        self.assertIn("aborted", phases)
+
+    def test_chat_abort_validation(self):
+        resp = self.client.post("/api/chat/abort", json={"session_id": ""})
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.post("/api/chat/abort",
+                               json={"session_id": "missing00000"})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_ask_suggest_pi_progress(self):
+        def _pipeline(kind, repo, instruction, log_path):
+            with open(log_path, "a") as f:
+                f.write("working…\n")
+            if kind == "suggest":
+                return {"repo": repo, "suggestions": [], "raw": "clean"}
+            return {"repo": repo, "reply": "answer",
+                    "proposal": None}
+
+        chat.run_pi_pipeline = _pipeline
+        resp = self.client.post("/api/suggest",
+                               json={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 200)
+        rid = resp.json()["id"]
+        self.assertRegex(rid, r"^[0-9a-f]{12}$")
+        for _ in range(100):
+            prog = self.client.get(f"/api/pi-progress/{rid}").json()
+            if prog["done"]:
+                break
+            time.sleep(0.05)
+        self.assertTrue(prog["done"])
+        self.assertIn("working", prog["output"])
+        self.assertEqual(prog["result"]["suggestions"], [])
+        resp = self.client.post("/api/ask", json={"repo": "remote-server",
+                                                  "instruction": "why slow?"})
+        arid = resp.json()["id"]
+        for _ in range(100):
+            prog = self.client.get(f"/api/pi-progress/{arid}").json()
+            if prog["done"]:
+                break
+            time.sleep(0.05)
+        self.assertEqual(prog["result"]["reply"], "answer")
+        # Validation mirrors buttons: bad instruction, bad rid.
+        resp = self.client.post("/api/ask", json={"repo": "remote-server",
+                                                  "instruction": "  "})
+        self.assertEqual(resp.status_code, 400)
+        resp = self.client.get("/api/pi-progress/nothex")
+        self.assertEqual(resp.status_code, 404)
+        resp = self.client.get("/api/pi-progress/aaaaaaaaaaaa")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_takeover(self):
+        ops.run_takeover = lambda: "takeover ok\n"
+        resp = self.client.post("/api/terminal/takeover")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True,
+                                       "output": "takeover ok\n"})
+
+    def test_workflow_health(self):
+        ops.fetch_workflow_health = lambda repo, gh: {
+            "repo": repo, "status": "healthy", "total_failing": 0,
+            "workflows": []}
+        resp = self.client.get("/api/workflow-health",
+                               params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "healthy")
+        resp = self.client.get("/api/workflow-health",
+                               params={"repo": "bad/repo!"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_workflow_health_fixture(self):
+        fixture = {"failing_runs": [{"name": "CI", "branch": "main",
+                                     "event": "push",
+                                     "url": "https://example.invalid/1"}]}
+        with tempfile.NamedTemporaryFile("w", suffix=".json",
+                                         delete=False) as fh:
+            json.dump(fixture, fh)
+            path = fh.name
+        old = os.environ.get("BUTTONS_FIXTURE_BRIEFING")
+        os.environ["BUTTONS_FIXTURE_BRIEFING"] = path
+        try:
+            resp = self.client.get("/api/workflow-health",
+                                   params={"repo": "remote-server"})
+        finally:
+            if old is None:
+                del os.environ["BUTTONS_FIXTURE_BRIEFING"]
+            else:
+                os.environ["BUTTONS_FIXTURE_BRIEFING"] = old
+            os.remove(path)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "failing")
+        self.assertEqual(body["total_failing"], 1)
+        self.assertIn("diagnosed_cause", body["workflows"][0])
+
+    def test_clear(self):
+        resp = self.client.post("/api/clear", json={})
+        self.assertEqual(resp.status_code, 404)
+        import backend.api.routers.jobs as jobs
+        resp = self.client.post("/api/clear", json={"id": "nope"})
+        self.assertEqual(resp.status_code, 404)
+        # Seed the record shape the registry itself manages.
+        with jobs.registry._lock:
+            jobs.registry.runs["clearprobe00"] = {
+                "id": "clearprobe00", "action": "x", "repo": "r",
+                "done": True, "exit_code": 0, "output": "old",
+                "seq": 9999, "started_at": 0, "finished_at": 0,
+                "last_output_at": 0}
+        try:
+            resp = self.client.post("/api/clear", json={})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), {"ok": True,
+                                           "id": "clearprobe00"})
+            self.assertEqual(
+                jobs.registry.runs["clearprobe00"]["output"], "")
+        finally:
+            with jobs.registry._lock:
+                jobs.registry.runs.pop("clearprobe00", None)
+
+    def test_health(self):
+        resp = self.client.get("/api/health")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("disk", body)
+        self.assertIn("memory", body)
+        self.assertIn("containers", body)
+
+
+if __name__ == "__main__":
+    unittest.main()
