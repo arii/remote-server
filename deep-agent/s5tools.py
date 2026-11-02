@@ -120,8 +120,9 @@ def read_repo_file(checkout, path, limit=3000):
 
 
 def grep_repo(checkout, pattern, limit=2000):
-    """Literal grep over a checkout (skips .git/node_modules/.venv).
-    Returns matches or a no-matches/REJECTED string."""
+    """Literal grep over a checkout (skips .git/node_modules/.venv and
+    generated/agent dirs). Returns matches or a no-matches/REJECTED
+    string."""
     if not pattern or len(pattern) > 120:
         return "REJECTED: bad pattern"
     try:
@@ -130,6 +131,7 @@ def grep_repo(checkout, pattern, limit=2000):
              "--exclude-dir=node_modules", "--exclude-dir=.venv",
              "--exclude-dir=__pycache__", "--exclude-dir=.boomtick",
              "--exclude-dir=chroma_db", "--exclude-dir=.claude",
+             "--exclude-dir=.muse",
              "--exclude=ledger.jsonl",
              "--", pattern, "."],
             cwd=checkout,

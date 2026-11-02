@@ -98,16 +98,18 @@ def read_repo_file(path: str) -> str:
 def grep_repo(pattern: str) -> str:
     """Search file contents in the repo checkout (read-only grep).
 
-    If a long pattern has no matches, retry with a shorter
-    distinctive fragment (e.g. '/buttons/api/ask' instead of
-    'POST /buttons/api/ask').
+    Always search the shortest distinctive fragment: for an HTTP
+    route use the path only (e.g. '/buttons/api/ask'), never the
+    method plus path ('POST ...' matches docs, never handler code).
+    Hits in docs or eval files are mentions, not the implementation:
+    answer from the file whose code handles the match.
 
     Args:
-        pattern: Literal search text.
+        pattern: Short literal search text.
     """
     # Delegate to the shared helper so log/index/ledger noise
-    # (.boomtick/, chroma_db/, .claude/, ledger.jsonl) never floods
-    # the -m 20 window and buries real hits like server.py.
+    # (.boomtick/, chroma_db/, .claude/, .muse/, ledger.jsonl) never
+    # floods the -m 20 window and buries real hits like server.py.
     return s5tools.grep_repo(_checkout, pattern)
 
 
