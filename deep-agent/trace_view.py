@@ -22,7 +22,9 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli
+
+cli.bootstrap()
 
 import runs  # noqa: E402
 
@@ -311,13 +313,11 @@ def main(argv=None) -> int:
     if path is None or not os.path.isfile(path):
         # Stdout, like every Sorry line: exit 1 promises the reply
         # on stdout so chunk readers show it on the phone.
-        print(f"Sorry, no trace found for {args.ref!r}.")
-        return 1
+        return cli.sorry(f"Sorry, no trace found for {args.ref!r}.")
     try:
         events, malformed = parse_trace(path)
     except OSError as exc:
-        print(f"Sorry, cannot read trace {path}: {exc}.")
-        return 1
+        return cli.sorry(f"Sorry, cannot read trace {path}: {exc}.")
     label = os.path.basename(path)
     if label.endswith(".jsonl"):
         label = label[:-len(".jsonl")]
@@ -326,8 +326,7 @@ def main(argv=None) -> int:
             with open(args.html, "w", encoding="utf-8") as f:
                 f.write(render_html(events, malformed, label))
         except OSError as exc:
-            print(f"Sorry, cannot write {args.html}: {exc}.")
-            return 1
+            return cli.sorry(f"Sorry, cannot write {args.html}: {exc}.")
         size = os.path.getsize(args.html)
         print(f"wrote {args.html} ({size} bytes, {len(events)} events)")
     if args.text or not args.html:
