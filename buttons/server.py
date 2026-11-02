@@ -73,7 +73,7 @@ STACK_GH = "arii/remote-server"
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight",
-                       "create-plan"}
+                       "create-plan", "merge-approved"}
 
 
 def _td_prefix(cwd):
@@ -629,10 +629,15 @@ def _suggest_from_briefing(brief):
     """SUGGEST lines mapped deterministically from briefing data.
     Same runnable shapes Pi was allowed to emit, in triage
     priority: conflicts first (they block everything), then
-    failing CI, then requested changes. The allowlist in
+    failing CI, then requested changes. Failing CI runs are
+    matched to their PR by branch. The allowlist in
     _parse_suggestions re-validates every line, so this mapping
-    can never smuggle a bad command into a Run button."""
+    can never smuggle a bad command into a Run button. Preflight
+    is deliberately never suggested: it is a pre-submit check
+    for coding agents, not a triage action — triage relies on
+    CI state instead."""
     lines = []
+    done = set()
     prs = [p for p in (brief.get("prs") or []) if isinstance(p, dict)]
     for pr in prs[:20]:
         num = pr.get("number")
@@ -642,20 +647,40 @@ def _suggest_from_briefing(brief):
             lines.append(
                 f"SUGGEST: td gh resolve-conflicts --pr {num} :: "
                 f"PR #{num} has merge conflicts")
+            done.add(num)
         elif pr.get("ci") == "failing":
             lines.append(
                 f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
                 f"PR #{num} CI is failing")
+            done.add(num)
         elif pr.get("review") == "CHANGES_REQUESTED":
             lines.append(
                 f"SUGGEST: td gh read-pr-reviews --pr {num} :: "
                 f"PR #{num} has requested changes")
-    if not lines and (brief.get("attention") or brief.get("failing_runs")):
-        lines.append(
-            "SUGGEST: td --json preflight :: attention items remain; "
-            "run the diagnostic sweep")
+            done.add(num)
+    by_branch = {}
+    for pr in prs:
+        num = pr.get("number")
+        branch = pr.get("branch")
+        if isinstance(num, int) and num > 0 and branch \
+                and num not in done:
+            by_branch.setdefault(str(branch), num)
+    for run in brief.get("failing_runs") or []:
+        if not isinstance(run, dict):
+            continue
+        num = by_branch.get(str(run.get("branch") or ""))
+        if num and num not in done:
+            lines.append(
+                f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
+                f"CI failing on {run.get('branch')} (PR #{num})")
+            done.add(num)
     if not lines:
-        lines.append("SUGGEST: none :: All queues clear and checks green.")
+        if brief.get("attention") or brief.get("failing_runs"):
+            lines.append(
+                "SUGGEST: none :: open items need CI/attention first; "
+                "see note.")
+        else:
+            lines.append("SUGGEST: none :: All queues clear and checks green.")
     return "\n".join(lines) + "\n"
 
 
@@ -1398,6 +1423,13 @@ ACTIONS = {
         "sub": "Runs one validated td command from the suggestions below.",
         "confirm": False,
         "hidden": True,
+        "steps": [],
+    },
+    "merge-approved": {
+        "label": "Merge approved PRs",
+        "group": "Briefing",
+        "sub": "Agent merges approved, green, mergeable PRs (repo from picker above)",
+        "confirm": True,
         "steps": [],
     },
 }
@@ -2423,6 +2455,12 @@ def run_action(run_id, action, repo="tech-dancer"):
             else:
                 rewritten.append(step)
         steps = rewritten
+    if action == "merge-approved":
+        # Steps are built from the picked repo's discovered gh path
+        # (charset-validated, never from the client), like run-td.
+        prefix = _td_prefix("/srv/remote-server/deep-agent")
+        steps = [EXEC + [prefix + ".venv/bin/python merge_approved.py "
+                         f"{repos[repo]['gh']}"]]
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
@@ -3306,7 +3344,7 @@ async function startRun(name, label, confirmFlag, dangerFlag) {
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
   const body = {action: name};
-  if (name === "briefing-td" || name === "warm-context" || name === "preflight") {
+  if (name === "briefing-td" || name === "warm-context" || name === "preflight" || name === "create-plan" || name === "merge-approved") {
     const picker = document.getElementById("briefingRepo");
     if (picker) body.repo = picker.value;
   }
@@ -3937,6 +3975,7 @@ function renderBriefing(b) {
     chip("CI " + pr.ci, pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
     chip("merge " + pr.merge, pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
     if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.overlaps && pr.overlaps.with && pr.overlaps.with.length) chip("overlaps #" + pr.overlaps.with.join(", #"), "chip-warn");
     if (pr.draft) chip("draft");
     if (pr.stale) chip("stale", "chip-warn");
     chip(pr.updated);
@@ -5322,6 +5361,7 @@ function renderEnrichedPrDetails(pr) {
     chip("CI: " + (pr.ci || "unknown"), pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
     chip("Merge: " + (pr.merge || "unknown"), pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
     if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.overlaps && pr.overlaps.with && pr.overlaps.with.length) chip("overlaps #" + pr.overlaps.with.join(", #"), "chip-warn");
     if (pr.draft) chip("Draft");
   }
 
@@ -7554,6 +7594,7 @@ class Handler(BaseHTTPRequestHandler):
                             "ci": found_pr.get("ci", "passing"),
                             "merge": found_pr.get("merge", "clean"),
                             "conflicted": found_pr.get("conflicted", False),
+                            "overlaps": found_pr.get("overlaps", {"with": [], "files": []}),
                             "draft": found_pr.get("draft", False),
                             "verdicts": found_pr.get("verdicts", []),
                             "reviews": found_pr.get("reviews_picked", []),
