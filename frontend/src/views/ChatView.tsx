@@ -60,11 +60,19 @@ function SessionPane({
   );
 }
 
+function formatStarted(started: unknown): string {
+  if (typeof started === 'number') {
+    return new Date(started > 1e12 ? started : started * 1000).toLocaleString();
+  }
+  if (typeof started === 'string' && started) {
+    const parsed = new Date(started);
+    return Number.isNaN(parsed.getTime()) ? started : parsed.toLocaleString();
+  }
+  return '';
+}
+
 function sessionDetailTitle(detail: AgentSessionDetail): string {
-  const when =
-    typeof detail.started === 'number'
-      ? new Date(detail.started > 1e12 ? detail.started : detail.started * 1000).toLocaleString()
-      : (detail.started ?? '');
+  const when = formatStarted(detail.started);
   return `${detail.repo} · ${detail.turns.length} turn(s)${when ? ` · ${when}` : ''}`;
 }
 

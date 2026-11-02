@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
+import { cleanBriefingLine } from './views/BriefingView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
 
@@ -47,6 +48,31 @@ describe('history utils', () => {
     expect(rows[0].recovery).toBe('');
   });
 
+  it('collapses consecutive job lifecycle chatter into one activity row', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'job', event: 'step auto-done', ts: 3 },
+        { kind: 'job', event: 'created', ts: 2 },
+        { kind: 'job', event: 'step done', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toMatch(/Job activity ×3/);
+    expect(rows[0].recovery).toBe('');
+  });
+
+  it('keeps mixed-kind routine chatter in separate rows', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'chat', event: 'chat started', ts: 2 },
+        { kind: 'job', event: 'created', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(2);
+  });
+
   it('sorts newest first using real job timestamps', () => {
     const rows = toHistoryRows(
       [
@@ -70,6 +96,27 @@ describe('history fixtures (?mock=1)', () => {
     const w = loadWorkflowHealth();
     expect(w.workflows.length).toBeGreaterThanOrEqual(1);
     expect(w.workflows[0].diagnosed_cause).toBeTruthy();
+  });
+});
+
+describe('briefing sanitation', () => {
+  it('strips reviewer HTML comments and caps length', () => {
+    const line =
+      "- #243: @boomtick[bot] APPROVED — '<!-- ai-review-count: 1 --> <!-- x -->'" +
+      ` ${'detail '.repeat(60)}`;
+    const clean = cleanBriefingLine(line);
+    expect(clean).not.toContain('<!--');
+    expect(clean).toContain('APPROVED');
+    expect(clean.length).toBeLessThanOrEqual(280);
+  });
+
+  it('strips unclosed trailing comments and review-state blobs', () => {
+    const clean = cleanBriefingLine(
+      "- #243: APPROVED '<!-- ai-review-state: eyJmaW5kaW5ncyI6W10",
+    );
+    expect(clean).not.toContain('<!--');
+    expect(clean).not.toContain('eyJmaW5kaW5ncyI6W10');
+    expect(clean).toContain('APPROVED');
   });
 });
 

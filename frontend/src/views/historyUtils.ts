@@ -44,9 +44,11 @@ interface FlatEntry {
   routine: boolean;
 }
 
-// Routine lifecycle chatter (chat start/finish/abort): true but noisy.
-// Consecutive runs collapse into one "activity" row (see toHistoryRows).
-const ROUTINE_RE = /^chat (started|finished|aborted)/i;
+// Routine lifecycle chatter (chat start/finish/abort, job step progress):
+// true but noisy. Consecutive same-kind runs collapse into one
+// "activity" row (see toHistoryRows).
+const ROUTINE_RE =
+  /^(chat (started|finished|aborted)|step (auto-?done|done|started)|created|job$)/i;
 
 function isFailure(kind: string, raw: string, summary: string): boolean {
   if (/fail|error|refus|reject|conflict|not permitted|aborted/i.test(raw)) return true;
@@ -107,7 +109,7 @@ function jobToEntry(j: JobRecord): FlatEntry {
   return {
     kind: j.kind || 'job',
     summary,
-    at: status,
+    at: rowTime(j.at ?? j.created_at),
     rawAt: jobTime(j),
     failed: /fail|error/i.test(status),
     routine: false,
@@ -137,13 +139,18 @@ function sameFailure(a: FlatEntry, b: FlatEntry): boolean {
   return a.kind === b.kind && a.summary === b.summary;
 }
 
+function activityLabel(kind: string, count: number): string {
+  const what = kind === 'chat' ? 'Chat session' : kind === 'job' ? 'Job' : 'Routine';
+  return `${what} activity ×${count}`;
+}
+
 function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
   const routineRun = entry.routine && count > 1;
   return {
     key: `${entry.kind}-${entry.summary}-${index}`,
     kind: entry.kind,
     summary: routineRun
-      ? `Chat session activity ×${count}`
+      ? activityLabel(entry.kind, count)
       : count > 1
         ? `${entry.summary} ×${count} — same failure repeated`
         : entry.summary,
@@ -160,8 +167,8 @@ function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
  * same kind + summary that sit next to each other in newest-first order
  * fold into one "×N" row. Equal failures separated by other rows stay
  * separate, so the count reflects one continuous incident, not a total.
- * Consecutive routine lifecycle rows (chat started/finished/aborted) fold
- * into one "Chat session activity ×N" row regardless of exact mix.
+ * Consecutive routine lifecycle rows of the same kind fold into one
+ * "<Kind> activity ×N" row regardless of exact mix.
  */
 export function toHistoryRows(
   jobs: JobRecord[],
@@ -179,7 +186,9 @@ export function toHistoryRows(
     while (
       i + count < flat.length &&
       (sameFailure(flat[i + count], flat[i]) ||
-        (flat[i].routine && flat[i + count].routine))
+        (flat[i].routine &&
+          flat[i + count].routine &&
+          flat[i + count].kind === flat[i].kind))
     ) {
       count++;
     }
