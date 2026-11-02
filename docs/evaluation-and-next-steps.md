@@ -67,7 +67,7 @@ User testing confirmed that button feedback on mobile needs targeted refinement:
 | **Status** | Stack | Quick health check (git status, compose ps, terminal image). | Active & fast (<1s). |
 | **Deploy buttons** | Stack | Rebuilds the buttons container via `terminal` container without self-kill. | Active. |
 | **Recreate terminal** | Stack | Recreates `terminal` after `.env` changes or if `zellij` hangs. | Active escape hatch. |
-| **Logs** | Stack | Tails 100 lines of `terminal` + `ollama` + Pi session audit. | Active. |
+| **Logs** | Stack | Tails 100 lines of `terminal` + `ollama` + Agent session audit. | Active. |
 | **Repo briefing** | Selected | Fast (~7s) triage of open PRs, CI, conflicts, and reviews. | Active (shows 0 PRs on clean boards). |
 | **Sync & nudge agents** | Stack / Repos | Syncs Jules sessions and runs automated CI feedback check. | Active (needs `JULES_API_KEY`). |
 | **Warm context** | Selected | Regenerates `.agent-context.json` for agent tools. | Active (~1s). |

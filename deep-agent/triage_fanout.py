@@ -20,7 +20,7 @@ from deepagents import create_deep_agent
 import ledger
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-MODEL_ID = "zai-org/GLM-5.3-Flash"
+MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 DEFAULT_REPOS = ["arii/tech-dancer", "arii/boomtick"]
 
 

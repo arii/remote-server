@@ -67,10 +67,76 @@ time docker exec ollama ollama run qwen3:8b "say hello in one sentence"
 Record the tok/s — the 6–12 / 3–6 estimates above are unmeasured and
 should be replaced with the real number.
 
+## Task-scoped tool profiles & CPU prefill latency
+
+Running local models on CPU (such as the AMD Ryzen 7 PRO 5850U on the S5) is
+extremely sensitive to initial prompt prefill token counts. When
+`@arii/boomtick-mcp` connects to Pi with all 35+ tools declared unconditionally,
+it injects ~2,500–3,500 tokens of JSON schemas into every conversation turn.
+
+Empirical benchmarks on the S5:
+- **All 35 MCP tools active:** ~190s prompt prefill on CPU.
+- **Pi core tools (`--no-mcp`):** 2.7s total execution time (~70x speedup).
+
+Small 7B–14B models on CPU suffer from extreme latency and instruction dilution
+when all schemas are loaded simultaneously. To keep benchmark turn latency
+**< 10s** for interactive code editing tasks, the terminal image provides
+task-scoped profile commands and selective MCP exposure.
+
+### Profile commands
+
+Baked into the terminal image (`/usr/local/bin/`):
+
+1. **`pi-code`** (interactive code editing):
+   ```bash
+   pi-code
+   ```
+   Runs `pi --no-mcp --tools read,edit,write,bash "$@"`. No MCP schemas are loaded,
+   yielding blazing fast ~2.7s execution times on CPU.
+2. **`pi-review`** (PR review):
+   ```bash
+   pi-review "review the latest PR diff"
+   ```
+   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr_diff,mcp__boomtick__github_comment_triage_summary "$@"`.
+   Scopes tools strictly to PR diffs and triage comments.
+3. **`pi-triage`** (issue & CI triage):
+   ```bash
+   pi-triage "triage failing runs on tech-dancer"
+   ```
+   Runs `pi --tools read,bash,mcp__boomtick__github_search_open_prs,mcp__boomtick__repo_read_ci_logs,mcp__boomtick__repo_get_changed_files "$@"`.
+   Scopes tools to PR search, CI logs, and changed file inspection.
+
+### Selective tool exposure in `mcp.json`
+
+Tool exposure can also be configured per MCP server via `toolExposure` in
+`terminal/pi-config/mcp.json` (inside the container: `/root/.pi/agent/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "boomtick": {
+      "exposure": "direct",
+      "toolExposure": {
+        "github_get_pr_diff": "direct",
+        "github_comment_triage_summary": "direct",
+        "github_search_open_prs": "direct",
+        "repo_read_ci_logs": "direct",
+        "repo_get_changed_files": "direct",
+        "*.*": "hidden"
+      }
+    }
+  }
+}
+```
+
+Pi flags can also override tool visibility on demand:
+- `--no-mcp`: disables all MCP servers and their schemas.
+- `--tools <list>`: explicitly allowlists tools (e.g. `pi --tools read,bash,mcp__boomtick__github_get_pr_diff`).
+
 ## BoomTick MCP tools (active 2026-10-27)
 
 Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, pinned to
-0.7.2 in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION` and run from
+0.8.1 in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION` and run from
 the baked `/usr/local/bin/boomtick-mcp` binary declared in
 `terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
 `"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
@@ -198,7 +264,7 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (CI smoke-tested; versions pinned except `td` and Muse, which track latest):
-  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.7.2, Muse CLI,
+  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` 0.8.1, Muse CLI,
   Python 3 + venv/pip, `td` (`boomtick-cli` from the BoomTick repo main branch in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
   `safe.directory = *`), Docker CLI. This covers the interpreters and

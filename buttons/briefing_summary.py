@@ -42,8 +42,9 @@ one section, never the whole briefing):
       CI from statusCheckRollup (failing / pending / passing /
       no checks), reviewDecision, mergeable.
   td --json gh status-board   work board (branch / issue / status)
-  td --json gh detect-conflicts --all   conflict scan (shape varies;
-      parsed defensively, see _conflicted_prs)
+  td --json gh detect-conflicts --all   overlap scan (shape varies;
+      parsed defensively, see _overlap_prs). NOTE: despite the command
+      name this reports PR-vs-PR file overlap, not merge conflicts.
   td --json repo workflow-runs   recent runs; failures only shown.
   td --json gh read-pr-reviews --pr N   per-PR review substance
       (GitHub review objects: user.login, state, body). The v1
@@ -62,7 +63,7 @@ one section, never the whole briefing):
       are counted, never claimed.
 
 Attention ranking (first match wins per PR, in this order):
-  conflicted > CI failing > changes requested > stale (>30 days).
+  conflicted > CI failing > changes requested > overlaps > stale (>30 days).
   A changes-requested item now quotes the review excerpt, so the
   action names what to address instead of just who objected.
 REVIEW_REQUIRED is deliberately NOT attention: in a solo repo most
@@ -232,9 +233,6 @@ def _session_repo(session):
         full = cand.get("full_name") or cand.get("fullName")
         if isinstance(full, str) and "/" in full:
             return full
-        name = cand.get("displayName") or cand.get("display_name") or ""
-        if isinstance(name, str) and REPO_KEY.lower() in name.lower():
-            return REPO_GH
     return None
 
 
@@ -255,15 +253,19 @@ TERMINAL_SESSION_STATES = {"SUCCEEDED", "COMPLETED", "FAILED",
                            "CANCELLED", "TERMINATED"}
 
 
-def _conflicted_prs(node, out, in_conf=False):
-    """Collect {number: files} from a detect-conflicts payload of
-    unknown shape. A dict counts when it pairs a PR number (or a
-    'prs' list of PR numbers, as td gh detect-conflicts --all emits)
-    with a truthy conflict indicator (a files list, hasConflicts) or
-    when it sits inside a conflicts list — e.g. {"conflicts": [{"prs":
-    [4814, 4826], "files": ["package.json"]}]}. Unknown shapes yield
-    nothing rather than a guessed conflict — mergeStateStatus still
-    covers it."""
+def _overlap_prs(node, out, in_conf=False):
+    """Collect {number: {"files": [...], "with": [...]}} from a
+    detect-conflicts payload of unknown shape.
+
+    NOTE on naming: `td gh detect-conflicts` does not detect merge
+    conflicts — it detects file overlap between open PRs (two PRs
+    touching the same paths). A dict counts when it pairs a PR number
+    (or a 'prs' list of PR numbers, as td emits) with a truthy overlap
+    indicator (a files list, hasConflicts) or when it sits inside a
+    conflicts list — e.g. {"conflicts": [{"prs": [4814, 4826],
+    "files": ["package.json"]}]}. "with" holds the other PR numbers
+    paired in the same dict. Unknown shapes yield nothing rather than
+    a guessed overlap."""
     if isinstance(node, dict):
         num = getf(node, "pr", "prNumber", "pr_number", "number")
         nums = [num] if isinstance(num, int) else []
@@ -281,17 +283,20 @@ def _conflicted_prs(node, out, in_conf=False):
         flag = node.get("hasConflicts", node.get("has_conflicts"))
         if nums and (files or flag is True or in_conf):
             for n in nums:
-                existing = out.setdefault(n, [])
+                entry = out.setdefault(n, {"files": [], "with": []})
                 for f in files:
-                    if f not in existing:
-                        existing.append(f)
+                    if f not in entry["files"]:
+                        entry["files"].append(f)
+                for peer in nums:
+                    if peer != n and peer not in entry["with"]:
+                        entry["with"].append(peer)
         for key, val in node.items():
-            _conflicted_prs(val, out,
-                            in_conf or key in ("conflicts", "conflictedFiles",
-                                               "conflicted_files"))
+            _overlap_prs(val, out,
+                         in_conf or key in ("conflicts", "conflictedFiles",
+                                            "conflicted_files"))
     elif isinstance(node, list):
         for item in node:
-            _conflicted_prs(item, out, in_conf)
+            _overlap_prs(item, out, in_conf)
 
 
 def fetch():
@@ -417,9 +422,9 @@ def analyze(data):
     text output is unchanged by the refactor."""
     prs = data["pr_list"]
     gh = data["gh"]
-    conflicted = {}
+    overlaps = {}
     if data["conf"]:
-        _conflicted_prs(data["conf"], conflicted)
+        _overlap_prs(data["conf"], overlaps)
 
     pr_infos = []
     attention = []
@@ -437,8 +442,15 @@ def analyze(data):
                  or getf(pr, "mergeStateStatus", "merge_state_status")
                  or "?")
         merge = str(merge).lower()
-        is_conflict = (isinstance(num, int) and num in conflicted) \
-            or merge == "dirty"
+        # True merge conflicts come only from GitHub's own mergeability
+        # verdict (mergeStateStatus DIRTY). The td overlap scan is PR-vs-PR
+        # file overlap, not mergeability — it must never set the
+        # conflicted flag (it once marked every overlapping PR, drafts
+        # included, as conflicted with base).
+        is_conflict = merge == "dirty"
+        ov = overlaps.get(num, {}) if isinstance(num, int) else {}
+        ov_peers = sorted(ov.get("with", []))
+        ov_files = sorted(ov.get("files", []))
         review = getf(view, "reviewDecision", "review_decision")
         pr_reviews = data["reviews"].get(num, []) \
             if isinstance(num, int) else []
@@ -483,6 +495,7 @@ def analyze(data):
             "draft": draft, "updated": updated_day, "ci": ci,
             "failing": failing, "merge": merge,
             "conflicted": bool(is_conflict), "stale": stale,
+            "overlaps": {"with": ov_peers, "files": ov_files},
             "review": review, "line": f"- {label} {detail}",
             "verdicts": [{"state": s, "user": u}
                          for s, (u, _b) in sorted(latest_by_state.items())],
@@ -508,6 +521,12 @@ def analyze(data):
                 if body:
                     item += f": '{body}'"
             attention.append((2, item, f"<!-- action:review pr:{num} -->"))
+        elif ov_peers:
+            peers = ", ".join(f"#{p}" for p in ov_peers)
+            on_files = ", ".join(ov_files[:3]) if ov_files else "shared files"
+            attention.append((2, f"{label} — overlaps with {peers} on "
+                                f"{on_files} (coordinate merge order)",
+                             f"<!-- action:review pr:{num} -->"))
         elif stale:
             attention.append((3, f"{label} — stale (updated {updated_day})",
                              f"<!-- action:review pr:{num} -->"))
@@ -569,18 +588,29 @@ def analyze(data):
     else:
         board_lines.append("No work-board items.")
 
-    conflicts_list = [{"number": num, "files": files}
-                      for num, files in sorted(conflicted.items())]
+    conflicts_list = [{"number": p["number"], "merge": "dirty"}
+                      for p in pr_infos if p["conflicted"]]
     conflicts_lines = []
-    if data["conf_err"]:
-        conflicts_lines.append(
-            f"Conflict scan unavailable: {data['conf_err']}")
-    elif conflicted:
-        for num, files in sorted(conflicted.items()):
-            conflicts_lines.append(f"- PR #{num}"
-                                   + (f": {', '.join(files)}" if files else ""))
+    if conflicts_list:
+        for entry in conflicts_list:
+            conflicts_lines.append(f"- PR #{entry['number']} (merge: dirty)")
     else:
         conflicts_lines.append("None detected.")
+    overlaps_list = [{"number": num, "with": sorted(e["with"]),
+                      "files": sorted(e["files"])}
+                     for num, e in sorted(overlaps.items())]
+    overlaps_lines = []
+    if data["conf_err"]:
+        overlaps_lines.append(f"Overlap scan unavailable: {data['conf_err']}")
+    elif overlaps_list:
+        for entry in overlaps_list:
+            peers = ", ".join(f"#{p}" for p in entry["with"]) or "—"
+            files = ", ".join(entry["files"]) if entry["files"] \
+                else "shared files"
+            overlaps_lines.append(f"- PR #{entry['number']} overlaps with "
+                                  f"{peers} on: {files}")
+    else:
+        overlaps_lines.append("None detected.")
 
     runs = getf(data["runs"], "workflow_runs", "workflowRuns",
                 default=[]) if data["runs"] else []
@@ -682,13 +712,12 @@ def analyze(data):
             item = f"- {title} — {state.lower()}"
             if created:
                 item += f" — {created}"
-            if repo == REPO_GH:
+            if repo == REPO_GH or (repo and (repo == REPO_KEY or repo.endswith("/" + REPO_KEY))):
                 matched.append(item)
             elif repo is not None:
                 jules_other += 1
             else:
-                jules_unscoped += 1
-                matched.append(item + " (repo unscoped)")
+                jules_other += 1
         if matched:
             jules_lines.extend(matched)
         else:
@@ -714,6 +743,7 @@ def analyze(data):
         "board_err": data["board_err"],
         "conflicts": conflicts_list, "conflicts_lines": conflicts_lines,
         "conf_err": data["conf_err"],
+        "overlaps": overlaps_list, "overlaps_lines": overlaps_lines,
         "failing_runs": failing_runs, "workflow_lines": workflow_lines,
         "runs_err": data["runs_err"],
         "jules": {"items": jules_items, "other": jules_other,
@@ -749,6 +779,9 @@ def build(data, analysis=None):
     lines.append("")
     lines.append("## Conflicts")
     lines.extend(a["conflicts_lines"])
+    lines.append("")
+    lines.append("## Overlaps")
+    lines.extend(a["overlaps_lines"])
     lines.append("")
     lines.append("## Workflow health")
     lines.extend(a["workflow_lines"])

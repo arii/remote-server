@@ -118,5 +118,34 @@ class TestExecutablePlans(unittest.TestCase):
         self.assertEqual(job["outcome"], "done")
 
 
+    def test_plans_box_validation_and_empty_states_in_server(self):
+        with open("buttons/server.py", "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Check disabled-until-valid buttons and inline reason elements
+        self.assertIn('reviewPrReason', content)
+        self.assertIn('planReviewReason', content)
+        self.assertIn('planAggReason', content)
+        self.assertIn('"loadPrDetailsBtn"', content)
+        self.assertIn('"planReviewBtn"', content)
+        self.assertIn('"planAggBtn"', content)
+
+        # Check onchange validation handlers
+        self.assertIn('revSel.onchange', content)
+        self.assertIn('planSel.onchange', content)
+        self.assertIn('aggSel.onchange', content)
+
+        # Check workflow-audit result + error rendering
+        self.assertIn('renderWorkflowAuditOutput', content)
+        self.assertIn('renderStructuredAuditOutput', content)
+        self.assertIn('Audited workflows', content)
+        self.assertIn('planWorkflowAuditBtn', content)
+
+        # Check empty-state strings
+        self.assertIn("No open PRs", content)
+        self.assertIn("No open PRs ✓", content)
+        self.assertIn("No plans yet", content)
+
+
 if __name__ == "__main__":
     unittest.main()

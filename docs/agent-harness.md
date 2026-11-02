@@ -166,7 +166,7 @@ Fallback chain when the $10 runs out: Gemini free-tier quotas → 2.5 Flash-Lite
 
 **What runs 24/7 on the box vs event-triggered:**
 - 24/7 (Docker `unless-stopped`): Ollama (model server), OpenClaw gateway, Tailscale (phone access), the GitHub Actions self-hosted runner (idle until a PR event).
-- Event-triggered: Gemini CLI / PR-Agent review jobs (GitHub `pull_request` webhook → runner → review via Gemini/local Ollama → comments posted), OpenClaw cron skills, Pi sessions (on-demand terminal).
+- Event-triggered: Gemini CLI / PR-Agent review jobs (GitHub `pull_request` webhook → runner → review via Gemini/local Ollama → comments posted), OpenClaw cron skills, Agent sessions (on-demand terminal).
 - GitHub-side (no box resources): Copilot code review.
 
 **Why not the others:** OpenHands needs frontier-class models and nested Docker — wrong for this box. Aider is excellent but interactive-only; it becomes the *engine* inside a LangGraph custom loop in Phase 3, not the product. Goose is the fallback if OpenClaw's security churn or chat-channel model doesn't fit — same Ollama backend, less built-in. LangChain from day one is over-engineering; buy the product (OpenClaw), build the framework only when the product constrains you.

@@ -1,1 +1,39 @@
-{"mcpServers":{"boomtick":{"args":[],"command":"/usr/local/bin/boomtick-mcp","env":{"APP_ID":"4321063","APP_PRIVATE_KEY":"!cat /srv/remote-server/boomtick.2026-10-28.private-key.pem","BOOMTICK_REPO_PATH":"/srv/repos/tech-dancer","GITHUB_APP_ID":"4321063","GITHUB_APP_PRIVATE_KEY":"!cat /srv/remote-server/boomtick.2026-10-28.private-key.pem","GITHUB_OWNER":"arii","GITHUB_PRIVATE_KEY":"!cat /srv/remote-server/boomtick.2026-10-28.private-key.pem","GITHUB_REPO":"tech-dancer","GITHUB_TOKEN":"${GITHUB_TOKEN}"},"exposure":"direct","toolExposure":{"*.*":"hidden"}},"browser-mcp":{"args":["-y","@browsermcp/mcp@latest"],"command":"npx","env":{"BROWSER_MCP_HOME":"/root/.local/share/browsermcp"},"exposure":"direct"}}}
+{
+  "mcpServers": {
+    "boomtick": {
+      "args": [],
+      "command": "/usr/local/bin/boomtick-mcp",
+      "env": {
+        "APP_ID": "4321063",
+        "APP_PRIVATE_KEY": "!cat /srv/remote-server/boomtick.2026-10-28.private-key.pem",
+        "BOOMTICK_REPO_PATH": "/srv/repos/tech-dancer",
+        "GITHUB_APP_ID": "4321063",
+        "GITHUB_APP_PRIVATE_KEY": "!cat /srv/remote-server/boomtick.2026-10-28.private-key.pem",
+        "GITHUB_OWNER": "arii",
+        "GITHUB_PRIVATE_KEY": "!cat /srv/remote-server/boomtick.2026-10-28.private-key.pem",
+        "GITHUB_REPO": "tech-dancer",
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "exposure": "direct",
+      "toolExposure": {
+        "github_get_pr_diff": "direct",
+        "github_comment_triage_summary": "direct",
+        "github_search_open_prs": "direct",
+        "repo_read_ci_logs": "direct",
+        "repo_get_changed_files": "direct",
+        "*.*": "hidden"
+      }
+    },
+    "browser-mcp": {
+      "args": [
+        "-y",
+        "@browsermcp/mcp@latest"
+      ],
+      "command": "npx",
+      "env": {
+        "BROWSER_MCP_HOME": "/root/.local/share/browsermcp"
+      },
+      "exposure": "direct"
+    }
+  }
+}

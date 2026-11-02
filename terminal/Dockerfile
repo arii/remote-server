@@ -16,7 +16,7 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-ARG BOOMTICK_MCP_VERSION=0.7.2
+ARG BOOMTICK_MCP_VERSION=0.8.1
 # Tracks BoomTick main so td updates flow on every terminal rebuild; pin to a cli-vX.Y.Z tag to freeze.
 ARG BOOMTICK_CLI_REF=main
 
@@ -85,6 +85,10 @@ RUN mkdir -p /etc/ttyd \
     widget = open('/tmp/takeover.html').read(); \
     open('/etc/ttyd/index.html', 'w').write(html.replace('</body>', widget + '</body>'))" \
  && rm -f /tmp/takeover.html
+
+# Task-scoped Pi profile scripts (pi-code, pi-review, pi-triage)
+COPY bin/ /usr/local/bin/
+RUN chmod +x /usr/local/bin/pi-*
 
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal

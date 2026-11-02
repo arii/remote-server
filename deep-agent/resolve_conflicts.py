@@ -21,7 +21,7 @@ from deepagents.backends import FilesystemBackend
 
 import ledger
 
-MODEL_ID = "zai-org/GLM-5.3-Flash"
+MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 DEFAULT_BASE = "origin/main"
 
 WORKTREE = None

@@ -73,7 +73,7 @@ STACK_GH = "arii/remote-server"
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 REPO_SCOPED_ACTIONS = {"briefing-td", "warm-context", "preflight",
-                       "create-plan"}
+                       "create-plan", "merge-approved"}
 
 
 def _td_prefix(cwd):
@@ -184,6 +184,8 @@ def _discover_repos(force=False):
 
 
 def _default_repo(repos):
+    if "remote-server" in repos:
+        return "remote-server"
     if "tech-dancer" in repos:
         return "tech-dancer"
     return sorted(repos)[0]
@@ -302,9 +304,7 @@ def _repo_strips_html(repos):
             f'<div class="repo" data-repo-pick="{name}">'
             f'<div class="reponame">'
             f'<a href="https://github.com/{gh}">{gh}</a></div>'
-            f'<div class="reposcope">{scope}</div>'
-            f'<div class="repostatus" data-repo-status="{gh}">'
-            "Auto-pull: not yet</div></div>")
+            f'<div class="reposcope">{scope}</div></div>')
     return "\n".join(out)
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
@@ -345,6 +345,52 @@ def _chat_abort_session(session_id):
 
 def _pi_progress_path(rid):
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
+
+
+HARNESS_LEDGER_PATH = "/srv/remote-server/deep-agent/ledger.jsonl"
+LEDGER_TAIL = 100
+
+
+def _ledger_sessions():
+    """Harness ledger runs as session rows (newest 100). Never
+    raises: a missing/unreadable ledger degrades to no rows. Row
+    ids are ledger line numbers, stable as the file grows."""
+    try:
+        proc = subprocess.run(
+            EXEC + [f"cat -n {HARNESS_LEDGER_PATH} | tail -n {LEDGER_TAIL}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True)
+        if proc.returncode != 0:
+            return []
+    except Exception:
+        return []
+    rows = []
+    for line in proc.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            n = int(parts[0])
+            e = json.loads(parts[1])
+        except Exception:
+            continue
+        if not isinstance(e, dict):
+            continue
+        calls = e.get("tool_calls") or []
+        title = (f"{e.get('script') or 'agent'} · "
+                 f"{e.get('model') or '?'} · {len(calls)} tool calls")
+        rows.append({
+            "file": f"ledger-{n}.jsonl",
+            "id": f"ledger-{n}",
+            "mtime": e.get("ts") or 0,
+            "cwd": "",
+            "repo": "",
+            "title": title[:80],
+            "kind": "ledger",
+            "source": "ledger",
+            "done": True,
+        })
+    return rows
 
 
 def _pi_start(kind, repo, instruction=None):
@@ -427,45 +473,70 @@ def _pi_thread(rid, kind, repo, instruction):
                             r["finished_at"] = time.time()
                     return
 
-                prompt = _suggest_prompt(repo, _suggest_context(brief))
-            else:
-                prompt = _ask_prompt(repo, instruction)
-
-            # Enforce context budget on prompt payload before passing to local LLM
-            prompt = context_filter.enforce_context_budget(prompt, max_tokens=4000)
-
-            b64 = base64.b64encode(prompt.encode()).decode()
-            # The prompt travels base64-encoded: its alphabet is
-            # shell-safe, so briefing titles or free-text
-            # instructions carrying quotes or $ cannot break out
-            # of the pi argument.
-            cmd = (_td_prefix(info["td_cwd"]) +
-                   'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-                   ' | base64 -d)"')
-            f.write("Asking Pi (local model, may take minutes)…\n")
-            f.flush()
-        # stdout+stderr go to the file so the progress endpoint
-        # streams them live; nothing is parsed until done.
-        proc = subprocess.run(
-            EXEC + [cmd], stdout=open(path, "a"),
-            stderr=subprocess.STDOUT, timeout=600, text=True)
-        raw = open(path).read()
-        with pi_runs_lock:
-            r = pi_runs.get(rid)
-            if r is None:
+                # Harness engine: deterministic suggestions mapped
+                # from the briefing plus a local-model explanation.
+                # No Pi process is spawned on this path.
+                f.write("Running deterministic triage…\n")
+                f.flush()
+                suggest_text = _suggest_from_briefing(brief)
+                f.write(suggest_text)
+                f.flush()
+                f.write("Explaining with local model…\n")
+                f.flush()
+                estdout = ""
+                try:
+                    eproc = subprocess.run(
+                        EXEC + ["cd /srv/remote-server/deep-agent && "
+                                ".venv/bin/python triage_explainer.py "
+                                f"{info['gh']}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=600, text=True)
+                    estdout = eproc.stdout or ""
+                except Exception as exc:
+                    estdout = f"Explainer unavailable: {exc}\n"
+                note = ""
+                for eline in estdout.splitlines():
+                    if eline.startswith("FINAL:"):
+                        note = eline[len("FINAL:"):].strip()
+                        break
+                f.write(estdout[-1000:])
+                f.flush()
+                with pi_runs_lock:
+                    r = pi_runs.get(rid)
+                    if r is not None:
+                        r["result"] = {
+                            "repo": repo,
+                            "suggestions": _parse_suggestions(suggest_text),
+                            "note": note[:1000],
+                            "raw": (suggest_text + estdout)[-2000:],
+                        }
+                        r["done"] = True
+                        r["finished_at"] = time.time()
                 return
-            if kind == "suggest":
-                parsed_suggs = _parse_suggestions(raw)
-                note = _extract_suggestion_note(raw, parsed_suggs)
-                r["result"] = {"repo": repo,
-                               "suggestions": parsed_suggs,
-                               "note": note,
-                               "raw": raw[-2000:]}
             else:
-                r["result"] = {"repo": repo, "reply": raw[-6000:],
-                               "proposal": _parse_proposal(raw)}
-            r["done"] = True
-            r["finished_at"] = time.time()
+                # Ask agent path: runs ask_investigator.py in deep-agent venv
+                f.write("Investigating with local agent…\n")
+                f.flush()
+                b64 = base64.b64encode(instruction.encode()).decode()
+                cmd = ("cd /srv/remote-server/deep-agent && "
+                       f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
+                proc = subprocess.run(
+                    EXEC + [cmd], stdout=open(path, "a"),
+                    stderr=subprocess.STDOUT, timeout=600, text=True)
+                raw = open(path).read()
+                with pi_runs_lock:
+                    r = pi_runs.get(rid)
+                    if r is None:
+                        return
+                    reply = raw
+                    idx = raw.find("FINAL:")
+                    if idx >= 0:
+                        reply = raw[idx + len("FINAL:"):].strip()
+                    r["result"] = {"repo": repo, "reply": reply[-6000:],
+                                   "proposal": _parse_proposal(raw)}
+                    r["done"] = True
+                    r["finished_at"] = time.time()
+                return
     except Exception as exc:
         with pi_runs_lock:
             r = pi_runs.get(rid)
@@ -538,6 +609,65 @@ def _validate_td_command(text):
         if ok:
             return tokens
     return None
+
+
+def _suggest_from_briefing(brief):
+    """SUGGEST lines mapped deterministically from briefing data.
+    Same runnable shapes Pi was allowed to emit, in triage
+    priority: conflicts first (they block everything), then
+    failing CI, then requested changes. Failing CI runs are
+    matched to their PR by branch. The allowlist in
+    _parse_suggestions re-validates every line, so this mapping
+    can never smuggle a bad command into a Run button. Preflight
+    is deliberately never suggested: it is a pre-submit check
+    for coding agents, not a triage action — triage relies on
+    CI state instead."""
+    lines = []
+    done = set()
+    prs = [p for p in (brief.get("prs") or []) if isinstance(p, dict)]
+    for pr in prs[:20]:
+        num = pr.get("number")
+        if not isinstance(num, int) or num <= 0:
+            continue
+        if pr.get("conflicted"):
+            lines.append(
+                f"SUGGEST: td gh resolve-conflicts --pr {num} :: "
+                f"PR #{num} has merge conflicts")
+            done.add(num)
+        elif pr.get("ci") == "failing":
+            lines.append(
+                f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
+                f"PR #{num} CI is failing")
+            done.add(num)
+        elif pr.get("review") == "CHANGES_REQUESTED":
+            lines.append(
+                f"SUGGEST: td gh read-pr-reviews --pr {num} :: "
+                f"PR #{num} has requested changes")
+            done.add(num)
+    by_branch = {}
+    for pr in prs:
+        num = pr.get("number")
+        branch = pr.get("branch")
+        if isinstance(num, int) and num > 0 and branch \
+                and num not in done:
+            by_branch.setdefault(str(branch), num)
+    for run in brief.get("failing_runs") or []:
+        if not isinstance(run, dict):
+            continue
+        num = by_branch.get(str(run.get("branch") or ""))
+        if num and num not in done:
+            lines.append(
+                f"SUGGEST: td --json agent fix-ci --pr {num} --execute :: "
+                f"CI failing on {run.get('branch')} (PR #{num})")
+            done.add(num)
+    if not lines:
+        if brief.get("attention") or brief.get("failing_runs"):
+            lines.append(
+                "SUGGEST: none :: open items need CI/attention first; "
+                "see note.")
+        else:
+            lines.append("SUGGEST: none :: All queues clear and checks green.")
+    return "\n".join(lines) + "\n"
 
 
 def _suggest_context(brief):
@@ -1149,7 +1279,7 @@ ACTIONS = {
         # calls. The full JSONL stays on disk; pi_logs.py never
         # fails the run, so a missing sessions dir degrades to a
         # note instead of turning Logs red.
-        "sub": "Terminal + Ollama logs, latest Pi session",
+        "sub": "Terminal + Ollama logs, latest Agent session",
         "confirm": False,
         "steps": [
             COMPOSE + ["logs", "--tail=100", "terminal", "ollama"],
@@ -1281,6 +1411,13 @@ ACTIONS = {
         "hidden": True,
         "steps": [],
     },
+    "merge-approved": {
+        "label": "Merge approved PRs",
+        "group": "Briefing",
+        "sub": "Agent merges approved, green, mergeable PRs (repo from picker above)",
+        "confirm": True,
+        "steps": [],
+    },
 }
 
 # Action buttons are rendered into the HTML server-side, not built
@@ -1328,11 +1465,11 @@ def _buttons_html():
                 f'<span class="bsub">{escape(spec["sub"])}</span></button>')
         if group == "Server":
             parts.append(
-                f'<details><summary class="grouphead">'
+                f'<details data-section="Server"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
         else:
             parts.append(
-                f'<details open><summary class="grouphead">'
+                f'<details open data-section="Briefing"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
     return "".join(parts)
 
@@ -2154,6 +2291,20 @@ def _job_create(template, repo, pr=None, issues=None, suggestions=None):
     return job, None
 
 
+def _job_step_failure_reason(output, exit_code=None):
+    """Extract a concise one-line failure reason from output or fall back to exit N."""
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output or "")
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    filtered = [l for l in lines if not l.startswith("$ ") and not re.match(r"^step failed with exit code \d+; aborting$", l)]
+    err_re = re.compile(r"(?:traceback|error|failed|failure|exception|stderr|fatal)", re.IGNORECASE)
+    for l in filtered:
+        if err_re.search(l):
+            return l[:200]
+    if filtered:
+        return filtered[0][:200]
+    return f"exit {exit_code}" if exit_code is not None else "failed"
+
+
 def _job_public(job):
     """Summary shape for the job list (no step internals)."""
     return {"id": job["id"], "template": job["template"],
@@ -2161,7 +2312,9 @@ def _job_public(job):
             "state": job["state"], "outcome": job.get("outcome"),
             "created_at": job["created_at"],
             "steps": [{"label": s["label"], "state": s["state"],
-                       "run_id": s.get("run_id")}
+                       "run_id": s.get("run_id"),
+                       "note": s.get("note"),
+                       "exit_code": s.get("exit_code")}
                       for s in job["plan"]]}
 
 
@@ -2241,7 +2394,7 @@ def _finish_run(run_id, action, repo, run):
             active_id = None
 
 
-def run_action(run_id, action, repo="tech-dancer"):
+def run_action(run_id, action, repo="remote-server"):
     global active_id
     run = runs[run_id]
     repos = _discover_repos()
@@ -2304,6 +2457,12 @@ def run_action(run_id, action, repo="tech-dancer"):
             else:
                 rewritten.append(step)
         steps = rewritten
+    if action == "merge-approved":
+        # Steps are built from the picked repo's discovered gh path
+        # (charset-validated, never from the client), running upstream td agent merge-approved.
+        prefix = _td_prefix(repos[repo]["td_cwd"])
+        steps = [EXEC + [prefix + "td --json agent merge-approved -r "
+                         f"{repos[repo]['gh']} --execute"]]
     for i, step in enumerate(steps, 1):
         with runs_lock:
             run["step_index"] = i
@@ -2508,9 +2667,13 @@ a { color: #8bf; }
 #tabbar { display: flex; gap: 0.4em; background: var(--bg-app); padding: 0.5em 0;
   border-bottom: 1px solid var(--border); }
 #tabbar .tab { flex: 1; width: auto; margin: 0; padding: 0.6em 0.2em; font-size: 0.9em;
-  text-align: center; }
+  text-align: center; position: relative; }
 #tabbar .tab.active { border-color: var(--primary); background: var(--bg-card-hover);
   font-weight: bold; }
+.tab-badge { display: inline-block; background: var(--primary); color: #fff; font-size: 0.75em;
+  padding: 0.1em 0.45em; border-radius: 10px; margin-left: 0.35em; font-weight: bold; vertical-align: middle; }
+.tab-dot { display: inline-block; width: 8px; height: 8px; background: var(--primary);
+  border-radius: 50%; margin-left: 0.35em; vertical-align: middle; }
 @media (max-width: 520px) {
   #tabbar .tab { font-size: 0.72em; padding: 0.6em 0.1em; }
 }
@@ -2588,6 +2751,17 @@ a { color: #8bf; }
 .pi-tool-result-details pre { margin: 0.3em 0 0; max-height: 250px; overflow-y: auto;
   font-size: 0.85em; background: #0d1117; }
 #outputDrawer pre { border: none; border-radius: 0; max-height: 45vh; margin: 0; }
+.run-cmd-details { margin: 0.5em 0 0.2em; font-size: 0.85em; opacity: 0.8; }
+.run-cmd-details summary { cursor: pointer; color: var(--text-muted); }
+.run-cmd-details pre { margin-top: 0.2em; background: rgba(0,0,0,0.3); font-size: 0.85em; }
+.run-summary-list { margin: 0.4em 0; }
+.run-summary-row { padding: 0.35em 0.5em; border-bottom: 1px solid rgba(255,255,255,0.07); font-size: 0.9em; display: flex; align-items: center; gap: 0.5em; flex-wrap: wrap; }
+.run-summary-row:last-child { border-bottom: none; }
+.run-summary-details { margin-top: 0.6em; }
+.run-summary-details summary { cursor: pointer; color: var(--text-muted); font-size: 0.88em; }
+.audit-counts { margin: 0.4em 0 0.6em; font-size: 0.95em; font-weight: 500; }
+.audit-table { width: 100%; border-collapse: collapse; margin-top: 0.4em; font-size: 0.88em; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid var(--border); }
 /* confirm modal (replaces window.confirm) */
 #confirmModal { position: fixed; inset: 0; z-index: 2000; display: none;
   align-items: center; justify-content: center; background: rgba(0,0,0,0.6); padding: 1em; }
@@ -2618,8 +2792,9 @@ a { color: #8bf; }
 .jobcard-del { flex: none; width: auto; padding: 0.2em 0.5em; border-radius: 6px; font-size: 0.85em; color: var(--text-muted); }
 .jobcard-del:hover { color: #ff8a8a; border-color: var(--danger); }
 .jobcard .jobmeta { font-size: 0.85em; color: var(--text-muted); margin-bottom: 0.4em; }
-.jobstep { display: flex; align-items: center; gap: 0.5em; padding: 0.35em 0;
+.jobstep { display: flex; flex-direction: column; gap: 0.25em; padding: 0.35em 0;
   border-top: 1px solid var(--border); font-size: 0.92em; }
+.jobstep-row { display: flex; align-items: center; gap: 0.5em; width: 100%; }
 .jobstep .st { font-size: 0.78em; border-radius: 20px; padding: 0.15em 0.6em;
   border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
 .jobstep .st.done { color: #7ed07e; border-color: #2e7d32; }
@@ -2629,6 +2804,11 @@ a { color: #8bf; }
 .jobstep .st.declined { color: var(--text-muted); }
 .jobstep .sactions { margin-left: auto; display: flex; gap: 0.4em; }
 .jobstep .sactions button { width: auto; margin: 0; padding: 0.35em 0.7em; font-size: 0.85em; }
+.jobstep-reason { font-size: 0.82em; color: #ff8a8a; margin-left: 1.8em; word-break: break-word; font-family: monospace; }
+.jobcard-expander { cursor: pointer; font-size: 0.85em; color: var(--primary); margin-top: 0.4em; user-select: none; }
+.jobcard-expander:hover { text-decoration: underline; }
+.jobs-show-more-wrap { text-align: center; margin: 1em 0; }
+.jobs-show-more-btn { width: auto !important; padding: 0.4em 1.2em; font-size: 0.9em; }
 .jobtmpl { border: 1px solid var(--border); border-radius: 10px; padding: 0.6em;
   margin: 0.4em 0; background: var(--bg-card); }
 .jobtmpl .blabel { font-weight: 600; }
@@ -2689,28 +2869,28 @@ a { color: #8bf; }
 <body>
 <h1>S5 Control Panel</h1>
 <div class="launcher-bar">
-  <a class="launcher-tile" href="/" title="Open Browser Terminal">💻 Terminal</a>
-  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">📝 VS Code</a>
+  <a class="launcher-tile" href="/" title="Open Browser Terminal">Terminal</a>
+  <a class="launcher-tile" id="codeLauncher" href="/code" target="_blank" rel="noopener noreferrer" title="Open VS Code in browser">VS Code</a>
 </div>
 <p>Fixed actions only, no free-text commands.
 Tap a repo card below to select it for the buttons and briefing.</p>
 <div id="repos">
 <!--REPO_STRIPS-->
 </div>
-<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Proactive Notifications">Notifications: off</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
+<div id="liveBar"><span id="liveSpinner" class="spinner" style="display:none"></span><span id="liveUpdated"></span><span id="livePending"></span><span id="notifyWrap" style="margin-left:auto; font-size:0.85em; display:inline-flex; align-items:center; gap:0.4em;"><span id="notifyBadge" title="Notifications: off (enable via NTFY_* in .env; see docs/buttons.md#proactive-notifications--scheduled-digest)">Notifications: off (set NTFY_* in .env; see docs/buttons.md)</span><button id="testNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Test push</button><button id="digestNotifyBtn" type="button" style="width:auto;margin:0;padding:0.2em 0.5em;font-size:0.8em;">Send digest</button></span></div>
 <div id="jsdiag">JavaScript is not running on this page — if this line stays
 visible, hard-refresh and check the browser console. The buttons
 below are still visible, but they need JavaScript to start a run.</div>
 <div id="stickyHead">
 <div id="pickerBar"><span id="serverDot" class="dot" title="server status"></span><span>Active repo: <strong id="selectedRepoName">...</strong></span><select id="briefingRepo" style="display:none">
 <!--REPO_OPTIONS-->
-</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">💬 Chat / Ask Agent</button></div>
+</select><button id="globalChatBtn" type="button" class="btn-primary global-chat-btn" title="Open interactive agent chat">Chat / Ask Agent</button></div>
 <div id="tabbar" role="tablist">
-<button class="tab active" data-tab="actions" role="tab">⚡ Actions</button>
-<button class="tab" data-tab="briefing" role="tab">📋 Briefing</button>
-<button class="tab" data-tab="pi" role="tab">🤖 Pi agent</button>
-<button class="tab" data-tab="project" role="tab">📊 Project</button>
-<button class="tab" data-tab="jobs" role="tab">🧰 Jobs</button><button class="tab" data-tab="ledger" role="tab">📜 Ledger</button>
+<button class="tab active" data-tab="actions" role="tab">Actions</button>
+<button class="tab" data-tab="briefing" role="tab">Briefing</button>
+<button class="tab" data-tab="pi" role="tab">Pi agent</button>
+<button class="tab" data-tab="project" role="tab">Project</button>
+<button class="tab" data-tab="jobs" role="tab">Jobs</button><button class="tab" data-tab="ledger" role="tab">Ledger</button>
 </div>
 </div>
 <section class="tabpanel" id="tab-actions">
@@ -2749,47 +2929,25 @@ below are still visible, but they need JavaScript to start a run.</div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
 <h2>Briefing</h2>
-<details><summary>How this works</summary>
-<p>Live briefing — open PRs, CI, conflicts, reviews, Jules
-sessions. Runs on load; the Refresh briefing button re-runs it
-from td. Tap a repo card above to select the repo for the cards,
-their action buttons, and the repo buttons.</p>
-</details>
 <div id="briefing"></div>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
 <h2>Suggested next actions</h2>
-<details><summary>How this works</summary>
-<p>Pi reads the briefing context and suggests td commands, then
-runs only what you approve: each suggestion has its own Run
-button with a confirm dialog. Pi runs read-only here;
-suggestions are validated against a fixed td-command list,
-anything else is shown as text, never run. Asking Pi takes
-minutes on the local model.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Pi runs read-only; each suggestion requires confirmation before running allowlisted commands.</div>
 <button id="suggestBtn">Suggest next actions</button>
 <div id="suggestions"></div>
 <div id="suggestErr"></div>
 
 <h2>Ask Agent / Chat</h2>
-<details><summary>How this works</summary>
-<p>Open-ended questions and instructions for this repo. Access the interactive agent chat via the topbar button or below to chat, stream tool actions, or dispatch tasks.</p>
-</details>
 <div style="margin: 0.6em 0;">
-  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">💬 Open Agent Chat</button>
+  <button id="piOpenChatBtn" class="btn-primary" type="button" style="width:auto;">Open Agent Chat</button>
 </div>
 
-<h2>Pi sessions</h2>
-<details><summary>How this works</summary>
-<p>Browse Pi transcripts on disk (pi-data volume). List shows the
-newest sessions with date, repo, and first prompt — tap one to
-render it readably. The full JSONL stays on disk. Clearing
-deletes all transcripts.</p>
-</details>
+<h2>Agent sessions</h2>
 <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center;">
 <button id="listPiSessions" style="width:auto; margin:0;">List sessions</button>
-<button id="clearPiSessions" style="width:auto; margin:0;">Clear Pi sessions</button>
+<button id="clearPiSessions" style="width:auto; margin:0;">Clear Agent sessions</button>
 </div>
 <input id="piSessionFilter" type="search" placeholder="Search sessions by repo or content…" style="display:none;">
 <div id="piSessionList" style="display:none;"></div>
@@ -2808,12 +2966,10 @@ deletes all transcripts.</p>
 </section>
 <section class="tabpanel" id="tab-project" style="display:none">
 <h2>Enriched PR Review <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>RepoAuditor-grade review surface: inspect PR status, CI checks, mergeability, full changed files tree with diff counts, and trigger structured AI review flows.</p>
-</details>
 <div class="planrow">
 <label>Pick PR: <select id="reviewPrSelect"><option value="">— Loading PRs —</option></select></label>
 <button id="loadPrDetailsBtn" type="button" class="btn-primary" style="width:auto;margin:0;">Inspect PR</button>
+<span id="reviewPrReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span>
 </div>
 <div id="prDetailsView" class="health-card" style="display:none;margin-top:0.6em;">
   <div class="health-head" id="prDetailsHead">PR #--</div>
@@ -2839,18 +2995,11 @@ deletes all transcripts.</p>
 <div id="prDetailsErr"></div>
 
 <h2>Workflow Health Analysis <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>RepoAuditor-grade workflow diagnostics: inspection across recent runs, failing jobs, steps, and check-run annotations to isolate the likely failure cause.</p>
-</details>
 <button id="refreshWorkflowHealthBtn" type="button" class="btn-ghost" style="width:auto;margin:0 0 0.5em 0;">Refresh workflow health</button>
 <div id="workflowHealthView"></div>
 <div id="workflowHealthErr"></div>
 
 <h2>Issues <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>Open issues for the picked repo — status, assignees, labels.
-Tap one to expand, assign, or open it in GitHub.</p>
-</details>
 <button id="refreshIssues">Refresh issues</button>
 <div id="issues"></div>
 <div id="issuesErr"></div>
@@ -2861,10 +3010,6 @@ Tap one to expand, assign, or open it in GitHub.</p>
 <button id="createIssueBtn">Create issue</button>
 <div id="newIssueErr"></div>
 <h2>Jules sessions & Agent Handoff <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>What Jules is doing — state, what it's working on, link.
-Needs JULES_API_KEY in .env.</p>
-</details>
 <div class="health-card" style="margin-bottom:0.8em;">
   <div class="health-head">Agent Handoff (Jules Branch-Based Work)</div>
   <div class="bsub">Dispatch Jules sessions for branch tasks, PR reviews, or workflow fixes beyond fix-ci.</div>
@@ -2879,34 +3024,24 @@ Needs JULES_API_KEY in .env.</p>
 <div id="julesSessions"></div>
 <div id="julesErr"></div>
 <h2>Plans <span class="forrepo" data-forrepo></span></h2>
-<details><summary>How this works</summary>
-<p>Deterministic td planning guides. They read repo state and
-write a markdown plan file; nothing executes or pushes.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Generates markdown plan files from repo state; nothing executes or pushes automatically.</div>
 <div class="planrow"><button id="planIssueAuditBtn">Audit open issues</button>
 <button id="planWorkflowAuditBtn">Audit workflows</button></div>
 <div class="planrow"><label>Review plan for PR
 <select id="planPrSelect"><option value="">—</option></select></label>
-<button id="planReviewBtn">Generate</button></div>
+<button id="planReviewBtn">Generate</button>
+<span id="planReviewReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span></div>
 <div class="planrow"><span>Aggregate PRs</span>
 <select id="planAggPrs" multiple size="4" style="min-width:9em"><option value="">—</option></select>
 <label>into <input id="planAggTarget" value="main" size="12" maxlength="64"></label>
-<button id="planAggBtn">Generate</button></div>
-<div id="planOut"></div>
+<button id="planAggBtn">Generate</button>
+<span id="planAggReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span></div>
+<div id="planOut"><p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p></div>
 <div id="planErr"></div>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
 <h2>Jobs</h2>
-<details><summary>How this works</summary>
-<p>Multi-step tasks with a visible plan. Read-only steps run on
-their own once the job starts; only steps that act outside the box
-wait for your Approve or Decline tap. Output streams to the drawer;
-declining ends the job. Every job writes an audit record — goal,
-plan, approvals with timestamps, run ids, outcome — to the Ledger
-tab and a JSON file on the buttons volume. Jobs only run the same
-allowlisted actions the buttons already offer; nothing new becomes
-writable.</p>
-</details>
+<div class="bsub" style="margin-bottom:0.5em;">Multi-step tasks where external actions pause for approval before executing allowlisted commands.</div>
 <div id="jobNew"></div>
 <div id="jobErr"></div>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5em;margin-bottom:0.5em;">
@@ -2918,12 +3053,6 @@ writable.</p>
 </section>
 <section class="tabpanel" id="tab-ledger" style="display:none">
 <details open><summary class="grouphead">Ledger</summary>
-<details><summary>How this works</summary>
-<p>Durable audit log — every run, webhook pull, and PR-action tap,
-newest first. Survives container restarts (named volume, not the
-checkout). Briefing reads are not logged. Clearing deletes all
-entries but leaves a 'ledger cleared' record.</p>
-</details>
 <label>Kind: <select id="ledgerKind">
 <option value="all">All</option>
 <option value="run">Runs</option>
@@ -2940,7 +3069,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </section>
 <div id="chatDrawer">
 <div id="chatDrawerHead">
-  <span class="chat-drawer-title">💬 Agent Chat <span class="forrepo" data-forrepo></span></span>
+  <span class="chat-drawer-title">Agent Chat <span class="forrepo" data-forrepo></span></span>
   <span class="dbactions">
     <span id="globalPhaseBadge" class="phase-badge">Ready</span>
     <button id="chatDrawerClose" type="button" class="btn-ghost">✕ Close</button>
@@ -2948,7 +3077,7 @@ entries but leaves a 'ledger cleared' record.</p>
 </div>
 <div class="chat-drawer-body">
   <div class="chat-card" id="globalChatCard" style="margin:0;">
-    <div class="bsub" style="margin-bottom:0.5em;">Interactive assistant with real-time streaming, tools, and cancellation. Ask questions or dispatch instructions for the selected repo.</div>
+    <div class="bsub" style="margin-bottom:0.5em;">Ask about this repo or dispatch a task.</div>
     <div class="chat-input-wrap">
       <textarea id="globalChatInput" class="chat-textarea" rows="3" placeholder="Ask about this repo, failing CI, commits, or task instructions…"></textarea>
       <div class="chat-ctrls">
@@ -2978,6 +3107,14 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
+const DEFAULT_REPO = "remote-server";
+
+// Project tab: issues, Jules sessions, td planning guides.
+// Reads the repo from the picker at tap time, like the other tabs.
+function projectRepo() {
+  const p = document.getElementById("briefingRepo");
+  return p ? p.value : DEFAULT_REPO;
+}
 const codeLauncher = document.getElementById("codeLauncher");
 if (codeLauncher) {
   codeLauncher.href = window.location.origin + "/code";
@@ -3006,6 +3143,7 @@ function shorten(s, n) {
 function markSelectedRepo() {
   const picker = document.getElementById("briefingRepo");
   const cur = picker ? picker.value : "";
+  try { if (cur) localStorage.setItem("buttons_selected_repo", cur); } catch (e) {}
   const nameEl = document.getElementById("selectedRepoName");
   if (nameEl && cur) nameEl.textContent = cur;
   document.querySelectorAll("[data-repo-pick]").forEach(el => {
@@ -3018,9 +3156,15 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     if (e.target.closest("a")) return;
     const picker = document.getElementById("briefingRepo");
     if (!picker) return;
-    picker.value = el.getAttribute("data-repo-pick");
-    picker.dispatchEvent(new Event("change"));
-    if (typeof refreshBriefing === "function") refreshBriefing();
+    const pickedRepo = el.getAttribute("data-repo-pick");
+    if (picker.value !== pickedRepo) {
+      picker.value = pickedRepo;
+      picker.dispatchEvent(new Event("change"));
+    } else {
+      markSelectedRepo();
+      if (typeof refreshBriefing === "function") refreshBriefing();
+      if (typeof refreshProject === "function") refreshProject();
+    }
   });
 });
 // Project tab: repo context lives where the work happens. The
@@ -3032,34 +3176,118 @@ function refreshProject() {
   document.querySelectorAll("[data-forrepo]").forEach(el => {
     el.textContent = "— " + repo;
   });
-  if (typeof renderReviewPrSelect === "function") renderReviewPrSelect();
+  const planOut = document.getElementById("planOut");
+  const planErr = document.getElementById("planErr");
+  if (planOut && !planOut.querySelector(".spinner")) {
+    planOut.innerHTML = '<p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p>';
+  }
+  if (planErr) planErr.textContent = "";
+  if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
+  else if (typeof renderReviewPrSelect === "function") renderReviewPrSelect();
   if (typeof refreshWorkflowHealth === "function") refreshWorkflowHealth();
   if (typeof refreshIssues === "function") refreshIssues();
   if (typeof refreshJulesSessions === "function") refreshJulesSessions();
   if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 }
 const _pickerEl = document.getElementById("briefingRepo");
-if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
-if (_pickerEl) _pickerEl.addEventListener("change", () => {
-  if (typeof refreshProject === "function") refreshProject();
-});
-markSelectedRepo();
+if (_pickerEl) {
+  _pickerEl.addEventListener("change", () => {
+    markSelectedRepo();
+    try { localStorage.setItem("s5.repo", _pickerEl.value); } catch (_) {}
+  });
+  _pickerEl.addEventListener("change", () => {
+    if (typeof refreshProject === "function") refreshProject();
+    if (typeof refreshBriefing === "function") refreshBriefing();
+  });
+}
+try {
+  const savedRepo = localStorage.getItem("s5.repo");
+  if (savedRepo && _pickerEl) {
+    _pickerEl.value = savedRepo;
+  }
+} catch (_) {}
+// Tab bar badges and state tracking
+let lastLedgerViewTs = Date.now() / 1000;
+let tabBadgeCounts = {briefing: 0, jobs: 0, ledger: false};
+
+function updateTabBadges() {
+  document.querySelectorAll("#tabbar .tab").forEach(tab => {
+    const tabName = tab.dataset.tab;
+    const existingBadge = tab.querySelector(".tab-badge, .tab-dot");
+    if (existingBadge) existingBadge.remove();
+
+    if (tabName === "briefing" && tabBadgeCounts.briefing > 0) {
+      const badge = document.createElement("span");
+      badge.className = "tab-badge";
+      badge.textContent = tabBadgeCounts.briefing;
+      tab.appendChild(badge);
+    } else if (tabName === "jobs" && tabBadgeCounts.jobs > 0) {
+      const badge = document.createElement("span");
+      badge.className = "tab-badge";
+      badge.textContent = tabBadgeCounts.jobs;
+      tab.appendChild(badge);
+    } else if (tabName === "ledger" && tabBadgeCounts.ledger) {
+      const dot = document.createElement("span");
+      dot.className = "tab-dot";
+      tab.appendChild(dot);
+    }
+  });
+}
 
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
+function activateTab(tabName) {
+  const tabBtn = document.querySelector(`#tabbar .tab[data-tab="${tabName}"]`);
+  if (!tabBtn) return;
+  document.querySelectorAll("#tabbar .tab").forEach(x =>
+    x.classList.toggle("active", x === tabBtn));
+  document.querySelectorAll(".tabpanel").forEach(p => {
+    p.style.display = (p.id === "tab-" + tabName) ? "" : "none";
+  });
+  if (tabName === "ledger") {
+    lastLedgerViewTs = Date.now() / 1000;
+    tabBadgeCounts.ledger = false;
+    updateTabBadges();
+  }
+  if (tabName === "project" &&
+      typeof refreshProject === "function") refreshProject();
+  try { localStorage.setItem("s5.tab", tabName); } catch (_) {}
+}
+
 document.querySelectorAll("#tabbar .tab").forEach(t => {
-  t.onclick = () => {
-    document.querySelectorAll("#tabbar .tab").forEach(x =>
-      x.classList.toggle("active", x === t));
-    document.querySelectorAll(".tabpanel").forEach(p => {
-      p.style.display = (p.id === "tab-" + t.dataset.tab) ? "" : "none";
-    });
-    // Opening the Project tab re-renders it for the current
-    // picker repo, so the sections never show a stale repo's data.
-    if (t.dataset.tab === "project" &&
-        typeof refreshProject === "function") refreshProject();
-  };
+  t.onclick = () => activateTab(t.dataset.tab);
 });
+
+try {
+  const savedTab = localStorage.getItem("s5.tab");
+  if (savedTab) activateTab(savedTab);
+} catch (_) {}
+
+function saveSectionStates() {
+  const sections = {};
+  document.querySelectorAll("details[data-section]").forEach(d => {
+    const sec = d.getAttribute("data-section");
+    if (sec) sections[sec] = d.open;
+  });
+  try { localStorage.setItem("s5.sections", JSON.stringify(sections)); } catch (_) {}
+}
+
+document.querySelectorAll("details[data-section]").forEach(d => {
+  d.addEventListener("toggle", saveSectionStates);
+});
+
+try {
+  const savedSec = localStorage.getItem("s5.sections");
+  if (savedSec) {
+    const parsed = JSON.parse(savedSec);
+    document.querySelectorAll("details[data-section]").forEach(d => {
+      const sec = d.getAttribute("data-section");
+      if (sec && typeof parsed[sec] === "boolean") {
+        d.open = parsed[sec];
+      }
+    });
+  }
+} catch (_) {}
 
 // Slide-up output drawer (replaces the inline <pre> below the
 // buttons): opens on run start and on new output, so progress is
@@ -3195,7 +3423,7 @@ async function startRun(name, label, confirmFlag, dangerFlag) {
   // Repo-scoped buttons follow the picker above; the rest are
   // stack-wide or global and ignore it.
   const body = {action: name};
-  if (name === "briefing-td" || name === "warm-context" || name === "preflight") {
+  if (name === "briefing-td" || name === "warm-context" || name === "preflight" || name === "create-plan" || name === "merge-approved") {
     const picker = document.getElementById("briefingRepo");
     if (picker) body.repo = picker.value;
   }
@@ -3308,6 +3536,110 @@ function ansiToHtml(text) {
   lines.push(cur);
   return lines.map(ansiLineToHtml).join("\n");
 }
+
+function relativizePath(path, repo) {
+  if (!path || typeof path !== "string") return "";
+  let p = path.trim();
+  p = p.replace(/^\/srv\/repos\/[^\/]+\//, "");
+  p = p.replace(/^\/srv\/remote-server\//, "");
+  p = p.replace(/^\/srv\//, "");
+  p = p.replace(/^\/home\/[^\/]+\/repos\/[^\/]+\//, "");
+  p = p.replace(/^\/home\/[^\/]+\/remote-server\//, "");
+  p = p.replace(/^\/home\/[^\/]+\//, "");
+  return p;
+}
+
+function splitRunCommand(rawText) {
+  const lines = (rawText || "").split("\n");
+  const cmdLines = [];
+  const bodyLines = [];
+  let pastLeadingCmd = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (!pastLeadingCmd && (l.startsWith("$ ") || l.startsWith("docker compose exec"))) {
+      cmdLines.push(l);
+    } else {
+      if (cmdLines.length > 0) pastLeadingCmd = true;
+      bodyLines.push(l);
+    }
+  }
+  return {
+    command: cmdLines.join("\n").trim(),
+    body: bodyLines.join("\n")
+  };
+}
+
+function renderSyncAgentsSummary(bodyText, fullText, repo) {
+  let parsed = null;
+  const jsonStart = bodyText.indexOf("[");
+  const objStart = bodyText.indexOf("{");
+  let startIdx = -1;
+  let isArray = false;
+  if (jsonStart >= 0 && (objStart < 0 || jsonStart < objStart)) {
+    startIdx = jsonStart;
+    isArray = true;
+  } else if (objStart >= 0) {
+    startIdx = objStart;
+  }
+  if (startIdx >= 0) {
+    try {
+      const slice = bodyText.slice(startIdx);
+      parsed = JSON.parse(slice);
+    } catch (e) {
+      const endIdx = isArray ? bodyText.lastIndexOf("]") : bodyText.lastIndexOf("}");
+      if (endIdx > startIdx) {
+        try {
+          parsed = JSON.parse(bodyText.slice(startIdx, endIdx + 1));
+        } catch (e2) {}
+      }
+    }
+  }
+  let sessions = [];
+  if (Array.isArray(parsed)) {
+    sessions = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    sessions = parsed.sessions || parsed.agent_sessions || parsed.items || [];
+  }
+  if (!sessions || !sessions.length) {
+    return ansiToHtml(bodyText);
+  }
+  let html = '<div class="run-summary-list">';
+  sessions.forEach(s => {
+    const title = escHtml(s.title || s.id || "Untitled session");
+    const st = (s.state || "unknown").toLowerCase();
+    let badgeCls = "chip";
+    if (st.includes("stall") || st.includes("wait") || st.includes("pend")) badgeCls += " chip-warn";
+    else if (st.includes("done") || st.includes("complete") || st.includes("success")) badgeCls += " chip-ok";
+    else if (st.includes("fail") || st.includes("error")) badgeCls += " chip-fail";
+    let when = "";
+    try { if (s.updated) when = new Date(s.updated).toLocaleString(); } catch (e) {}
+    const sRepo = escHtml(s.repo || repo || projectRepo());
+    let link = "";
+    if (s.url) {
+      link = ` · <a href="${escHtml(s.url)}" target="_blank" rel="noopener">view</a>`;
+    }
+    html += `<div class="run-summary-row"><span class="${badgeCls}">${escHtml(s.state || "?")}</span> <strong>${title}</strong> · <span>${sRepo}</span>${when ? ' · <span>updated ' + escHtml(when) + '</span>' : ''}${link}</div>`;
+  });
+  html += '</div>';
+  html += `<details class="run-summary-details"><summary>Full JSON output (${Math.round((fullText || "").length / 1024)} KB)</summary><pre>${escHtml(fullText)}</pre></details>`;
+  return html;
+}
+
+function renderRunOutput(run) {
+  const raw = run.output || "";
+  const parts = splitRunCommand(raw);
+  let html = "";
+  if (run.action === "sync-agents" || run.action === "sync-nudge") {
+    html = renderSyncAgentsSummary(parts.body, raw, run.repo);
+  } else {
+    html = ansiToHtml(parts.body);
+  }
+  if (parts.command) {
+    html += `<details class="run-cmd-details"><summary>command</summary><pre class="cmd-run">${escHtml(parts.command)}</pre></details>`;
+  }
+  return html;
+}
+
 let lastRenderedOutput = null;
 
 // Last error line for the failure banner, read from the output
@@ -3498,7 +3830,7 @@ async function poll(id, action) {
     // Re-render only on change: re-parsing a 200KB tail every poll
     // would churn on a phone for no visible difference.
     if (run.output !== lastRenderedOutput) {
-      outEl.innerHTML = ansiToHtml(run.output);
+      outEl.innerHTML = renderRunOutput(run);
       lastRenderedOutput = run.output;
     }
     outEl.scrollTop = outEl.scrollHeight;
@@ -3603,10 +3935,7 @@ document.getElementById("bugBtn").onclick = reportBug;
 const actionsBugBtn = document.getElementById("actionsBugBtn");
 if (actionsBugBtn) actionsBugBtn.onclick = reportBug;
 
-</script>
-<script>
-// Briefing view (script block 2, separate from the core block
-// above, so a Briefing failure cannot take the core buttons down).
+// Briefing view
 // Renders the structured briefing from /buttons/api/briefing as
 // PR cards. Auto-runs on load and after a Refresh briefing run;
 // changing the picker above re-fetches.
@@ -3629,7 +3958,7 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
     try {
       const picker = document.getElementById("briefingRepo");
       const body = {pr_number: pr.number, action: action,
-        repo: picker ? picker.value : "tech-dancer"};
+        repo: picker ? picker.value : DEFAULT_REPO};
       const resp = await fetchJson("/buttons/api/pr-action", {method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)});
@@ -3644,67 +3973,182 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
   };
   return b;
 }
-function renderBriefing(b) {
-  briefingErrEl.textContent = "";
-  briefingEl.textContent = "";
-  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
-  const att = document.createElement("div");
-  const attHead = document.createElement("b");
-  attHead.textContent = "Needs attention";
-  att.appendChild(attHead);
-  // Collect attention items, ensuring failing runs are always included.
-  const attentionItems = [];
-  const seenAtt = new Set();
+
+// Deduplicate attention items and failing runs into a single list of actionable items.
+function dedupeAttention(b) {
+  const items = [];
   (b.attention || []).forEach(a => {
-    attentionItems.push({text: a, raw: a});
-    seenAtt.add(a);
+    items.push({text: a, raw: a});
   });
-  // Guarantee each failing run is surfaced as an actionable item with likely cause
   (b.failing_runs || []).forEach(run => {
     const runName = run.name || "CI";
     const branchName = run.branch || "main";
     const eventName = run.event || "push";
     const failedParts = (run.failed || []).map(f =>
-      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-    ).join("; ");
+      shorten((f.job || "") + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
+    ).filter(Boolean).join("; ");
     const causeSummary = failedParts || "workflow failed";
     const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
-    // Check if an equivalent item was already in b.attention
-    let alreadyPresent = false;
-    for (const item of attentionItems) {
-      if (item.text.includes(runName) && item.text.includes(branchName)) {
-        alreadyPresent = true;
-        item.run = run;
-        item.cause = causeSummary;
+    let found = false;
+    for (const it of items) {
+      if (it.text.includes(runName) && it.text.includes(branchName)) {
+        found = true;
+        it.run = run;
+        it.cause = causeSummary;
         break;
       }
     }
-    if (!alreadyPresent) {
-      attentionItems.push({
-        text: runText,
-        raw: runText,
-        run: run,
-        cause: causeSummary
-      });
+    if (!found) {
+      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
     }
   });
+  return items;
+}
 
+// Render the unified deduped attention list component
+function renderAttentionList(b, container, options) {
+  const limit = (options && options.limit) || 0;
+  container.textContent = "";
+  const items = dedupeAttention(b);
   const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
   const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
 
-  if (attentionItems.length) {
-    const ul = document.createElement("ul");
-    attentionItems.forEach(item => {
-      const li = document.createElement("li");
+  if (!items.length && !hasFailingRuns && !hasConflicts) {
+    const p = document.createElement("p");
+    p.style.color = "var(--text-muted)";
+    p.textContent = (options && options.cleanMessage) || "All clear — nothing needs attention.";
+    container.appendChild(p);
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "attn-head";
+  head.style.fontWeight = "bold";
+  head.style.marginBottom = "0.4em";
+  head.textContent = "Needs attention";
+  container.appendChild(head);
+
+  const listItems = limit > 0 ? items.slice(0, limit) : items;
+  const ul = document.createElement("ul");
+  ul.style.listStyle = "none";
+  ul.style.paddingLeft = "0";
+
+  listItems.forEach(item => {
+    const li = document.createElement("li");
+    li.style.marginBottom = "0.5em";
+    li.style.padding = "0.4em 0.6em";
+    li.style.background = "var(--bg-card)";
+    li.style.border = "1px solid var(--border)";
+    li.style.borderRadius = "6px";
+
+    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
+    let wfName = item.run ? (item.run.name || "CI") : "";
+    let wfBranch = item.run ? (item.run.branch || "main") : "";
+    let wfCause = item.cause || "";
+    if (isRun) {
+      if (!wfName) {
+        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
+        if (matchRun) {
+          wfName = matchRun[1].trim();
+          wfBranch = matchRun[2].trim();
+        } else {
+          wfName = "Workflow";
+          wfBranch = "main";
+        }
+      }
+      if (!wfCause) {
+        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
+        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
+      }
+    }
+
+    if (item.run) {
+      const topRow = document.createElement("div");
+      topRow.style.display = "flex";
+      topRow.style.alignItems = "center";
+      topRow.style.gap = "0.4em";
+      topRow.style.flexWrap = "wrap";
+
+      const cWf = document.createElement("span");
+      cWf.className = "chip chip-fail";
+      cWf.textContent = wfName;
+      topRow.appendChild(cWf);
+
+      const cBr = document.createElement("span");
+      cBr.className = "chip";
+      cBr.textContent = wfBranch;
+      topRow.appendChild(cBr);
+
+      if (wfCause) {
+        const cCause = document.createElement("span");
+        cCause.className = "chip chip-warn";
+        cCause.textContent = shorten(wfCause, 80);
+        cCause.title = wfCause;
+        topRow.appendChild(cCause);
+      }
+
+      li.appendChild(topRow);
+
+      const det = document.createElement("details");
+      det.style.marginTop = "0.3em";
+      det.style.fontSize = "0.9em";
+      const sum = document.createElement("summary");
+      sum.textContent = "Details & actions";
+      sum.style.cursor = "pointer";
+      sum.style.color = "var(--text-muted)";
+      det.appendChild(sum);
+
+      const bodyDiv = document.createElement("div");
+      bodyDiv.style.marginTop = "0.4em";
+      const desc = document.createElement("div");
+      desc.textContent = item.text;
+      bodyDiv.appendChild(desc);
+
+      const actionsSpan = document.createElement("div");
+      actionsSpan.style.cssText = "display:flex;gap:0.4em;align-items:center;margin-top:0.4em;flex-wrap:wrap;";
+
+      const draftBtn = document.createElement("button");
+      draftBtn.type = "button";
+      draftBtn.className = "btn-ghost";
+      draftBtn.style.cssText = "width:auto;margin:0;padding:0.2em 0.5em;font-size:0.85em;";
+      draftBtn.textContent = "Draft issue from failure";
+      draftBtn.onclick = () => {
+        if (typeof draftIssueFromFinding === "function") {
+          draftIssueFromFinding({
+            source: "workflow",
+            id: (item.run && item.run.id) || wfName,
+            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
+            cause: wfCause,
+            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+          });
+        }
+      };
+      actionsSpan.appendChild(draftBtn);
+
+      const askPiBtn = document.createElement("button");
+      askPiBtn.type = "button";
+      askPiBtn.className = "btn-primary";
+      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.2em 0.5em;font-size:0.85em;";
+      askPiBtn.textContent = "Ask Pi to diagnose";
+      askPiBtn.onclick = () => {
+        const piTab = document.querySelector('[data-tab="pi"]');
+        const piInp = document.getElementById("piPrompt");
+        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
+        if (piTab) piTab.click();
+      };
+      actionsSpan.appendChild(askPiBtn);
+
+      bodyDiv.appendChild(actionsSpan);
+      det.appendChild(bodyDiv);
+      li.appendChild(det);
+    } else {
       const span = document.createElement("span");
       span.textContent = item.text;
       li.appendChild(span);
 
-      // Actions container for attention item
       const actionsSpan = document.createElement("span");
       actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
 
-      // Repair button if linked to issue
       const m = item.text.match(/(?:^|\s)#(\d+)/);
       if (m) {
         const btn = document.createElement("button");
@@ -3729,27 +4173,7 @@ function renderBriefing(b) {
         actionsSpan.appendChild(btn);
       }
 
-      // If item is a failing run, surface "Draft issue from failure" and "Ask Pi to diagnose"
-      const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
       if (isRun) {
-        let wfName = item.run ? (item.run.name || "CI") : "";
-        let wfBranch = item.run ? (item.run.branch || "main") : "";
-        let wfCause = item.cause || "";
-        if (!wfName) {
-          const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
-          if (matchRun) {
-            wfName = matchRun[1].trim();
-            wfBranch = matchRun[2].trim();
-          } else {
-            wfName = "Workflow";
-            wfBranch = "main";
-          }
-        }
-        if (!wfCause) {
-          const matchCause = item.text.match(/likely cause:\s*(.+)$/);
-          wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
-        }
-
         const draftBtn = document.createElement("button");
         draftBtn.type = "button";
         draftBtn.className = "btn-ghost";
@@ -3759,10 +4183,10 @@ function renderBriefing(b) {
           if (typeof draftIssueFromFinding === "function") {
             draftIssueFromFinding({
               source: "workflow",
-              id: (item.run && item.run.id) || wfName,
+              id: wfName,
               title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
               cause: wfCause,
-              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ""`
             });
           }
         };
@@ -3785,14 +4209,27 @@ function renderBriefing(b) {
       if (actionsSpan.children.length > 0) {
         li.appendChild(actionsSpan);
       }
-      ul.appendChild(li);
-    });
-    att.appendChild(ul);
-  } else if (!hasFailingRuns && !hasConflicts) {
-    const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
-  }
+    }
+    ul.appendChild(li);
+  });
+  container.appendChild(ul);
+}
+
+function renderBriefing(b) {
+  briefingErrEl.textContent = "";
+  briefingEl.textContent = "";
+  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
+  const att = document.createElement("div");
+  renderAttentionList(b, att, {cleanMessage: "No failing runs ✓"});
   briefingEl.appendChild(att);
-  (b.prs || []).forEach(pr => {
+  const prList = b.prs || [];
+  if (!prList.length && !b.prs_err) {
+    const noPr = document.createElement("p");
+    noPr.style.color = "var(--text-muted)";
+    noPr.textContent = "No open PRs ✓";
+    briefingEl.appendChild(noPr);
+  }
+  prList.forEach(pr => {
     const card = document.createElement("div");
     card.className = "prcard";
     const head = document.createElement("div");
@@ -3826,6 +4263,7 @@ function renderBriefing(b) {
     chip("CI " + pr.ci, pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
     chip("merge " + pr.merge, pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
     if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.overlaps && pr.overlaps.with && pr.overlaps.with.length) chip("overlaps #" + pr.overlaps.with.join(", #"), "chip-warn");
     if (pr.draft) chip("draft");
     if (pr.stale) chip("stale", "chip-warn");
     chip(pr.updated);
@@ -3865,24 +4303,10 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
-  if (b.failing_runs && b.failing_runs.length) {
-    const w = document.createElement("div");
-    const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
-    b.failing_runs.forEach(run => {
-      const p = document.createElement("p");
-      const failed = (run.failed || []).map(f =>
-        shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-      ).join("; ");
-      p.textContent = shorten(
-        run.name + " on " + run.branch + " (" + run.event + ")" +
-        (failed ? " — failed: " + failed : ""), 600);
-      w.appendChild(p);
-    });
-    briefingEl.appendChild(w);
-  }
+
   const j = b.jules || {};
   const js = document.createElement("div");
-  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
+  const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)" + (b.repo ? " — " + b.repo : ""); js.appendChild(jHead);
   if (j.unavailable) {
     const p = document.createElement("p"); p.textContent = "Jules sessions unavailable: " + j.unavailable; js.appendChild(p);
   } else if (j.items && j.items.length) {
@@ -3893,174 +4317,54 @@ function renderBriefing(b) {
   if (j.other) { const p = document.createElement("p"); p.textContent = "(" + j.other + " active session(s) for other repos, not listed.)"; js.appendChild(p); }
   briefingEl.appendChild(js);
 }
+function renderBriefingUnavailable(errMsg) {
+  if (briefingEl) briefingEl.textContent = "";
+  if (briefingErrEl) setErrorEl(briefingErrEl, errMsg || "briefing unavailable", "briefing unavailable");
+  const att = document.getElementById("attentionBody");
+  if (att) {
+    att.textContent = "";
+    const span = document.createElement("span");
+    span.textContent = "Briefing unavailable — ";
+    att.appendChild(span);
+    const rb = document.createElement("button");
+    rb.className = "btn-ghost btn-retry";
+    rb.textContent = "Retry";
+    rb.onclick = () => refreshBriefing();
+    att.appendChild(rb);
+  }
+}
+
 async function refreshBriefing() {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
-  const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  let res;
+  try {
+    res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo), {signal: controller.signal});
+  } catch (err) {
+    clearTimeout(timeoutId);
+    renderBriefingUnavailable(err && err.name === "AbortError" ? "Briefing request timed out" : (err && err.message) || String(err));
+    return;
+  }
+  clearTimeout(timeoutId);
   if (!res.ok) {
-    briefingEl.textContent = "";
-    setErrorEl(briefingErrEl, res.data.error || ("HTTP " + res.status), "briefing unavailable");
-    const att = document.getElementById("attentionBody");
-    if (att) {
-      att.textContent = "";
-      const span = document.createElement("span");
-      span.textContent = "Briefing unavailable — ";
-      att.appendChild(span);
-      const rb = document.createElement("button");
-      rb.className = "btn-ghost btn-retry";
-      rb.textContent = "Retry";
-      rb.onclick = () => refreshBriefing();
-      att.appendChild(rb);
-    }
+    renderBriefingUnavailable(res.data && res.data.error ? res.data.error : ("HTTP " + res.status));
     return;
   }
   briefingErrEl.textContent = "";
   renderBriefing(res.data);
   briefingPrs = res.data.pr_list || [];
+  const failingCount = (res.data.failing_runs || []).length;
+  tabBadgeCounts.briefing = failingCount;
+  updateTabBadges();
   if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
   if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
-  if (typeof renderAttention === "function") renderAttention(res.data);
-}
-
-// Status-first: the Actions tab leads with what needs attention —
-// failing runs and attention items from the latest briefing. Runs
-// whenever the briefing refreshes, so the top of the default tab
-// always reflects the freshest state.
-function renderAttention(b) {
-  const el = document.getElementById("attentionBody");
-  if (!el) return;
-  el.textContent = "";
-  const items = [];
-  (b.attention || []).forEach(a => {
-    items.push({text: a, raw: a});
-  });
-  (b.failing_runs || []).forEach(run => {
-    const runName = run.name || "CI";
-    const branchName = run.branch || "main";
-    const eventName = run.event || "push";
-    const failedParts = (run.failed || []).map(f =>
-      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-    ).join("; ");
-    const causeSummary = failedParts || "workflow failed";
-    const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
-    let found = false;
-    for (const it of items) {
-      if (it.text.includes(runName) && it.text.includes(branchName)) {
-        found = true;
-        it.run = run;
-        it.cause = causeSummary;
-        break;
-      }
-    }
-    if (!found) {
-      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
-    }
-  });
-
-  const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
-  const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
-
-  if (!items.length && !hasFailingRuns && !hasConflicts) {
-    el.textContent = "All clear — nothing needs attention.";
-    return;
+  if (typeof renderAttentionList === "function") {
+    const el = document.getElementById("attentionBody");
+    if (el) renderAttentionList(res.data, el, {limit: 8, cleanMessage: "No failing runs ✓"});
   }
-  const head = document.createElement("div");
-  head.className = "attn-head";
-  head.textContent = "Needs attention";
-  el.appendChild(head);
-  const ul = document.createElement("ul");
-  items.slice(0, 8).forEach(item => {
-    const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = item.text;
-    li.appendChild(span);
-
-    const actionsSpan = document.createElement("span");
-    actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
-
-    const m = item.text.match(/(?:^|\s)#(\d+)/);
-    if (m) {
-      const btn = document.createElement("button");
-      btn.textContent = "Repair";
-      btn.className = "btn-ghost";
-      btn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        try {
-          await fetchJson("/buttons/api/repair/dispatch", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({issue: parseInt(m[1], 10)})
-          });
-          const details = document.getElementById("repairDetails");
-          if (details) details.open = true;
-          if (typeof refreshStatus === "function") refreshStatus();
-        } finally {
-          btn.disabled = false;
-        }
-      };
-      actionsSpan.appendChild(btn);
-    }
-
-    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
-    if (isRun) {
-      let wfName = item.run ? (item.run.name || "CI") : "";
-      let wfBranch = item.run ? (item.run.branch || "main") : "";
-      let wfCause = item.cause || "";
-      if (!wfName) {
-        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
-        if (matchRun) {
-          wfName = matchRun[1].trim();
-          wfBranch = matchRun[2].trim();
-        } else {
-          wfName = "Workflow";
-          wfBranch = "main";
-        }
-      }
-      if (!wfCause) {
-        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
-        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
-      }
-
-      const draftBtn = document.createElement("button");
-      draftBtn.type = "button";
-      draftBtn.className = "btn-ghost";
-      draftBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      draftBtn.textContent = "Draft issue from failure";
-      draftBtn.onclick = () => {
-        if (typeof draftIssueFromFinding === "function") {
-          draftIssueFromFinding({
-            source: "workflow",
-            id: (item.run && item.run.id) || wfName,
-            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
-            cause: wfCause,
-            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
-          });
-        }
-      };
-      actionsSpan.appendChild(draftBtn);
-
-      const askPiBtn = document.createElement("button");
-      askPiBtn.type = "button";
-      askPiBtn.className = "btn-primary";
-      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      askPiBtn.textContent = "Ask Pi to diagnose";
-      askPiBtn.onclick = () => {
-        const piTab = document.querySelector('[data-tab="pi"]');
-        const piInp = document.getElementById("piPrompt");
-        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
-        if (piTab) piTab.click();
-      };
-      actionsSpan.appendChild(askPiBtn);
-    }
-
-    if (actionsSpan.children.length > 0) {
-      li.appendChild(actionsSpan);
-    }
-    ul.appendChild(li);
-  });
-  el.appendChild(ul);
 }
 
 // Agent jobs: multi-step tasks with a visible plan. Read-only
@@ -4140,7 +4444,7 @@ function renderJobNew() {
       issueBox.textContent = "Loading issues…";
       d.appendChild(issueBox);
       const picker = document.getElementById("briefingRepo");
-      const repo = picker ? picker.value : "tech-dancer";
+      const repo = picker ? picker.value : DEFAULT_REPO;
       fetchJson("/buttons/api/issues?repo=" + encodeURIComponent(repo))
         .then(res => {
           issueBox.textContent = "";
@@ -4201,7 +4505,7 @@ function renderJobNew() {
     b.textContent = "Start job";
     b.onclick = async () => {
       const picker = document.getElementById("briefingRepo");
-      const body = {template: name, repo: picker ? picker.value : "tech-dancer"};
+      const body = {template: name, repo: picker ? picker.value : DEFAULT_REPO};
       if (t.needsPr) {
         const n = parseInt(prSelect.value, 10);
         if (!(n > 0)) { jobErr("Pick an open PR."); return; }
@@ -4227,6 +4531,8 @@ function renderJobNew() {
     el.appendChild(d);
   });
 }
+let jobsShowAll = false;
+
 async function refreshJobs() {
   const listEl = document.getElementById("jobList");
   const errEl = document.getElementById("jobListErr");
@@ -4239,11 +4545,46 @@ async function refreshJobs() {
   if (errEl) errEl.textContent = "";
   listEl.textContent = "";
   const jobs = res.data.jobs || [];
+  const failedJobsCount = jobs.filter(j => j.outcome === "failed" || (j.steps || []).some(s => s.state === "failed")).length;
+  tabBadgeCounts.jobs = failedJobsCount;
+  updateTabBadges();
   if (!jobs.length) {
     listEl.textContent = "No jobs yet. Start one above.";
     return;
   }
-  jobs.forEach(j => listEl.appendChild(renderJobCard(j)));
+
+  let newestTerminalIdx = -1;
+  for (let i = 0; i < jobs.length; i++) {
+    if (jobs[i].state === "terminal") {
+      newestTerminalIdx = i;
+      break;
+    }
+  }
+
+  const limit = jobsShowAll ? jobs.length : 20;
+  const visibleJobs = jobs.slice(0, limit);
+
+  visibleJobs.forEach((j, idx) => {
+    const isOlderTerminal = j.state === "terminal" && idx > newestTerminalIdx;
+    listEl.appendChild(renderJobCard(j, isOlderTerminal));
+  });
+
+  if (jobs.length > 20 && !jobsShowAll) {
+    const wrap = document.createElement("div");
+    wrap.className = "jobs-show-more-wrap";
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "btn-ghost jobs-show-more-btn";
+    moreBtn.id = "jobsShowMoreBtn";
+    moreBtn.textContent = `Show more (${jobs.length - 20} remaining)`;
+    moreBtn.onclick = () => {
+      jobsShowAll = true;
+      refreshJobs();
+    };
+    wrap.appendChild(moreBtn);
+    listEl.appendChild(wrap);
+  }
+
   // Read-only steps start on the server without a tap. If one is
   // running and we aren't polling its run yet, pick it up so its
   // output streams to the drawer and step-done gets reported.
@@ -4262,7 +4603,7 @@ async function refreshJobs() {
     }
   }
 }
-function renderJobCard(j) {
+function renderJobCard(j, collapsed = false) {
   const card = document.createElement("div");
   card.className = "jobcard";
   const head = document.createElement("div");
@@ -4298,6 +4639,13 @@ function renderJobCard(j) {
     (j.state === "terminal" ? " · " + j.outcome : " · active");
   card.appendChild(m);
 
+  // Steps container (can be hidden if collapsed)
+  const stepsContainer = document.createElement("div");
+  stepsContainer.className = "jobcard-steps";
+  if (collapsed) {
+    stepsContainer.style.display = "none";
+  }
+
   // Consolidated approval card for write steps if multiple or write steps present
   const pendingWrites = j.steps.map((s, idx) => ({s, idx}))
     .filter(item => item.s.write && item.s.state === "pending");
@@ -4319,19 +4667,22 @@ function renderJobCard(j) {
     bbtn.onclick = () => jobApproveAll(j.id);
     banner.appendChild(btext);
     banner.appendChild(bbtn);
-    card.appendChild(banner);
+    stepsContainer.appendChild(banner);
   }
 
   j.steps.forEach((s, i) => {
     const row = document.createElement("div");
     row.className = "jobstep";
+    const rowTop = document.createElement("div");
+    rowTop.className = "jobstep-row";
+
     const badge = document.createElement("span");
     badge.className = "st " + s.state;
     badge.textContent = s.state;
     const lab = document.createElement("span");
     lab.textContent = s.label;
-    row.appendChild(badge);
-    row.appendChild(lab);
+    rowTop.appendChild(badge);
+    rowTop.appendChild(lab);
     if (j.state === "active" && s.state === "pending" &&
         j.steps.slice(0, i).every(p => p.state === "done" || p.state === "declined")) {
       const acts = document.createElement("span");
@@ -4344,7 +4695,7 @@ function renderJobCard(j) {
       no.className = "btn-ghost";
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(ok); acts.appendChild(no);
-      row.appendChild(acts);
+      rowTop.appendChild(acts);
     } else if (j.state === "active" && s.state === "pending" && s.write) {
       // Allow declining individual write steps even ahead of turn
       const acts = document.createElement("span");
@@ -4354,10 +4705,42 @@ function renderJobCard(j) {
       no.className = "btn-ghost";
       no.onclick = () => jobDecline(j.id, i);
       acts.appendChild(no);
-      row.appendChild(acts);
+      rowTop.appendChild(acts);
     }
-    card.appendChild(row);
+    row.appendChild(rowTop);
+
+    // One-line failure reason under failed step
+    if (s.state === "failed") {
+      const reasonEl = document.createElement("div");
+      reasonEl.className = "jobstep-reason";
+      let reasonText = "";
+      if (s.note && typeof s.note === "string" && s.note.trim()) {
+        reasonText = s.note.trim().split("\n")[0].trim();
+      } else if (s.exit_code !== undefined && s.exit_code !== null) {
+        reasonText = `exit ${s.exit_code}`;
+      } else {
+        reasonText = "exit 1";
+      }
+      reasonEl.textContent = reasonText;
+      row.appendChild(reasonEl);
+    }
+
+    stepsContainer.appendChild(row);
   });
+
+  if (collapsed) {
+    const expander = document.createElement("div");
+    expander.className = "jobcard-expander";
+    expander.textContent = "▸ Show steps";
+    expander.onclick = () => {
+      const isHidden = stepsContainer.style.display === "none";
+      stepsContainer.style.display = isHidden ? "block" : "none";
+      expander.textContent = isHidden ? "▾ Hide steps" : "▸ Show steps";
+    };
+    card.appendChild(expander);
+  }
+
+  card.appendChild(stepsContainer);
   return card;
 }
 async function jobApproveAll(id) {
@@ -4428,10 +4811,17 @@ if (clearJobsBtn) clearJobsBtn.onclick = async () => {
   refreshJobs();
   if (typeof refreshLedger === "function") refreshLedger();
 };
-refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
-if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
-refreshBriefing();
+if (briefingRepoPicker) {
+  try {
+    const savedRepo = localStorage.getItem("buttons_selected_repo");
+    if (savedRepo && Array.from(briefingRepoPicker.options).some(o => o.value === savedRepo)) {
+      briefingRepoPicker.value = savedRepo;
+      markSelectedRepo();
+    }
+  } catch (e) {}
+  briefingRepoPicker.onchange = refreshBriefing;
+}
 
 // Pi background runs: streams output directly into the slide-up
 // drawer (the way Jobs does) while updating inline status.
@@ -4520,16 +4910,24 @@ const suggestErrEl = document.getElementById("suggestErr");
 function renderSuggestions(data, repo) {
   suggestionsEl.textContent = "";
   if (!data.suggestions || !data.suggestions.length) {
-    const note = data.note || data.raw || "Pi suggested nothing runnable.";
+    const note = data.note || data.raw || "Agent suggested nothing runnable.";
     const noteDiv = document.createElement("div");
     noteDiv.className = "prmeta";
     noteDiv.style.marginBottom = "0.5em";
-    noteDiv.textContent = "Pi note (no runnable commands):";
+    noteDiv.textContent = "Agent note (no runnable commands):";
     suggestionsEl.appendChild(noteDiv);
     const pre = document.createElement("pre");
     pre.textContent = note;
     suggestionsEl.appendChild(pre);
     return;
+  }
+
+  if (data.note) {
+    const noteDiv = document.createElement("div");
+    noteDiv.className = "prmeta";
+    noteDiv.style.marginBottom = "0.8em";
+    noteDiv.textContent = data.note;
+    suggestionsEl.appendChild(noteDiv);
   }
 
   // Batch action: Turn all approved suggestions into a tracked job
@@ -4634,7 +5032,7 @@ function renderSuggestions(data, repo) {
 }
 if (suggestBtn) suggestBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   suggestErrEl.textContent = "";
   suggestionsEl.textContent = "";
   const pre = document.createElement("pre");
@@ -4717,7 +5115,7 @@ function renderAskResult(data, repo) {
 }
 if (askBtn) askBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   const instruction = askBox.value.trim();
   if (!instruction) { askErr.textContent = "Type an instruction first."; return; }
   askErr.textContent = "";
@@ -4772,6 +5170,9 @@ async function refreshLedger() {
     ledgerErrEl.textContent = "";
     ledgerEl.textContent = "";
     const entries = data.entries || [];
+    const hasNewEntries = entries.some(e => e.ts && e.ts > lastLedgerViewTs);
+    tabBadgeCounts.ledger = hasNewEntries;
+    updateTabBadges();
     if (!entries.length) { ledgerEl.textContent = "No ledger entries yet."; return; }
     entries.forEach(e => {
       const row = document.createElement("div");
@@ -4807,7 +5208,6 @@ if (clearLedgerBtn) clearLedgerBtn.onclick = async () => {
   refreshLedger();
 };
 if (ledgerKindEl) ledgerKindEl.onchange = refreshLedger;
-refreshLedger();
 
 // Pi session browser. List renders each session file as a compact
 // card showing date/time, repo, and first prompt snippet.
@@ -4896,7 +5296,7 @@ function renderConversation(sessionData) {
       turn.tool_calls.forEach(tc => {
         const pill = document.createElement("span");
         pill.className = "pi-tool-pill";
-        pill.textContent = "⚙ " + (tc.name || "tool");
+        pill.textContent = tc.name || "tool";
         tcContainer.appendChild(pill);
       });
       turnEl.appendChild(tcContainer);
@@ -4907,7 +5307,7 @@ function renderConversation(sessionData) {
         const details = document.createElement("details");
         details.className = "pi-tool-result-details";
         const sum = document.createElement("summary");
-        sum.textContent = "⚙ Output: " + (tr.name || "tool result");
+        sum.textContent = "Output: " + (tr.name || "tool result");
         const pre = document.createElement("pre");
         pre.textContent = tr.content || "";
         details.appendChild(sum);
@@ -4976,7 +5376,7 @@ function renderSessionList() {
 
   if (!filtered.length) {
     piSessionListEl.style.display = "none";
-    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Pi sessions found.";
+    piSessionErrEl.textContent = filterQuery ? "No sessions matching '" + filterQuery + "'." : "No Agent sessions found.";
     return;
   }
 
@@ -5010,6 +5410,15 @@ function renderSessionList() {
       meta.appendChild(bgBadge);
     }
 
+    if (s.source === "ledger") {
+      const ledgerBadge = document.createElement("span");
+      ledgerBadge.className = "pirow-badge";
+      ledgerBadge.style.background = "#3b4252";
+      ledgerBadge.style.color = "#a3be8c";
+      ledgerBadge.textContent = "ledger";
+      meta.appendChild(ledgerBadge);
+    }
+
     if (s.mtime) {
       const timeSpan = document.createElement("span");
       timeSpan.className = "pirow-time";
@@ -5033,7 +5442,7 @@ function renderSessionList() {
     del.title = "Delete this session";
     del.onclick = async (e) => {
       e.stopPropagation();
-      if (!(await confirmDialog("Delete Pi session",
+      if (!(await confirmDialog("Delete Agent session",
           "Delete this transcript? It cannot be undone.", true)))
         return;
       const r = await fetchJson("/buttons/api/pi-sessions/delete",
@@ -5053,7 +5462,7 @@ function renderSessionList() {
     };
 
     row.appendChild(b);
-    row.appendChild(del);
+    if (s.source !== "ledger") row.appendChild(del);
     piSessionListEl.appendChild(row);
   });
 }
@@ -5066,7 +5475,7 @@ if (piSessionFilterEl) {
 
 const clearPiSessionsBtn = document.getElementById("clearPiSessions");
 if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
-  if (!(await confirmDialog("Clear Pi sessions", "This deletes the transcripts and cannot be undone.", true))) return;
+  if (!(await confirmDialog("Clear Agent sessions", "This deletes the transcripts and cannot be undone.", true))) return;
   const r = await fetch("/buttons/api/pi-sessions/clear", {method: "POST"});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { setErrorEl(piSessionErrEl, data.error || r.status, "clear failed"); return; }
@@ -5077,7 +5486,7 @@ if (clearPiSessionsBtn) clearPiSessionsBtn.onclick = async () => {
   piSessionListEl.textContent = "";
   piSessionListEl.style.display = "none";
   piSessionOutEl.textContent = "";
-  piSessionErrEl.textContent = data.output || "Pi sessions cleared.";
+  piSessionErrEl.textContent = data.output || "Agent sessions cleared.";
 };
 
 const listPiSessionsBtn = document.getElementById("listPiSessions");
@@ -5108,24 +5517,41 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
   }
 };
 
-// Project tab: issues, Jules sessions, td planning guides.
-// Reads the repo from the picker at tap time, like the other tabs.
-function projectRepo() {
-  const p = document.getElementById("briefingRepo");
-  return p ? p.value : "remote-server";
-}
 let currentPrDetails = null;
 
 function renderReviewPrSelect() {
   const sel = document.getElementById("reviewPrSelect");
+  const btn = document.getElementById("loadPrDetailsBtn");
+  const reasonEl = document.getElementById("reviewPrReason");
   if (!sel) return;
+  const prs = briefingPrs || [];
+  if (!prs.length) {
+    sel.innerHTML = '<option value="">No open PRs</option>';
+    if (btn) {
+      btn.disabled = true;
+      btn.title = "No open PRs";
+    }
+    if (reasonEl) {
+      reasonEl.textContent = "No open PRs";
+      reasonEl.style.display = "inline";
+    }
+    return;
+  }
   sel.innerHTML = '<option value="">— Pick open PR —</option>';
-  (briefingPrs || []).forEach(pr => {
+  prs.forEach(pr => {
     const o = document.createElement("option");
     o.value = pr.number;
     o.textContent = "#" + pr.number + " — " + String(pr.title || "").slice(0, 60);
     sel.appendChild(o);
   });
+  if (btn) {
+    btn.disabled = !sel.value;
+    btn.title = "";
+  }
+  if (reasonEl) {
+    reasonEl.textContent = "";
+    reasonEl.style.display = "none";
+  }
 }
 
 async function loadEnrichedPrDetails(prNum) {
@@ -5187,6 +5613,7 @@ function renderEnrichedPrDetails(pr) {
     chip("CI: " + (pr.ci || "unknown"), pr.ci === "passing" ? "chip-ok" : pr.ci === "failing" ? "chip-fail" : "");
     chip("Merge: " + (pr.merge || "unknown"), pr.merge === "clean" ? "chip-ok" : pr.merge === "behind" ? "chip-warn" : "");
     if (pr.conflicted) chip("CONFLICTED", "chip-fail");
+    if (pr.overlaps && pr.overlaps.with && pr.overlaps.with.length) chip("overlaps #" + pr.overlaps.with.join(", #"), "chip-warn");
     if (pr.draft) chip("Draft");
   }
 
@@ -5417,26 +5844,78 @@ async function dispatchJulesHandoff() {
 function renderPlanPrSelects() {
   renderReviewPrSelect();
   const single = document.getElementById("planPrSelect");
-  if (single) {
-    single.innerHTML = '<option value="">—</option>';
-    (briefingPrs || []).forEach(pr => {
-      const o = document.createElement("option");
-      o.value = pr.number;
-      o.textContent = "#" + pr.number + " — " +
-        String(pr.title || "").slice(0, 60);
-      single.appendChild(o);
-    });
-  }
+  const reviewBtn = document.getElementById("planReviewBtn");
+  const reviewReasonEl = document.getElementById("planReviewReason");
   const multi = document.getElementById("planAggPrs");
+  const aggBtn = document.getElementById("planAggBtn");
+  const aggReasonEl = document.getElementById("planAggReason");
+  const prs = briefingPrs || [];
+
+  if (single) {
+    if (!prs.length) {
+      single.innerHTML = '<option value="">No open PRs</option>';
+      if (reviewBtn) {
+        reviewBtn.disabled = true;
+        reviewBtn.title = "No open PRs";
+      }
+      if (reviewReasonEl) {
+        reviewReasonEl.textContent = "No open PRs";
+        reviewReasonEl.style.display = "inline";
+      }
+    } else {
+      single.innerHTML = '<option value="">—</option>';
+      prs.forEach(pr => {
+        const o = document.createElement("option");
+        o.value = pr.number;
+        o.textContent = "#" + pr.number + " — " +
+          String(pr.title || "").slice(0, 60);
+        single.appendChild(o);
+      });
+      if (reviewBtn) {
+        reviewBtn.disabled = !single.value;
+        reviewBtn.title = "";
+      }
+      if (reviewReasonEl) {
+        reviewReasonEl.textContent = "";
+        reviewReasonEl.style.display = "none";
+      }
+    }
+  }
+
   if (multi) {
     multi.innerHTML = "";
-    (briefingPrs || []).forEach(pr => {
+    if (!prs.length) {
       const o = document.createElement("option");
-      o.value = pr.number;
-      o.textContent = "#" + pr.number + " — " +
-        String(pr.title || "").slice(0, 40);
+      o.value = "";
+      o.disabled = true;
+      o.textContent = "No open PRs";
       multi.appendChild(o);
-    });
+      if (aggBtn) {
+        aggBtn.disabled = true;
+        aggBtn.title = "No open PRs";
+      }
+      if (aggReasonEl) {
+        aggReasonEl.textContent = "No open PRs";
+        aggReasonEl.style.display = "inline";
+      }
+    } else {
+      prs.forEach(pr => {
+        const o = document.createElement("option");
+        o.value = pr.number;
+        o.textContent = "#" + pr.number + " — " +
+          String(pr.title || "").slice(0, 40);
+        multi.appendChild(o);
+      });
+      if (aggBtn) {
+        const selected = Array.from(multi.selectedOptions).map(o => o.value).filter(Boolean);
+        aggBtn.disabled = !selected.length;
+        aggBtn.title = "";
+      }
+      if (aggReasonEl) {
+        aggReasonEl.textContent = "";
+        aggReasonEl.style.display = "none";
+      }
+    }
   }
 }
 async function refreshIssues() {
@@ -5625,7 +6104,7 @@ async function createProjectIssue() {
 async function refreshJulesStatusCard() {
   const el = document.getElementById("julesCardBody");
   if (!el) return;
-  const repo = (typeof projectRepo === "function") ? projectRepo() : "tech-dancer";
+  const repo = (typeof projectRepo === "function") ? projectRepo() : DEFAULT_REPO;
   const res = await fetchJson("/buttons/api/jules-sessions?repo=" + encodeURIComponent(repo));
   const data = res.data || {};
   if (!res.ok) {
@@ -5640,14 +6119,8 @@ async function refreshJulesStatusCard() {
     el.appendChild(p);
   }
   const ss = data.sessions || [];
-  if (!ss.length) {
-    const p = document.createElement("div");
-    p.style.color = "var(--text-muted)";
-    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
-    el.appendChild(p);
-    return;
-  }
-  ss.forEach(s => {
+  const unk = data.unknown || [];
+  const renderRow = (s) => {
     const row = document.createElement("div");
     row.className = "jules-session-row";
 
@@ -5690,8 +6163,37 @@ async function refreshJulesStatusCard() {
       meta.textContent += " · PR: " + s.pr_url.split("/").pop();
     }
     row.appendChild(meta);
-    el.appendChild(row);
-  });
+    return row;
+  };
+
+  if (!ss.length) {
+    const p = document.createElement("div");
+    p.style.color = "var(--text-muted)";
+    p.textContent = "No active Jules sessions for " + (data.repo || repo) + ".";
+    el.appendChild(p);
+  } else {
+    ss.forEach(s => el.appendChild(renderRow(s)));
+  }
+
+  if (unk.length) {
+    const uHeader = document.createElement("div");
+    uHeader.style.marginTop = "0.6em";
+    uHeader.style.fontWeight = "bold";
+    uHeader.style.fontSize = "0.9em";
+    uHeader.style.color = "var(--text-muted)";
+    uHeader.textContent = "Unknown / global sessions (" + unk.length + "):";
+    el.appendChild(uHeader);
+    unk.forEach(s => el.appendChild(renderRow(s)));
+  }
+
+  if (data.other) {
+    const pOther = document.createElement("div");
+    pOther.style.color = "var(--text-muted)";
+    pOther.style.fontSize = "0.88em";
+    pOther.style.marginTop = "0.4em";
+    pOther.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+    el.appendChild(pOther);
+  }
 }
 
 async function refreshJulesSessions() {
@@ -5716,11 +6218,8 @@ async function refreshJulesSessions() {
     el.appendChild(n);
   }
   const ss = data.sessions || [];
-  if (!ss.length) {
-    el.appendChild(document.createTextNode("No Jules sessions."));
-    return;
-  }
-  ss.forEach(s => {
+  const unk = data.unknown || [];
+  const renderCard = (s) => {
     const card = document.createElement("div");
     card.className = "prcard";
     const title = document.createElement("div");
@@ -5750,29 +6249,151 @@ async function refreshJulesSessions() {
       pr.appendChild(a);
       card.appendChild(pr);
     }
-    el.appendChild(card);
-  });
+    return card;
+  };
+
+  if (!ss.length) {
+    el.appendChild(document.createTextNode("No Jules sessions."));
+  } else {
+    ss.forEach(s => el.appendChild(renderCard(s)));
+  }
+
+  if (unk.length) {
+    const uSection = document.createElement("div");
+    uSection.style.marginTop = "0.8em";
+    const uHeader = document.createElement("div");
+    uHeader.style.fontWeight = "bold";
+    uHeader.style.color = "var(--text-muted)";
+    uHeader.style.marginBottom = "0.3em";
+    uHeader.textContent = "Unknown / global sessions (" + unk.length + "):";
+    uSection.appendChild(uHeader);
+    unk.forEach(s => uSection.appendChild(renderCard(s)));
+    el.appendChild(uSection);
+  }
+
+  if (data.other) {
+    const p = document.createElement("p");
+    p.style.color = "var(--text-muted)";
+    p.style.fontSize = "0.9em";
+    p.textContent = "(" + data.other + " active session(s) for other repos, not listed.)";
+    el.appendChild(p);
+  }
 }
+function renderIssueAuditOutput(data, container, repo) {
+  renderStructuredAuditOutput(data, container, repo, "issues");
+}
+
+function renderWorkflowAuditOutput(data, container, repo) {
+  renderStructuredAuditOutput(data, container, repo, "workflows");
+}
+
+function renderStructuredAuditOutput(data, container, repo, auditType) {
+  let parsed = null;
+  const rawText = data.output || "";
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (e) {
+    const s1 = rawText.indexOf("{");
+    const s2 = rawText.lastIndexOf("}");
+    if (s1 >= 0 && s2 > s1) {
+      try { parsed = JSON.parse(rawText.slice(s1, s2 + 1)); } catch (e2) {}
+    }
+  }
+
+  const items = (parsed && (parsed.workflows || parsed.runs || parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
+  const totalCount = parsed ? (parsed.count !== undefined ? parsed.count : (parsed.total !== undefined ? parsed.total : (items ? items.length : 0))) : 0;
+  const label = auditType === "workflows" ? "Audited workflows" : "Audited issues";
+
+  const countDiv = document.createElement("div");
+  countDiv.className = "audit-counts";
+  countDiv.textContent = `${label}: ${totalCount}`;
+  container.appendChild(countDiv);
+
+  if (items && items.length > 0) {
+    const table = document.createElement("table");
+    table.className = "audit-table";
+    const head1 = auditType === "workflows" ? "Workflow / Run" : "# / ID";
+    const head2 = auditType === "workflows" ? "Status / Event" : "Title / Finding";
+    const head3 = auditType === "workflows" ? "Path / Plan" : "Path / Plan";
+    table.innerHTML = `<thead><tr><th>${head1}</th><th>${head2}</th><th>${head3}</th></tr></thead><tbody></tbody>`;
+    const tbody = table.querySelector("tbody");
+    items.forEach(it => {
+      const tr = document.createElement("tr");
+      const num = it.number || it.id || it.issue || "";
+      const name = it.name || it.title || it.workflow || (num ? `#${num}` : "");
+      let rawPath = it.plan_path || it.path || it.file || "";
+      let relPath = relativizePath(rawPath, repo);
+      const url = it.url || it.html_url || ((num && repo && auditType !== "workflows") ? `https://github.com/${repo}/issues/${num}` : "");
+
+      const tdCol1 = document.createElement("td");
+      if (url) {
+        tdCol1.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">${escHtml(String(name || num))}</a>`;
+      } else {
+        tdCol1.textContent = name || (num ? `#${num}` : "—");
+      }
+
+      const tdCol2 = document.createElement("td");
+      const subInfo = it.conclusion || it.status || it.event || it.summary || it.diagnosed_cause || (auditType === "workflows" ? "—" : "(no title)");
+      tdCol2.textContent = subInfo;
+
+      const tdCol3 = document.createElement("td");
+      if (relPath) {
+        tdCol3.innerHTML = `<code>${escHtml(relPath)}</code>`;
+      } else {
+        tdCol3.textContent = "—";
+      }
+
+      tr.appendChild(tdCol1);
+      tr.appendChild(tdCol2);
+      tr.appendChild(tdCol3);
+      tbody.appendChild(tr);
+    });
+    container.appendChild(table);
+  }
+
+  // Full output remains accessible via collapsed details
+  const details = document.createElement("details");
+  details.className = "run-summary-details";
+  details.style.marginTop = "0.8em";
+  const summary = document.createElement("summary");
+  summary.textContent = "Full raw output";
+  const pre = document.createElement("pre");
+  pre.id = "planRawOutput";
+  pre.textContent = rawText || "(empty)";
+  details.appendChild(summary);
+  details.appendChild(pre);
+  container.appendChild(details);
+}
+
 async function runPlan(plan, extra) {
   const out = document.getElementById("planOut");
   const err = document.getElementById("planErr");
   out.innerHTML = '<span class="spinner"></span> Generating plan…';
   err.textContent = "";
-  const res = await fetchJson("/buttons/api/run-plan", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({repo: projectRepo(), plan: plan},
-                                      extra || {}))});
-  const data = res.data || {};
-  if (!res.ok) {
+  const repo = projectRepo();
+  let res;
+  try {
+    res = await fetchJson("/buttons/api/run-plan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(Object.assign({repo: repo, plan: plan},
+                                        extra || {}))});
+  } catch (e) {
     out.innerHTML = "";
-    setErrorEl(err, data.error || res.status, "plan failed");
+    setErrorEl(err, e, "plan failed");
+    return;
+  }
+  const data = (res && res.data) || {};
+  if (!res || !res.ok) {
+    out.innerHTML = "";
+    setErrorEl(err, data.error || (res ? res.status : "network error"), "plan failed");
     return;
   }
   out.innerHTML = "";
   if (data.plan_path) {
     const p = document.createElement("p");
-    p.textContent = "Plan written to: " + data.plan_path;
+    const rel = relativizePath(data.plan_path, repo);
+    p.innerHTML = "Plan written to: <code>" + escHtml(rel) + "</code>";
     out.appendChild(p);
   }
   if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
@@ -5786,7 +6407,7 @@ async function runPlan(plan, extra) {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
-          repo: projectRepo(),
+          repo: repo,
           plan_content: data.output,
           plan_path: data.plan_path || ""
         })
@@ -5806,10 +6427,17 @@ async function runPlan(plan, extra) {
     };
     out.appendChild(runBtn);
   }
-  const pre = document.createElement("pre");
-  pre.id = "planRawOutput";
-  pre.textContent = data.output || "(empty)";
-  out.appendChild(pre);
+
+  if (plan === "issue-audit") {
+    renderIssueAuditOutput(data, out, repo);
+  } else if (plan === "workflow-audit") {
+    renderWorkflowAuditOutput(data, out, repo);
+  } else {
+    const pre = document.createElement("pre");
+    pre.id = "planRawOutput";
+    pre.textContent = (data.output || "(empty)").replace(/\/srv\/[^\s'"]+/g, "[server path]");
+    out.appendChild(pre);
+  }
 }
 function renderPlanLiveChecklist(job, container) {
   let box = document.getElementById("planLiveBox");
@@ -5926,7 +6554,7 @@ function pollPlanJob(jid, container) {
   const pab = document.getElementById("planAggBtn");
   if (pab) pab.onclick = () => {
     const sel = document.getElementById("planAggPrs");
-    const prs = Array.from(sel.selectedOptions).map(o => o.value);
+    const prs = Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
     const target =
       (document.getElementById("planAggTarget").value || "").trim() ||
       "main";
@@ -5937,6 +6565,29 @@ function pollPlanJob(jid, container) {
     }
     runPlan("aggregation", {prs: prs, target: target});
   };
+
+  const revSel = document.getElementById("reviewPrSelect");
+  if (revSel) {
+    revSel.onchange = () => {
+      const btn = document.getElementById("loadPrDetailsBtn");
+      if (btn) btn.disabled = !revSel.value;
+    };
+  }
+  const planSel = document.getElementById("planPrSelect");
+  if (planSel) {
+    planSel.onchange = () => {
+      const btn = document.getElementById("planReviewBtn");
+      if (btn) btn.disabled = !planSel.value;
+    };
+  }
+  const aggSel = document.getElementById("planAggPrs");
+  if (aggSel) {
+    aggSel.onchange = () => {
+      const btn = document.getElementById("planAggBtn");
+      const selected = Array.from(aggSel.selectedOptions).map(o => o.value).filter(Boolean);
+      if (btn) btn.disabled = !selected.length;
+    };
+  }
 })();
 
 // Live updates: re-fetch status every 10s (skipped while the tab
@@ -5965,19 +6616,7 @@ async function refreshStatus() {
     const pend = document.getElementById("livePending");
     const w = s.webhooks || {};
     const pending = s.webhooks_pending || [];
-    // Per-repo pull state lives on the repo cards, so the page
-    // always shows which repo each result belongs to.
-    document.querySelectorAll("[data-repo-status]").forEach(card => {
-      const repo = card.getAttribute("data-repo-status");
-      if (pending.includes(repo)) {
-        card.textContent = "Auto-pull: pulling…";
-      } else if (w[repo]) {
-        const st = w[repo];
-        card.textContent = "Auto-pull: " +
-          (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
-          new Date(st.at * 1000).toLocaleString();
-      }
-    });
+
     // Stale page: a remote-server pull landed after this container
     // started, so the served page predates the checkout. Show the
     // banner and highlight the rebuild button — the pull alone
@@ -6003,9 +6642,11 @@ async function refreshStatus() {
       if (badge) {
         if (n.ntfy || n.webhook) {
           badge.textContent = "Notifications: " + (n.ntfy ? "ntfy(" + (n.topic || "active") + ")" : "webhook");
+          badge.title = "Proactive Notifications active (" + (n.ntfy ? "ntfy" : "webhook") + ")";
           badge.style.color = "#7ed07e";
         } else {
-          badge.textContent = "Notifications: off";
+          badge.textContent = "Notifications: off (set NTFY_* in .env; see docs/buttons.md)";
+          badge.title = "Notifications: off (enable via NTFY_* in .env; see docs/buttons.md#proactive-notifications--scheduled-digest)";
           badge.style.color = "var(--text-muted)";
         }
       }
@@ -6118,19 +6759,36 @@ refreshStatus = async function() {
   } catch (e) {}
 };
 
-refreshStatus();
-if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
 if (testNotifyBtn) testNotifyBtn.onclick = async () => {
+  const badge = document.getElementById("notifyBadge");
+  const isOff = badge && badge.textContent.includes("off");
+  if (isOff) {
+    if (typeof confirmDialog === "function") {
+      await confirmDialog(
+        "Notifications Disabled",
+        "Notifications are currently off (set NTFY_* in .env; see docs/buttons.md).",
+        false
+      );
+    }
+    return;
+  }
+  if (typeof confirmDialog === "function") {
+    const ok = await confirmDialog("Notification Test", "Send a test notification via the configured ntfy/webhook?", false);
+    if (!ok) return;
+  }
   testNotifyBtn.disabled = true;
-  const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
-  testNotifyBtn.disabled = false;
-  if (!res.ok) {
-    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
-  } else {
-    if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+  try {
+    const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
+    if (!res.ok) {
+      if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Failed: " + (res.data.error || res.status), false);
+    } else {
+      if (typeof confirmDialog === "function") await confirmDialog("Notification Test", "Test notification sent! Check ntfy/webhook.", false);
+    }
+  } finally {
+    testNotifyBtn.disabled = false;
   }
 };
 
@@ -6192,23 +6850,35 @@ function initInteractiveChat(prefix) {
           const actionsWrap = document.createElement("div");
           actionsWrap.className = "chat-actions-container"; // Uses CSS class instead of inline styles
 
-          parsed.actions.forEach(actionName => {
+          const allowedActionNames = ["health", "status", "deploy-buttons", "recreate", "recreate-code", "logs", "briefing-td", "sync-agents", "warm-context", "preflight", "create-plan", "merge-approved"];
+          parsed.actions.forEach(actionItem => {
+             const actionName = (typeof actionItem === "string") ? actionItem : (actionItem && actionItem.id);
+             const actionLabel = (actionItem && actionItem.label) || actionName;
+             if (!actionName || !allowedActionNames.includes(actionName)) return;
+
              const btn = document.createElement("button");
              btn.type = "button";
              btn.className = "btn-primary";
-             btn.textContent = "⚡ " + actionName;
-             btn.onclick = () => {
-                 if (!actionName || typeof actionName !== "string") return;
-                 fetchJson("/buttons/api/run", {
-                     method: "POST",
-                     body: JSON.stringify({ action: actionName, repo: STATE.selectedRepo })
-                 }).then(res => {
-                     if (res.id) {
-                         alert("Action triggered: " + res.id);
+             btn.textContent = actionLabel;
+             btn.onclick = async () => {
+                 const picker = document.getElementById("briefingRepo");
+                 const repo = picker ? picker.value : DEFAULT_REPO;
+                 if (typeof startRun === "function") {
+                     const isDanger = ["deploy-buttons", "recreate", "recreate-code"].includes(actionName);
+                     const needsConfirm = isDanger || ["create-plan", "merge-approved"].includes(actionName);
+                     startRun(actionName, actionLabel, needsConfirm, isDanger);
+                 } else {
+                     const res = await fetchJson("/buttons/api/run", {
+                         method: "POST",
+                         headers: {"Content-Type": "application/json"},
+                         body: JSON.stringify({ action: actionName, repo: repo })
+                     });
+                     if (res.ok && res.data && res.data.id) {
+                         if (typeof poll === "function") poll(res.data.id, actionName);
                      } else {
-                         alert("Error: " + (res.error || "Unknown error"));
+                         alert("Error: " + ((res.data && res.data.error) || "Run failed"));
                      }
-                 });
+                 }
              };
              actionsWrap.appendChild(btn);
           });
@@ -6324,7 +6994,7 @@ function initInteractiveChat(prefix) {
     if (errEl) errEl.textContent = "";
 
     const picker = document.getElementById("briefingRepo");
-    const repo = picker ? picker.value : "tech-dancer";
+    const repo = picker ? picker.value : DEFAULT_REPO;
     const sessionId = "chat-" + Math.random().toString(36).substring(2, 10);
     activeSessionId = sessionId;
 
@@ -6351,7 +7021,7 @@ function initInteractiveChat(prefix) {
           const payload = JSON.parse(e.data);
           const ph = payload.phase || "";
           if (ph === "prefill") setPhase("prefill", "Analyzing Context...");
-          else if (ph === "tool_call") setPhase("tool_call", "Running Tool ⚙...");
+          else if (ph === "tool_call") setPhase("tool_call", "Running Tool...");
           else if (ph === "generating") setPhase("generating", "Generating Response...");
           else if (ph === "done") setPhase("done", "Complete ✓" + (payload.elapsed ? " (" + payload.elapsed + "s)" : ""));
           else if (ph === "aborted") setPhase("aborted", "Aborted ⏹");
@@ -6451,6 +7121,20 @@ if (globalChatBtn) {
 
 const piOpenChatBtn = document.getElementById("piOpenChatBtn");
 if (piOpenChatBtn) piOpenChatBtn.onclick = openChatDrawer;
+
+// Initial execution sequence wrapped in try/catch to render Retry UI on sync throws
+try {
+  markSelectedRepo();
+  refreshProject();
+  refreshJobs();
+  refreshBriefing();
+  if (typeof refreshLedger === "function") refreshLedger();
+  if (typeof refreshStatus === "function") refreshStatus();
+  if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
+} catch (err) {
+  console.error("Initialization error:", err);
+  renderBriefingUnavailable(err && err.message ? err.message : String(err));
+}
 </script>
 </body>
 </html>
@@ -6634,10 +7318,9 @@ class Handler(BaseHTTPRequestHandler):
         budgeted_prompt = context_filter.enforce_context_budget(prompt, max_tokens=3000)
         b64 = base64.b64encode(budgeted_prompt.encode()).decode()
 
-        # Build command: pi in print mode with read-only tools
-        cmd = (_td_prefix(info["td_cwd"]) +
-               'pi -p --tools read,grep,find,ls "$(echo ' + b64 +
-               ' | base64 -d)"')
+        # Build command: ask_investigator agent in deep-agent venv
+        cmd = ("cd /srv/remote-server/deep-agent && "
+               f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
 
         # Check for tool calling heuristics in the request
         tool_keywords = ("read", "find", "grep", "search", "list", "check", "file", "code", "where", "log")
@@ -6928,7 +7611,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"entries": _ledger_read(kind, limit)})
         elif path == "/buttons/api/pi-sessions":
             # List Pi session files (newest first) as JSON, unified with
-            # background pi -p runs (Ask Pi / Suggest). No TD prefix:
+            # background agent runs (Ask / Suggest). No TD prefix:
             # pi_logs reads /root/.pi directly, it needs no repo cwd and no .env.
             sessions = []
             try:
@@ -6964,6 +7647,7 @@ class Handler(BaseHTTPRequestHandler):
                         "done": r.get("done", False)
                     })
 
+            sessions.extend(_ledger_sessions())
             sessions.sort(key=lambda s: s.get("mtime", 0), reverse=True)
             self._json({"sessions": sessions})
         elif path == "/buttons/api/pi-session":
@@ -7033,6 +7717,52 @@ class Handler(BaseHTTPRequestHandler):
                     "turns": turns,
                     "raw_output": raw_output or reply,
                     "output": raw_output or reply
+                })
+                return
+
+            if query.startswith("ledger-"):
+                m = re.fullmatch(r"ledger-(\d+)\.jsonl", query)
+                if not m:
+                    self._json({"error": "bad ledger query"}, 400)
+                    return
+                lineno = int(m.group(1))
+                try:
+                    lproc = subprocess.run(
+                        EXEC + [f"sed -n '{lineno}p' {HARNESS_LEDGER_PATH}"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        timeout=60, text=True)
+                    entry = json.loads(lproc.stdout)
+                    if not isinstance(entry, dict):
+                        raise ValueError("not an entry")
+                except Exception:
+                    self._json(
+                        {"error": f"No ledger entry matching '{query}'"},
+                        404)
+                    return
+                calls = entry.get("tool_calls") or []
+                call_lines = "\n".join(
+                    f"- {c.get('name')}: {str(c.get('args'))[:200]}"
+                    for c in calls if isinstance(c, dict))
+                usage = entry.get("usage") or {}
+                summary = (
+                    f"{entry.get('script')} · {entry.get('model')}\n"
+                    f"thread {entry.get('thread_id')} · "
+                    f"{entry.get('duration_s')}s\n"
+                    f"tokens in/out: {usage.get('input_tokens')}/"
+                    f"{usage.get('output_tokens')}\n"
+                    f"tool calls:\n{call_lines or '(no tool calls)'}\n"
+                    f"final: {entry.get('final_preview') or ''}")
+                self._json({
+                    "file": query,
+                    "id": query[:-6],
+                    "cwd": "",
+                    "repo": "",
+                    "started": entry.get("ts"),
+                    "source": "ledger",
+                    "turns": [{"role": "assistant", "text": summary,
+                               "timestamp": entry.get("ts")}],
+                    "raw_output": lproc.stdout,
+                    "output": summary,
                 })
                 return
 
@@ -7372,6 +8102,7 @@ class Handler(BaseHTTPRequestHandler):
                             "ci": found_pr.get("ci", "passing"),
                             "merge": found_pr.get("merge", "clean"),
                             "conflicted": found_pr.get("conflicted", False),
+                            "overlaps": found_pr.get("overlaps", {"with": [], "files": []}),
                             "draft": found_pr.get("draft", False),
                             "verdicts": found_pr.get("verdicts", []),
                             "reviews": found_pr.get("reviews_picked", []),
@@ -7460,22 +8191,79 @@ class Handler(BaseHTTPRequestHandler):
                               prefix=_td_prefix(info["td_cwd"]))
                 data = json.loads(out)
                 sessions = []
+                unknown_sessions = []
+                other_count = 0
                 seen_session_ids = set()
+                target_gh = (info.get("gh") or "").lower()
+                target_repo = repo.lower()
                 for s in data.get("sessions", []):
-                    if len(sessions) >= 30:
-                        break
                     sid = s.get("id") or s.get("sessionId") or s.get("name")
                     if sid:
                         if sid in seen_session_ids:
                             continue
                         seen_session_ids.add(sid)
+
+                    # Extract session repo candidate
+                    s_repo = ""
+                    ctx = s.get("sourceContext") or s.get("source_context") or {}
+                    if isinstance(ctx, dict):
+                        repo_ctx = ctx.get("githubRepoContext") or ctx.get("github_repo_context") or {}
+                        if isinstance(repo_ctx, dict):
+                            owner = repo_ctx.get("owner")
+                            r = repo_ctx.get("repo")
+                            if owner and r:
+                                s_repo = f"{owner}/{r}".lower()
+                        if not s_repo:
+                            src_val = ctx.get("source") or ""
+                            if src_val:
+                                s_clean = src_val.strip("/")
+                                p = s_clean.split("/")
+                                if len(p) >= 2 and ("repositories" in p or "/" in s_clean):
+                                    s_repo = f"{p[-2]}/{p[-1]}".lower()
+                                elif p:
+                                    s_repo = p[-1].lower()
+                    if not s_repo:
+                        src = s.get("source") or {}
+                        if isinstance(src, dict):
+                            gh_repo = src.get("githubRepo") or src.get("github_repo") or {}
+                            if isinstance(gh_repo, dict):
+                                owner = gh_repo.get("owner")
+                                r = gh_repo.get("repo")
+                                if owner and r:
+                                    s_repo = f"{owner}/{r}".lower()
+                            if not s_repo:
+                                full = src.get("full_name") or src.get("fullName") or ""
+                                if full:
+                                    s_repo = str(full).lower()
+                        elif isinstance(src, str) and src:
+                            s_clean = src.strip("/")
+                            p = s_clean.split("/")
+                            if len(p) >= 2 and ("repositories" in p or "/" in s_clean):
+                                s_repo = f"{p[-2]}/{p[-1]}".lower()
+                            elif p:
+                                s_repo = p[-1].lower()
+
+                    matches_repo = False
+                    is_unknown = False
+                    if s_repo:
+                        if target_gh and (s_repo == target_gh or s_repo.endswith("/" + target_repo)):
+                            matches_repo = True
+                        elif s_repo == target_repo:
+                            matches_repo = True
+                    else:
+                        is_unknown = True
+
+                    if not matches_repo and not is_unknown:
+                        other_count += 1
+                        continue
+
                     pr_url = ""
                     for o in s.get("outputs", []) or []:
                         pr = o.get("pullRequest") or {}
                         if pr.get("url"):
                             pr_url = pr["url"]
                             break
-                    sessions.append({
+                    item = {
                         "id": s.get("id"), "title": s.get("title"),
                         "state": s.get("state"),
                         "updated": s.get("updateTime"),
@@ -7484,8 +8272,17 @@ class Handler(BaseHTTPRequestHandler):
                                    .get("source", "")
                                    .split("/")[-1]),
                         "pr_url": pr_url,
-                    })
+                    }
+                    if is_unknown:
+                        if len(unknown_sessions) < 30:
+                            unknown_sessions.append(item)
+                    else:
+                        if len(sessions) < 30:
+                            sessions.append(item)
+
                 self._json({"repo": repo, "sessions": sessions,
+                            "unknown": unknown_sessions,
+                            "other": other_count,
                             "notice": data.get("notice", "")})
             except Exception as exc:
                 err_msg = str(exc)
@@ -7780,10 +8577,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)[:500]}, 500)
             return
         if path == "/buttons/api/suggest":
-            # Pi suggests, in the background (see _pi_start): the
-            # local-model run takes minutes, so the POST returns
-            # an id immediately and the client polls
-            # /buttons/api/pi-progress/<id> for live output.
+            # Harness suggest, in the background (see _pi_start):
+            # deterministic briefing mapping plus a local-model
+            # explanation. The POST returns an id immediately and
+            # the client polls /buttons/api/pi-progress/<id> for
+            # live output.
             # Reads only: suggestions are not ledger entries,
             # exactly like briefing reads.
             try:
@@ -8167,6 +8965,8 @@ class Handler(BaseHTTPRequestHandler):
                         if run_exit == 0 else "failed"
                     st["finished_at"] = time.time()
                     st["exit_code"] = run_exit
+                    if st["state"] == "failed" and not st.get("note"):
+                        st["note"] = _job_step_failure_reason(run.get("output", "") if run else "", run_exit)
                     _job_after_step(job)
                     _jobs_save()
                     state = st["state"]
