@@ -81,6 +81,29 @@ class RealRoutersTest(unittest.TestCase):
         self.assertEqual(row["repo"], "demo")
         self.assertEqual(row["title"], "hello world")
 
+    def test_agent_runs_shapes(self):
+        from backend.api.routers import agents
+        real_list = agents.runs.list_runs
+        real_get = agents.runs.get_run
+        agents.runs.list_runs = lambda limit=50: [
+            {"id": "run-0", "script": "deep_chat.py",
+             "thread": "abc", "model": "m", "ok": True}]
+        agents.runs.get_run = lambda rid: (
+            {"id": "run-0", "entry": {"thread_id": "abc"}, "trace": []}
+            if rid == "run-0" else None)
+        try:
+            resp = self.client.get("/api/agents/runs")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["runs"][0]["id"], "run-0")
+            resp = self.client.get("/api/agents/runs/run-0")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("trace", resp.json())
+            resp = self.client.get("/api/agents/runs/run-9")
+            self.assertEqual(resp.status_code, 404)
+        finally:
+            agents.runs.list_runs = real_list
+            agents.runs.get_run = real_get
+
 
 if __name__ == "__main__":
     unittest.main()

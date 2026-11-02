@@ -31,16 +31,16 @@ class FakeStdout(io.StringIO):
 
 
 class FakeProc:
-    def __init__(self, text="", block=None):
+    def __init__(self, text="", block=None, code=0):
         self.stdout = FakeStdout(text, block)
-        self.returncode = 0
+        self.returncode = code
         self.terminated = False
         self._block = block
 
     def wait(self):
         if self._block is not None:
             self._block.wait(timeout=10)
-        return 0
+        return self.returncode
 
     def terminate(self):
         self.terminated = True
@@ -61,11 +61,19 @@ class ChatOpsTest(unittest.TestCase):
         self.client = make_client()
         self._orig_repo = chat.get_repo_info
         self._orig_spawn = chat.spawn_chat_process
+        self._orig_pspawn = chat.spawn_pipeline_process
         self._orig_pipeline = chat.run_pi_pipeline
+        self._orig_validate = chat.validate_action_request
+        self._orig_resume_spawn = chat.run_resume_spawn
+        self._orig_venv = chat.deep_agent_python
+        self._orig_script = chat.deep_agent_script
         self._orig_takeover = ops.run_takeover
         self._orig_wf = ops.fetch_workflow_health
         chat.get_repo_info = lambda repo: {"gh": "arii/remote-server",
                                            "td_cwd": "/srv/remote-server"}
+        chat.deep_agent_python = lambda: os.path.abspath(chat.__file__)
+        chat.deep_agent_script = lambda name: os.path.abspath(chat.__file__)
+        chat.pending_resumes.clear()
         from backend.core import get_repo_status as _real_status
         self._orig_status = _real_status
         import backend.core as _core
@@ -76,7 +84,13 @@ class ChatOpsTest(unittest.TestCase):
     def tearDown(self):
         chat.get_repo_info = self._orig_repo
         chat.spawn_chat_process = self._orig_spawn
+        chat.spawn_pipeline_process = self._orig_pspawn
         chat.run_pi_pipeline = self._orig_pipeline
+        chat.validate_action_request = self._orig_validate
+        chat.run_resume_spawn = self._orig_resume_spawn
+        chat.deep_agent_python = self._orig_venv
+        chat.deep_agent_script = self._orig_script
+        chat.pending_resumes.clear()
         ops.run_takeover = self._orig_takeover
         ops.fetch_workflow_health = self._orig_wf
         import backend.core as _core
@@ -182,6 +196,145 @@ class ChatOpsTest(unittest.TestCase):
         resp = self.client.post("/api/chat/abort",
                                json={"session_id": "missing00000"})
         self.assertEqual(resp.status_code, 404)
+
+    def _interrupt_text(self, value):
+        blob = json.dumps({"thread_id": "sess00000001",
+                           "interrupts": [{"id": "x", "value": value}]})
+        return f"Looking into it…\nINTERRUPT: {blob}\n"
+
+    def test_chat_stream_exit_codes(self):
+        chat.spawn_chat_process = lambda argv: FakeProc("nope", code=2)
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "exit20000001"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertIn("misconfigured", events[-1][1]["error"])
+        chat.deep_agent_python = lambda: "/nonexistent/python"
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "exit20000002"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[0][1], {"error": "agent runtime not installed"})
+
+    def test_chat_stream_approval_and_autoreject(self):
+        value = {"action_requests": [
+            {"args": {"kind": "td", "command": "td hi"}}]}
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            self._interrupt_text(value), code=3)
+        chat.validate_action_request = lambda args: (
+            True, "PROPOSE td\nCOMMAND: td hi\nEND PROPOSE")
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "do the thing",
+                                     "repo": "remote-server",
+                                     "session_id": "sess00000001"})
+        events = self._sse_events(resp)
+        approvals = [p for e, p in events if e == "approval"]
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(approvals[0]["session_id"], "sess00000001")
+        self.assertEqual(approvals[0]["proposals"],
+                         ["PROPOSE td\nCOMMAND: td hi\nEND PROPOSE"])
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertTrue(done["approval_pending"])
+        self.assertNotIn("INTERRUPT", done["text"])
+        self.assertTrue(chat.pending_resumes["sess00000001"]["pending"])
+        # Invalid proposal: auto-rejected, resume spawned, no approval kept.
+        chat.validate_action_request = lambda args: (
+            False, "REJECTED: nope")
+        calls = []
+        chat.run_resume_spawn = lambda *a: calls.append(a) or (0, "ok")
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "do the thing",
+                                     "repo": "remote-server",
+                                     "session_id": "sess00000002"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertIn("REJECTED", events[-1][1]["error"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], "reject")
+        self.assertNotIn("sess00000002", chat.pending_resumes)
+
+    def test_chat_resume_flow(self):
+        chat.pending_resumes["rsm000000001"] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"kind": "td"}, "proposals": ["P"],
+            "pending": True, "busy": False}
+        seen = []
+        chat.run_resume_spawn = lambda *a: seen.append(a) or (0, "All done.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertTrue(body["resumed"])
+        self.assertEqual(body["text"], "All done.")
+        self.assertNotIn("approval", body)
+        # Double-tap: second POST is a 409, not a second spawn.
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(len(seen), 1)
+        # Unknown session, bad shape.
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "never0000000",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 404)
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000001",
+                                     "decision": "maybe"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_chat_resume_reject_defaults_message(self):
+        import base64
+        chat.pending_resumes["rsm000000002"] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"kind": "td"}, "proposals": ["P"],
+            "pending": True, "busy": False}
+        seen = []
+        chat.run_resume_spawn = lambda *a: seen.append(a) or (0, "Declined.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000002",
+                                     "decision": "reject"})
+        self.assertEqual(resp.status_code, 202)
+        sent = base64.b64decode(seen[0][3]).decode()
+        self.assertEqual(sent, "Declined by reviewer.")
+
+    def test_run_pi_pipeline_parses_shapes(self):
+        out = ("Investigating…\n"
+               "REPORT (authoritative, from tool results):\n"
+               "  buttons/server.py: chat handler\n"
+               "FINAL: It serves chat.\n"
+               "PROPOSE issue\n"
+               "TITLE: Fix chat\n"
+               "BODY:\n"
+               "Details here.\n"
+               "END PROPOSE\n")
+        chat.spawn_pipeline_process = lambda argv: FakeProc(out)
+        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
+            path = fh.name
+        try:
+            result = chat.run_pi_pipeline("ask", "remote-server",
+                                          "what does it do?", path)
+        finally:
+            with open(path) as fh:
+                logged = fh.read()
+            os.remove(path)
+        self.assertIn("chat handler", logged)
+        self.assertEqual(result["report"], ["buttons/server.py: chat handler"])
+        self.assertIn("It serves chat.", result["reply"])
+        self.assertEqual(result["proposal"]["kind"], "issue")
+        self.assertEqual(result["proposal"]["title"], "Fix chat")
+        self.assertIn("Details here.", result["proposal"]["body"])
+        chat.spawn_pipeline_process = lambda argv: FakeProc("boom\n", code=1)
+        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
+            path = fh.name
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                chat.run_pi_pipeline("suggest", "remote-server", None, path)
+        finally:
+            os.remove(path)
+        self.assertIn("boom", str(ctx.exception))
 
     def test_ask_suggest_pi_progress(self):
         def _pipeline(kind, repo, instruction, log_path):

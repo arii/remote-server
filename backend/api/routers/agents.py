@@ -1,10 +1,12 @@
-"""agents router: read-only Pi session listing.
+"""agents router: agent runs listing + Pi session listing.
 
-List shape follows docs/session-record-contract.md list response:
-{"sessions": [<pi-file rows>]}, newest first by mtime. Only
-transcript files on disk are listed (no background/ledger rows:
-this backend owns no runs and adds no Jules surface).
+Runs shape: {"runs": [<runs.py summaries>]}, newest first, stable
+run-<ledger-line> ids. Run detail adds the ledger entry plus its
+trace events.
 """
+
+import os
+import sys
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -12,6 +14,14 @@ from pydantic import BaseModel, Field
 from fastapi import HTTPException
 
 from backend.agents.sessions import get_session_detail, list_sessions
+
+sys.path.insert(0, os.path.join(
+    os.path.dirname(
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "deep-agent"))
+
+import runs  # noqa: E402
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -54,3 +64,16 @@ def session_detail(name: str) -> dict:
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/runs")
+def agent_runs(limit: int = 50) -> dict:
+    return {"runs": runs.list_runs(limit)}
+
+
+@router.get("/runs/{run_id}")
+def agent_run(run_id: str) -> dict:
+    row = runs.get_run(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown run")
+    return row
