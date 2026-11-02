@@ -2681,9 +2681,13 @@ a { color: #8bf; }
 #tabbar { display: flex; gap: 0.4em; background: var(--bg-app); padding: 0.5em 0;
   border-bottom: 1px solid var(--border); }
 #tabbar .tab { flex: 1; width: auto; margin: 0; padding: 0.6em 0.2em; font-size: 0.9em;
-  text-align: center; }
+  text-align: center; position: relative; }
 #tabbar .tab.active { border-color: var(--primary); background: var(--bg-card-hover);
   font-weight: bold; }
+.tab-badge { display: inline-block; background: var(--primary); color: #fff; font-size: 0.75em;
+  padding: 0.1em 0.45em; border-radius: 10px; margin-left: 0.35em; font-weight: bold; vertical-align: middle; }
+.tab-dot { display: inline-block; width: 8px; height: 8px; background: var(--primary);
+  border-radius: 50%; margin-left: 0.35em; vertical-align: middle; }
 @media (max-width: 520px) {
   #tabbar .tab { font-size: 0.72em; padding: 0.6em 0.1em; }
 }
@@ -3082,7 +3086,7 @@ write a markdown plan file; nothing executes or pushes.</p>
 <select id="planAggPrs" multiple size="4" style="min-width:9em"><option value="">—</option></select>
 <label>into <input id="planAggTarget" value="main" size="12" maxlength="64"></label>
 <button id="planAggBtn">Generate</button></div>
-<div id="planOut"></div>
+<div id="planOut"><p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p></div>
 <div id="planErr"></div>
 </section>
 <section class="tabpanel" id="tab-jobs" style="display:none">
@@ -3227,6 +3231,34 @@ if (_pickerEl) _pickerEl.addEventListener("change", () => {
 });
 markSelectedRepo();
 
+// Tab bar badges and state tracking
+let lastLedgerViewTs = Date.now() / 1000;
+let tabBadgeCounts = {briefing: 0, jobs: 0, ledger: false};
+
+function updateTabBadges() {
+  document.querySelectorAll("#tabbar .tab").forEach(tab => {
+    const tabName = tab.dataset.tab;
+    const existingBadge = tab.querySelector(".tab-badge, .tab-dot");
+    if (existingBadge) existingBadge.remove();
+
+    if (tabName === "briefing" && tabBadgeCounts.briefing > 0) {
+      const badge = document.createElement("span");
+      badge.className = "tab-badge";
+      badge.textContent = tabBadgeCounts.briefing;
+      tab.appendChild(badge);
+    } else if (tabName === "jobs" && tabBadgeCounts.jobs > 0) {
+      const badge = document.createElement("span");
+      badge.className = "tab-badge";
+      badge.textContent = tabBadgeCounts.jobs;
+      tab.appendChild(badge);
+    } else if (tabName === "ledger" && tabBadgeCounts.ledger) {
+      const dot = document.createElement("span");
+      dot.className = "tab-dot";
+      tab.appendChild(dot);
+    }
+  });
+}
+
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
 document.querySelectorAll("#tabbar .tab").forEach(t => {
@@ -3236,6 +3268,11 @@ document.querySelectorAll("#tabbar .tab").forEach(t => {
     document.querySelectorAll(".tabpanel").forEach(p => {
       p.style.display = (p.id === "tab-" + t.dataset.tab) ? "" : "none";
     });
+    if (t.dataset.tab === "ledger") {
+      lastLedgerViewTs = Date.now() / 1000;
+      tabBadgeCounts.ledger = false;
+      updateTabBadges();
+    }
     // Opening the Project tab re-renders it for the current
     // picker repo, so the sections never show a stale repo's data.
     if (t.dataset.tab === "project" &&
@@ -3930,67 +3967,188 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
   };
   return b;
 }
-function renderBriefing(b) {
-  briefingErrEl.textContent = "";
-  briefingEl.textContent = "";
-  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
-  const att = document.createElement("div");
-  const attHead = document.createElement("b");
-  attHead.textContent = "Needs attention";
-  att.appendChild(attHead);
-  // Collect attention items, ensuring failing runs are always included.
-  const attentionItems = [];
-  const seenAtt = new Set();
+
+// Long job/step strings blow out card height: cap one segment and the whole line.
+function shorten(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+// Deduplicate attention items and failing runs into a single list of actionable items.
+function dedupeAttention(b) {
+  const items = [];
   (b.attention || []).forEach(a => {
-    attentionItems.push({text: a, raw: a});
-    seenAtt.add(a);
+    items.push({text: a, raw: a});
   });
-  // Guarantee each failing run is surfaced as an actionable item with likely cause
   (b.failing_runs || []).forEach(run => {
     const runName = run.name || "CI";
     const branchName = run.branch || "main";
     const eventName = run.event || "push";
     const failedParts = (run.failed || []).map(f =>
-      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-    ).join("; ");
+      shorten((f.job || "") + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
+    ).filter(Boolean).join("; ");
     const causeSummary = failedParts || "workflow failed";
     const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
-    // Check if an equivalent item was already in b.attention
-    let alreadyPresent = false;
-    for (const item of attentionItems) {
-      if (item.text.includes(runName) && item.text.includes(branchName)) {
-        alreadyPresent = true;
-        item.run = run;
-        item.cause = causeSummary;
+    let found = false;
+    for (const it of items) {
+      if (it.text.includes(runName) && it.text.includes(branchName)) {
+        found = true;
+        it.run = run;
+        it.cause = causeSummary;
         break;
       }
     }
-    if (!alreadyPresent) {
-      attentionItems.push({
-        text: runText,
-        raw: runText,
-        run: run,
-        cause: causeSummary
-      });
+    if (!found) {
+      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
     }
   });
+  return items;
+}
 
+// Render the unified deduped attention list component
+function renderAttentionList(b, container, options) {
+  const limit = (options && options.limit) || 0;
+  container.textContent = "";
+  const items = dedupeAttention(b);
   const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
   const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
 
-  if (attentionItems.length) {
-    const ul = document.createElement("ul");
-    attentionItems.forEach(item => {
-      const li = document.createElement("li");
+  if (!items.length && !hasFailingRuns && !hasConflicts) {
+    const p = document.createElement("p");
+    p.style.color = "var(--text-muted)";
+    p.textContent = (options && options.cleanMessage) || "All clear — nothing needs attention.";
+    container.appendChild(p);
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.className = "attn-head";
+  head.style.fontWeight = "bold";
+  head.style.marginBottom = "0.4em";
+  head.textContent = "Needs attention";
+  container.appendChild(head);
+
+  const listItems = limit > 0 ? items.slice(0, limit) : items;
+  const ul = document.createElement("ul");
+  ul.style.listStyle = "none";
+  ul.style.paddingLeft = "0";
+
+  listItems.forEach(item => {
+    const li = document.createElement("li");
+    li.style.marginBottom = "0.5em";
+    li.style.padding = "0.4em 0.6em";
+    li.style.background = "var(--bg-card)";
+    li.style.border = "1px solid var(--border)";
+    li.style.borderRadius = "6px";
+
+    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
+    let wfName = item.run ? (item.run.name || "CI") : "";
+    let wfBranch = item.run ? (item.run.branch || "main") : "";
+    let wfCause = item.cause || "";
+    if (isRun) {
+      if (!wfName) {
+        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
+        if (matchRun) {
+          wfName = matchRun[1].trim();
+          wfBranch = matchRun[2].trim();
+        } else {
+          wfName = "Workflow";
+          wfBranch = "main";
+        }
+      }
+      if (!wfCause) {
+        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
+        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
+      }
+    }
+
+    if (item.run) {
+      const topRow = document.createElement("div");
+      topRow.style.display = "flex";
+      topRow.style.alignItems = "center";
+      topRow.style.gap = "0.4em";
+      topRow.style.flexWrap = "wrap";
+
+      const cWf = document.createElement("span");
+      cWf.className = "chip chip-fail";
+      cWf.textContent = wfName;
+      topRow.appendChild(cWf);
+
+      const cBr = document.createElement("span");
+      cBr.className = "chip";
+      cBr.textContent = wfBranch;
+      topRow.appendChild(cBr);
+
+      if (wfCause) {
+        const cCause = document.createElement("span");
+        cCause.className = "chip chip-warn";
+        cCause.textContent = shorten(wfCause, 80);
+        cCause.title = wfCause;
+        topRow.appendChild(cCause);
+      }
+
+      li.appendChild(topRow);
+
+      const det = document.createElement("details");
+      det.style.marginTop = "0.3em";
+      det.style.fontSize = "0.9em";
+      const sum = document.createElement("summary");
+      sum.textContent = "Details & actions";
+      sum.style.cursor = "pointer";
+      sum.style.color = "var(--text-muted)";
+      det.appendChild(sum);
+
+      const bodyDiv = document.createElement("div");
+      bodyDiv.style.marginTop = "0.4em";
+      const desc = document.createElement("div");
+      desc.textContent = item.text;
+      bodyDiv.appendChild(desc);
+
+      const actionsSpan = document.createElement("div");
+      actionsSpan.style.cssText = "display:flex;gap:0.4em;align-items:center;margin-top:0.4em;flex-wrap:wrap;";
+
+      const draftBtn = document.createElement("button");
+      draftBtn.type = "button";
+      draftBtn.className = "btn-ghost";
+      draftBtn.style.cssText = "width:auto;margin:0;padding:0.2em 0.5em;font-size:0.85em;";
+      draftBtn.textContent = "Draft issue from failure";
+      draftBtn.onclick = () => {
+        if (typeof draftIssueFromFinding === "function") {
+          draftIssueFromFinding({
+            source: "workflow",
+            id: (item.run && item.run.id) || wfName,
+            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
+            cause: wfCause,
+            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+          });
+        }
+      };
+      actionsSpan.appendChild(draftBtn);
+
+      const askPiBtn = document.createElement("button");
+      askPiBtn.type = "button";
+      askPiBtn.className = "btn-primary";
+      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.2em 0.5em;font-size:0.85em;";
+      askPiBtn.textContent = "Ask Pi to diagnose";
+      askPiBtn.onclick = () => {
+        const piTab = document.querySelector('[data-tab="pi"]');
+        const piInp = document.getElementById("piPrompt");
+        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
+        if (piTab) piTab.click();
+      };
+      actionsSpan.appendChild(askPiBtn);
+
+      bodyDiv.appendChild(actionsSpan);
+      det.appendChild(bodyDiv);
+      li.appendChild(det);
+    } else {
       const span = document.createElement("span");
       span.textContent = item.text;
       li.appendChild(span);
 
-      // Actions container for attention item
       const actionsSpan = document.createElement("span");
       actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
 
-      // Repair button if linked to issue
       const m = item.text.match(/(?:^|\s)#(\d+)/);
       if (m) {
         const btn = document.createElement("button");
@@ -4015,27 +4173,7 @@ function renderBriefing(b) {
         actionsSpan.appendChild(btn);
       }
 
-      // If item is a failing run, surface "Draft issue from failure" and "Ask Pi to diagnose"
-      const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
       if (isRun) {
-        let wfName = item.run ? (item.run.name || "CI") : "";
-        let wfBranch = item.run ? (item.run.branch || "main") : "";
-        let wfCause = item.cause || "";
-        if (!wfName) {
-          const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
-          if (matchRun) {
-            wfName = matchRun[1].trim();
-            wfBranch = matchRun[2].trim();
-          } else {
-            wfName = "Workflow";
-            wfBranch = "main";
-          }
-        }
-        if (!wfCause) {
-          const matchCause = item.text.match(/likely cause:\s*(.+)$/);
-          wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
-        }
-
         const draftBtn = document.createElement("button");
         draftBtn.type = "button";
         draftBtn.className = "btn-ghost";
@@ -4045,10 +4183,10 @@ function renderBriefing(b) {
           if (typeof draftIssueFromFinding === "function") {
             draftIssueFromFinding({
               source: "workflow",
-              id: (item.run && item.run.id) || wfName,
+              id: wfName,
               title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
               cause: wfCause,
-              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
+              details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ""`
             });
           }
         };
@@ -4071,14 +4209,27 @@ function renderBriefing(b) {
       if (actionsSpan.children.length > 0) {
         li.appendChild(actionsSpan);
       }
-      ul.appendChild(li);
-    });
-    att.appendChild(ul);
-  } else if (!hasFailingRuns && !hasConflicts) {
-    const p = document.createElement("p"); p.textContent = "Nothing needs attention."; att.appendChild(p);
-  }
+    }
+    ul.appendChild(li);
+  });
+  container.appendChild(ul);
+}
+
+function renderBriefing(b) {
+  briefingErrEl.textContent = "";
+  briefingEl.textContent = "";
+  if (b.prs_err) briefingErrEl.textContent = "Open PR list unavailable: " + b.prs_err;
+  const att = document.createElement("div");
+  renderAttentionList(b, att, {cleanMessage: "No failing runs ✓"});
   briefingEl.appendChild(att);
-  (b.prs || []).forEach(pr => {
+  const prList = b.prs || [];
+  if (!prList.length && !b.prs_err) {
+    const noPr = document.createElement("p");
+    noPr.style.color = "var(--text-muted)";
+    noPr.textContent = "No open PRs ✓";
+    briefingEl.appendChild(noPr);
+  }
+  prList.forEach(pr => {
     const card = document.createElement("div");
     card.className = "prcard";
     const head = document.createElement("div");
@@ -4159,21 +4310,6 @@ function renderBriefing(b) {
     s = String(s || "");
     return s.length > n ? s.slice(0, n - 1) + "…" : s;
   }
-  if (b.failing_runs && b.failing_runs.length) {
-    const w = document.createElement("div");
-    const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
-    b.failing_runs.forEach(run => {
-      const p = document.createElement("p");
-      const failed = (run.failed || []).map(f =>
-        shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-      ).join("; ");
-      p.textContent = shorten(
-        run.name + " on " + run.branch + " (" + run.event + ")" +
-        (failed ? " — failed: " + failed : ""), 600);
-      w.appendChild(p);
-    });
-    briefingEl.appendChild(w);
-  }
   const j = b.jules || {};
   const js = document.createElement("div");
   const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
@@ -4212,6 +4348,9 @@ async function refreshBriefing() {
   briefingErrEl.textContent = "";
   renderBriefing(res.data);
   briefingPrs = res.data.pr_list || [];
+  const failingCount = (res.data.failing_runs || []).length;
+  tabBadgeCounts.briefing = failingCount;
+  updateTabBadges();
   if (typeof refreshJobPrSelect === "function") refreshJobPrSelect();
   if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
   if (typeof renderAttention === "function") renderAttention(res.data);
@@ -4224,137 +4363,7 @@ async function refreshBriefing() {
 function renderAttention(b) {
   const el = document.getElementById("attentionBody");
   if (!el) return;
-  el.textContent = "";
-  const items = [];
-  (b.attention || []).forEach(a => {
-    items.push({text: a, raw: a});
-  });
-  (b.failing_runs || []).forEach(run => {
-    const runName = run.name || "CI";
-    const branchName = run.branch || "main";
-    const eventName = run.event || "push";
-    const failedParts = (run.failed || []).map(f =>
-      shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-    ).join("; ");
-    const causeSummary = failedParts || "workflow failed";
-    const runText = "Failing run: " + runName + " on " + branchName + " (" + eventName + ") — likely cause: " + causeSummary;
-    let found = false;
-    for (const it of items) {
-      if (it.text.includes(runName) && it.text.includes(branchName)) {
-        found = true;
-        it.run = run;
-        it.cause = causeSummary;
-        break;
-      }
-    }
-    if (!found) {
-      items.push({text: runText, raw: runText, run: run, cause: causeSummary});
-    }
-  });
-
-  const hasFailingRuns = Boolean(b.failing_runs && b.failing_runs.length);
-  const hasConflicts = Boolean(b.conflicts && b.conflicts.length);
-
-  if (!items.length && !hasFailingRuns && !hasConflicts) {
-    el.textContent = "All clear — nothing needs attention.";
-    return;
-  }
-  const head = document.createElement("div");
-  head.className = "attn-head";
-  head.textContent = "Needs attention";
-  el.appendChild(head);
-  const ul = document.createElement("ul");
-  items.slice(0, 8).forEach(item => {
-    const li = document.createElement("li");
-    const span = document.createElement("span");
-    span.textContent = item.text;
-    li.appendChild(span);
-
-    const actionsSpan = document.createElement("span");
-    actionsSpan.style.cssText = "display:inline-flex;gap:0.3em;align-items:center;margin-left:0.5em;flex-wrap:wrap;";
-
-    const m = item.text.match(/(?:^|\s)#(\d+)/);
-    if (m) {
-      const btn = document.createElement("button");
-      btn.textContent = "Repair";
-      btn.className = "btn-ghost";
-      btn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        try {
-          await fetchJson("/buttons/api/repair/dispatch", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({issue: parseInt(m[1], 10)})
-          });
-          const details = document.getElementById("repairDetails");
-          if (details) details.open = true;
-          if (typeof refreshStatus === "function") refreshStatus();
-        } finally {
-          btn.disabled = false;
-        }
-      };
-      actionsSpan.appendChild(btn);
-    }
-
-    const isRun = item.run || item.text.startsWith("Failing run:") || item.text.includes("— CI failing");
-    if (isRun) {
-      let wfName = item.run ? (item.run.name || "CI") : "";
-      let wfBranch = item.run ? (item.run.branch || "main") : "";
-      let wfCause = item.cause || "";
-      if (!wfName) {
-        const matchRun = item.text.match(/Failing run:\s*([^—]+?)\s+on\s+([^\s—(]+)/);
-        if (matchRun) {
-          wfName = matchRun[1].trim();
-          wfBranch = matchRun[2].trim();
-        } else {
-          wfName = "Workflow";
-          wfBranch = "main";
-        }
-      }
-      if (!wfCause) {
-        const matchCause = item.text.match(/likely cause:\s*(.+)$/);
-        wfCause = matchCause ? matchCause[1] : (item.text || "Workflow failed");
-      }
-
-      const draftBtn = document.createElement("button");
-      draftBtn.type = "button";
-      draftBtn.className = "btn-ghost";
-      draftBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      draftBtn.textContent = "Draft issue from failure";
-      draftBtn.onclick = () => {
-        if (typeof draftIssueFromFinding === "function") {
-          draftIssueFromFinding({
-            source: "workflow",
-            id: (item.run && item.run.id) || wfName,
-            title: `Fix workflow failure: ${wfName} on ${wfBranch}`,
-            cause: wfCause,
-            details: `Failing run details:\nWorkflow: ${wfName}\nBranch: ${wfBranch}\nCause: ${wfCause}\nURL: ${(item.run && item.run.url) || ""}`
-          });
-        }
-      };
-      actionsSpan.appendChild(draftBtn);
-
-      const askPiBtn = document.createElement("button");
-      askPiBtn.type = "button";
-      askPiBtn.className = "btn-primary";
-      askPiBtn.style.cssText = "width:auto;margin:0;padding:0.1em 0.5em;font-size:0.8em;";
-      askPiBtn.textContent = "Ask Pi to diagnose";
-      askPiBtn.onclick = () => {
-        const piTab = document.querySelector('[data-tab="pi"]');
-        const piInp = document.getElementById("piPrompt");
-        if (piInp) piInp.value = `Diagnose and suggest fix for failing workflow '${wfName}' on branch '${wfBranch}'. Cause: ${wfCause}`;
-        if (piTab) piTab.click();
-      };
-      actionsSpan.appendChild(askPiBtn);
-    }
-
-    if (actionsSpan.children.length > 0) {
-      li.appendChild(actionsSpan);
-    }
-    ul.appendChild(li);
-  });
-  el.appendChild(ul);
+  renderAttentionList(b, el, {limit: 8, cleanMessage: "No failing runs ✓"});
 }
 
 // Agent jobs: multi-step tasks with a visible plan. Read-only
@@ -4535,6 +4544,9 @@ async function refreshJobs() {
   if (errEl) errEl.textContent = "";
   listEl.textContent = "";
   const jobs = res.data.jobs || [];
+  const failedJobsCount = jobs.filter(j => j.outcome === "failed" || (j.steps || []).some(s => s.state === "failed")).length;
+  tabBadgeCounts.jobs = failedJobsCount;
+  updateTabBadges();
   if (!jobs.length) {
     listEl.textContent = "No jobs yet. Start one above.";
     return;
@@ -5150,6 +5162,9 @@ async function refreshLedger() {
     ledgerErrEl.textContent = "";
     ledgerEl.textContent = "";
     const entries = data.entries || [];
+    const hasNewEntries = entries.some(e => e.ts && e.ts > lastLedgerViewTs);
+    tabBadgeCounts.ledger = hasNewEntries;
+    updateTabBadges();
     if (!entries.length) { ledgerEl.textContent = "No ledger entries yet."; return; }
     entries.forEach(e => {
       const row = document.createElement("div");
