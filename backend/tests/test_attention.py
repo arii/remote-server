@@ -6,10 +6,6 @@ from backend.core import require_confirm
 from backend.api.routers import attention
 
 
-class FakeResp:
-    pass
-
-
 class RequireConfirmTest(unittest.TestCase):
     def test_accept(self):
         require_confirm({"intent": "x", "confirmed": True}, "x")
@@ -86,6 +82,41 @@ class AttentionShapeTest(unittest.TestCase):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException):
             attention.attention("a/b/c")
+
+    def test_identical_failing_runs_collapse(self):
+        wfs = [{"id": i, "name": "CI", "diagnosed_cause": "boom"}
+               for i in (1, 2, 3)]
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": wfs},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_pending_approvals=lambda: [],
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        runs = [i for i in body["items"] if i["kind"] == "failing-run"]
+        self.assertEqual(len(runs), 1)
+        self.assertIn("×3", runs[0]["title"])
+
+
+class WorkflowHealthCacheTest(unittest.TestCase):
+    def test_second_call_served_from_cache(self):
+        calls = []
+        orig = attention.ops.fetch_workflow_health
+        attention.ops.fetch_workflow_health = (
+            lambda repo, gh: calls.append((repo, gh)) or {"ok": True})
+        attention._WF_CACHE.clear()
+        try:
+            first = attention.get_workflow_health("remote-server")
+            second = attention.get_workflow_health("remote-server")
+            self.assertEqual(first, {"ok": True})
+            self.assertEqual(second, {"ok": True})
+            self.assertEqual(len(calls), 1)
+        finally:
+            attention.ops.fetch_workflow_health = orig
+            attention._WF_CACHE.clear()
 
 
 if __name__ == "__main__":

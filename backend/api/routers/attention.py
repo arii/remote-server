@@ -14,10 +14,18 @@ functions so tests can monkeypatch them (injectable seams).
 
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from backend import ledger
+from backend.api.routers import ops
+from backend.api.routers.jobs import registry
+from backend.core import validate_repo_name
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["attention"])
 
@@ -46,17 +54,25 @@ class AttentionList(BaseModel):
     items: list[AttentionItem] = Field(default_factory=list)
 
 
+# TTL cache: the gh subprocess chain behind workflow-health takes
+# seconds; the Now queue polls it on every view. Freshness of a minute
+# is plenty for an attention list. Tests reset _WF_CACHE directly.
+WF_CACHE_TTL = 60.0
+_WF_CACHE: dict[str, tuple[float, dict]] = {}
+
+
 def get_workflow_health(repo: str) -> dict:
     """Injectable seam: failing-run diagnosis via workflow-health logic."""
-    from backend.api.routers import ops
-
-    return ops.fetch_workflow_health(repo, f"arii/{repo}")
+    hit = _WF_CACHE.get(repo)
+    if hit is not None and time.time() - hit[0] < WF_CACHE_TTL:
+        return hit[1]
+    data = ops.fetch_workflow_health(repo, f"arii/{repo}") or {}
+    _WF_CACHE[repo] = (time.time(), data)
+    return data
 
 
 def list_failed_jobs() -> list:
     """Injectable seam: failed jobs from the jobs registry."""
-    from backend.api.routers.jobs import registry
-
     out = []
     for job in registry.list_jobs():
         if not isinstance(job, dict):
@@ -72,8 +88,6 @@ def list_failed_jobs() -> list:
 
 def list_failed_webhooks() -> list:
     """Injectable seam: failed webhooks from ledger kinds."""
-    from backend import ledger
-
     entries = ledger.read(kind="webhook", limit=50)
     out = []
     for e in entries:
@@ -89,8 +103,6 @@ def list_failed_webhooks() -> list:
 
 def list_pending_approvals() -> list:
     """Injectable seam: pending approvals (ledger + jobs registry)."""
-    from backend import ledger
-
     out = []
     for e in ledger.read(kind="all", limit=100):
         if not isinstance(e, dict):
@@ -100,20 +112,16 @@ def list_pending_approvals() -> list:
                     "approval requested", "approval pending", "awaiting approval"):
             out.append(e)
     try:
-        from backend.api.routers.jobs import registry
-
         for job in registry.list_jobs():
             if isinstance(job, dict) and job.get("awaiting_approval") is True:
                 out.append(job)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("attention: jobs registry read failed: %s", exc)
     return out
 
 
 @router.get("/attention", response_model=AttentionList)
 def attention(repo: str = "remote-server") -> dict:
-    from backend.core import validate_repo_name
-
     try:
         name = validate_repo_name(repo)
     except ValueError as exc:
@@ -122,24 +130,37 @@ def attention(repo: str = "remote-server") -> dict:
     items: list[dict] = []
     try:
         health = get_workflow_health(name) or {}
-    except Exception:
+    except Exception as exc:
+        logger.warning("attention: workflow-health read failed: %s", exc)
         health = {}
+    seen_runs: dict[tuple[str, str], dict] = {}
     for wf in (health.get("workflows") or []):
         if not isinstance(wf, dict):
             continue
         rid = wf.get("id", "?")
-        items.append({
+        title = f"Failing workflow: {wf.get('name', 'Workflow')}"
+        detail = wf.get("diagnosed_cause", "Workflow failed.")
+        key = (title, detail)
+        if key in seen_runs:
+            seen_runs[key]["runs"] += 1
+            continue
+        item = {
             "id": f"run-{rid}",
             "kind": "failing-run",
-            "title": f"Failing workflow: {wf.get('name', 'Workflow')}",
-            "detail": wf.get("diagnosed_cause", "Workflow failed."),
+            "title": title,
+            "detail": detail,
             "repo": name,
             "severity": "crit",
             "action": {"label": "View health", "method": "GET",
                        "href": f"/api/workflow-health?repo={name}",
                        "destructive": False, "intent": ""},
             "created_at": now,
-        })
+        }
+        seen_runs[key] = {"item": item, "runs": 1}
+        items.append(item)
+    for entry in seen_runs.values():
+        if entry["runs"] > 1:
+            entry["item"]["title"] += f" ×{entry['runs']}"
     for job in list_failed_jobs():
         jid = job.get("id", "?")
         items.append({

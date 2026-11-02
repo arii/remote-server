@@ -1,11 +1,7 @@
 """Tests for automated (no-human-UI) refresh ledger entries."""
 
-import sys
-import os
 import unittest
 from unittest.mock import patch, MagicMock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import buttons.server as srv
 
