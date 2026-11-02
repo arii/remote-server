@@ -134,6 +134,20 @@ mkdir -p ~/.gemini/antigravity-cli/mcp/browser-mcp
 
 Boomtick provides PR rescue, merge conflict resolution, CI log inspection, and git workflow automation.
 
+The canonical setup is scripted (idempotent — safe to re-run):
+
+```bash
+pnpm run setup:boomtick-mcp
+# or: bash scripts/setup-boomtick-mcp.sh
+# with overrides: GITHUB_REPO=tech-dancer BOOMTICK_REPO_PATH=/srv/repos/tech-dancer bash scripts/setup-boomtick-mcp.sh
+```
+
+It links the live schemas, resolves the server binary (global install
+preferred, checkout build as fallback), and writes both
+`mcp_config.json` files. `GITHUB_TOKEN` is read from the environment
+when set and never written otherwise. The manual steps below remain as
+fallback.
+
 > **Important — Avoid Static Caches:** Never leave a static directory named `mcp/boomtick`. Always use a live symlink named `boomtick-mcp` pointing directly to `~/boomtick/mcp/.mcp/schemas`. This ensures tool schemas automatically update when contracts in boomtick change without schema drift or duplicate server registrations.
 
 ### A. Symlink the Live Schemas

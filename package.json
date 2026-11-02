@@ -25,6 +25,7 @@
     "webhooks:setup": "docker compose exec terminal bash /srv/remote-server/scripts/setup-webhooks.sh",
     "models:pull": "bash scripts/pull-models.sh",
     "audit:fallow": "fallow",
+    "setup:boomtick-mcp": "bash scripts/setup-boomtick-mcp.sh",
     "setup:browser-mcp": "bash scripts/setup-browser-mcp.sh",
     "permissions:update": "bash scripts/update-permissions.sh"
   },

@@ -103,6 +103,9 @@ services:
       # Persist Antigravity CLI (agy) binary, state, auth, and chat history across container recreates.
       - gemini-data:/root/.gemini
       - local-data:/root/.local
+      # Muse CLI auth/settings persist across recreates (the binary is
+      # baked into the image; /root/.local already persists via local-data).
+      - muse-data:/root/.config/muse
       # Other checkouts, cloned on the host (see docs/pi-setup.md § repos).
       # HOST_HOME defaults to /home/ari (host user path).
       - ${HOST_HOME:-/home/ari}/repos:/srv/repos
@@ -123,6 +126,7 @@ services:
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
@@ -259,6 +263,7 @@ volumes:
   pi-data:
   gemini-data:
   local-data:
+  muse-data:
   buttons-data:
   code-server-data:
   code-server-config:
