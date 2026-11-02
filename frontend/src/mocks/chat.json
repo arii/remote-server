@@ -1,0 +1,7 @@
+{
+  "messages": [
+    { "role": "user", "text": "What is failing on main?" },
+    { "role": "assistant", "text": "One workflow is failing in test-e2e (Playwright browser missing)." }
+  ],
+  "progress": { "done": true, "output": "Fetching briefing…\nDone.\n" }
+}

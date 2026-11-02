@@ -1,4 +1,6 @@
 import historyFixture from '../mocks/history.json';
+import jobsFixture from '../mocks/jobs.json';
+import chatFixture from '../mocks/chat.json';
 import systemHealthFixture from '../mocks/system-health.json';
 import workflowHealthFixture from '../mocks/workflow-health.json';
 import type {
@@ -61,4 +63,19 @@ export function loadIssues(): IssueRow[] {
 export function loadWorkflowHealth(): WorkflowHealthResponse {
   const w = workflowHealthFixture as WorkflowHealthResponse;
   return { ...w, workflows: [...w.workflows] };
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+export function loadJobs(): JobsResponse {
+  const j = jobsFixture as unknown as JobsResponse;
+  return { jobs: [...j.jobs] };
+}
+
+export function loadChat(): { messages: ChatMessage[]; progress: { done: boolean; output: string } } {
+  const c = chatFixture as unknown as { messages: ChatMessage[]; progress: { done: boolean; output: string } };
+  return { messages: [...c.messages], progress: { ...c.progress } };
 }

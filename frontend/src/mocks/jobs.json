@@ -1,0 +1,6 @@
+{
+  "jobs": [
+    { "id": "job-1", "kind": "briefing", "repo": "remote-server", "done": false },
+    { "id": "job-2", "kind": "preflight", "repo": "remote-server", "done": true }
+  ]
+}
