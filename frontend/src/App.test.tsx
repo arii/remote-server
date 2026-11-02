@@ -62,6 +62,23 @@ describe('history utils', () => {
     expect(rows[0].recovery).toBe('');
   });
 
+  it('prefers backend error reasons over generic failure text', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        {
+          kind: 'chat',
+          event: 'chat failed',
+          error: 'agent runtime misconfigured (exit 2)',
+          ts: 1,
+        },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toContain('misconfigured');
+    expect(rows[0].recovery).toBeTruthy();
+  });
+
   it('keeps mixed-kind routine chatter in separate rows', () => {
     const rows = toHistoryRows(
       [],

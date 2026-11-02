@@ -124,7 +124,11 @@ function entryFailed(e: LedgerEntry, raw: string, summary: string): boolean {
 
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
   const raw = e.event ?? e.action ?? e.kind;
-  const summary = plainLanguage(raw ?? '', e.kind);
+  // Backend-supplied reasons are already human sentences; use verbatim.
+  const summary =
+    e.error && e.error.trim()
+      ? e.error.trim().slice(0, 200)
+      : plainLanguage(raw ?? '', e.kind);
   return {
     kind: e.kind,
     summary,

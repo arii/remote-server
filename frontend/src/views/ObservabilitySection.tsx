@@ -17,7 +17,7 @@ export function ContainerPills({ containers }: { containers: ContainerStatus[] }
     );
   }
   return (
-    <ul className="actions" data-testid="observability-containers">
+    <ul className="pills" data-testid="observability-containers">
       {containers.map((c, i) => (
         // eslint-disable-next-line react/no-array-index-key
         <li key={`${c.service ?? c.name ?? 'container'}-${i}`} data-testid="container-pill">

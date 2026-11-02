@@ -34,15 +34,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'history', label: 'History' },
 ];
 
-const TAB_SUBTITLES: Record<Tab, string> = {
-  now: 'What needs your attention.',
-  review: 'PRs and issues awaiting review.',
-  jobs: 'Approved runs and the repair worker.',
-  chat: 'Talk to the agent; past sessions below.',
-  briefing: 'Daily briefing and digests.',
-  history: 'What happened, plus system observability.',
-};
-
 const FALLBACK_REPOS: RepoInfo[] = [
   { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: true },
 ];
@@ -82,33 +73,28 @@ export default function App() {
 
   return (
     <main className="layout">
-      <header className="page-head">
-        <div>
-          <h1>{TABS.find((t) => t.id === tab)?.label ?? 'Now'}</h1>
-          <p className="row-meta">{TAB_SUBTITLES[tab]}</p>
-        </div>
-        <div className="actions">
-          <RepoPicker repos={repos} value={repo} onChange={setRepo} />
-          <span
-            data-testid="repo-chip"
-            className="repo-chip"
-            aria-label={`Active repo: ${repo}`}
-          >
-            {repo}
-          </span>
-          <span data-testid="stack-status" className="row-meta">
-            {healthSummary(health)}
-          </span>
-          <a data-testid="tool-terminal" href={`${stackBase()}/`}>
-            Terminal
-          </a>
-          <a data-testid="tool-code" href={`${stackBase()}/code`}>
-            Code
-          </a>
-          <button type="button" data-testid="tool-chat" onClick={() => setTab('chat')}>
-            Chat
-          </button>
-        </div>
+      <header className="toolbar">
+        <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+        <span
+          data-testid="repo-chip"
+          className="repo-chip"
+          aria-label={`Active repo: ${repo}`}
+        >
+          {repo}
+        </span>
+        <span data-testid="stack-status" className="row-meta">
+          {healthSummary(health)}
+        </span>
+        <span className="spacer" />
+        <a data-testid="tool-terminal" href={`${stackBase()}/`}>
+          Terminal
+        </a>
+        <a data-testid="tool-code" href={`${stackBase()}/code`}>
+          Code
+        </a>
+        <button type="button" data-testid="tool-chat" onClick={() => setTab('chat')}>
+          Chat
+        </button>
       </header>
       <nav className="actions" aria-label="Views">
         {TABS.map((t) => (

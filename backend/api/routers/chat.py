@@ -365,6 +365,7 @@ def _approval_events(session_id: str, repo: str, info: dict,
                         {"error": "approval requested but no proposal found"})
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat failed",
+                       "error": "approval requested but no proposal found",
                        "exit": 3, "elapsed": elapsed})
         return
     checked = [validate_action_request(a) for a in requests]
@@ -381,7 +382,7 @@ def _approval_events(session_id: str, repo: str, info: dict,
         yield sse_frame("error", {"error": f"proposal rejected: {reason}"})
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat auto-rejected",
-                       "elapsed": elapsed})
+                       "error": reason, "elapsed": elapsed})
         return
     proposals = [t for _, t in checked]
     with pending_resumes_lock:
@@ -448,8 +449,9 @@ def _resume_decision(session_id: str, decision: str,
             st["pending"] = False
             return None, 500, "approval requested but no proposal found"
         st["pending"] = False
+    done_word = "approved" if decision == "approve" else "rejected"
     ledger_append({"kind": "chat", "session_id": session_id,
-                   "repo": st["repo"], "event": f"chat {decision}d"})
+                   "repo": st["repo"], "event": f"chat {done_word}"})
     return body, 202, ""
 
 
@@ -497,6 +499,9 @@ def _chat_events(prompt: str, repo: str, session_id: str):
         yield sse_frame("error", {"error": str(exc)})
         with chat_sessions_lock:
             chat_sessions.pop(session_id, None)
+        ledger_append({"kind": "chat", "session_id": session_id,
+                       "repo": repo, "event": "chat failed",
+                       "error": str(exc)[:500]})
         return
     yield sse_frame("phase", {"phase": "generating",
                               "message": "Streaming response from model..."})
@@ -541,6 +546,7 @@ def _chat_events(prompt: str, repo: str, session_id: str):
                         {"error": "agent runtime misconfigured (exit 2)"})
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat failed",
+                       "error": "agent runtime misconfigured (exit 2)",
                        "exit": 2, "elapsed": elapsed})
         return
     if code == 3:

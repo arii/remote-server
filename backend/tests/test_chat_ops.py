@@ -58,6 +58,10 @@ def make_client():
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class ChatOpsTest(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp, "ledger.jsonl")
         self.client = make_client()
         self._orig_repo = chat.get_repo_info
         self._orig_spawn = chat.spawn_chat_process
@@ -82,6 +86,10 @@ class ChatOpsTest(unittest.TestCase):
         _opsmod.get_repo_status = lambda name: {"repo": name}
 
     def tearDown(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
         chat.get_repo_info = self._orig_repo
         chat.spawn_chat_process = self._orig_spawn
         chat.spawn_pipeline_process = self._orig_pspawn
@@ -210,6 +218,11 @@ class ChatOpsTest(unittest.TestCase):
         events = self._sse_events(resp)
         self.assertEqual(events[-1][0], "error")
         self.assertIn("misconfigured", events[-1][1]["error"])
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            logged = [json.loads(line) for line in fh if line.strip()]
+        failed = [e for e in logged if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("misconfigured", failed[0]["error"])
         chat.deep_agent_python = lambda: "/nonexistent/python"
         resp = self.client.post("/api/chat/stream",
                                json={"prompt": "hi", "repo": "remote-server",
