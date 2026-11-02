@@ -54,9 +54,11 @@ describe('components', () => {
     expect(err).toContain('data-testid="detail-error"');
   });
 
-  it('App renders loading state before live fetch resolves', () => {
+  it('App renders Now nav, repo chip, and Now loading state', () => {
     const html = renderToStaticMarkup(<App />);
-    expect(html).toContain('data-testid="app-loading"');
+    expect(html).toContain('data-testid="now-loading"');
+    expect(html).toContain('data-testid="repo-chip"');
+    expect(html).toContain('History');
   });
 
   it('SystemHealth reflects session count', () => {
