@@ -3,6 +3,7 @@ import HoldToConfirm from '../components/HoldToConfirm';
 import {
   clearJobs,
   dispatchRepair,
+  fetchJobRun,
   fetchJobs,
   fetchPiProgress,
   fetchRepairStatus,
@@ -21,10 +22,22 @@ const ACTIONS = [
   'preflight',
   'run-td',
   'merge-approved',
-  'sync-agents',
-  'nudge-agents',
   'warm-context',
+  'create-plan',
+  'deploy-buttons',
+  'recreate',
+  'recreate-code',
 ];
+
+// Mirrors backend DESTRUCTIVE_ACTIONS: dispatched behind hold-to-confirm
+// with {intent: 'jobs-run', confirmed: true}.
+const DESTRUCTIVE_ACTIONS = new Set([
+  'merge-approved',
+  'create-plan',
+  'deploy-buttons',
+  'recreate',
+  'recreate-code',
+]);
 
 function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
@@ -157,9 +170,13 @@ function DispatchBar({ action, onAction, onDispatch, onClear, onTakeover }: Disp
           ))}
         </select>
       </label>
-      <button type="button" data-testid="jobs-dispatch" onClick={onDispatch}>
-        Dispatch
-      </button>
+      {DESTRUCTIVE_ACTIONS.has(action) ? (
+        <HoldToConfirm label={`Dispatch ${action}`} onFire={onDispatch} />
+      ) : (
+        <button type="button" data-testid="jobs-dispatch" onClick={onDispatch}>
+          Dispatch
+        </button>
+      )}
       <HoldToConfirm label="Clear jobs" onFire={() => onClear(false)} />
       <HoldToConfirm label="Clear all" onFire={() => onClear(true)} />
       <HoldToConfirm label="Take over terminal" onFire={onTakeover} />
@@ -222,7 +239,18 @@ export default function JobsView({ repo }: { repo: string }) {
       stopPoll();
       await load();
     } catch {
-      // No pi-progress entry for plain job runs; fall back to job list refresh.
+      let done = true;
+      try {
+        const r = await fetchJobRun(rid);
+        setTail(r.output);
+        done = r.done;
+        if (done && r.exit_code !== 0 && r.exit_code !== null) {
+          setNotice(`Run ${rid} failed (exit ${r.exit_code}).`);
+        }
+      } catch {
+        // No progress entry at all; fall back to job list refresh.
+      }
+      if (!done) return;
       stopPoll();
       await load();
     }
@@ -230,7 +258,7 @@ export default function JobsView({ repo }: { repo: string }) {
 
   async function onDispatch() {
     setNotice(null);
-    const started = await startJobRun(action, repo);
+    const started = await startJobRun(action, repo, DESTRUCTIVE_ACTIONS.has(action));
     setRunId(started.id);
     setNotice(`Started ${action}: ${started.id}`);
     if (useMock()) return;

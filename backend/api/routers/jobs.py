@@ -12,16 +12,25 @@ backend.exec.engine, which enforces the same allowlists, timeouts,
 and output truncation as the original.
 """
 
+import re
+import threading
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.exec.engine import (
     ALLOWED_ACTIONS,
+    DESTRUCTIVE_ACTIONS,
+    REPO_SCOPED_ACTIONS,
     RunRegistry,
     build_plan_argv,
+    execute_run,
     td_run,
     validate_td_command,
 )
+
+RID_RE = re.compile(r"^[0-9a-f]{12}$")
+RUN_TAIL = 6000
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -57,6 +66,8 @@ class ClearResult(BaseModel):
 class RunRequest(BaseModel):
     action: str = ""
     repo: str = "remote-server"
+    intent: str = ""
+    confirmed: bool = False
 
 
 class RunStarted(BaseModel):
@@ -101,16 +112,53 @@ def clear_jobs(body: ClearRequest) -> dict:
     return {"ok": True, "cleared": count}
 
 
+def _repo_target(repo: str) -> tuple[str, str]:
+    """Validate a repo name; return (gh, td_cwd). Raises ValueError."""
+    from backend.core import get_repo_status, validate_repo_name
+
+    name = validate_repo_name(repo)
+    try:
+        get_repo_status(name)
+    except (ValueError, FileNotFoundError, RuntimeError):
+        raise ValueError("unknown repo")
+    gh = f"arii/{name}"
+    td_cwd = "/srv/remote-server" if name == "remote-server" \
+        else f"/srv/repos/{name}"
+    return gh, td_cwd
+
+
+def _launch(run_id: str, action: str, repo: str,
+            td_argv=None) -> None:
+    (gh, td_cwd) = _repo_target(repo) \
+        if action in REPO_SCOPED_ACTIONS else ("", "")
+    worker = threading.Thread(
+        target=execute_run,
+        args=(registry, run_id, action, repo, gh, td_cwd),
+        kwargs={"td_argv": td_argv},
+        daemon=True)
+    worker.start()
+
+
 @router.post("/run", response_model=RunStarted)
 def start_run(body: RunRequest) -> dict:
     if body.action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail="unknown action")
+    if body.action in DESTRUCTIVE_ACTIONS:
+        from backend.core import require_confirm
+
+        require_confirm(body, "jobs-run")
+    if body.action in REPO_SCOPED_ACTIONS:
+        try:
+            _repo_target(body.repo)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="unknown repo")
     run_id, err = registry.start_run(body.action, body.repo)
     if err:
         raise HTTPException(
             status_code=409 if "already in progress" in err else 400,
             detail=err,
         )
+    _launch(run_id, body.action, body.repo)
     return {"id": run_id}
 
 
@@ -121,13 +169,39 @@ def start_run_td(body: RunTdRequest) -> dict:
     tokens = validate_td_command(body.command)
     if not tokens:
         raise HTTPException(status_code=400, detail="bad repo or command")
+    try:
+        _repo_target(body.repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad repo or command")
     run_id, err = registry.start_run("run-td", body.repo, td_argv=tokens)
     if err:
         raise HTTPException(
             status_code=409 if "already in progress" in err else 400,
             detail=err,
         )
+    _launch(run_id, "run-td", body.repo, td_argv=tokens)
     return {"id": run_id}
+
+
+class RunProgress(BaseModel):
+    done: bool = False
+    output: str = ""
+    exit_code: int | None = None
+    action: str = ""
+
+
+@router.get("/runs/{rid}", response_model=RunProgress)
+def run_progress(rid: str) -> dict:
+    if not RID_RE.match(rid):
+        raise HTTPException(status_code=404, detail="unknown run")
+    with registry._lock:
+        run = registry.runs.get(rid)
+        if run is None:
+            raise HTTPException(status_code=404, detail="unknown run")
+        out = run.get("output", "")
+        return {"done": run["done"], "output": out[-RUN_TAIL:],
+                "exit_code": run.get("exit_code"),
+                "action": run.get("action", "")}
 
 
 @router.post("/run-plan", response_model=RunPlanResult)

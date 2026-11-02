@@ -142,8 +142,26 @@ export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; 
   });
 }
 
-export function startJobRun(action: string, repo: string): Promise<{ id: string }> {
-  return postJson<{ id: string }>('/api/jobs/run', { action, repo });
+export function startJobRun(
+  action: string,
+  repo: string,
+  confirmed = false,
+): Promise<{ id: string }> {
+  return postJson<{ id: string }>(
+    '/api/jobs/run',
+    confirmed ? { action, repo, intent: 'jobs-run', confirmed: true } : { action, repo },
+  );
+}
+
+export interface JobRunProgress {
+  done: boolean;
+  output: string;
+  exit_code: number | null;
+  action: string;
+}
+
+export function fetchJobRun(rid: string): Promise<JobRunProgress> {
+  return getJson<JobRunProgress>(`/api/jobs/runs/${encodeURIComponent(rid)}`);
 }
 
 export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number }> {
