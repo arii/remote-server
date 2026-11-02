@@ -6,8 +6,6 @@ complete instructions go in its single task call.
 """
 
 import os
-import re
-import subprocess
 import sys
 import time
 
@@ -18,8 +16,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 
 import ledger
+import triage_common
 
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 DEFAULT_REPOS = ["arii/tech-dancer", "arii/boomtick"]
 
@@ -31,15 +29,7 @@ def triage_counts(repo: str) -> str:
     Args:
         repo: Repository in owner/name format.
     """
-    if not REPO_RE.match(repo):
-        return "REJECTED: repo must look like owner/name"
-    proc = subprocess.run(
-        ["td", "agent", "suggest", "-r", repo],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    return (proc.stdout + proc.stderr).strip()[:1500]
+    return triage_common.fetch_triage_counts(repo)
 
 
 def main() -> int:
@@ -49,7 +39,7 @@ def main() -> int:
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
         return 1
     repos = sys.argv[1:] or DEFAULT_REPOS
-    bad = [r for r in repos if not REPO_RE.match(r)]
+    bad = [r for r in repos if not triage_common.valid_repo(r)]
     if bad:
         print(f"bad repo(s): {bad}", file=sys.stderr)
         return 2
@@ -83,24 +73,22 @@ def main() -> int:
         ],
         checkpointer=MemorySaver(),
     )
+    # Unique per run: the constant "fanout-run" collided across runs
+    # and repos in the ledger; each process is one checkpoint sequence.
+    thread = "fanout-" + time.strftime("%Y%m%d-%H%M%S")
     result = agent.invoke(
         {
             "messages": [
                 {"role": "user", "content": f"Triage {repo_list}."}
             ]
         },
-        config={"configurable": {"thread_id": "fanout-run"}},
+        config={"configurable": {"thread_id": thread}},
     )
-    tasks = sum(
-        1
-        for m in result["messages"]
-        for tc in (getattr(m, "tool_calls", []) or [])
-        if tc.get("name") == "task"
-    )
+    tasks = triage_common.count_tool_calls(result["messages"], "task")
     ledger.record(
         "triage_fanout.py",
         f"nebius:{MODEL_ID}",
-        "fanout-run",
+        thread,
         result["messages"],
         started,
         extra={"task_delegations": tasks, "repos": repos},

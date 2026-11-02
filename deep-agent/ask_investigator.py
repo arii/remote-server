@@ -9,8 +9,8 @@ Every run is recorded to the ledger with tool results.
 """
 
 import base64
+import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -18,16 +18,16 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from langchain.agents import create_agent  # noqa: E402
+from langchain_core.messages import ToolMessage  # noqa: E402
 from langchain_core.tools import tool  # noqa: E402
 from langchain_ollama import ChatOllama  # noqa: E402
 
 import ledger  # noqa: E402
+import observe  # noqa: E402
+import s5tools  # noqa: E402
 
 MODEL_ID = os.environ.get("ASK_MODEL", "qwen3:8b")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-
-CHECKOUTS = {"arii/remote-server": "/srv/remote-server"}
 
 # Mirror of ALLOWED_TD_COMMANDS in buttons/server.py (source of truth).
 ALLOWED_TD = [
@@ -45,13 +45,6 @@ ALLOWED_TD = [
 _repo = ""
 _checkout = ""
 _retriever = None
-
-
-def _checkout_for(repo):
-    if repo in CHECKOUTS:
-        return CHECKOUTS[repo]
-    short = repo.split("/", 1)[1]
-    return f"/srv/repos/{short}"
 
 
 def _retriever_for():
@@ -77,6 +70,8 @@ def search_docs(query: str) -> str:
     Args:
         query: Short question (2-10 words).
     """
+    if not query or not query.strip() or len(query) > 500:
+        return "REJECTED: bad query"
     try:
         hits = _retriever_for().invoke(query)
     except Exception as exc:
@@ -96,45 +91,28 @@ def read_repo_file(path: str) -> str:
     Args:
         path: Repo-relative path, e.g. buttons/server.py.
     """
-    full = os.path.realpath(os.path.join(_checkout, path or ""))
-    if full != _checkout and not full.startswith(_checkout + os.sep):
-        return "REJECTED: path escapes the checkout"
-    if not os.path.isfile(full):
-        return "not found: no such file"
-    try:
-        with open(full, encoding="utf-8", errors="replace") as f:
-            return f.read(3000)
-    except OSError as exc:
-        return f"read failed: {exc}"
+    # Same sandbox + messages as the inline version this replaces;
+    # one implementation lives in s5tools now (like grep_repo).
+    return s5tools.read_repo_file(_checkout, path)
 
 
 @tool
 def grep_repo(pattern: str) -> str:
     """Search file contents in the repo checkout (read-only grep).
 
-    If a long pattern has no matches, retry with a shorter
-    distinctive fragment (e.g. '/buttons/api/ask' instead of
-    'POST /buttons/api/ask').
+    Always search the shortest distinctive fragment: for an HTTP
+    route use the path only (e.g. '/buttons/api/ask'), never the
+    method plus path ('POST ...' matches docs, never handler code).
+    Hits in docs or eval files are mentions, not the implementation:
+    answer from the file whose code handles the match.
 
     Args:
-        pattern: Literal search text.
+        pattern: Short literal search text.
     """
-    if not pattern or len(pattern) > 120:
-        return "REJECTED: bad pattern"
-    try:
-        proc = subprocess.run(
-            ["grep", "-rn", "-m", "20", "--exclude-dir=.git",
-             "--exclude-dir=node_modules", "--exclude-dir=.venv",
-             "--exclude-dir=__pycache__", "--", pattern, "."],
-            cwd=_checkout,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"grep failed: {exc}"
-    out = (proc.stdout or "").strip()
-    return out[:2000] or "no matches"
+    # Delegate to the shared helper so log/index/ledger noise
+    # (.boomtick/, chroma_db/, .claude/, .muse/, ledger.jsonl) never
+    # floods the -m 20 window and buries real hits like server.py.
+    return s5tools.grep_repo(_checkout, pattern)
 
 
 @tool
@@ -145,25 +123,38 @@ def pr_state(number: str) -> str:
         number: PR number as digits, e.g. "153".
     """
     # String type: the tool wrapper coerces True to 1 for int args,
-    # which would smuggle a bool past validation into gh.
+    # which would smuggle a bool past validation into the command.
     if not isinstance(number, str) or not number.isdigit() \
             or int(number) <= 0:
         return "REJECTED: bad PR number"
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", str(number), "--repo", _repo,
-             "--json", "state,isDraft,reviewDecision,mergeable,title",
-             "--jq", "{state, draft: .isDraft, review: .reviewDecision, "
-                     "mergeable, title}"],
+            ["td", "--json", "gh", "pr-view", "--pr", str(number),
+             "--repo", _repo],
             capture_output=True,
             text=True,
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"gh failed: {exc}"
+        return f"td failed: {exc}"
     if proc.returncode != 0:
-        return f"gh error: {(proc.stderr or '').strip()[:200]}"
-    return (proc.stdout or "").strip()[:800]
+        return f"td error: {(proc.stderr or '').strip()[:200]}"
+    try:
+        snap = json.loads(proc.stdout or "")
+    except json.JSONDecodeError:
+        return f"td error: bad json: {(proc.stdout or '').strip()[:200]}"
+    if not isinstance(snap, dict) or snap.get("status") == "error":
+        msg = snap.get("message", "") if isinstance(snap, dict) else ""
+        return f"td error: {msg or (proc.stdout or '').strip()[:200]}"
+    summary = snap.get("checksSummary") or {}
+    return _short_line(
+        f"{snap.get('state')} draft={snap.get('draft')} "
+        f"review={snap.get('reviewDecision')} "
+        f"mergeable={snap.get('mergeable')} "
+        f"checks={summary.get('passed')}/{summary.get('total')} "
+        f"failed={summary.get('failed')} "
+        f"pending={summary.get('pending')} "
+        f"title={snap.get('title')}", limit=400)
 
 
 SYSTEM = (
@@ -182,18 +173,30 @@ SYSTEM = (
     f"Allowed td commands (exact shapes):\n" + "\n".join(ALLOWED_TD) + "\n"
     "If no write is needed, just answer — no PROPOSE block. "
     "Always invoke tools through the function-calling interface. "
-    "Never write a tool call out as JSON text."
+    "Never write a tool call out as JSON text. "
+    "Keep replies readable on a phone: short paragraphs or a short "
+    "list, no wide tables."
 )
 
 
+def _short_line(content, limit=160):
+    """First line of a tool result, capped for phone-sized tails.
+
+    The REPORT block streams live to the phone; a visible ellipsis
+    marks truncation so a cut line never reads as complete.
+    """
+    line = content.strip().splitlines()[0]
+    return line if len(line) <= limit else line[:limit] + "…"
+
+
 def main() -> int:
-    if len(sys.argv) < 3 or not REPO_RE.match(sys.argv[1]):
+    if len(sys.argv) < 3 or not s5tools.valid_repo(sys.argv[1]):
         print("usage: ask_investigator.py owner/repo <b64-instruction>",
               file=sys.stderr)
         return 2
     global _repo, _checkout
     _repo = sys.argv[1]
-    _checkout = _checkout_for(_repo)
+    _checkout = s5tools.checkout_for(_repo)
     try:
         instruction = base64.b64decode(sys.argv[2]).decode()
     except Exception:
@@ -213,16 +216,32 @@ def main() -> int:
         temperature=0,
         model_kwargs={} if think else {"think": False},
     )
+    thread = "ask-" + _repo.replace("/", "-")
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("ask_investigator", thread))
+    recorder.run_start("ask_investigator.py", thread,
+                       f"ollama:{MODEL_ID}")
     agent = create_agent(
         model=model,
         tools=[search_docs, read_repo_file, grep_repo, pr_state],
         system_prompt=f"Repo: {_repo}. " + SYSTEM,
+        middleware=observe.trace_middleware(recorder),
     )
     print(f"Investigating {_repo} (local model)…", flush=True)
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": instruction}]},
-        config={"recursion_limit": 12},
-    )
+    try:
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": instruction}]},
+            # 20: trace middleware nodes consume budget (~4 steps per
+            # tool call, measured); preserves room for ~4 tool calls.
+            config={"recursion_limit": 20},
+        )
+    except Exception:
+        recorder.run_end(False)
+        recorder.close()
+        raise
+    recorder.run_end(True)
+    recorder.close()
+    print(f"trace: {recorder.path}", file=sys.stderr)
     calls = sum(
         len(getattr(m, "tool_calls", []) or [])
         for m in result["messages"]
@@ -230,15 +249,16 @@ def main() -> int:
     ledger.record(
         "ask_investigator.py",
         f"ollama:{MODEL_ID}",
-        "ask-" + _repo.replace("/", "-"),
+        thread,
         result["messages"],
         started,
+        extra={"trace": recorder.path},
     )
     print(f"tool_calls_made: {calls}")
     outcomes = [
-        str(m.content).strip().splitlines()[0][:200]
+        _short_line(str(m.content))
         for m in result["messages"]
-        if m.__class__.__name__ == "ToolMessage"
+        if isinstance(m, ToolMessage)
         and str(m.content).strip()
     ]
     print("REPORT (authoritative, from tool results):")

@@ -7,4 +7,5 @@ langchain-openai
 langchain-ollama
 langchain-chroma
 langchain-text-splitters
+langgraph-checkpoint-sqlite
 python-dotenv
