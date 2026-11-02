@@ -184,6 +184,8 @@ def _discover_repos(force=False):
 
 
 def _default_repo(repos):
+    if "remote-server" in repos:
+        return "remote-server"
     if "tech-dancer" in repos:
         return "tech-dancer"
     return sorted(repos)[0]
@@ -303,8 +305,7 @@ def _repo_strips_html(repos):
             f'<div class="reponame">'
             f'<a href="https://github.com/{gh}">{gh}</a></div>'
             f'<div class="reposcope">{scope}</div>'
-            f'<div class="repostatus" data-repo-status="{gh}">'
-            "Auto-pull: not yet</div></div>")
+            f'<div class="repostatus" data-repo-status="{gh}"></div></div>')
     return "\n".join(out)
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
@@ -1328,7 +1329,7 @@ def _buttons_html():
                 f'<span class="bsub">{escape(spec["sub"])}</span></button>')
         if group == "Server":
             parts.append(
-                f'<details><summary class="grouphead">'
+                f'<details id="groupServer"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
         else:
             parts.append(
@@ -2241,7 +2242,7 @@ def _finish_run(run_id, action, repo, run):
             active_id = None
 
 
-def run_action(run_id, action, repo="tech-dancer"):
+def run_action(run_id, action, repo="remote-server"):
     global active_id
     run = runs[run_id]
     repos = _discover_repos()
@@ -2992,12 +2993,18 @@ let timer = null;
 // across tabs.
 let userStartedRun = false;
 
+function shorten(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
 // Repo cards are tap-to-select: clicking a card (outside its
 // GitHub link) sets the picker and refreshes the briefing. The
 // picker remains as the explicit control.
 function markSelectedRepo() {
   const picker = document.getElementById("briefingRepo");
   const cur = picker ? picker.value : "";
+  try { if (cur) localStorage.setItem("buttons_selected_repo", cur); } catch (e) {}
   const nameEl = document.getElementById("selectedRepoName");
   if (nameEl && cur) nameEl.textContent = cur;
   document.querySelectorAll("[data-repo-pick]").forEach(el => {
@@ -3010,9 +3017,15 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     if (e.target.closest("a")) return;
     const picker = document.getElementById("briefingRepo");
     if (!picker) return;
-    picker.value = el.getAttribute("data-repo-pick");
-    markSelectedRepo();
-    if (typeof refreshBriefing === "function") refreshBriefing();
+    const pickedRepo = el.getAttribute("data-repo-pick");
+    if (picker.value !== pickedRepo) {
+      picker.value = pickedRepo;
+      picker.dispatchEvent(new Event("change"));
+    } else {
+      markSelectedRepo();
+      if (typeof refreshBriefing === "function") refreshBriefing();
+      if (typeof refreshProject === "function") refreshProject();
+    }
   });
 });
 // Project tab: repo context lives where the work happens. The
@@ -3039,17 +3052,21 @@ markSelectedRepo();
 
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
+function selectTab(tabName) {
+  const t = document.querySelector(`#tabbar .tab[data-tab="${tabName}"]`);
+  if (!t) return;
+  document.querySelectorAll("#tabbar .tab").forEach(x =>
+    x.classList.toggle("active", x === t));
+  document.querySelectorAll(".tabpanel").forEach(p => {
+    p.style.display = (p.id === "tab-" + tabName) ? "" : "none";
+  });
+  try { localStorage.setItem("buttons_active_tab", tabName); } catch (e) {}
+  if (tabName === "project" && typeof refreshProject === "function") refreshProject();
+}
+
 document.querySelectorAll("#tabbar .tab").forEach(t => {
   t.onclick = () => {
-    document.querySelectorAll("#tabbar .tab").forEach(x =>
-      x.classList.toggle("active", x === t));
-    document.querySelectorAll(".tabpanel").forEach(p => {
-      p.style.display = (p.id === "tab-" + t.dataset.tab) ? "" : "none";
-    });
-    // Opening the Project tab re-renders it for the current
-    // picker repo, so the sections never show a stale repo's data.
-    if (t.dataset.tab === "project" &&
-        typeof refreshProject === "function") refreshProject();
+    selectTab(t.dataset.tab);
   };
 });
 
@@ -3061,6 +3078,19 @@ function openDrawer() { if (drawerEl) drawerEl.classList.add("open"); }
 function closeDrawer() { if (drawerEl) drawerEl.classList.remove("open"); }
 const drawerCloseBtn = document.getElementById("drawerClose");
 if (drawerCloseBtn) drawerCloseBtn.onclick = closeDrawer;
+
+const serverDetails = document.getElementById("groupServer");
+if (serverDetails) {
+  try {
+    const savedServerState = localStorage.getItem("buttons_server_collapse");
+    if (savedServerState !== null) {
+      serverDetails.open = (savedServerState === "true");
+    }
+    serverDetails.addEventListener("toggle", () => {
+      try { localStorage.setItem("buttons_server_collapse", String(serverDetails.open)); } catch (e) {}
+    });
+  } catch (e) {}
+}
 
 // Confirm modal (replaces window.confirm): non-blocking, carries
 // a title + body, danger styling for destructive actions.
@@ -3857,13 +3887,6 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
-  // Long job/step strings (a Dependabot run dumps dozens of
-  // package names) blow out the card height: cap one segment
-  // and the whole line.
-  function shorten(s, n) {
-    s = String(s || "");
-    return s.length > n ? s.slice(0, n - 1) + "…" : s;
-  }
   if (b.failing_runs && b.failing_runs.length) {
     const w = document.createElement("div");
     const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
@@ -4429,7 +4452,20 @@ if (clearJobsBtn) clearJobsBtn.onclick = async () => {
 };
 refreshJobs();
 const briefingRepoPicker = document.getElementById("briefingRepo");
-if (briefingRepoPicker) briefingRepoPicker.onchange = refreshBriefing;
+if (briefingRepoPicker) {
+  try {
+    const savedRepo = localStorage.getItem("buttons_selected_repo");
+    if (savedRepo && Array.from(briefingRepoPicker.options).some(o => o.value === savedRepo)) {
+      briefingRepoPicker.value = savedRepo;
+      markSelectedRepo();
+    }
+  } catch (e) {}
+  briefingRepoPicker.onchange = refreshBriefing;
+}
+try {
+  const savedTab = localStorage.getItem("buttons_active_tab");
+  if (savedTab) selectTab(savedTab);
+} catch (e) {}
 refreshBriefing();
 
 // Pi background runs: streams output directly into the slide-up
@@ -5769,46 +5805,74 @@ async function runPlan(plan, extra) {
     return;
   }
   out.innerHTML = "";
-  if (data.plan_path) {
-    const p = document.createElement("p");
-    p.textContent = "Plan written to: " + data.plan_path;
-    out.appendChild(p);
+  let parsedJson = null;
+  if (data.output) {
+    try {
+      parsedJson = JSON.parse(data.output);
+    } catch (e) {}
   }
-  if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
-    const runBtn = document.createElement("button");
-    runBtn.textContent = "Run as job";
-    runBtn.style.margin = "0.5em 0";
-    runBtn.onclick = async () => {
-      runBtn.disabled = true;
-      runBtn.textContent = "Starting job…";
-      const jres = await fetchJson("/buttons/api/jobs", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          repo: projectRepo(),
-          plan_content: data.output,
-          plan_path: data.plan_path || ""
-        })
-      });
-      if (!jres.ok) {
-        setErrorEl(err, jres.data.error || jres.status, "could not start job");
-        runBtn.disabled = false;
-        runBtn.textContent = "Run as job";
-        return;
+
+  if (parsedJson && (parsedJson.issues || Array.isArray(parsedJson))) {
+    const issues = parsedJson.issues || parsedJson;
+    const count = issues.length;
+    const summaryP = document.createElement("p");
+    summaryP.innerHTML = `<strong>Audit found ${count} issue${count === 1 ? '' : 's'}:</strong>`;
+    out.appendChild(summaryP);
+    const list = document.createElement("ul");
+    list.style.paddingLeft = "1.2em";
+    list.style.fontSize = "0.9em";
+    issues.forEach(it => {
+      const li = document.createElement("li");
+      if (it.url || it.html_url) {
+        const a = document.createElement("a");
+        a.href = it.url || it.html_url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = `#${it.number || '?'}: ${it.title || 'Issue'}`;
+        li.appendChild(a);
+      } else {
+        li.textContent = `#${it.number || '?'}: ${it.title || 'Issue'}`;
       }
-      const job = jres.data.job;
-      runBtn.textContent = "Job started!";
-      // Render live interactive checklist and start polling
-      renderPlanLiveChecklist(job, out);
-      pollPlanJob(job.id, out);
-      if (typeof refreshJobs === "function") refreshJobs();
-    };
-    out.appendChild(runBtn);
+      list.appendChild(li);
+    });
+    out.appendChild(list);
+  } else {
+    if (data.output && (data.output.includes("- [ ]") || data.output.includes("- [x]"))) {
+      const runBtn = document.createElement("button");
+      runBtn.textContent = "Run as job";
+      runBtn.style.margin = "0.5em 0";
+      runBtn.onclick = async () => {
+        runBtn.disabled = true;
+        runBtn.textContent = "Starting job…";
+        const jres = await fetchJson("/buttons/api/jobs", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            repo: projectRepo(),
+            plan_content: data.output,
+            plan_path: data.plan_path || ""
+          })
+        });
+        if (!jres.ok) {
+          setErrorEl(err, jres.data.error || jres.status, "could not start job");
+          runBtn.disabled = false;
+          runBtn.textContent = "Run as job";
+          return;
+        }
+        const job = jres.data.job;
+        runBtn.textContent = "Job started!";
+        // Render live interactive checklist and start polling
+        renderPlanLiveChecklist(job, out);
+        pollPlanJob(job.id, out);
+        if (typeof refreshJobs === "function") refreshJobs();
+      };
+      out.appendChild(runBtn);
+    }
+    const pre = document.createElement("pre");
+    pre.id = "planRawOutput";
+    pre.textContent = (data.output || "(empty)").replace(/\/srv\/[^\s'"]+/g, "[server path]");
+    out.appendChild(pre);
   }
-  const pre = document.createElement("pre");
-  pre.id = "planRawOutput";
-  pre.textContent = data.output || "(empty)";
-  out.appendChild(pre);
 }
 function renderPlanLiveChecklist(job, container) {
   let box = document.getElementById("planLiveBox");
@@ -5970,11 +6034,16 @@ async function refreshStatus() {
       const repo = card.getAttribute("data-repo-status");
       if (pending.includes(repo)) {
         card.textContent = "Auto-pull: pulling…";
+        card.style.display = "block";
       } else if (w[repo]) {
         const st = w[repo];
         card.textContent = "Auto-pull: " +
           (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
           new Date(st.at * 1000).toLocaleString();
+        card.style.display = "block";
+      } else {
+        card.textContent = "";
+        card.style.display = "none";
       }
     });
     // Stale page: a remote-server pull landed after this container
@@ -6123,6 +6192,22 @@ setInterval(refreshStatus, 10000);
 
 const testNotifyBtn = document.getElementById("testNotifyBtn");
 if (testNotifyBtn) testNotifyBtn.onclick = async () => {
+  const badge = document.getElementById("notifyBadge");
+  const isOff = badge && badge.textContent.includes("off");
+  if (isOff) {
+    if (typeof confirmDialog === "function") {
+      await confirmDialog(
+        "Notifications Disabled",
+        "Notifications are currently off. To enable push alerts, set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL in /srv/remote-server/.env.",
+        false
+      );
+    }
+    return;
+  }
+  if (typeof confirmDialog === "function") {
+    const ok = await confirmDialog("Send Test Notification", "Send a test notification to configured endpoints (ntfy / webhook)?", false);
+    if (!ok) return;
+  }
   testNotifyBtn.disabled = true;
   const res = await fetchJson("/buttons/api/notifications/test", {method: "POST"});
   testNotifyBtn.disabled = false;
