@@ -302,9 +302,7 @@ def _repo_strips_html(repos):
             f'<div class="repo" data-repo-pick="{name}">'
             f'<div class="reponame">'
             f'<a href="https://github.com/{gh}">{gh}</a></div>'
-            f'<div class="reposcope">{scope}</div>'
-            f'<div class="repostatus" data-repo-status="{gh}">'
-            "Auto-pull: not yet</div></div>")
+            f'<div class="reposcope">{scope}</div></div>')
     return "\n".join(out)
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
@@ -1479,11 +1477,11 @@ def _buttons_html():
                 f'<span class="bsub">{escape(spec["sub"])}</span></button>')
         if group == "Server":
             parts.append(
-                f'<details><summary class="grouphead">'
+                f'<details data-section="Server"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
         else:
             parts.append(
-                f'<details open><summary class="grouphead">'
+                f'<details open data-section="Briefing"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
     return "".join(parts)
 
@@ -3175,6 +3173,7 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
+const DEFAULT_REPO = "remote-server";
 const codeLauncher = document.getElementById("codeLauncher");
 if (codeLauncher) {
   codeLauncher.href = window.location.origin + "/code";
@@ -3208,8 +3207,7 @@ document.querySelectorAll("[data-repo-pick]").forEach(el => {
     const picker = document.getElementById("briefingRepo");
     if (!picker) return;
     picker.value = el.getAttribute("data-repo-pick");
-    markSelectedRepo();
-    if (typeof refreshBriefing === "function") refreshBriefing();
+    picker.dispatchEvent(new Event("change"));
   });
 });
 // Project tab: repo context lives where the work happens. The
@@ -3235,11 +3233,24 @@ function refreshProject() {
   if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 }
 const _pickerEl = document.getElementById("briefingRepo");
-if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
-if (_pickerEl) _pickerEl.addEventListener("change", () => {
-  if (typeof refreshProject === "function") refreshProject();
-});
+if (_pickerEl) {
+  _pickerEl.addEventListener("change", () => {
+    markSelectedRepo();
+    try { localStorage.setItem("s5.repo", _pickerEl.value); } catch (_) {}
+  });
+  _pickerEl.addEventListener("change", () => {
+    if (typeof refreshProject === "function") refreshProject();
+    if (typeof refreshBriefing === "function") refreshBriefing();
+  });
+}
+try {
+  const savedRepo = localStorage.getItem("s5.repo");
+  if (savedRepo && _pickerEl) {
+    _pickerEl.value = savedRepo;
+  }
+} catch (_) {}
 markSelectedRepo();
+refreshProject();
 
 // Tab bar badges and state tracking
 let lastLedgerViewTs = Date.now() / 1000;
@@ -3271,24 +3282,58 @@ function updateTabBadges() {
 
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
+function activateTab(tabName) {
+  const tabBtn = document.querySelector(`#tabbar .tab[data-tab="${tabName}"]`);
+  if (!tabBtn) return;
+  document.querySelectorAll("#tabbar .tab").forEach(x =>
+    x.classList.toggle("active", x === tabBtn));
+  document.querySelectorAll(".tabpanel").forEach(p => {
+    p.style.display = (p.id === "tab-" + tabName) ? "" : "none";
+  });
+  if (tabName === "ledger") {
+    lastLedgerViewTs = Date.now() / 1000;
+    tabBadgeCounts.ledger = false;
+    updateTabBadges();
+  }
+  if (tabName === "project" &&
+      typeof refreshProject === "function") refreshProject();
+  try { localStorage.setItem("s5.tab", tabName); } catch (_) {}
+}
+
 document.querySelectorAll("#tabbar .tab").forEach(t => {
-  t.onclick = () => {
-    document.querySelectorAll("#tabbar .tab").forEach(x =>
-      x.classList.toggle("active", x === t));
-    document.querySelectorAll(".tabpanel").forEach(p => {
-      p.style.display = (p.id === "tab-" + t.dataset.tab) ? "" : "none";
-    });
-    if (t.dataset.tab === "ledger") {
-      lastLedgerViewTs = Date.now() / 1000;
-      tabBadgeCounts.ledger = false;
-      updateTabBadges();
-    }
-    // Opening the Project tab re-renders it for the current
-    // picker repo, so the sections never show a stale repo's data.
-    if (t.dataset.tab === "project" &&
-        typeof refreshProject === "function") refreshProject();
-  };
+  t.onclick = () => activateTab(t.dataset.tab);
 });
+
+try {
+  const savedTab = localStorage.getItem("s5.tab");
+  if (savedTab) activateTab(savedTab);
+} catch (_) {}
+
+function saveSectionStates() {
+  const sections = {};
+  document.querySelectorAll("details[data-section]").forEach(d => {
+    const sec = d.getAttribute("data-section");
+    if (sec) sections[sec] = d.open;
+  });
+  try { localStorage.setItem("s5.sections", JSON.stringify(sections)); } catch (_) {}
+}
+
+document.querySelectorAll("details[data-section]").forEach(d => {
+  d.addEventListener("toggle", saveSectionStates);
+});
+
+try {
+  const savedSec = localStorage.getItem("s5.sections");
+  if (savedSec) {
+    const parsed = JSON.parse(savedSec);
+    document.querySelectorAll("details[data-section]").forEach(d => {
+      const sec = d.getAttribute("data-section");
+      if (sec && typeof parsed[sec] === "boolean") {
+        d.open = parsed[sec];
+      }
+    });
+  }
+} catch (_) {}
 
 // Slide-up output drawer (replaces the inline <pre> below the
 // buttons): opens on run start and on new output, so progress is
@@ -3962,7 +4007,7 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
     try {
       const picker = document.getElementById("briefingRepo");
       const body = {pr_number: pr.number, action: action,
-        repo: picker ? picker.value : "tech-dancer"};
+        repo: picker ? picker.value : DEFAULT_REPO};
       const resp = await fetchJson("/buttons/api/pr-action", {method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)});
@@ -4335,7 +4380,7 @@ function renderBriefing(b) {
 }
 async function refreshBriefing() {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
   const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
   if (!res.ok) {
@@ -4453,7 +4498,7 @@ function renderJobNew() {
       issueBox.textContent = "Loading issues…";
       d.appendChild(issueBox);
       const picker = document.getElementById("briefingRepo");
-      const repo = picker ? picker.value : "tech-dancer";
+      const repo = picker ? picker.value : DEFAULT_REPO;
       fetchJson("/buttons/api/issues?repo=" + encodeURIComponent(repo))
         .then(res => {
           issueBox.textContent = "";
@@ -4514,7 +4559,7 @@ function renderJobNew() {
     b.textContent = "Start job";
     b.onclick = async () => {
       const picker = document.getElementById("briefingRepo");
-      const body = {template: name, repo: picker ? picker.value : "tech-dancer"};
+      const body = {template: name, repo: picker ? picker.value : DEFAULT_REPO};
       if (t.needsPr) {
         const n = parseInt(prSelect.value, 10);
         if (!(n > 0)) { jobErr("Pick an open PR."); return; }
@@ -5034,7 +5079,7 @@ function renderSuggestions(data, repo) {
 }
 if (suggestBtn) suggestBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   suggestErrEl.textContent = "";
   suggestionsEl.textContent = "";
   const pre = document.createElement("pre");
@@ -5117,7 +5162,7 @@ function renderAskResult(data, repo) {
 }
 if (askBtn) askBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   const instruction = askBox.value.trim();
   if (!instruction) { askErr.textContent = "Type an instruction first."; return; }
   askErr.textContent = "";
@@ -5524,7 +5569,7 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
 // Reads the repo from the picker at tap time, like the other tabs.
 function projectRepo() {
   const p = document.getElementById("briefingRepo");
-  return p ? p.value : "remote-server";
+  return p ? p.value : DEFAULT_REPO;
 }
 let currentPrDetails = null;
 
@@ -6113,7 +6158,7 @@ async function createProjectIssue() {
 async function refreshJulesStatusCard() {
   const el = document.getElementById("julesCardBody");
   if (!el) return;
-  const repo = (typeof projectRepo === "function") ? projectRepo() : "tech-dancer";
+  const repo = (typeof projectRepo === "function") ? projectRepo() : DEFAULT_REPO;
   const res = await fetchJson("/buttons/api/jules-sessions?repo=" + encodeURIComponent(repo));
   const data = res.data || {};
   if (!res.ok) {
@@ -6578,19 +6623,6 @@ async function refreshStatus() {
     const pend = document.getElementById("livePending");
     const w = s.webhooks || {};
     const pending = s.webhooks_pending || [];
-    // Per-repo pull state lives on the repo cards, so the page
-    // always shows which repo each result belongs to.
-    document.querySelectorAll("[data-repo-status]").forEach(card => {
-      const repo = card.getAttribute("data-repo-status");
-      if (pending.includes(repo)) {
-        card.textContent = "Auto-pull: pulling…";
-      } else if (w[repo]) {
-        const st = w[repo];
-        card.textContent = "Auto-pull: " +
-          (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
-          new Date(st.at * 1000).toLocaleString();
-      }
-    });
     // Stale page: a remote-server pull landed after this container
     // started, so the served page predates the checkout. Show the
     // banner and highlight the rebuild button — the pull alone
@@ -6946,7 +6978,7 @@ function initInteractiveChat(prefix) {
     if (errEl) errEl.textContent = "";
 
     const picker = document.getElementById("briefingRepo");
-    const repo = picker ? picker.value : "tech-dancer";
+    const repo = picker ? picker.value : DEFAULT_REPO;
     const sessionId = "chat-" + Math.random().toString(36).substring(2, 10);
     activeSessionId = sessionId;
 
