@@ -1,0 +1,21 @@
+# Local laptop run of the buttons UX (no OAuth, no Caddy, no Tailscale).
+#
+# Usage (from the repo root on your laptop):
+#   cp .env.example .env   # then set HOST_HOME=$HOME, keep the rest
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml \
+#     up -d --build buttons terminal ollama
+#   # first run only, inside terminal: gh auth login ; ollama pull qwen3:8b
+# Open: http://localhost:8000/buttons
+#
+# Only loopback-published ports: nothing here is reachable from the LAN.
+# The buttons page talks to the terminal + ollama containers over the
+# compose network exactly like production; only the edge (OAuth/Caddy)
+# is skipped. Never use this file on the S5 host — it would shadow the
+# real edge. See docs/local-ux.md.
+services:
+  buttons:
+    ports:
+      - "127.0.0.1:8000:8000"
+  terminal:
+    ports:
+      - "127.0.0.1:7681:7681"
