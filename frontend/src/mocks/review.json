@@ -1,0 +1,76 @@
+{
+  "repos": [
+    { "name": "remote-server", "full": "arii/remote-server", "branch": "main", "clean": true },
+    { "name": "tech-dancer", "full": "arii/tech-dancer", "branch": "main", "clean": false }
+  ],
+  "prs": [
+    {
+      "number": 42,
+      "title": "Fix webhook retry",
+      "author": "octo",
+      "branch": "fix/webhook-retry",
+      "isDraft": false,
+      "ciStatus": "passing",
+      "ciLabel": "passing",
+      "reviewDecision": "APPROVED",
+      "mergeable": "MERGEABLE",
+      "url": "https://example.invalid/pr/42"
+    },
+    {
+      "number": 43,
+      "title": "WIP: agent memory",
+      "author": "octo",
+      "branch": "wip/agent-memory",
+      "isDraft": true,
+      "ciStatus": "pending",
+      "ciLabel": "pending",
+      "reviewDecision": "",
+      "mergeable": "UNKNOWN",
+      "url": "https://example.invalid/pr/43"
+    }
+  ],
+  "details": {
+    "repo": "remote-server",
+    "number": 42,
+    "title": "Fix webhook retry",
+    "branch": "fix/webhook-retry",
+    "base": "main",
+    "ci": "passing",
+    "failing": [],
+    "merge": "clean",
+    "conflicted": false,
+    "draft": false,
+    "url": "https://example.invalid/pr/42",
+    "files": [
+      { "path": "backend/api/routers/pulls.py", "additions": 12, "deletions": 3, "changes": 15 },
+      { "path": "tests/test_pulls.py", "additions": 30, "deletions": 0, "changes": 30 }
+    ],
+    "stats": { "total_files": 2, "additions": 42, "deletions": 3 },
+    "ai_prompts": [
+      { "id": "security", "label": "Security Audit", "prompt": "Audit PR #42 for security vulnerabilities." },
+      { "id": "summary", "label": "Review Comments", "prompt": "Synthesize line-level findings for PR #42." }
+    ]
+  },
+  "issues": [
+    {
+      "number": 7,
+      "title": "Flaky CI on main",
+      "state": "open",
+      "assignees": [],
+      "labels": [{ "name": "bug" }],
+      "updatedAt": "2026-01-01T00:00:00Z",
+      "url": "https://example.invalid/issues/7",
+      "body": "CI flakes on retry path."
+    },
+    {
+      "number": 8,
+      "title": "Ledger timestamps unclear",
+      "state": "open",
+      "assignees": [{ "login": "octo" }],
+      "labels": [],
+      "updatedAt": "2026-01-02T00:00:00Z",
+      "url": "https://example.invalid/issues/8",
+      "body": "Show local time in history rows."
+    }
+  ]
+}

@@ -75,3 +75,59 @@ export function fetchWorkflowHealth(repo: string): Promise<WorkflowHealthRespons
     `/api/workflow-health?repo=${encodeURIComponent(repo)}`,
   );
 }
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`POST ${path} failed: ${resp.status}`);
+  return (await resp.json()) as T;
+}
+
+export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
+  return getJson<import('./reviewTypes').ReposResponse>('/api/repos');
+}
+
+export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListResponse> {
+  return getJson<import('./reviewTypes').PrListResponse>(
+    `/api/prs?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export function fetchPrDetails(repo: string, pr: number): Promise<import('./reviewTypes').PrDetailsResponse> {
+  return getJson<import('./reviewTypes').PrDetailsResponse>(
+    `/api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+  );
+}
+
+export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; output: string }> {
+  return postJson<{ ok: boolean; output: string }>('/api/pr-action', {
+    repo,
+    pr_number: prNumber,
+    action: 'merge',
+    intent: 'pr-merge',
+    confirmed: true,
+  });
+}
+
+export function fetchIssues(repo: string): Promise<import('./reviewTypes').IssueListResponse> {
+  return getJson<import('./reviewTypes').IssueListResponse>(
+    `/api/issues?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export function assignIssue(repo: string, issue: string, assignee: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>('/api/assign-issue', { repo, issue, assignee });
+}
+
+export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<import('./reviewTypes').IssueDraftResponse> {
+  return postJson<import('./reviewTypes').IssueDraftResponse>('/api/issue-draft', {
+    repo,
+    source: 'finding',
+    title,
+    cause,
+    details,
+  });
+}
