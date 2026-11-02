@@ -304,8 +304,7 @@ def _repo_strips_html(repos):
             f'<div class="repo" data-repo-pick="{name}">'
             f'<div class="reponame">'
             f'<a href="https://github.com/{gh}">{gh}</a></div>'
-            f'<div class="reposcope">{scope}</div>'
-            f'<div class="repostatus" data-repo-status="{gh}"></div></div>')
+            f'<div class="reposcope">{scope}</div></div>')
     return "\n".join(out)
 # HOME must be the host user's home: ${HOME} in the compose file (repos
 # mount) interpolates from the CLI environment, and the daemon resolves
@@ -1480,11 +1479,11 @@ def _buttons_html():
                 f'<span class="bsub">{escape(spec["sub"])}</span></button>')
         if group == "Server":
             parts.append(
-                f'<details id="groupServer"><summary class="grouphead">'
+                f'<details data-section="Server"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
         else:
             parts.append(
-                f'<details open><summary class="grouphead">'
+                f'<details open data-section="Briefing"><summary class="grouphead">'
                 f'{GROUP_TITLES[group]}</summary>{"".join(btns)}</details>')
     return "".join(parts)
 
@@ -3009,6 +3008,7 @@ deletes all transcripts.</p>
 <div class="planrow">
 <label>Pick PR: <select id="reviewPrSelect"><option value="">— Loading PRs —</option></select></label>
 <button id="loadPrDetailsBtn" type="button" class="btn-primary" style="width:auto;margin:0;">Inspect PR</button>
+<span id="reviewPrReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span>
 </div>
 <div id="prDetailsView" class="health-card" style="display:none;margin-top:0.6em;">
   <div class="health-head" id="prDetailsHead">PR #--</div>
@@ -3082,11 +3082,13 @@ write a markdown plan file; nothing executes or pushes.</p>
 <button id="planWorkflowAuditBtn">Audit workflows</button></div>
 <div class="planrow"><label>Review plan for PR
 <select id="planPrSelect"><option value="">—</option></select></label>
-<button id="planReviewBtn">Generate</button></div>
+<button id="planReviewBtn">Generate</button>
+<span id="planReviewReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span></div>
 <div class="planrow"><span>Aggregate PRs</span>
 <select id="planAggPrs" multiple size="4" style="min-width:9em"><option value="">—</option></select>
 <label>into <input id="planAggTarget" value="main" size="12" maxlength="64"></label>
-<button id="planAggBtn">Generate</button></div>
+<button id="planAggBtn">Generate</button>
+<span id="planAggReason" class="inline-reason" style="display:none;color:var(--text-muted);font-size:0.85em;margin-left:0.4em;"></span></div>
 <div id="planOut"><p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p></div>
 <div id="planErr"></div>
 </section>
@@ -3173,6 +3175,7 @@ entries but leaves a 'ledger cleared' record.</p>
 // here cannot make the buttons vanish — and the diagnostic line
 // above stays visible if this block never runs at all.
 document.getElementById("jsdiag").style.display = "none";
+const DEFAULT_REPO = "remote-server";
 const codeLauncher = document.getElementById("codeLauncher");
 if (codeLauncher) {
   codeLauncher.href = window.location.origin + "/code";
@@ -3186,11 +3189,6 @@ let timer = null;
 // because on a phone the drawer is how progress stays visible
 // across tabs.
 let userStartedRun = false;
-
-function shorten(s, n) {
-  s = String(s || "");
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
-}
 
 // Repo cards are tap-to-select: clicking a card (outside its
 // GitHub link) sets the picker and refreshes the briefing. The
@@ -3231,18 +3229,38 @@ function refreshProject() {
   document.querySelectorAll("[data-forrepo]").forEach(el => {
     el.textContent = "— " + repo;
   });
-  if (typeof renderReviewPrSelect === "function") renderReviewPrSelect();
+  const planOut = document.getElementById("planOut");
+  const planErr = document.getElementById("planErr");
+  if (planOut && !planOut.querySelector(".spinner")) {
+    planOut.innerHTML = '<p style="color:var(--text-muted);margin:0.5em 0;">No plans yet</p>';
+  }
+  if (planErr) planErr.textContent = "";
+  if (typeof renderPlanPrSelects === "function") renderPlanPrSelects();
+  else if (typeof renderReviewPrSelect === "function") renderReviewPrSelect();
   if (typeof refreshWorkflowHealth === "function") refreshWorkflowHealth();
   if (typeof refreshIssues === "function") refreshIssues();
   if (typeof refreshJulesSessions === "function") refreshJulesSessions();
   if (typeof refreshJulesStatusCard === "function") refreshJulesStatusCard();
 }
 const _pickerEl = document.getElementById("briefingRepo");
-if (_pickerEl) _pickerEl.addEventListener("change", markSelectedRepo);
-if (_pickerEl) _pickerEl.addEventListener("change", () => {
-  if (typeof refreshProject === "function") refreshProject();
-});
+if (_pickerEl) {
+  _pickerEl.addEventListener("change", () => {
+    markSelectedRepo();
+    try { localStorage.setItem("s5.repo", _pickerEl.value); } catch (_) {}
+  });
+  _pickerEl.addEventListener("change", () => {
+    if (typeof refreshProject === "function") refreshProject();
+    if (typeof refreshBriefing === "function") refreshBriefing();
+  });
+}
+try {
+  const savedRepo = localStorage.getItem("s5.repo");
+  if (savedRepo && _pickerEl) {
+    _pickerEl.value = savedRepo;
+  }
+} catch (_) {}
 markSelectedRepo();
+refreshProject();
 
 // Tab bar badges and state tracking
 let lastLedgerViewTs = Date.now() / 1000;
@@ -3274,28 +3292,58 @@ function updateTabBadges() {
 
 // Tab bar: one visible panel at a time. The output drawer is
 // fixed-position, so it stays reachable from every tab.
-function selectTab(tabName) {
-  const t = document.querySelector(`#tabbar .tab[data-tab="${tabName}"]`);
-  if (!t) return;
+function activateTab(tabName) {
+  const tabBtn = document.querySelector(`#tabbar .tab[data-tab="${tabName}"]`);
+  if (!tabBtn) return;
   document.querySelectorAll("#tabbar .tab").forEach(x =>
-    x.classList.toggle("active", x === t));
+    x.classList.toggle("active", x === tabBtn));
   document.querySelectorAll(".tabpanel").forEach(p => {
     p.style.display = (p.id === "tab-" + tabName) ? "" : "none";
   });
-  try { localStorage.setItem("buttons_active_tab", tabName); } catch (e) {}
-  if (tabName === "project" && typeof refreshProject === "function") refreshProject();
+  if (tabName === "ledger") {
+    lastLedgerViewTs = Date.now() / 1000;
+    tabBadgeCounts.ledger = false;
+    updateTabBadges();
+  }
+  if (tabName === "project" &&
+      typeof refreshProject === "function") refreshProject();
+  try { localStorage.setItem("s5.tab", tabName); } catch (_) {}
 }
 
 document.querySelectorAll("#tabbar .tab").forEach(t => {
-  t.onclick = () => {
-    selectTab(t.dataset.tab);
-    if (t.dataset.tab === "ledger") {
-      lastLedgerViewTs = Date.now() / 1000;
-      tabBadgeCounts.ledger = false;
-      updateTabBadges();
-    }
-  };
+  t.onclick = () => activateTab(t.dataset.tab);
 });
+
+try {
+  const savedTab = localStorage.getItem("s5.tab");
+  if (savedTab) activateTab(savedTab);
+} catch (_) {}
+
+function saveSectionStates() {
+  const sections = {};
+  document.querySelectorAll("details[data-section]").forEach(d => {
+    const sec = d.getAttribute("data-section");
+    if (sec) sections[sec] = d.open;
+  });
+  try { localStorage.setItem("s5.sections", JSON.stringify(sections)); } catch (_) {}
+}
+
+document.querySelectorAll("details[data-section]").forEach(d => {
+  d.addEventListener("toggle", saveSectionStates);
+});
+
+try {
+  const savedSec = localStorage.getItem("s5.sections");
+  if (savedSec) {
+    const parsed = JSON.parse(savedSec);
+    document.querySelectorAll("details[data-section]").forEach(d => {
+      const sec = d.getAttribute("data-section");
+      if (sec && typeof parsed[sec] === "boolean") {
+        d.open = parsed[sec];
+      }
+    });
+  }
+} catch (_) {}
 
 // Slide-up output drawer (replaces the inline <pre> below the
 // buttons): opens on run start and on new output, so progress is
@@ -3305,19 +3353,6 @@ function openDrawer() { if (drawerEl) drawerEl.classList.add("open"); }
 function closeDrawer() { if (drawerEl) drawerEl.classList.remove("open"); }
 const drawerCloseBtn = document.getElementById("drawerClose");
 if (drawerCloseBtn) drawerCloseBtn.onclick = closeDrawer;
-
-const serverDetails = document.getElementById("groupServer");
-if (serverDetails) {
-  try {
-    const savedServerState = localStorage.getItem("buttons_server_collapse");
-    if (savedServerState !== null) {
-      serverDetails.open = (savedServerState === "true");
-    }
-    serverDetails.addEventListener("toggle", () => {
-      try { localStorage.setItem("buttons_server_collapse", String(serverDetails.open)); } catch (e) {}
-    });
-  } catch (e) {}
-}
 
 // Confirm modal (replaces window.confirm): non-blocking, carries
 // a title + body, danger styling for destructive actions.
@@ -3982,7 +4017,7 @@ function prActionButton(pr, action, label, confirmText, cls, danger) {
     try {
       const picker = document.getElementById("briefingRepo");
       const body = {pr_number: pr.number, action: action,
-        repo: picker ? picker.value : "tech-dancer"};
+        repo: picker ? picker.value : DEFAULT_REPO};
       const resp = await fetchJson("/buttons/api/pr-action", {method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)});
@@ -4333,21 +4368,7 @@ function renderBriefing(b) {
     card.appendChild(result);
     briefingEl.appendChild(card);
   });
-  if (b.failing_runs && b.failing_runs.length) {
-    const w = document.createElement("div");
-    const wHead = document.createElement("b"); wHead.textContent = "Failing runs"; w.appendChild(wHead);
-    b.failing_runs.forEach(run => {
-      const p = document.createElement("p");
-      const failed = (run.failed || []).map(f =>
-        shorten(f.job + (f.steps && f.steps.length ? " (" + f.steps.join(", ") + ")" : ""), 160)
-      ).join("; ");
-      p.textContent = shorten(
-        run.name + " on " + run.branch + " (" + run.event + ")" +
-        (failed ? " — failed: " + failed : ""), 600);
-      w.appendChild(p);
-    });
-    briefingEl.appendChild(w);
-  }
+
   const j = b.jules || {};
   const js = document.createElement("div");
   const jHead = document.createElement("b"); jHead.textContent = "Agent sessions (Jules)"; js.appendChild(jHead);
@@ -4363,7 +4384,7 @@ function renderBriefing(b) {
 }
 async function refreshBriefing() {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   briefingEl.innerHTML = '<span class="spinner"></span> Loading briefing…';
   const res = await fetchJson("/buttons/api/briefing?repo=" + encodeURIComponent(repo));
   if (!res.ok) {
@@ -4481,7 +4502,7 @@ function renderJobNew() {
       issueBox.textContent = "Loading issues…";
       d.appendChild(issueBox);
       const picker = document.getElementById("briefingRepo");
-      const repo = picker ? picker.value : "tech-dancer";
+      const repo = picker ? picker.value : DEFAULT_REPO;
       fetchJson("/buttons/api/issues?repo=" + encodeURIComponent(repo))
         .then(res => {
           issueBox.textContent = "";
@@ -4542,7 +4563,7 @@ function renderJobNew() {
     b.textContent = "Start job";
     b.onclick = async () => {
       const picker = document.getElementById("briefingRepo");
-      const body = {template: name, repo: picker ? picker.value : "tech-dancer"};
+      const body = {template: name, repo: picker ? picker.value : DEFAULT_REPO};
       if (t.needsPr) {
         const n = parseInt(prSelect.value, 10);
         if (!(n > 0)) { jobErr("Pick an open PR."); return; }
@@ -4860,10 +4881,6 @@ if (briefingRepoPicker) {
   } catch (e) {}
   briefingRepoPicker.onchange = refreshBriefing;
 }
-try {
-  const savedTab = localStorage.getItem("buttons_active_tab");
-  if (savedTab) selectTab(savedTab);
-} catch (e) {}
 refreshBriefing();
 
 // Pi background runs: streams output directly into the slide-up
@@ -5075,7 +5092,7 @@ function renderSuggestions(data, repo) {
 }
 if (suggestBtn) suggestBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   suggestErrEl.textContent = "";
   suggestionsEl.textContent = "";
   const pre = document.createElement("pre");
@@ -5158,7 +5175,7 @@ function renderAskResult(data, repo) {
 }
 if (askBtn) askBtn.onclick = async () => {
   const picker = document.getElementById("briefingRepo");
-  const repo = picker ? picker.value : "tech-dancer";
+  const repo = picker ? picker.value : DEFAULT_REPO;
   const instruction = askBox.value.trim();
   if (!instruction) { askErr.textContent = "Type an instruction first."; return; }
   askErr.textContent = "";
@@ -5565,20 +5582,43 @@ if (listPiSessionsBtn) listPiSessionsBtn.onclick = async () => {
 // Reads the repo from the picker at tap time, like the other tabs.
 function projectRepo() {
   const p = document.getElementById("briefingRepo");
-  return p ? p.value : "remote-server";
+  return p ? p.value : DEFAULT_REPO;
 }
 let currentPrDetails = null;
 
 function renderReviewPrSelect() {
   const sel = document.getElementById("reviewPrSelect");
+  const btn = document.getElementById("loadPrDetailsBtn");
+  const reasonEl = document.getElementById("reviewPrReason");
   if (!sel) return;
+  const prs = briefingPrs || [];
+  if (!prs.length) {
+    sel.innerHTML = '<option value="">No open PRs</option>';
+    if (btn) {
+      btn.disabled = true;
+      btn.title = "No open PRs";
+    }
+    if (reasonEl) {
+      reasonEl.textContent = "No open PRs";
+      reasonEl.style.display = "inline";
+    }
+    return;
+  }
   sel.innerHTML = '<option value="">— Pick open PR —</option>';
-  (briefingPrs || []).forEach(pr => {
+  prs.forEach(pr => {
     const o = document.createElement("option");
     o.value = pr.number;
     o.textContent = "#" + pr.number + " — " + String(pr.title || "").slice(0, 60);
     sel.appendChild(o);
   });
+  if (btn) {
+    btn.disabled = !sel.value;
+    btn.title = "";
+  }
+  if (reasonEl) {
+    reasonEl.textContent = "";
+    reasonEl.style.display = "none";
+  }
 }
 
 async function loadEnrichedPrDetails(prNum) {
@@ -5871,26 +5911,78 @@ async function dispatchJulesHandoff() {
 function renderPlanPrSelects() {
   renderReviewPrSelect();
   const single = document.getElementById("planPrSelect");
-  if (single) {
-    single.innerHTML = '<option value="">—</option>';
-    (briefingPrs || []).forEach(pr => {
-      const o = document.createElement("option");
-      o.value = pr.number;
-      o.textContent = "#" + pr.number + " — " +
-        String(pr.title || "").slice(0, 60);
-      single.appendChild(o);
-    });
-  }
+  const reviewBtn = document.getElementById("planReviewBtn");
+  const reviewReasonEl = document.getElementById("planReviewReason");
   const multi = document.getElementById("planAggPrs");
+  const aggBtn = document.getElementById("planAggBtn");
+  const aggReasonEl = document.getElementById("planAggReason");
+  const prs = briefingPrs || [];
+
+  if (single) {
+    if (!prs.length) {
+      single.innerHTML = '<option value="">No open PRs</option>';
+      if (reviewBtn) {
+        reviewBtn.disabled = true;
+        reviewBtn.title = "No open PRs";
+      }
+      if (reviewReasonEl) {
+        reviewReasonEl.textContent = "No open PRs";
+        reviewReasonEl.style.display = "inline";
+      }
+    } else {
+      single.innerHTML = '<option value="">—</option>';
+      prs.forEach(pr => {
+        const o = document.createElement("option");
+        o.value = pr.number;
+        o.textContent = "#" + pr.number + " — " +
+          String(pr.title || "").slice(0, 60);
+        single.appendChild(o);
+      });
+      if (reviewBtn) {
+        reviewBtn.disabled = !single.value;
+        reviewBtn.title = "";
+      }
+      if (reviewReasonEl) {
+        reviewReasonEl.textContent = "";
+        reviewReasonEl.style.display = "none";
+      }
+    }
+  }
+
   if (multi) {
     multi.innerHTML = "";
-    (briefingPrs || []).forEach(pr => {
+    if (!prs.length) {
       const o = document.createElement("option");
-      o.value = pr.number;
-      o.textContent = "#" + pr.number + " — " +
-        String(pr.title || "").slice(0, 40);
+      o.value = "";
+      o.disabled = true;
+      o.textContent = "No open PRs";
       multi.appendChild(o);
-    });
+      if (aggBtn) {
+        aggBtn.disabled = true;
+        aggBtn.title = "No open PRs";
+      }
+      if (aggReasonEl) {
+        aggReasonEl.textContent = "No open PRs";
+        aggReasonEl.style.display = "inline";
+      }
+    } else {
+      prs.forEach(pr => {
+        const o = document.createElement("option");
+        o.value = pr.number;
+        o.textContent = "#" + pr.number + " — " +
+          String(pr.title || "").slice(0, 40);
+        multi.appendChild(o);
+      });
+      if (aggBtn) {
+        const selected = Array.from(multi.selectedOptions).map(o => o.value).filter(Boolean);
+        aggBtn.disabled = !selected.length;
+        aggBtn.title = "";
+      }
+      if (aggReasonEl) {
+        aggReasonEl.textContent = "";
+        aggReasonEl.style.display = "none";
+      }
+    }
   }
 }
 async function refreshIssues() {
@@ -6079,7 +6171,7 @@ async function createProjectIssue() {
 async function refreshJulesStatusCard() {
   const el = document.getElementById("julesCardBody");
   if (!el) return;
-  const repo = (typeof projectRepo === "function") ? projectRepo() : "tech-dancer";
+  const repo = (typeof projectRepo === "function") ? projectRepo() : DEFAULT_REPO;
   const res = await fetchJson("/buttons/api/jules-sessions?repo=" + encodeURIComponent(repo));
   const data = res.data || {};
   if (!res.ok) {
@@ -6208,6 +6300,14 @@ async function refreshJulesSessions() {
   });
 }
 function renderIssueAuditOutput(data, container, repo) {
+  renderStructuredAuditOutput(data, container, repo, "issues");
+}
+
+function renderWorkflowAuditOutput(data, container, repo) {
+  renderStructuredAuditOutput(data, container, repo, "workflows");
+}
+
+function renderStructuredAuditOutput(data, container, repo, auditType) {
   let parsed = null;
   const rawText = data.output || "";
   try {
@@ -6220,47 +6320,52 @@ function renderIssueAuditOutput(data, container, repo) {
     }
   }
 
-  const items = (parsed && (parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
+  const items = (parsed && (parsed.workflows || parsed.runs || parsed.issues || parsed.audit || parsed.items || parsed.plans)) || (Array.isArray(parsed) ? parsed : null);
   const totalCount = parsed ? (parsed.count !== undefined ? parsed.count : (parsed.total !== undefined ? parsed.total : (items ? items.length : 0))) : 0;
+  const label = auditType === "workflows" ? "Audited workflows" : "Audited issues";
 
   const countDiv = document.createElement("div");
   countDiv.className = "audit-counts";
-  countDiv.textContent = `Audited issues: ${totalCount}`;
+  countDiv.textContent = `${label}: ${totalCount}`;
   container.appendChild(countDiv);
 
   if (items && items.length > 0) {
     const table = document.createElement("table");
     table.className = "audit-table";
-    table.innerHTML = "<thead><tr><th># / ID</th><th>Title / Finding</th><th>Path / Plan</th></tr></thead><tbody></tbody>";
+    const head1 = auditType === "workflows" ? "Workflow / Run" : "# / ID";
+    const head2 = auditType === "workflows" ? "Status / Event" : "Title / Finding";
+    const head3 = auditType === "workflows" ? "Path / Plan" : "Path / Plan";
+    table.innerHTML = `<thead><tr><th>${head1}</th><th>${head2}</th><th>${head3}</th></tr></thead><tbody></tbody>`;
     const tbody = table.querySelector("tbody");
     items.forEach(it => {
       const tr = document.createElement("tr");
       const num = it.number || it.id || it.issue || "";
-      const title = it.title || it.name || it.summary || "";
+      const name = it.name || it.title || it.workflow || (num ? `#${num}` : "");
       let rawPath = it.plan_path || it.path || it.file || "";
       let relPath = relativizePath(rawPath, repo);
-      const url = it.url || it.html_url || (num && repo ? `https://github.com/${repo}/issues/${num}` : "");
+      const url = it.url || it.html_url || ((num && repo && auditType !== "workflows") ? `https://github.com/${repo}/issues/${num}` : "");
 
-      const tdNum = document.createElement("td");
+      const tdCol1 = document.createElement("td");
       if (url) {
-        tdNum.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">#${escHtml(String(num))}</a>`;
+        tdCol1.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">${escHtml(String(name || num))}</a>`;
       } else {
-        tdNum.textContent = num ? `#${num}` : "—";
+        tdCol1.textContent = name || (num ? `#${num}` : "—");
       }
 
-      const tdTitle = document.createElement("td");
-      tdTitle.textContent = title || "(no title)";
+      const tdCol2 = document.createElement("td");
+      const subInfo = it.conclusion || it.status || it.event || it.summary || it.diagnosed_cause || (auditType === "workflows" ? "—" : "(no title)");
+      tdCol2.textContent = subInfo;
 
-      const tdPath = document.createElement("td");
+      const tdCol3 = document.createElement("td");
       if (relPath) {
-        tdPath.innerHTML = `<code>${escHtml(relPath)}</code>`;
+        tdCol3.innerHTML = `<code>${escHtml(relPath)}</code>`;
       } else {
-        tdPath.textContent = "—";
+        tdCol3.textContent = "—";
       }
 
-      tr.appendChild(tdNum);
-      tr.appendChild(tdTitle);
-      tr.appendChild(tdPath);
+      tr.appendChild(tdCol1);
+      tr.appendChild(tdCol2);
+      tr.appendChild(tdCol3);
       tbody.appendChild(tr);
     });
     container.appendChild(table);
@@ -6286,15 +6391,22 @@ async function runPlan(plan, extra) {
   out.innerHTML = '<span class="spinner"></span> Generating plan…';
   err.textContent = "";
   const repo = projectRepo();
-  const res = await fetchJson("/buttons/api/run-plan", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({repo: repo, plan: plan},
-                                      extra || {}))});
-  const data = res.data || {};
-  if (!res.ok) {
+  let res;
+  try {
+    res = await fetchJson("/buttons/api/run-plan", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(Object.assign({repo: repo, plan: plan},
+                                        extra || {}))});
+  } catch (e) {
     out.innerHTML = "";
-    setErrorEl(err, data.error || res.status, "plan failed");
+    setErrorEl(err, e, "plan failed");
+    return;
+  }
+  const data = (res && res.data) || {};
+  if (!res || !res.ok) {
+    out.innerHTML = "";
+    setErrorEl(err, data.error || (res ? res.status : "network error"), "plan failed");
     return;
   }
   out.innerHTML = "";
@@ -6338,6 +6450,8 @@ async function runPlan(plan, extra) {
 
   if (plan === "issue-audit") {
     renderIssueAuditOutput(data, out, repo);
+  } else if (plan === "workflow-audit") {
+    renderWorkflowAuditOutput(data, out, repo);
   } else {
     const pre = document.createElement("pre");
     pre.id = "planRawOutput";
@@ -6460,7 +6574,7 @@ function pollPlanJob(jid, container) {
   const pab = document.getElementById("planAggBtn");
   if (pab) pab.onclick = () => {
     const sel = document.getElementById("planAggPrs");
-    const prs = Array.from(sel.selectedOptions).map(o => o.value);
+    const prs = Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean);
     const target =
       (document.getElementById("planAggTarget").value || "").trim() ||
       "main";
@@ -6471,6 +6585,29 @@ function pollPlanJob(jid, container) {
     }
     runPlan("aggregation", {prs: prs, target: target});
   };
+
+  const revSel = document.getElementById("reviewPrSelect");
+  if (revSel) {
+    revSel.onchange = () => {
+      const btn = document.getElementById("loadPrDetailsBtn");
+      if (btn) btn.disabled = !revSel.value;
+    };
+  }
+  const planSel = document.getElementById("planPrSelect");
+  if (planSel) {
+    planSel.onchange = () => {
+      const btn = document.getElementById("planReviewBtn");
+      if (btn) btn.disabled = !planSel.value;
+    };
+  }
+  const aggSel = document.getElementById("planAggPrs");
+  if (aggSel) {
+    aggSel.onchange = () => {
+      const btn = document.getElementById("planAggBtn");
+      const selected = Array.from(aggSel.selectedOptions).map(o => o.value).filter(Boolean);
+      if (btn) btn.disabled = !selected.length;
+    };
+  }
 })();
 
 // Live updates: re-fetch status every 10s (skipped while the tab
@@ -6499,24 +6636,7 @@ async function refreshStatus() {
     const pend = document.getElementById("livePending");
     const w = s.webhooks || {};
     const pending = s.webhooks_pending || [];
-    // Per-repo pull state lives on the repo cards, so the page
-    // always shows which repo each result belongs to.
-    document.querySelectorAll("[data-repo-status]").forEach(card => {
-      const repo = card.getAttribute("data-repo-status");
-      if (pending.includes(repo)) {
-        card.textContent = "Auto-pull: pulling…";
-        card.style.display = "block";
-      } else if (w[repo]) {
-        const st = w[repo];
-        card.textContent = "Auto-pull: " +
-          (st.ok ? "pulled ✓ " : "pull failed ✗ ") +
-          new Date(st.at * 1000).toLocaleString();
-        card.style.display = "block";
-      } else {
-        card.textContent = "";
-        card.style.display = "none";
-      }
-    });
+
     // Stale page: a remote-server pull landed after this container
     // started, so the served page predates the checkout. Show the
     // banner and highlight the rebuild button — the pull alone
@@ -6884,7 +7004,7 @@ function initInteractiveChat(prefix) {
     if (errEl) errEl.textContent = "";
 
     const picker = document.getElementById("briefingRepo");
-    const repo = picker ? picker.value : "tech-dancer";
+    const repo = picker ? picker.value : DEFAULT_REPO;
     const sessionId = "chat-" + Math.random().toString(36).substring(2, 10);
     activeSessionId = sessionId;
 

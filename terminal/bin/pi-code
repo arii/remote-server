@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Task-scoped Pi profile: code
+# Disables MCP schemas to eliminate CPU prefill latency for fast interactive coding.
+set -euo pipefail
+
+exec pi --no-mcp --tools read,edit,write,bash "$@"

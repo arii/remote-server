@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Task-scoped Pi profile: pr-review
+# Scoped tools for reviewing PR diffs and posting triage summaries.
+set -euo pipefail
+
+exec pi --tools read,bash,mcp__boomtick__github_get_pr_diff,mcp__boomtick__github_comment_triage_summary "$@"
