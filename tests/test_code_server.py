@@ -74,6 +74,50 @@ class TestCodeServer(unittest.TestCase):
         self.assertNotIn("<!--CODE_PORT-->", content)
         self.assertNotIn("CODE_PORT", content)
 
+    def test_caddyfile_code_trailing_slash_redirect(self):
+        with open("caddy/Caddyfile") as f:
+            caddyfile = f.read()
+        # Exact /code (no trailing slash) must redirect to /code/ BEFORE the
+        # strip_prefix block: code-server answers / with a relative redirect
+        # (./?folder=...), which a browser sitting on /code would resolve to
+        # / (the terminal) instead of staying under /code/.
+        idx_exact = caddyfile.index("handle /code {")
+        idx_code = caddyfile.index("handle /code*")
+        self.assertLess(idx_exact, idx_code)
+        self.assertIn("redir * /code/", caddyfile[idx_exact:idx_code])
+
+    def test_code_server_extensions_declared_and_boot_installed(self):
+        with open("config/code-server/entrypoint.d/extensions.txt") as f:
+            ids = [ln.split()[0] for ln in f
+                   if ln.strip() and not ln.strip().startswith("#")]
+        for expected in ("continue.continue",
+                         "github.vscode-pull-request-github",
+                         "github.vscode-github-actions",
+                         "dbaeumer.vscode-eslint",
+                         "esbenp.prettier-vscode",
+                         "ms-python.python"):
+            self.assertIn(expected, ids)
+
+        hook = "config/code-server/entrypoint.d/install-extensions.sh"
+        self.assertTrue(os.access(hook, os.X_OK))
+        with open(hook) as f:
+            hook_src = f.read()
+        self.assertIn("extensions.txt", hook_src)
+        self.assertIn("--install-extension", hook_src)
+
+        res = subprocess.run(
+            ["docker", "compose", "--env-file", ".env.example", "config", "--format", "json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        code_server = json.loads(res.stdout)["services"]["code-server"]
+        self.assertEqual(code_server["environment"]["ENTRYPOINTD"], "/seed/entrypoint.d")
+        mounts = [str(v) for v in code_server.get("volumes", [])]
+        self.assertTrue(any("entrypoint.d" in v and "/seed/entrypoint.d" in v
+                            for v in mounts))
+
 
 if __name__ == "__main__":
     unittest.main()

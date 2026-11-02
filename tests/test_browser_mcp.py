@@ -29,6 +29,9 @@ class TestBrowserMcp(unittest.TestCase):
         launcher = os.path.join(self.tmpdir, ".gemini/antigravity-cli/bin/start_browsermcp.sh")
         self.assertTrue(os.path.isfile(launcher))
         self.assertTrue(os.access(launcher, os.X_OK))
+        with open(launcher, "r", encoding="utf-8") as f:
+            launcher_src = f.read()
+        self.assertIn("BROWSER_MCP_HOME", launcher_src)
 
         browser_json = os.path.join(self.tmpdir, ".gemini/antigravity-cli/mcp/browser-mcp/browser.json")
         self.assertTrue(os.path.isfile(browser_json))
@@ -78,6 +81,31 @@ class TestBrowserMcp(unittest.TestCase):
         res = subprocess.run(["bash", dep_script], env=self.env, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"allow-boomtick-mcp.sh failed: {res.stderr}")
         self.assertIn("deprecated", res.stderr)
+
+    def test_setup_browsermcp_tunnel_script(self):
+        setup_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/setup-browsermcp-tunnel.sh"))
+        env = self.env.copy()
+        env["OFFLINE"] = "1"
+        res = subprocess.run(["bash", setup_script], env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"setup-browsermcp-tunnel.sh failed: {res.stderr}")
+
+        wrapper = os.path.join(self.tmpdir, ".local/bin/browsermcp-tunnel.sh")
+        self.assertTrue(os.path.isfile(wrapper))
+        self.assertTrue(os.access(wrapper, os.X_OK))
+        with open(wrapper, "r", encoding="utf-8") as f:
+            wrapper_src = f.read()
+        # Quoted heredocs must pass everything through literally (no setup-time expansion).
+        self.assertIn('S5="${S5_SSH_TARGET:-ari@100.85.113.67}"', wrapper_src)
+        self.assertIn("docker inspect remote-terminal-1", wrapper_src)
+        self.assertIn("-L 9010:", wrapper_src)
+        self.assertIn("BatchMode=yes", wrapper_src)
+
+        unit = os.path.join(self.tmpdir, ".config/systemd/user/browsermcp-tunnel.service")
+        self.assertTrue(os.path.isfile(unit))
+        with open(unit, "r", encoding="utf-8") as f:
+            unit_src = f.read()
+        self.assertIn("ExecStart=%h/.local/bin/browsermcp-tunnel.sh", unit_src)
+        self.assertIn("Restart=always", unit_src)
 
 
 if __name__ == "__main__":

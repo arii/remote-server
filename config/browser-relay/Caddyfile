@@ -1,0 +1,10 @@
+# Forwards the laptop (via ssh -L to the S5 host, then terminal:19010 over
+# the compose network) to the BrowserMCP daemon's loopback-only relay.
+# :19010, not :9010: the daemon already holds 127.0.0.1:9010 in terminal's
+# network namespace, which this service shares. Host is pinned to loopback
+# for the daemon's DNS-rebinding check.
+:19010 {
+	reverse_proxy 127.0.0.1:9010 {
+		header_up Host 127.0.0.1:9010
+	}
+}

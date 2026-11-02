@@ -1,0 +1,17 @@
+# Declarative code-server extension set.
+# Installed (only if missing) on every container start by the sibling
+# install-extensions.sh via $ENTRYPOINTD. One extension ID per line;
+# '#' starts a comment. TypeScript support is built into code-server
+# itself, so it needs no entry here.
+# After editing: docker compose up -d --no-deps code-server
+
+# In-IDE assistant, pre-pointed at local Ollama (qwen3:8b) via config/continue
+continue.continue
+# GitHub: review PRs and watch Actions without leaving the editor
+github.vscode-pull-request-github
+github.vscode-github-actions
+# JS/TS: lint and format
+dbaeumer.vscode-eslint
+esbenp.prettier-vscode
+# Python (buttons/ service)
+ms-python.python

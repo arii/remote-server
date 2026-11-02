@@ -119,7 +119,9 @@ server entry with its own `GITHUB_REPO` / `BOOMTICK_REPO_PATH`.
   repo scope) → `GITHUB_TOKEN` / `GH_TOKEN` inside the container. The
   server requires `gh` authenticated in `PATH` — `gh` is installed in
   the terminal image and reads the same token. Without the token, only
-  public read-only ops work.
+  public read-only ops work. Processes that don't inherit container env
+  (harness MCP servers) read `~/.config/gh/hosts.yml` instead — seed it
+  with `pnpm run setup:gh-auth` (persisted via the `gh-data` volume).
 - **Write guards:** mutating operations (commits, branch creation, PR
   opening) require explicit `writeMode: true` / `pushMode: true` flags —
   Pi won't mutate a repo unless you tell it to pass those.
