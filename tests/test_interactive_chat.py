@@ -25,15 +25,7 @@ class TestInteractiveChat(unittest.TestCase):
         self.assertIn('id="actionsPhaseBadge"', server.HTML)
         self.assertIn('id="actionsChatStream"', server.HTML)
 
-        # Briefing tab chat card
-        self.assertIn('id="briefingChatCard"', server.HTML)
-        self.assertIn('id="briefingChatInput"', server.HTML)
-        self.assertIn('id="briefingChatSendBtn"', server.HTML)
-        self.assertIn('id="briefingChatAbortBtn"', server.HTML)
-        self.assertIn('id="briefingPhaseBadge"', server.HTML)
-        self.assertIn('id="briefingChatStream"', server.HTML)
-
-        # Pi tab chat card
+# Pi tab chat card
         self.assertIn('id="piChatCard"', server.HTML)
         self.assertIn('id="piChatInput"', server.HTML)
         self.assertIn('id="piChatSendBtn"', server.HTML)

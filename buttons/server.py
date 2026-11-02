@@ -2702,23 +2702,7 @@ below are still visible, but they need JavaScript to start a run.</div>
 <div class="actions-footer"><button id="actionsBugBtn" title="File a bug or issue on GitHub">Report bug</button></div>
 </section>
 <section class="tabpanel" id="tab-briefing" style="display:none">
-<div class="chat-card" id="briefingChatCard">
-  <div class="chat-head">
-    <div class="chat-title">💬 Ask Pi / Quick Agent Prompt <span class="forrepo" data-forrepo></span></div>
-    <span id="briefingPhaseBadge" class="phase-badge">Ready</span>
-  </div>
-  <div class="bsub" style="margin-bottom:0.5em;">Ask ad-hoc questions or task requests. Streams tokens live with phase status.</div>
-  <div class="chat-input-wrap">
-    <textarea id="briefingChatInput" class="chat-textarea" rows="2" placeholder="Ask about this repo, CI status, recent commits, or task requests…"></textarea>
-    <div class="chat-ctrls">
-      <button id="briefingChatSendBtn" class="btn-primary">Send Prompt</button>
-      <button id="briefingChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
-      <button id="briefingChatClearBtn" class="btn-ghost">Clear</button>
-    </div>
-  </div>
-  <div id="briefingChatStream" class="chat-stream-box"></div>
-  <div id="briefingChatErr" class="repair-err" style="margin-top:0.4em;"></div>
-</div>
+
 <h2>Briefing</h2>
 <details><summary>How this works</summary>
 <p>Live briefing — open PRs, CI, conflicts, reviews, Jules
@@ -2730,23 +2714,7 @@ their action buttons, and the repo buttons.</p>
 <div id="briefingErr"></div>
 </section>
 <section class="tabpanel" id="tab-pi" style="display:none">
-<div class="chat-card" id="piChatCard">
-  <div class="chat-head">
-    <div class="chat-title">🤖 Interactive Agent Chat & Streaming <span class="forrepo" data-forrepo></span></div>
-    <span id="piPhaseBadge" class="phase-badge">Ready</span>
-  </div>
-  <div class="bsub" style="margin-bottom:0.5em;">Interactive chat prompt with local LLM & Pi agent. Tap-to-copy code blocks, real-time token streaming, and cancellation.</div>
-  <div class="chat-input-wrap">
-    <textarea id="piChatInput" class="chat-textarea" rows="3" placeholder="Ask ad-hoc questions or task requests (e.g. 'Summarize failing CI runs in main' or 'Where are webhook handlers defined?')..."></textarea>
-    <div class="chat-ctrls">
-      <button id="piChatSendBtn" class="btn-primary">Send Prompt</button>
-      <button id="piChatAbortBtn" class="btn-danger" style="display:none;">Abort</button>
-      <button id="piChatClearBtn" class="btn-ghost">Clear</button>
-    </div>
-  </div>
-  <div id="piChatStream" class="chat-stream-box"></div>
-  <div id="piChatErr" class="repair-err" style="margin-top:0.4em;"></div>
-</div>
+
 <h2>Suggested next actions</h2>
 <details><summary>How this works</summary>
 <p>Pi reads the briefing context and suggests td commands, then
@@ -5996,6 +5964,56 @@ function initInteractiveChat(prefix) {
   let activeTextNode = null;
 
   function renderFullMarkdown(container, text) {
+    container.innerHTML = "";
+    activeTextNode = null;
+    if (!text) return;
+
+    // Check if the text contains a JSON block with actions
+    const jsonMatch = text.match(/```(?:json)?\n([\s\S]*?)\n```/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[1]);
+        if (parsed.actions && Array.isArray(parsed.actions)) {
+          // Render text part
+          if (parsed.text) {
+             const t = document.createElement("div");
+             t.textContent = parsed.text;
+             container.appendChild(t);
+          }
+
+          // Render inline buttons
+          const actionsWrap = document.createElement("div");
+          actionsWrap.style.marginTop = "1em";
+          actionsWrap.style.display = "flex";
+          actionsWrap.style.gap = "0.5em";
+          actionsWrap.style.flexWrap = "wrap";
+
+          parsed.actions.forEach(actionName => {
+             const btn = document.createElement("button");
+             btn.type = "button";
+             btn.className = "btn-primary";
+             btn.textContent = "⚡ " + actionName;
+             btn.onclick = () => {
+                 fetchJson("/buttons/api/run", {
+                     method: "POST",
+                     body: JSON.stringify({ action: actionName, repo: STATE.selectedRepo })
+                 }).then(res => {
+                     if (res.id) {
+                         alert("Action triggered: " + res.id);
+                     } else {
+                         alert("Error: " + (res.error || "Unknown error"));
+                     }
+                 });
+             };
+             actionsWrap.appendChild(btn);
+          });
+          container.appendChild(actionsWrap);
+          return;
+        }
+      } catch (e) {
+          // Fall back to normal rendering if JSON is invalid
+      }
+    }
     container.innerHTML = "";
     activeTextNode = null;
     if (!text) return;
