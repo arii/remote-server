@@ -753,32 +753,6 @@ def _suggest_context(brief):
     return context_filter.enforce_context_budget(raw_context, max_tokens=3000)
 
 
-def _suggest_prompt(repo, context):
-    return (
-        f"Suggest the next actions for repo {repo}, as td commands.\n"
-        "Use ONLY the context below (plus files you can read in "
-        "this repo's checkout). Do not run any tools. Do not use "
-        "boomtick MCP tools for this task — they are scoped to a "
-        "different repo.\n"
-        "Code discipline: Workaround chains (e.g. `cmd || variant-cmd`, "
-        "fallback ladders papering over errors, or retrying with tweaked flags) "
-        "are review-blocking findings, not nits. Never suggest workaround chains; "
-        "always address root causes with ONE canonical command path.\n"
-        "Output ONLY lines in exactly this form, one per action:\n"
-        "SUGGEST: <td command> :: <one-line reason>\n"
-        "Allowed td commands (exact shapes, PR numbers only from "
-        f"the context):\n{ALLOWED_TD_COMMANDS_TEXT}\n"
-        "If the context shows a problem (failing CI, conflicts, "
-        "stale PRs) but no allowed command fits it directly, read "
-        "the repo checkout (git log, .github/workflows) to pin "
-        "down the cause, then suggest the closest diagnostic "
-        "command — do not conclude 'none' while problems remain "
-        "visible.\n"
-        "If genuinely nothing needs doing, output exactly one "
-        "line: SUGGEST: none :: <reason>\n"
-        "Context:\n" + context)
-
-
 def _parse_suggestions(raw):
     """Validated suggestions from Pi's stdout. ANSI escapes are
     stripped first (print mode may color). Tolerates small-model
