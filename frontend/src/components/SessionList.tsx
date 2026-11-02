@@ -17,7 +17,7 @@ export default function SessionList({ sessions, selected, onSelect }: Props) {
   return (
     <ul data-testid="session-list" className="session-list">
       {sessions.map((s) => (
-        <li key={s.file}>
+        <li key={sessionKey(s)}>
           <button
             type="button"
             data-testid={`session-row-${s.file}`}
