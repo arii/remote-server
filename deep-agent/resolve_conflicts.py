@@ -19,6 +19,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 
+import cli
 import ledger
 
 MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
@@ -70,11 +71,8 @@ def git_diff_check() -> str:
 def main() -> int:
     global WORKTREE, BASE
     if len(sys.argv) < 2:
-        print(
-            "usage: resolve_conflicts.py <worktree-path> [base-ref]",
-            file=sys.stderr,
-        )
-        return 2
+        return cli.usage_error(
+            "usage: resolve_conflicts.py <worktree-path> [base-ref]")
     WORKTREE = sys.argv[1]
     BASE = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_BASE
     started = time.time()

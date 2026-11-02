@@ -38,14 +38,15 @@ propose_action, and it only formats a proposal; execution stays
 server-side behind the existing validated endpoints.
 """
 
-import base64
 import json
 import os
 import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli
+
+cli.bootstrap()
 
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
@@ -387,7 +388,7 @@ def _emit_interrupt(thread_id, interrupts):
 
 def _cmd_validate(raw):
     try:
-        payload = json.loads(base64.b64decode(raw).decode())
+        payload = json.loads(cli.b64decode(raw))
     except Exception:
         print(json.dumps({"ok": False, "text": "REJECTED: bad input"}))
         return 2
@@ -397,25 +398,22 @@ def _cmd_validate(raw):
 
 
 def _cmd_turn(repo, thread_id, raw_prompt):
-    try:
-        prompt = base64.b64decode(raw_prompt).decode()
-    except Exception:
-        print("bad base64 prompt", file=sys.stderr)
-        return 2
+    prompt = cli.b64decode(raw_prompt)
+    if prompt is None:
+        return cli.usage_error("bad base64 prompt")
     if not prompt.strip() or len(prompt) > MAX_PROMPT:
-        print("bad prompt", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad prompt")
     started = time.time()
     try:
         model, spec = build_model()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, no model is available right now: {_short_err(exc)}")
     except ImportError as exc:
         # Stdout, like every other Sorry line: exit 1 promises the
         # reply on stdout so the SSE chunk reader shows it on the phone.
-        print(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, the chat backend is not installed: {_short_err(exc)}")
     print(f"deep_chat via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
     from langchain_core.messages import HumanMessage  # noqa: E402
@@ -433,7 +431,6 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             agent, {"messages": messages}, config)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
-        print(reply, flush=True)
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -442,7 +439,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             extra={"repo": repo, "mode": "turn", "trace": recorder.path,
                    "error": str(exc)[:200]},
         )
-        return 1
+        return cli.sorry(reply)
     from langchain_core.messages import AIMessage  # noqa: E402
 
     recorder.run_end(True)
@@ -464,31 +461,27 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     try:
         decision = decision_for_verdict(verdict)
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        return cli.usage_error(str(exc))
     message = ""
     if raw_message is not None:
-        try:
-            message = base64.b64decode(raw_message).decode()
-        except Exception:
-            print("bad base64 message", file=sys.stderr)
-            return 2
+        message = cli.b64decode(raw_message)
+        if message is None:
+            return cli.usage_error("bad base64 message")
         try:
             decision = decision_for_verdict(verdict, message)
         except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
+            return cli.usage_error(str(exc))
     started = time.time()
     try:
         model, spec = build_model()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, no model is available right now: {_short_err(exc)}")
     except ImportError as exc:
         # Stdout, like every other Sorry line: exit 1 promises the
         # reply on stdout so the SSE chunk reader shows it on the phone.
-        print(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, the chat backend is not installed: {_short_err(exc)}")
     print(f"deep_chat resume via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
     from langgraph.types import Command  # noqa: E402
@@ -517,7 +510,6 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
             config)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
-        print(reply, flush=True)
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -526,7 +518,7 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
             extra={"repo": repo, "mode": "resume", "verdict": verdict,
                    "trace": recorder.path, "error": str(exc)[:200]},
         )
-        return 1
+        return cli.sorry(reply)
     recorder.run_end(True)
     recorder.close()
     print(f"trace: {recorder.path}", file=sys.stderr)
@@ -547,26 +539,21 @@ def main(argv=None) -> int:
     if len(argv) == 3 and argv[1] == "--validate-proposal":
         return _cmd_validate(argv[2])
     if len(argv) < 4 or not s5tools.valid_repo(argv[1]):
-        print("usage: deep_chat.py owner/repo <thread-id> <b64-prompt>",
-              file=sys.stderr)
-        print("   or: deep_chat.py owner/repo <thread-id> --resume "
-              "approve|reject [b64-message]", file=sys.stderr)
-        print("   or: deep_chat.py --validate-proposal <b64-json>",
-              file=sys.stderr)
-        return 2
+        return cli.usage_error(
+            "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>",
+            "   or: deep_chat.py owner/repo <thread-id> --resume "
+            "approve|reject [b64-message]",
+            "   or: deep_chat.py --validate-proposal <b64-json>")
     if not valid_thread_id(argv[2]):
-        print("bad thread-id", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad thread-id")
     repo, thread_id = argv[1], argv[2]
     try:
         s5tools.checkout_for(repo)
     except ValueError:
-        print(f"bad repo: {repo!r}", file=sys.stderr)
-        return 2
+        return cli.usage_error(f"bad repo: {repo!r}")
     if argv[3] == "--resume":
         if len(argv) < 5:
-            print("resume needs a verdict", file=sys.stderr)
-            return 2
+            return cli.usage_error("resume needs a verdict")
         return _cmd_resume(repo, thread_id, argv[4],
                            argv[5] if len(argv) > 5 else None)
     return _cmd_turn(repo, thread_id, argv[3])

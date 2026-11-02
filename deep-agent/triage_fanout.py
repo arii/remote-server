@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent
 
+import cli
 import ledger
 import triage_common
 
@@ -41,8 +42,7 @@ def main() -> int:
     repos = sys.argv[1:] or DEFAULT_REPOS
     bad = [r for r in repos if not triage_common.valid_repo(r)]
     if bad:
-        print(f"bad repo(s): {bad}", file=sys.stderr)
-        return 2
+        return cli.usage_error(f"bad repo(s): {bad}")
     model = ChatOpenAI(
         model=MODEL_ID,
         base_url="https://api.studio.nebius.com/v1",

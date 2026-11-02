@@ -10,6 +10,8 @@ import os
 import sys
 import time
 
+import cli
+
 LEDGER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.jsonl")
 
 
@@ -122,8 +124,7 @@ def main() -> int:
     try:
         n = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     except ValueError:
-        print("n must be an integer", file=sys.stderr)
-        return 2
+        return cli.usage_error("n must be an integer")
     if not os.path.exists(LEDGER):
         print("ledger empty")
         return 0

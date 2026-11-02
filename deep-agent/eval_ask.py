@@ -23,8 +23,10 @@ import re
 import sys
 import time
 
+import cli
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+cli.bootstrap()
 
 import eval_lib  # noqa: E402
 
@@ -238,8 +240,7 @@ def main(argv=None) -> int:
     if "--json" in args:
         i = args.index("--json")
         if i + 1 >= len(args):
-            print("error: --json needs a path", file=sys.stderr)
-            return 2
+            return cli.usage_error("error: --json needs a path")
         json_path = args.pop(i + 1)
         args.pop(i)
     repo = args[0] if args else "arii/remote-server"

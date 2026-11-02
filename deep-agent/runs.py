@@ -20,6 +20,8 @@ import os
 import re
 import sys
 
+import cli
+
 LEDGER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "ledger.jsonl")
 TRACES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -271,8 +273,7 @@ def main(argv=None) -> int:
     if path is None:
         # Stdout, like every Sorry line: exit 1 promises the reply
         # on stdout so chunk readers show it on the phone.
-        print(f"Sorry, no run found for {ref!r}.")
-        return 1
+        return cli.sorry(f"Sorry, no run found for {ref!r}.")
     print(path)
     return 0
 
