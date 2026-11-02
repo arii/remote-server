@@ -6848,7 +6848,7 @@ function initInteractiveChat(prefix) {
              const btn = document.createElement("button");
              btn.type = "button";
              btn.className = "btn-primary";
-             btn.textContent = "⚡ " + actionLabel;
+             btn.textContent = actionLabel;
              btn.onclick = async () => {
                  const picker = document.getElementById("briefingRepo");
                  const repo = picker ? picker.value : DEFAULT_REPO;
