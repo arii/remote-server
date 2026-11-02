@@ -1,0 +1,37 @@
+{
+  "updated_at": 1796073600,
+  "items": [
+    {
+      "id": "att-1",
+      "kind": "ci_failure",
+      "title": "CI failing on main",
+      "detail": "3 jobs failing in the nightly run.",
+      "repo": "remote-server",
+      "severity": "crit",
+      "action": {
+        "label": "Open failing runs",
+        "method": "GET",
+        "href": "/api/jobs",
+        "destructive": false,
+        "intent": "open-failing-runs"
+      },
+      "created_at": 1796070000
+    },
+    {
+      "id": "att-2",
+      "kind": "stale_job",
+      "title": "Clear finished jobs",
+      "detail": "12 finished jobs are cluttering the queue.",
+      "repo": "remote-server",
+      "severity": "warn",
+      "action": {
+        "label": "Clear finished",
+        "method": "POST",
+        "href": "/api/jobs/clear",
+        "destructive": true,
+        "intent": "clear-finished-jobs"
+      },
+      "created_at": 1796066400
+    }
+  ]
+}
