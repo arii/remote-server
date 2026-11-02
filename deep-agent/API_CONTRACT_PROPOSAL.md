@@ -176,7 +176,25 @@ On the following `done`, render the final markdown as today.
 3. Should `approval` cards reuse the jobs Approve/Decline styling,
    or stay chat-local?
 
-## 9. Deliberately out of scope
+## 9. Trace events (deep-agent lane owns the shapes)
+
+Every run writes `deep-agent/traces/<script>_<thread>_<ts>.jsonl`
+(`observe.py`, via documented middleware hooks; never raises). The
+backend streams each line live as an SSE `trace` event and serves the
+file with run detail. Shapes:
+
+- `run_start {script, thread, model}`
+- `model_request {n_messages}`
+- `model_response {usage: {input_tokens, output_tokens, total_tokens}}`
+- `tool_call {name, args_preview, duration_s, ok,
+  result_preview|error}` (previews capped at 2000 chars)
+- `run_end {duration_s, ok}`
+
+Every event carries `ts` (epoch seconds). The ledger row's
+`extra.trace` points at the file. This is what makes tool calls and
+decisions visible; sync on presentation later.
+
+## 10. Deliberately out of scope
 
 - No `backend/**`, `frontend/**`, `buttons/server.py`, or
   `docker-compose.yml` changes in this slice.
