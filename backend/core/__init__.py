@@ -163,6 +163,103 @@ def require_confirm(body, intent: str) -> None:
         raise HTTPException(status_code=400, detail="confirmation required")
 
 
+def _parse_gh_remote(url: str | None) -> str | None:
+    """owner/repo from a git remote URL, or None (port of buttons/server.py)."""
+    import re
+
+    if not url:
+        return None
+    url = url.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+    m = re.match(r"^(?:git@github\.com:|https://github\.com/|"
+                 r"ssh://git@github\.com/)(.+)$", url)
+    if not m or not REPO_NAME_RE.match(m.group(1).split("/")[0]) \
+            or "/" not in m.group(1):
+        return None
+    owner, _, repo_part = m.group(1).partition("/")
+    if not owner or not repo_part or "/" in repo_part \
+            or not REPO_NAME_RE.match(repo_part):
+        return None
+    return f"{owner}/{repo_part}"
+
+
+def _git_run(run, cmd: list[str], path: Path, timeout: int = 30):
+    import subprocess
+
+    run = run or subprocess.run
+    return run(
+        ["git", "-c", f"safe.directory={path}", "-C", str(path)] + cmd,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=timeout, text=True,
+    )
+
+
+def list_repos(repos_dir: Path | str | None = None,
+               stack_dir: Path | str | None = None,
+               run=None) -> list[dict[str, Any]]:
+    """Every discovered checkout as {name, full, branch, clean}.
+
+    Port of buttons/server.py _discover_repos, minus the td/gh
+    runtime fields: the special stack checkout (remote-server)
+    plus every repos-dir entry with a .git. Entries that fail
+    git probing are skipped, never mapped to another repo; a
+    checkout without a parseable GitHub origin keeps the
+    default full name ``arii/<name>``. ``repos_dir``/``stack_dir``/
+    ``run`` are injectable seams for tests.
+    """
+    import subprocess
+
+    run = run or subprocess.run
+    root = Path(repos_dir) if repos_dir is not None else get_repos_dir()
+    stack = Path(stack_dir) if stack_dir is not None else Path(
+        os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server"))
+
+    candidates: list[tuple[str, Path]] = []
+    stack_git = stack / ".git"
+    if stack.is_dir() and (stack_git.is_dir() or stack_git.is_file()):
+        candidates.append(("remote-server", stack))
+    try:
+        entries = sorted(os.listdir(root))
+    except Exception:
+        entries = []
+    for name in entries:
+        if name == "remote-server" or not REPO_NAME_RE.match(name):
+            continue
+        path = root / name
+        git_path = path / ".git"
+        if not (git_path.is_dir() or git_path.is_file()):
+            continue
+        candidates.append((name, path))
+
+    repos: list[dict[str, Any]] = []
+    for name, path in candidates:
+        try:
+            origin = run(
+                ["git", "-c", f"safe.directory={path}", "-C", str(path),
+                 "config", "--get", "remote.origin.url"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, text=True,
+            )
+            full = _parse_gh_remote(origin.stdout.strip()) \
+                if origin.returncode == 0 else None
+            branch_proc = _git_run(
+                run, ["rev-parse", "--abbrev-ref", "HEAD"], path)
+            branch = branch_proc.stdout.strip() \
+                if branch_proc.returncode == 0 else ""
+            status_proc = _git_run(
+                run, ["status", "--short", "--branch"], path)
+            if status_proc.returncode != 0:
+                continue
+            lines = [ln for ln in status_proc.stdout.splitlines()
+                     if ln and not ln.startswith("##")]
+            repos.append({"name": name, "full": full or f"arii/{name}",
+                          "branch": branch, "clean": len(lines) == 0})
+        except Exception:
+            continue
+    return sorted(repos, key=lambda r: r["name"])
+
+
 def get_repo_status(repo: str) -> dict[str, Any]:
     """Read-only git status for one repo checkout.
 

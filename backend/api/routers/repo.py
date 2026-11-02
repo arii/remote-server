@@ -3,9 +3,11 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.core import get_repo_status
+from backend.core import get_repo_status, list_repos
 
 router = APIRouter(prefix="/api/repo", tags=["repo"])
+
+repos_router = APIRouter(prefix="/api/repos", tags=["repos"])
 
 
 class RepoStatus(BaseModel):
@@ -19,9 +21,30 @@ class RepoHealth(BaseModel):
     ok: bool = True
 
 
+class RepoEntry(BaseModel):
+    name: str
+    full: str
+    branch: str
+    clean: bool
+
+
+class ReposList(BaseModel):
+    repos: list[RepoEntry]
+
+
 @router.get("/health", response_model=RepoHealth)
 def health() -> dict:
     return {"ok": True}
+
+
+@repos_router.get("", response_model=ReposList)
+def repos_list() -> dict:
+    return {"repos": list_repos()}
+
+
+@repos_router.get("/", response_model=ReposList, include_in_schema=False)
+def repos_list_slash() -> dict:
+    return {"repos": list_repos()}
 
 
 @router.get("/status", response_model=RepoStatus)
