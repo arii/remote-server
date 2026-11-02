@@ -9,6 +9,13 @@ import type {
   SystemHealthResponse,
   WorkflowHealthResponse,
 } from '../apiClient';
+import reviewFixture from '../mocks/review.json';
+import type {
+  IssueRow,
+  PrDetailsResponse,
+  PrRow,
+  RepoInfo,
+} from '../reviewTypes';
 
 // Offline dev override: append ?mock=1 to use bundled fixtures instead of
 // live endpoints. Views always attempt the live fetch first and fail visibly
@@ -29,6 +36,26 @@ export function loadHistory(): { jobs: JobsResponse['jobs']; entries: LedgerResp
 
 export function loadSystemHealth(): SystemHealthResponse {
   return { ...(systemHealthFixture as SystemHealthResponse) };
+}
+
+export function loadRepos(): RepoInfo[] {
+  const r = reviewFixture as unknown as { repos: RepoInfo[] };
+  return [...r.repos];
+}
+
+export function loadPrs(): PrRow[] {
+  const r = reviewFixture as unknown as { prs: PrRow[] };
+  return [...r.prs];
+}
+
+export function loadPrDetails(): PrDetailsResponse {
+  const r = reviewFixture as unknown as { details: PrDetailsResponse };
+  return { ...r.details, files: [...r.details.files] };
+}
+
+export function loadIssues(): IssueRow[] {
+  const r = reviewFixture as unknown as { issues: IssueRow[] };
+  return [...r.issues];
 }
 
 export function loadWorkflowHealth(): WorkflowHealthResponse {
