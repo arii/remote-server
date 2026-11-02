@@ -7779,7 +7779,12 @@ class Handler(BaseHTTPRequestHandler):
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=60, text=True)
                 payload["raw_output"] = proc_raw.stdout if proc_raw.returncode == 0 else ""
-                self._json(payload)
+                # Contract: missing transcript -> 404; ambiguous
+                # query keeps its error payload at 200 (no code
+                # specified for "Multiple sessions match").
+                err = payload.get("error", "") if isinstance(payload, dict) else ""
+                code = 404 if isinstance(err, str) and err.startswith("No session matching") else 200
+                self._json(payload, code)
             except Exception as exc:
                 self._json({"error": str(exc)[:500]}, 500)
         elif path.startswith("/buttons/api/run/"):
