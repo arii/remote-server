@@ -129,6 +129,18 @@ def _td_shape_re(shape):
 
 _TD_RES = [_td_shape_re(s) for s in ALLOWED_TD]
 
+BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+DISPATCH_TASK_LIMIT = 4000
+
+
+def _valid_branch(branch):
+    """git-plausible branch name: charset, length, no dot-dot."""
+    return (isinstance(branch, str)
+            and 1 <= len(branch) <= 120
+            and bool(BRANCH_RE.match(branch))
+            and ".." not in branch
+            and branch[0] not in "/-.")
+
 
 def validate_proposal(payload):
     """Validate a propose_action payload. Returns (ok, text).
@@ -168,7 +180,25 @@ def validate_proposal(payload):
             "REJECTED: td command is not an allowlisted shape "
             "(verbatim, changing only N to digits)"
         )
-    return False, "REJECTED: kind must be 'issue' or 'td'"
+    if kind == "dispatch":
+        repo = payload.get("repo")
+        branch = payload.get("branch")
+        task = payload.get("task")
+        if not s5tools.valid_repo(repo):
+            return False, "REJECTED: dispatch needs a repo (owner/name)"
+        branch = branch.strip() if isinstance(branch, str) else branch
+        if not _valid_branch(branch):
+            return False, ("REJECTED: dispatch needs a branch "
+                           "(1-120 chars, [A-Za-z0-9._/-], no ..)")
+        if not isinstance(task, str) or not task.strip() \
+                or len(task) > DISPATCH_TASK_LIMIT:
+            return False, ("REJECTED: dispatch needs a task "
+                           "(1-4000 chars)")
+        return True, (
+            f"PROPOSE dispatch\nREPO: {repo}\nBRANCH: {branch}\n"
+            f"TASK:\n{task.strip()}\nEND PROPOSE"
+        )
+    return False, "REJECTED: kind must be 'issue', 'td', or 'dispatch'"
 
 
 def decision_for_verdict(verdict, message=""):
@@ -243,7 +273,9 @@ def build_tools(checkout):
 
     @tool
     def propose_action(kind: str, title: str = "",
-                       body: str = "", command: str = "") -> str:
+                       body: str = "", command: str = "",
+                       repo: str = "", branch: str = "",
+                       task: str = "") -> str:
         """Propose the ONE write action this turn needs (human-approved).
 
         Call at most once per turn, after read-only investigation, then
@@ -252,15 +284,21 @@ def build_tools(checkout):
         proposal text for the server to run.
 
         Args:
-            kind: 'issue' (file a GitHub issue) or 'td' (run one
-                allowlisted td command).
+            kind: 'issue' (file a GitHub issue), 'td' (run one
+                allowlisted td command), or 'dispatch' (implement via
+                a BoomTick worktree session).
             title: Issue title (kind='issue').
             body: Issue body markdown (kind='issue').
             command: Exact td command (kind='td'; allowlisted shapes
                 only, changing N to digits).
+            repo: Target repo owner/name (kind='dispatch').
+            branch: Base branch to work from (kind='dispatch').
+            task: Implementation brief (kind='dispatch').
         """
         ok, text = validate_proposal(
-            {"kind": kind, "title": title, "body": body, "command": command}
+            {"kind": kind, "title": title, "body": body,
+             "command": command, "repo": repo, "branch": branch,
+             "task": task}
         )
         return text
 
