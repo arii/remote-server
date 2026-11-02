@@ -20,8 +20,8 @@ export default function RepoPicker({
       >
         {repos.map((r) => (
           <option key={r.name} value={r.name}>
-            {r.name}
-            {r.clean ? '' : ' (dirty)'} · {r.branch}
+            {r.full} · on {r.branch}
+            {r.clean ? '' : ' (dirty)'}
           </option>
         ))}
       </select>

@@ -71,7 +71,13 @@ function RowsList({ rows }: { rows: HistoryRow[] }) {
   );
 }
 
-export default function HistoryView({ repo }: { repo: string }) {
+export default function HistoryView({
+  repo,
+  health,
+}: {
+  repo: string;
+  health: import('../apiClient').SystemHealthResponse | null;
+}) {
   const { jobs, entries, error, loading, load } = useHistoryData();
   const [kind, setKind] = useState('all');
   const all = entries ?? [];
@@ -79,7 +85,7 @@ export default function HistoryView({ repo }: { repo: string }) {
 
   return (
     <div data-testid="history-view">
-      <ObservabilitySection repo={repo} />
+      <ObservabilitySection repo={repo} health={health} />
 
       <section aria-label="History">
         <div className="page-head">

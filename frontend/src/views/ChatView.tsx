@@ -1,6 +1,72 @@
 import { useEffect, useRef, useState } from 'react';
-import { abortChat, chatStreamUrl } from '../apiClient';
+import {
+  abortChat,
+  chatStreamUrl,
+  fetchAgentSessionDetail,
+  fetchAgentSessions,
+} from '../apiClient';
+import type { AgentSession, AgentSessionDetail } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
+
+function SessionPane({
+  sessions,
+  selected,
+  detail,
+  onSelect,
+}: {
+  sessions: AgentSession[];
+  selected: string | null;
+  detail: AgentSessionDetail | null;
+  onSelect: (file: string) => void;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <section data-testid="chat-sessions">
+      <h3>Past sessions</h3>
+      <ul className="session-list">
+        {sessions.map((s) => (
+          <li key={s.file} className="detail">
+            <button
+              type="button"
+              data-testid={`chat-session-${s.file}`}
+              aria-pressed={selected === s.file}
+              onClick={() => onSelect(s.file)}
+            >
+              <span className="row-title">{s.title || s.file}</span>{' '}
+              <span className="row-meta">
+                {s.repo} · {new Date(s.mtime * 1000).toLocaleString()}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {selected && detail && (
+        <div className="detail" data-testid="chat-session-detail">
+          <span className="row-title">
+            {sessionDetailTitle(detail)}
+          </span>
+          <ul className="session-list">
+            {detail.turns.slice(0, 20).map((t, i) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <li key={i} className="detail">
+                <span className="row-title">{t.role}</span>
+                <p>{t.text}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function sessionDetailTitle(detail: AgentSessionDetail): string {
+  const when =
+    typeof detail.started === 'number'
+      ? new Date(detail.started > 1e12 ? detail.started : detail.started * 1000).toLocaleString()
+      : (detail.started ?? '');
+  return `${detail.repo} · ${detail.turns.length} turn(s)${when ? ` · ${when}` : ''}`;
+}
 
 function newSessionId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -62,12 +128,36 @@ export default function ChatView({ repo }: { repo: string }) {
   const [prompt, setPrompt] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [detail, setDetail] = useState<AgentSessionDetail | null>(null);
   const sessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    if (useMock()) setMessages(loadChat().messages);
+    if (useMock()) {
+      setMessages(loadChat().messages);
+      return;
+    }
+    (async () => {
+      try {
+        const live = await fetchAgentSessions();
+        setSessions(live.sessions);
+      } catch {
+        // Past sessions stay hidden; live chat still works.
+      }
+    })();
   }, []);
+
+  async function onSelectSession(file: string) {
+    setSelected(file);
+    setDetail(null);
+    try {
+      setDetail(await fetchAgentSessionDetail(file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   function appendToken(token: string) {
     if (!token) return;
@@ -165,6 +255,12 @@ export default function ChatView({ repo }: { repo: string }) {
           Ask anything about this repo.
         </p>
       )}
+      <SessionPane
+        sessions={sessions}
+        selected={selected}
+        detail={detail}
+        onSelect={(file) => void onSelectSession(file)}
+      />
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
           Prompt{' '}

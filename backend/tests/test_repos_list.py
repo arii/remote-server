@@ -1,6 +1,8 @@
 """GET /api/repos: shape, multiple repos, unknown-dir handling."""
 
+import os
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -142,6 +144,17 @@ class ReposListTest(unittest.TestCase):
             resp2, got3, _, _ = self._get(
                 tmp + "-missing", ["x"], missing_root=True)
             self.assertEqual(resp2.json(), {"repos": []})
+
+
+class ReposDirFallbackTest(unittest.TestCase):
+    def test_missing_configured_root_falls_through(self):
+        from backend.core import get_repos_dir
+        with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": "/nonexistent-root-xyz"}):
+            got = get_repos_dir()
+        if Path("/srv/repos").is_dir():
+            self.assertEqual(got, Path("/srv/repos"))
+        else:
+            self.assertEqual(got, Path("/nonexistent-root-xyz"))
 
 
 if __name__ == "__main__":

@@ -1,11 +1,35 @@
 import { useEffect, useState } from 'react';
-import { fetchSystemHealth, fetchWorkflowHealth } from '../apiClient';
+import { fetchWorkflowHealth } from '../apiClient';
 import type {
+  ContainerStatus,
   SystemHealthResponse,
   WorkflowHealthResponse,
   WorkflowRun,
 } from '../apiClient';
-import { loadSystemHealth, loadWorkflowHealth, useMock } from './mockViews';
+import { loadWorkflowHealth, useMock } from './mockViews';
+
+export function ContainerPills({ containers }: { containers: ContainerStatus[] }) {
+  if (containers.length === 0) {
+    return (
+      <p className="row-meta" data-testid="observability-containers-empty">
+        No containers reporting.
+      </p>
+    );
+  }
+  return (
+    <ul className="actions" data-testid="observability-containers">
+      {containers.map((c, i) => (
+        // eslint-disable-next-line react/no-array-index-key
+        <li key={`${c.service ?? c.name ?? 'container'}-${i}`} data-testid="container-pill">
+          <span className="repo-chip" title={c.status ?? ''}>
+            {c.service ?? c.name ?? 'container'}: {c.state ?? '?'}
+            {c.health ? ` (${c.health})` : ''}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function HealthLine({
   health,
@@ -14,17 +38,27 @@ function HealthLine({
   health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
 }) {
-  const healthText = health
-    ? `${health.containers.length} container(s) reporting`
-    : 'loading…';
+  if (!health) {
+    return (
+      <p className="row-meta" data-testid="observability-health">
+        Stack health: loading…
+      </p>
+    );
+  }
+  const up = health.containers.filter((c) => c.state === 'running').length;
   const flowText = flow
     ? ` · automated runs: ${flow.status} (${flow.total_failing} failing)`
     : '';
   return (
-    <p className="row-meta" data-testid="observability-health">
-      Stack health: {healthText}
-      {flowText}
-    </p>
+    <div data-testid="observability-health">
+      <p className="row-meta">
+        Stack health: {up}/{health.containers.length} containers up
+        {health.disk.summary ? ` · Disk: ${health.disk.summary}` : ''}
+        {health.memory.summary ? ` · Mem: ${health.memory.summary}` : ''}
+        {flowText}
+      </p>
+      <ContainerPills containers={health.containers} />
+    </div>
   );
 }
 
@@ -64,28 +98,26 @@ function RunsList({ flow }: { flow: WorkflowHealthResponse }) {
   );
 }
 
-export default function ObservabilitySection({ repo }: { repo: string }) {
-  const [health, setHealth] = useState<SystemHealthResponse | null>(null);
+export default function ObservabilitySection({
+  repo,
+  health,
+}: {
+  repo: string;
+  health: SystemHealthResponse | null;
+}) {
   const [flow, setFlow] = useState<WorkflowHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     if (useMock()) {
-      setHealth(loadSystemHealth());
       setFlow(loadWorkflowHealth());
       return;
     }
     (async () => {
       try {
-        const [h, w] = await Promise.all([
-          fetchSystemHealth(),
-          fetchWorkflowHealth(repo),
-        ]);
-        if (!cancelled) {
-          setHealth(h);
-          setFlow(w);
-        }
+        const w = await fetchWorkflowHealth(repo);
+        if (!cancelled) setFlow(w);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }

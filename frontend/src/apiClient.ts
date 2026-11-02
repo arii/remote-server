@@ -1,12 +1,27 @@
 import type {
+  BriefingResponse,
   JobsResponse,
   LedgerResponse,
 } from './apiTypes';
 
+export interface DiskSummary {
+  summary?: string;
+  percent?: number;
+  error?: string | null;
+}
+
+export interface ContainerStatus {
+  name?: string;
+  service?: string;
+  state?: string;
+  status?: string;
+  health?: string;
+}
+
 export interface SystemHealthResponse {
-  disk: Record<string, unknown>;
-  memory: Record<string, unknown>;
-  containers: Array<Record<string, unknown>>;
+  disk: DiskSummary;
+  memory: DiskSummary;
+  containers: ContainerStatus[];
 }
 
 async function readJson<T>(resp: Response, method: string, path: string): Promise<T> {
@@ -27,6 +42,12 @@ export function fetchSystemHealth(): Promise<SystemHealthResponse> {
 
 export function fetchJobs(): Promise<JobsResponse> {
   return getJson<JobsResponse>('/api/jobs');
+}
+
+export function fetchBriefing(repo: string): Promise<BriefingResponse> {
+  return getJson<BriefingResponse>(
+    `/api/briefing?repo=${encodeURIComponent(repo)}`,
+  );
 }
 
 export function fetchAttention(repo: string): Promise<import('./attentionTypes').AttentionResponse> {
@@ -173,4 +194,49 @@ export function requestTakeover(): Promise<{ ok: boolean; output: string }> {
     intent: 'terminal-takeover',
     confirmed: true,
   });
+}
+
+export interface RepairStatusResponse {
+  status: string;
+  timestamp: number | null;
+  log_buffer: string;
+  issue: number | null;
+  exit_code: number | null;
+}
+
+export function dispatchRepair(issue: string): Promise<{ ok: boolean; issue: number; status: string }> {
+  return postJson<{ ok: boolean; issue: number; status: string }>('/api/repair/dispatch', {
+    issue,
+  });
+}
+
+export function fetchRepairStatus(): Promise<RepairStatusResponse> {
+  return getJson<RepairStatusResponse>('/api/repair/status');
+}
+
+export interface AgentSession {
+  file: string;
+  mtime: number;
+  cwd: string;
+  repo: string;
+  title: string;
+}
+
+export interface AgentSessionDetail {
+  file: string;
+  cwd: string;
+  repo: string;
+  started?: number | string;
+  turns: Array<{ role: string; text: string }>;
+  total_entries?: number;
+}
+
+export function fetchAgentSessions(): Promise<{ sessions: AgentSession[] }> {
+  return getJson<{ sessions: AgentSession[] }>('/api/agents/sessions');
+}
+
+export function fetchAgentSessionDetail(file: string): Promise<AgentSessionDetail> {
+  return getJson<AgentSessionDetail>(
+    `/api/agents/sessions/${encodeURIComponent(file)}`,
+  );
 }

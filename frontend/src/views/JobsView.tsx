@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
 import {
   clearJobs,
+  dispatchRepair,
   fetchJobs,
   fetchPiProgress,
+  fetchRepairStatus,
   requestTakeover,
   startJobRun,
 } from '../apiClient';
+import type { RepairStatusResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import { loadJobs, useMock } from './mockViews';
 
@@ -25,6 +28,94 @@ const ACTIONS = [
 
 function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
+}
+
+const IDLE_REPAIR: RepairStatusResponse = {
+  status: 'idle',
+  timestamp: null,
+  log_buffer: '',
+  issue: null,
+  exit_code: null,
+};
+
+function RepairSection() {
+  const [issue, setIssue] = useState('');
+  const [status, setStatus] = useState<RepairStatusResponse>(IDLE_REPAIR);
+  const [error, setError] = useState<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  function stopWatch() {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  useEffect(() => stopWatch, []);
+
+  async function refresh() {
+    try {
+      setStatus(await fetchRepairStatus());
+    } catch {
+      stopWatch();
+    }
+  }
+
+  async function onDispatchRepair() {
+    const target = issue.trim();
+    if (!target) return;
+    setError(null);
+    try {
+      if (useMock()) {
+        setStatus({ ...IDLE_REPAIR, status: 'running', issue: Number(target) || null });
+        return;
+      }
+      const started = await dispatchRepair(target);
+      setStatus({ ...IDLE_REPAIR, status: started.status, issue: started.issue });
+      stopWatch();
+      timerRef.current = window.setInterval(() => void refresh(), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <section data-testid="repair-section">
+      <h3>Repair worker</h3>
+      <p className="row-meta">Trigger a repair run from an issue number or URL.</p>
+      <div className="actions">
+        <label className="row-meta" htmlFor="repair-issue">
+          Issue{' '}
+          <input
+            id="repair-issue"
+            data-testid="repair-issue"
+            value={issue}
+            onChange={(e) => setIssue(e.target.value)}
+            placeholder="42 or issue URL"
+          />
+        </label>
+        <button
+          type="button"
+          data-testid="repair-dispatch"
+          disabled={!issue.trim()}
+          onClick={() => void onDispatchRepair()}
+        >
+          Dispatch repair
+        </button>
+      </div>
+      {error && (
+        <p className="row-meta" role="alert">
+          Repair failed: {error}
+        </p>
+      )}
+      <p className="row-meta" data-testid="repair-status">
+        Status: {status.status}
+        {status.issue !== null ? ` · #${status.issue}` : ''}
+        {status.exit_code !== null ? ` · exit ${status.exit_code}` : ''}
+      </p>
+      {status.log_buffer && <pre className="row-meta">{status.log_buffer}</pre>}
+    </section>
+  );
 }
 
 function JobListItem({ job, repo }: { job: JobRecord; repo: string }) {
@@ -208,6 +299,7 @@ export default function JobsView({ repo }: { repo: string }) {
           <pre className="row-meta">{tail || 'Waiting for output…'}</pre>
         </div>
       )}
+      <RepairSection />
     </section>
   );
 }
