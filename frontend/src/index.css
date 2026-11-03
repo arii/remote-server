@@ -37,6 +37,20 @@ h1, h2, h3 { text-wrap: balance; }
 
 .layout { max-width: 960px; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; }
 
+/* Screen-reader-only: keeps the document outline honest (h1) without
+   adding visual chrome the Operate surface does not need. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -331,6 +345,8 @@ button {
   background: var(--surface-2);
   padding: 0.45rem 0.8rem;
   cursor: pointer;
+  /* Phone-first targets: every button meets the 44px minimum. */
+  min-height: 44px;
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.45; cursor: default; }
@@ -341,6 +357,9 @@ button[type="submit"]:hover:not(:disabled) { background: #1d4ed8; }
 button[data-testid="hold-disarmed"], button[data-testid="hold-armed"] {
   position: relative;
   overflow: hidden;
+  /* The press-and-hold must win over scroll on phones: without this
+     a finger that drifts mid-hold scrolls the page and cancels. */
+  touch-action: none;
 }
 button[data-testid="hold-disarmed"] > [data-testid="hold-progress"] {
   position: absolute;

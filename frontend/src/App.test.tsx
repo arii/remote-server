@@ -4,7 +4,7 @@ import App from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { InboxFeed } from './apiClient';
-import { cleanBriefingLine } from './views/BriefingView';
+import { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
   TraceTimeline,
@@ -258,6 +258,34 @@ describe('briefing sanitation', () => {
     expect(clean).not.toContain('<!--');
     expect(clean).not.toContain('eyJmaW5kaW5ncyI6W10');
     expect(clean).toContain('APPROVED');
+  });
+});
+
+describe('briefing all-clear', () => {
+  const empty = {
+    repo: 'r',
+    attention: [],
+    prs: [],
+    prs_err: '',
+    reviews_lines: [],
+    board: [],
+    board_lines: [],
+    board_err: '',
+    conflicts_lines: [],
+    overlaps_lines: [],
+    failing_runs: [],
+    workflow_lines: [],
+    runs_err: '',
+  };
+  it('condenses a fully empty briefing to one all-clear', () => {
+    expect(briefingAllClear(empty)).toBe(true);
+  });
+  it('keeps sections when anything has content or errored', () => {
+    expect(briefingAllClear({ ...empty, prs: [{ number: 1 }] })).toBe(false);
+    expect(briefingAllClear({ ...empty, attention: ['x'] })).toBe(false);
+    expect(briefingAllClear({ ...empty, conflicts_lines: ['- PR #1'] })).toBe(false);
+    expect(briefingAllClear({ ...empty, board: [{ branch: 'b' }] })).toBe(false);
+    expect(briefingAllClear({ ...empty, runs_err: 'boom' })).toBe(false);
   });
 });
 

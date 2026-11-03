@@ -602,7 +602,6 @@ def analyze(data):
     reviews = data["reviews"]
     reviews_err = data["reviews_err"]
     if reviews:
-        shown_any = False
         for pr in prs:
             num = getf(pr, "number")
             if not isinstance(num, int) or num not in reviews:
@@ -610,7 +609,6 @@ def analyze(data):
             items = reviews[num]
             if not items:
                 continue
-            shown_any = True
             picked = []
             for want in ("CHANGES_REQUESTED", "APPROVED", "COMMENTED"):
                 for user, state, body, _s in items:
@@ -627,13 +625,11 @@ def analyze(data):
                 if i == len(picked) - 1 and len(items) > len(picked):
                     line += f" (+{len(items) - len(picked)} more)"
                 reviews_lines.append(line)
-        if not shown_any:
-            reviews_lines.append("No reviews on open PRs.")
+        # No placeholder when nothing showed: empty sections stay
+        # empty and the frontend shows one all-clear instead.
     elif reviews_err:
         first_err = next(iter(reviews_err.values()), "")
         reviews_lines.append(f"Reviews unavailable: {first_err}")
-    else:
-        reviews_lines.append("No reviews fetched (no open PRs).")
     if reviews_err:
         for num, err in sorted(reviews_err.items()):
             reviews_lines.append(f"Reviews unavailable for #{num}: {err}")
@@ -664,8 +660,7 @@ def analyze(data):
             if status:
                 parts.append(status)
             board_lines.append("- " + " — ".join(parts))
-    else:
-        board_lines.append("No work-board items.")
+    # No "no items" placeholder: empty stays empty (all-clear above).
 
     conflicts_list = [{"number": p["number"], "merge": "dirty"}
                       for p in pr_infos if p["conflicted"]]
@@ -673,8 +668,7 @@ def analyze(data):
     if conflicts_list:
         for entry in conflicts_list:
             conflicts_lines.append(f"- PR #{entry['number']} (merge: dirty)")
-    else:
-        conflicts_lines.append("None detected.")
+    # No "none detected" placeholder: empty stays empty.
     overlaps_list = [{"number": num, "with": sorted(e["with"]),
                       "files": sorted(e["files"])}
                      for num, e in sorted(overlaps.items())]
@@ -688,8 +682,7 @@ def analyze(data):
                 else "shared files"
             overlaps_lines.append(f"- PR #{entry['number']} overlaps with "
                                   f"{peers} on: {files}")
-    else:
-        overlaps_lines.append("None detected.")
+    # No "none detected" placeholder: empty stays empty.
 
     runs = getf(data["runs"], "workflow_runs", "workflowRuns",
                 default=[]) if data["runs"] else []
@@ -736,8 +729,7 @@ def analyze(data):
                 "event": getf(run, "event", default="?"),
                 "url": url, "failed": failed_struct,
             })
-        if not raw_failing:
-            workflow_lines.append("No failing runs in the recent list.")
+        # No "no failing runs" placeholder: empty stays empty.
 
     for fr in failing_runs:
         run_name = fr.get("name", "workflow")
@@ -847,21 +839,27 @@ def build(data, analysis=None):
         lines.extend(p["line"] for p in a["prs"])
     else:
         lines.append("No open PRs.")
+    # analyze() leaves empty sections empty for the API (the app
+    # condenses them); the markdown rendering keeps a (none) marker
+    # so headings never dangle over a blank gap.
+    def _or_none(lines):
+        return lines if lines else ["(none)"]
+
     lines.append("")
     lines.append("## Reviews")
-    lines.extend(a["reviews_lines"])
+    lines.extend(_or_none(a["reviews_lines"]))
     lines.append("")
     lines.append("## Work board")
-    lines.extend(a["board_lines"])
+    lines.extend(_or_none(a["board_lines"]))
     lines.append("")
     lines.append("## Conflicts")
-    lines.extend(a["conflicts_lines"])
+    lines.extend(_or_none(a["conflicts_lines"]))
     lines.append("")
     lines.append("## Overlaps")
-    lines.extend(a["overlaps_lines"])
+    lines.extend(_or_none(a["overlaps_lines"]))
     lines.append("")
     lines.append("## Workflow health")
-    lines.extend(a["workflow_lines"])
+    lines.extend(_or_none(a["workflow_lines"]))
     lines.append("")
     lines.append("## Agent sessions (Jules)")
     lines.extend(a["jules_lines"])

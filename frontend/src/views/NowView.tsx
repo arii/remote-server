@@ -71,13 +71,14 @@ function ReportDialog({
       }}
     >
       <label className="row-meta" htmlFor="report-title">
-        Bug title{' '}
+        Bug title (required){' '}
         <input
           id="report-title"
           data-testid="report-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           required
+          aria-required="true"
         />
       </label>
       <label className="row-meta" htmlFor="report-body">

@@ -90,6 +90,22 @@ function BoardSection({
   );
 }
 
+// Condense-empties: when every section is empty and nothing errored,
+// the view shows one all-clear instead of five bare headings.
+export function briefingAllClear(data: BriefingResponse): boolean {
+  if (data.prs_err || data.board_err || data.runs_err) return false;
+  return (
+    data.prs.length === 0 &&
+    data.attention.length === 0 &&
+    data.reviews_lines.length === 0 &&
+    (data.board ?? []).length === 0 &&
+    data.board_lines.length === 0 &&
+    data.conflicts_lines.length === 0 &&
+    data.overlaps_lines.length === 0 &&
+    data.workflow_lines.length === 0
+  );
+}
+
 function PrRow({ pr }: { pr: Record<string, unknown> }) {
   const meta = [pr.author, pr.branch, pr.ciLabel ?? pr.ciStatus]
     .map((v) => String(v ?? '').trim())
@@ -144,23 +160,32 @@ export default function BriefingView({ repo }: { repo: string }) {
           {data.prs_err}
         </p>
       )}
-      <Section title="Needs attention" lines={data.attention} />
-      {data.prs.length > 0 && (
-        <section>
-          <h3>Open pull requests</h3>
-          <ul className="session-list">
-            {data.prs.map((pr, i) => (
-              // eslint-disable-next-line react/no-array-index-key
-              <PrRow key={i} pr={pr} />
-            ))}
-          </ul>
-        </section>
+      {briefingAllClear(data) ? (
+        <div data-testid="briefing-clear">
+          <h3>All clear</h3>
+          <p className="row-meta">No open PRs, no conflicts, no failing runs.</p>
+        </div>
+      ) : (
+        <>
+          <Section title="Needs attention" lines={data.attention} />
+          {data.prs.length > 0 && (
+            <section>
+              <h3>Open pull requests</h3>
+              <ul className="session-list">
+                {data.prs.map((pr, i) => (
+                  // eslint-disable-next-line react/no-array-index-key
+                  <PrRow key={i} pr={pr} />
+                ))}
+              </ul>
+            </section>
+          )}
+          <Section title="Reviews" lines={data.reviews_lines} />
+          <BoardSection board={data.board ?? []} lines={data.board_lines} err={data.board_err} />
+          <Section title="Conflicts" lines={data.conflicts_lines} />
+          <Section title="Overlaps" lines={data.overlaps_lines} />
+          <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
+        </>
       )}
-      <Section title="Reviews" lines={data.reviews_lines} />
-      <BoardSection board={data.board ?? []} lines={data.board_lines} err={data.board_err} />
-      <Section title="Conflicts" lines={data.conflicts_lines} />
-      <Section title="Overlaps" lines={data.overlaps_lines} />
-      <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
     </section>
   );
 }
