@@ -191,6 +191,19 @@ class RouterTest(unittest.TestCase):
             json={"action": "preflight", "repo": "no-such-repo"})
         self.assertEqual(resp.status_code, 400)
 
+    def test_jobs_list_carries_timestamps(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        rid, err = jobs_router.registry.start_run("logs")
+        self.assertIsNone(err)
+        resp = self.client.get("/api/jobs")
+        self.assertEqual(resp.status_code, 200)
+        rows = [j for j in resp.json()["jobs"] if j["id"] == rid]
+        self.assertEqual(len(rows), 1)
+        self.assertIsInstance(rows[0]["at"], float)
+        jobs_router.registry.finish_run(rid, 0)
+
     def test_run_progress_shapes(self):
         import backend.api.routers.jobs as jobs_router
 

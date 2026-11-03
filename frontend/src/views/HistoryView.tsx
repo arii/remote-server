@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchJobs, fetchLedger } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
-import { toHistoryRows } from './historyUtils';
+import { jobPassesKindFilter, toHistoryRows } from './historyUtils';
 import type { HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
 
@@ -119,7 +119,10 @@ export default function HistoryView({
   const { jobs, entries, error, loading, load } = useHistoryData();
   const [kind, setKind] = useState('all');
   const all = entries ?? [];
-  const rows = toHistoryRows(jobs ?? [], filterByKind(all, kind));
+  const rows = toHistoryRows(
+    (jobs ?? []).filter((j) => jobPassesKindFilter(j.kind, kind)),
+    filterByKind(all, kind),
+  );
 
   return (
     <div data-testid="history-view">
