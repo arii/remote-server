@@ -259,6 +259,18 @@ export function fetchRepairStatus(): Promise<RepairStatusResponse> {
   return getJson<RepairStatusResponse>('api/repair/status');
 }
 
+export interface PlanReadResponse {
+  repo: string;
+  name: string;
+  content: string;
+}
+
+export function fetchPlan(repo: string, name: string): Promise<PlanReadResponse> {
+  return getJson<PlanReadResponse>(
+    `api/jobs/plans/${encodeURIComponent(name)}?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
 export interface AgentRun {
   id: string;
   script: string;

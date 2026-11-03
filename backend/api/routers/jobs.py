@@ -14,6 +14,7 @@ and output truncation as the original.
 
 import re
 import threading
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -233,3 +234,69 @@ def start_run_plan(body: RunPlanRequest) -> dict:
     except Exception:
         pass
     return {"ok": True, "output": out[-4000:], "plan_path": plan_path}
+
+
+PLAN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
+PLAN_READ_MAX = 20000
+
+
+class PlanList(BaseModel):
+    repo: str = ""
+    plans: list = Field(default_factory=list)
+
+
+class PlanRead(BaseModel):
+    repo: str = ""
+    name: str = ""
+    content: str = ""
+
+
+def _plans_dir(repo: str) -> Path:
+    """Validated .agents/plans dir for a repo. Raises ValueError."""
+    from backend.core import get_repo_status, resolve_repo_path, \
+        validate_repo_name
+    from backend.exec.engine import stack_dir
+
+    try:
+        name = validate_repo_name(repo)
+        get_repo_status(name)
+    except (ValueError, FileNotFoundError, RuntimeError):
+        raise ValueError("unknown repo")
+    base = Path(stack_dir()) if name == "remote-server" \
+        else resolve_repo_path(name)
+    return base / ".agents" / "plans"
+
+
+@router.get("/plans", response_model=PlanList)
+def list_plans(repo: str = "remote-server") -> dict:
+    try:
+        plans_dir = _plans_dir(repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown repo")
+    rows = []
+    if plans_dir.is_dir():
+        for child in sorted(plans_dir.iterdir(), reverse=True):
+            if child.is_file() and PLAN_NAME_RE.match(child.name):
+                try:
+                    st = child.stat()
+                except OSError:
+                    continue
+                rows.append({"name": child.name, "size": st.st_size,
+                             "mtime": st.st_mtime})
+    return {"repo": repo, "plans": rows[:50]}
+
+
+@router.get("/plans/{name}", response_model=PlanRead)
+def read_plan(name: str, repo: str = "remote-server") -> dict:
+    if not PLAN_NAME_RE.match(name):
+        raise HTTPException(status_code=404, detail="unknown plan")
+    try:
+        plans_dir = _plans_dir(repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown repo")
+    path = plans_dir / name
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        raise HTTPException(status_code=404, detail="unknown plan")
+    return {"repo": repo, "name": name, "content": content[:PLAN_READ_MAX]}

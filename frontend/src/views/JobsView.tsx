@@ -7,6 +7,7 @@ import {
   fetchJobRun,
   fetchJobs,
   fetchPiProgress,
+  fetchPlan,
   fetchPrDetails,
   fetchPrs,
   fetchRepairStatus,
@@ -138,6 +139,14 @@ export function resultLine(output: string): string {
     .map((l) => l.trim())
     .filter((l) => l.length > 0 && !l.startsWith('$'));
   return lines.length > 0 ? lines[lines.length - 1] : '';
+}
+
+// Plan filename from a create-plan result line ("wrote <path>.md").
+export function planNameFromResult(result: string): string | null {
+  const m = result.trim().match(/^wrote\s+(.+\.md)$/);
+  if (!m) return null;
+  const parts = m[1].split('/');
+  return parts[parts.length - 1] || null;
 }
 
 const IDLE_REPAIR: RepairStatusResponse = {
@@ -324,9 +333,29 @@ export default function JobsView({ repo }: { repo: string }) {
   // Relevance state. null = unknown (fail open: buttons stay enabled).
   const [mergeReady, setMergeReady] = useState<number | null>(null);
   const [prState, setPrState] = useState<{ n: number; ci: string; conflicted: boolean } | null>(null);
+  const [planCard, setPlanCard] = useState<{ repo: string; name: string } | null>(null);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [planContent, setPlanContent] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
   const labelRef = useRef<string>('');
+  const launchRepoRef = useRef<string>(repo);
   const progressRef = useRef<HTMLDivElement | null>(null);
+
+  async function onTogglePlan() {
+    if (!planCard) return;
+    if (planOpen) {
+      setPlanOpen(false);
+      return;
+    }
+    setPlanOpen(true);
+    if (planContent !== null) return;
+    try {
+      const p = await fetchPlan(planCard.repo, planCard.name);
+      setPlanContent(p.content);
+    } catch (err) {
+      setPlanContent(`Couldn't load plan: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   async function guarded(fn: () => Promise<void>) {
     setError(null);
@@ -421,6 +450,10 @@ export default function JobsView({ repo }: { repo: string }) {
         setNotice(`Run ${rid} failed (exit ${r.exit_code})${result ? `: ${result}` : '.'}`);
       } else {
         setNotice(result ? `Finished ${label}: ${result}` : `Finished ${label}.`);
+        if (r.action === 'create-plan') {
+          const name = planNameFromResult(result);
+          if (name) setPlanCard({ repo: launchRepoRef.current, name });
+        }
       }
       stopPoll();
       await load();
@@ -448,6 +481,10 @@ export default function JobsView({ repo }: { repo: string }) {
   async function launch(label: string, start: () => Promise<{ id: string }>) {
     setNotice(null);
     setTail('');
+    setPlanCard(null);
+    setPlanOpen(false);
+    setPlanContent(null);
+    launchRepoRef.current = repo;
     const started = await start();
     setRunId(started.id);
     setNotice(`Started ${label}: ${started.id}`);
@@ -535,6 +572,20 @@ export default function JobsView({ repo }: { repo: string }) {
             </p>
           )}
           <pre className="row-meta">{tail || 'Waiting for output…'}</pre>
+        </div>
+      )}
+      {planCard && (
+        <div className="detail" data-testid="jobs-plan">
+          <span className="row-title">Plan written</span>
+          <p className="row-meta">
+            {planCard.repo}/.agents/plans/{planCard.name}
+          </p>
+          <div className="actions">
+            <button type="button" data-testid="jobs-plan-toggle" onClick={() => void onTogglePlan()}>
+              {planOpen ? 'Hide plan' : 'View plan'}
+            </button>
+          </div>
+          {planOpen && <pre className="row-meta">{planContent ?? 'Loading…'}</pre>}
         </div>
       )}
 
