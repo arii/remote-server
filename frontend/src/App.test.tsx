@@ -7,7 +7,14 @@ import type { InboxFeed, SystemHealthResponse } from './apiClient';
 import HoldToConfirm from './components/HoldToConfirm';
 import TriageHint from './components/TriageHint';
 import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
-import BriefingView, { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
+import BriefingView, {
+  BriefingBody,
+  briefingActions,
+  briefingAllClear,
+  briefingSummary,
+  cleanBriefingLine,
+  dayTrend,
+} from './views/BriefingView';
 import {
   ApprovalCard,
   TraceTimeline,
@@ -29,7 +36,7 @@ import {
 } from './views/jobsUtils';
 import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
 import ReviewView, { PrDetails, PrRowMerge, detailsPromptVisible } from './views/ReviewView';
-import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
+import { loadBriefing, loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
@@ -299,6 +306,78 @@ describe('briefing all-clear', () => {
     expect(briefingAllClear({ ...empty, conflicts_lines: ['- PR #1'] })).toBe(false);
     expect(briefingAllClear({ ...empty, board: [{ branch: 'b' }] })).toBe(false);
     expect(briefingAllClear({ ...empty, runs_err: 'boom' })).toBe(false);
+  });
+});
+
+describe('briefing substance', () => {
+  const empty = {
+    repo: 'r',
+    attention: [],
+    prs: [],
+    prs_err: '',
+    reviews_lines: [],
+    board: [],
+    board_lines: [],
+    board_err: '',
+    conflicts_lines: [],
+    overlaps_lines: [],
+    failing_runs: [],
+    workflow_lines: [],
+    runs_err: '',
+  };
+  const noop = () => {};
+  it('summarizes counts in one line', () => {
+    expect(briefingSummary(empty)).toContain('All clear');
+    const busy = {
+      ...empty,
+      prs: [{ number: 1 }, { number: 2 }],
+      conflicts_lines: ['- PR #1'],
+      workflow_lines: ['x failed'],
+    };
+    const line = briefingSummary(busy);
+    expect(line).toContain('2 open PRs');
+    expect(line).toContain('1 conflict');
+    expect(line).toContain('1 failing run');
+  });
+  it('suggests next actions from state, capped at three', () => {
+    const clear = briefingActions(empty);
+    expect(clear.length).toBeGreaterThan(0);
+    expect(clear[0].seed.length).toBeGreaterThan(0);
+    const failing = briefingActions({ ...empty, workflow_lines: ['x failed'] });
+    expect(failing.some((a) => a.label.includes('fail'))).toBe(true);
+    expect(briefingActions(loadBriefing()).length).toBeLessThanOrEqual(3);
+  });
+  it('counts last-day events and failures', () => {
+    const now = 1793745800;
+    expect(
+      dayTrend(
+        [
+          { kind: 'chat', event: 'a', ts: now - 100, ok: true },
+          { kind: 'webhook', event: 'b', ts: now - 200, ok: false },
+          { kind: 'webhook', event: 'old', ts: now - 100000, ok: false },
+        ],
+        now,
+      ),
+    ).toBe('Last 24h: 2 events, 1 failure.');
+  });
+  it('all-clear body shows actions and a History pointer', () => {
+    const html = renderToStaticMarkup(
+      <BriefingBody data={empty} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+    );
+    expect(html).toContain('data-testid="briefing-actions"');
+    expect(html).toContain('data-testid="briefing-history"');
+  });
+  it('non-empty body shows condensed highlights', () => {
+    const html = renderToStaticMarkup(
+      <BriefingBody
+        data={{ ...empty, prs: [{ number: 1, title: 't' }] }}
+        ledger={[{ kind: 'chat', event: 'merged #1', ts: 1793745700, ok: true }]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="briefing-highlights"');
+    expect(html).toContain('data-testid="briefing-summary"');
   });
 });
 
@@ -679,7 +758,7 @@ describe('p2 a11y batch', () => {
     expect(renderToStaticMarkup(
       <NowView repo="r" health={null} reportContext="" onAskAgent={noop} />,
     )).toContain('data-testid="now-loading" role="status"');
-    expect(renderToStaticMarkup(<BriefingView repo="r" />)).toContain(
+    expect(renderToStaticMarkup(<BriefingView repo="r" onAskAgent={noop} onOpenHistory={noop} />)).toContain(
       'data-testid="briefing-loading" role="status"',
     );
     expect(renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} onSelectPr={() => {}} />)).toContain(
