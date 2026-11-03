@@ -701,6 +701,22 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('<h4>Review prompts</h4>');
     expect(html).not.toContain('<h2>');
   });
+
+  it('PR merge uses tap-to-fire with an inline confirm, not hold-to-arm', () => {
+    const html = renderToStaticMarkup(
+      <PrDetails
+        repo="r"
+        details={loadPrDetails()}
+        mergeBlocked={null}
+        mergeDisabled={false}
+        onMerge={() => {}}
+        onAskAgent={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="tap-fire"');
+    expect(html).toContain('asks for confirmation');
+    expect(html).not.toContain('hold-disarmed');
+  });
 });
 
 describe('repo picker labels', () => {
