@@ -7,9 +7,10 @@ with an injected ``ts`` epoch, keys sorted), same prune policy, same
 newest-first kind-filtered reads, and the same clear-with-tombstone
 semantics. FILE FORMAT IS IDENTICAL — data, not code, compat.
 
-Kind allowlist covers terminal/td + buttons action kinds only. There
-is deliberately no Jules-session kind: Jules dies post-Nov-11 and no
-Jules-session ledger events are recorded here.
+Kind allowlist covers terminal/td + buttons action kinds plus the
+interactive agent kind. There is deliberately no Jules-session kind:
+Jules dies post-Nov-11 and no Jules-session ledger events are
+recorded here.
 """
 
 import json
@@ -31,6 +32,7 @@ LEDGER_KINDS = (
     "chat",
     "td",
     "terminal",
+    "agent",
 )
 
 ledger_lock = threading.Lock()

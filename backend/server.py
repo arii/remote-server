@@ -5,10 +5,11 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import agents, attention, briefing, chat, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import agent, agents, attention, briefing, chat, issues, jobs, notify, ops, pulls, repo, system
 
 app = FastAPI(title="remote-server backend")
 
+app.include_router(agent.router)
 app.include_router(agents.router)
 app.include_router(briefing.router)
 app.include_router(repo.router)
