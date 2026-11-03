@@ -25,7 +25,9 @@ except ImportError:
 
 from backend.exec import agent_turn
 
-SID_RE = re.compile(r"^[0-9a-f]{12}$")
+SID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{12}$")
 TURN_BODY = {"provider": "muse", "repo": "testrepo",
              "prompt": "hello", "intent": "agent-spawn",
              "confirmed": True}
@@ -84,6 +86,25 @@ class TurnArgvTest(unittest.TestCase):
         argv = agent_turn.turn_argv("muse", "/srv/x", "s",
                                    "a; rm -rf /", False)
         self.assertIn("a; rm -rf /", argv)
+
+    def test_new_session_id_is_full_uuid(self):
+        import uuid
+
+        for _ in range(3):
+            sid = agent_turn.new_session_id()
+            self.assertEqual(sid, str(uuid.UUID(sid)))
+            self.assertEqual(len(sid), 36)
+
+    def test_muse_argv_carries_valid_uuid(self):
+        import uuid
+
+        sid = agent_turn.new_session_id()
+        argv = agent_turn.turn_argv("muse", "/srv/x", sid, "hi",
+                                   False)
+        flag_at = argv.index("--session-id")
+        carried = argv[flag_at + 1]
+        self.assertEqual(carried, sid)
+        uuid.UUID(carried)
 
 
 class RunTurnTest(unittest.TestCase):
@@ -245,7 +266,8 @@ class AgentRouterTest(unittest.TestCase):
         self.assertTrue(SID_RE.match(done["session_id"]))
 
     def test_followup_turn_skips_confirm(self):
-        body = dict(TURN_BODY, session_id="abc123def456",
+        body = dict(TURN_BODY,
+                    session_id="12345678-1234-5678-1234-567812345678",
                     prompt="again")
         body.pop("confirmed")
         body.pop("intent")
