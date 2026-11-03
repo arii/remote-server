@@ -63,6 +63,31 @@ export function nowPollMs(itemCount: number): number {
   return itemCount > 0 ? 15000 : 60000;
 }
 
+export function StackSection({ health }: { health: SystemHealthResponse | null }) {
+  const allUp =
+    health !== null &&
+    health.containers.length > 0 &&
+    health.containers.every(
+      (c) =>
+        (c.state ?? '').toLowerCase() === 'running' &&
+        (c.health ?? '').toLowerCase() !== 'unhealthy',
+    );
+  return (
+    <section data-testid="now-stack" aria-label="Stack">
+      <h2>Stack</h2>
+      {!health ? (
+        <p className="row-meta" role="status">Stack status: loading…</p>
+      ) : allUp ? (
+        <p className="row-meta" data-testid="now-stack-clear" role="status">
+          All {health.containers.length} containers up — all clear.
+        </p>
+      ) : (
+        <ContainerPills containers={health.containers} />
+      )}
+    </section>
+  );
+}
+
 function sevClass(severity: string): string {
   const s = severity.toLowerCase();
   if (s === 'crit' || s === 'critical') return 'sev sev-crit';
@@ -299,14 +324,7 @@ export default function NowView({
           Done: {fired}
         </p>
       )}
-      <section data-testid="now-stack" aria-label="Stack">
-        <h2>Stack</h2>
-        {health ? (
-          <ContainerPills containers={health.containers} />
-        ) : (
-          <p className="row-meta" role="status">Stack status: loading…</p>
-        )}
-      </section>
+      <StackSection health={health} />
       {data && (
         <>
           <InboxStrips
