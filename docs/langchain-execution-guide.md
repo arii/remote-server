@@ -42,8 +42,8 @@ already hardened for small-model quirks; reuse them verbatim.
   `NEBIUS_ONLY=1` forces cloud, `OLLAMA_STRICT=1` fails instead of falling
   back. Embeddings stay local (`nomic-embed-text`). Never log specs or
   kwargs — the API key must not reach the ledger or progress files.
-- Shared helpers: import from `deep-agent/s5tools.py` — `run`/`run_json`
-  (timeout, no shell, capped errors), `gh_json`, `td`, `checkout_for`,
+- Shared helpers: import from `deep-agent/s5tools.py` — `run`
+  (timeout, no shell, capped errors), `td`, `checkout_for`,
   `read_repo_file`, `grep_repo`. Never re-implement gh/td/file access;
   new code reads validators from `s5tools`, not from slice scripts.
 - No reimplementation: if a slice needs a capability that belongs in
