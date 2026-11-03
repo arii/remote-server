@@ -4,15 +4,15 @@
 # same trust level as the terminal container). Never publish its port —
 # ingress is via oauth2-proxy -> caddy only.
 
-# ---- SPA build ----
+# ---- SPA build (pnpm workspace: single root lockfile) ----
 FROM node:22-alpine AS spa
-WORKDIR /build/frontend
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+WORKDIR /build
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json ./frontend/
 RUN npm install -g "pnpm@10.28.2" \
- && printf 'onlyBuiltDependencies:\n  - esbuild\n' > pnpm-workspace.yaml \
  && pnpm install --frozen-lockfile
-COPY frontend/ ./
-RUN VITE_BASE=/buttons/ pnpm build
+COPY frontend/ ./frontend/
+RUN VITE_BASE=/buttons/ pnpm --filter frontend build
 
 # ---- Runtime ----
 FROM python:3.11-slim

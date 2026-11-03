@@ -13,6 +13,7 @@ from . import context_filter
 from . import parse_task_spec
 from . import preflight_digest
 from . import repair_worker
+from . import validate_config
 
 COMMANDS = {
     "ast-check": ("Validate one file's syntax.", ast_validator.main),
@@ -21,6 +22,7 @@ COMMANDS = {
     "parse-task": ("Parse a task-spec file or stdin.", parse_task_spec.main),
     "preflight": ("Digest td preflight JSON on stdin.", preflight_digest.main),
     "repair": ("Autonomous repair worker.", repair_worker.main),
+    "validate-config": ("Validate repo configs.", validate_config.main),
 }
 
 
