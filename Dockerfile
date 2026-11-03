@@ -20,8 +20,10 @@ ARG BOOMTICK_CLI_REF=main
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git gh curl ca-certificates \
+ && apt-get install -y --no-install-recommends git gh curl ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /home/ari \
+ && ln -sfn /root/.ssh /home/ari/.ssh \
  && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
   | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
  && mkdir -p /usr/local/libexec/docker/cli-plugins \
