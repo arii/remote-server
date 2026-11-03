@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Offer to resume the muse session interrupted by a terminal restart (#408).
+#
+# muse-resume-offer prints "name|uuid" when the latest session for this
+# workspace died with its segment unterminated before container boot.
+# Empty reply or Y resumes; anything else declines and records a
+# per-session marker so this boot stops asking; timeout resumes
+# (automatic recovery); interrupt or error keeps a fresh shell.
+# MUSE_NO_AUTORESUME=1 skips entirely. Resume-only: the single exec is
+# `muse resume <uuid>`, never anything destructive.
+set -u
+
+[ "${MUSE_NO_AUTORESUME:-0}" = "1" ] && exit 0
+command -v muse-resume-offer >/dev/null 2>&1 || exit 0
+command -v muse >/dev/null 2>&1 || exit 0
+
+offer="$(muse-resume-offer 2>/dev/null)" || exit 0
+[ -n "$offer" ] || exit 0
+name="${offer%%|*}"
+uuid="${offer##*|}"
+[ -n "$name" ] && [ -n "$uuid" ] && [ "$name" != "$offer" ] || exit 0
+
+timeout="${MUSE_RESUME_TIMEOUT:-10}"
+read -r -t "$timeout" -p "Resume muse session $name? [Y/n] " reply
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  case "$reply" in
+    ""|[Yy]*) ;;
+    *)
+      mkdir -p "${MUSE_DECLINED_DIR:-/tmp/muse-resume-declined}"
+      touch "${MUSE_DECLINED_DIR:-/tmp/muse-resume-declined}/$uuid"
+      exit 0
+      ;;
+  esac
+elif [ "$rc" -ne 142 ]; then
+  # Interrupt or read error: fresh shell, never trap.
+  exit 0
+fi
+# Timeout (rc 142) falls through to automatic recovery.
+exec muse resume "$uuid"

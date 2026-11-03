@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Offer data for muse auto-resume on interactive shell start (#408).
+
+Prints "name|uuid" for the latest session in this workspace when it was
+interrupted by a terminal restart: segment unterminated, updated before
+container boot (/proc/1 start), recent, and not declined this boot.
+Anything else (live session, clean end, ancient, declined, missing or
+corrupt store) prints nothing. Exit 0 always: shell start must never
+break. MUSE_NO_AUTORESUME=1 forces silence.
+"""
+
+import os
+import sqlite3
+import sys
+import time
+
+OFFER_MAX_AGE_SECS = 7 * 86400
+
+
+def container_boot_us():
+    """Container start as epoch microseconds. MUSE_BOOT_EPOCH (epoch
+    seconds) overrides for tests; /proc/1 mtime is container init."""
+    override = os.environ.get("MUSE_BOOT_EPOCH")
+    if override:
+        try:
+            return int(float(override) * 1_000_000)
+        except ValueError:
+            return None
+    try:
+        return int(os.stat("/proc/1").st_mtime * 1_000_000)
+    except OSError:
+        return None
+
+
+def declined_dir():
+    return os.environ.get(
+        "MUSE_DECLINED_DIR", "/tmp/muse-resume-declined"
+    )
+
+
+def latest_session(conn, workspace):
+    row = conn.execute(
+        "SELECT session_id, logged_session_name, updated_at_us,"
+        " latest_segment_terminated"
+        " FROM sessions WHERE workspace_root = ?"
+        " ORDER BY updated_at_us DESC LIMIT 1",
+        (workspace,),
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT session_id, logged_session_name, updated_at_us,"
+            " latest_segment_terminated"
+            " FROM sessions ORDER BY updated_at_us DESC LIMIT 1"
+        ).fetchone()
+    return row
+
+
+def claimed_name(muse_dir, session_id):
+    db = os.path.join(muse_dir, "session-name-authority", "session-names.db")
+    if not os.path.isfile(db):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT normalized_name FROM session_name_claims_v2"
+            " WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def offer_line(workspace):
+    home = os.path.expanduser("~")
+    data_home = os.environ.get("XDG_DATA_HOME", os.path.join(home, ".local", "share"))
+    muse_dir = os.path.join(data_home, "muse")
+    db = os.path.join(muse_dir, "session-index.db")
+    if not os.path.isfile(db):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None
+    try:
+        row = latest_session(conn, workspace)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    session_id, logged_name, updated_us, terminated = row
+    if terminated:
+        return None
+    boot_us = container_boot_us()
+    now_us = int(time.time() * 1_000_000)
+    if boot_us is None or updated_us is None:
+        return None
+    if updated_us >= boot_us:
+        return None
+    if now_us - updated_us > OFFER_MAX_AGE_SECS * 1_000_000:
+        return None
+    if os.path.exists(os.path.join(declined_dir(), session_id)):
+        return None
+    name = logged_name or claimed_name(muse_dir, session_id) or session_id[:8]
+    return f"{name}|{session_id}"
+
+
+def main(argv):
+    try:
+        if os.environ.get("MUSE_NO_AUTORESUME") == "1":
+            return 0
+        workspace = argv[1] if len(argv) > 1 else os.getcwd()
+        line = offer_line(workspace)
+    except Exception:
+        return 0
+    if line:
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

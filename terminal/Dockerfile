@@ -106,6 +106,18 @@ RUN touch /root/.bashrc \
       >> /root/.bashrc) \
  && muse-resume-hint > /dev/null
 
+# Muse auto-resume offer on interactive shell start (#408): offers to
+# resume the session interrupted by a restart (timeout resumes, N declines
+# until next restart, MUSE_NO_AUTORESUME=1 skips). Same rebuild+recreate
+# note. Smoke test runs the no-store path plus a bash syntax check.
+RUN touch /root/.bashrc \
+ && (grep -q "muse-resume-ask" /root/.bashrc || printf '%s\n' \
+      '# Muse auto-resume offer (interactive shells only).' \
+      'if [ -n "$PS1" ] && command -v muse-resume-ask >/dev/null 2>&1; then muse-resume-ask; fi' \
+      >> /root/.bashrc) \
+ && muse-resume-offer > /dev/null \
+ && bash -n /usr/local/bin/muse-resume-ask
+
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
 COPY config.kdl /root/.config/zellij/config.kdl
