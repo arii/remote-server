@@ -12,9 +12,6 @@ confirmed: True}) because provider CLIs run tools; follow-up turns
 and abort are free.
 """
 
-import os
-from pathlib import Path
-
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -50,22 +47,20 @@ class ProviderList(BaseModel):
 
 
 def _repo_target(repo: str) -> tuple[str, str]:
-    """Validate a repo name; return (name, cwd). Raises ValueError."""
-    from backend.core import get_repo_status, resolve_repo_path, \
-        validate_repo_name
+    """Validate a repo name; return (name, terminal-side cwd).
+
+    Raises ValueError. The cwd feeds `compose exec --workdir` into
+    the terminal container, so it must be the /srv bind-mount path
+    even when the buttons-side resolver returns /home/ari paths.
+    """
+    from backend.core import get_repo_status, validate_repo_name
 
     try:
         name = validate_repo_name(repo)
         get_repo_status(name)
     except (ValueError, FileNotFoundError, RuntimeError):
         raise ValueError("unknown repo")
-    path = resolve_repo_path(name)
-    if name == "remote-server" and not (path / ".git").exists():
-        stack = Path(os.environ.get("BACKEND_STACK_DIR",
-                                    "/home/ari/remote-server"))
-        if (stack / ".git").exists():
-            return name, str(stack)
-    return name, str(path)
+    return name, agent_turn.terminal_cwd(name)
 
 
 @router.get("/providers", response_model=ProviderList)
