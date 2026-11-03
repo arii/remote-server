@@ -75,7 +75,7 @@ def _repo_target(repo: str) -> tuple[str, str]:
 async def agent_providers() -> dict:
     status = await agent_turn.provider_status(
         agent_turn.terminal_cwd("remote-server"))
-    return {"providers": list(agent_turn.PROVIDERS),
+    return {"providers": list(agent_turn.ordered_providers()),
             "status": status}
 
 

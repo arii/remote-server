@@ -53,6 +53,28 @@ class TurnArgvTest(unittest.TestCase):
     def test_allowlist_is_headless_capable_only(self):
         self.assertEqual(set(agent_turn.PROVIDERS), {"muse", "agy"})
 
+    def test_default_order_is_muse_first(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_DEFAULT_PROVIDER", None)
+            self.assertEqual(agent_turn.ordered_providers(),
+                             ("muse", "agy"))
+
+    def test_env_flips_default_to_agy(self):
+        with mock.patch.dict(os.environ,
+                             {"AGENT_DEFAULT_PROVIDER": "agy"}):
+            self.assertEqual(agent_turn.ordered_providers(),
+                             ("agy", "muse"))
+
+    def test_unknown_or_empty_env_keeps_default_order(self):
+        for value in ("pi", "", "  ", "AGY "):
+            with mock.patch.dict(os.environ,
+                                 {"AGENT_DEFAULT_PROVIDER": value}):
+                order = agent_turn.ordered_providers()
+            if value.strip().lower() in ("muse", "agy"):
+                self.assertEqual(order[0], value.strip().lower())
+            else:
+                self.assertEqual(order, ("muse", "agy"))
+
     def test_rejects_unknown(self):
         with self.assertRaises(ValueError):
             agent_turn.turn_argv("pi", "/srv/x", "s", "hi", False)
@@ -317,6 +339,17 @@ class AgentRouterTest(unittest.TestCase):
         self.assertEqual(body["providers"], ["muse", "agy"])
         self.assertEqual(len(body["status"]), 1)
         self.assertFalse(body["status"][0]["available"])
+
+    def test_providers_endpoint_respects_default_env(self):
+        async def fake_status(cwd):
+            return []
+        with mock.patch.dict(os.environ,
+                             {"AGENT_DEFAULT_PROVIDER": "agy"}), \
+             mock.patch.object(agent.agent_turn, "provider_status",
+                               side_effect=fake_status):
+            resp = self.client.get("/api/agent/providers")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["providers"], ["agy", "muse"])
 
     def test_turn_rejects_unknown_provider(self):
         body = dict(TURN_BODY, provider="pi")
