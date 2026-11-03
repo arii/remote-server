@@ -109,10 +109,12 @@ export default function NowView({
   repo,
   health,
   reportContext,
+  onAskAgent,
 }: {
   repo: string;
   health: SystemHealthResponse | null;
   reportContext: string;
+  onAskAgent: (seed: string) => void;
 }) {
   const [data, setData] = useState<AttentionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -220,14 +222,25 @@ export default function NowView({
                 {item.kind} · {item.severity} · {formatStamp(item.created_at)}
               </p>
               <p>{item.detail}</p>
-              <ActionControl
-                item={item}
-                onDone={(title) => {
-                  setFired(title);
-                  void refresh();
-                }}
-                onError={setError}
-              />
+              <div className="actions">
+                <ActionControl
+                  item={item}
+                  onDone={(title) => {
+                    setFired(title);
+                    void refresh();
+                  }}
+                  onError={setError}
+                />
+                <button
+                  type="button"
+                  data-testid={`ask-agent-${item.id}`}
+                  onClick={() =>
+                    onAskAgent(`${item.title} (${item.repo}): ${item.detail}`)
+                  }
+                >
+                  Ask agent
+                </button>
+              </div>
             </li>
           ))}
         </ul>

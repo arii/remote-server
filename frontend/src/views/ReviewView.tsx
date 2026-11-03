@@ -22,7 +22,13 @@ function labelOf(v: unknown): string {
   return '';
 }
 
-export default function ReviewView({ repo }: { repo: string }) {
+export default function ReviewView({
+  repo,
+  onAskAgent,
+}: {
+  repo: string;
+  onAskAgent: (seed: string) => void;
+}) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
@@ -230,7 +236,20 @@ export default function ReviewView({ repo }: { repo: string }) {
                   </li>
                 ))}
               </ul>
-              <HoldToConfirm label={`Merge PR #${sel.number}`} onFire={() => void onMerge(sel.number)} />
+              <div className="actions">
+                <HoldToConfirm label={`Merge PR #${sel.number}`} onFire={() => void onMerge(sel.number)} />
+                <button
+                  type="button"
+                  data-testid={`ask-agent-pr-${sel.number}`}
+                  onClick={() =>
+                    onAskAgent(
+                      `PR #${sel.number} ${sel.title} (${repo}): ${sel.branch} into ${sel.base}, CI ${sel.ci}, merge ${sel.merge}.`,
+                    )
+                  }
+                >
+                  Ask agent
+                </button>
+              </div>
             </div>
           )}
           <h3>Create issue</h3>

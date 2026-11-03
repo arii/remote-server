@@ -27,9 +27,9 @@ type Tab = 'now' | 'review' | 'jobs' | 'chat' | 'briefing' | 'history';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'now', label: 'Now' },
+  { id: 'chat', label: 'Chat' },
   { id: 'review', label: 'Review' },
   { id: 'jobs', label: 'Jobs' },
-  { id: 'chat', label: 'Chat' },
   { id: 'briefing', label: 'Briefing' },
   { id: 'history', label: 'History' },
 ];
@@ -43,6 +43,12 @@ export default function App() {
   const [repos, setRepos] = useState<RepoInfo[]>(FALLBACK_REPOS);
   const [repo, setRepo] = useState('remote-server');
   const [health, setHealth] = useState<SystemHealthResponse | null>(null);
+  const [chatSeed, setChatSeed] = useState<string | null>(null);
+
+  function askAgent(seed: string) {
+    setChatSeed(seed);
+    setTab('chat');
+  }
 
   useEffect(() => {
     if (useMock()) {
@@ -92,9 +98,6 @@ export default function App() {
         <a data-testid="tool-code" href={`${stackBase()}/code`}>
           Code
         </a>
-        <button type="button" data-testid="tool-chat" onClick={() => setTab('chat')}>
-          Chat
-        </button>
       </header>
       <nav className="actions" aria-label="Views">
         {TABS.map((t) => (
@@ -113,11 +116,14 @@ export default function App() {
           repo={repo}
           health={health}
           reportContext={`Repo ${repo} · ${healthSummary(health)}`}
+          onAskAgent={askAgent}
         />
       )}
-      {tab === 'review' && <ReviewView repo={repo} />}
+      {tab === 'review' && <ReviewView repo={repo} onAskAgent={askAgent} />}
       {tab === 'jobs' && <JobsView repo={repo} />}
-      {tab === 'chat' && <ChatView repo={repo} />}
+      {tab === 'chat' && (
+        <ChatView repo={repo} seed={chatSeed} onSeedUsed={() => setChatSeed(null)} />
+      )}
       {tab === 'briefing' && <BriefingView repo={repo} />}
       {tab === 'history' && <HistoryView repo={repo} health={health} />}
     </main>

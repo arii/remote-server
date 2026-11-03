@@ -227,9 +227,21 @@ async function pumpStream(
   }
 }
 
-export default function ChatView({ repo }: { repo: string }) {
+export default function ChatView({
+  repo,
+  seed,
+  onSeedUsed,
+}: {
+  repo: string;
+  seed: string | null;
+  onSeedUsed: () => void;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(seed ?? '');
+  useEffect(() => {
+    if (seed) onSeedUsed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
