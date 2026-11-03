@@ -24,6 +24,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /home/ari \
  && ln -sfn /root/.ssh /home/ari/.ssh \
+ && git config --system --add safe.directory '*' \
+ && echo "mounted checkouts trusted (single-user box)" \
  && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
   | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
  && mkdir -p /usr/local/libexec/docker/cli-plugins \
@@ -48,7 +50,8 @@ COPY deep-agent/ ./deep-agent/
 COPY core_cli/ ./core_cli/
 COPY --from=spa /build/frontend/dist ./frontend/dist/
 # Build-time smoke: CLI intact after our pins, server + agent imports resolve.
-RUN /opt/venvs/td/bin/td --help > /dev/null \
+RUN git config --system --get-all safe.directory | grep -qF '*' \
+ && /opt/venvs/td/bin/td --help > /dev/null \
  && /opt/venvs/td/bin/python -c "import fastapi, uvicorn, httpx, langchain; print('deps ok')" \
  && /opt/venvs/td/bin/python -c "import backend.server; print('server imports ok')" \
  && /opt/venvs/td/bin/python /app/core_cli/briefing_summary.py 2>&1 | grep -q "usage:" \
