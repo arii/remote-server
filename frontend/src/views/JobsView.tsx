@@ -19,6 +19,7 @@ import type { RepairStatusResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import type { IssueRow } from '../reviewTypes';
 import { mergeBlockReason } from '../reviewTypes';
+import { TRIAGE_HINT, useTriageKeys } from '../triageKeys';
 import { loadJobs, useMock } from './mockViews';
 
 interface TdCommand {
@@ -294,14 +295,20 @@ function RepairSection({ repo }: { repo: string }) {
 function JobListItem({
   job,
   repo,
+  kbdFocus,
   onSelect,
 }: {
   job: JobRecord;
   repo: string;
+  kbdFocus?: boolean;
   onSelect: (id: string) => void;
 }) {
   return (
-    <li key={job.id} className="detail" data-testid={`job-${job.id}`}>
+    <li
+      key={job.id}
+      className={`detail${kbdFocus ? ' kbd-focus' : ''}`}
+      data-testid={`job-${job.id}`}
+    >
       <span className="row-title">{labelOf(job)}</span>
       <p className="row-meta">
         {job.id} · {job.repo || repo} · {job.done ? 'done' : 'active'}
@@ -317,7 +324,15 @@ function JobListItem({
   );
 }
 
-export default function JobsView({ repo }: { repo: string }) {
+export default function JobsView({
+  repo,
+  triageSuspended = false,
+}: {
+  repo: string;
+  // Drawer-open flag: while true (agent drawer / PTY terminal open),
+  // triage keys are disabled.
+  triageSuspended?: boolean;
+}) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -335,6 +350,18 @@ export default function JobsView({ repo }: { repo: string }) {
   const labelRef = useRef<string>('');
   const launchRepoRef = useRef<string>(repo);
   const progressRef = useRef<HTMLDivElement | null>(null);
+  // Live list for the triage opener (hook subscribes once, reads via ref).
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
+  const [cursor] = useTriageKeys({
+    count: jobs?.length ?? 0,
+    suspended: triageSuspended,
+    onOpen: (i) => {
+      const j = jobsRef.current?.[i];
+      if (j) void guarded(() => onSelectRun(j.id));
+    },
+    rowTestId: (i) => `job-${jobsRef.current?.[i]?.id ?? ''}`,
+  });
 
   async function onTogglePlan() {
     if (!planCard) return;
@@ -753,6 +780,7 @@ export default function JobsView({ repo }: { repo: string }) {
         </ul>
       </section>
 
+      <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT}</p>
       {list.length === 0 ? (
         <div data-testid="jobs-empty">
           <h3>No runs</h3>
@@ -760,11 +788,12 @@ export default function JobsView({ repo }: { repo: string }) {
         </div>
       ) : (
         <ul className="session-list" data-testid="jobs-list">
-          {list.map((j) => (
+          {list.map((j, ji) => (
             <JobListItem
               key={j.id}
               job={j}
               repo={repo}
+              kbdFocus={cursor === ji}
               onSelect={(id) => void guarded(() => onSelectRun(id))}
             />
           ))}
