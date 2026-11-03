@@ -25,6 +25,11 @@ When using BoomTick MCP tools:
 - `docker compose up -d --build` — start the project
 - `pnpm run lint` — run the lint task
 
+## Agent lanes
+
+- Multi-session lane work is coordinated through memory file `lanes/registry.md` (personal_project scope): role → session-name roster. Read it to find the orchestrator/coders/auditors; never guess session names.
+- Lane skills live in `.agents/skills/` (force-added; the directory is otherwise ignored). Imported/upstream skills stay ignored as re-fetchable.
+
 ## Code Map
 
 - `backend` — application source
