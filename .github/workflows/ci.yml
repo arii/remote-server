@@ -1,7 +1,8 @@
 name: CI
 
 # Builds the terminal image on every push/PR, validates the compose file,
-# lints the shell scripts, and scans for leaked secrets.
+# lints the shell scripts, scans for leaked secrets, and runs the
+# backend + frontend test suites with the backend type-check.
 #
 # Docker workflow replicates arii/BoomTick's pattern:
 # .github/actions/setup-docker-buildx (ghcr.io login + buildx),
@@ -132,3 +133,18 @@ jobs:
         run: pnpm --filter frontend lint
       - name: unit tests
         run: pnpm --filter frontend test
+
+  backend:
+    name: backend tests + type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: install backend deps
+        run: pip install -r backend/requirements.txt
+      - name: type-check backend tree
+        run: npm run type-check
+      - name: backend unit tests
+        run: npm run test:backend
