@@ -5,6 +5,7 @@ import {
   apiUrl,
   fetchAgentProviders,
   fetchAttention,
+  fetchBriefing,
   fetchInbox,
   fetchJobs,
   fetchLedger,
@@ -12,7 +13,10 @@ import {
   fetchPrDiff,
   fetchSystemHealth,
   fetchWorkflowHealth,
+  invalidateViewCaches,
   postAgentTurn,
+  startJobRun,
+  warmViewCaches,
 } from './apiClient';
 
 function mockFetchJson(body: unknown, ok = true, status = 200) {
@@ -28,6 +32,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   __clearPrCaches();
+  invalidateViewCaches();
 });
 
 describe('apiClient (fetch with inline shapes)', () => {
@@ -209,5 +214,75 @@ describe('pr details/diff cache + in-flight dedup', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await fetchPrDiff('demo', 7);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('view cache (briefing/jobs/attention)', () => {
+  const jobsBody = { jobs: [] };
+  const briefingBody = { attention: [] };
+  const attentionBody = { updated_at: 1, items: [] };
+
+  function queueJson(...bodies: unknown[]) {
+    const f = vi.fn();
+    for (const b of bodies) {
+      f.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => b,
+        text: async () => '',
+      });
+    }
+    return f;
+  }
+
+  it('serves briefing from cache within TTL and refetches after expiry', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = mockFetchJson(briefingBody);
+      vi.stubGlobal('fetch', fetchMock);
+      await fetchBriefing('demo');
+      await fetchBriefing('demo');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(61_000);
+      await fetchBriefing('demo');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dedups concurrent jobs fetches into one request', async () => {
+    const fetchMock = mockFetchJson(jobsBody);
+    vi.stubGlobal('fetch', fetchMock);
+    await Promise.all([fetchJobs(), fetchJobs()]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never caches failures', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
+    await expect(fetchBriefing('demo')).rejects.toThrow('GET api/briefing');
+    const succeeding = mockFetchJson(briefingBody);
+    vi.stubGlobal('fetch', succeeding);
+    await expect(fetchBriefing('demo')).resolves.toEqual(briefingBody);
+    expect(succeeding).toHaveBeenCalledTimes(1);
+  });
+
+  it('mutations invalidate the jobs cache', async () => {
+    const fetchMock = queueJson(jobsBody, { id: 'abc123' }, jobsBody);
+    vi.stubGlobal('fetch', fetchMock);
+    await fetchJobs();
+    await startJobRun('merge-approved', 'demo', true);
+    await fetchJobs();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('warms briefing/jobs/attention so later reads hit cache', async () => {
+    const fetchMock = queueJson(briefingBody, jobsBody, attentionBody);
+    vi.stubGlobal('fetch', fetchMock);
+    await warmViewCaches('demo');
+    await fetchBriefing('demo');
+    await fetchJobs();
+    await fetchAttention('demo');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

@@ -52,19 +52,76 @@ export function fetchSystemHealth(): Promise<SystemHealthResponse> {
   return getJson<SystemHealthResponse>('api/system/health');
 }
 
+// Short-lived in-memory cache + in-flight dedup for slow view reads
+// (briefing generation, jobs, attention). Views unmount on tab switch;
+// the module-level cache survives so revisits land instantly. Keyed by
+// request path; successes cached briefly, failures never cached,
+// mutations invalidate.
+const VIEW_CACHE_TTL_MS = 60_000;
+const VIEW_CACHE_SHORT_TTL_MS = 30_000;
+
+interface ViewCacheEntry {
+  value: unknown;
+  expiresAt: number;
+}
+
+const viewCache = new Map<string, ViewCacheEntry>();
+const viewInflight = new Map<string, Promise<unknown>>();
+
+function cachedViewFetch<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  const hit = viewCache.get(key);
+  if (hit) {
+    if (hit.expiresAt > Date.now()) return Promise.resolve(hit.value as T);
+    viewCache.delete(key);
+  }
+  const pending = viewInflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const p = load();
+  viewInflight.set(key, p);
+  p.then(
+    (value) => {
+      viewCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+      viewInflight.delete(key);
+    },
+    () => {
+      viewInflight.delete(key);
+    },
+  );
+  return p;
+}
+
+/** Drop all cached view reads. Mutations call this; tests reset with it. */
+export function invalidateViewCaches(): void {
+  viewCache.clear();
+  viewInflight.clear();
+}
+
+/** Fire-and-forget warm of slow view reads (called on idle from Now). */
+export function warmViewCaches(repo: string): Promise<void> {
+  return Promise.all([
+    fetchBriefing(repo).catch(() => undefined),
+    fetchJobs().catch(() => undefined),
+    fetchAttention(repo).catch(() => undefined),
+  ]).then(() => undefined);
+}
+
 export function fetchJobs(): Promise<JobsResponse> {
-  return getJson<JobsResponse>('api/jobs');
+  return cachedViewFetch<JobsResponse>('api/jobs', VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<JobsResponse>('api/jobs'),
+  );
 }
 
 export function fetchBriefing(repo: string): Promise<BriefingResponse> {
-  return getJson<BriefingResponse>(
-    `api/briefing?repo=${encodeURIComponent(repo)}`,
+  const path = `api/briefing?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<BriefingResponse>(path, VIEW_CACHE_TTL_MS, () =>
+    getJson<BriefingResponse>(path),
   );
 }
 
 export function fetchAttention(repo: string): Promise<import('./attentionTypes').AttentionResponse> {
-  return getJson<import('./attentionTypes').AttentionResponse>(
-    `api/attention?repo=${encodeURIComponent(repo)}`,
+  const path = `api/attention?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<import('./attentionTypes').AttentionResponse>(path, VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<import('./attentionTypes').AttentionResponse>(path),
   );
 }
 
@@ -256,14 +313,20 @@ export function startJobRun(
   return postJson<{ id: string }>(
      'api/jobs/run',
     confirmed ? { action, repo, intent: 'jobs-run', confirmed: true } : { action, repo },
-  );
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export function startTdRun(
   command: string,
   repo: string,
 ): Promise<{ id: string }> {
-  return postJson<{ id: string }>('api/jobs/run-td', { command, repo });
+  return postJson<{ id: string }>('api/jobs/run-td', { command, repo }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export interface JobRunProgress {
@@ -282,6 +345,9 @@ export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number 
     all,
     intent: 'jobs-clear',
     confirmed: true,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 

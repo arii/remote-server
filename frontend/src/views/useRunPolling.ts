@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { fetchJobRun, fetchPiProgress } from '../apiClient';
+import { fetchJobRun, fetchPiProgress, invalidateViewCaches } from '../apiClient';
 import { completionOutcome } from './jobsUtils';
 
 // Polls one run to completion: streams output into the progress panel,
@@ -49,6 +49,7 @@ export function useRunPolling({
       setNotice(outcome.notice);
       if (outcome.planCard) setPlanCard(outcome.planCard);
       stopPoll();
+      invalidateViewCaches();
       await reload();
     } catch {
       try {
@@ -60,6 +61,7 @@ export function useRunPolling({
       }
       setRunning(null);
       stopPoll();
+      invalidateViewCaches();
       await reload();
     }
   }
