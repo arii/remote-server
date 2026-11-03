@@ -5,6 +5,7 @@ import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { InboxFeed } from './apiClient';
 import HoldToConfirm from './components/HoldToConfirm';
+import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
 import BriefingView, { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
@@ -696,5 +697,22 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('<h3>');
     expect(html).toContain('<h4>Review prompts</h4>');
     expect(html).not.toContain('<h2>');
+  });
+});
+
+describe('repo picker labels', () => {
+  const dirty = { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: false };
+  it('shortens the option label but keeps branch and dirty state', () => {
+    const label = repoOptionLabel(dirty);
+    expect(label).toContain('remote-server');
+    expect(label).toContain('main');
+    expect(label).toContain('dirty');
+    expect(label.length).toBeLessThan('arii/remote-server · on main (dirty)'.length);
+  });
+  it('renders the full label as hover title', () => {
+    const html = renderToStaticMarkup(
+      <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
+    );
+    expect(html).toContain('title="arii/remote-server');
   });
 });

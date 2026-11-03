@@ -81,7 +81,7 @@ h1, h2, h3 { text-wrap: balance; }
   display: inline-flex;
   align-items: center;
 }
-.toolbar select { max-width: 15rem; }
+.toolbar select { max-width: 20rem; }
 
 .page-head {
   display: flex;
