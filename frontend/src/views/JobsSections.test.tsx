@@ -30,6 +30,10 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).toContain('data-testid="td-pr"');
     expect(html).toContain('data-testid="dispatch-td-fix-ci"');
     expect(html).toContain('data-testid="dispatch-td-list-sessions"');
+    expect(html).toContain('data-testid="dispatch-td-doctor"');
+    expect(html).toContain('data-testid="dispatch-td-preflight"');
+    expect(html).toContain('data-testid="dispatch-td-audit-pr"');
+    expect(html).toContain('data-testid="dispatch-td-ai-review"');
     expect(html).toContain('data-testid="td-change-block"');
     expect(html).toContain('PR #12');
   });

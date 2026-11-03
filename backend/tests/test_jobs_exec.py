@@ -61,6 +61,28 @@ class ValidateTdCommandTest(unittest.TestCase):
         self.assertIsNone(engine.validate_td_command(""))
         self.assertIsNone(engine.validate_td_command("git status"))
 
+    def test_accept_diagnostic_shapes(self):
+        self.assertEqual(engine.validate_td_command("td doctor"), ["td", "doctor"])
+        self.assertEqual(
+            engine.validate_td_command("td preflight"), ["td", "preflight"]
+        )
+        self.assertEqual(
+            engine.validate_td_command("td gh audit-pr --pr 12 --fetch --audit"),
+            ["td", "gh", "audit-pr", "--pr", "12", "--fetch", "--audit"],
+        )
+        self.assertEqual(
+            engine.validate_td_command("td ai review 12"),
+            ["td", "ai", "review", "12"],
+        )
+
+    def test_reject_audit_submit_and_bare_audit(self):
+        # --submit posts a review: never one-tap dispatchable.
+        self.assertIsNone(
+            engine.validate_td_command("td gh audit-pr --pr 12 --fetch --audit --submit")
+        )
+        # Bare audit-pr with no stage flags is a server-side no-op.
+        self.assertIsNone(engine.validate_td_command("td gh audit-pr --pr 12"))
+
 
 class TruncationTest(unittest.TestCase):
     def test_tail_kept(self):

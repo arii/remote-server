@@ -52,6 +52,34 @@ const TD_COMMANDS: TdCommand[] = [
     needsPr: false,
     build: () => 'td --json agent run-feedback-check',
   },
+  {
+    slug: 'doctor',
+    label: 'Doctor',
+    desc: 'Full-stack runtime diagnostic.',
+    needsPr: false,
+    build: () => 'td doctor',
+  },
+  {
+    slug: 'preflight',
+    label: 'Preflight',
+    desc: 'Local checks before blaming CI.',
+    needsPr: false,
+    build: () => 'td preflight',
+  },
+  {
+    slug: 'audit-pr',
+    label: 'Audit PR',
+    desc: 'Headless PR audit: context plus findings. Never submits.',
+    needsPr: true,
+    build: (pr) => `td gh audit-pr --pr ${pr} --fetch --audit`,
+  },
+  {
+    slug: 'ai-review',
+    label: 'AI review',
+    desc: 'Quick heuristic review pass.',
+    needsPr: true,
+    build: (pr) => `td ai review ${pr}`,
+  },
 ];
 
 export default function TdCommands({
