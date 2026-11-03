@@ -73,6 +73,22 @@ async def _stop_proc(proc: subprocess.Popen) -> None:
             pass
 
 
+TERMINAL_REPOS = "/srv/repos"
+TERMINAL_STACK = "/srv/remote-server"
+
+
+def terminal_cwd(name: str) -> str:
+    """Repo checkout path as seen inside the terminal container.
+
+    Turns exec into terminal, whose bind-mounts live at /srv; the
+    buttons-side resolver may return host-style /home/ari paths
+    that do not exist there (same rule as chat.py td_cwd).
+    """
+    if name == "remote-server":
+        return TERMINAL_STACK
+    return f"{TERMINAL_REPOS}/{name}"
+
+
 def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
                continued: bool) -> list:
     """Argv for one headless turn. Injectable seam: tests patch this

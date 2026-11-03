@@ -87,6 +87,14 @@ class TurnArgvTest(unittest.TestCase):
                                    "a; rm -rf /", False)
         self.assertIn("a; rm -rf /", argv)
 
+    def test_terminal_cwd_uses_container_mounts(self):
+        # Exec runs in the terminal container: repos live at /srv,
+        # never the host-style /home/ari paths (see chat.py td_cwd).
+        self.assertEqual(agent_turn.terminal_cwd("boomtick"),
+                         "/srv/repos/boomtick")
+        self.assertEqual(agent_turn.terminal_cwd("remote-server"),
+                         "/srv/remote-server")
+
     def test_new_session_id_is_full_uuid(self):
         import uuid
 
