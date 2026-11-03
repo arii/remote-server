@@ -80,6 +80,7 @@ export default function App() {
 
   return (
     <main className="layout">
+      <h1 className="sr-only">Operator console</h1>
       <header className="toolbar">
         <RepoPicker repos={repos} value={repo} onChange={setRepo} />
         <span
