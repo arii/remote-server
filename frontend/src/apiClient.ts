@@ -411,29 +411,37 @@ export function fetchAgentProviders(): Promise<{ providers: string[] }> {
   return getJson<{ providers: string[] }>('api/agent/providers');
 }
 
-export function spawnAgentSession(
+export function postAgentTurn(
   provider: string,
   repo: string,
-): Promise<{ session_id: string }> {
-  return postJson<{ session_id: string }>('api/agent/spawn', {
-    provider,
-    repo,
-    intent: 'agent-spawn',
-    confirmed: true,
+  prompt: string,
+  sessionId: string | null,
+  signal?: AbortSignal,
+): Promise<Response> {
+  // Raw Response: the caller pumps the SSE stream. A new conversation
+  // (no session id) carries the hold-to-confirm intent; follow-ups
+  // reuse the session the done event returned.
+  return fetch(apiUrl('api/agent/turn'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      repo,
+      prompt,
+      session_id: sessionId ?? '',
+      intent: sessionId ? '' : 'agent-spawn',
+      confirmed: !sessionId,
+    }),
+    signal,
   });
 }
 
 export function abortAgentSession(
   sessionId: string,
-): Promise<{ ok: boolean; exit: number | null }> {
-  return postJson<{ ok: boolean; exit: number | null }>('api/agent/abort', {
+): Promise<{ ok: boolean; killed: boolean }> {
+  return postJson<{ ok: boolean; killed: boolean }>('api/agent/abort', {
     session_id: sessionId,
   });
-}
-
-export function agentWsUrl(protocol: string, host: string, sessionId: string): string {
-  const ws = protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${ws}//${host}${apiUrl(`api/agent/ws/${sessionId}`)}`;
 }
 
 export interface ApprovalPayload {

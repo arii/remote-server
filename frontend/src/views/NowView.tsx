@@ -193,10 +193,12 @@ export default function NowView({
     <section data-testid="now-view">
       <header className="page-head">
         <div>
-          <h2>Now</h2>
-          <p className="row-meta" title={formatStamp(data.updated_at)}>
-            Updated {relativeStamp(data.updated_at)}
-          </p>
+          <h2>
+            Now{' '}
+            <span className="head-stamp" title={formatStamp(data.updated_at)}>
+              Updated {relativeStamp(data.updated_at)}
+            </span>
+          </h2>
         </div>
         <button type="button" data-testid="report-bug" onClick={() => setDialogOpen(true)}>
           Report a bug

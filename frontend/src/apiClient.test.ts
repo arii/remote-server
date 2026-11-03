@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __clearPrCaches,
   abortAgentSession,
-  agentWsUrl,
   apiUrl,
   fetchAgentProviders,
   fetchAttention,
@@ -12,7 +11,7 @@ import {
   fetchPrDiff,
   fetchSystemHealth,
   fetchWorkflowHealth,
-  spawnAgentSession,
+  postAgentTurn,
 } from './apiClient';
 
 function mockFetchJson(body: unknown, ok = true, status = 200) {
@@ -84,43 +83,57 @@ describe('apiClient (fetch with inline shapes)', () => {
   });
 
   it('fetches the agent provider allowlist', async () => {
-    vi.stubGlobal('fetch', mockFetchJson({ providers: ['muse', 'agy', 'pi'] }));
-    expect(await fetchAgentProviders()).toEqual({ providers: ['muse', 'agy', 'pi'] });
+    vi.stubGlobal('fetch', mockFetchJson({ providers: ['muse', 'agy'] }));
+    expect(await fetchAgentProviders()).toEqual({ providers: ['muse', 'agy'] });
     expect(fetch).toHaveBeenCalledWith('/api/agent/providers');
   });
 
-  it('spawns an agent session behind hold-to-confirm', async () => {
-    vi.stubGlobal('fetch', mockFetchJson({ session_id: 'abc123' }));
-    expect(await spawnAgentSession('muse', 'remote-server')).toEqual({ session_id: 'abc123' });
-    expect(fetch).toHaveBeenCalledWith('/api/agent/spawn', {
+  it('starts a conversation behind hold-to-confirm', async () => {
+    const resp = { ok: true, status: 200 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(resp));
+    expect(await postAgentTurn('muse', 'remote-server', 'hi', null)).toBe(resp);
+    expect(fetch).toHaveBeenCalledWith('/api/agent/turn', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         provider: 'muse',
         repo: 'remote-server',
+        prompt: 'hi',
+        session_id: '',
         intent: 'agent-spawn',
         confirmed: true,
       }),
+      signal: undefined,
     });
   });
 
-  it('aborts an agent session', async () => {
-    vi.stubGlobal('fetch', mockFetchJson({ ok: true, exit: 143 }));
-    expect(await abortAgentSession('abc123')).toEqual({ ok: true, exit: 143 });
+  it('follows up on a session without reconfirming', async () => {
+    const resp = { ok: true, status: 200 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(resp));
+    await postAgentTurn('agy', 'remote-server', 'again', 'abc123');
+    expect(fetch).toHaveBeenCalledWith('/api/agent/turn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'agy',
+        repo: 'remote-server',
+        prompt: 'again',
+        session_id: 'abc123',
+        intent: '',
+        confirmed: false,
+      }),
+      signal: undefined,
+    });
+  });
+
+  it('aborts an agent turn', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, killed: true }));
+    expect(await abortAgentSession('abc123')).toEqual({ ok: true, killed: true });
     expect(fetch).toHaveBeenCalledWith('/api/agent/abort', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: 'abc123' }),
     });
-  });
-
-  it('builds ws(s) agent relay urls from the page origin', () => {
-    expect(agentWsUrl('https:', 'example.com', 'abc123')).toBe(
-      'wss://example.com/api/agent/ws/abc123',
-    );
-    expect(agentWsUrl('http:', 'localhost:5173', 'abc123')).toBe(
-      'ws://localhost:5173/api/agent/ws/abc123',
-    );
   });
 });
 
