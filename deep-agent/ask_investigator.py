@@ -30,7 +30,8 @@ import s5tools  # noqa: E402
 MODEL_ID = os.environ.get("ASK_MODEL", "qwen3:8b")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 
-# Mirror of ALLOWED_TD_COMMANDS in buttons/server.py (source of truth).
+# Mirror of ALLOWED_TD_COMMANDS in backend/exec/engine.py (source of
+# truth). Jules shapes are dead with Jules.
 ALLOWED_TD = [
     "td --json agent fix-ci --pr N --execute",
     "td gh read-pr-reviews --pr N",
@@ -39,7 +40,6 @@ ALLOWED_TD = [
     "td context-warm",
     "td --json preflight",
     "td --json agent list-sessions",
-    "td --json jules list-sessions",
     "td --json agent run-feedback-check",
 ]
 
