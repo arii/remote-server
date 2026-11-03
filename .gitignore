@@ -71,3 +71,6 @@ deep-agent/*
 # `git clean -fd` preserves these; `git clean -fdx` would remove them.
 .agents/
 skills-lock.json
+
+# Vite build output (regenerate with pnpm build)
+frontend/dist/

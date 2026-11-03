@@ -122,7 +122,7 @@ function requestSummary(args: Record<string, unknown>): string {
   return 'Proposed write';
 }
 
-function ApprovalCard({
+export function ApprovalCard({
   approval,
   decided,
   onDecide,

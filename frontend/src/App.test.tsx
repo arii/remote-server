@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
 import { cleanBriefingLine } from './views/BriefingView';
-import { cleanAgentText, traceLine } from './views/ChatView';
+import { ApprovalCard, cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
 
@@ -163,6 +163,30 @@ describe('chat agent text', () => {
       'END ok=true',
     );
     expect(traceLine({ ts: 105, type: 'future_thing' }, 100)).toContain('? future_thing');
+  });
+
+  it('renders the approval card with proposals and decisions', () => {
+    const html = renderToStaticMarkup(
+      <ApprovalCard
+        approval={{
+          session_id: 's',
+          action_requests: [{ args: { kind: 'td', command: 'td hi' } }],
+          proposals: ['PROPOSE td\nCOMMAND: td hi\nEND PROPOSE'],
+        }}
+        decided={null}
+        onDecide={() => {}}
+      />,
+    );
+    expect(html).toContain('Approval needed');
+    expect(html).toContain('Run: td hi');
+    expect(html).toContain('COMMAND: td hi');
+    expect(html).toContain('Approve');
+    expect(html).toContain('Reject');
+    const decided = renderToStaticMarkup(
+      <ApprovalCard approval={{ session_id: 's' }} decided="Approved." onDecide={() => {}} />,
+    );
+    expect(decided).toContain('Approved.');
+    expect(decided).not.toContain('Reject');
   });
 });
 
