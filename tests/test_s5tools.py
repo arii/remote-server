@@ -1,8 +1,6 @@
 import os
-import subprocess
 import sys
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
@@ -46,28 +44,6 @@ class TestS5Tools(unittest.TestCase):
             s5tools.run("not-a-list")
         with self.assertRaises(ValueError):
             s5tools.run([])
-
-    def test_run_json(self):
-        self.assertEqual(
-            s5tools.run_json([sys.executable, "-c", "print('{\"a\": 1}')"]),
-            {"a": 1},
-        )
-        with self.assertRaises(RuntimeError):
-            s5tools.run_json([sys.executable, "-c", "print('nope')"])
-
-    def test_gh_json(self):
-        completed = subprocess.CompletedProcess(
-            args=["gh"], returncode=0, stdout='{"x": true}', stderr=""
-        )
-        with mock.patch.object(subprocess, "run", return_value=completed):
-            self.assertEqual(s5tools.gh_json(["pr", "view", "1"]), {"x": True})
-        failed = subprocess.CompletedProcess(
-            args=["gh"], returncode=1, stdout="", stderr="boom"
-        )
-        with mock.patch.object(subprocess, "run", return_value=failed):
-            with self.assertRaises(RuntimeError) as ctx:
-                s5tools.gh_json(["pr", "view", "1"])
-        self.assertIn("boom", str(ctx.exception))
 
     def test_read_repo_file(self):
         import tempfile

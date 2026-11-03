@@ -11,7 +11,6 @@ Do NOT put secrets in here; the model router (`model_router.py`) and the
 ledger (`ledger.py`) own their own concerns.
 """
 
-import json
 import os
 import re
 import subprocess
@@ -67,20 +66,6 @@ def run(argv, cwd=None, timeout=DEFAULT_TIMEOUT):
         err = (proc.stderr or "").strip()[:200]
         raise RuntimeError(f"rc={proc.returncode}: {' '.join(argv[:3])}: {err}")
     return (proc.stdout or "").strip()
-
-
-def run_json(argv, cwd=None, timeout=DEFAULT_TIMEOUT):
-    """run() plus JSON parsing; raises RuntimeError on bad JSON."""
-    out = run(argv, cwd=cwd, timeout=timeout)
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        raise RuntimeError(f"bad json from {' '.join(argv[:2])}: {out[:200]}")
-
-
-def gh_json(args, timeout=DEFAULT_TIMEOUT):
-    """gh CLI returning parsed JSON. Caller passes -R/--repo in args."""
-    return run_json(["gh", *args], timeout=timeout)
 
 
 def td(args, cwd, timeout=300):
