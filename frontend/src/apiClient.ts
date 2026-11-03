@@ -138,10 +138,16 @@ export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListRe
   );
 }
 
+export interface HiddenStructural {
+  count: number;
+  files: string[];
+}
+
 export interface PrDiffResponse {
   number: number;
   diff: string;
   truncated: boolean;
+  hidden_structural?: HiddenStructural;
 }
 
 // Short-lived in-memory cache + in-flight dedup for PR details/diff,
@@ -265,6 +271,45 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
   return getJson<import('./reviewTypes').IssueListResponse>(
     `api/issues?repo=${encodeURIComponent(repo)}`,
   );
+}
+
+async function deleteJson<T>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(apiUrl(path), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return readJson<T>(resp, 'DELETE', path);
+}
+
+export function fetchDeferred(repo: string): Promise<import('./reviewTypes').DeferredListResponse> {
+  return getJson<import('./reviewTypes').DeferredListResponse>(
+    `api/deferred?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export function deferRow(
+  repo: string,
+  kind: 'pr' | 'issue',
+  number: number,
+): Promise<import('./reviewTypes').DeferredListResponse> {
+  return postJson<import('./reviewTypes').DeferredListResponse>('api/deferred', {
+    repo,
+    kind,
+    number,
+  });
+}
+
+export function restoreRow(
+  repo: string,
+  kind: 'pr' | 'issue',
+  number: number,
+): Promise<import('./reviewTypes').DeferredListResponse> {
+  return deleteJson<import('./reviewTypes').DeferredListResponse>('api/deferred', {
+    repo,
+    kind,
+    number,
+  });
 }
 
 export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<import('./reviewTypes').IssueDraftResponse> {

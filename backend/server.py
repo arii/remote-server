@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import agent, agents, attention, briefing, chat, inbox, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import agent, agents, attention, briefing, chat, deferred, inbox, issues, jobs, notify, ops, pulls, repo, system
 
 app = FastAPI(title="remote-server backend")
 
@@ -23,6 +23,7 @@ app.include_router(pulls.router)
 app.include_router(issues.router)
 app.include_router(attention.router)
 app.include_router(inbox.router)
+app.include_router(deferred.router)
 
 
 @app.get("/health")

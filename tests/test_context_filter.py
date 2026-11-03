@@ -129,8 +129,40 @@ class TestContextFilterHelpersAndIntegration(unittest.TestCase):
         self.assertTrue(context_filter.is_excluded_path("src/vendor/app.min.js"))
         self.assertTrue(context_filter.is_excluded_path("assets/icon.svg"))
         self.assertTrue(context_filter.is_excluded_path("buttons/__pycache__/server.cpython-312.pyc"))
+        self.assertTrue(context_filter.is_excluded_path("dist/app.bundle.js"))
         self.assertFalse(context_filter.is_excluded_path("src/index.ts"))
         self.assertFalse(context_filter.is_excluded_path("buttons/server.py"))
+
+    def test_is_structural_path(self):
+        for p in ("pnpm-lock.yaml", "frontend/pnpm-lock.yaml",
+                  "package-lock.json", "yarn.lock", "Cargo.lock",
+                  "poetry.lock", "Gemfile.lock", "app.min.js",
+                  "dist/app.min.js", "app.bundle.js",
+                  "dist/app.bundle.js", "dist/output.js",
+                  "pkg/dist/output.js"):
+            self.assertTrue(context_filter.is_structural_path(p), p)
+        for p in ("src/index.ts", "logo.svg", "icon.png",
+                  "server.cpython-312.pyc", "mydist/output.js", ""):
+            self.assertFalse(context_filter.is_structural_path(p), p)
+
+    def test_structural_hidden_files(self):
+        diff = ("diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n"
+                "--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n"
+                "@@ -1 +1 @@\n-foo\n+bar\n"
+                "diff --git a/logo.svg b/logo.svg\n"
+                "--- a/logo.svg\n+++ b/logo.svg\n"
+                "@@ -0,0 +1 @@\n+<svg/>\n"
+                "diff --git a/dist/bundle.min.js b/dist/bundle.min.js\n"
+                "--- a/dist/bundle.min.js\n+++ b/dist/bundle.min.js\n"
+                "@@ -1 +1 @@\n-a\n+b\n"
+                "diff --git a/app.py b/app.py\n"
+                "--- a/app.py\n+++ b/app.py\n"
+                "@@ -1 +1 @@\n-x\n+y\n")
+        self.assertEqual(
+            context_filter.structural_hidden_files(diff),
+            ["pnpm-lock.yaml", "dist/bundle.min.js"])
+        self.assertEqual(context_filter.structural_hidden_files(""), [])
+        self.assertEqual(context_filter.structural_hidden_files(None), [])
 
 
 if __name__ == "__main__":
