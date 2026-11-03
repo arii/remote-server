@@ -92,6 +92,19 @@ class TestModelRouter(unittest.TestCase):
         with self.assertRaises(ValueError):
             model_router.chat_kwargs({"provider": "wat"})
 
+    def test_nebius_kwargs_request_stream_usage(self):
+        # The tokenfactory gateway omits usage_metadata from stream
+        # chunks unless stream_usage is set; without it every Nebius
+        # run ledgers zeros (spend tracking blind).
+        kwargs = model_router.chat_kwargs(
+            {"provider": "nebius", "model": "m",
+             "base_url": "http://x"})
+        self.assertTrue(kwargs["stream_usage"])
+        ollama = model_router.chat_kwargs(
+            {"provider": "ollama", "model": "m",
+             "base_url": "http://x"})
+        self.assertNotIn("stream_usage", ollama)
+
 
 if __name__ == "__main__":
     unittest.main()

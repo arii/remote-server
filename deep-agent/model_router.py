@@ -120,5 +120,8 @@ def chat_kwargs(spec):
             "model": spec["model"],
             "base_url": spec["base_url"],
             "temperature": 0,
+            # The gateway omits usage from stream chunks unless asked;
+            # without this every Nebius run ledgers zero tokens.
+            "stream_usage": True,
         }
     raise ValueError(f"bad spec provider: {spec.get('provider')!r}")
