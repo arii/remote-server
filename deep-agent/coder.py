@@ -25,6 +25,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -82,9 +83,16 @@ def parse_args(argv):
     return args
 
 
+TEST_FILE_RE = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")
+
+
 def check_allowed(argv):
-    """True when argv starts with an allowlisted run_check prefix."""
+    """True when argv starts with an allowlisted run_check prefix, or
+    runs one repo test file directly (python3 tests/test_x.py)."""
     tupled = tuple(argv)
+    if len(tupled) >= 2 and tupled[0] == "python3" \
+            and TEST_FILE_RE.match(tupled[1]):
+        return True
     return any(tupled[:len(p)] == p for p in CHECK_PREFIXES)
 
 

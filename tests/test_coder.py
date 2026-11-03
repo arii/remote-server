@@ -49,8 +49,18 @@ class TestAllowlist(unittest.TestCase):
             ["git", "diff", "--stat"]))
         self.assertTrue(coder.check_allowed(["npx", "tsc", "--noEmit"]))
 
+    def test_direct_test_file(self):
+        self.assertTrue(coder.check_allowed(
+            ["python3", "tests/test_s5tools.py"]))
+        self.assertTrue(coder.check_allowed(
+            ["python3", "tests/test_x.py", "-v"]))
+
     def test_rejected(self):
         self.assertFalse(coder.check_allowed([]))
+        self.assertFalse(coder.check_allowed(
+            ["python3", "tests/helper.py"]))
+        self.assertFalse(coder.check_allowed(
+            ["python3", "tests/../evil.py"]))
         self.assertFalse(coder.check_allowed(["rm", "-rf", "."]))
         self.assertFalse(coder.check_allowed(["git", "push"]))
         self.assertFalse(coder.check_allowed(["curl", "http://x"]))
