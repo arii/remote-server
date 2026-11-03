@@ -1,5 +1,13 @@
 import type { RepoInfo } from '../reviewTypes';
 
+export function repoOptionLabel(r: RepoInfo): string {
+  return `${r.name} · ${r.branch}${r.clean ? '' : ' (dirty)'}`;
+}
+
+function repoOptionTitle(r: RepoInfo): string {
+  return `${r.full} · on ${r.branch}${r.clean ? '' : ' (dirty)'}`;
+}
+
 export default function RepoPicker({
   repos,
   value,
@@ -19,9 +27,8 @@ export default function RepoPicker({
         onChange={(e) => onChange(e.target.value)}
       >
         {repos.map((r) => (
-          <option key={r.name} value={r.name}>
-            {r.full} · on {r.branch}
-            {r.clean ? '' : ' (dirty)'}
+          <option key={r.name} value={r.name} title={repoOptionTitle(r)}>
+            {repoOptionLabel(r)}
           </option>
         ))}
       </select>
