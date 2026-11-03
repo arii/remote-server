@@ -450,6 +450,20 @@ export function abortRepair(): Promise<{ ok: boolean; killed: boolean }> {
   return postJson<{ ok: boolean; killed: boolean }>('api/repair/abort', {});
 }
 
+export interface RepairVerifyPreview {
+  ok: boolean;
+  issue: number;
+  command: string;
+  allowlisted: boolean;
+  error: string;
+}
+
+export function fetchVerifyCommand(issue: string): Promise<RepairVerifyPreview> {
+  return getJson<RepairVerifyPreview>(
+    `api/repair/verify-command?issue=${encodeURIComponent(issue)}`,
+  );
+}
+
 export interface PlanReadResponse {
   repo: string;
   name: string;

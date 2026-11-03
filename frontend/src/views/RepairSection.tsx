@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus } from '../apiClient';
-import type { RepairStatusResponse } from '../apiClient';
+import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerifyCommand } from '../apiClient';
+import type { RepairStatusResponse, RepairVerifyPreview } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
 import { useMock } from './mockViews';
-import { repairCandidates, repairFailureMessage } from './jobsUtils';
+import { repairCandidates, repairFailureMessage, repairVerifyBlocksDispatch, repairVerifyLine } from './jobsUtils';
 
 const IDLE_REPAIR: RepairStatusResponse = {
   status: 'idle',
@@ -16,9 +16,11 @@ const IDLE_REPAIR: RepairStatusResponse = {
 export default function RepairSection({
   repo,
   initialStatus,
+  initialPreview,
 }: {
   repo: string;
   initialStatus?: RepairStatusResponse;
+  initialPreview?: RepairVerifyPreview | null;
 }) {
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [picked, setPicked] = useState('');
@@ -27,6 +29,9 @@ export default function RepairSection({
     initialStatus ?? IDLE_REPAIR,
   );
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<RepairVerifyPreview | null>(
+    initialPreview ?? null,
+  );
   const timerRef = useRef<number | null>(null);
 
   function stopWatch() {
@@ -53,6 +58,29 @@ export default function RepairSection({
       cancelled = true;
     };
   }, [repo]);
+
+  const target = (picked || manual).trim();
+  useEffect(() => {
+    let cancelled = false;
+    if (useMock()) return;
+    if (!target) {
+      setPreview(null);
+      return;
+    }
+    setPreview(null);
+    (async () => {
+      try {
+        const live = await fetchVerifyCommand(target);
+        if (!cancelled) setPreview(live);
+      } catch {
+        if (!cancelled) setPreview(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, manual]);
 
   async function refresh() {
     try {
@@ -127,7 +155,7 @@ export default function RepairSection({
         <button
           type="button"
           data-testid="repair-dispatch"
-          disabled={!picked.trim() && !manual.trim()}
+          disabled={!target || repairVerifyBlocksDispatch(preview)}
           onClick={() => void onDispatchRepair()}
         >
           Dispatch repair
@@ -163,6 +191,11 @@ export default function RepairSection({
           </label>
         </div>
       </details>
+      {repairVerifyLine(preview) && (
+        <p className="row-meta" data-testid="repair-verify">
+          {repairVerifyLine(preview)}
+        </p>
+      )}
       {error && (
         <p className="row-meta" role="alert">
           Repair failed: {error}

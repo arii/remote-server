@@ -10,6 +10,7 @@ this backend serves /api/* like its sibling routers):
 - POST /api/repair/dispatch       start the repair worker for an issue
 - GET  /api/repair/status         repair worker state
 - POST /api/repair/abort          abort the in-flight repair worker
+- GET  /api/repair/verify-command parsed verify cmd + allowlist verdict
 
 Repair runs the worker the same way the legacy handler does: the
 same argv (python3 -m core_cli repair --issue N) with no new
@@ -29,6 +30,11 @@ from pydantic import BaseModel, Field
 
 from backend.exec.engine import stack_dir
 from backend.gh import repo_gh, run_gh, run_gh_json
+from core_cli.parse_task_spec import parse_task_spec
+from core_cli.verify_allowlist import (
+    VERIFY_VERB_HELP,
+    validate_verify_command,
+)
 
 router = APIRouter(prefix="/api", tags=["issues"])
 
@@ -186,6 +192,45 @@ class RepairAbortResult(BaseModel):
     killed: bool = False
 
 
+class RepairVerifyPreview(BaseModel):
+    ok: bool = True
+    issue: int = 0
+    command: str = ""
+    allowlisted: bool = False
+    error: str = ""
+
+
+def _repair_verify_preview(issue_number: int) -> dict:
+    """Parsed verification command + allowlist verdict for an issue.
+
+    Shared by the preview endpoint (the confirmer sees the command)
+    and dispatch (refuse to spawn rejected commands). Repair targets
+    the stack repo only — same scope as the worker argv.
+    """
+    try:
+        gh = repo_gh("remote-server")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        row = run_gh_json(gh, ["issue", "view", str(issue_number),
+                               "--repo", gh, "--json", "body"],
+                          timeout=60)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+    body = row.get("body", "") if isinstance(row, dict) else ""
+    try:
+        cmd = parse_task_spec(body or "").get("verification_command", "")
+    except ValueError as exc:
+        return {"ok": True, "issue": issue_number, "command": "",
+                "allowlisted": False, "error": str(exc)[:300]}
+    if not validate_verify_command(cmd):
+        return {"ok": True, "issue": issue_number, "command": cmd[:500],
+                "allowlisted": False,
+                "error": f"not allowlisted (allowed: {VERIFY_VERB_HELP})"}
+    return {"ok": True, "issue": issue_number, "command": cmd[:500],
+            "allowlisted": True, "error": ""}
+
+
 def trigger_repair(issue_number: int):
     t = threading.Thread(target=_repair_worker_thread,
                          args=(issue_number,), daemon=True)
@@ -253,12 +298,27 @@ def issue_draft(body: IssueDraftRequest) -> dict:
     return {"ok": True, "title": body.title, "body": md}
 
 
+@router.get("/repair/verify-command",
+            response_model=RepairVerifyPreview)
+def repair_verify_command(issue: str = "") -> dict:
+    issue_number = parse_issue_number(issue)
+    if issue_number is None:
+        raise HTTPException(
+            status_code=400, detail="invalid issue number or url")
+    return _repair_verify_preview(issue_number)
+
+
 @router.post("/repair/dispatch", response_model=RepairDispatchResult)
 def repair_dispatch(body: RepairDispatchRequest) -> dict:
     issue_number = parse_issue_number(body.issue)
     if issue_number is None:
         raise HTTPException(
             status_code=400, detail="invalid issue number or url")
+    preview = _repair_verify_preview(issue_number)
+    if not preview["allowlisted"]:
+        raise HTTPException(
+            status_code=400,
+            detail=preview["error"] or "verification command rejected")
     trigger_repair(issue_number)
     return {"ok": True, "issue": issue_number, "status": "running"}
 
