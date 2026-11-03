@@ -38,6 +38,7 @@ propose_action, and it only formats a proposal; execution stays
 server-side behind the existing validated endpoints.
 """
 
+import base64
 import json
 import os
 import re
@@ -70,6 +71,20 @@ RECURSION_LIMIT = 40
 MAX_HISTORY_MESSAGES = 40
 # Tool results carried into the salvage pass after a recursion cutoff.
 SALVAGE_TOOL_TAIL = 12
+
+# Propose-only maintainer sweep (roadmap item 7): read-only checks
+# the agent can actually run, findings via propose_action (which
+# always needs human approval). Scheduling is a deploy concern;
+# this is the runnable mode.
+SUPERVISOR_BRIEF = (
+    "You are the repo maintainer on a scheduled sweep. Work read-only "
+    "with list_dir/grep_repo/read_repo_file; track the sweep with "
+    "write_todos. Checks: (1) TODO/FIXME/XXX/HACK markers — report "
+    "file:line for each; (2) docs drift — docs/*.md paths that no "
+    "longer exist in the checkout. Then either report all-clean or "
+    "call propose_action(kind='issue') once per real finding (title + "
+    "file:line evidence). Propose, never fix; end with a summary."
+)
 EXIT_NEEDS_APPROVAL = 3
 
 # Mirror of ALLOWED_TD in ask_investigator.py (which mirrors
@@ -722,11 +737,18 @@ def main(argv=None) -> int:
     argv = sys.argv if argv is None else argv
     if len(argv) == 3 and argv[1] == "--validate-proposal":
         return _cmd_validate(argv[2])
+    if len(argv) == 3 and argv[2] == "--supervise":
+        if not s5tools.valid_repo(argv[1]):
+            return cli.usage_error(f"bad repo: {argv[1]!r}")
+        thread = f"supervise-{argv[1].split('/')[1]}"
+        raw = base64.b64encode(SUPERVISOR_BRIEF.encode()).decode()
+        return _cmd_turn(argv[1], thread, raw)
     if len(argv) < 4 or not s5tools.valid_repo(argv[1]):
         return cli.usage_error(
             "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>",
             "   or: deep_chat.py owner/repo <thread-id> --resume "
             "approve|reject [b64-message]",
+            "   or: deep_chat.py owner/repo --supervise",
             "   or: deep_chat.py --validate-proposal <b64-json>")
     if not valid_thread_id(argv[2]):
         return cli.usage_error("bad thread-id")

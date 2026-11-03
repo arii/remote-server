@@ -292,6 +292,36 @@ class TestCliValidation(unittest.TestCase):
         self.assertEqual(p.returncode, 2)
 
 
+class TestSuperviseMode(unittest.TestCase):
+    def test_brief_is_propose_only(self):
+        brief = deep_chat.SUPERVISOR_BRIEF
+        self.assertIn("TODO", brief)
+        self.assertIn("propose_action", brief)
+        self.assertIn("read-only", brief)
+
+    def test_argv_dispatch(self):
+        from unittest import mock
+
+        with mock.patch.object(deep_chat, "_cmd_turn",
+                               return_value=0) as turn:
+            code = deep_chat.main(
+                ["deep_chat.py", "arii/remote-server", "--supervise"])
+        self.assertEqual(code, 0)
+        repo, thread, raw = turn.call_args[0]
+        self.assertEqual(repo, "arii/remote-server")
+        self.assertEqual(thread, "supervise-remote-server")
+        self.assertEqual(base64.b64decode(raw).decode(),
+                         deep_chat.SUPERVISOR_BRIEF)
+
+    def test_bad_repo_rejected(self):
+        from unittest import mock
+
+        with mock.patch.object(deep_chat, "_cmd_turn") as turn:
+            code = deep_chat.main(["deep_chat.py", "nope", "--supervise"])
+        self.assertEqual(code, 2)
+        turn.assert_not_called()
+
+
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
     def test_five_tools(self):
