@@ -182,6 +182,12 @@ li.detail > button:focus-visible { outline: 2px solid var(--accent); outline-off
 [data-testid="history-list"] { gap: 0; }
 .history-row { padding: 0.55rem 0; border-top: 1px solid var(--border); }
 .history-row:first-child { border-top: 0; }
+.history-row .row-title { display: flex; align-items: center; gap: 0.45rem; }
+.history-row .row-meta { display: block; margin-top: 0.15rem; }
+.history-icon { flex: none; }
+.tone-bad { color: var(--bad); }
+.tone-ok { color: var(--ok); }
+.tone-muted { color: var(--muted); }
 
 .sev {
   display: inline-block;

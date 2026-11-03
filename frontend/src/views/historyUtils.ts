@@ -26,6 +26,8 @@ export function plainLanguage(raw: string, fallbackKind: string): string {
   return first;
 }
 
+export type HistoryTone = 'bad' | 'ok' | 'muted';
+
 export interface HistoryRow {
   key: string;
   kind: string;
@@ -33,6 +35,7 @@ export interface HistoryRow {
   at: string;
   repeat: number;
   recovery: string;
+  tone: HistoryTone;
 }
 
 interface FlatEntry {
@@ -150,6 +153,7 @@ function activityLabel(kind: string, count: number): string {
 
 function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
   const routineRun = entry.routine && count > 1;
+  const failed = entry.failed && !entry.routine;
   return {
     key: `${entry.kind}-${entry.summary}-${index}`,
     kind: entry.kind,
@@ -160,7 +164,8 @@ function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
         : entry.summary,
     at: entry.at,
     repeat: count,
-    recovery: entry.failed && !entry.routine ? recoveryFor(entry.kind, entry.summary) : '',
+    recovery: failed ? recoveryFor(entry.kind, entry.summary) : '',
+    tone: failed ? 'bad' : entry.routine ? 'muted' : 'ok',
   };
 }
 
