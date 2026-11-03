@@ -111,6 +111,9 @@ data: {"session_id": "abc123", "action_requests": [{"name": "propose_action", "a
    `dispatch` proposals execute as BoomTick `agent_dispatch`
    worktree sessions (implement → test → open PR); the executor
    never reviews its own work — review stays GitHub-native.
+   Parse note: TASK text may be inline (`TASK: <brief>`) or block
+   form (`TASK:\n<brief>`); accept all text after `TASK:` up to
+   `END PROPOSE` (small models compress the form).
 
 ## 5. Agent process protocol (deep-agent lane owns)
 

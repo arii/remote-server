@@ -121,6 +121,21 @@ PROMPTS = [
         )],
         "gating": False,
     },
+    {
+        "name": "propose-dispatch",
+        "prompt": "Dispatch implementation of a typo fix to a "
+                  "worktree session on arii/remote-server main.",
+        "tools": [],
+        # TASK text may be inline or block form (8b compresses);
+        # the server parser must accept both.
+        "anchor": re.compile(
+            r"PROPOSE dispatch\nREPO: arii/remote-server\n"
+            r"BRANCH: main\nTASK:\s*[\s\S]+?\nEND PROPOSE",
+            re.I,
+        ),
+        "max_propose_blocks": 1,
+        "gating": False,
+    },
 ]
 
 PROPOSE_BLOCK_RE = re.compile(
