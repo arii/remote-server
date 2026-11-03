@@ -207,6 +207,7 @@ li.detail.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px va
 .history-row .row-meta { display: block; margin-top: 0.15rem; }
 .history-row summary { cursor: pointer; list-style-position: outside; }
 .history-row details pre { margin: 0.4rem 0 0.2rem; white-space: pre-wrap; }
+.history-run-output { margin: 0.2rem 0 0.2rem 0.75rem; padding-left: 0.6rem; border-left: 2px solid var(--border); }
 .history-icon { flex: none; }
 .tone-bad { color: var(--bad); }
 .tone-ok { color: var(--ok); }
