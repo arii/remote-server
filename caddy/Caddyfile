@@ -1,5 +1,5 @@
 # Internal router behind oauth2-proxy (single OAuth gate, single TLS port).
-# oauth2-proxy -> caddy:8080 -> terminal (/), buttons (/buttons*), or code-server (/code*).
+# oauth2-proxy -> caddy:8080 -> terminal (/), buttons (/buttons*), code-server (/code*), or hrm (/hrm*).
 # Caddy reverse_proxy handles websocket upgrades automatically (ttyd and code-server).
 # No TLS here: oauth2-proxy terminates TLS; this port is compose-network
 # only and is never published to the host.
@@ -20,6 +20,16 @@
 	handle /code* {
 		uri strip_prefix /code
 		reverse_proxy code-server:8080
+	}
+
+	# HRM dashboard (dev server :3000 inside the terminal container; the
+	# compose service name tracks it across container recreates).
+	# Public entry: https://<host>:8443/hrm (behind the oauth2-proxy gate).
+	# No strip: the app serves its basePath itself, so /hrm/* passes through
+	# untouched (pages, /hrm/api/*, /hrm/_next/*, /hrm/ws). This one-block
+	# shape is the repeatable per-repo pattern for subpath previews.
+	handle /hrm* {
+		reverse_proxy terminal:3000
 	}
 
 	handle {
