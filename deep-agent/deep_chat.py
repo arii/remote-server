@@ -54,6 +54,7 @@ import ledger  # noqa: E402
 import observe  # noqa: E402
 import tracing  # noqa: E402
 import intent  # noqa: E402
+import skills  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
@@ -587,7 +588,8 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     saver, _, _holder = open_checkpointer()
     turn_intent = intent.classify(prompt)
     agent = build_agent(repo, saver, model=model, recorder=recorder,
-                        intent_hint=intent.hint(turn_intent))
+                        intent_hint=skills.system_addition(turn_intent)
+                        or None)
     config = {"configurable": {"thread_id": thread_id}}
     trimmed = trim_thread_history(agent, config)
     if trimmed:
