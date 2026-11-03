@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.core import get_system_health, validate_repo_name
+from backend.exec.engine import stack_dir
 from backend.ledger import LEDGER_KINDS, clear as ledger_clear
 from backend.ledger import read as ledger_read
 
@@ -91,11 +92,13 @@ def _run_briefing(repo: str, gh: str) -> dict:
                           "..", "..", "..", "buttons",
                           "briefing_summary.py")
     script = os.path.normpath(script)
+    # cwd = live checkout: td discovers project_config.json upward from
+    # cwd, and the image workdir (/app) has none. Script stays baked.
     proc = subprocess.run(
         ["python3", script, "--briefing-json",
          "--repo", repo, "--gh", gh],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=180, text=True)
+        timeout=180, text=True, cwd=stack_dir())
     if proc.returncode != 0:
         raise RuntimeError(
             (proc.stderr or "").strip().splitlines()[-1]

@@ -27,6 +27,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.exec.engine import stack_dir
 from backend.gh import repo_gh, run_gh, run_gh_json
 
 router = APIRouter(prefix="/api", tags=["issues"])
@@ -143,8 +144,11 @@ def _repair_worker_thread(issue_number: int) -> None:
     cmd = ["python3", "scripts/repair_worker.py",
            "--issue", str(issue_number)]
     try:
+        # cwd = live checkout: the worker path is repo-relative and the
+        # image workdir (/app) has no scripts/ dir.
         proc = run.Popen(cmd, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, bufsize=1)
+                         stderr=subprocess.STDOUT, text=True, bufsize=1,
+                         cwd=stack_dir())
         if proc.stdout:
             for line in proc.stdout:
                 with repair_state_lock:
