@@ -149,6 +149,8 @@ class ChatOpsTest(unittest.TestCase):
                                        "repo": "remote-server",
                                        "session_id": "get123get123"})
         self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
+        self.assertEqual(resp.headers.get("x-accel-buffering"), "no")
         events = self._sse_events(resp)
         self.assertTrue(any(e == "done" for e, _ in events))
         resp = self.client.post("/api/chat/stream",

@@ -659,19 +659,30 @@ class PiProgress(BaseModel):
     error: str | None = None
 
 
+SSE_HEADERS = {
+    # Canonical SSE hygiene: no proxy (oauth2-proxy, caches) may
+    # buffer or cache the event body; each frame flushes downstream.
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
 @router.get("/chat/stream")
 def chat_stream_get(prompt: str = "", repo: str = "remote-server",
                     session_id: str = "") -> StreamingResponse:
     sid = session_id or uuid.uuid4().hex[:12]
     return StreamingResponse(_chat_events(prompt, repo, sid),
-                             media_type="text/event-stream")
+                             media_type="text/event-stream",
+                             headers=SSE_HEADERS)
 
 
 @router.post("/chat/stream")
 def chat_stream_post(body: ChatStreamRequest) -> StreamingResponse:
     sid = body.session_id or uuid.uuid4().hex[:12]
     return StreamingResponse(_chat_events(body.prompt, body.repo, sid),
-                             media_type="text/event-stream")
+                             media_type="text/event-stream",
+                             headers=SSE_HEADERS)
 
 
 @router.post("/chat/abort", response_model=ChatAbortResult)
