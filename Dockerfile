@@ -8,7 +8,9 @@
 FROM node:22-alpine AS spa
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN npm install -g "pnpm@10.28.2" \
+ && printf 'onlyBuiltDependencies:\n  - esbuild\n' > pnpm-workspace.yaml \
+ && pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm build
 
