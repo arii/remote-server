@@ -25,8 +25,8 @@ import JobsView, {
   resultLine,
 } from './views/JobsView';
 import NowView, { ReportDialog, nowPollMs } from './views/NowView';
-import ReviewView, { PrDetails } from './views/ReviewView';
-import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
+import ReviewView, { IssueDetails, PrDetails } from './views/ReviewView';
+import { loadHistory, loadIssues, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
@@ -697,6 +697,21 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('<h3>');
     expect(html).toContain('<h4>Review prompts</h4>');
     expect(html).not.toContain('<h2>');
+  });
+
+  it('Issue details renders issue metadata and ask agent button', () => {
+    const issues = loadIssues();
+    const html = renderToStaticMarkup(
+      <IssueDetails
+        repo="remote-server"
+        issue={issues[0]!}
+        onAskAgent={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="review-issue-details"');
+    expect(html).toContain(`#${issues[0]!.number} ${issues[0]!.title}`);
+    expect(html).toContain('data-testid="ask-agent-issue-7"');
+    expect(html).toContain('CI flakes on retry path.');
   });
 });
 

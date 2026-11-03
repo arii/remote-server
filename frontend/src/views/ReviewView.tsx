@@ -186,6 +186,53 @@ export function PrDetails({
   );
 }
 
+export function IssueDetails({
+  repo,
+  issue,
+  onAskAgent,
+}: {
+  repo: string;
+  issue: IssueRow;
+  onAskAgent: (seed: string) => void;
+}) {
+  const assignees = (issue.assignees || []).map(labelOf).filter(Boolean);
+  const labels = (issue.labels || []).map(labelOf).filter(Boolean);
+  const metaParts: string[] = [];
+  if (issue.state) metaParts.push(issue.state);
+  if (assignees.length > 0) metaParts.push(`assigned: ${assignees.join(', ')}`);
+  if (labels.length > 0) metaParts.push(`labels: ${labels.join(', ')}`);
+  if (issue.updatedAt) metaParts.push(`updated ${issue.updatedAt}`);
+
+  return (
+    <div className="detail" data-testid="review-issue-details">
+      <h3>#{issue.number} {issue.title}</h3>
+      {metaParts.length > 0 && (
+        <p className="row-meta">{metaParts.join(' · ')}</p>
+      )}
+      {issue.body ? (
+        <pre className="row-meta" data-testid={`review-issue-body-${issue.number}`}>
+          {issue.body}
+        </pre>
+      ) : (
+        <p className="row-meta">No description provided.</p>
+      )}
+      <div className="actions">
+        <button
+          type="button"
+          data-testid={`ask-agent-issue-${issue.number}`}
+          onClick={() =>
+            onAskAgent(
+              `Issue #${issue.number} ${issue.title} (${repo})${issue.body ? `: ${issue.body}` : ''}`,
+            )
+          }
+        >
+          Ask agent
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ReviewView({
   repo,
   onAskAgent,
@@ -202,6 +249,7 @@ export default function ReviewView({
   const [deferred, setDeferred] = useState<DeferredRow[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [details, setDetails] = useState<PrDetailsResponse | null>(null);
+  const [selectedIssue, setSelectedIssue] = useState<IssueRow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
@@ -221,7 +269,7 @@ export default function ReviewView({
   );
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
-  // a PR row; issue rows have no detail view, so Enter is a no-op there.
+  // a PR or issue row into the Details pane.
   // d defers the cursor row (reversible via Restore).
   const rows: Array<{ kind: 'pr' | 'issue'; number: number }> = [
     ...visiblePrs.map((p) => ({ kind: 'pr' as const, number: p.number })),
@@ -232,7 +280,13 @@ export default function ReviewView({
     suspended: triageSuspended,
     onOpen: (i) => {
       const r = rows[i];
-      if (r && r.kind === 'pr') void selectPr(r.number);
+      if (!r) return;
+      if (r.kind === 'pr') {
+        void selectPr(r.number);
+      } else {
+        const iss = visibleIssues.find((item) => item.number === r.number);
+        if (iss) selectIssue(iss);
+      }
     },
     onDefer: (i) => {
       const r = rows[i];
@@ -252,6 +306,7 @@ export default function ReviewView({
     setDeferred([]);
     setSelected(null);
     setDetails(null);
+    setSelectedIssue(null);
     setError(null);
     if (useMock()) {
       setPrs(loadPrs());
@@ -284,9 +339,16 @@ export default function ReviewView({
     };
   }, [repo]);
 
+  function selectIssue(iss: IssueRow) {
+    setSelected(null);
+    setDetails(null);
+    setSelectedIssue(iss);
+  }
+
   async function selectPr(n: number) {
     setSelected(n);
     setDetails(null);
+    setSelectedIssue(null);
     if (useMock()) {
       const d = loadPrDetails();
       setDetails(n === d.number ? d : { ...d, number: n, title: `PR #${n}` });
@@ -328,6 +390,9 @@ export default function ReviewView({
     if (kind === 'pr' && selected === n) {
       setSelected(null);
       setDetails(null);
+    }
+    if (kind === 'issue' && selectedIssue?.number === n) {
+      setSelectedIssue(null);
     }
     setNotice(`Deferred ${kind === 'pr' ? 'PR' : 'issue'} #${n}.`);
   }
@@ -456,13 +521,17 @@ export default function ReviewView({
               {visibleIssues.map((iss, ii) => (
                 <li
                   key={iss.number}
-                  className={`detail${cursor === prCount + ii ? ' kbd-focus' : ''}`}
+                  className={`detail${selectedIssue?.number === iss.number ? ' selected' : ''}${cursor === prCount + ii ? ' kbd-focus' : ''}`}
                   data-testid={`review-issue-${iss.number}`}
+                  aria-current={selectedIssue?.number === iss.number ? true : undefined}
                 >
                   <span className="row-title">#{iss.number} {iss.title}</span>
                   <p className="row-meta">
                     {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
                   </p>
+                  <button type="button" data-testid={`select-issue-${iss.number}`} onClick={() => selectIssue(iss)}>
+                    Open
+                  </button>{' '}
                   <button type="button" data-testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)}>
                     Defer
                   </button>
@@ -500,14 +569,7 @@ export default function ReviewView({
           )}
         </div>
         <div>
-          {!sel ? (
-            <>
-              <h3>Details</h3>
-              <p className="row-meta" data-testid="review-details-empty">
-                Select a PR to see file stats and review prompts.
-              </p>
-            </>
-          ) : (
+          {sel ? (
             <PrDetails
               repo={repo}
               details={sel}
@@ -516,6 +578,23 @@ export default function ReviewView({
               onMerge={(n) => void onMerge(n)}
               onAskAgent={onAskAgent}
             />
+          ) : selectedIssue ? (
+            <IssueDetails
+              repo={repo}
+              issue={selectedIssue}
+              onAskAgent={onAskAgent}
+            />
+          ) : (
+            <>
+              <h3>Details</h3>
+              <p className="row-meta" data-testid="review-details-empty">
+                {visiblePrs.length === 0 && visibleIssues.length > 0
+                  ? 'Select an issue to see context.'
+                  : visiblePrs.length === 0 && visibleIssues.length === 0
+                  ? 'No open PRs or issues.'
+                  : 'Select a PR or issue to see file stats and context.'}
+              </p>
+            </>
           )}
           <details data-testid="review-create-disclosure">
             <summary className="details-title">New issue</summary>

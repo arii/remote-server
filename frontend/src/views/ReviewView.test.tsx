@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { applyOptimisticMerge, isRowDeferred, nextPrAfterMerge, revertOptimisticMerge } from './ReviewView';
+import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  IssueDetails,
+  applyOptimisticMerge,
+  isRowDeferred,
+  nextPrAfterMerge,
+  revertOptimisticMerge,
+} from './ReviewView';
+import type { IssueRow } from '../reviewTypes';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -60,5 +68,44 @@ describe('deferred row matching', () => {
   it('returns false for undeferred rows and empty lists', () => {
     expect(isRowDeferred(deferred, 'pr', 12)).toBe(false);
     expect(isRowDeferred([], 'pr', 7)).toBe(false);
+  });
+});
+
+describe('IssueDetails rendering and agent seeding', () => {
+  const issueWithBody: IssueRow = {
+    number: 101,
+    title: 'Broken pipeline',
+    state: 'open',
+    assignees: [{ login: 'dev-alice' }],
+    labels: [{ name: 'bug' }, { name: 'priority-high' }],
+    updatedAt: '2026-04-01T12:00:00Z',
+    body: 'Pipeline step 3 times out on Linux runners.',
+  };
+
+  const minimalIssue: IssueRow = {
+    number: 102,
+    title: 'Tidy comments',
+  };
+
+  it('renders title, state, assignees, labels, and body', () => {
+    const html = renderToStaticMarkup(
+      <IssueDetails repo="test-repo" issue={issueWithBody} onAskAgent={() => {}} />,
+    );
+    expect(html).toContain('data-testid="review-issue-details"');
+    expect(html).toContain('#101 Broken pipeline');
+    expect(html).toContain('open');
+    expect(html).toContain('assigned: dev-alice');
+    expect(html).toContain('labels: bug, priority-high');
+    expect(html).toContain('updated 2026-04-01T12:00:00Z');
+    expect(html).toContain('Pipeline step 3 times out on Linux runners.');
+    expect(html).toContain('data-testid="ask-agent-issue-101"');
+  });
+
+  it('renders fallback when no description is present', () => {
+    const html = renderToStaticMarkup(
+      <IssueDetails repo="test-repo" issue={minimalIssue} onAskAgent={() => {}} />,
+    );
+    expect(html).toContain('#102 Tidy comments');
+    expect(html).toContain('No description provided.');
   });
 });
