@@ -184,6 +184,8 @@ li.detail > button:focus-visible { outline: 2px solid var(--accent); outline-off
 .history-row:first-child { border-top: 0; }
 .history-row .row-title { display: flex; align-items: center; gap: 0.45rem; }
 .history-row .row-meta { display: block; margin-top: 0.15rem; }
+.history-row summary { cursor: pointer; list-style-position: outside; }
+.history-row details pre { margin: 0.4rem 0 0.2rem; white-space: pre-wrap; }
 .history-icon { flex: none; }
 .tone-bad { color: var(--bad); }
 .tone-ok { color: var(--ok); }

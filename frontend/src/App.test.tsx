@@ -117,6 +117,26 @@ describe('history utils', () => {
     );
     expect(rows.map((r) => r.tone)).toEqual(['bad', 'muted', 'ok']);
   });
+
+  it('carries expandable detail beyond the summary', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        {
+          kind: 'chat',
+          event: 'chat finished',
+          repo: 'remote-server',
+          session_id: 'abc123',
+          exit: 0,
+          elapsed: 34.6,
+          ts: 1,
+        },
+      ],
+    );
+    expect(rows[0].detail).toContain('event: chat finished');
+    expect(rows[0].detail).toContain('session: abc123');
+    expect(rows[0].detail).toContain('elapsed: 34.6s');
+  });
 });
 
 describe('history fixtures (?mock=1)', () => {

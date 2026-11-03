@@ -50,6 +50,10 @@ export interface LedgerEntry {
   ok?: boolean;
   status?: string;
   error?: string;
+  detail?: string;
+  session_id?: string;
+  exit?: number;
+  elapsed?: number;
 }
 
 export interface LedgerResponse {

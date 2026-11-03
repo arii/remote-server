@@ -36,6 +36,7 @@ export interface HistoryRow {
   repeat: number;
   recovery: string;
   tone: HistoryTone;
+  detail: string;
 }
 
 interface FlatEntry {
@@ -45,6 +46,7 @@ interface FlatEntry {
   rawAt: number;
   failed: boolean;
   routine: boolean;
+  detail: string;
 }
 
 // Routine lifecycle chatter (chat start/finish/abort, job step progress):
@@ -109,6 +111,10 @@ function jobTime(j: JobRecord): number {
 function jobToEntry(j: JobRecord): FlatEntry {
   const status = jobStatus(j);
   const summary = plainLanguage(`${jobTitle(j)}: ${status}`, 'Job');
+  const lines = [`run: ${j.id}`, `kind: ${j.kind || 'job'}`, `status: ${status}`];
+  if (j.repo) lines.push(`repo: ${j.repo}`);
+  if (typeof j.exit_code === 'number') lines.push(`exit: ${j.exit_code}`);
+  if (j.error) lines.push(`error: ${j.error}`.slice(0, 1500));
   return {
     kind: j.kind || 'job',
     summary,
@@ -116,6 +122,7 @@ function jobToEntry(j: JobRecord): FlatEntry {
     rawAt: jobTime(j),
     failed: /fail|error/i.test(status),
     routine: false,
+    detail: lines.join('\n'),
   };
 }
 
@@ -132,6 +139,13 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
     e.error && e.error.trim()
       ? e.error.trim().slice(0, 200)
       : plainLanguage(raw ?? '', e.kind);
+  const lines = [`event: ${raw ?? e.kind}`];
+  if (e.error && e.error.trim()) lines.push(`error: ${e.error.trim()}`.slice(0, 1500));
+  if (e.detail) lines.push(`detail: ${e.detail}`.slice(0, 1500));
+  if (e.repo) lines.push(`repo: ${e.repo}`);
+  if (e.session_id) lines.push(`session: ${e.session_id}`);
+  if (typeof e.exit === 'number') lines.push(`exit: ${e.exit}`);
+  if (typeof e.elapsed === 'number') lines.push(`elapsed: ${e.elapsed}s`);
   return {
     kind: e.kind,
     summary,
@@ -139,6 +153,7 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
     rawAt: epochOf(e.ts ?? e.at),
     failed: entryFailed(e, raw ?? '', summary),
     routine: ROUTINE_RE.test(summary),
+    detail: lines.join('\n').slice(0, 2000),
   };
 }
 
@@ -166,6 +181,7 @@ function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
     repeat: count,
     recovery: failed ? recoveryFor(entry.kind, entry.summary) : '',
     tone: failed ? 'bad' : entry.routine ? 'muted' : 'ok',
+    detail: entry.detail,
   };
 }
 
