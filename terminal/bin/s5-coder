@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Session coder: deep-agent implementation runner (replaces pi as the
+# BoomTick session executor). Installed to /usr/local/bin via
+# terminal/Dockerfile (COPY bin/).
+set -euo pipefail
+
+REPO="${S5_CODER_REPO:-/srv/remote-server}"
+VENV="$REPO/deep-agent/.venv/bin/python"
+
+exec "$VENV" "$REPO/deep-agent/coder.py" "$@"

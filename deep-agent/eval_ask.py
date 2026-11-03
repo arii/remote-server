@@ -127,7 +127,9 @@ PROMPTS = [
                   "worktree session on arii/remote-server main.",
         "tools": [],
         # TASK text may be inline or block form (8b compresses);
-        # the server parser must accept both.
+        # the chat router (PROPOSE-dispatch contract owner; execution
+        # via the jobs registry/engine) must accept both. Promote to
+        # gating once the router implements dispatch handling.
         "anchor": re.compile(
             r"PROPOSE dispatch\nREPO: arii/remote-server\n"
             r"BRANCH: main\nTASK:\s*[\s\S]+?\nEND PROPOSE",
