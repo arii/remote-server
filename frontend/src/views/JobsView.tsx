@@ -133,6 +133,16 @@ function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
 }
 
+// The human result of a run: last meaningful output line, skipping the
+// `$ ...` command echoes the engine prepends. Empty when nothing surfaced.
+export function resultLine(output: string): string {
+  const lines = output
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('$'));
+  return lines.length > 0 ? lines[lines.length - 1] : '';
+}
+
 const IDLE_REPAIR: RepairStatusResponse = {
   status: 'idle',
   timestamp: null,
@@ -176,7 +186,16 @@ function RepairSection({ repo }: { repo: string }) {
 
   async function refresh() {
     try {
-      setStatus(await fetchRepairStatus());
+      const next = await fetchRepairStatus();
+      setStatus(next);
+      if (next.status === 'done' || next.status === 'failed') {
+        stopWatch();
+        setError(
+          next.status === 'failed'
+            ? `Repair run for #${next.issue ?? '?'} failed${next.exit_code !== null ? ` (exit ${next.exit_code})` : ''}.`
+            : null,
+        );
+      }
     } catch {
       stopWatch();
     }
@@ -301,6 +320,8 @@ export default function JobsView({ repo }: { repo: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [pr, setPr] = useState('');
   const pollRef = useRef<number | null>(null);
+  const labelRef = useRef<string>('');
+  const progressRef = useRef<HTMLDivElement | null>(null);
 
   async function guarded(fn: () => Promise<void>) {
     setError(null);
@@ -336,6 +357,7 @@ export default function JobsView({ repo }: { repo: string }) {
 
   function startPolling(rid: string, label: string) {
     stopPoll();
+    labelRef.current = label;
     setRunning(label);
     void pollOnce(rid);
     pollRef.current = window.setInterval(() => void pollOnce(rid), 2000);
@@ -347,8 +369,12 @@ export default function JobsView({ repo }: { repo: string }) {
       setTail(r.output);
       if (!r.done) return;
       setRunning(null);
+      const label = labelRef.current || 'Run';
+      const result = resultLine(r.output);
       if (r.exit_code !== 0 && r.exit_code !== null) {
-        setNotice(`Run ${rid} failed (exit ${r.exit_code}).`);
+        setNotice(`Run ${rid} failed (exit ${r.exit_code})${result ? `: ${result}` : '.'}`);
+      } else {
+        setNotice(result ? `Finished ${label}: ${result}` : `Finished ${label}.`);
       }
       stopPoll();
       await load();
@@ -375,6 +401,7 @@ export default function JobsView({ repo }: { repo: string }) {
 
   async function launch(label: string, start: () => Promise<{ id: string }>) {
     setNotice(null);
+    setTail('');
     const started = await start();
     setRunId(started.id);
     setNotice(`Started ${label}: ${started.id}`);
@@ -382,6 +409,13 @@ export default function JobsView({ repo }: { repo: string }) {
     if (/^[0-9a-f]{12}$/.test(started.id)) startPolling(started.id, label);
     else await load();
   }
+
+  // Bring the progress panel into view once it renders for a new run.
+  useEffect(() => {
+    if (!running) return;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    progressRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
+  }, [running]);
 
   function onDispatchFixed(a: FixedAction, confirmed: boolean) {
     return guarded(() => launch(a.label, () => startJobRun(a.action, repo, confirmed)));
@@ -435,6 +469,19 @@ export default function JobsView({ repo }: { repo: string }) {
         <p className="row-meta" data-testid="jobs-notice">
           {notice}
         </p>
+      )}
+      {(tail || runId) && (
+        <div className="detail" data-testid="jobs-progress" ref={progressRef}>
+          <span className="row-title">
+            {running ? `Running ${running}…` : `Output${runId ? ` · ${runId}` : ''}`}
+          </span>
+          {!running && runId && resultLine(tail) && (
+            <p className="row-meta" data-testid="jobs-result">
+              {resultLine(tail)}
+            </p>
+          )}
+          <pre className="row-meta">{tail || 'Waiting for output…'}</pre>
+        </div>
       )}
 
       <section aria-label="Observe">
@@ -571,14 +618,6 @@ export default function JobsView({ repo }: { repo: string }) {
             />
           ))}
         </ul>
-      )}
-      {(tail || runId) && (
-        <div className="detail" data-testid="jobs-progress">
-          <span className="row-title">
-            {running ? `Running ${running}…` : `Output${runId ? ` · ${runId}` : ''}`}
-          </span>
-          <pre className="row-meta">{tail || 'Waiting for output…'}</pre>
-        </div>
       )}
       <RepairSection repo={repo} />
     </section>
