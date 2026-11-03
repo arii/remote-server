@@ -180,15 +180,16 @@ def new_session_id() -> str:
     return str(uuid.uuid4())
 
 
-# Availability probing (issue #397): the picker must show dead
-# providers before the user fires. Only a real (trivial) turn proves
-# API access — `muse usage` exits 0 even with no_allowance, and
-# --version only proves install — so the probe fires one tiny turn
-# per provider. Results cache briefly; each probe orphans one CLI
-# session (fresh uuid / new agy conversation), so TTL stays long.
+# Availability probing (issues #397, #499): the picker must show dead
+# providers before the user fires, but the signal has to be fast,
+# free, and non-poisoning — so the probe checks binary presence
+# only, never a live turn. A live turn per probe cost ~10s cold,
+# spent model money, and orphaned an agy conversation that the next
+# continued turn would then resume. A binary-present CLI that fails
+# still surfaces via the failure guidance card, which is the honest
+# place for it. Results cache briefly to avoid exec spam.
 PROBE_TTL = 300
-PROBE_TIMEOUT = 25
-PROBE_PROMPT = "Reply with exactly: ok"
+PROBE_TIMEOUT = 15
 
 _probe_cache: dict = {}
 _probe_lock = threading.Lock()
@@ -207,17 +208,19 @@ def _run_probe(argv: list, timeout: int):
 
 
 async def probe_provider(provider: str, cwd: str) -> dict:
-    """Probe one provider: binary present, then a trivial turn.
+    """Probe one provider by binary presence only — never a turn.
 
     Returns {name, available, checked_at, detail}. Unknown provider
-    raises ValueError like turn_argv.
+    raises ValueError like turn_argv. The cwd arg is kept so callers
+    don't change; presence doesn't depend on it.
     """
     if provider not in PROVIDERS:
         raise ValueError("unknown provider")
     checked_at = int(time.time())
     binary = exec_argv("command -v %s" % provider)
     try:
-        found = await asyncio.to_thread(_run_probe, binary, 15)
+        found = await asyncio.to_thread(_run_probe, binary,
+                                        PROBE_TIMEOUT)
     except Exception as exc:
         return {"name": provider, "available": False,
                 "checked_at": checked_at,
@@ -225,25 +228,6 @@ async def probe_provider(provider: str, cwd: str) -> dict:
     if found.returncode != 0:
         return {"name": provider, "available": False,
                 "checked_at": checked_at, "detail": "binary missing"}
-    argv = turn_argv(provider, cwd, new_session_id(), PROBE_PROMPT,
-                     False)
-    try:
-        completed = await asyncio.to_thread(_run_probe, argv,
-                                            PROBE_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return {"name": provider, "available": False,
-                "checked_at": checked_at,
-                "detail": "probe timed out"}
-    except Exception as exc:
-        return {"name": provider, "available": False,
-                "checked_at": checked_at,
-                "detail": "probe error: %s" % exc}
-    if completed.returncode != 0:
-        tail = (completed.stderr or "").strip().split("\n")
-        detail = tail[-1][:200] if tail and tail[-1] else \
-            "exit %s" % completed.returncode
-        return {"name": provider, "available": False,
-                "checked_at": checked_at, "detail": detail}
     return {"name": provider, "available": True,
             "checked_at": checked_at, "detail": "ok"}
 

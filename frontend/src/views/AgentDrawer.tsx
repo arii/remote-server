@@ -3,6 +3,10 @@ import TapToFire from '../components/TapToFire';
 import { abortAgentSession, fetchAgentProviders, postAgentTurn } from '../apiClient';
 import { useMock } from './mockViews';
 
+// Mirrors backend PROVIDERS (agent_turn.py): the picker renders
+// these instantly and live status refines them.
+const FALLBACK_PROVIDERS = ['muse', 'agy'];
+
 interface Turn {
   role: 'user' | 'assistant';
   text: string;
@@ -141,7 +145,13 @@ export default function AgentDrawer({
   initialProviders?: string[];
   initialStatus?: Record<string, boolean>;
 }) {
-  const [providers, setProviders] = useState<string[]>(initialProviders ?? []);
+  // Optimistic: the picker renders instantly with the allowlist and
+  // live status refines it. Probes are binary checks now (issue
+  // #499), so the blind window is milliseconds; a dead provider
+  // fails fast into the guidance card.
+  const [providers, setProviders] = useState<string[]>(
+    initialProviders ?? FALLBACK_PROVIDERS,
+  );
   const [status, setStatus] = useState<Record<string, boolean>>(
     initialStatus ?? {},
   );
@@ -162,7 +172,7 @@ export default function AgentDrawer({
   useEffect(() => {
     if (initialProviders) return;
     if (useMock()) {
-      setProviders(['muse', 'agy']);
+      setProviders(FALLBACK_PROVIDERS);
       return;
     }
     (async () => {
@@ -172,8 +182,10 @@ export default function AgentDrawer({
         const next: Record<string, boolean> = {};
         for (const s of liveProviders.status ?? []) next[s.name] = s.available;
         setStatus(next);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+      } catch {
+        // Status is advisory: keep the optimistic picker. A dead
+        // provider fails fast into the guidance card on fire.
+        setProviders(FALLBACK_PROVIDERS);
       }
     })();
   }, [initialProviders]);

@@ -149,14 +149,14 @@ class ProbeTest(unittest.TestCase):
         return m
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
-    def test_probe_available_on_clean_turn(self, run):
+    def test_probe_available_on_binary_present(self, run):
         run.return_value = self._completed()
         status = asyncio.run(
             agent_turn.probe_provider("muse", "/srv/remote-server"))
         self.assertTrue(status["available"])
         self.assertEqual(status["name"], "muse")
         self.assertGreater(status["checked_at"], 0)
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 1)
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_probe_dead_when_binary_missing(self, run):
@@ -168,31 +168,35 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
-    def test_probe_dead_on_turn_failure(self, run):
-        run.side_effect = [self._completed(),
-                           self._completed(code=1,
-                                           stderr="auth revoked")]
-        status = asyncio.run(
-            agent_turn.probe_provider("muse", "/srv/remote-server"))
-        self.assertFalse(status["available"])
-        self.assertIn("auth revoked", status["detail"])
+    def test_probe_fires_no_live_turn(self, run):
+        run.return_value = self._completed()
+        with mock.patch(
+                "backend.exec.agent_turn.turn_argv",
+                side_effect=AssertionError("must not build a turn")):
+            status = asyncio.run(
+                agent_turn.probe_provider("agy", "/srv/remote-server"))
+        self.assertTrue(status["available"])
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args[0][0]
+        self.assertIn("command -v", " ".join(argv))
+        self.assertNotIn("Reply with exactly", " ".join(argv))
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
-    def test_probe_dead_on_timeout(self, run):
+    def test_probe_dead_on_binary_timeout(self, run):
         import subprocess as sp
 
-        run.side_effect = [self._completed(),
-                           sp.TimeoutExpired("muse", 25)]
+        run.side_effect = sp.TimeoutExpired("muse", 15)
         status = asyncio.run(
             agent_turn.probe_provider("muse", "/srv/remote-server"))
         self.assertFalse(status["available"])
+        self.assertIn("binary check failed", status["detail"])
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_status_caches_within_ttl(self, run):
         run.return_value = self._completed()
         asyncio.run(agent_turn.provider_status("/srv/remote-server"))
         asyncio.run(agent_turn.provider_status("/srv/remote-server"))
-        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_count, 2)
 
     def test_probe_rejects_unknown(self):
         with self.assertRaises(ValueError):

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { GuidanceCard, otherProvider, pumpTurn } from './AgentDrawer';
+import AgentDrawer, {
+  GuidanceCard,
+  otherProvider,
+  pumpTurn,
+} from './AgentDrawer';
 
 function streamOf(text: string): ReadableStreamDefaultReader<Uint8Array> {
   const stream = new ReadableStream<Uint8Array>({
@@ -81,5 +85,14 @@ describe('guidance card (issue #410)', () => {
     );
     expect(html).toContain('data-testid="agent-guidance"');
     expect(html).not.toContain('agent-switch-provider');
+  });
+});
+
+describe('instant picker (issue #499)', () => {
+  it('renders provider options before status loads', () => {
+    const html = renderToStaticMarkup(<AgentDrawer repo="remote-server" />);
+    expect(html).toContain('data-testid="agent-provider"');
+    expect(html).toContain('value="muse"');
+    expect(html).toContain('value="agy"');
   });
 });
