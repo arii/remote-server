@@ -5,8 +5,9 @@ streams stdout chunks to the caller, accepts stdin writes, and reaps
 the child on abort or disconnect. The API is async; blocking PTY
 reads run on one daemon thread per session.
 
-Provider allowlist (binaries verified 2026-11-03 on the host and in
-the terminal container, which share the same PATH layout):
+Provider allowlist (binaries verified 2026-11-03 in the terminal
+container; buttons holds no provider CLIs, so spawn execs into
+terminal via compose under buttons' local PTY):
 - muse  /root/.local/bin/muse  Muse Code 1.4.14,
   `muse [OPTIONS] [PROMPT]` (bare argv starts the interactive TUI)
 - agy   /root/.local/bin/agy   1.4.12 (bare argv starts a session)
@@ -15,8 +16,9 @@ the terminal container, which share the same PATH layout):
 Excluded: copilot/gh-copilot (no binary; the `gh copilot` extension is
 not installed), codex, gemini, claude, aider, opencode (no binaries).
 
-No CLI flags are passed: every provider starts its interactive
-session with a bare argv, so there are no invented flags to go stale.
+No provider CLI flags are passed: every provider starts its
+interactive session with a bare argv, so there are no invented flags
+to go stale. The docker/compose wrapper flags are ours.
 """
 
 from __future__ import annotations
@@ -25,13 +27,13 @@ import asyncio
 import os
 import pty
 import select
-import shutil
 import signal
 import subprocess
 import threading
 import time
 import uuid
 
+from backend.exec.engine import compose_argv
 from backend.ledger import append as ledger_append
 
 PROVIDERS = ("muse", "agy", "pi")
@@ -47,16 +49,29 @@ SESSION_TTL = 3600
 READ_CHUNK = 65536
 
 
-def provider_argv(provider: str) -> list:
+def provider_argv(provider: str, cwd: str) -> list:
     """Argv for an allowlisted provider. Injectable seam: tests patch
     this to return a fake command (e.g. ["/bin/cat"]) so no real
-    agent binary runs under test."""
+    agent binary runs under test.
+
+    Runs `docker compose exec terminal <provider>` under the local
+    PTY (stdin is a TTY there, so the daemon allocates the remote
+    end): binaries and credentials live in terminal, not buttons.
+    The preflight keeps the honest 500 (not installed) instead of a
+    stillborn session.
+    """
     if provider not in PROVIDERS:
         raise ValueError("unknown provider")
-    path = shutil.which(provider)
-    if not path:
+    # `command` is a shell builtin: wrap in sh -c. provider is
+    # allowlist-validated above, so no injection through the -c string.
+    probe = subprocess.run(
+        compose_argv("exec", "-T", "terminal", "sh", "-c",
+                     f"command -v {provider}"),
+        capture_output=True, text=True, timeout=30)
+    if probe.returncode != 0 or not probe.stdout.strip():
         raise RuntimeError("provider not installed")
-    return [path]
+    return compose_argv("exec", "--workdir", cwd, "terminal",
+                        provider)
 
 
 class AgentPtyManager:
@@ -71,7 +86,7 @@ class AgentPtyManager:
         """Spawn a provider CLI in a PTY rooted at cwd. Returns the
         session id. `argv` overrides the allowlist lookup (tests)."""
         cmd = list(argv) if argv is not None \
-            else provider_argv(provider)
+            else provider_argv(provider, cwd)
         now = time.time()
         with self._lock:
             for sid in [k for k, s in self._sessions.items()
@@ -80,9 +95,15 @@ class AgentPtyManager:
                 del self._sessions[sid]
         master, slave = pty.openpty()
         try:
+            # No cwd: it names the repo path inside terminal (the
+            # exec --workdir), which need not exist in buttons; the
+            # docker CLI runs anywhere. TERM falls back so remote
+            # TUIs get a sane default.
             proc = subprocess.Popen(
                 cmd, stdin=slave, stdout=slave, stderr=slave,
-                cwd=cwd, preexec_fn=os.setsid, close_fds=True)
+                preexec_fn=os.setsid, close_fds=True,
+                env={**os.environ, "TERM": os.environ.get("TERM")
+                     or "xterm-256color"})
         except Exception:
             os.close(master)
             os.close(slave)

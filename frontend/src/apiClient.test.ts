@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  abortAgentSession,
+  agentWsUrl,
   apiUrl,
+  fetchAgentProviders,
   fetchAttention,
   fetchJobs,
   fetchLedger,
   fetchPrDiff,
   fetchSystemHealth,
   fetchWorkflowHealth,
+  spawnAgentSession,
 } from './apiClient';
 
 function mockFetchJson(body: unknown, ok = true, status = 200) {
@@ -73,5 +77,45 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(apiUrl('api/jobs')).toBe('/api/jobs');
     expect(apiUrl('/api/jobs')).toBe('/api/jobs');
     expect(apiUrl('https://example.com/x')).toBe('https://example.com/x');
+  });
+
+  it('fetches the agent provider allowlist', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ providers: ['muse', 'agy', 'pi'] }));
+    expect(await fetchAgentProviders()).toEqual({ providers: ['muse', 'agy', 'pi'] });
+    expect(fetch).toHaveBeenCalledWith('/api/agent/providers');
+  });
+
+  it('spawns an agent session behind hold-to-confirm', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ session_id: 'abc123' }));
+    expect(await spawnAgentSession('muse', 'remote-server')).toEqual({ session_id: 'abc123' });
+    expect(fetch).toHaveBeenCalledWith('/api/agent/spawn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'muse',
+        repo: 'remote-server',
+        intent: 'agent-spawn',
+        confirmed: true,
+      }),
+    });
+  });
+
+  it('aborts an agent session', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, exit: 143 }));
+    expect(await abortAgentSession('abc123')).toEqual({ ok: true, exit: 143 });
+    expect(fetch).toHaveBeenCalledWith('/api/agent/abort', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: 'abc123' }),
+    });
+  });
+
+  it('builds ws(s) agent relay urls from the page origin', () => {
+    expect(agentWsUrl('https:', 'example.com', 'abc123')).toBe(
+      'wss://example.com/api/agent/ws/abc123',
+    );
+    expect(agentWsUrl('http:', 'localhost:5173', 'abc123')).toBe(
+      'ws://localhost:5173/api/agent/ws/abc123',
+    );
   });
 });
