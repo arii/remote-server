@@ -657,7 +657,7 @@ describe('p2 a11y batch', () => {
     expect(renderToStaticMarkup(<BriefingView repo="r" />)).toContain(
       'data-testid="briefing-loading" role="status"',
     );
-    expect(renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} />)).toContain(
+    expect(renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} onSelectPr={() => {}} />)).toContain(
       'data-testid="review-prs-loading" role="status"',
     );
     expect(renderToStaticMarkup(<JobsView repo="r" onAskAgent={noop} />)).toContain(
@@ -795,7 +795,7 @@ describe('triage hints', () => {
     expect(html).toContain('d defers');
   });
   it('wires the shared hint into Review', () => {
-    const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} />);
+    const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} onSelectPr={() => {}} />);
     expect(html).toContain('data-testid="triage-hint"');
     expect(html).toContain('triage-hint');
   });
@@ -808,7 +808,7 @@ describe('review details prompt', () => {
     expect(detailsPromptVisible(true, 0)).toBe(false);
   });
   it('renders the prompt in Review while loading', () => {
-    const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={() => {}} />);
+    const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />);
     expect(html).toContain('data-testid="review-details-empty"');
   });
 });

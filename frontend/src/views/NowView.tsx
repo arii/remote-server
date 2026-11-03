@@ -217,6 +217,13 @@ export default function NowView({
   // One section mounted at a time: Review and Jobs each bind window
   // triage keys, so mounting both would double-bind j/k/Enter.
   const [section, setSection] = useState<'review' | 'jobs' | null>(null);
+  // Last Review row selection, surviving section switches so Jobs can
+  // prefill its PR field from row context. Reset on repo change.
+  const [lastPr, setLastPr] = useState<number | null>(null);
+
+  useEffect(() => {
+    setLastPr(null);
+  }, [repo]);
 
   async function refresh() {
     try {
@@ -405,8 +412,8 @@ export default function NowView({
           Jobs{data.runs.active ? ' •' : ''}
         </button>
       </div>
-          {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} />}
-          {section === 'jobs' && <JobsView repo={repo} onAskAgent={onAskAgent} />}
+          {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} onSelectPr={setLastPr} />}
+          {section === 'jobs' && <JobsView repo={repo} onAskAgent={onAskAgent} initialPr={lastPr} />}
         </>
       )}
     </section>

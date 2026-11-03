@@ -4,6 +4,7 @@ import {
   conflictBlockReason,
   fixCiBlockReason,
   mergeNoteFor,
+  prFieldSeed,
   repairFailureMessage,
   tdBlockReason,
 } from './jobsUtils';
@@ -133,5 +134,12 @@ describe('completionOutcome', () => {
       repo: 'r',
     });
     expect(other.planCard).toBeNull();
+  });
+});
+
+describe('pr field seed', () => {
+  it('seeds the field from the selected row, empty with no selection', () => {
+    expect(prFieldSeed(7)).toBe('7');
+    expect(prFieldSeed(null)).toBe('');
   });
 });
