@@ -28,7 +28,7 @@ import {
   resultLine,
 } from './views/jobsUtils';
 import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
-import ReviewView, { PrDetails, detailsPromptVisible } from './views/ReviewView';
+import ReviewView, { PrDetails, PrRowMerge, detailsPromptVisible } from './views/ReviewView';
 import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
@@ -700,6 +700,33 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('<h3>');
     expect(html).toContain('<h4>Review prompts</h4>');
     expect(html).not.toContain('<h2>');
+  });
+
+  it('PR rows merge inline without opening Details', () => {
+    const ready = {
+      number: 7, title: 't', author: 'a', branch: 'b', isDraft: false,
+      ciStatus: 'passing', ciLabel: 'passing', reviewDecision: 'APPROVED',
+      mergeable: 'MERGEABLE', url: '',
+    };
+    const html = renderToStaticMarkup(
+      <PrRowMerge pr={ready} merging={false} onMerge={() => {}} />,
+    );
+    expect(html).toContain('data-testid="merge-pr-7"');
+    expect(html).toContain('asks for confirmation');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('PR row merge stays disabled when blocked', () => {
+    const draft = {
+      number: 8, title: 't', author: 'a', branch: 'b', isDraft: true,
+      ciStatus: 'passing', ciLabel: 'passing', reviewDecision: 'APPROVED',
+      mergeable: 'MERGEABLE', url: '',
+    };
+    const html = renderToStaticMarkup(
+      <PrRowMerge pr={draft} merging={false} onMerge={() => {}} />,
+    );
+    expect(html).toContain('data-testid="merge-pr-8"');
+    expect(html).toContain('disabled');
   });
 
   it('PR merge uses tap-to-fire with an inline confirm, not hold-to-arm', () => {

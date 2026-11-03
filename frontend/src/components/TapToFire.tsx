@@ -7,6 +7,8 @@ export interface TapToFireProps {
   // the first tap asks inline ("<label>? <confirm> [Confirm] [Cancel]")
   // instead of firing. No timing gesture either way.
   confirm?: string;
+  // Per-instance trigger testid for repeated rows; defaults to tap-fire.
+  testid?: string;
   onFire: () => void;
 }
 
@@ -17,7 +19,7 @@ export function confirmPrompt(label: string, consequence: string): string {
 
 // Tap fires. Replaces the press-and-hold arm gesture on Jobs and agent
 // surfaces, where timing gestures fail on flaky touch and some AT.
-export default function TapToFire({ label, disabled, confirm, onFire }: TapToFireProps) {
+export default function TapToFire({ label, disabled, confirm, testid = 'tap-fire', onFire }: TapToFireProps) {
   const [asking, setAsking] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
@@ -72,7 +74,7 @@ export default function TapToFire({ label, disabled, confirm, onFire }: TapToFir
       ref={triggerRef}
       disabled={disabled}
       aria-label={confirm === undefined ? label : `${label} (asks for confirmation)`}
-      data-testid="tap-fire"
+      data-testid={testid}
       onClick={() => {
         if (disabled) return;
         if (confirm === undefined) onFire();
