@@ -6,6 +6,8 @@ import { ApprovalCard, cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
 import { resultLine } from './views/JobsView';
+import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
+import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
 describe('history utils', () => {
   it('uses plain language, never raw stderr', () => {
@@ -200,6 +202,34 @@ describe('job result line', () => {
   it('returns empty when only echoes or blank output exist', () => {
     expect(resultLine('$ echo hi\n\n')).toBe('');
     expect(resultLine('')).toBe('');
+  });
+});
+
+describe('merge relevance', () => {
+  const ready: PrRow = {
+    number: 1,
+    title: 't',
+    author: 'a',
+    branch: 'b',
+    isDraft: false,
+    ciStatus: 'passing',
+    ciLabel: 'passing',
+    reviewDecision: 'APPROVED',
+    mergeable: 'MERGEABLE',
+    url: '',
+  };
+  it('passes a ready PR and names each blocker', () => {
+    expect(mergeBlockReason(ready)).toBeNull();
+    expect(mergeBlockReason({ ...ready, isDraft: true })).toContain('draft');
+    expect(mergeBlockReason({ ...ready, reviewDecision: '' })).toContain('unapproved');
+    expect(mergeBlockReason({ ...ready, ciStatus: 'failing' })).toContain('failing');
+    expect(mergeBlockReason({ ...ready, mergeable: 'CONFLICTING' })).toContain('CONFLICTING');
+  });
+  it('mirrors the single-merge server gate', () => {
+    const d = { ci: 'passing', merge: 'clean' } as PrDetailsResponse;
+    expect(detailsMergeBlockReason(d)).toBeNull();
+    expect(detailsMergeBlockReason({ ...d, ci: 'pending' })).toContain('pending');
+    expect(detailsMergeBlockReason({ ...d, merge: 'dirty' })).toContain('dirty');
   });
 });
 

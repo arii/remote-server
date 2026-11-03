@@ -78,3 +78,21 @@ export interface IssueDraftResponse {
   title: string;
   body: string;
 }
+
+// Merge relevance, mirroring the server gates (td evaluate_pr_merge_readiness
+// for batch merge; pulls._pr_action for single merge). Buttons stay enabled
+// when state is unknown — these gate only on known-bad state, fail open.
+export function mergeBlockReason(p: PrRow): string | null {
+  if (p.isDraft) return 'is a draft';
+  if (p.reviewDecision !== 'APPROVED') return `review is ${p.reviewDecision || 'unapproved'}`;
+  if (p.ciStatus !== 'passing') return `CI is ${p.ciStatus || 'unknown'}`;
+  if (p.mergeable !== 'MERGEABLE') return `merge state is ${p.mergeable || 'unknown'}`;
+  return null;
+}
+
+export function detailsMergeBlockReason(d: PrDetailsResponse): string | null {
+  if (d.ci !== 'passing' || d.merge !== 'clean') {
+    return `Not mergeable: CI ${d.ci}, merge ${d.merge}.`;
+  }
+  return null;
+}

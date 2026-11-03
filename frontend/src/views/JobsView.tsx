@@ -7,6 +7,8 @@ import {
   fetchJobRun,
   fetchJobs,
   fetchPiProgress,
+  fetchPrDetails,
+  fetchPrs,
   fetchRepairStatus,
   requestTakeover,
   startJobRun,
@@ -15,6 +17,7 @@ import {
 import type { RepairStatusResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import type { IssueRow } from '../reviewTypes';
+import { mergeBlockReason } from '../reviewTypes';
 import { loadJobs, useMock } from './mockViews';
 
 interface FixedAction {
@@ -246,6 +249,11 @@ function RepairSection({ repo }: { repo: string }) {
           Dispatch repair
         </button>
       </div>
+      {issues && issues.length === 0 && (
+        <p className="row-meta" data-testid="repair-empty">
+          No open issues to repair.
+        </p>
+      )}
       <details>
         <summary className="row-meta">Other issue number or URL</summary>
         <div className="actions">
@@ -313,6 +321,9 @@ export default function JobsView({ repo }: { repo: string }) {
   const [tail, setTail] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [pr, setPr] = useState('');
+  // Relevance state. null = unknown (fail open: buttons stay enabled).
+  const [mergeReady, setMergeReady] = useState<number | null>(null);
+  const [prState, setPrState] = useState<{ n: number; ci: string; conflicted: boolean } | null>(null);
   const pollRef = useRef<number | null>(null);
   const labelRef = useRef<string>('');
   const progressRef = useRef<HTMLDivElement | null>(null);
@@ -339,6 +350,47 @@ export default function JobsView({ repo }: { repo: string }) {
     void guarded(load);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMergeReady(null);
+    if (useMock()) return;
+    (async () => {
+      try {
+        const live = await fetchPrs(repo);
+        if (!cancelled) {
+          setMergeReady(live.prs.filter((p) => mergeBlockReason(p) === null).length);
+        }
+      } catch {
+        if (!cancelled) setMergeReady(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repo]);
+
+  useEffect(() => {
+    const n = pr.trim();
+    setPrState(null);
+    if (!/^\d+$/.test(n) || useMock()) return;
+    let cancelled = false;
+    const num = Number(n);
+    const t = window.setTimeout(() => {
+      (async () => {
+        try {
+          const d = await fetchPrDetails(repo, num);
+          if (!cancelled) setPrState({ n: num, ci: d.ci, conflicted: d.conflicted });
+        } catch {
+          if (!cancelled) setPrState(null);
+        }
+      })();
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [pr, repo]);
 
   function stopPoll() {
     if (pollRef.current !== null) {
@@ -445,6 +497,14 @@ export default function JobsView({ repo }: { repo: string }) {
   if (!jobs) return <section data-testid="jobs-loading">Loading…</section>;
 
   const prOk = /^\d+$/.test(pr.trim());
+  const prStateCurrent = prState && String(prState.n) === pr.trim() ? prState : null;
+  const finishedCount = jobs.filter((j) => j.done).length;
+  const fixCiBlock =
+    prStateCurrent && prStateCurrent.ci !== 'failing'
+      ? `CI is ${prStateCurrent.ci} — nothing to fix.`
+      : null;
+  const conflictBlock =
+    prStateCurrent && !prStateCurrent.conflicted ? 'No conflicts on this PR.' : null;
 
   return (
     <section data-testid="jobs-view">
@@ -512,6 +572,12 @@ export default function JobsView({ repo }: { repo: string }) {
               />
             </label>
           </div>
+          {prStateCurrent && (
+            <p className="row-meta" data-testid="td-pr-state">
+              PR #{prStateCurrent.n}: CI {prStateCurrent.ci} ·{' '}
+              {prStateCurrent.conflicted ? 'conflicted' : 'clean'}
+            </p>
+          )}
           <div className="actions">
             {TD_COMMANDS.filter((c) => c.needsPr && !c.hold).map((c) => (
               <button
@@ -528,15 +594,23 @@ export default function JobsView({ repo }: { repo: string }) {
           </div>
           <div className="actions">
             <span className="row-meta">Change (hold to run):</span>
-            {TD_COMMANDS.filter((c) => c.needsPr && c.hold).map((c) => (
-              <HoldToConfirm
-                key={c.slug}
-                label={c.label}
-                disabled={!prOk}
-                onFire={() => onDispatchTd(c)}
-              />
-            ))}
+            {TD_COMMANDS.filter((c) => c.needsPr && c.hold).map((c) => {
+              const block = c.slug === 'fix-ci' ? fixCiBlock : conflictBlock;
+              return (
+                <HoldToConfirm
+                  key={c.slug}
+                  label={c.label}
+                  disabled={!prOk || block !== null}
+                  onFire={() => onDispatchTd(c)}
+                />
+              );
+            })}
           </div>
+          {(fixCiBlock || conflictBlock) && (
+            <p className="row-meta" data-testid="td-change-block">
+              {[fixCiBlock, conflictBlock].filter(Boolean).join(' ')}
+            </p>
+          )}
         </div>
         <div className="cmd-group" data-testid="td-repo-group">
           <p className="row-meta">Whole repo</p>
@@ -567,35 +641,68 @@ export default function JobsView({ repo }: { repo: string }) {
       <section aria-label="Danger zone" className="danger-zone">
         <h3>Danger zone</h3>
         <ul className="session-list">
-          {DANGER.map((d) => (
-            <li key={d.action} className="danger-row" data-testid={`danger-${d.action}`}>
-              <div>
-                <span className="row-title">{d.label}</span>
-                <p className="row-meta">{d.consequence}</p>
-              </div>
-              <HoldToConfirm
-                label={d.label}
-                onFire={() =>
-                  void guarded(() =>
-                    launch(d.label, () => startJobRun(d.action, repo, true)),
-                  )
-                }
-              />
-            </li>
-          ))}
+          {DANGER.map((d) => {
+            const mergeNote =
+              d.action === 'merge-approved' && mergeReady !== null
+                ? mergeReady === 0
+                  ? 'No approved, green PRs right now.'
+                  : `${mergeReady} ready to merge.`
+                : null;
+            return (
+              <li key={d.action} className="danger-row" data-testid={`danger-${d.action}`}>
+                <div>
+                  <span className="row-title">{d.label}</span>
+                  <p className="row-meta">
+                    {mergeNote === null ? (
+                      d.consequence
+                    ) : mergeReady === 0 ? (
+                      mergeNote
+                    ) : (
+                      <>
+                        {d.consequence} ({mergeNote})
+                      </>
+                    )}
+                  </p>
+                </div>
+                <HoldToConfirm
+                  label={d.label}
+                  disabled={d.action === 'merge-approved' && mergeReady === 0}
+                  onFire={() =>
+                    void guarded(() =>
+                      launch(d.label, () => startJobRun(d.action, repo, true)),
+                    )
+                  }
+                />
+              </li>
+            );
+          })}
           <li className="danger-row" data-testid="danger-clear-finished">
             <div>
               <span className="row-title">Clear finished runs</span>
-              <p className="row-meta">Drops finished runs from the list below.</p>
+              <p className="row-meta">
+                {finishedCount === 0
+                  ? 'Nothing finished to clear.'
+                  : 'Drops finished runs from the list below.'}
+              </p>
             </div>
-            <HoldToConfirm label="Clear finished" onFire={() => void guarded(() => onClear(false))} />
+            <HoldToConfirm
+              label="Clear finished"
+              disabled={finishedCount === 0}
+              onFire={() => void guarded(() => onClear(false))}
+            />
           </li>
           <li className="danger-row" data-testid="danger-clear-all">
             <div>
               <span className="row-title">Clear everything</span>
-              <p className="row-meta">Drops all runs, including running ones.</p>
+              <p className="row-meta">
+                {jobs.length === 0 ? 'No runs to clear.' : 'Drops all runs, including running ones.'}
+              </p>
             </div>
-            <HoldToConfirm label="Clear everything" onFire={() => void guarded(() => onClear(true))} />
+            <HoldToConfirm
+              label="Clear everything"
+              disabled={jobs.length === 0}
+              onFire={() => void guarded(() => onClear(true))}
+            />
           </li>
           <li className="danger-row" data-testid="danger-takeover">
             <div>
