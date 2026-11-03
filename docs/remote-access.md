@@ -24,8 +24,10 @@ phone browser ──https://TERMINAL_DOMAIN:TERMINAL_PORT──▶ oauth2-proxy
                                                    caddy:8080 (compose net)
                                                      ├── / (terminal:7681, ttyd + zellij)
                                                      ├── /buttons* (buttons:8000)
-                                                     └── /code* (code-server:8080)
-                                                           └─ Continue extension (Ollama qwen3:8b)
+                                                     ├── /code* (code-server:8080)
+                                                     │     └─ Continue extension (Ollama qwen3:8b)
+                                                     └── /hrm* + future /<name>* repo previews
+                                                           (pattern: docs/repo-previews.md)
 ```
 
 ### code-server behind GitHub OAuth gate via /code subpath

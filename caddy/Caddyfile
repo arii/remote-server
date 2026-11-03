@@ -22,12 +22,15 @@
 		reverse_proxy code-server:8080
 	}
 
+	# Repo previews: one block per /<name>, no strip (the app serves its
+	# own basePath). Template:
+	#   handle /<name>* {
+	#   	reverse_proxy <upstream>
+	#   }
+	# Full pattern + app contract: docs/repo-previews.md.
 	# HRM dashboard (dev server :3000 inside the terminal container; the
 	# compose service name tracks it across container recreates).
 	# Public entry: https://<host>:8443/hrm (behind the oauth2-proxy gate).
-	# No strip: the app serves its basePath itself, so /hrm/* passes through
-	# untouched (pages, /hrm/api/*, /hrm/_next/*, /hrm/ws). This one-block
-	# shape is the repeatable per-repo pattern for subpath previews.
 	handle /hrm* {
 		reverse_proxy terminal:3000
 	}
