@@ -36,7 +36,11 @@ DEFAULT_EXCLUDED_PATTERNS = [
     # Minified assets & source maps
     "*.min.js",
     "*.min.css",
+    "*.bundle.js",
     "*.map",
+    # Build output dirs
+    "dist/*",
+    "*/dist/*",
     # Vector and binary assets
     "*.svg",
     "*.png",
@@ -59,6 +63,68 @@ DEFAULT_EXCLUDED_PATTERNS = [
 DEFAULT_MAX_FILE_LINES = 200
 DEFAULT_MAX_TOKENS = 4000
 CHARS_PER_TOKEN = 4  # Standard approximation for code/log tokenizers
+
+# Structural files hidden behind the pr-diff badge (lockfiles plus
+# minified/generated bundles). A subset of the default exclusions:
+# binary/image/font assets stay filtered from the diff text but are
+# not reported as structural.
+STRUCTURAL_DIFF_PATTERNS = [
+    # Lockfiles
+    "*pnpm-lock.yaml",
+    "*package-lock.json",
+    "*yarn.lock",
+    "*Cargo.lock",
+    "*poetry.lock",
+    "*Gemfile.lock",
+    "*composer.lock",
+    "*flake.lock",
+    # Minified/generated bundles & build outputs
+    "*.min.js",
+    "*.min.css",
+    "*.bundle.js",
+    "dist/*",
+    "*/dist/*",
+]
+
+
+def is_structural_path(path: str) -> bool:
+    """Return True if path is a structural file (lockfile or
+    minified/generated bundle). Used by the pr-diff endpoint to
+    report hidden_structural behind the diff badge."""
+    return is_excluded_path(path, STRUCTURAL_DIFF_PATTERNS)
+
+
+def structural_hidden_files(diff_text: str) -> list:
+    """File paths in a unified diff that the structural predicate
+    hides, in diff order. Never raises: unparseable input yields []."""
+    if not diff_text:
+        return []
+    try:
+        lines = diff_text.splitlines()
+    except Exception:
+        return []
+    paths: list = []
+    chunk: list = []
+
+    def flush(c):
+        if not c:
+            return
+        head = []
+        for ln in c:
+            if ln.startswith("@@ "):
+                break
+            head.append(ln)
+        path = _extract_filepath_from_diff_header(head)
+        if path and is_structural_path(path):
+            paths.append(path)
+
+    for line in lines:
+        if line.startswith("diff --git ") and chunk:
+            flush(chunk)
+            chunk = []
+        chunk.append(line)
+    flush(chunk)
+    return paths
 
 
 def estimate_tokens(text: str) -> int:

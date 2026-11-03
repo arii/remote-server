@@ -2,15 +2,18 @@ import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
 import {
   createIssue,
+  deferRow,
   draftIssue,
+  fetchDeferred,
   fetchIssues,
   fetchPrDetails,
   fetchPrDiff,
   fetchPrs,
   mergePr,
+  restoreRow,
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
-import type { IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
+import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
 import { detailsMergeBlockReason } from '../reviewTypes';
 import { TRIAGE_HINT, useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
@@ -42,6 +45,17 @@ export function nextPrAfterMerge(
   const idx = prNumbers.indexOf(mergedNumber);
   if (idx === -1) return null;
   return prNumbers[(idx + 1) % prNumbers.length] ?? null;
+}
+
+// True when a (kind, number) row carries a deferred flag. Deferred
+// rows hide from the main Review lists and surface in the Deferred
+// disclosure instead; defer is reversible via Restore.
+export function isRowDeferred(
+  deferred: ReadonlyArray<{ kind: string; number: number }>,
+  kind: 'pr' | 'issue',
+  n: number,
+): boolean {
+  return deferred.some((d) => d.kind === kind && d.number === n);
 }
 
 function labelOf(v: unknown): string {
@@ -85,6 +99,15 @@ function PrDiff({ repo, pr }: { repo: string; pr: number }) {
           {diff.truncated && (
             <p className="row-meta">Truncated to the first 30 KB.</p>
           )}
+          {diff.hidden_structural && diff.hidden_structural.count > 0 && (
+            <p
+              className="row-meta"
+              data-testid={`review-diff-hidden-${pr}`}
+              title={diff.hidden_structural.files.join(', ')}
+            >
+              +{diff.hidden_structural.count} hidden structural files
+            </p>
+          )}
           <pre className="row-meta" data-testid={`review-diff-body-${pr}`}>
             {diff.diff || 'Empty diff.'}
           </pre>
@@ -109,6 +132,7 @@ export default function ReviewView({
 }) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
+  const [deferred, setDeferred] = useState<DeferredRow[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [details, setDetails] = useState<PrDetailsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -120,11 +144,21 @@ export default function ReviewView({
   const [merging, setMerging] = useState<ReadonlySet<number>>(new Set());
   const [creatingIssue, setCreatingIssue] = useState(false);
 
+  // Deferred rows hide from the main lists (and from the triage
+  // cursor) and surface in the Deferred disclosure instead.
+  const visiblePrs = (prs ?? []).filter(
+    (p) => !isRowDeferred(deferred, 'pr', p.number),
+  );
+  const visibleIssues = (issues ?? []).filter(
+    (i) => !isRowDeferred(deferred, 'issue', i.number),
+  );
+
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
   // a PR row; issue rows have no detail view, so Enter is a no-op there.
+  // d defers the cursor row (reversible via Restore).
   const rows: Array<{ kind: 'pr' | 'issue'; number: number }> = [
-    ...(prs ?? []).map((p) => ({ kind: 'pr' as const, number: p.number })),
-    ...(issues ?? []).map((i) => ({ kind: 'issue' as const, number: i.number })),
+    ...visiblePrs.map((p) => ({ kind: 'pr' as const, number: p.number })),
+    ...visibleIssues.map((i) => ({ kind: 'issue' as const, number: i.number })),
   ];
   const [cursor, setCursor] = useTriageKeys({
     count: rows.length,
@@ -133,17 +167,22 @@ export default function ReviewView({
       const r = rows[i];
       if (r && r.kind === 'pr') void selectPr(r.number);
     },
+    onDefer: (i) => {
+      const r = rows[i];
+      if (r) void deferSelected(r.kind, r.number);
+    },
     rowTestId: (i) => {
       const r = rows[i];
       return r.kind === 'pr' ? `review-pr-${r.number}` : `review-issue-${r.number}`;
     },
   });
-  const prCount = prs?.length ?? 0;
+  const prCount = visiblePrs.length;
 
   useEffect(() => {
     let cancelled = false;
     setPrs(null);
     setIssues(null);
+    setDeferred([]);
     setSelected(null);
     setDetails(null);
     setError(null);
@@ -161,6 +200,16 @@ export default function ReviewView({
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    // Deferred flags load independently: if the store is unreachable
+    // the lists still render, with nothing hidden.
+    (async () => {
+      try {
+        const d = await fetchDeferred(repo);
+        if (!cancelled) setDeferred(d.deferred);
+      } catch {
+        if (!cancelled) setDeferred([]);
       }
     })();
     return () => {
@@ -181,7 +230,7 @@ export default function ReviewView({
       // Silent next-item prefetch: warm the details+diff cache for the
       // next PR in list order so advancing renders instantly.
       const next = nextPrAfterMerge(
-        (prs ?? []).map((p) => p.number),
+        visiblePrs.map((p) => p.number),
         n,
       );
       if (next !== null && next !== n) {
@@ -195,13 +244,50 @@ export default function ReviewView({
     }
   }
 
+  async function deferSelected(kind: 'pr' | 'issue', n: number) {
+    setError(null);
+    if (isRowDeferred(deferred, kind, n)) return;
+    if (useMock()) {
+      setDeferred((prev) => [...prev, { kind, number: n, deferred_at: Date.now() / 1000 }]);
+    } else {
+      try {
+        const r = await deferRow(repo, kind, n);
+        setDeferred(r.deferred);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
+    if (kind === 'pr' && selected === n) {
+      setSelected(null);
+      setDetails(null);
+    }
+    setNotice(`Deferred ${kind === 'pr' ? 'PR' : 'issue'} #${n}.`);
+  }
+
+  async function restoreSelected(kind: 'pr' | 'issue', n: number) {
+    setError(null);
+    if (useMock()) {
+      setDeferred((prev) => prev.filter((d) => !(d.kind === kind && d.number === n)));
+    } else {
+      try {
+        const r = await restoreRow(repo, kind, n);
+        setDeferred(r.deferred);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
+    setNotice(`Restored ${kind === 'pr' ? 'PR' : 'issue'} #${n}.`);
+  }
+
   async function onMerge(n: number) {
     setError(null);
     setMerging((prev) => applyOptimisticMerge(prev, n));
     try {
       await mergePr(repo, n);
       setNotice(`Merged PR #${n}.`);
-      const numbers = (prs ?? []).map((p) => p.number);
+      const numbers = visiblePrs.map((p) => p.number);
       const next = nextPrAfterMerge(numbers, n);
       if (next !== null) {
         const at = numbers.indexOf(next);
@@ -261,17 +347,17 @@ export default function ReviewView({
       {notice && (
         <p className="row-meta" data-testid="review-notice">{notice}</p>
       )}
-      <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT}</p>
+      <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT} · d defers</p>
       <div className="columns">
         <div>
           <h3>Pull requests</h3>
           {!prs ? (
             <p className="row-meta" data-testid="review-prs-loading">Loading…</p>
-          ) : prs.length === 0 ? (
+          ) : visiblePrs.length === 0 ? (
             <p className="row-meta" data-testid="review-prs-empty">No open PRs.</p>
           ) : (
             <ul className="session-list" data-testid="review-pr-list">
-              {prs.map((p, pi) => (
+              {visiblePrs.map((p, pi) => (
                 <li
                   key={p.number}
                   className={`detail${selected === p.number ? ' selected' : ''}${cursor === pi ? ' kbd-focus' : ''}${merging.has(p.number) ? ' merging' : ''}`}
@@ -286,6 +372,9 @@ export default function ReviewView({
                   </p>
                   <button type="button" onClick={() => void selectPr(p.number)}>
                     Open
+                  </button>{' '}
+                  <button type="button" data-testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)}>
+                    Defer
                   </button>
                 </li>
               ))}
@@ -294,11 +383,11 @@ export default function ReviewView({
           <h3>Issues</h3>
           {!issues ? (
             <p className="row-meta" data-testid="review-issues-loading">Loading…</p>
-          ) : issues.length === 0 ? (
+          ) : visibleIssues.length === 0 ? (
             <p className="row-meta" data-testid="review-issues-empty">No open issues.</p>
           ) : (
             <ul className="session-list" data-testid="review-issue-list">
-              {issues.map((iss, ii) => (
+              {visibleIssues.map((iss, ii) => (
                 <li
                   key={iss.number}
                   className={`detail${cursor === prCount + ii ? ' kbd-focus' : ''}`}
@@ -308,9 +397,40 @@ export default function ReviewView({
                   <p className="row-meta">
                     {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
                   </p>
+                  <button type="button" data-testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)}>
+                    Defer
+                  </button>
                 </li>
               ))}
             </ul>
+          )}
+          {deferred.length > 0 && (
+            <details data-testid="review-deferred-disclosure">
+              <summary className="details-title">Deferred ({deferred.length})</summary>
+              <ul className="session-list" data-testid="review-deferred-list">
+                {deferred.map((d) => {
+                  const title = d.kind === 'pr'
+                    ? (prs ?? []).find((p) => p.number === d.number)?.title
+                    : (issues ?? []).find((i) => i.number === d.number)?.title;
+                  return (
+                    <li
+                      key={`${d.kind}-${d.number}`}
+                      data-testid={`review-deferred-${d.kind}-${d.number}`}
+                    >
+                      <span className="row-title">#{d.number} {title ?? d.kind}</span>
+                      <p className="row-meta">{d.kind === 'pr' ? 'pull request' : 'issue'}</p>
+                      <button
+                        type="button"
+                        data-testid={`restore-deferred-${d.kind}-${d.number}`}
+                        onClick={() => void restoreSelected(d.kind, d.number)}
+                      >
+                        Restore
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </details>
           )}
         </div>
         <div>

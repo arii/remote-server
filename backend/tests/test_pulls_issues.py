@@ -169,6 +169,16 @@ class PrDiffTest(unittest.TestCase):
     DIFF = ("diff --git a/app.py b/app.py\n"
             "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n"
             "-print(1)\n+print(2)\n")
+    STRUCT_DIFF = (
+        "diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml\n"
+        "--- a/pnpm-lock.yaml\n+++ b/pnpm-lock.yaml\n@@ -1 +1 @@\n"
+        "-foo: 1.0.0\n+foo: 1.0.1\n"
+        "diff --git a/dist/app.bundle.js b/dist/app.bundle.js\n"
+        "--- a/dist/app.bundle.js\n+++ b/dist/app.bundle.js\n"
+        "@@ -1 +1 @@\n-var a=1;\n+var a=2;\n"
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n"
+        "-print(1)\n+print(2)\n")
 
     def test_diff_shape(self):
         runner = FakeRunner().on(["gh"], FakeProc(stdout=self.DIFF))
@@ -177,9 +187,24 @@ class PrDiffTest(unittest.TestCase):
         self.assertEqual(out["number"], 7)
         self.assertIn("+print(2)", out["diff"])
         self.assertFalse(out["truncated"])
+        self.assertEqual(out["hidden_structural"],
+                         {"count": 0, "files": []})
         argv = runner.calls[0]
         self.assertEqual(argv[:4], ["gh", "pr", "diff", "7"])
         self.assertIn("arii/remote-server", argv)
+
+    def test_diff_reports_hidden_structural(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=self.STRUCT_DIFF))
+        out = pulls_mod.pr_diff(repo="remote-server", pr=7,
+                                runner=runner)
+        self.assertEqual(out["hidden_structural"],
+                         {"count": 2,
+                          "files": ["pnpm-lock.yaml",
+                                    "dist/app.bundle.js"]})
+        self.assertNotIn("foo: 1.0.1", out["diff"])
+        self.assertNotIn("var a=2", out["diff"])
+        self.assertIn("+print(2)", out["diff"])
 
     def test_diff_truncates_huge_output(self):
         big = self.DIFF * 5000

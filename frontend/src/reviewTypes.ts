@@ -79,6 +79,16 @@ export interface IssueDraftResponse {
   body: string;
 }
 
+export interface DeferredRow {
+  kind: 'pr' | 'issue';
+  number: number;
+  deferred_at?: number;
+}
+
+export interface DeferredListResponse {
+  deferred: DeferredRow[];
+}
+
 // Merge relevance, mirroring the server gates (td evaluate_pr_merge_readiness
 // for batch merge; pulls._pr_action for single merge). Buttons stay enabled
 // when state is unknown — these gate only on known-bad state, fail open.

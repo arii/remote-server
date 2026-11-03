@@ -265,10 +265,17 @@ def pr_details(repo: str = "remote-server", pr: int = 0,
     }
 
 
+class HiddenStructural(BaseModel):
+    count: int = 0
+    files: list = Field(default_factory=list)
+
+
 class PrDiff(BaseModel):
     number: int = 0
     diff: str = ""
     truncated: bool = False
+    hidden_structural: HiddenStructural = Field(
+        default_factory=HiddenStructural)
 
 
 @router.get("/pr-diff", response_model=PrDiff)
@@ -286,9 +293,13 @@ def pr_diff(repo: str = "remote-server", pr: int = 0,
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     diff = context_filter.filter_diff(raw, max_file_lines=120)
+    hidden = context_filter.structural_hidden_files(raw or "")
+    shape = {"count": len(hidden), "files": hidden}
     if len(diff) > 30000:
-        return {"number": pr, "diff": diff[:30000], "truncated": True}
-    return {"number": pr, "diff": diff, "truncated": False}
+        return {"number": pr, "diff": diff[:30000], "truncated": True,
+                "hidden_structural": shape}
+    return {"number": pr, "diff": diff, "truncated": False,
+            "hidden_structural": shape}
 
 
 @router.post("/pr-action", response_model=PrActionResult)

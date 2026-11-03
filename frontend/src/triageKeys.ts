@@ -49,22 +49,29 @@ export interface TriageKeysOptions {
   // triage key is handled (agent drawer, PTY terminal, modal flows).
   suspended?: boolean;
   onOpen: (index: number) => void;
+  // Optional defer binding (Review only): d defers the cursor row.
+  // Reversible by design, so it needs no hold-to-confirm.
+  onDefer?: (index: number) => void;
   // Optional row locator for scrolling the cursor into view.
   rowTestId?: (index: number) => string;
 }
 
-// j/k moves a cursor over `count` rows, Enter opens the cursor row.
+// j/k moves a cursor over `count` rows, Enter opens the cursor row,
+// d defers it when onDefer is wired (Review only).
 // Wiring only (no destructive bindings: hold-to-confirm stays pointer
 // or focused-button+Enter). Returns [cursor, setCursor].
 export function useTriageKeys({
   count,
   suspended = false,
   onOpen,
+  onDefer,
   rowTestId,
 }: TriageKeysOptions): [number | null, (c: number | null) => void] {
   const [cursor, setCursor] = useState<number | null>(null);
   const openRef = useRef(onOpen);
   openRef.current = onOpen;
+  const deferRef = useRef(onDefer);
+  deferRef.current = onDefer;
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
   const countRef = useRef(count);
@@ -115,6 +122,17 @@ export function useTriageKeys({
         if (at === null || at >= countRef.current) return;
         e.preventDefault();
         openRef.current(at);
+        return;
+      }
+      if (e.key === 'd') {
+        // Same guards as j/k: no modifiers (checked above), suspended
+        // flag, and never while typing in an editable control.
+        if (isEditableFocus(active)) return;
+        const defer = deferRef.current;
+        const at = cursorRef.current;
+        if (!defer || at === null || at >= countRef.current) return;
+        e.preventDefault();
+        defer(at);
       }
     }
     window.addEventListener('keydown', onKey);

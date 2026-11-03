@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyOptimisticMerge, nextPrAfterMerge, revertOptimisticMerge } from './ReviewView';
+import { applyOptimisticMerge, isRowDeferred, nextPrAfterMerge, revertOptimisticMerge } from './ReviewView';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -38,5 +38,27 @@ describe('next PR after merge', () => {
 
   it('returns null when the merged PR is not in the list', () => {
     expect(nextPrAfterMerge([3, 7, 9], 12)).toBeNull();
+  });
+});
+
+describe('deferred row matching', () => {
+  const deferred = [
+    { kind: 'pr', number: 7 },
+    { kind: 'issue', number: 3 },
+  ];
+
+  it('matches on kind and number together', () => {
+    expect(isRowDeferred(deferred, 'pr', 7)).toBe(true);
+    expect(isRowDeferred(deferred, 'issue', 3)).toBe(true);
+  });
+
+  it('does not cross kinds on the same number', () => {
+    expect(isRowDeferred(deferred, 'issue', 7)).toBe(false);
+    expect(isRowDeferred(deferred, 'pr', 3)).toBe(false);
+  });
+
+  it('returns false for undeferred rows and empty lists', () => {
+    expect(isRowDeferred(deferred, 'pr', 12)).toBe(false);
+    expect(isRowDeferred([], 'pr', 7)).toBe(false);
   });
 });
