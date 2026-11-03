@@ -90,13 +90,18 @@ function RowsList({ rows }: { rows: HistoryRow[] }) {
             className="history-row"
             data-testid={r.repeat > 1 ? 'history-incident' : 'history-row'}
           >
-            <span className="row-title">
-              <StatusIcon tone={r.tone} /> {r.summary}
-            </span>
-            <span className="row-meta">
-              {r.kind} · {r.at}
-              {advice && <> · Recovery: {advice}</>}
-            </span>
+            <details data-testid="history-detail">
+              <summary>
+                <span className="row-title">
+                  <StatusIcon tone={r.tone} /> {r.summary}
+                </span>
+                <span className="row-meta">
+                  {r.kind} · {r.at}
+                  {advice && <> · Recovery: {advice}</>}
+                </span>
+              </summary>
+              <pre className="row-meta">{r.detail}</pre>
+            </details>
           </li>
         );
       })}
