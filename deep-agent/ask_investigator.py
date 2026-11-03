@@ -116,6 +116,21 @@ def grep_repo(pattern: str) -> str:
     return s5tools.grep_repo(_checkout, pattern)
 
 
+def _json_or_none(text):
+    try:
+        return json.loads(text or "")
+    except json.JSONDecodeError:
+        return None
+
+
+def _td_error(number, snap):
+    """Format a td JSON error with the PR number so agents relay it."""
+    msg = (snap.get("message") or "").strip()[:200] or "unknown error"
+    code = snap.get("code", "")
+    suffix = f" (code {code})" if code != "" else ""
+    return f"PR #{number}: td error: {msg}{suffix}"
+
+
 @tool
 def pr_state(number: str) -> str:
     """Summarize a GitHub PR: state, reviews, checks (read-only).
@@ -139,14 +154,20 @@ def pr_state(number: str) -> str:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"td failed: {exc}"
     if proc.returncode != 0:
+        # td exits nonzero for API errors but still prints the JSON
+        # error on stdout (stderr stays empty): parse it first.
+        snap = _json_or_none(proc.stdout)
+        if isinstance(snap, dict) and snap.get("status") == "error":
+            return _td_error(number, snap)
         return f"td error: {(proc.stderr or '').strip()[:200]}"
     try:
         snap = json.loads(proc.stdout or "")
     except json.JSONDecodeError:
         return f"td error: bad json: {(proc.stdout or '').strip()[:200]}"
-    if not isinstance(snap, dict) or snap.get("status") == "error":
-        msg = snap.get("message", "") if isinstance(snap, dict) else ""
-        return f"td error: {msg or (proc.stdout or '').strip()[:200]}"
+    if not isinstance(snap, dict):
+        return f"td error: bad json: {(proc.stdout or '').strip()[:200]}"
+    if snap.get("status") == "error":
+        return _td_error(number, snap)
     summary = snap.get("checksSummary") or {}
     return _short_line(
         f"{snap.get('state')} draft={snap.get('draft')} "

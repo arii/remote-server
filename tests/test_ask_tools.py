@@ -132,6 +132,22 @@ class TestAskTools(unittest.TestCase):
             self.assertIn(
                 "td failed", ai.pr_state.invoke({"number": "153"}))
 
+    def test_pr_state_nonzero_json_error_surfaces_message(self):
+        # Live shape: td exits 148 for API errors with the JSON error
+        # on stdout and empty stderr (eval pr-missing case).
+        payload = json.dumps({"status": "error",
+                              "message": "GitHub API Error: Not Found",
+                              "type": "CLIError", "code": 404})
+        proc = subprocess.CompletedProcess(
+            args=["td"], returncode=148, stdout=payload + "\n",
+            stderr="")
+        with mock.patch.object(ai.subprocess, "run", return_value=proc):
+            out = ai.pr_state.invoke({"number": "999999"})
+        self.assertIn("999999", out)
+        self.assertIn("Not Found", out)
+        self.assertIn("404", out)
+        self.assertIn("td error", out)
+
     def test_search_docs_rejects_bad_query(self):
         # Validation runs before the retriever is touched: no model.
         for bad in ["", "   ", "x" * 501]:
