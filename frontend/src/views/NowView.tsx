@@ -25,6 +25,23 @@ function formatStamp(epochSeconds: number): string {
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
+function relativeStamp(epochSeconds: number): string {
+  if (!epochSeconds) return 'unknown time';
+  const mins = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function sevClass(severity: string): string {
+  const s = severity.toLowerCase();
+  if (s === 'crit' || s === 'critical') return 'sev sev-crit';
+  if (s === 'warn' || s === 'warning') return 'sev sev-warn';
+  return 'sev sev-info';
+}
+
 function ReportDialog({
   initialBody,
   onSubmit,
@@ -177,7 +194,9 @@ export default function NowView({
       <header className="page-head">
         <div>
           <h2>Now</h2>
-          <p className="row-meta">Updated {formatStamp(data.updated_at)}</p>
+          <p className="row-meta" title={formatStamp(data.updated_at)}>
+            Updated {relativeStamp(data.updated_at)}
+          </p>
         </div>
         <button type="button" data-testid="report-bug" onClick={() => setDialogOpen(true)}>
           Report a bug
@@ -219,7 +238,11 @@ export default function NowView({
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
               <span className="row-title">{item.title}</span>
               <p className="row-meta">
-                {item.kind} · {item.severity} · {formatStamp(item.created_at)}
+                {item.kind} · <span className={sevClass(item.severity)}>{item.severity}</span>
+                {' · '}
+                <span title={formatStamp(item.created_at)}>
+                  {relativeStamp(item.created_at)}
+                </span>
               </p>
               <p>{item.detail}</p>
               <div className="actions">

@@ -178,6 +178,22 @@ li.detail > button:focus-visible { outline: 2px solid var(--accent); outline-off
 }
 .danger-row:first-child { border-top: 0; }
 
+[data-testid="history-list"] { gap: 0; }
+.history-row { padding: 0.55rem 0; border-top: 1px solid var(--border); }
+.history-row:first-child { border-top: 0; }
+
+.sev {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  border: 1px solid var(--border);
+}
+.sev-crit { color: #ffb4b4; border-color: var(--bad); }
+.sev-warn { color: #ffd9a0; border-color: var(--warn); }
+.sev-info { color: var(--muted); }
+
 .turns { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.75rem; }
 .turn { border-top: 2px solid var(--border); padding-top: 0.5rem; }
 .turn-assistant { border-top-color: var(--accent); }
