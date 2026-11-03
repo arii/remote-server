@@ -161,6 +161,8 @@ li.detail > button:focus-visible { outline: 2px solid var(--accent); outline-off
 li.detail.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 /* Keyboard triage cursor (j/k): visible focus ring on the current row. */
 li.detail.kbd-focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Optimistic merge pending state: dim the row while the merge is in flight. */
+li.detail.merging { opacity: 0.55; }
 
 /* Typing indicator: three pulsing dots (static under reduced-motion). */
 .typing-dots { display: inline-flex; gap: 0.3rem; padding: 0.35rem 0 0.1rem; }
