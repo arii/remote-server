@@ -38,6 +38,12 @@ export function prFieldSeed(selectedPr: number | null): string {
   return selectedPr === null ? '' : String(selectedPr);
 }
 
+// Clearing drops the selected run's output pane — unless a run is live
+// (the pane shows its streaming output) or nothing cleared.
+export function shouldResetPaneOnClear(cleared: number, running: string | null): boolean {
+  return cleared > 0 && running === null;
+}
+
 // Repair worker candidates: skip issues that are not actionable
 // right now (blocked on a decision/lane, or scheduled future work).
 // A manual number still overrides the filter.
