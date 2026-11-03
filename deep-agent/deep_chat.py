@@ -68,6 +68,19 @@ MAX_PROMPT = 3000
 # Trace middleware nodes consume budget (~4 steps per tool call,
 # measured); 40 preserves room for ~9 tool calls per turn.
 RECURSION_LIMIT = 40
+# Tool-call budget per turn (ToolMessages in thread state). Past this
+# the model sees only propose_action plus a nudge: looper models that
+# would investigate to the recursion cutoff must propose-or-answer
+# instead, and the cutoff becomes near-unreachable (#307). Legit
+# turns use 1-3 tools; 6 splits the difference. Counts whole-thread
+# history, so a post-approval continuation stays narrowed (it only
+# needs to summarize).
+CHAT_TOOL_BUDGET = 6
+BUDGET_SPENT_NUDGE = (
+    "Tool budget spent. Either call propose_action once with the "
+    "exact change and stop, or answer from what you already gathered. "
+    "No other tools are available."
+)
 # Sliding window over checkpoint history, applied at turn start.
 # Checkpoints append indefinitely; without this long threads blow
 # the context window. ~5-10 turns of history.
@@ -417,6 +430,57 @@ def open_checkpointer(path=THREAD_DB):
     return cm.__enter__(), True, cm
 
 
+def tool_budget_middleware():
+    """ToolBudgetMiddleware instance. Venv-only (langchain import).
+
+    Counts ToolMessages in the thread: within budget the request
+    passes through; past CHAT_TOOL_BUDGET the model sees only
+    propose_action plus the spent nudge, and stray non-propose calls
+    are rejected at the tool boundary instead of executing (#307).
+    Sync hooks only: chat turns use sync invoke/stream.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.messages import SystemMessage, ToolMessage
+
+    def _spent(state):
+        try:
+            messages = state.get("messages", [])
+        except AttributeError:
+            return 0
+        return sum(isinstance(m, ToolMessage) for m in messages)
+
+    def _name(tool):
+        return tool.get("name") if isinstance(tool, dict) \
+            else getattr(tool, "name", None)
+
+    class ToolBudget(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            if _spent(request.state) < CHAT_TOOL_BUDGET:
+                return handler(request)
+            narrowed = [t for t in request.tools
+                        if _name(t) == "propose_action"]
+            return handler(request.override(
+                tools=narrowed,
+                messages=[*request.messages,
+                          SystemMessage(content=BUDGET_SPENT_NUDGE)]))
+
+        def wrap_tool_call(self, request, handler):
+            if request.tool_call["name"] == "propose_action":
+                return handler(request)
+            if _spent(request.state) < CHAT_TOOL_BUDGET:
+                return handler(request)
+            call = request.tool_call
+            return ToolMessage(
+                content="Error: tool budget spent, call propose_action "
+                        "or answer from gathered evidence.",
+                tool_call_id=call["id"] or "",
+                name=call["name"],
+                status="error",
+            )
+
+    return ToolBudget()
+
+
 def build_agent(repo, checkpointer, model=None, recorder=None,
                 intent_hint=None, spec=None):
     """create_deep_agent chat slice. Venv-only. Model injectable."""
@@ -424,9 +488,10 @@ def build_agent(repo, checkpointer, model=None, recorder=None,
 
     if model is None:
         model, spec = build_model()
-    kwargs = {}
+    stack = [tool_budget_middleware()]
     if recorder is not None:
-        kwargs["middleware"] = observe.trace_middleware(recorder)
+        stack.extend(observe.trace_middleware(recorder))
+    kwargs = {"middleware": stack}
     permissions = gate_chat_harness(spec) if spec is not None else None
     system = f"Repo: {repo}. " + SYSTEM
     if intent_hint:

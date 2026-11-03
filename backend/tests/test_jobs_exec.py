@@ -272,7 +272,36 @@ class RouterTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
 
 
-class ExecuteRunTest(unittest.TestCase):
+class _LedgerTmpDir:
+    """Point the audit ledger at a tmp dir: execute_run now ledgers
+    every finished run, and tests must not touch the real path."""
+
+    def _ledger_setup(self):
+        import os
+        import tempfile
+
+        self._ledger_tmp = tempfile.TemporaryDirectory()
+        self._ledger_old = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self._ledger_tmp.name, "ledger.jsonl")
+
+    def _ledger_teardown(self):
+        import os
+
+        if self._ledger_old is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._ledger_old
+        self._ledger_tmp.cleanup()
+
+
+class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
+    def setUp(self):
+        self._ledger_setup()
+
+    def tearDown(self):
+        self._ledger_teardown()
+
     def _reg(self, action="logs"):
         reg = RunRegistry()
         rid, err = reg.start_run(action)
@@ -302,6 +331,41 @@ class ExecuteRunTest(unittest.TestCase):
         self.assertEqual(run["exit_code"], 1)
         self.assertIn("printed nothing", run["output"])
 
+    def test_finished_run_is_ledgered(self):
+        import json
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ledger.jsonl")
+            old = os.environ.get("BUTTONS_LEDGER_PATH")
+            os.environ["BUTTONS_LEDGER_PATH"] = path
+            try:
+                reg, rid = self._reg("logs")
+                engine.execute_run(
+                    reg, rid, "logs", "remote-server", "", "",
+                    runner=lambda argv: (0, "ok\n"))
+                reg2, rid2 = self._reg("run-td")
+                engine.execute_run(
+                    reg2, rid2, "run-td", "remote-server",
+                    "arii/remote-server", "/srv/remote-server",
+                    td_argv=["td", "context-warm"],
+                    runner=lambda argv: (0, "ok\n"))
+            finally:
+                if old is None:
+                    os.environ.pop("BUTTONS_LEDGER_PATH", None)
+                else:
+                    os.environ["BUTTONS_LEDGER_PATH"] = old
+            with open(path) as f:
+                entries = [json.loads(line) for line in f]
+        by_action = {e["action"]: e for e in entries
+                     if e.get("kind") == "run"}
+        self.assertEqual(by_action["logs"]["exit"], 0)
+        self.assertEqual(by_action["logs"]["repo"], "remote-server")
+        self.assertIn("elapsed_s", by_action["logs"])
+        self.assertEqual(by_action["run-td"]["command"],
+                         "td context-warm")
+
     def test_run_td_builds_validated_step(self):
         reg, rid = self._reg("run-td")
         seen = []
@@ -326,7 +390,13 @@ def _sleep_step(seconds):
             f"import time;time.sleep({seconds})"]
 
 
-class WatchdogTest(unittest.TestCase):
+class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
+    def setUp(self):
+        self._ledger_setup()
+
+    def tearDown(self):
+        self._ledger_teardown()
+
     def test_hung_step_killed_by_watchdog(self):
         chunks = []
         start = time.time()
@@ -362,7 +432,13 @@ class WatchdogTest(unittest.TestCase):
         self.assertIn("hi", "".join(chunks))
 
 
-class FinishGuaranteeTest(unittest.TestCase):
+class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
+    def setUp(self):
+        self._ledger_setup()
+
+    def tearDown(self):
+        self._ledger_teardown()
+
     def test_append_failure_still_finishes(self):
         reg = RunRegistry()
         rid, err = reg.start_run("logs")

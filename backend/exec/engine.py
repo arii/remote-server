@@ -422,11 +422,24 @@ def run_step_pipe(step, append, runner=None, timeout=None):
 def execute_run(registry, run_id, action, repo, gh, td_cwd,
                 td_argv=None, runner=None):
     """Worker body: run an action's steps to completion. Never raises."""
+    from backend.ledger import append as ledger_append
+
+    started = time.time()
+
+    def _done(code):
+        registry.finish_run(run_id, code)
+        entry = {"kind": "run", "action": action, "repo": repo,
+                 "exit": code,
+                 "elapsed_s": round(time.time() - started, 2)}
+        if td_argv:
+            entry["command"] = " ".join(td_argv)
+        ledger_append(entry)
+
     try:
         steps, err = action_steps(action, repo, gh, td_cwd, td_argv)
         if err:
             registry.append(run_id, f"error: {err}\n")
-            registry.finish_run(run_id, 1)
+            _done(1)
             return
         for step in steps:
             registry.append(run_id, "$ " + " ".join(step) + "\n")
@@ -448,16 +461,16 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
                         run_id, "note: the step printed nothing before "
                         "failing — re-run this command on the host to "
                         "diagnose.\n")
-                registry.finish_run(run_id, code)
+                _done(code)
                 return
-        registry.finish_run(run_id, 0)
+        _done(0)
     except Exception as exc:  # never leave a run stuck active
         try:
             registry.append(run_id, f"error: {exc}\n")
         except Exception:
             pass
         try:
-            registry.finish_run(run_id, 1)
+            _done(1)
         except Exception:
             pass
 

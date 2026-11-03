@@ -831,6 +831,72 @@ class TestAgentMechanics(unittest.TestCase):
             {"configurable": {"thread_id": "t-gate-read"}})
         self.assertNotIn("permission denied", self._tool_text(out))
 
+    def _looper_model(self, n_calls, seen_binds, seen_msgs):
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from pydantic import Field
+
+        class Looper(BaseChatModel):
+            replies: list = Field(default_factory=list)
+
+            @property
+            def _llm_type(self):
+                return "looper"
+
+            def _generate(self, messages, stop=None, run_manager=None,
+                          **kwargs):
+                seen_msgs.append(list(messages))
+                msg = self.replies.pop(0) if self.replies \
+                    else AIMessage(content="")
+                return ChatResult(
+                    generations=[ChatGeneration(message=msg)])
+
+            def bind_tools(self, tools, **kwargs):
+                seen_binds.append(
+                    {t.get("name") if isinstance(t, dict)
+                     else getattr(t, "name", None) for t in tools})
+                return self
+
+        calls = [AIMessage(content="", tool_calls=[
+            {"name": "grep_repo", "args": {"pattern": f"zzz-{i}"},
+             "id": f"loop-{i}", "type": "tool_call"},
+        ]) for i in range(n_calls)]
+        return Looper(replies=calls + [AIMessage(content="done")])
+
+    def test_tool_budget_narrows_to_propose(self):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        binds, msgs = [], []
+        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1,
+                                   binds, msgs)
+        agent = deep_chat.build_agent("arii/remote-server",
+                                      InMemorySaver(), model=model)
+        agent.invoke(
+            {"messages": [{"role": "user", "content": "dig deep"}]},
+            {"configurable": {"thread_id": "t-budget-narrow"}})
+        self.assertGreater(len(binds), 1)
+        self.assertIn("grep_repo", binds[0])
+        self.assertIn({"propose_action"}, binds[1:])
+        nudge_seen = any(
+            m.__class__.__name__ == "SystemMessage"
+            and "budget" in str(m.content).lower()
+            for batch in msgs for m in batch)
+        self.assertTrue(nudge_seen, "expected a budget-spent nudge")
+
+    def test_tool_budget_rejects_over_calls(self):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        binds, msgs = [], []
+        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1,
+                                   binds, msgs)
+        agent = deep_chat.build_agent("arii/remote-server",
+                                      InMemorySaver(), model=model)
+        out = agent.invoke(
+            {"messages": [{"role": "user", "content": "dig deep"}]},
+            {"configurable": {"thread_id": "t-budget-reject"}})
+        self.assertIn("budget spent", self._tool_text(out))
+
 
 def _msg(cls_name, mid):
     return type(cls_name, (), {"id": mid, "content": "x"})()
