@@ -11,7 +11,7 @@ import {
 } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, toHistoryRows } from './views/historyUtils';
-import { planNameFromResult, resultLine } from './views/JobsView';
+import { attachIdFromConflict, planNameFromResult, resultLine } from './views/JobsView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -292,6 +292,19 @@ describe('job result line', () => {
     );
     expect(planNameFromResult('Already up to date.')).toBeNull();
     expect(planNameFromResult('')).toBeNull();
+  });
+});
+
+describe('conflict attach', () => {
+  it('extracts the active run id from a 409 detail', () => {
+    expect(
+      attachIdFromConflict(
+        'POST api/jobs/run-td failed: 409 {"detail":"a run is already in progress: 799c6006012d"}',
+      ),
+    ).toBe('799c6006012d');
+    expect(attachIdFromConflict('POST api/jobs/run failed: 400 {"Detail":"bad"}')).toBeNull();
+    expect(attachIdFromConflict('a run is already in progress: 799c6006012d')).toBeNull();
+    expect(attachIdFromConflict('failed: 409 {"Detail":"busy"}')).toBeNull();
   });
 });
 
