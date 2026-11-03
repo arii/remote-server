@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
 import { cleanBriefingLine } from './views/BriefingView';
-import { ApprovalCard, cleanAgentText, traceLine } from './views/ChatView';
+import {
+  ApprovalCard,
+  TypingIndicator,
+  awaitingFirstToken,
+  cleanAgentText,
+  traceLine,
+} from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, toHistoryRows } from './views/historyUtils';
 import { planNameFromResult, resultLine } from './views/JobsView';
@@ -240,6 +246,33 @@ describe('chat agent text', () => {
     );
     expect(decided).toContain('Approved.');
     expect(decided).not.toContain('Reject');
+  });
+});
+
+describe('chat typing indicator', () => {
+  it('shows only while streaming with an empty assistant placeholder', () => {
+    expect(awaitingFirstToken(false, [{ role: 'assistant', text: '' }])).toBe(false);
+    expect(awaitingFirstToken(true, [])).toBe(false);
+    expect(awaitingFirstToken(true, [{ role: 'user', text: 'hi' }])).toBe(false);
+    expect(
+      awaitingFirstToken(true, [
+        { role: 'user', text: 'hi' },
+        { role: 'assistant', text: '' },
+      ]),
+    ).toBe(true);
+    expect(
+      awaitingFirstToken(true, [
+        { role: 'user', text: 'hi' },
+        { role: 'assistant', text: 'token…' },
+      ]),
+    ).toBe(false);
+  });
+
+  it('renders a polite live region with three dots', () => {
+    const html = renderToStaticMarkup(<TypingIndicator />);
+    expect(html).toContain('data-testid="chat-typing"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('typing-dots');
   });
 });
 
