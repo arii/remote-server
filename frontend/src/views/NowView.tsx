@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
-import { apiUrl, createIssue, fetchAttention } from '../apiClient';
-import type { SystemHealthResponse } from '../apiClient';
-import type { AttentionItem, AttentionResponse } from '../attentionTypes';
-import { loadAttention, loadAttentionEmpty } from '../mocks/attention';
+import { apiUrl, createIssue, fetchInbox } from '../apiClient';
+import type { InboxFeed, SystemHealthResponse } from '../apiClient';
+import type { AttentionItem } from '../attentionTypes';
+import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
 import { ContainerPills } from './ObservabilitySection';
+import InboxStrips from './InboxStrips';
+import ReviewView from './ReviewView';
+import JobsView from './JobsView';
 import { useMock } from './mockViews';
 
 function isGetAction(item: AttentionItem): boolean {
@@ -139,15 +142,18 @@ export default function NowView({
   reportContext: string;
   onAskAgent: (seed: string) => void;
 }) {
-  const [data, setData] = useState<AttentionResponse | null>(null);
+  const [data, setData] = useState<InboxFeed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fired, setFired] = useState<string | null>(null);
   const [reported, setReported] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // One section mounted at a time: Review and Jobs each bind window
+  // triage keys, so mounting both would double-bind j/k/Enter.
+  const [section, setSection] = useState<'review' | 'jobs' | null>(null);
 
   async function refresh() {
     try {
-      const live = await fetchAttention(repo);
+      const live = await fetchInbox(repo);
       setData(live);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -159,12 +165,12 @@ export default function NowView({
     if (useMock()) {
       const params = new URLSearchParams(window.location.search);
       const empty = params.get('empty') === '1';
-      setData(empty ? loadAttentionEmpty() : loadAttention());
+      setData(empty ? loadInboxEmpty() : loadInbox());
       return;
     }
     (async () => {
       try {
-        const live = await fetchAttention(repo);
+        const live = await fetchInbox(repo);
         if (!cancelled) setData(live);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -184,7 +190,7 @@ export default function NowView({
       () => {
         if (!document.hidden) void refresh();
       },
-      nowPollMs(data.items.length),
+      nowPollMs(data.attention.length),
     );
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -250,14 +256,19 @@ export default function NowView({
           <p className="row-meta">Stack status: loading…</p>
         )}
       </section>
-      {data.items.length === 0 ? (
+      <InboxStrips
+        feed={data}
+        onOpenReview={() => setSection('review')}
+        onOpenJobs={() => setSection('jobs')}
+      />
+      {data.attention.length === 0 ? (
         <div data-testid="now-empty">
           <h3>Nothing needs you right now</h3>
           <p className="row-meta">All clear. Check back later.</p>
         </div>
       ) : (
         <ul className="session-list" data-testid="now-list">
-          {data.items.map((item) => (
+          {data.attention.map((item) => (
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
               <span className="row-title">{item.title}</span>
               <p className="row-meta">
@@ -291,6 +302,26 @@ export default function NowView({
           ))}
         </ul>
       )}
+      <div className="actions" data-testid="inbox-sections">
+        <button
+          type="button"
+          data-testid="inbox-open-review"
+          aria-pressed={section === 'review'}
+          onClick={() => setSection((s) => (s === 'review' ? null : 'review'))}
+        >
+          Review
+        </button>
+        <button
+          type="button"
+          data-testid="inbox-open-jobs"
+          aria-pressed={section === 'jobs'}
+          onClick={() => setSection((s) => (s === 'jobs' ? null : 'jobs'))}
+        >
+          Jobs{data.runs.active ? ' •' : ''}
+        </button>
+      </div>
+      {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} />}
+      {section === 'jobs' && <JobsView repo={repo} />}
     </section>
   );
 }

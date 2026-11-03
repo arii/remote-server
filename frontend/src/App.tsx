@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
 import NowView from './views/NowView';
-import ReviewView from './views/ReviewView';
-import JobsView from './views/JobsView';
 import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
@@ -23,14 +21,17 @@ function healthSummary(health: SystemHealthResponse | null): string {
   return `Status: ${up}/${health.containers.length} containers up`;
 }
 
-type Tab = 'now' | 'review' | 'jobs' | 'chat' | 'briefing' | 'history';
+type Tab = 'now' | 'chat' | 'briefing' | 'history';
 
+// Now is the triage inbox (attention + Review/Jobs sections); History
+// is the secondary trail. Review/Jobs live inside Now, not as routes.
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'now', label: 'Now' },
   { id: 'chat', label: 'Chat' },
-  { id: 'review', label: 'Review' },
-  { id: 'jobs', label: 'Jobs' },
   { id: 'briefing', label: 'Briefing' },
+];
+
+const SECONDARY_TABS: Array<{ id: Tab; label: string }> = [
   { id: 'history', label: 'History' },
 ];
 
@@ -111,6 +112,18 @@ export default function App() {
           </button>
         ))}
       </nav>
+      <nav className="actions secondary" aria-label="Secondary views">
+        {SECONDARY_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            aria-pressed={tab === t.id}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
       {tab === 'now' && (
         <NowView
           repo={repo}
@@ -119,8 +132,6 @@ export default function App() {
           onAskAgent={askAgent}
         />
       )}
-      {tab === 'review' && <ReviewView repo={repo} onAskAgent={askAgent} />}
-      {tab === 'jobs' && <JobsView repo={repo} />}
       {tab === 'chat' && (
         <ChatView repo={repo} seed={chatSeed} onSeedUsed={() => setChatSeed(null)} />
       )}

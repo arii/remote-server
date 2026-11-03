@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
+import InboxStrips from './views/InboxStrips';
+import type { InboxFeed } from './apiClient';
 import { cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
@@ -498,6 +500,56 @@ describe('app', () => {
     expect(html).toContain('History');
     expect(html).not.toContain('sessions');
     expect(html).not.toContain('briefing');
+  });
+
+  it('App folds Review/Jobs into Now and demotes History', () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('aria-label="Views"');
+    expect(html).toContain('aria-label="Secondary views"');
+    expect(html).not.toContain('>Review</button>');
+    expect(html).not.toContain('>Jobs</button>');
+  });
+});
+
+describe('inbox strips', () => {
+  const feed: InboxFeed = {
+    repo: 'remote-server',
+    updated_at: 1,
+    attention: [],
+    merge_ready: {
+      count: 2,
+      top: [
+        { number: 12, title: 'Fix it' },
+        { number: 13, title: 'Ship it' },
+      ],
+    },
+    runs: {
+      active: { id: 'abc', action: 'run-td', started: 1 },
+      recent: [{ id: 'def', action: 'logs', exit: 0 }],
+    },
+  };
+
+  it('renders merge-ready and active-run strips', () => {
+    const html = renderToStaticMarkup(
+      <InboxStrips feed={feed} onOpenReview={() => {}} onOpenJobs={() => {}} />,
+    );
+    expect(html).toContain('data-testid="inbox-merge-ready"');
+    expect(html).toContain('Ready to merge (2)');
+    expect(html).toContain('#12 Fix it');
+    expect(html).toContain('data-testid="inbox-active-run"');
+    expect(html).toContain('Active: run-td');
+  });
+
+  it('renders nothing when there is nothing actionable', () => {
+    const empty: InboxFeed = {
+      ...feed,
+      merge_ready: { count: 0, top: [] },
+      runs: { active: null, recent: [] },
+    };
+    const html = renderToStaticMarkup(
+      <InboxStrips feed={empty} onOpenReview={() => {}} onOpenJobs={() => {}} />,
+    );
+    expect(html).toBe('');
   });
 });
 
