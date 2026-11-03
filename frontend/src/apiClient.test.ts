@@ -4,6 +4,7 @@ import {
   fetchAttention,
   fetchJobs,
   fetchLedger,
+  fetchPrDiff,
   fetchSystemHealth,
   fetchWorkflowHealth,
 } from './apiClient';
@@ -60,6 +61,12 @@ describe('apiClient (fetch with inline shapes)', () => {
   it('throws visibly on HTTP errors (no silent fallback)', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
     await expect(fetchJobs()).rejects.toThrow('GET api/jobs failed: 500');
+  });
+
+  it('fetches the pr diff for a repo and number', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ number: 1095, diff: 'x', truncated: false }));
+    await fetchPrDiff('boomtick', 1095);
+    expect(fetch).toHaveBeenCalledWith('/api/pr-diff?repo=boomtick&pr=1095');
   });
 
   it('absolutizes api paths from the Vite base, passes the rest through', () => {

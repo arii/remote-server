@@ -5,9 +5,11 @@ import {
   draftIssue,
   fetchIssues,
   fetchPrDetails,
+  fetchPrDiff,
   fetchPrs,
   mergePr,
 } from '../apiClient';
+import type { PrDiffResponse } from '../apiClient';
 import type { IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
@@ -19,6 +21,48 @@ function labelOf(v: unknown): string {
     if (typeof o.name === 'string') return o.name;
   }
   return '';
+}
+
+function PrDiff({ repo, pr }: { repo: string; pr: number }) {
+  const [diff, setDiff] = useState<PrDiffResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    if (diff || error || useMock()) return;
+    try {
+      setDiff(await fetchPrDiff(repo, pr));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <details
+      data-testid={`review-diff-${pr}`}
+      onToggle={(e) => {
+        if ((e.target as HTMLDetailsElement).open) void load();
+      }}
+    >
+      <summary className="details-title">View diff</summary>
+      {error && (
+        <p className="row-meta" role="alert">
+          Couldn&apos;t load diff: {error}
+        </p>
+      )}
+      {diff ? (
+        <>
+          {diff.truncated && (
+            <p className="row-meta">Truncated to the first 30 KB.</p>
+          )}
+          <pre className="row-meta" data-testid={`review-diff-body-${pr}`}>
+            {diff.diff || 'Empty diff.'}
+          </pre>
+        </>
+      ) : (
+        !error && <p className="row-meta">Loading…</p>
+      )}
+    </details>
+  );
 }
 
 export default function ReviewView({
@@ -205,6 +249,7 @@ export default function ReviewView({
                   </li>
                 ))}
               </ul>
+              <PrDiff repo={repo} pr={sel.number} />
               <div className="actions">
                 <HoldToConfirm label={`Merge PR #${sel.number}`} onFire={() => void onMerge(sel.number)} />
                 <button
