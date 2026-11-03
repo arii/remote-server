@@ -29,12 +29,6 @@ const OBSERVE: FixedAction[] = [
   { action: 'logs', label: 'Recent logs', desc: 'Last 100 terminal and ollama lines.' },
 ];
 
-const REFRESH: FixedAction[] = [
-  { action: 'briefing-td', label: 'Repo briefing', desc: 'Full text briefing for this repo.' },
-  { action: 'preflight', label: 'Preflight checks', desc: 'Preflight digest for this repo.' },
-  { action: 'warm-context', label: 'Warm context', desc: 'Refresh the agent context index.' },
-];
-
 interface TdCommand {
   slug: string;
   label: string;
@@ -488,23 +482,6 @@ export default function JobsView({ repo }: { repo: string }) {
         <h3>Observe</h3>
         <div className="actions">
           {OBSERVE.map((a) => (
-            <button
-              key={a.action}
-              type="button"
-              data-testid={`dispatch-${a.action}`}
-              title={a.desc}
-              onClick={() => onDispatchFixed(a, false)}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section aria-label="Refresh">
-        <h3>Refresh</h3>
-        <div className="actions">
-          {REFRESH.map((a) => (
             <button
               key={a.action}
               type="button"
