@@ -166,17 +166,25 @@ function activityLabel(kind: string, count: number): string {
   return `${what} activity ×${count}`;
 }
 
+export function jobPassesKindFilter(jobKind: string | undefined, filter: string): boolean {
+  if (filter === 'all') return true;
+  // Job rows are runs: they answer to the run filter whatever action ran.
+  if (filter === 'run') return true;
+  return (jobKind || 'job') === filter;
+}
+
 function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
   const routineRun = entry.routine && count > 1;
   const failed = entry.failed && !entry.routine;
+  const repeated = count > 1 && !routineRun
+    ? failed
+      ? `${entry.summary} ×${count} — same failure repeated`
+      : `${entry.summary} ×${count}`
+    : null;
   return {
     key: `${entry.kind}-${entry.summary}-${index}`,
     kind: entry.kind,
-    summary: routineRun
-      ? activityLabel(entry.kind, count)
-      : count > 1
-        ? `${entry.summary} ×${count} — same failure repeated`
-        : entry.summary,
+    summary: routineRun ? activityLabel(entry.kind, count) : (repeated ?? entry.summary),
     at: entry.at,
     repeat: count,
     recovery: failed ? recoveryFor(entry.kind, entry.summary) : '',

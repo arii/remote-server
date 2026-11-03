@@ -21,18 +21,6 @@ import type { IssueRow } from '../reviewTypes';
 import { mergeBlockReason } from '../reviewTypes';
 import { loadJobs, useMock } from './mockViews';
 
-interface FixedAction {
-  action: string;
-  label: string;
-  desc: string;
-}
-
-const OBSERVE: FixedAction[] = [
-  { action: 'health', label: 'Stack health', desc: 'Disk, memory and container snapshot.' },
-  { action: 'status', label: 'Repo status', desc: 'Git branch, recent commits, images.' },
-  { action: 'logs', label: 'Recent logs', desc: 'Last 100 terminal and ollama lines.' },
-];
-
 interface TdCommand {
   slug: string;
   label: string;
@@ -102,7 +90,7 @@ interface DangerAction {
 const DANGER: DangerAction[] = [
   {
     action: 'merge-approved',
-    label: 'Merge approved PRs',
+    label: 'Merge approved PR',
     consequence: 'Merges every approved, green PR.',
   },
   {
@@ -500,10 +488,6 @@ export default function JobsView({ repo }: { repo: string }) {
     progressRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' });
   }, [running]);
 
-  function onDispatchFixed(a: FixedAction, confirmed: boolean) {
-    return guarded(() => launch(a.label, () => startJobRun(a.action, repo, confirmed)));
-  }
-
   function onDispatchTd(cmd: TdCommand) {
     const n = pr.trim();
     if (cmd.needsPr && !/^\d+$/.test(n)) {
@@ -549,7 +533,7 @@ export default function JobsView({ repo }: { repo: string }) {
         <div>
           <h2>Jobs</h2>
           <p className="row-meta">
-            {jobs.length} approved job{jobs.length === 1 ? '' : 's'}
+            {jobs.length} run{jobs.length === 1 ? '' : 's'}
           </p>
         </div>
         <button type="button" data-testid="jobs-refresh" onClick={() => void guarded(load)}>
@@ -588,23 +572,7 @@ export default function JobsView({ repo }: { repo: string }) {
           {planOpen && <pre className="row-meta">{planContent ?? 'Loading…'}</pre>}
         </div>
       )}
-
-      <section aria-label="Observe">
-        <h3>Observe</h3>
-        <div className="actions">
-          {OBSERVE.map((a) => (
-            <button
-              key={a.action}
-              type="button"
-              data-testid={`dispatch-${a.action}`}
-              title={a.desc}
-              onClick={() => onDispatchFixed(a, false)}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
-      </section>
+      <RepairSection repo={repo} />
 
       <section aria-label="Agent commands">
         <h3>Agent commands</h3>
@@ -767,7 +735,7 @@ export default function JobsView({ repo }: { repo: string }) {
 
       {jobs.length === 0 ? (
         <div data-testid="jobs-empty">
-          <h3>No approved jobs</h3>
+          <h3>No runs</h3>
           <p className="row-meta">Dispatch one above or check back later.</p>
         </div>
       ) : (
@@ -782,7 +750,6 @@ export default function JobsView({ repo }: { repo: string }) {
           ))}
         </ul>
       )}
-      <RepairSection repo={repo} />
     </section>
   );
 }

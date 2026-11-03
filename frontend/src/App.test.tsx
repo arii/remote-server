@@ -4,7 +4,7 @@ import App from './App';
 import { cleanBriefingLine } from './views/BriefingView';
 import { ApprovalCard, cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
-import { plainLanguage, toHistoryRows } from './views/historyUtils';
+import { jobPassesKindFilter, plainLanguage, toHistoryRows } from './views/historyUtils';
 import { planNameFromResult, resultLine } from './views/JobsView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
@@ -116,6 +116,24 @@ describe('history utils', () => {
       ],
     );
     expect(rows.map((r) => r.tone)).toEqual(['bad', 'muted', 'ok']);
+  });
+
+  it('repeats claim failure only for actual failures', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'system', event: 'buttons started', ts: 2 },
+        { kind: 'system', event: 'buttons started', ts: 1 },
+      ],
+    );
+    expect(rows[0].summary).not.toContain('failure');
+  });
+
+  it('filters job rows by kind, all jobs answer to run', () => {
+    expect(jobPassesKindFilter('create-plan', 'all')).toBe(true);
+    expect(jobPassesKindFilter('create-plan', 'chat')).toBe(false);
+    expect(jobPassesKindFilter('create-plan', 'run')).toBe(true);
+    expect(jobPassesKindFilter(undefined, 'chat')).toBe(false);
   });
 
   it('carries expandable detail beyond the summary', () => {

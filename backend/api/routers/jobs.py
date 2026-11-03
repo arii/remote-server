@@ -46,6 +46,7 @@ class JobRecord(BaseModel):
     repo: str = ""
     done: bool = False
     exit_code: int | None = None
+    at: float | None = None
 
 
 class JobList(BaseModel):
@@ -109,7 +110,8 @@ def list_jobs() -> dict:
                          key=lambda r: r.get("seq", 0), reverse=True)
         rows = [{"id": r["id"], "kind": r.get("action", ""),
                  "name": r.get("action", ""), "repo": r.get("repo", ""),
-                 "done": r["done"], "exit_code": r.get("exit_code")}
+                 "done": r["done"], "exit_code": r.get("exit_code"),
+                 "at": r.get("started_at")}
                 for r in ordered]
     return {"jobs": rows}
 
