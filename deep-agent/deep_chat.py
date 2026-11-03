@@ -220,6 +220,23 @@ def decision_for_verdict(verdict, message=""):
     raise ValueError(f"bad verdict {verdict!r}: want 'approve'/'reject'")
 
 
+def approved_proposal_blocks(action_requests):
+    """Validated PROPOSE/REJECTED texts for approved interrupt requests.
+
+    Pure: the model decides what to SAY after approval, so the server
+    cannot rely on the reply carrying anything machine-readable.
+    This re-validates the approved args deterministically so _cmd_resume
+    can print the executable blocks itself.
+    """
+    texts = []
+    for req in action_requests or []:
+        if not isinstance(req, dict):
+            continue
+        _ok, text = validate_proposal(req.get("args", {}))
+        texts.append(text)
+    return texts
+
+
 def resume_payload(decisions):
     """Wrap per-request decisions for Command(resume=...)."""
     if not isinstance(decisions, list) or not decisions:
@@ -634,6 +651,10 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
                "trace": recorder.path},
         usage=_usage, calls=_calls,
     )
+    if verdict == "approve":
+        for text in approved_proposal_blocks(
+                first.get("action_requests", [])):
+            print(text, flush=True)
     pending = _pending_interrupts(agent, config)
     if pending:
         return _emit_interrupt(thread_id, pending)

@@ -181,6 +181,29 @@ class TestVerdictMapping(unittest.TestCase):
                 deep_chat.resume_payload(bad)
 
 
+class TestApprovedProposalBlocks(unittest.TestCase):
+    def test_valid_issue_block(self):
+        texts = deep_chat.approved_proposal_blocks([
+            {"name": "propose_action",
+             "args": {"kind": "issue", "title": "T", "body": "B"}}])
+        self.assertEqual(len(texts), 1)
+        self.assertIn("PROPOSE issue", texts[0])
+        self.assertIn("END PROPOSE", texts[0])
+
+    def test_invalid_becomes_rejected(self):
+        texts = deep_chat.approved_proposal_blocks([
+            {"name": "propose_action", "args": {"kind": "issue"}}])
+        self.assertEqual(len(texts), 1)
+        self.assertTrue(texts[0].startswith("REJECTED"))
+
+    def test_skips_malformed(self):
+        self.assertEqual(
+            deep_chat.approved_proposal_blocks([None, "x", {}]),
+            ["REJECTED: kind must be 'issue', 'td', or 'dispatch'"])
+        self.assertEqual(deep_chat.approved_proposal_blocks([]), [])
+        self.assertEqual(deep_chat.approved_proposal_blocks(None), [])
+
+
 class TestThreadIds(unittest.TestCase):
     def test_ok(self):
         for tid in ("abc123", "a" * 64, "a-b_c"):
