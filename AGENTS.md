@@ -24,6 +24,7 @@ When using BoomTick MCP tools:
 
 - `docker compose up -d --build` — start the project
 - `pnpm run lint` — run the lint task
+- `npm run lint && npm test` — reproduce the CI gates locally (shell + type-check + tsc, then backend + frontend suites; backend needs `pip install -r backend/requirements.txt` first)
 
 ## Agent lanes
 
