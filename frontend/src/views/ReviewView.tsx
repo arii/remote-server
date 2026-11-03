@@ -191,7 +191,12 @@ export default function ReviewView({
           ) : (
             <ul className="session-list" data-testid="review-pr-list">
               {prs.map((p) => (
-                <li key={p.number} className="detail" data-testid={`review-pr-${p.number}`}>
+                <li
+                  key={p.number}
+                  className={`detail${selected === p.number ? ' selected' : ''}`}
+                  data-testid={`review-pr-${p.number}`}
+                  aria-current={selected === p.number ? true : undefined}
+                >
                   <span className="row-title">#{p.number} {p.title}</span>
                   <p className="row-meta">
                     {p.author} · {p.branch} · CI {p.ciLabel}

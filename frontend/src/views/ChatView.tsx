@@ -165,6 +165,35 @@ export function ApprovalCard({
   );
 }
 
+// True while the stream is open but no token has landed yet: the
+// assistant placeholder is still empty, so show a typing indicator.
+export function awaitingFirstToken(
+  streaming: boolean,
+  messages: ChatMessage[],
+): boolean {
+  if (!streaming || messages.length === 0) return false;
+  const last = messages[messages.length - 1];
+  return last.role === 'assistant' && last.text.length === 0;
+}
+
+export function TypingIndicator() {
+  return (
+    <li
+      className="detail typing"
+      data-testid="chat-typing"
+      aria-live="polite"
+      aria-label="Assistant is typing"
+    >
+      <span className="row-title">Assistant</span>
+      <span className="typing-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+    </li>
+  );
+}
+
 function newSessionId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
@@ -406,6 +435,9 @@ export default function ChatView({
     }
   }
 
+  const typing = awaitingFirstToken(streaming, messages);
+  const shown = typing ? messages.slice(0, -1) : messages;
+
   return (
     <section data-testid="chat-view">
       <header className="page-head">
@@ -430,12 +462,13 @@ export default function ChatView({
         </p>
       )}
       <ul className="session-list" data-testid="chat-history">
-        {messages.map((m, i) => (
+        {shown.map((m, i) => (
           <li key={i} className="detail" data-testid={`chat-msg-${m.role}-${i}`}>
             <span className="row-title">{m.role === 'user' ? 'You' : 'Assistant'}</span>
             <p>{m.role === 'assistant' ? cleanAgentText(m.text) : m.text}</p>
           </li>
         ))}
+        {typing && <TypingIndicator />}
       </ul>
       {messages.length === 0 && (
         <p className="row-meta" data-testid="chat-empty">
