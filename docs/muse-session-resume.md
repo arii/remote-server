@@ -5,6 +5,24 @@ across terminal container recreates via the `local-data` volume (`/root/.config/
 persists via `muse-data`). A crash or restart does not delete sessions — just
 reattach to one.
 
+## Automatic offer
+
+On interactive shell start, the shell offers to resume when the latest
+session for the current workspace was interrupted by a restart
+(segment unterminated, updated before container boot, recent):
+
+- `Enter` or `Y` resumes: `muse resume <session-uuid>` (resume-only,
+  never anything destructive).
+- Anything else declines and stops asking for that session until the
+  next restart.
+- No answer within 10 seconds resumes automatically.
+- Interrupt, error, or missing pieces always land on a fresh shell.
+
+Opt out entirely: `MUSE_NO_AUTORESUME=1`. Implementation:
+`terminal/bin/muse-resume-offer` (decision, tested in
+`tests/test_resume_offer.py`) + `terminal/bin/muse-resume-ask`
+(prompt), hooked from `/root/.bashrc` by `terminal/Dockerfile`.
+
 ## Quick resume
 
 From the repo directory in the terminal container:
