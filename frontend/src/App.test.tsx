@@ -593,7 +593,7 @@ describe('inbox strips', () => {
 });
 
 describe('agent drawer', () => {
-  it('renders provider picker, prompt, and hold-to-launch idle', () => {
+  it('renders provider picker, prompt, and tap-to-launch idle', () => {
     const html = renderToStaticMarkup(
       <AgentDrawer repo="remote-server" initialProviders={['muse', 'agy']} />,
     );
