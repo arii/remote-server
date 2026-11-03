@@ -254,6 +254,39 @@ class RunTurnTest(unittest.TestCase):
         kinds = [e.get("kind") for e in entries]
         self.assertIn("agent-turn", kinds)
 
+    def _turn_entry(self, session_id):
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if entry.get("kind") == "agent-turn" \
+                        and entry.get("session_id") == session_id:
+                    return entry
+        self.fail(f"no agent-turn entry for {session_id}")
+
+    def test_ledgers_decision_detail(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-dec", prompt="list files",
+                      continued=False, argv=["/bin/echo", "yo"])
+        entry = self._turn_entry("s-dec")
+        self.assertEqual(entry.get("prompt"), "list files")
+        detail = entry.get("detail", "")
+        for needle in ("asked: list files", "ran: muse turn",
+                       "verdict: exit 0"):
+            self.assertIn(needle, detail)
+        self.assertNotIn("error", entry)
+
+    def test_ledger_failure_carries_reason(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-fail", prompt="hi", continued=False,
+                      argv=["/bin/sh", "-c",
+                             "echo oops >&2; exit 3"])
+        entry = self._turn_entry("s-fail")
+        self.assertIn("exit 3", entry.get("error", ""))
+        self.assertIn("oops", entry.get("error", ""))
+        self.assertIn("verdict", entry.get("detail", ""))
+
     def test_abort_kills_inflight(self):
         async def go():
             task = asyncio.create_task(self._agen(

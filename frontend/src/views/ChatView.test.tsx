@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { isStalled, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
-import type { AgentRun } from '../apiClient';
+import { isStalled, runDecisions, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import type { AgentRun, AgentRunDetail } from '../apiClient';
 
 describe('stream progress (issue #376)', () => {
   it('formats elapsed alone before anything arrives', () => {
@@ -94,5 +94,69 @@ describe('past runs manage (issue #412)', () => {
 
   it('hides the pane when there are no runs', () => {
     expect(paneHtml([])).toBe('');
+  });
+});
+
+function detailWith(extra: Record<string, unknown>): AgentRunDetail {
+  return { id: 'run-0', entry: { thread_id: 't', extra }, trace: [] };
+}
+
+describe('run decisions (issue #414)', () => {
+  it('parses decisions from the entry extra', () => {
+    const entry = {
+      extra: {
+        decisions: [
+          { what: 'ran grep_repo(q)', why: '→ found it' },
+          { what: 'answered from 1 tool result', why: 'The answer.' },
+        ],
+      },
+    };
+    expect(runDecisions(entry)).toEqual([
+      { what: 'ran grep_repo(q)', why: '→ found it' },
+      { what: 'answered from 1 tool result', why: 'The answer.' },
+    ]);
+  });
+
+  it('returns empty when decisions are absent or malformed', () => {
+    expect(runDecisions({})).toEqual([]);
+    expect(runDecisions({ extra: {} })).toEqual([]);
+    expect(runDecisions({ extra: { decisions: 'nope' } })).toEqual([]);
+    expect(runDecisions({ extra: { decisions: [{ what: 1 }] } })).toEqual([]);
+  });
+
+  it('lists decisions with rationale in run detail', () => {
+    const html = renderToStaticMarkup(
+      <RunsPane
+        runs={[pastRun()]}
+        selected="run-0"
+        detail={detailWith({
+          decisions: [{ what: 'ran grep_repo(q)', why: '→ found it' }],
+        })}
+        onSelect={() => {}}
+        onContinue={() => {}}
+        onDelete={() => {}}
+        onClearFinished={() => {}}
+        notice={null}
+      />,
+    );
+    expect(html).toContain('data-testid="chat-run-decisions"');
+    expect(html).toContain('ran grep_repo(q)');
+    expect(html).toContain('→ found it');
+  });
+
+  it('omits the decisions section without stored decisions', () => {
+    const html = renderToStaticMarkup(
+      <RunsPane
+        runs={[pastRun()]}
+        selected="run-0"
+        detail={detailWith({})}
+        onSelect={() => {}}
+        onContinue={() => {}}
+        onDelete={() => {}}
+        onClearFinished={() => {}}
+        notice={null}
+      />,
+    );
+    expect(html).not.toContain('chat-run-decisions');
   });
 });

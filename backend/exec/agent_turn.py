@@ -130,6 +130,49 @@ def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
                         *cli)
 
 
+def _first_line(text: str, limit: int) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:limit]
+    return ""
+
+
+def turn_decisions(provider: str, prompt: str, continued: bool,
+                   code: int | None, started: float, tail: str,
+                   err_tail: str, truncated: bool,
+                   timed_out: bool) -> tuple[str, str | None]:
+    """Decision block + failure reason for one agent-turn record.
+
+    Returns (detail, error): detail is the what+why lines History
+    expands; error is a human sentence, set only on failure so
+    History summaries stay clean on success.
+    """
+    asked = _first_line(prompt, 150)
+    session = "continued session" if continued else "fresh session"
+    lines = [f"asked: {asked}" if asked else "asked: (empty prompt)",
+             f"ran: {provider} turn ({session})"]
+    elapsed = round(time.time() - started, 1)
+    error = None
+    if timed_out:
+        lines.append(f"verdict: timed out after {TURN_TIMEOUT}s")
+        lines.append(f"why: no turn may hold longer than {TURN_TIMEOUT}s")
+        error = f"{provider} turn timed out after {TURN_TIMEOUT}s"
+    elif code != 0:
+        reason = _first_line(err_tail, 200) or "no stderr recorded"
+        lines.append(f"verdict: exit {code} in {elapsed}s")
+        lines.append(f"why: {reason}")
+        error = f"{provider} turn failed (exit {code}): {reason}"
+    else:
+        said = _first_line(tail, 200)
+        lines.append(f"verdict: exit 0 in {elapsed}s")
+        lines.append(f"said: {said}" if said else "said: (no output)")
+        if truncated:
+            lines.append("note: output capped at "
+                         f"{TURN_OUTPUT_MAX} chars")
+    return "\n".join(lines), error
+
+
 def new_session_id() -> str:
     """Mint a session id. Full UUID: `muse exec --session-id`
     rejects anything else (12-hex ids fail the turn with a CLI
@@ -305,13 +348,20 @@ class AgentTurnManager:
                 except Exception:
                     pass
         code = proc.poll()
-        ledger_append({"kind": "agent-turn", "session_id": session_id,
-                       "provider": provider, "repo": repo,
-                       "exit": code,
-                       "duration_s": round(time.time() - started, 2),
-                       "tail": "".join(out_text)[-STDERR_TAIL:],
-                       "stderr": err_tail, "truncated": truncated,
-                       "timed_out": timed_out})
+        tail = "".join(out_text)[-STDERR_TAIL:]
+        detail, error = turn_decisions(
+            provider, prompt, continued, code, started, tail,
+            err_tail, truncated, timed_out)
+        record = {"kind": "agent-turn", "session_id": session_id,
+                  "provider": provider, "repo": repo,
+                  "prompt": prompt[:150], "exit": code,
+                  "duration_s": round(time.time() - started, 2),
+                  "tail": tail, "stderr": err_tail,
+                  "truncated": truncated, "timed_out": timed_out,
+                  "detail": detail}
+        if error is not None:
+            record["error"] = error
+        ledger_append(record)
         with self._lock:
             self._results[session_id] = {"exit": code,
                                          "stderr": err_tail,

@@ -59,6 +59,7 @@ import observe  # noqa: E402
 import tracing  # noqa: E402
 import intent  # noqa: E402
 import skills  # noqa: E402
+import decisions  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
@@ -691,6 +692,8 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
                       thread_id, messages, started,
                       extra={"repo": repo, "mode": "turn",
                              "intent": "trivial", "prompt": prompt,
+                             "decisions": decisions.build_decisions(
+                                 [], [], reply, error=str(exc)),
                              "error": str(exc)[:200]})
         return cli.sorry(f"Sorry, the assistant failed: {_short_err(exc)}")
     print(reply, flush=True)
@@ -702,7 +705,9 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
                   thread_id, messages + [AIMessage(content=reply)], started,
                   extra={"repo": repo, "mode": "turn", "intent": "trivial",
-                         "prompt": prompt},
+                         "prompt": prompt,
+                         "decisions": decisions.build_decisions(
+                             [], [], reply)},
                   usage=usage, calls=[])
     return 0
 
@@ -759,6 +764,8 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             thread_id, messages, started,
             extra={"repo": repo, "mode": "turn", "trace": recorder.path,
                    "intent": turn_intent, "prompt": prompt,
+                   "decisions": decisions.build_decisions(
+                       _calls, [], reply, error=str(exc)),
                    "error": str(exc)[:200]},
             usage=_usage, calls=_calls,
         )
@@ -769,12 +776,16 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     recorder.close()
     print(f"trace: {recorder.path}", file=sys.stderr)
     _usage, _calls = recorder.totals()
+    tool_results = [decisions.tool_text(getattr(m, "content", ""))
+                    for m in tool_msgs]
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, messages + tool_msgs + [AIMessage(content=reply)],
         started, extra={"repo": repo, "mode": "turn",
                         "trace": recorder.path, "intent": turn_intent,
                         "prompt": prompt,
+                        "decisions": decisions.build_decisions(
+                            _calls, tool_results, reply),
                         **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )
@@ -845,7 +856,13 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, [AIMessage(content=reply)], started,
             extra={"repo": repo, "mode": "resume", "verdict": verdict,
-                   "trace": recorder.path, "error": str(exc)[:200]},
+                   "trace": recorder.path,
+                   "decisions": decisions.build_decisions(
+                       _calls, [], reply, verdict=verdict,
+                       message=message, error=str(exc),
+                       proposals=approved_proposal_blocks(
+                           first.get("action_requests", []))),
+                   "error": str(exc)[:200]},
             usage=_usage, calls=_calls,
         )
         return cli.sorry(reply)
@@ -858,6 +875,12 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
         thread_id, tool_msgs + [AIMessage(content=reply)], started,
         extra={"repo": repo, "mode": "resume", "verdict": verdict,
                "trace": recorder.path,
+               "decisions": decisions.build_decisions(
+                   _calls, [decisions.tool_text(getattr(m, "content", ""))
+                            for m in tool_msgs],
+                   reply, verdict=verdict, message=message,
+                   proposals=approved_proposal_blocks(
+                       first.get("action_requests", []))),
                **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )

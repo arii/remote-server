@@ -182,6 +182,26 @@ function runMeta(run: AgentRun): string {
   return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok${tools} · ${when}`;
 }
 
+export interface RunDecision {
+  what: string;
+  why: string;
+}
+
+// Per-turn what+why lines deep_chat records into extra.decisions.
+// Older rows predate them; malformed entries never break the pane.
+export function runDecisions(entry: Record<string, unknown>): RunDecision[] {
+  const extra = entry.extra as Record<string, unknown> | undefined;
+  const raw = extra?.decisions;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (d): d is { what: unknown; why: unknown } =>
+        typeof d === 'object' && d !== null,
+    )
+    .filter((d) => typeof d.what === 'string' && typeof d.why === 'string')
+    .map((d) => ({ what: d.what as string, why: d.why as string }));
+}
+
 export function RunsPane({
   runs,
   selected,
@@ -256,6 +276,19 @@ export function RunsPane({
       {selected && detail && (
         <div className="detail" data-testid="chat-run-detail">
           <span className="row-title">{detail.id}</span>
+          {runDecisions(detail.entry).length > 0 && (
+            <div data-testid="chat-run-decisions">
+              <span className="row-title">Decisions</span>
+              <ul className="session-list">
+                {runDecisions(detail.entry).map((d, i) => (
+                  <li key={i} data-testid={`chat-run-decision-${i}`}>
+                    <span>{d.what}</span>{' '}
+                    <span className="row-meta">{d.why}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <TraceTimeline trace={detail.trace} t0={t0} />
         </div>
       )}
