@@ -156,6 +156,7 @@ class TestDeepChatArgv(unittest.TestCase):
             "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>\n"
             "   or: deep_chat.py owner/repo <thread-id> --resume "
             "approve|reject [b64-message]\n"
+            "   or: deep_chat.py owner/repo --supervise\n"
             "   or: deep_chat.py --validate-proposal <b64-json>\n")
         self.assertEqual(p.stdout, "")
 
