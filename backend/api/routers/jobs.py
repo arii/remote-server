@@ -22,11 +22,12 @@ from pydantic import BaseModel, Field
 from backend.exec.engine import (
     ALLOWED_ACTIONS,
     DESTRUCTIVE_ACTIONS,
+    PLAN_TIMEOUT,
     REPO_SCOPED_ACTIONS,
     RunRegistry,
     build_plan_argv,
     execute_run,
-    td_run,
+    td_run_async,
     validate_td_command,
 )
 
@@ -168,7 +169,13 @@ def start_run(body: RunRequest) -> dict:
             status_code=409 if "already in progress" in err else 400,
             detail=err,
         )
-    _launch(run_id, body.action, body.repo)
+    try:
+        _launch(run_id, body.action, body.repo)
+    except Exception:
+        # _launch runs after start_run took the single-flight lock;
+        # release it so a failed launch can't wedge the engine (#294).
+        registry.finish_run(run_id, 1)
+        raise
     return {"id": run_id}
 
 
@@ -189,7 +196,11 @@ def start_run_td(body: RunTdRequest) -> dict:
             status_code=409 if "already in progress" in err else 400,
             detail=err,
         )
-    _launch(run_id, "run-td", body.repo, td_argv=tokens)
+    try:
+        _launch(run_id, "run-td", body.repo, td_argv=tokens)
+    except Exception:
+        registry.finish_run(run_id, 1)
+        raise
     return {"id": run_id}
 
 
@@ -215,7 +226,7 @@ def run_progress(rid: str) -> dict:
 
 
 @router.post("/run-plan", response_model=RunPlanResult)
-def start_run_plan(body: RunPlanRequest) -> dict:
+async def start_run_plan(body: RunPlanRequest) -> dict:
     import json
 
     argv, err = build_plan_argv(body.plan, body.pr, body.prs, body.target)
@@ -225,7 +236,9 @@ def start_run_plan(body: RunPlanRequest) -> dict:
 
     cmd = " ".join(_shlex.quote(t) for t in argv)
     try:
-        out = td_run(cmd, timeout=300)
+        # Async wait: a 5-minute plan run must not pin one of
+        # FastAPI's sync workers and starve the other routes (#294).
+        out = await td_run_async(cmd, timeout=PLAN_TIMEOUT)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     plan_path = ""

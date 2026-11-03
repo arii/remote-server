@@ -557,24 +557,43 @@ def _chat_events(prompt: str, repo: str, session_id: str):
                        "repo": repo, "event": "chat failed",
                        "error": str(exc)[:500]})
         return
-    yield sse_frame("phase", {"phase": "generating",
-                              "message": "Streaming response from model..."})
     full_response: list[str] = []
     is_aborted = False
     code = 0
     try:
+        yield sse_frame("phase", {"phase": "generating",
+                                  "message": "Streaming response from model..."})
         if proc.stdout:
             for chunk in iter(lambda: proc.stdout.read(16), ""):
                 with chat_sessions_lock:
                     sess = chat_sessions.get(session_id)
                     if sess and sess.get("aborted"):
                         is_aborted = True
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
                         break
                 full_response.append(chunk)
                 yield sse_frame("token", {"token": chunk})
         proc.wait()
         code = proc.returncode
+    except GeneratorExit:
+        # Client disconnected mid-stream: GeneratorExit is not an
+        # Exception, so without this the LLM child keeps running
+        # detached (SSE zombie, #294). Kill it, drop the session.
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        with chat_sessions_lock:
+            chat_sessions.pop(session_id, None)
+        raise
     except Exception as exc:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
         code = 1
         yield sse_frame("error", {"error": str(exc)})
     with chat_sessions_lock:

@@ -9,6 +9,7 @@ is dead); the Pi transcript step of logs is cut (Pi is dead).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shlex
@@ -42,6 +43,11 @@ ALLOWED_PLANS = ("issue-audit", "workflow-audit", "review", "aggregation")
 # _td_run default timeout, and the run-plan call timeout.
 TD_RUN_TIMEOUT = 120
 PLAN_TIMEOUT = 300
+
+# Watchdog: no single engine step may run longer than this (#288).
+# A hung step is killed and fails the run instead of wedging the
+# single-flight engine forever.
+STEP_TIMEOUT = 300
 
 # Action names ported from buttons/server.py::ACTIONS (Jules actions
 # cut: sync-agents/nudge-agents are dead with Jules).
@@ -239,6 +245,36 @@ def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     return proc.stdout
 
 
+async def td_run_async(cmd, timeout=TD_RUN_TIMEOUT):
+    """Async td_run: same command shape and error contract, but the
+    wait happens on the event loop instead of blocking a sync worker
+    thread, so concurrent plan runs overlap instead of starving
+    FastAPI's sync pool (#294)."""
+    proc = await asyncio.create_subprocess_exec(
+        "bash", "-c", cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=stack_dir(),
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise RuntimeError(f"command timed out after {timeout}s")
+    if proc.returncode != 0:
+        text = err.decode("utf-8", "replace")
+        raise RuntimeError(
+            text.strip().splitlines()[-1] if text.strip()
+            else "command failed"
+        )
+    return out.decode("utf-8", "replace")
+
+
 def action_steps(action, repo, gh, td_cwd, td_argv=None):
     """argv steps for an action. Returns (steps, error).
 
@@ -328,26 +364,59 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     return None, "unknown action"
 
 
-def run_step_pipe(step, append, runner=None):
+def run_step_pipe(step, append, runner=None, timeout=None):
     """Run one step, streaming output through append(chunk).
 
     Pipes (not a PTY: no ANSI in the UI). ``runner`` injects tests:
     runner(argv) -> (exit_code, output).
+
+    Output drains on a reader thread while the caller waits with a
+    watchdog: a step running past ``timeout`` (default STEP_TIMEOUT)
+    is killed and returns 124 with a note, so a hung step fails its
+    run instead of wedging the single-flight engine (#288).
     """
     if runner is not None:
         code, out = runner(step)
         if out:
             append(out)
         return code
+    limit = STEP_TIMEOUT if timeout is None else timeout
     proc = subprocess.Popen(
         step, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, cwd=stack_dir(),
         env={**os.environ, "TERM": "xterm-256color"})
     assert proc.stdout is not None
-    for line in proc.stdout:
-        append(line)
-    return proc.wait()
+    drained = threading.Event()
+    errors: list = []
+
+    def _drain():
+        try:
+            for line in proc.stdout:
+                append(line)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            drained.set()
+
+    worker = threading.Thread(target=_drain, daemon=True)
+    worker.start()
+    try:
+        code = proc.wait(timeout=limit)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        code = 124
+        append(f"\nnote: step killed after {limit}s without finishing "
+               f"(watchdog; exit 124)\n")
+    finally:
+        drained.wait(timeout=5)
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+    if errors:
+        raise errors[0]
+    return code
 
 
 def execute_run(registry, run_id, action, repo, gh, td_cwd,
@@ -385,6 +454,9 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
     except Exception as exc:  # never leave a run stuck active
         try:
             registry.append(run_id, f"error: {exc}\n")
+        except Exception:
+            pass
+        try:
             registry.finish_run(run_id, 1)
         except Exception:
             pass
@@ -438,14 +510,14 @@ class RunRegistry:
 
     def finish_run(self, run_id, exit_code):
         with self._lock:
+            if self.active_id == run_id:
+                self.active_id = None
             run = self.runs.get(run_id)
             if run is None:
                 return
             run["exit_code"] = exit_code
             run["done"] = True
             run["finished_at"] = time.time()
-            if self.active_id == run_id:
-                self.active_id = None
 
     def clear_run(self, run_id=None):
         """Clear stored output only. Exact port of the /api/clear
