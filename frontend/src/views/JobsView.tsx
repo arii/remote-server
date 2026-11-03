@@ -145,6 +145,19 @@ export function planNameFromResult(result: string): string | null {
   return parts[parts.length - 1] || null;
 }
 
+// Repair worker candidates: skip issues that are not actionable
+// right now (blocked on a decision/lane, or scheduled future work).
+// A manual number still overrides the filter.
+export function repairCandidates(issues: IssueRow[]): IssueRow[] {
+  return issues.filter(
+    (i) =>
+      !(i.labels ?? []).some((l) => {
+        const name = typeof l === 'string' ? l : l.name;
+        return name === 'blocked' || name === 'scheduled';
+      }),
+  );
+}
+
 const IDLE_REPAIR: RepairStatusResponse = {
   status: 'idle',
   timestamp: null,
@@ -238,7 +251,7 @@ function RepairSection({ repo }: { repo: string }) {
             }}
           >
             <option value="">Select…</option>
-            {(issues ?? []).map((i) => (
+            {repairCandidates(issues ?? []).map((i) => (
               <option key={i.number} value={String(i.number)}>
                 #{i.number} {i.title}
               </option>
@@ -254,9 +267,11 @@ function RepairSection({ repo }: { repo: string }) {
           Dispatch repair
         </button>
       </div>
-      {issues && issues.length === 0 && (
+      {issues && repairCandidates(issues).length === 0 && (
         <p className="row-meta" data-testid="repair-empty">
-          No open issues to repair.
+          {issues.length === 0
+            ? 'No open issues to repair.'
+            : 'Open issues are all blocked or scheduled — nothing actionable.'}
         </p>
       )}
       <details>
@@ -783,8 +798,10 @@ export default function JobsView({
       <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT}</p>
       {list.length === 0 ? (
         <div data-testid="jobs-empty">
-          <h3>No runs</h3>
-          <p className="row-meta">Dispatch one above or check back later.</p>
+          <h3>No batch runs</h3>
+          <p className="row-meta">
+            Dispatch one above. Agent chat runs live under Chat → Past runs.
+          </p>
         </div>
       ) : (
         <ul className="session-list" data-testid="jobs-list">

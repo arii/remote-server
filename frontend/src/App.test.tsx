@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
-import AgentDrawer, { TRANSCRIPT_MAX, appendCapped } from './views/AgentDrawer';
+import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import { cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
@@ -14,7 +14,7 @@ import {
 } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
-import { attachIdFromConflict, planNameFromResult, resultLine } from './views/JobsView';
+import { attachIdFromConflict, planNameFromResult, repairCandidates, resultLine } from './views/JobsView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -414,6 +414,17 @@ describe('job result line', () => {
   });
 });
 
+describe('repair candidates', () => {
+  it('skips blocked and scheduled issues, keeps actionable ones', () => {
+    const issues = [
+      { number: 1, title: 'fix me', labels: [] },
+      { number: 102, title: 'future', labels: [{ name: 'scheduled' }] },
+      { number: 324, title: 'decide', labels: ['blocked'] },
+    ];
+    expect(repairCandidates(issues).map((i) => i.number)).toEqual([1]);
+  });
+});
+
 describe('conflict attach', () => {
   it('extracts the active run id from a 409 detail', () => {
     expect(
@@ -475,7 +486,7 @@ describe('app', () => {
 describe('agent drawer', () => {
   it('renders provider picker, prompt, and hold-to-launch idle', () => {
     const html = renderToStaticMarkup(
-      <AgentDrawer repo="remote-server" initialProviders={['muse', 'agy', 'pi']} />,
+      <AgentDrawer repo="remote-server" initialProviders={['muse', 'agy']} />,
     );
     expect(html).toContain('data-testid="agent-drawer"');
     expect(html).toContain('data-testid="agent-provider"');
@@ -485,10 +496,35 @@ describe('agent drawer', () => {
     expect(html).not.toContain('data-testid="agent-transcript"');
   });
 
-  it('caps the transcript tail', () => {
-    expect(appendCapped('ab', 'cd')).toBe('abcd');
-    const big = appendCapped('x'.repeat(TRANSCRIPT_MAX), 'yz');
-    expect(big.length).toBe(TRANSCRIPT_MAX);
-    expect(big.endsWith('yz')).toBe(true);
+  function streamReader(text: string) {
+    const bytes = new TextEncoder().encode(text);
+    let sent = false;
+    return {
+      read: async () => {
+        if (sent) return { done: true as const, value: undefined };
+        sent = true;
+        return { done: false as const, value: bytes };
+      },
+    } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+  }
+
+  it('pumps tokens and resolves the done session', async () => {
+    const tokens: string[] = [];
+    const result = await pumpTurn(
+      streamReader(
+        'event: token\ndata: {"token": "AG"}\n\n' +
+          'event: token\ndata: {"token": "Y-OK"}\n\n' +
+          'event: done\ndata: {"text": "AGY-OK", "session_id": "abc123"}\n\n',
+      ),
+      (t) => tokens.push(t),
+    );
+    expect(tokens).toEqual(['AG', 'Y-OK']);
+    expect(result).toEqual({ sessionId: 'abc123', text: 'AGY-OK' });
+  });
+
+  it('rejects with the server error detail', async () => {
+    await expect(
+      pumpTurn(streamReader('event: error\ndata: {"error": "exit 2"}\n\n'), () => {}),
+    ).rejects.toThrow('exit 2');
   });
 });

@@ -18,15 +18,23 @@ export function ContainerPills({ containers }: { containers: ContainerStatus[] }
   }
   return (
     <ul className="pills" data-testid="observability-containers">
-      {containers.map((c, i) => (
+      {containers.map((c, i) => {
+        const running = (c.state ?? '').toLowerCase() === 'running';
+        const sick = (c.health ?? '').toLowerCase() === 'unhealthy';
         // eslint-disable-next-line react/no-array-index-key
-        <li key={`${c.service ?? c.name ?? 'container'}-${i}`} data-testid="container-pill">
-          <span className="repo-chip" title={c.status ?? ''}>
-            {c.service ?? c.name ?? 'container'}: {c.state ?? '?'}
-            {c.health ? ` (${c.health})` : ''}
-          </span>
-        </li>
-      ))}
+        return (
+          <li key={`${c.service ?? c.name ?? 'container'}-${i}`} data-testid="container-pill">
+            <span className="repo-chip pill-dot" title={c.status ?? ''}>
+              <span
+                aria-hidden="true"
+                className={running && !sick ? 'dot dot-ok' : 'dot dot-bad'}
+              />
+              {c.service ?? c.name ?? 'container'}: {c.state ?? '?'}
+              {c.health ? ` (${c.health})` : ''}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }
