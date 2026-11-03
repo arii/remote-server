@@ -33,9 +33,12 @@ need them, so system python can import the validators and run
 Harness note: create_deep_agent also installs its built-in tools
 (write_todos, ls/read_file/write_file/edit_file/glob/grep, task).
 Those run on the default ephemeral StateBackend — scratch state that
-never touches disk or the checkout. The only repo-write path is
-propose_action, and it only formats a proposal; execution stays
-server-side behind the existing validated endpoints.
+never touches disk or the checkout. gate_chat_harness removes task
+from the model (ungated subagent spend) and denies virtual-fs writes
+(scratch the model could mistake for repo state); reads stay. The
+only repo-write path is propose_action, and it only formats a
+proposal; execution stays server-side behind the existing validated
+endpoints.
 """
 
 import base64
@@ -65,6 +68,19 @@ MAX_PROMPT = 3000
 # Trace middleware nodes consume budget (~4 steps per tool call,
 # measured); 40 preserves room for ~9 tool calls per turn.
 RECURSION_LIMIT = 40
+# Tool-call budget per turn (ToolMessages in thread state). Past this
+# the model sees only propose_action plus a nudge: looper models that
+# would investigate to the recursion cutoff must propose-or-answer
+# instead, and the cutoff becomes near-unreachable (#307). Legit
+# turns use 1-3 tools; 6 splits the difference. Counts whole-thread
+# history, so a post-approval continuation stays narrowed (it only
+# needs to summarize).
+CHAT_TOOL_BUDGET = 6
+BUDGET_SPENT_NUDGE = (
+    "Tool budget spent. Either call propose_action once with the "
+    "exact change and stop, or answer from what you already gathered. "
+    "No other tools are available."
+)
 # Sliding window over checkpoint history, applied at turn start.
 # Checkpoints append indefinitely; without this long threads blow
 # the context window. ~5-10 turns of history.
@@ -112,6 +128,33 @@ INTERRUPT_ON = {
         "description": "Review the proposed write action before it runs.",
     }
 }
+
+# deepagents resolves harness profiles by the BUILT instance's
+# (provider, identifier): ChatOllama -> ollama:<model>, ChatOpenAI
+# (our Nebius path) -> openai:<model>. Translate our spec provider
+# names; anything else passes through for custom model classes.
+PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
+
+
+def gate_chat_harness(spec):
+    """Exclude task + deny virtual-fs writes for one chat model.
+
+    Venv-only. Registers an exact provider:model harness profile
+    excluding the task tool (spawns an ungated general-purpose
+    subagent: unbounded spend with no approval gate) and returns the
+    permissions list denying virtual-fs writes (scratch the model
+    could mistake for repo state). Reads stay allowed; our 5 real
+    tools are untouched. (#306)
+    """
+    from deepagents import HarnessProfileConfig, register_harness_profile
+    from deepagents.middleware.filesystem import FilesystemPermission
+
+    provider = PROFILE_PROVIDERS.get(spec["provider"], spec["provider"])
+    register_harness_profile(
+        f"{provider}:{spec['model']}",
+        HarnessProfileConfig(excluded_tools={"task"}))
+    return [FilesystemPermission(operations=["write"], paths=["/**"],
+                                 mode="deny")]
 
 SYSTEM = (
     "You are helping Ari from his phone. Be terse, no filler. "
@@ -387,16 +430,69 @@ def open_checkpointer(path=THREAD_DB):
     return cm.__enter__(), True, cm
 
 
+def tool_budget_middleware():
+    """ToolBudgetMiddleware instance. Venv-only (langchain import).
+
+    Counts ToolMessages in the thread: within budget the request
+    passes through; past CHAT_TOOL_BUDGET the model sees only
+    propose_action plus the spent nudge, and stray non-propose calls
+    are rejected at the tool boundary instead of executing (#307).
+    Sync hooks only: chat turns use sync invoke/stream.
+    """
+    from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.messages import SystemMessage, ToolMessage
+
+    def _spent(state):
+        try:
+            messages = state.get("messages", [])
+        except AttributeError:
+            return 0
+        return sum(isinstance(m, ToolMessage) for m in messages)
+
+    def _name(tool):
+        return tool.get("name") if isinstance(tool, dict) \
+            else getattr(tool, "name", None)
+
+    class ToolBudget(AgentMiddleware):
+        def wrap_model_call(self, request, handler):
+            if _spent(request.state) < CHAT_TOOL_BUDGET:
+                return handler(request)
+            narrowed = [t for t in request.tools
+                        if _name(t) == "propose_action"]
+            return handler(request.override(
+                tools=narrowed,
+                messages=[*request.messages,
+                          SystemMessage(content=BUDGET_SPENT_NUDGE)]))
+
+        def wrap_tool_call(self, request, handler):
+            if request.tool_call["name"] == "propose_action":
+                return handler(request)
+            if _spent(request.state) < CHAT_TOOL_BUDGET:
+                return handler(request)
+            call = request.tool_call
+            return ToolMessage(
+                content="Error: tool budget spent, call propose_action "
+                        "or answer from gathered evidence.",
+                tool_call_id=call["id"] or "",
+                name=call["name"],
+                status="error",
+            )
+
+    return ToolBudget()
+
+
 def build_agent(repo, checkpointer, model=None, recorder=None,
-                intent_hint=None):
+                intent_hint=None, spec=None):
     """create_deep_agent chat slice. Venv-only. Model injectable."""
     from deepagents import create_deep_agent  # noqa: E402
 
     if model is None:
-        model, _ = build_model()
-    kwargs = {}
+        model, spec = build_model()
+    stack = [tool_budget_middleware()]
     if recorder is not None:
-        kwargs["middleware"] = observe.trace_middleware(recorder)
+        stack.extend(observe.trace_middleware(recorder))
+    kwargs = {"middleware": stack}
+    permissions = gate_chat_harness(spec) if spec is not None else None
     system = f"Repo: {repo}. " + SYSTEM
     if intent_hint:
         system += " " + intent_hint
@@ -405,6 +501,7 @@ def build_agent(repo, checkpointer, model=None, recorder=None,
         tools=build_tools(s5tools.checkout_for(repo)),
         system_prompt=system,
         interrupt_on=dict(INTERRUPT_ON),
+        permissions=permissions,
         checkpointer=checkpointer,
         **kwargs,
     )
@@ -604,7 +701,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     turn_intent = intent.classify(prompt)
     agent = build_agent(repo, saver, model=model, recorder=recorder,
                         intent_hint=skills.system_addition(turn_intent)
-                        or None)
+                        or None, spec=spec)
     config = {"configurable": {"thread_id": thread_id}}
     trimmed = trim_thread_history(agent, config)
     if trimmed:
@@ -682,7 +779,8 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     recorder.run_start("deep_chat.py", thread_id,
                        f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
-    agent = build_agent(repo, saver, model=model, recorder=recorder)
+    agent = build_agent(repo, saver, model=model, recorder=recorder,
+                        spec=spec)
     config = {"configurable": {"thread_id": thread_id}}
     pending = _pending_interrupts(agent, config)
     if not pending:

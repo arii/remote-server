@@ -714,6 +714,189 @@ class TestAgentMechanics(unittest.TestCase):
             {"configurable": {"thread_id": "t-wire"}})
         self.assertEqual(out["messages"][-1].content, "wired")
 
+    def _spying_model(self, base, replies, seen, **kwargs):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from pydantic import Field
+
+        class Spy(base):
+            replies: list = Field(default_factory=list)
+
+            def _generate(self, messages, stop=None, run_manager=None,
+                          **kwargs):
+                from langchain_core.messages import AIMessage
+
+                msg = self.replies.pop(0) if self.replies \
+                    else AIMessage(content="")
+                return ChatResult(
+                    generations=[ChatGeneration(message=msg)])
+
+            def bind_tools(self, tools, **kwargs):
+                for t in tools:
+                    name = t.get("name") if isinstance(t, dict) \
+                        else getattr(t, "name", None)
+                    if name:
+                        seen.append(name)
+                return self
+
+        return Spy(replies=list(replies), **kwargs)
+
+    def _fs_call_msg(self, name, args, call_id="call-fs"):
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(content="", tool_calls=[
+            {"name": name, "args": args, "id": call_id,
+             "type": "tool_call"},
+        ])
+
+    def _tool_text(self, out):
+        return "\n".join(str(m.content) for m in out["messages"]
+                         if m.__class__.__name__ == "ToolMessage")
+
+    def test_chat_gates_exclude_task(self):
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langchain_ollama import ChatOllama
+
+        seen = []
+        model = self._spying_model(
+            ChatOllama, [AIMessage(content="hi-done")], seen,
+            model="qwen3:8b")
+        agent = deep_chat.build_agent(
+            "arii/remote-server", InMemorySaver(), model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"})
+        out = agent.invoke(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            {"configurable": {"thread_id": "t-gate-task"}})
+        self.assertEqual(out["messages"][-1].content, "hi-done")
+        self.assertNotIn("task", seen)
+        for name in ("read_repo_file", "grep_repo", "list_dir",
+                     "search_docs", "propose_action"):
+            self.assertIn(name, seen)
+
+    def test_chat_gates_translate_nebius_provider(self):
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langchain_openai import ChatOpenAI
+
+        seen = []
+        model = self._spying_model(
+            ChatOpenAI, [AIMessage(content="hi-done")], seen,
+            model="glm-gate-probe", api_key="test")
+        agent = deep_chat.build_agent(
+            "arii/remote-server", InMemorySaver(), model=model,
+            spec={"provider": "nebius", "model": "glm-gate-probe"})
+        agent.invoke(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            {"configurable": {"thread_id": "t-gate-nebius"}})
+        self.assertNotIn("task", seen)
+
+    def test_chat_gates_deny_virtual_writes(self):
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langchain_ollama import ChatOllama
+
+        seen = []
+        model = self._spying_model(
+            ChatOllama,
+            [self._fs_call_msg("write_file",
+                               {"file_path": "/probe.txt",
+                                "content": "x"}),
+             AIMessage(content="done")],
+            seen, model="qwen3:8b")
+        agent = deep_chat.build_agent(
+            "arii/remote-server", InMemorySaver(), model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"})
+        out = agent.invoke(
+            {"messages": [{"role": "user", "content": "write it"}]},
+            {"configurable": {"thread_id": "t-gate-write"}})
+        self.assertIn("permission denied", self._tool_text(out))
+
+    def test_chat_gates_allow_virtual_reads(self):
+        from langchain_core.messages import AIMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langchain_ollama import ChatOllama
+
+        seen = []
+        model = self._spying_model(
+            ChatOllama,
+            [self._fs_call_msg("read_file",
+                               {"file_path": "/probe.txt"}),
+             AIMessage(content="done")],
+            seen, model="qwen3:8b")
+        agent = deep_chat.build_agent(
+            "arii/remote-server", InMemorySaver(), model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"})
+        out = agent.invoke(
+            {"messages": [{"role": "user", "content": "read it"}]},
+            {"configurable": {"thread_id": "t-gate-read"}})
+        self.assertNotIn("permission denied", self._tool_text(out))
+
+    def _looper_model(self, n_calls, seen_binds, seen_msgs):
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from pydantic import Field
+
+        class Looper(BaseChatModel):
+            replies: list = Field(default_factory=list)
+
+            @property
+            def _llm_type(self):
+                return "looper"
+
+            def _generate(self, messages, stop=None, run_manager=None,
+                          **kwargs):
+                seen_msgs.append(list(messages))
+                msg = self.replies.pop(0) if self.replies \
+                    else AIMessage(content="")
+                return ChatResult(
+                    generations=[ChatGeneration(message=msg)])
+
+            def bind_tools(self, tools, **kwargs):
+                seen_binds.append(
+                    {t.get("name") if isinstance(t, dict)
+                     else getattr(t, "name", None) for t in tools})
+                return self
+
+        calls = [AIMessage(content="", tool_calls=[
+            {"name": "grep_repo", "args": {"pattern": f"zzz-{i}"},
+             "id": f"loop-{i}", "type": "tool_call"},
+        ]) for i in range(n_calls)]
+        return Looper(replies=calls + [AIMessage(content="done")])
+
+    def test_tool_budget_narrows_to_propose(self):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        binds, msgs = [], []
+        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1,
+                                   binds, msgs)
+        agent = deep_chat.build_agent("arii/remote-server",
+                                      InMemorySaver(), model=model)
+        agent.invoke(
+            {"messages": [{"role": "user", "content": "dig deep"}]},
+            {"configurable": {"thread_id": "t-budget-narrow"}})
+        self.assertGreater(len(binds), 1)
+        self.assertIn("grep_repo", binds[0])
+        self.assertIn({"propose_action"}, binds[1:])
+        nudge_seen = any(
+            m.__class__.__name__ == "SystemMessage"
+            and "budget" in str(m.content).lower()
+            for batch in msgs for m in batch)
+        self.assertTrue(nudge_seen, "expected a budget-spent nudge")
+
+    def test_tool_budget_rejects_over_calls(self):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        binds, msgs = [], []
+        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1,
+                                   binds, msgs)
+        agent = deep_chat.build_agent("arii/remote-server",
+                                      InMemorySaver(), model=model)
+        out = agent.invoke(
+            {"messages": [{"role": "user", "content": "dig deep"}]},
+            {"configurable": {"thread_id": "t-budget-reject"}})
+        self.assertIn("budget spent", self._tool_text(out))
+
 
 def _msg(cls_name, mid):
     return type(cls_name, (), {"id": mid, "content": "x"})()
