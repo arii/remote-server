@@ -6,6 +6,7 @@ import {
   mergeNoteFor,
   prFieldSeed,
   repairFailureMessage,
+  shouldResetPaneOnClear,
   tdBlockReason,
 } from './jobsUtils';
 
@@ -141,5 +142,15 @@ describe('pr field seed', () => {
   it('seeds the field from the selected row, empty with no selection', () => {
     expect(prFieldSeed(7)).toBe('7');
     expect(prFieldSeed(null)).toBe('');
+  });
+});
+
+describe('clear resets pane', () => {
+  it('resets the selected run when idle and something cleared', () => {
+    expect(shouldResetPaneOnClear(1, null)).toBe(true);
+  });
+  it('keeps a live polling view and no-op clears', () => {
+    expect(shouldResetPaneOnClear(1, 'Merge approved PR')).toBe(false);
+    expect(shouldResetPaneOnClear(0, null)).toBe(false);
   });
 });

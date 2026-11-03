@@ -20,6 +20,7 @@ import {
   planExecuteSeed,
   prFieldSeed,
   resultLine,
+  shouldResetPaneOnClear,
 } from './jobsUtils';
 import DangerZone from './DangerZone';
 import RepairSection from './RepairSection';
@@ -354,6 +355,13 @@ export default function JobsView({
   async function onClear(all: boolean) {
     const r = await clearJobs(all);
     setNotice(`Cleared ${r.cleared} job(s).`);
+    if (shouldResetPaneOnClear(r.cleared, running)) {
+      setRunId(null);
+      setTail('');
+      setPlanCard(null);
+      setPlanOpen(false);
+      setPlanContent(null);
+    }
     await load();
   }
 
