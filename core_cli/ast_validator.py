@@ -228,13 +228,14 @@ def validate_source_syntax(file_path: str, code: str) -> Dict[str, Any]:
         return {"valid": True, "error": None, "line": None}
 
 
-def main() -> None:
+def main(argv=None) -> None:
     """CLI runner for ast_validator."""
-    if len(sys.argv) < 2:
+    args = sys.argv[1:] if argv is None else argv
+    if not args:
         print("Usage: ast_validator.py <file_path>")
         sys.exit(1)
 
-    file_path = sys.argv[1]
+    file_path = args[0]
     if not os.path.exists(file_path):
         print(f"Error: File '{file_path}' does not exist.")
         sys.exit(1)

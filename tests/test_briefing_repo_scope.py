@@ -10,7 +10,7 @@ and Briefing (td, unscoped) disagreed about open PRs.
 import unittest
 from unittest import mock
 
-import buttons.briefing_summary as bs
+import core_cli.briefing_summary as bs
 
 
 def _payload_for(argv):

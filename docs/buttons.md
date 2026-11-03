@@ -56,12 +56,12 @@ recreate containers, unlike the read-only actions.
 | Deploy buttons (rebuild this page) | Runs in the TERMINAL container, not buttons itself: `git pull --ff-only`, `docker compose up -d --build buttons`, then a verify loop curling the new container's status endpoint (60s, fails visibly with `compose ps` output on timeout) — rebuilds the buttons container from the checked-out code |
 | Recreate terminal | `docker compose up -d --force-recreate terminal` — use after editing `.env` (editing `.env` does not change a running container) |
 | Logs | `docker compose logs --tail=100 terminal ollama`, then `buttons/pi_logs.py` in the terminal container — readable Agent session audit, see below |
-| Refresh briefing | `buttons/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
+| Refresh briefing | `core_cli/briefing_summary.py --briefing` inside the terminal container: parses td JSON plus `gh` enrichment into a readable briefing — see below. Repo follows the picker above, and the cards refresh when the run completes. This is the page's only briefing action: the old standalone Refresh button, which re-fetched without a run record, is gone, so a manual refresh now logs a run |
 | Sync agent sessions | `td agent list-sessions` — list active Jules sessions, read-only (global across repos, not picker-scoped). Nudging moved to the Nudge agents job: the session list is the preview, and the feedback post waits for an Approve tap. A missing JULES_API_KEY is not a failure: the step prints a notice and exits 0, so the run stays green instead of turning the banner red for config you haven't done |
 | Merge approved PRs | `td --json agent merge-approved -r <gh> --execute` inside the terminal container: upstream BoomTick agent triages open PRs and merges each approved + green + mergeable one (drafts refused). Repo follows the picker above; confirm tap first |
 | System health | `df -h`, `free -m`, `docker compose ps` — disk, memory, container states, read-only |
 | Warm repo context | `td context-warm` — regenerate the picked repo's `.agent-context.json` if stale |
-| Preflight check | `td --json preflight` piped through `buttons/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code. Note: td's preflight currently hardcodes the BoomTick repo's checks — on other repos the pnpm/audit checks fail spuriously (tracked in `docs/boomtick-issues.md`, patch ready); the digest surfaces the first stderr line as the failure detail |
+| Preflight check | `td --json preflight` piped through `core_cli/preflight_digest.py` — one OK/FAIL line per check (doctor, typecheck, lint, overlap, merge simulation) plus a summary, instead of 30KB of raw JSON. Raw output is kept only when the JSON won't parse; `pipefail` preserves td's own exit code. Note: td's preflight currently hardcodes the BoomTick repo's checks — on other repos the pnpm/audit checks fail spuriously (tracked in `docs/boomtick-issues.md`, patch ready); the digest surfaces the first stderr line as the failure detail |
 
 Deploy buttons and Recreate ask for
 confirmation first, as do the per-PR action buttons on the
@@ -275,7 +275,7 @@ dump. It runs on page load (with a spinner while the td/gh
 calls complete) and re-fetches on Refresh; it does not
 auto-refresh, so a card you are reading does not shift under
 you. The data comes from `GET /buttons/api/briefing`, which
-runs `buttons/briefing_summary.py --briefing-json` in the
+runs `core_cli/briefing_summary.py --briefing-json` in the
 terminal container and passes its JSON through. The JSON and
 the text briefing come from one `analyze()` function, so the
 cards and the text output cannot disagree about a PR.
@@ -813,7 +813,7 @@ commands, so bring-up and clean-up stop being lengthy shell lines:
 | `hooks:install` / `hooks:check` | `scripts/setup-hooks.sh` / with `--check` |
 | `webhooks:setup` / `webhooks:check` | `scripts/setup-webhooks.sh` via the terminal container / with `--check` |
 | `models:pull` | `bash scripts/pull-models.sh` (the old Pull models button, as a shell command) |
-| `check` | `python3 -m py_compile buttons/server.py buttons/briefing_summary.py buttons/pi_logs.py` |
+| `check` | `python3 -m py_compile core_cli/*.py` |
 
 Run with `npm run <script>` from the checkout. It needs node/npm
 where you run it, plus docker compose and git on PATH.

@@ -122,17 +122,17 @@ class BriefingLedgerTest(unittest.TestCase):
 
 
 class BriefingScriptSmokeTest(unittest.TestCase):
-    """The router shells out to buttons/briefing_summary.py; it must import.
+    """The router shells out to core_cli/briefing_summary.py; it must import.
 
     Regression: the buttons image shipped the script without its sibling
-    buttons/context_filter.py, so /api/briefing 500'd in prod while the
+    context_filter.py, so /api/briefing 500'd in prod while the
     fixture-based router tests stayed green.
     """
 
     def test_script_imports_resolve(self):
         root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        script = os.path.join(root, "buttons", "briefing_summary.py")
+        script = os.path.join(root, "core_cli", "briefing_summary.py")
         # No args -> usage to stderr, exit 2 (the script has no --help).
         # Any ModuleNotFoundError would traceback and exit 1 instead.
         proc = subprocess.run(

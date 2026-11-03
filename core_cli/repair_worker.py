@@ -30,8 +30,8 @@ except ImportError:
     END = "__end__"  # type: ignore
 
 try:
-    from scripts.ast_validator import validate_source_syntax
-    from scripts.parse_task_spec import parse_task_spec
+    from core_cli.ast_validator import validate_source_syntax
+    from core_cli.parse_task_spec import parse_task_spec
 except ImportError:
     try:
         from ast_validator import validate_source_syntax
@@ -405,11 +405,11 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
         return False
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Deterministic Autonomous Repair Worker")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number to repair")
     parser.add_argument("--body", type=str, default="", help="Optional task specification markdown body")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     success = run_repair(issue_number=args.issue, issue_body=args.body or None)
     sys.exit(0 if success else 1)

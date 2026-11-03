@@ -8,14 +8,14 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 
-import buttons.preflight_digest as pfd
+import core_cli.preflight_digest as pfd
 
 
 class TestPreflightDigest(unittest.TestCase):
     def run_digest(self, payload):
         raw = payload if isinstance(payload, str) else json.dumps(payload)
         proc = subprocess.run(
-            [sys.executable, "buttons/preflight_digest.py"],
+            [sys.executable, "core_cli/preflight_digest.py"],
             input=raw,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -208,7 +208,7 @@ step failed with exit code 1; aborting
         self.assertEqual(extracted, "project_config.json could not be found")
 
     def test_preflight_checklist_failure_extraction(self):
-        output = """$ set -o pipefail; td --json preflight | python3 buttons/preflight_digest.py
+        output = """$ set -o pipefail; td --json preflight | python3 core_cli/preflight_digest.py
 ✓ Doctor: OK
 ⊘ Typecheck: Skipped
 ✗ Lint: FAIL — 3 errors

@@ -349,7 +349,7 @@ class RepairTest(unittest.TestCase):
             self.assertIn("line1", status["log_buffer"])
             self.assertEqual(
                 runner.calls[0],
-                ["python3", "scripts/repair_worker.py",
+                ["python3", "-m", "core_cli", "repair",
                  "--issue", "5"])
         finally:
             issues_mod._repair_runner = old

@@ -38,7 +38,7 @@ class JulesSection(BaseModel):
 
 class Briefing(BaseModel):
     """Structured briefing payload: shape of analyze() in
-    buttons/briefing_summary.py. Extra keys allowed so new briefing
+    core_cli/briefing_summary.py. Extra keys allowed so new briefing
     sections pass through instead of 500ing."""
 
     model_config = ConfigDict(extra="allow")
@@ -89,7 +89,7 @@ class LedgerClearResult(BaseModel):
 
 def _run_briefing(repo: str, gh: str) -> dict:
     script = os.path.join(os.path.dirname(__file__),
-                          "..", "..", "..", "buttons",
+                          "..", "..", "..", "core_cli",
                           "briefing_summary.py")
     script = os.path.normpath(script)
     # cwd = live checkout: td discovers project_config.json upward from

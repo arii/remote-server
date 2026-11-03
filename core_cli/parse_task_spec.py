@@ -166,10 +166,11 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
     }
 
 
-def main() -> None:
+def main(argv=None) -> None:
     """CLI entrypoint to parse task spec from file or stdin."""
-    if len(sys.argv) > 1:
-        filepath = sys.argv[1]
+    args = sys.argv[1:] if argv is None else argv
+    if args:
+        filepath = args[0]
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
     else:
