@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
-import type { InboxFeed } from './apiClient';
+import type { InboxFeed, SystemHealthResponse } from './apiClient';
 import HoldToConfirm from './components/HoldToConfirm';
 import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
 import BriefingView, { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
@@ -24,7 +24,7 @@ import JobsView, {
   repairCandidates,
   resultLine,
 } from './views/JobsView';
-import NowView, { ReportDialog, nowPollMs } from './views/NowView';
+import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
 import ReviewView, { PrDetails } from './views/ReviewView';
 import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
@@ -714,5 +714,27 @@ describe('repo picker labels', () => {
       <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
     );
     expect(html).toContain('title="arii/remote-server');
+  });
+});
+
+describe('now stack condense', () => {
+  const healthy = (n: number): SystemHealthResponse => ({
+    disk: {},
+    memory: {},
+    containers: Array.from({ length: n }, (_, i) => ({
+      service: `svc-${i}`,
+      state: 'running',
+    })),
+  });
+  it('collapses to one line when every container is up', () => {
+    const html = renderToStaticMarkup(<StackSection health={healthy(8)} />);
+    expect(html).toContain('All 8 containers up');
+    expect(html).not.toContain('container-pill');
+  });
+  it('keeps pills when a container is down', () => {
+    const h = healthy(2);
+    h.containers[1] = { service: 'svc-1', state: 'exited' };
+    const html = renderToStaticMarkup(<StackSection health={h} />);
+    expect(html).toContain('container-pill');
   });
 });
