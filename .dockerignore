@@ -1,14 +1,17 @@
 # Keep the buttons build context to what the image needs.
 **
 !Dockerfile
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
 !backend/
 !backend/**
 !deep-agent/
 !deep-agent/**
 !frontend/
 !frontend/**
-!buttons/
-!buttons/briefing_summary.py
+!core_cli/
+!core_cli/**
 # Build inputs excluded even from the above.
 backend/tests/
 backend/**/__pycache__/

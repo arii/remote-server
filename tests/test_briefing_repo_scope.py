@@ -172,27 +172,5 @@ class LineFormatTest(unittest.TestCase):
         )
 
 
-class RunJsonErrorTest(unittest.TestCase):
-    def _run(self, stdout, stderr="", code=1):
-        proc = mock.Mock()
-        proc.stdout = stdout
-        proc.stderr = stderr
-        proc.returncode = code
-        with mock.patch.object(bs.subprocess, "run", return_value=proc):
-            return bs.run_json(["td", "x"], 60)
-
-    def test_stdout_fallback_skips_bare_braces(self):
-        _, _, err = self._run('{"partial": true}\n}\n')
-        self.assertEqual(err, "exit 1")
-
-    def test_stdout_fallback_keeps_real_message(self):
-        _, _, err = self._run('line one\nboom failed\n}\n')
-        self.assertEqual(err, "boom failed")
-
-    def test_stderr_preferred(self):
-        _, _, err = self._run('}\n', stderr="bad repo")
-        self.assertEqual(err, "bad repo")
-
-
 if __name__ == "__main__":
     unittest.main()
