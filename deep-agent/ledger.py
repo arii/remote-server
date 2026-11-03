@@ -12,6 +12,7 @@ import sys
 import time
 
 import cli
+import pricing
 
 # EVAL_LEDGER lets parallel eval gates isolate their ledgers; the eval
 # scorer reads the same knob, so writer and scorer stay consistent.
@@ -125,6 +126,12 @@ def record(script, model, thread_id, messages, started, extra=None,
         prompt = extra.get("prompt")
         if isinstance(prompt, str) and len(prompt) > 4000:
             extra["prompt"] = prompt[:4000]
+        usage = dict(usage) if isinstance(usage, dict) \
+            else _usage_total(messages)
+        # Record-time quote freezes the rate: rows stay true even
+        # when the card moves. Old rows without these fields are
+        # derived at read time (current-rate estimates, no rewrite).
+        cost_usd, metered = pricing.quote(model, usage)
         entry = {
             "kind": "deep-agent-run",
             "ts": time.time(),
@@ -134,8 +141,9 @@ def record(script, model, thread_id, messages, started, extra=None,
             "duration_s": duration,
             "tool_calls": calls,
             "tool_results": results,
-            "usage": dict(usage) if isinstance(usage, dict)
-            else _usage_total(messages),
+            "usage": usage,
+            "cost_usd": cost_usd,
+            "metered": metered,
             "final_preview": final,
             "extra": extra,
         }

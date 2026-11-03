@@ -474,6 +474,8 @@ export interface AgentRun {
   tokens: number;
   preview: string;
   has_prompt: boolean;
+  cost_usd: number | null;
+  metered: boolean;
 }
 
 export interface TraceEvent {

@@ -109,6 +109,31 @@ class TestRuns(unittest.TestCase):
             self.assertFalse(out[0]["has_prompt"])
             self.assertTrue(out[1]["has_prompt"])
 
+    def test_summary_carries_recorded_cost(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     cost_usd=0.0008, metered=True),
+            ])
+            out = runs.list_runs(ledger_path=path)
+            self.assertTrue(out[0]["metered"])
+            self.assertAlmostEqual(out[0]["cost_usd"], 0.0008)
+
+    def test_summary_derives_cost_for_old_rows(self):
+        usage = {"input_tokens": 2000, "output_tokens": 1000,
+                 "total_tokens": 3000}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     usage=usage),
+                _row(model="ollama:qwen3:8b", usage=usage),
+            ])
+            out = runs.list_runs(ledger_path=path)
+            self.assertFalse(out[0]["metered"])
+            self.assertEqual(out[0]["cost_usd"], 0.0)
+            self.assertTrue(out[1]["metered"])
+            self.assertAlmostEqual(out[1]["cost_usd"], 0.0008)
+
 
 if __name__ == "__main__":
     unittest.main()

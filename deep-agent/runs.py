@@ -24,6 +24,7 @@ import time
 
 import cli
 import ledger
+import pricing
 
 LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(
     ledger.state_dir(), "ledger.jsonl")
@@ -47,6 +48,13 @@ def _is_deleted(row):
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
     usage = row.get("usage") or {}
+    cost_usd = row.get("cost_usd")
+    metered = row.get("metered")
+    if not isinstance(cost_usd, (int, float)) \
+            or not isinstance(metered, bool):
+        # Old rows predate record-time quotes: derive at the
+        # current card (display estimate, the row is untouched).
+        cost_usd, metered = pricing.quote(row.get("model"), usage)
     return {
         "id": f"run-{index}",
         "script": row.get("script", "?"),
@@ -61,6 +69,8 @@ def _entry_summary(index, row):
         "preview": (row.get("final_preview", "") or "")[:200],
         "has_prompt": isinstance(extra.get("prompt"), str)
         and bool(extra.get("prompt")),
+        "cost_usd": cost_usd,
+        "metered": metered,
     }
 
 

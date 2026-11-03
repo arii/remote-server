@@ -103,6 +103,26 @@ class TestRecord(unittest.TestCase):
             extra={"prompt": "do the thing"})
         self.assertEqual(entry["extra"]["prompt"], "do the thing")
 
+    def test_records_cost_for_metered_model(self):
+        entry = ledger.record(
+            "s.py", "nebius:zai-org/GLM-5.3-Flash", "t", [],
+            time.time(),
+            usage={"input_tokens": 2000, "output_tokens": 1000,
+                   "total_tokens": 3000})
+        self.assertTrue(entry["metered"])
+        self.assertAlmostEqual(entry["cost_usd"], 0.0008)
+        filed = self.read_entry()
+        self.assertTrue(filed["metered"])
+        self.assertAlmostEqual(filed["cost_usd"], 0.0008)
+
+    def test_records_free_for_local_model(self):
+        entry = ledger.record(
+            "s.py", "ollama:qwen3:8b", "t", [], time.time(),
+            usage={"input_tokens": 2000, "output_tokens": 1000,
+                   "total_tokens": 3000})
+        self.assertFalse(entry["metered"])
+        self.assertEqual(entry["cost_usd"], 0.0)
+
     def test_happy_path(self):
         msgs = [
             ai("thinking", usage={"input_tokens": 10, "output_tokens": 5,
