@@ -209,7 +209,8 @@ def attention(repo: str = "remote-server") -> dict:
     webhook_incidents: dict = {}
     for e in list_failed_webhooks():
         repo = str(e.get("repo", name))
-        detail = str(e.get("error", e.get("event", "webhook failed")))
+        detail = str(e.get("error") or e.get("detail") or e.get("event")
+                     or "webhook failed")
         key = (repo, detail)
         ts = float(e.get("ts", now) or now)
         prev = webhook_incidents.get(key)

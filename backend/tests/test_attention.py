@@ -146,6 +146,27 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(
             by_detail["refused"]["title"], "Failed webhook delivery")
 
+    def test_webhook_detail_reads_writer_detail_key(self):
+        hooks = [
+            {"id": "w1", "ts": 1.0, "ok": False,
+             "detail": "fatal: not possible to fast-forward"},
+        ]
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: hooks,
+            list_pending_approvals=lambda: [],
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        items = [i for i in body["items"]
+                 if i["kind"] == "failed-webhook"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["detail"],
+                         "fatal: not possible to fast-forward")
+
 
 class WorkflowHealthCacheTest(unittest.TestCase):
     def test_second_call_served_from_cache(self):
