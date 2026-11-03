@@ -591,6 +591,101 @@ class TestAgentMechanics(unittest.TestCase):
         self.assertEqual(out["messages"][-1].content, "wired")
 
 
+def _msg(cls_name, mid):
+    return type(cls_name, (), {"id": mid, "content": "x"})()
+
+
+def _history(n_turns, start=0):
+    # System + (human, ai, tool) rounds with stable ids.
+    msgs = [_msg("SystemMessage", "sys")] if start == 0 else []
+    i = start
+    for _ in range(n_turns):
+        msgs.append(_msg("HumanMessage", f"h{i}"))
+        msgs.append(_msg("AIMessage", f"a{i}"))
+        msgs.append(_msg("ToolMessage", f"t{i}"))
+        i += 1
+    return msgs
+
+
+class TestHistoryTrim(unittest.TestCase):
+    def test_within_budget_keeps_all(self):
+        self.assertEqual(deep_chat.plan_history_trim(_history(2)), [])
+
+    def test_trims_oldest_snapped_to_human(self):
+        msgs = _history(20)
+        drop = deep_chat.plan_history_trim(msgs, keep=10)
+        # 60 non-system; newest 10 start mid-round at t16, so the
+        # snap keeps h17..t19 and drops h0..t16 (51 ids).
+        self.assertEqual(len(drop), 51)
+        self.assertNotIn("sys", drop)
+        self.assertIn("h0", drop)
+        self.assertIn("h16", drop)
+        self.assertIn("t16", drop)
+        self.assertNotIn("h17", drop)
+        self.assertNotIn("t19", drop)
+
+    def test_no_human_boundary_skips(self):
+        msgs = [_msg("AIMessage", f"a{i}") for i in range(50)]
+        self.assertEqual(deep_chat.plan_history_trim(msgs, keep=10), [])
+
+    def test_idless_messages_skipped(self):
+        msgs = _history(20)
+        for m in msgs:
+            m.id = None
+        self.assertEqual(deep_chat.plan_history_trim(msgs, keep=10), [])
+
+    def test_empty(self):
+        self.assertEqual(deep_chat.plan_history_trim([]), [])
+        self.assertEqual(deep_chat.plan_history_trim(None), [])
+
+
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
+class TestTrimThreadHistory(unittest.TestCase):
+    def test_removes_via_update_state(self):
+        from langchain_core.messages import RemoveMessage
+
+        seen = {}
+
+        class FakeAgent:
+            def get_state(self, config):
+                seen["config"] = config
+                snap = unittest.mock.Mock()
+                snap.values = {"messages": _history(20)}
+                return snap
+
+            def update_state(self, config, values):
+                seen["update"] = values
+
+        n = deep_chat.trim_thread_history(
+            FakeAgent(), {"thread": "t"}, keep=10)
+        self.assertTrue(n > 0)
+        updates = seen["update"]["messages"]
+        self.assertTrue(all(isinstance(m, RemoveMessage) for m in updates))
+        self.assertEqual(len(updates), n)
+        self.assertIn("h0", [m.id for m in updates])
+
+    def test_noop_within_budget(self):
+        class FakeAgent:
+            def get_state(self, config):
+                snap = unittest.mock.Mock()
+                snap.values = {"messages": _history(2)}
+                return snap
+
+            def update_state(self, config, values):
+                raise AssertionError("must not trim")
+
+        self.assertEqual(
+            deep_chat.trim_thread_history(FakeAgent(), {}), 0)
+
+    def test_broken_agent_never_raises(self):
+        class FakeAgent:
+            def get_state(self, config):
+                raise RuntimeError("saver gone")
+
+        self.assertEqual(
+            deep_chat.trim_thread_history(FakeAgent(), {}), 0)
+
+
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestCheckpointer(unittest.TestCase):
     def test_open_checkpointer_shape(self):

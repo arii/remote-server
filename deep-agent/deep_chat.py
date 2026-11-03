@@ -62,6 +62,10 @@ MAX_PROMPT = 3000
 # Trace middleware nodes consume budget (~4 steps per tool call,
 # measured); 40 preserves room for ~9 tool calls per turn.
 RECURSION_LIMIT = 40
+# Sliding window over checkpoint history, applied at turn start.
+# Checkpoints append indefinitely; without this long threads blow
+# the context window. ~5-10 turns of history.
+MAX_HISTORY_MESSAGES = 40
 EXIT_NEEDS_APPROVAL = 3
 
 # Mirror of ALLOWED_TD in ask_investigator.py (which mirrors
@@ -375,6 +379,55 @@ def _pending_interrupts(agent, config):
     return found
 
 
+def _message_role(message):
+    """human/system/other by class name (no langchain import)."""
+    name = message.__class__.__name__
+    if name == "HumanMessage":
+        return "human"
+    if name == "SystemMessage":
+        return "system"
+    return "other"
+
+
+def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
+    """Ids to drop from checkpoint history. Pure, no langchain import.
+
+    Keeps a leading SystemMessage plus the newest `keep` messages,
+    snapped to start at a HumanMessage boundary so a ToolMessage is
+    never orphaned from its AI tool call. Returns [] when within
+    budget or when no safe boundary exists (trim skipped, not forced).
+    """
+    messages = list(messages or [])
+    rest = messages[1:] if messages and _message_role(
+        messages[0]) == "system" else messages
+    if len(rest) <= keep:
+        return []
+    window = rest[-keep:]
+    starts = [i for i, m in enumerate(window)
+              if _message_role(m) == "human"]
+    if not starts:
+        return []
+    keep_ids = {id(m) for m in window[starts[0]:]}
+    return [m.id for m in rest if id(m) not in keep_ids
+            and getattr(m, "id", None)]
+
+
+def trim_thread_history(agent, config, keep=MAX_HISTORY_MESSAGES):
+    """Drop aged-out checkpoint messages. Best-effort; never raises."""
+    try:
+        snap = agent.get_state(config)
+        messages = (snap.values or {}).get("messages", []) or []
+        drop = plan_history_trim(messages, keep=keep)
+        if not drop:
+            return 0
+        from langchain_core.messages import RemoveMessage  # noqa: E402
+        agent.update_state(
+            config, {"messages": [RemoveMessage(id=i) for i in drop]})
+        return len(drop)
+    except Exception:
+        return 0
+
+
 def _stream(agent, first_input, config):
     """Stream one agent invocation; returns (reply, tool_msgs, msgs)."""
     from langchain_core.messages import AIMessage, AIMessageChunk  # noqa: E402
@@ -466,6 +519,10 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     saver, _, _holder = open_checkpointer()
     agent = build_agent(repo, saver, model=model, recorder=recorder)
     config = {"configurable": {"thread_id": thread_id}}
+    trimmed = trim_thread_history(agent, config)
+    if trimmed:
+        print(f"trimmed {trimmed} aged-out history message(s)",
+              file=sys.stderr)
     messages = [HumanMessage(content=prompt)]
     try:
         reply, tool_msgs, _ = _stream(
