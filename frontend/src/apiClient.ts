@@ -138,6 +138,18 @@ export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListRe
   );
 }
 
+export interface PrDiffResponse {
+  number: number;
+  diff: string;
+  truncated: boolean;
+}
+
+export function fetchPrDiff(repo: string, pr: number): Promise<PrDiffResponse> {
+  return getJson<PrDiffResponse>(
+    `api/pr-diff?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+  );
+}
+
 export function fetchPrDetails(repo: string, pr: number): Promise<import('./reviewTypes').PrDetailsResponse> {
   return getJson<import('./reviewTypes').PrDetailsResponse>(
     `api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,

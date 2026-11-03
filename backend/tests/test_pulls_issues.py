@@ -165,6 +165,49 @@ class PrDetailsTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
 
+class PrDiffTest(unittest.TestCase):
+    DIFF = ("diff --git a/app.py b/app.py\n"
+            "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n"
+            "-print(1)\n+print(2)\n")
+
+    def test_diff_shape(self):
+        runner = FakeRunner().on(["gh"], FakeProc(stdout=self.DIFF))
+        out = pulls_mod.pr_diff(repo="remote-server", pr=7,
+                                runner=runner)
+        self.assertEqual(out["number"], 7)
+        self.assertIn("+print(2)", out["diff"])
+        self.assertFalse(out["truncated"])
+        argv = runner.calls[0]
+        self.assertEqual(argv[:4], ["gh", "pr", "diff", "7"])
+        self.assertIn("arii/remote-server", argv)
+
+    def test_diff_truncates_huge_output(self):
+        big = self.DIFF * 5000
+        runner = FakeRunner().on(["gh"], FakeProc(stdout=big))
+        out = pulls_mod.pr_diff(repo="remote-server", pr=7,
+                                runner=runner)
+        self.assertTrue(out["truncated"])
+        self.assertLessEqual(len(out["diff"]), 30000)
+
+    def test_diff_bad_pr(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            pulls_mod.pr_diff(repo="remote-server", pr=0,
+                              runner=FakeRunner())
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_diff_gh_failure_is_500(self):
+        from fastapi import HTTPException
+
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stderr="boom", returncode=1))
+        with self.assertRaises(HTTPException) as ctx:
+            pulls_mod.pr_diff(repo="remote-server", pr=7,
+                              runner=runner)
+        self.assertEqual(ctx.exception.status_code, 500)
+
+
 class PrActionTest(unittest.TestCase):
     def test_merge_gate_refuses_dirty_ci(self):
         runner = FakeRunner().on(
@@ -320,6 +363,7 @@ class RouteTableTest(unittest.TestCase):
                          issues_mod.router.routes}
         self.assertIn(("/api/prs", ("GET",)), pulls_routes)
         self.assertIn(("/api/pr-details", ("GET",)), pulls_routes)
+        self.assertIn(("/api/pr-diff", ("GET",)), pulls_routes)
         self.assertIn(("/api/pr-action", ("POST",)), pulls_routes)
         self.assertIn(("/api/issues", ("GET",)), issues_routes)
         self.assertIn(("/api/create-issue", ("POST",)), issues_routes)

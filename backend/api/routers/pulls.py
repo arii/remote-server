@@ -6,6 +6,7 @@ this backend serves /api/* like its sibling routers):
 
 - GET  /api/prs?repo=            open PRs, shaped rows
 - GET  /api/pr-details?repo=&pr= enriched details + AI prompts
+- GET  /api/pr-diff?repo=&pr=    filtered unified diff, truncated
 - POST /api/pr-action             merge / update / fix-ci with gating
 
 Note: the legacy /buttons/api/prs handler calls _format_ci_status
@@ -24,6 +25,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.gh import repo_gh, run_gh, run_gh_json
+from buttons import context_filter
 
 router = APIRouter(prefix="/api", tags=["pulls"])
 
@@ -261,6 +263,32 @@ def pr_details(repo: str = "remote-server", pr: int = 0,
                   "deletions": sum(f["deletions"] for f in files)},
         "ai_prompts": prompts,
     }
+
+
+class PrDiff(BaseModel):
+    number: int = 0
+    diff: str = ""
+    truncated: bool = False
+
+
+@router.get("/pr-diff", response_model=PrDiff)
+def pr_diff(repo: str = "remote-server", pr: int = 0,
+            runner=None) -> dict:
+    try:
+        gh = repo_gh(repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bad repo")
+    if not isinstance(pr, int) or pr <= 0:
+        raise HTTPException(status_code=400, detail="bad pr number")
+    try:
+        raw = run_gh(gh, ["pr", "diff", str(pr), "--repo", gh],
+                     timeout=60, runner=runner)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+    diff = context_filter.filter_diff(raw, max_file_lines=120)
+    if len(diff) > 30000:
+        return {"number": pr, "diff": diff[:30000], "truncated": True}
+    return {"number": pr, "diff": diff, "truncated": False}
 
 
 @router.post("/pr-action", response_model=PrActionResult)
