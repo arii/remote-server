@@ -444,6 +444,28 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(resp.json(), {"ok": True,
                                        "output": "takeover ok\n"})
 
+    def test_takeover_hups_inside_terminal_container(self):
+        import subprocess as sp
+        seen = {}
+
+        class P:
+            stdout = "hup_exit=0\n"
+
+        def fake_run(argv, **kw):
+            seen["argv"] = argv
+            return P()
+
+        real_run = sp.run
+        sp.run = fake_run
+        try:
+            self.assertEqual(ops.run_takeover(), "hup_exit=0\n")
+        finally:
+            sp.run = real_run
+        argv = seen["argv"]
+        self.assertIn("exec", argv)
+        self.assertIn("terminal", argv)
+        self.assertTrue(any("^zellij attach" in a for a in argv))
+
     def test_workflow_health(self):
         ops.fetch_workflow_health = lambda repo, gh: {
             "repo": repo, "status": "healthy", "total_failing": 0,
