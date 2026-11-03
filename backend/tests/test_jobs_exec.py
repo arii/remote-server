@@ -192,6 +192,11 @@ class RouterTest(unittest.TestCase):
         jobs_router.registry = RunRegistry()
         with mock.patch(
             "backend.api.routers.jobs._launch"
+        ), mock.patch(
+            # Repo validation reads real checkouts; this test is
+            # about the run flow, so the repo is stubbed.
+            "backend.core.get_repo_status",
+            return_value={"repo": "remote-server"},
         ):
             resp = self.client.post(
                 "/api/jobs/run-td", json={"command": "td context-warm"}
@@ -529,6 +534,11 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
             with mock.patch(
                 "backend.api.routers.jobs._launch",
                 side_effect=RuntimeError("thread starved"),
+            ), mock.patch(
+                # Stub the checkout so the test asserts the
+                # launch failure, not the absence of /srv/repos.
+                "backend.core.get_repo_status",
+                return_value={"repo": "remote-server"},
             ):
                 resp = client.post(path, json=payload)
             self.assertEqual(resp.status_code, 500)
