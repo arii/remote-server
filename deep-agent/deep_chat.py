@@ -53,6 +53,7 @@ import model_router  # noqa: E402
 import ledger  # noqa: E402
 import observe  # noqa: E402
 import tracing  # noqa: E402
+import intent  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
@@ -66,6 +67,8 @@ RECURSION_LIMIT = 40
 # Checkpoints append indefinitely; without this long threads blow
 # the context window. ~5-10 turns of history.
 MAX_HISTORY_MESSAGES = 40
+# Tool results carried into the salvage pass after a recursion cutoff.
+SALVAGE_TOOL_TAIL = 12
 EXIT_NEEDS_APPROVAL = 3
 
 # Mirror of ALLOWED_TD in ask_investigator.py (which mirrors
@@ -368,7 +371,8 @@ def open_checkpointer(path=THREAD_DB):
     return cm.__enter__(), True, cm
 
 
-def build_agent(repo, checkpointer, model=None, recorder=None):
+def build_agent(repo, checkpointer, model=None, recorder=None,
+                intent_hint=None):
     """create_deep_agent chat slice. Venv-only. Model injectable."""
     from deepagents import create_deep_agent  # noqa: E402
 
@@ -377,10 +381,13 @@ def build_agent(repo, checkpointer, model=None, recorder=None):
     kwargs = {}
     if recorder is not None:
         kwargs["middleware"] = observe.trace_middleware(recorder)
+    system = f"Repo: {repo}. " + SYSTEM
+    if intent_hint:
+        system += " " + intent_hint
     return create_deep_agent(
         model=model,
         tools=build_tools(s5tools.checkout_for(repo)),
-        system_prompt=f"Repo: {repo}. " + SYSTEM,
+        system_prompt=system,
         interrupt_on=dict(INTERRUPT_ON),
         checkpointer=checkpointer,
         **kwargs,
@@ -445,45 +452,89 @@ def trim_thread_history(agent, config, keep=MAX_HISTORY_MESSAGES):
         return 0
 
 
-def _stream(agent, first_input, config):
-    """Stream one agent invocation; returns (reply, tool_msgs, msgs)."""
+def _salvage_input(agent, config, first_input, tool_messages):
+    """Message list for the post-cutoff final-answer pass. Pure shape."""
+    from langchain_core.messages import HumanMessage  # noqa: E402
+
+    if isinstance(first_input, dict) and "messages" in first_input:
+        base = list(first_input["messages"])
+        evidence = list(tool_messages[-SALVAGE_TOOL_TAIL:])
+    else:
+        try:
+            thread = (agent.get_state(config).values or {}).get(
+                "messages", []) or []
+        except Exception:
+            thread = []
+        base, evidence = [], list(thread[-SALVAGE_TOOL_TAIL:])
+    return base + evidence + [HumanMessage(
+        content="Answer now using only the conversation and tool "
+        "results above. Do not make any more tool calls.")]
+
+
+def _stream(agent, first_input, config, model=None):
+    """Stream one agent invocation.
+
+    Returns (reply, tool_msgs, msgs, salvaged). On a tool-loop
+    recursion cutoff with a model available, one final no-tools
+    pass answers from gathered evidence instead of dying (same
+    salvage as chat_agent); without a model the error propagates.
+    """
     from langchain_core.messages import AIMessage, AIMessageChunk  # noqa: E402
+    from langgraph.errors import GraphRecursionError  # noqa: E402
 
     text_parts = []
     tool_messages = []
     last_ai = ""
-    stream = agent.stream(
-        first_input,
-        config={**config, "recursion_limit": RECURSION_LIMIT,
-                "callbacks": tracing.tracing_callbacks()},
-        stream_mode=["messages", "updates"],
-    )
-    for mode, payload in stream:
-        if mode == "messages":
-            chunk = payload[0]
-            if isinstance(chunk, AIMessageChunk) and isinstance(
-                chunk.content, str
-            ) and chunk.content:
-                print(chunk.content, end="", flush=True)
-                text_parts.append(chunk.content)
-        elif mode == "updates":
-            for update in payload.values():
-                # Updates are usually {messages: [...]} dicts, but some
-                # nodes (e.g. around interrupts) emit tuples instead.
-                msgs = update.get("messages", []) \
-                    if isinstance(update, dict) else []
-                for m in msgs:
-                    if m.__class__.__name__ == "ToolMessage":
-                        tool_messages.append(m)
-                    elif isinstance(m, AIMessage) and isinstance(
-                        m.content, str
-                    ) and m.content and not getattr(m, "tool_calls", None):
-                        last_ai = m.content
+    try:
+        stream = agent.stream(
+            first_input,
+            config={**config, "recursion_limit": RECURSION_LIMIT,
+                    "callbacks": tracing.tracing_callbacks()},
+            stream_mode=["messages", "updates"],
+        )
+        for mode, payload in stream:
+            if mode == "messages":
+                chunk = payload[0]
+                if isinstance(chunk, AIMessageChunk) and isinstance(
+                    chunk.content, str
+                ) and chunk.content:
+                    print(chunk.content, end="", flush=True)
+                    text_parts.append(chunk.content)
+            elif mode == "updates":
+                for update in payload.values():
+                    # Updates are usually {messages: [...]} dicts, but
+                    # some nodes (e.g. around interrupts) emit tuples
+                    # instead.
+                    msgs = update.get("messages", []) \
+                        if isinstance(update, dict) else []
+                    for m in msgs:
+                        if m.__class__.__name__ == "ToolMessage":
+                            tool_messages.append(m)
+                        elif isinstance(m, AIMessage) and isinstance(
+                            m.content, str
+                        ) and m.content and not getattr(
+                            m, "tool_calls", None
+                        ):
+                            last_ai = m.content
+    except GraphRecursionError:
+        if model is None:
+            raise
+        try:
+            answer = model.invoke(_salvage_input(
+                agent, config, first_input, tool_messages))
+            salvaged = (answer.content or "").strip()
+        except Exception:
+            salvaged = ""
+        if not salvaged:
+            raise
+        print(salvaged, flush=True)
+        return salvaged, tool_messages, \
+            [AIMessage(content=salvaged)], True
     print("", flush=True)
     # Streaming models feed text_parts; non-streaming ones only appear
     # whole in updates. Prefer the last text-only AI message.
     reply = (last_ai or "".join(text_parts)).strip()
-    return reply, tool_messages, [AIMessage(content=reply)]
+    return reply, tool_messages, [AIMessage(content=reply)], False
 
 
 def _emit_interrupt(thread_id, interrupts):
@@ -534,7 +585,9 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     recorder.run_start("deep_chat.py", thread_id,
                        f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
-    agent = build_agent(repo, saver, model=model, recorder=recorder)
+    turn_intent = intent.classify(prompt)
+    agent = build_agent(repo, saver, model=model, recorder=recorder,
+                        intent_hint=intent.hint(turn_intent))
     config = {"configurable": {"thread_id": thread_id}}
     trimmed = trim_thread_history(agent, config)
     if trimmed:
@@ -542,8 +595,8 @@ def _cmd_turn(repo, thread_id, raw_prompt):
               file=sys.stderr)
     messages = [HumanMessage(content=prompt)]
     try:
-        reply, tool_msgs, _ = _stream(
-            agent, {"messages": messages}, config)
+        reply, tool_msgs, _, salvaged = _stream(
+            agent, {"messages": messages}, config, model=model)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         recorder.run_end(False)
@@ -553,7 +606,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, messages, started,
             extra={"repo": repo, "mode": "turn", "trace": recorder.path,
-                   "error": str(exc)[:200]},
+                   "intent": turn_intent, "error": str(exc)[:200]},
             usage=_usage, calls=_calls,
         )
         return cli.sorry(reply)
@@ -567,7 +620,8 @@ def _cmd_turn(repo, thread_id, raw_prompt):
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, messages + tool_msgs + [AIMessage(content=reply)],
         started, extra={"repo": repo, "mode": "turn",
-                        "trace": recorder.path},
+                        "trace": recorder.path, "intent": turn_intent,
+                        **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )
     pending = _pending_interrupts(agent, config)
@@ -624,9 +678,9 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     first = pending[0].get("value") or {}
     count = len(first.get("action_requests", []) or []) or 1
     try:
-        reply, tool_msgs, _ = _stream(
+        reply, tool_msgs, _, salvaged = _stream(
             agent, Command(resume=resume_payload([decision] * count)),
-            config)
+            config, model=model)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         recorder.run_end(False)
@@ -648,7 +702,8 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, tool_msgs + [AIMessage(content=reply)], started,
         extra={"repo": repo, "mode": "resume", "verdict": verdict,
-               "trace": recorder.path},
+               "trace": recorder.path,
+               **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )
     if verdict == "approve":
