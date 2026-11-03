@@ -8,4 +8,5 @@ langchain-ollama
 langchain-chroma
 langchain-text-splitters
 langgraph-checkpoint-sqlite
+langsmith
 python-dotenv
