@@ -5,7 +5,10 @@
     "buttons/ux/*.js"
   ],
   "ignorePatterns": [
-    "terminal/**"
+    "terminal/**",
+    ".agents/**",
+    ".claude/**",
+    ".github/skills/**"
   ],
   "rules": {
     "unused-export": "warn",
