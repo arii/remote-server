@@ -5,6 +5,7 @@ import { cleanBriefingLine } from './views/BriefingView';
 import { ApprovalCard, cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
+import { resultLine } from './views/JobsView';
 
 describe('history utils', () => {
   it('uses plain language, never raw stderr', () => {
@@ -187,6 +188,18 @@ describe('chat agent text', () => {
     );
     expect(decided).toContain('Approved.');
     expect(decided).not.toContain('Reject');
+  });
+});
+
+describe('job result line', () => {
+  it('surfaces the last meaningful line past command echoes', () => {
+    expect(resultLine('$ docker compose exec -T terminal bash\nwrote .agents/plans/x.md\n')).toBe(
+      'wrote .agents/plans/x.md',
+    );
+  });
+  it('returns empty when only echoes or blank output exist', () => {
+    expect(resultLine('$ echo hi\n\n')).toBe('');
+    expect(resultLine('')).toBe('');
   });
 });
 
