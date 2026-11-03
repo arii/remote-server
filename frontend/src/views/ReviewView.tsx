@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
+import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
   createIssue,
@@ -173,8 +173,9 @@ export function PrDetails({
         </p>
       )}
       <div className="actions">
-        <HoldToConfirm
+        <TapToFire
           label={`Merge PR #${details.number}`}
+          confirm="This cannot be undone."
           disabled={mergeDisabled}
           onFire={() => onMerge(details.number)}
         />
