@@ -492,12 +492,83 @@ class TestAgentMechanics(unittest.TestCase):
             [AIMessage(content="streamed hi")], thread="t-stream")
         buf = io.StringIO()
         with redirect_stdout(buf):
-            reply, tool_msgs, msgs = deep_chat._stream(
+            reply, tool_msgs, msgs, salvaged = deep_chat._stream(
                 agent, {"messages": [{"role": "user", "content": "hi"}]},
                 config)
         self.assertEqual(reply, "streamed hi")
         self.assertEqual(tool_msgs, [])
         self.assertEqual(len(msgs), 1)
+        self.assertFalse(salvaged)
+
+    def test_stream_salvages_recursion_cutoff(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langgraph.errors import GraphRecursionError
+
+        class LoopingAgent:
+            def stream(self, *a, **k):
+                raise GraphRecursionError("limit of 40 reached")
+
+        seen = {}
+
+        class FakeModel:
+            def invoke(self, messages):
+                seen["messages"] = messages
+                return AIMessage(content="salvaged answer")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            reply, _, _, salvaged = deep_chat._stream(
+                LoopingAgent(),
+                {"messages": [{"role": "user", "content": "hi"}]},
+                {}, model=FakeModel())
+        self.assertEqual(reply, "salvaged answer")
+        self.assertTrue(salvaged)
+        self.assertIn("salvaged answer", buf.getvalue())
+        tail = seen["messages"][-1]
+        self.assertIsInstance(tail, HumanMessage)
+        self.assertIn("any more tool calls", tail.content)
+
+    def test_stream_reraises_without_model(self):
+        from langgraph.errors import GraphRecursionError
+
+        class LoopingAgent:
+            def stream(self, *a, **k):
+                raise GraphRecursionError("limit of 40 reached")
+
+        with self.assertRaises(GraphRecursionError):
+            deep_chat._stream(
+                LoopingAgent(), {"messages": []}, {})
+
+    def test_build_agent_appends_intent_hint(self):
+        from unittest import mock
+
+        with mock.patch("deepagents.create_deep_agent") as factory:
+            deep_chat.build_agent(
+                "arii/remote-server", mock.Mock(), model="m",
+                intent_hint="HINT-SENTINEL")
+        prompt = factory.call_args.kwargs["system_prompt"]
+        self.assertIn("HINT-SENTINEL", prompt)
+        with mock.patch("deepagents.create_deep_agent") as factory:
+            deep_chat.build_agent("arii/remote-server", mock.Mock(),
+                                  model="m")
+        self.assertNotIn("HINT-SENTINEL",
+                         factory.call_args.kwargs["system_prompt"])
+
+    def test_stream_reraises_when_salvage_fails(self):
+        from langgraph.errors import GraphRecursionError
+
+        class LoopingAgent:
+            def stream(self, *a, **k):
+                raise GraphRecursionError("limit of 40 reached")
+
+        class DeadModel:
+            def invoke(self, messages):
+                raise RuntimeError("invoke down")
+
+        with self.assertRaises(GraphRecursionError):
+            deep_chat._stream(
+                LoopingAgent(), {"messages": []}, {},
+                model=DeadModel())
 
     def _queue_model(self, replies):
         from langchain_core.language_models.chat_models import BaseChatModel
