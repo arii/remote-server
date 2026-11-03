@@ -95,7 +95,10 @@ def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
 
 
 def new_session_id() -> str:
-    return uuid.uuid4().hex[:12]
+    """Mint a session id. Full UUID: `muse exec --session-id`
+    rejects anything else (12-hex ids fail the turn with a CLI
+    usage error). Continued turns reuse the minted id."""
+    return str(uuid.uuid4())
 
 
 class AgentTurnManager:
