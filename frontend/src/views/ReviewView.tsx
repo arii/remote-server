@@ -59,6 +59,13 @@ export function isRowDeferred(
   return deferred.some((d) => d.kind === kind && d.number === n);
 }
 
+// The "Select a PR..." Details prompt is only satisfiable while PRs may
+// still arrive (loading) or a visible PR can be selected; once loaded
+// with zero visible PRs the pane would be permanently dead, so hide it.
+export function detailsPromptVisible(prsLoaded: boolean, visiblePrCount: number): boolean {
+  return !prsLoaded || visiblePrCount > 0;
+}
+
 function labelOf(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
@@ -400,6 +407,7 @@ export default function ReviewView({
   }
 
   const sel = details && selected !== null ? details : null;
+  const promptVisible = detailsPromptVisible(prs !== null, visiblePrs.length);
 
   return (
     <section data-testid="review-view">
@@ -501,14 +509,15 @@ export default function ReviewView({
           )}
         </div>
         <div>
-          {!sel ? (
+          {!sel && promptVisible && (
             <>
               <h3>Details</h3>
               <p className="row-meta" data-testid="review-details-empty">
                 Select a PR to see file stats and review prompts.
               </p>
             </>
-          ) : (
+          )}
+          {sel && (
             <PrDetails
               repo={repo}
               details={sel}

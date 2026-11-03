@@ -26,7 +26,7 @@ import JobsView, {
   resultLine,
 } from './views/JobsView';
 import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
-import ReviewView, { PrDetails } from './views/ReviewView';
+import ReviewView, { PrDetails, detailsPromptVisible } from './views/ReviewView';
 import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
@@ -753,5 +753,17 @@ describe('triage hints', () => {
     const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} />);
     expect(html).toContain('data-testid="triage-hint"');
     expect(html).toContain('triage-hint');
+  });
+});
+
+describe('review details prompt', () => {
+  it('shows while PRs load or a PR is selectable, hides when loaded-empty', () => {
+    expect(detailsPromptVisible(false, 0)).toBe(true);
+    expect(detailsPromptVisible(true, 2)).toBe(true);
+    expect(detailsPromptVisible(true, 0)).toBe(false);
+  });
+  it('renders the prompt in Review while loading', () => {
+    const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={() => {}} />);
+    expect(html).toContain('data-testid="review-details-empty"');
   });
 });
