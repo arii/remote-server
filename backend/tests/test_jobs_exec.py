@@ -207,6 +207,41 @@ class RouterTest(unittest.TestCase):
         resp = self.client.get("/api/jobs/runs/aaaaaaaaaaaa")
         self.assertEqual(resp.status_code, 404)
 
+    def test_plans_list_and_read(self):
+        import tempfile
+        from pathlib import Path
+
+        import backend.api.routers.jobs as jobs_router
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plans = Path(tmp) / ".agents" / "plans"
+            plans.mkdir(parents=True)
+            (plans / "2026-11-03-briefing-plan.md").write_text("# plan\n")
+            (plans / "notes.txt").write_text("not a plan")
+            with mock.patch.object(jobs_router, "_plans_dir",
+                                   return_value=plans):
+                resp = self.client.get("/api/jobs/plans",
+                                       params={"repo": "remote-server"})
+                self.assertEqual(resp.status_code, 200)
+                names = [p["name"] for p in resp.json()["plans"]]
+                self.assertEqual(names, ["2026-11-03-briefing-plan.md"])
+                resp = self.client.get(
+                    "/api/jobs/plans/2026-11-03-briefing-plan.md",
+                    params={"repo": "remote-server"})
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.json()["content"], "# plan\n")
+                resp = self.client.get("/api/jobs/plans/missing.md",
+                                       params={"repo": "remote-server"})
+                self.assertEqual(resp.status_code, 404)
+
+    def test_plans_rejects_traversal_and_bad_repo(self):
+        resp = self.client.get("/api/jobs/plans/..%2Fsecret.md",
+                               params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 404)
+        resp = self.client.get("/api/jobs/plans/x.md",
+                               params={"repo": "no-such-repo"})
+        self.assertEqual(resp.status_code, 400)
+
     def test_sync_agents_cut(self):
         resp = self.client.post(
             "/api/jobs/run", json={"action": "sync-agents"})

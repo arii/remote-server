@@ -5,7 +5,7 @@ import { cleanBriefingLine } from './views/BriefingView';
 import { ApprovalCard, cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
-import { resultLine } from './views/JobsView';
+import { planNameFromResult, resultLine } from './views/JobsView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -214,6 +214,13 @@ describe('job result line', () => {
   it('returns empty when only echoes or blank output exist', () => {
     expect(resultLine('$ echo hi\n\n')).toBe('');
     expect(resultLine('')).toBe('');
+  });
+  it('extracts the plan filename from a wrote line', () => {
+    expect(planNameFromResult('wrote .agents/plans/2026-11-03-briefing-plan.md')).toBe(
+      '2026-11-03-briefing-plan.md',
+    );
+    expect(planNameFromResult('Already up to date.')).toBeNull();
+    expect(planNameFromResult('')).toBeNull();
   });
 });
 
