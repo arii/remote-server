@@ -28,6 +28,21 @@ class AgentsHealth(BaseModel):
     ok: bool = True
 
 
+class ConfirmRequest(BaseModel):
+    intent: str = ""
+    confirmed: bool = False
+
+
+class ClearRunsResult(BaseModel):
+    ok: bool = True
+    cleared: int = 0
+
+
+class DeleteRunResult(BaseModel):
+    ok: bool = True
+    id: str = ""
+
+
 @router.get("/health", response_model=AgentsHealth)
 def health() -> dict:
     return {"ok": True}
@@ -44,3 +59,21 @@ def agent_run(run_id: str) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="unknown run")
     return row
+
+
+@router.post("/runs/clear", response_model=ClearRunsResult)
+def clear_agent_runs(body: ConfirmRequest) -> dict:
+    from backend.core import require_confirm
+
+    require_confirm(body, "agents-clear")
+    return {"ok": True, "cleared": runs.clear_finished_runs()}
+
+
+@router.delete("/runs/{run_id}", response_model=DeleteRunResult)
+def delete_agent_run(run_id: str, body: ConfirmRequest) -> dict:
+    from backend.core import require_confirm
+
+    require_confirm(body, "agents-delete")
+    if not runs.delete_run(run_id):
+        raise HTTPException(status_code=404, detail="unknown run")
+    return {"ok": True, "id": run_id}

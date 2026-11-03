@@ -90,6 +90,19 @@ class TestRecord(unittest.TestCase):
         with open(self.tmp.name, encoding="utf-8") as f:
             return json.loads(f.read().strip().splitlines()[-1])
 
+    def test_prompt_capped_at_4k(self):
+        entry = ledger.record(
+            "s.py", "m", "t", [], time.time(),
+            extra={"prompt": "x" * 5000})
+        self.assertEqual(len(entry["extra"]["prompt"]), 4000)
+        self.assertEqual(len(self.read_entry()["extra"]["prompt"]), 4000)
+
+    def test_short_prompt_kept_verbatim(self):
+        entry = ledger.record(
+            "s.py", "m", "t", [], time.time(),
+            extra={"prompt": "do the thing"})
+        self.assertEqual(entry["extra"]["prompt"], "do the thing")
+
     def test_happy_path(self):
         msgs = [
             ai("thinking", usage={"input_tokens": 10, "output_tokens": 5,

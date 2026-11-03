@@ -690,7 +690,7 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
         ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
                       thread_id, messages, started,
                       extra={"repo": repo, "mode": "turn",
-                             "intent": "trivial",
+                             "intent": "trivial", "prompt": prompt,
                              "error": str(exc)[:200]})
         return cli.sorry(f"Sorry, the assistant failed: {_short_err(exc)}")
     print(reply, flush=True)
@@ -701,7 +701,8 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
                  for k in ("input_tokens", "output_tokens", "total_tokens")}
     ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
                   thread_id, messages + [AIMessage(content=reply)], started,
-                  extra={"repo": repo, "mode": "turn", "intent": "trivial"},
+                  extra={"repo": repo, "mode": "turn", "intent": "trivial",
+                         "prompt": prompt},
                   usage=usage, calls=[])
     return 0
 
@@ -757,7 +758,8 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, messages, started,
             extra={"repo": repo, "mode": "turn", "trace": recorder.path,
-                   "intent": turn_intent, "error": str(exc)[:200]},
+                   "intent": turn_intent, "prompt": prompt,
+                   "error": str(exc)[:200]},
             usage=_usage, calls=_calls,
         )
         return cli.sorry(reply)
@@ -772,6 +774,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
         thread_id, messages + tool_msgs + [AIMessage(content=reply)],
         started, extra={"repo": repo, "mode": "turn",
                         "trace": recorder.path, "intent": turn_intent,
+                        "prompt": prompt,
                         **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )
