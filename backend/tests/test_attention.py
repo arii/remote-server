@@ -105,17 +105,22 @@ class AttentionShapeTest(unittest.TestCase):
         orig_read = ledger_mod.read
         ledger_mod.read = lambda kind="all", limit=50: [
             {"id": "w-ok", "ts": 3.0, "ok": True,
-             "event": "pull ok"},
+             "repo": "arii/remote-server", "event": "pull ok"},
             {"id": "w-old", "ts": 1.0, "ok": False,
-             "error": "timeout"},
+             "repo": "arii/remote-server", "error": "timeout"},
             {"id": "w-new", "ts": 5.0, "ok": False,
-             "error": "timeout"},
+             "repo": "arii/remote-server", "error": "timeout"},
+            {"id": "w-cross", "ts": 1.0, "ok": False,
+             "repo": "arii/boomtick", "error": "timeout"},
         ]
         try:
             out = attention.list_failed_webhooks()
         finally:
             ledger_mod.read = orig_read
-        self.assertEqual([e["id"] for e in out], ["w-new"])
+        # Same-repo old failure resolved; cross-repo failure kept:
+        # a remote-server success says nothing about boomtick.
+        self.assertEqual(
+            sorted(e["id"] for e in out), ["w-cross", "w-new"])
 
     def test_identical_failed_webhooks_collapse(self):
         hooks = [
