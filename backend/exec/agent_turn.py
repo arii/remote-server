@@ -17,11 +17,18 @@ claude/aider/opencode (no binaries).
 No other provider CLI flags are passed: everything above was probed
 live, so there are no invented flags to go stale. The
 docker/compose wrapper flags are ours.
+
+Cutoff flip (issue #399): the drawer defaults to providers[0], and
+ordered_providers() reads AGENT_DEFAULT_PROVIDER per request, so the
+on-call flips muse->agy with env only (buttons redeploy, no code).
+A muse-local fallback was ruled out: the local provider refuses
+non-macOS platforms, verified by probe.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import threading
 import time
@@ -31,6 +38,19 @@ from backend.exec.engine import compose_argv, exec_argv
 from backend.ledger import append as ledger_append
 
 PROVIDERS = ("muse", "agy")
+
+# Drawer default selector (cutoff flip): first entry wins. Read per
+# request so a buttons redeploy with the env set takes effect.
+DEFAULT_PROVIDER_ENV = "AGENT_DEFAULT_PROVIDER"
+
+
+def ordered_providers() -> tuple:
+    """Provider order for the drawer. Unknown/empty env keeps the
+    default muse-first order (fail safe)."""
+    first = os.environ.get(DEFAULT_PROVIDER_ENV, "muse").strip().lower()
+    if first not in PROVIDERS:
+        return PROVIDERS
+    return (first,) + tuple(p for p in PROVIDERS if p != first)
 
 READ_CHUNK = 65536
 STDERR_TAIL = 4000
