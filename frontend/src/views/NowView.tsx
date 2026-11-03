@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
-import { apiUrl, createIssue, fetchInbox } from '../apiClient';
+import { apiUrl, createIssue, fetchInbox, warmViewCaches } from '../apiClient';
 import type { InboxFeed, SystemHealthResponse } from '../apiClient';
 import type { AttentionItem } from '../attentionTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
@@ -247,6 +247,20 @@ export default function NowView({
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
+  // Warm slow view reads on idle so first Briefing/Jobs visits land
+  // instantly instead of generating on click.
+  useEffect(() => {
+    if (useMock()) return;
+    const warm = () => void warmViewCaches(repo);
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(warm);
+      return () => window.cancelIdleCallback(id);
+    }
+    const t = window.setTimeout(warm, 0);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
