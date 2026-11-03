@@ -7,6 +7,21 @@ export interface HoldToConfirmProps {
   onFire: () => void;
 }
 
+function buzz(ms: number) {
+  if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+    navigator.vibrate(ms);
+  }
+}
+
+// Pure tick decision for tests: tick when progress crosses into a new
+// quartile (0.25 / 0.5 / 0.75). Completion (p >= 1) never ticks — the
+// arm pulse replaces it. Reduced motion suppresses all ticks.
+export function shouldTickHaptic(prevProgress: number, nextProgress: number, reduced: boolean): boolean {
+  if (reduced) return false;
+  if (nextProgress >= 1) return false;
+  return Math.floor(nextProgress * 4) > Math.floor(prevProgress * 4);
+}
+
 // Press-and-hold to arm, then tap to fire. Respects prefers-reduced-motion
 // (arming is instant, no animated progress).
 export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }: HoldToConfirmProps) {
@@ -14,6 +29,7 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
   const [progress, setProgress] = useState(0);
   const timer = useRef<number | null>(null);
   const startRef = useRef(0);
+  const prevRef = useRef(0);
   const reduced =
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
@@ -35,17 +51,23 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
     if (reduced) {
       setArmed(true);
       setProgress(1);
+      buzz(40);
       return;
     }
     startRef.current = Date.now();
+    prevRef.current = 0;
     setProgress(0);
     clear();
+    buzz(10);
     timer.current = window.setInterval(() => {
       const p = Math.min(1, (Date.now() - startRef.current) / holdMs);
+      if (shouldTickHaptic(prevRef.current, p, reduced)) buzz(10);
+      prevRef.current = p;
       setProgress(p);
       if (p >= 1) {
         clear();
         setArmed(true);
+        buzz(40);
       }
     }, 30);
   }
