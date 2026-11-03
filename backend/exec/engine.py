@@ -550,16 +550,20 @@ class RunRegistry:
             return run["id"], None
 
     def clear_jobs(self, all_jobs=False):
-        """Clear terminal jobs (or all). Exact port of
-        buttons/server.py::_jobs_clear. Returns count removed."""
+        """Clear finished runs (or all). Returns count removed.
+
+        Operates on the runs store (the same store GET /api/jobs
+        lists), not the legacy jobs dict. Clearing records never
+        releases single-flight: a cleared active run's finish still
+        owns the active slot."""
         with self._lock:
             to_del = [
-                jid
-                for jid, job in self.jobs.items()
-                if all_jobs or job.get("state") == "terminal"
+                rid
+                for rid, run in self.runs.items()
+                if all_jobs or run.get("done")
             ]
-            for jid in to_del:
-                del self.jobs[jid]
+            for rid in to_del:
+                del self.runs[rid]
         return len(to_del)
 
     def list_jobs(self):
