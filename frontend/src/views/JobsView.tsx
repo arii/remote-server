@@ -158,6 +158,12 @@ export function repairCandidates(issues: IssueRow[]): IssueRow[] {
   );
 }
 
+// Auto-refresh gate: the list re-fetches on an interval only while a
+// batch run is still active, so an idle Jobs view makes no traffic.
+export function jobsListActive(jobs: JobRecord[]): boolean {
+  return jobs.some((j) => !j.done);
+}
+
 const IDLE_REPAIR: RepairStatusResponse = {
   status: 'idle',
   timestamp: null,
@@ -417,6 +423,18 @@ export default function JobsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
+  // Live list: re-fetch while a run is active so completion lands
+  // without a manual Refresh. Paused in a hidden tab.
+  useEffect(() => {
+    if (useMock()) return;
+    if (!jobs || (!jobsListActive(jobs) && !running)) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void guarded(load);
+    }, 5000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, running, load]);
+
   useEffect(() => {
     let cancelled = false;
     setMergeReady(null);
@@ -591,6 +609,7 @@ export default function JobsView({
           <h2>Jobs</h2>
           <p className="row-meta">
             {list.length} run{list.length === 1 ? '' : 's'}
+            {jobsListActive(list) || running ? ' · Live' : ''}
           </p>
         </div>
         <button type="button" data-testid="jobs-refresh" onClick={() => void guarded(load)}>

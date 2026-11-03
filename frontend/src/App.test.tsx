@@ -14,7 +14,7 @@ import {
 } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
-import { attachIdFromConflict, planNameFromResult, repairCandidates, resultLine } from './views/JobsView';
+import { attachIdFromConflict, jobsListActive, planNameFromResult, repairCandidates, resultLine } from './views/JobsView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -422,6 +422,15 @@ describe('repair candidates', () => {
       { number: 324, title: 'decide', labels: ['blocked'] },
     ];
     expect(repairCandidates(issues).map((i) => i.number)).toEqual([1]);
+  });
+});
+
+describe('jobs live gate', () => {
+  it('stays live while any run is unfinished', () => {
+    expect(jobsListActive([{ id: 'a', done: true }])).toBe(false);
+    expect(jobsListActive([])).toBe(false);
+    expect(jobsListActive([{ id: 'a', done: true }, { id: 'b', done: false }])).toBe(true);
+    expect(jobsListActive([{ id: 'b' }])).toBe(true);
   });
 });
 
