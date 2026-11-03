@@ -165,6 +165,13 @@ export function startJobRun(
   );
 }
 
+export function startTdRun(
+  command: string,
+  repo: string,
+): Promise<{ id: string }> {
+  return postJson<{ id: string }>('api/jobs/run-td', { command, repo });
+}
+
 export interface JobRunProgress {
   done: boolean;
   output: string;

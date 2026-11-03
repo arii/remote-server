@@ -19,6 +19,20 @@ class FakeProc:
         self.stderr = stderr
 
 
+class DeployHealthGateTest(unittest.TestCase):
+    def test_gate_hits_routable_status_path(self):
+        # The gate curls buttons:8000 directly (no Caddy strip), so it
+        # must use the root-served /api/status, not /buttons/api/status
+        # (which 404s and fails every deploy).
+        steps, err = engine.action_steps(
+            "deploy-buttons", "remote-server",
+            "arii/remote-server", "/srv/remote-server")
+        self.assertIsNone(err)
+        gate = " ".join(" ".join(s) for s in steps)
+        self.assertIn("http://buttons:8000/api/status", gate)
+        self.assertNotIn("/buttons/api/status", gate)
+
+
 class ValidateTdCommandTest(unittest.TestCase):
     def test_accept_exact_shapes(self):
         self.assertEqual(

@@ -150,6 +150,26 @@ li.detail > button {
 }
 li.detail > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
+.danger-zone {
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0 0.9rem 0.9rem;
+  margin-top: 1.25rem;
+}
+.danger-zone > h3 { margin-top: 0.9rem; }
+.danger-zone .session-list { gap: 0; }
+.danger-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--border);
+}
+.danger-row:first-child { border-top: 0; }
+
 .turns { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.75rem; }
 .turn { border-top: 2px solid var(--border); padding-top: 0.5rem; }
 .turn-assistant { border-top-color: var(--accent); }
