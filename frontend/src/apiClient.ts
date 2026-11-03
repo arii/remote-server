@@ -491,8 +491,20 @@ export function fetchAgentRun(runId: string): Promise<AgentRunDetail> {
   return getJson<AgentRunDetail>(`api/agents/runs/${encodeURIComponent(runId)}`);
 }
 
-export function fetchAgentProviders(): Promise<{ providers: string[] }> {
-  return getJson<{ providers: string[] }>('api/agent/providers');
+export interface AgentProviderStatus {
+  name: string;
+  available: boolean;
+  checked_at: number;
+  detail: string;
+}
+
+export function fetchAgentProviders(): Promise<{
+  providers: string[];
+  status?: AgentProviderStatus[];
+}> {
+  return getJson<{ providers: string[]; status?: AgentProviderStatus[] }>(
+    'api/agent/providers',
+  );
 }
 
 export function postAgentTurn(

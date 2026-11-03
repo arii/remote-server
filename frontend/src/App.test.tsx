@@ -607,6 +607,31 @@ describe('agent drawer', () => {
     expect(html).not.toContain('data-testid="agent-transcript"');
   });
 
+  it('marks dead providers and defaults to a live one', () => {
+    const html = renderToStaticMarkup(
+      <AgentDrawer
+        repo="remote-server"
+        initialProviders={['muse', 'agy']}
+        initialStatus={{ muse: false, agy: true }}
+      />,
+    );
+    expect(html).toContain('muse (unreachable)');
+    expect(html).toContain('value="agy" selected');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('disables launch when the selected provider is dead', () => {
+    const html = renderToStaticMarkup(
+      <AgentDrawer
+        repo="remote-server"
+        initialProviders={['muse']}
+        initialStatus={{ muse: false }}
+      />,
+    );
+    expect(html).toContain('muse (unreachable)');
+    expect(html).toContain('disabled');
+  });
+
   function streamReader(text: string) {
     const bytes = new TextEncoder().encode(text);
     let sent = false;
