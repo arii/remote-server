@@ -38,10 +38,11 @@ def _preview(value):
 
 
 def default_trace_path(script, thread_id):
-    """deep-agent/traces/<script>_<thread>_<ts>.jsonl (dir created)."""
+    """<state>/traces/<script>_<thread>_<ts>.jsonl (dir created)."""
+    import ledger
+
     safe = _THREAD_SAFE.sub("_", thread_id or "run")[:64] or "run"
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "traces")
+    base = os.path.join(ledger.state_dir(), "traces")
     try:
         os.makedirs(base, exist_ok=True)
     except OSError:

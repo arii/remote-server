@@ -21,11 +21,11 @@ import re
 import sys
 
 import cli
+import ledger
 
-LEDGER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                      "ledger.jsonl")
-TRACES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                      "traces")
+LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(
+    ledger.state_dir(), "ledger.jsonl")
+TRACES = os.path.join(ledger.state_dir(), "traces")
 RUN_RE = re.compile(r"^run-(\d+)$")
 
 

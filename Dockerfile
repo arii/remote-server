@@ -26,6 +26,8 @@ RUN apt-get update \
  && ln -sfn /root/.ssh /home/ari/.ssh \
  && git config --system --add safe.directory '*' \
  && echo "mounted checkouts trusted (single-user box)" \
+ && mkdir -p /var/lib/buttons/deep-agent \
+ && echo "deep-agent state dir ready (persisted volume)" \
  && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
   | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
  && mkdir -p /usr/local/libexec/docker/cli-plugins \
@@ -60,6 +62,7 @@ RUN git config --system --get-all safe.directory | grep -qF '*' \
 # Repo state (git status, compose file, .env) resolves to the mounted
 # live checkout, not the baked code.
 ENV DEEP_AGENT_VENV=/opt/venvs/td/bin/python \
-    BUTTONS_STACK=/home/ari/remote-server
+    BUTTONS_STACK=/home/ari/remote-server \
+    DEEP_AGENT_STATE_DIR=/var/lib/buttons/deep-agent
 EXPOSE 8000
 CMD ["/opt/venvs/td/bin/python", "-m", "uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
