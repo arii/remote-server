@@ -106,6 +106,28 @@ def getf(d, *names, default=None):
     return default
 
 
+def _json_error_message(blob):
+    """A useful message from a td --json error blob, or ''.
+
+    td --json failures print a JSON error blob whose last line is
+    '}' — surfacing the blob's own message fields instead keeps
+    the UI from showing a bare brace."""
+    if not isinstance(blob, dict):
+        return ""
+    for key in ("message", "error", "detail"):
+        val = blob.get(key)
+        if isinstance(val, str):
+            val = val.strip()
+            if val and val != "None":
+                return val
+    typ = blob.get("type")
+    if isinstance(typ, str):
+        typ = typ.strip()
+        if typ and typ != "None":
+            return typ
+    return ""
+
+
 def run_json(cmd, timeout, cwd=None):
     """Run cmd, return (parsed JSON or None, raw stdout, error str)."""
     try:
@@ -116,6 +138,16 @@ def run_json(cmd, timeout, cwd=None):
         return None, "", str(exc)
     raw = proc.stdout or ""
     if proc.returncode != 0:
+        # td --json failures print a JSON error blob (on stderr,
+        # sometimes stdout) — prefer its message over the last line.
+        for stream in (proc.stderr or "", raw):
+            try:
+                blob = json.loads(stream)
+            except Exception:
+                continue
+            detail = _json_error_message(blob)
+            if detail:
+                return None, raw, detail[:160]
         pools = [(proc.stderr or "").strip().splitlines()]
         # td sometimes reports the failure on stdout instead.
         pools.append(raw.strip().splitlines())
