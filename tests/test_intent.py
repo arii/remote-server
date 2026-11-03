@@ -55,6 +55,28 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(intent.classify("FIX IT NOW"), "fix")
 
 
+class TestTrivial(unittest.TestCase):
+    def test_greetings_are_trivial(self):
+        for text in ("hi", "Hi", "HI!", "hi?", "hi...", "hi…", "  hi  ",
+                     "hello", "Hello!", "hey", "yo", "howdy", "sup",
+                     "thanks", "Thanks!", "thank you", "thx", "bye",
+                     "goodbye", "Goodbye.", "good morning",
+                     "good afternoon", "good evening", "good night",
+                     "morning", "night"):
+            self.assertEqual(intent.classify(text), "trivial", text)
+
+    def test_work_mentions_are_not_trivial(self):
+        self.assertEqual(intent.classify("hi, fix the login bug"), "fix")
+        self.assertEqual(
+            intent.classify("thanks for fixing the bug"), "fix")
+        self.assertEqual(
+            intent.classify("hello, review PR #5 for me"), "review")
+        self.assertEqual(
+            intent.classify("Add a hello endpoint"), "implement")
+        self.assertEqual(
+            intent.classify("hey what does this do?"), "explain")
+
+
 class TestHint(unittest.TestCase):
     def test_implement_points_at_dispatch(self):
         self.assertIn("dispatch", intent.hint("implement"))
@@ -69,6 +91,9 @@ class TestHint(unittest.TestCase):
     def test_explain_has_no_hint(self):
         self.assertIsNone(intent.hint("explain"))
         self.assertIsNone(intent.hint("bogus"))
+
+    def test_trivial_has_no_hint(self):
+        self.assertIsNone(intent.hint("trivial"))
 
 
 if __name__ == "__main__":
