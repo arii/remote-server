@@ -18,6 +18,7 @@ import {
   fixCiBlockReason,
   jobsListActive,
   planExecuteSeed,
+  prFieldSeed,
   resultLine,
 } from './jobsUtils';
 import DangerZone from './DangerZone';
@@ -188,12 +189,16 @@ export default function JobsView({
   repo,
   triageSuspended = false,
   onAskAgent,
+  initialPr = null,
 }: {
   repo: string;
   // Drawer-open flag: while true (agent drawer / PTY terminal open),
   // triage keys are disabled.
   triageSuspended?: boolean;
   onAskAgent: (seed: string) => void;
+  // Review row selection from Now: seeds the PR field on mount.
+  // Jobs remounts per section visit, so each visit picks up the latest.
+  initialPr?: number | null;
 }) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -201,7 +206,7 @@ export default function JobsView({
   const [running, setRunning] = useState<string | null>(null);
   const [tail, setTail] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const [pr, setPr] = useState('');
+  const [pr, setPr] = useState(prFieldSeed(initialPr));
   // Relevance state. null = unknown (fail open: buttons stay enabled).
   const mergeReady = useMergeReady(repo);
   const prState = usePrRefState(pr, repo);

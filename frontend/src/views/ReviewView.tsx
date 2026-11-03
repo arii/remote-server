@@ -222,12 +222,15 @@ export default function ReviewView({
   repo,
   onAskAgent,
   triageSuspended = false,
+  onSelectPr,
 }: {
   repo: string;
   onAskAgent: (seed: string) => void;
   // Drawer-open flag: while true (agent drawer / PTY terminal open),
   // triage keys are disabled.
   triageSuspended?: boolean;
+  // Reports row selection up so Now can prefill the Jobs PR field.
+  onSelectPr: (n: number | null) => void;
 }) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
@@ -318,6 +321,7 @@ export default function ReviewView({
 
   async function selectPr(n: number) {
     setSelected(n);
+    onSelectPr(n);
     setDetails(null);
     if (useMock()) {
       const d = loadPrDetails();
@@ -359,6 +363,7 @@ export default function ReviewView({
     }
     if (kind === 'pr' && selected === n) {
       setSelected(null);
+      onSelectPr(null);
       setDetails(null);
     }
     setNotice(`Deferred ${kind === 'pr' ? 'PR' : 'issue'} #${n}.`);

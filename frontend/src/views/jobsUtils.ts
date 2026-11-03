@@ -32,6 +32,12 @@ export function planExecuteSeed(name: string, content: string): string {
   return `Execute this plan step by step (${name}). Report progress as you go.\n\n${content}`;
 }
 
+// Agent-commands PR field seed from the Review row selection held by
+// Now. Empty with no selection (field works standalone as before).
+export function prFieldSeed(selectedPr: number | null): string {
+  return selectedPr === null ? '' : String(selectedPr);
+}
+
 // Repair worker candidates: skip issues that are not actionable
 // right now (blocked on a decision/lane, or scheduled future work).
 // A manual number still overrides the filter.
