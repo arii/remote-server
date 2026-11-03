@@ -59,6 +59,7 @@ CHECK_PREFIXES = (
 )
 
 CODER_RULES = """You are implementing the task below in the checkout at {worktree}. Rules:
+- File paths are relative to the worktree root: /x means {worktree}/x.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Verify with run_check (the touched area's tests/lint) before finishing.
