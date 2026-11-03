@@ -20,6 +20,7 @@ Announce yourself: read `lanes/registry.md` for the orchestrator session (see Di
 5. File new findings: `gh issue create --label audit --title "[<area>] <finding>"`. Every issue must include: verified `file:line`, severity, and expected vs actual.
 6. Message the orchestrator (see Discovery) one summary per batch: `batch: #<a> #<b> [<area>] <short note each>`.
 7. Repeat the loop on the next view or after fixes land; re-verify previously filed findings against the live app and note fixed-vs-still-broken.
+8. Accept orchestrator `verify: #<n>` requests as priority interrupts: re-verify that finding live immediately and reply `verified: #<n> fixed|broken <one-line note>`.
 
 ## Handoff format
 
