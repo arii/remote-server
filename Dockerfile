@@ -24,10 +24,12 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
   | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
- && mkdir -p /root/.docker/cli-plugins \
+ && mkdir -p /usr/local/libexec/docker/cli-plugins \
  && curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
-  -o /root/.docker/cli-plugins/docker-compose \
- && chmod +x /root/.docker/cli-plugins/docker-compose \
+  -o /usr/local/libexec/docker/cli-plugins/docker-compose \
+ && chmod +x /usr/local/libexec/docker/cli-plugins/docker-compose \
+ && HOME=/nonexistent docker compose version > /dev/null \
+ && echo "compose plugin resolves HOME-independently" \
  && python3 -m venv /opt/venvs/td \
  && /opt/venvs/td/bin/pip install --no-cache-dir \
   "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \

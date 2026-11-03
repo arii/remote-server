@@ -86,12 +86,39 @@ def list_failed_jobs() -> list:
     return out
 
 
+def latest_webhook_success_ts() -> float:
+    """Injectable seam: newest successful webhook ts (0.0 if none)."""
+    try:
+        entries = ledger.read(kind="webhook", limit=200)
+    except Exception:
+        return 0.0
+    best = 0.0
+    for e in entries:
+        if isinstance(e, dict) and e.get("ok") is True:
+            try:
+                best = max(best, float(e.get("ts", 0) or 0))
+            except (TypeError, ValueError):
+                pass
+    return best
+
+
 def list_failed_webhooks() -> list:
-    """Injectable seam: failed webhooks from ledger kinds."""
+    """Injectable seam: failed webhooks from ledger kinds.
+
+    Failures older than the latest success are resolved history,
+    not queue items — a later good pull means the checkout moved on.
+    """
+    resolved_before = latest_webhook_success_ts()
     entries = ledger.read(kind="webhook", limit=50)
     out = []
     for e in entries:
         if not isinstance(e, dict):
+            continue
+        try:
+            ts = float(e.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if ts <= resolved_before:
             continue
         blob = " ".join(str(e.get(k, "")) for k in
                         ("event", "status", "error", "detail")).lower()

@@ -104,11 +104,13 @@ def get_system_health() -> dict[str, Any]:
     try:
         stack = os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server")
         compose = ["docker", "compose", "-f", f"{stack}/docker-compose.yml"]
-        env = {**os.environ, "HOME": "/home/ari"}
+        # Inherit env: the compose plugin lives under the runtime
+        # user's ~/.docker, and a HOME override blinds plugin
+        # discovery (empty list, swallowed below).
         proc = subprocess.run(
             compose + ["ps", "--format", "json"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=10, text=True, env=env,
+            timeout=10, text=True,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             raw = proc.stdout.strip()

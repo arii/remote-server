@@ -119,6 +119,22 @@ class HmacTableTest(unittest.TestCase):
             notify_router._resolve_repo_path = orig
 
 
+class WebhookWorkerTest(unittest.TestCase):
+    def test_crash_releases_pending_and_records_state(self):
+        orig_pull = N.webhook_pull
+        N.webhook_pull = lambda path: (_ for _ in ()).throw(
+            RuntimeError("boom"))
+        N.webhook_pending.add("arii/x")
+        try:
+            N.webhook_worker("arii/x", "/tmp")
+        finally:
+            N.webhook_pull = orig_pull
+        self.assertNotIn("arii/x", N.webhook_pending)
+        state = N.webhook_state.get("arii/x", {})
+        self.assertFalse(state.get("ok"))
+        self.assertIn("boom", state.get("detail", ""))
+
+
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class NotificationsEndpointsTest(unittest.TestCase):
     def setUp(self):
