@@ -116,12 +116,17 @@ def run_json(cmd, timeout, cwd=None):
         return None, "", str(exc)
     raw = proc.stdout or ""
     if proc.returncode != 0:
-        err = (proc.stderr or "").strip().splitlines()
-        if not err:
-            # td sometimes reports the failure on stdout instead.
-            out = raw.strip().splitlines()
-            err = [out[-1]] if out else []
-        return None, raw, (err[-1][:160] if err
+        pools = [(proc.stderr or "").strip().splitlines()]
+        # td sometimes reports the failure on stdout instead.
+        pools.append(raw.strip().splitlines())
+        detail = ""
+        for pool in pools:
+            meaningful = [line for line in pool
+                          if any(ch.isalnum() for ch in line)]
+            if meaningful:
+                detail = meaningful[-1].strip()
+                break
+        return None, raw, (detail[:160] if detail
                            else f"exit {proc.returncode}")
     try:
         return json.loads(raw), raw, ""
