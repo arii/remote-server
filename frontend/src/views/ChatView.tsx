@@ -300,6 +300,46 @@ export function TypingIndicator() {
   );
 }
 
+// No-event watchdog: abort a stream that goes silent this long. Routine
+// local prefill exceeds a minute; the backend bounds nothing on this
+// path, so 3x that margin separates stall from slowness.
+export const STALL_SECONDS = 180;
+
+export function isStalled(lastEventMs: number, nowMs: number): boolean {
+  return nowMs - lastEventMs > STALL_SECONDS * 1000;
+}
+
+// Streaming progress line: elapsed always, plus phase and token count
+// once known. "Working… 45s · prefill · 12 tok".
+export function streamProgress(
+  elapsedSec: number,
+  phase: string | null,
+  tokens: number,
+): string {
+  let line = `Working… ${elapsedSec}s`;
+  if (phase) line += ` · ${phase}`;
+  if (tokens > 0) line += ` · ${tokens} tok`;
+  return line;
+}
+
+// Ticks every second while streaming, so deliberately not a live
+// region (the sr-only phase announcer carries screen-reader updates).
+export function StreamProgress({
+  elapsed,
+  phase,
+  tokens,
+}: {
+  elapsed: number;
+  phase: string | null;
+  tokens: number;
+}) {
+  return (
+    <p className="row-meta" data-testid="chat-progress">
+      {streamProgress(elapsed, phase, tokens)}
+    </p>
+  );
+}
+
 function newSessionId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
@@ -342,6 +382,7 @@ async function pumpStream(
   onApproval: (payload: ApprovalPayload) => void,
   onPhase: (message: string | null) => void,
   onDone: (text: string) => void,
+  onEvent: () => void,
 ): Promise<void> {
   const decoder = new TextDecoder();
   let buf = '';
@@ -352,6 +393,7 @@ async function pumpStream(
     const { events, rest } = parseSse(buf);
     buf = rest;
     for (const ev of events) {
+      onEvent();
       if (ev.name === 'error') throw new Error(ev.data);
       if (ev.name === 'token') {
         onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
@@ -403,8 +445,13 @@ export default function ChatView({
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [approval, setApproval] = useState<ApprovalPayload | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [tokenCount, setTokenCount] = useState(0);
   const sessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const startRef = useRef(0);
+  const lastEventRef = useRef(0);
+  const stalledRef = useRef(false);
 
   useEffect(() => {
     if (useMock()) {
@@ -433,6 +480,7 @@ export default function ChatView({
 
   function appendToken(token: string) {
     if (!token) return;
+    setTokenCount((c) => c + 1);
     setMessages((m) => {
       const next = [...m];
       const last = next[next.length - 1];
@@ -467,6 +515,9 @@ export default function ChatView({
         },
         setPhase,
         backfillDone,
+        () => {
+          lastEventRef.current = Date.now();
+        },
       );
     } catch (err) {
       if ((err as Error).name !== 'AbortError') throw err;
@@ -496,6 +547,11 @@ export default function ChatView({
       mockReply();
       return;
     }
+    startRef.current = Date.now();
+    lastEventRef.current = Date.now();
+    stalledRef.current = false;
+    setElapsed(0);
+    setTokenCount(0);
     setStreaming(true);
     setMessages((m) => [...m, { role: 'assistant', text: '' }]);
     try {
@@ -507,11 +563,16 @@ export default function ChatView({
     }
   }
 
-  async function onAbort() {
+  function stopStream() {
     abortRef.current?.abort();
-    const sid = sessionRef.current;
+    abortRef.current = null;
     setStreaming(false);
     setPhase(null);
+  }
+
+  async function onAbort() {
+    stopStream();
+    const sid = sessionRef.current;
     if (!sid || useMock()) return;
     try {
       await abortChat(sid);
@@ -519,6 +580,30 @@ export default function ChatView({
       setError(err instanceof Error ? err.message : String(err));
     }
   }
+
+  function onStall() {
+    stopStream();
+    const sid = sessionRef.current;
+    setError(`Stream stalled — no response for ${STALL_SECONDS}s.`);
+    if (!sid || useMock()) return;
+    void abortChat(sid).catch(() => {
+      // Run already dead; the stall message stands.
+    });
+  }
+
+  // Elapsed ticker + stall watchdog while streaming.
+  useEffect(() => {
+    if (!streaming) return;
+    const t = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+      if (!stalledRef.current && isStalled(lastEventRef.current, Date.now())) {
+        stalledRef.current = true;
+        onStall();
+      }
+    }, 1000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming]);
 
   async function onDecide(decision: 'approve' | 'reject') {
     if (!approval || decided) return;
@@ -562,11 +647,10 @@ export default function ChatView({
           Chat failed: {error}
         </p>
       )}
-      {streaming && phase && (
-        <p className="row-meta" data-testid="chat-phase" role="status">
-          {phase}
-        </p>
-      )}
+      {streaming && <StreamProgress elapsed={elapsed} phase={phase} tokens={tokenCount} />}
+      <span className="sr-only" role="status" data-testid="chat-phase">
+        {streaming ? phase : null}
+      </span>
       <ul className="session-list" data-testid="chat-history">
         {shown.map((m, i) => (
           <li key={i} className="detail" data-testid={`chat-msg-${m.role}-${i}`}>
