@@ -179,7 +179,40 @@ function runMeta(run: AgentRun): string {
     ? new Date(run.started_ts * 1000).toLocaleString()
     : 'unknown time';
   const tools = run.tools.length > 0 ? ` · tools ${run.tools.join(',')}` : '';
-  return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok${tools} · ${when}`;
+  return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok · ${runCost(run)}${tools} · ${when}`;
+}
+
+// Per-row cost slot: local runs are free, metered runs show the
+// recorded/derived quote, unrated metered runs stay honest with a
+// bare tag instead of an invented number.
+export function runCost(run: AgentRun): string {
+  if (!run.metered) return 'free';
+  if (run.cost_usd === null || run.cost_usd === undefined) return 'metered';
+  return `$${run.cost_usd.toFixed(4)}`;
+}
+
+export interface MeteredTotal {
+  total: number;
+  unknown: number;
+  free: number;
+}
+
+// Running metered total over the listed runs. Rounded to whole
+// microdollars so the total matches the row sums exactly.
+export function meteredTotal(runs: AgentRun[]): MeteredTotal {
+  let total = 0;
+  let unknown = 0;
+  let free = 0;
+  for (const r of runs) {
+    if (!r.metered) {
+      free += 1;
+    } else if (r.cost_usd === null || r.cost_usd === undefined) {
+      unknown += 1;
+    } else {
+      total += r.cost_usd;
+    }
+  }
+  return { total: Math.round(total * 1e6) / 1e6, unknown, free };
 }
 
 export interface RunDecision {
@@ -223,9 +256,15 @@ export function RunsPane({
 }) {
   if (runs.length === 0) return null;
   const t0 = detail && detail.trace.length > 0 ? num(detail.trace[0].ts) : 0;
+  const metered = meteredTotal(runs);
   return (
     <section data-testid="chat-runs">
       <h3>Past runs</h3>
+      <p className="row-meta" data-testid="chat-runs-metered-total">
+        Metered total ${metered.total.toFixed(4)}
+        {metered.unknown > 0 &&
+          ` (+${metered.unknown} unknown rate${metered.unknown === 1 ? '' : 's'})`}
+      </p>
       <div className="actions">
         <TapToFire
           label="Clear finished"

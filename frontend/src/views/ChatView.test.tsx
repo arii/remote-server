@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { isStalled, runDecisions, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import { isStalled, meteredTotal, runCost, runDecisions, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 
 describe('stream progress (issue #376)', () => {
@@ -46,6 +46,8 @@ function pastRun(over: Partial<AgentRun> = {}): AgentRun {
     tokens: 0,
     preview: 'hello',
     has_prompt: true,
+    cost_usd: 0.0,
+    metered: false,
     ...over,
   };
 }
@@ -158,5 +160,53 @@ describe('run decisions (issue #414)', () => {
       />,
     );
     expect(html).not.toContain('chat-run-decisions');
+  });
+});
+
+describe('run cost (issue #398)', () => {
+  it('tags local runs free', () => {
+    expect(runCost(pastRun({ metered: false, cost_usd: 0.0 }))).toBe('free');
+  });
+
+  it('prices metered runs', () => {
+    expect(runCost(pastRun({ metered: true, cost_usd: 0.0008 }))).toBe(
+      '$0.0008',
+    );
+  });
+
+  it('marks unrated metered runs without inventing a number', () => {
+    expect(runCost(pastRun({ metered: true, cost_usd: null }))).toBe(
+      'metered',
+    );
+  });
+
+  it('sums the metered total and counts unknown rates', () => {
+    expect(
+      meteredTotal([
+        pastRun({ metered: false, cost_usd: 0.0 }),
+        pastRun({ id: 'run-1', metered: true, cost_usd: 0.0008 }),
+        pastRun({ id: 'run-2', metered: true, cost_usd: 0.0002 }),
+        pastRun({ id: 'run-3', metered: true, cost_usd: null }),
+      ]),
+    ).toEqual({ total: 0.001, unknown: 1, free: 1 });
+  });
+
+  it('shows per-row cost and the metered total', () => {
+    const html = paneHtml([
+      pastRun({ metered: true, cost_usd: 0.0008 }),
+      pastRun({ id: 'run-1', metered: false, cost_usd: 0.0 }),
+    ]);
+    expect(html).toContain('$0.0008');
+    expect(html).toContain('free');
+    expect(html).toContain('data-testid="chat-runs-metered-total"');
+    expect(html).toContain('Metered total $0.0008');
+  });
+
+  it('flags unknown-rate runs in the total', () => {
+    const html = paneHtml([
+      pastRun({ metered: true, cost_usd: null }),
+    ]);
+    expect(html).toContain('metered');
+    expect(html).toContain('(+1 unknown rate)');
   });
 });
