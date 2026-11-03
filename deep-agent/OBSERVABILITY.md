@@ -1,11 +1,12 @@
 # Deep-agent observability: how to see what is happening
 
-Three layers, cheapest first:
+Four layers, cheapest first:
 
 1. `python3 deep-agent/runs.py` — which runs exist.
 2. `python3 deep-agent/trace_view.py <run>` — what one run did
    (phone text on stdout, or `--html` timeline).
 3. `python3 deep-agent/ledger.py [n]` — run outcomes + token totals.
+4. LangSmith (§7) — cloud traces, when a key is configured.
 
 `runs.py` and `trace_view.py` are stdlib-only: they run under
 system `python3` with no venv. The writer side (`observe.py`
@@ -171,3 +172,18 @@ served file. Suggested wiring (peer's call):
 - Empty `runs.py` (`no runs`): `deep-agent/ledger.jsonl`
   has no rows yet — run any ledgered script first. For
   raw trace files see `list_traces` (§2).
+
+## 7. LangSmith (opt-in cloud traces)
+
+`deep-agent/tracing.py` attaches one `LangChainTracer` to the
+`deep_chat.py` / `chat_agent.py` stream configs when — and only
+when — `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are both
+set (`LANGSMITH_PROJECT` optional; these are the current env
+names, older ones are dead). Anything else returns no callbacks,
+so tracing can never break a run. No key is provisioned for this
+project; to enable, fill the placeholders in `.env.example`
+(live key in untracked `.env` only, never committed) and rebuild
+the venv (`langsmith` is in `deep-agent/requirements.txt`).
+Caveat: on ingest failure the LangSmith client echoes the key to
+stderr (upstream behavior) — keep container logs trusted, same as
+other credential-bearing output.

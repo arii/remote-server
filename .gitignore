@@ -65,6 +65,7 @@ deep-agent/*
 !deep-agent/API_CONTRACT_PROPOSAL.md
 !deep-agent/eval_lib.py
 !deep-agent/eval_chat.py
+!deep-agent/tracing.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),

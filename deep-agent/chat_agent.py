@@ -30,6 +30,7 @@ cli.bootstrap()
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
 import ledger  # noqa: E402
+import tracing  # noqa: E402
 from langgraph.errors import GraphRecursionError  # noqa: E402
 from langchain.agents import create_agent  # noqa: E402
 from langchain_core.messages import (  # noqa: E402
@@ -202,7 +203,8 @@ def main() -> int:
         messages = history + [HumanMessage(content=prompt)]
         stream = agent.stream(
             {"messages": messages},
-            config={"recursion_limit": 12},
+            config={"recursion_limit": 12,
+                    "callbacks": tracing.tracing_callbacks()},
             stream_mode=["messages", "updates"],
         )
         for mode, payload in stream:

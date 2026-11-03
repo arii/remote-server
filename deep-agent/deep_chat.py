@@ -52,6 +52,7 @@ import s5tools  # noqa: E402
 import model_router  # noqa: E402
 import ledger  # noqa: E402
 import observe  # noqa: E402
+import tracing  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
@@ -383,7 +384,8 @@ def _stream(agent, first_input, config):
     last_ai = ""
     stream = agent.stream(
         first_input,
-        config={**config, "recursion_limit": RECURSION_LIMIT},
+        config={**config, "recursion_limit": RECURSION_LIMIT,
+                "callbacks": tracing.tracing_callbacks()},
         stream_mode=["messages", "updates"],
     )
     for mode, payload in stream:
