@@ -11,6 +11,7 @@ import {
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
+import { detailsMergeBlockReason } from '../reviewTypes';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
 function labelOf(v: unknown): string {
@@ -250,8 +251,17 @@ export default function ReviewView({
                 ))}
               </ul>
               <PrDiff repo={repo} pr={sel.number} />
+              {detailsMergeBlockReason(sel) && (
+                <p className="row-meta" data-testid="review-merge-block">
+                  {detailsMergeBlockReason(sel)}
+                </p>
+              )}
               <div className="actions">
-                <HoldToConfirm label={`Merge PR #${sel.number}`} onFire={() => void onMerge(sel.number)} />
+                <HoldToConfirm
+                  label={`Merge PR #${sel.number}`}
+                  disabled={detailsMergeBlockReason(sel) !== null}
+                  onFire={() => void onMerge(sel.number)}
+                />
                 <button
                   type="button"
                   data-testid={`ask-agent-pr-${sel.number}`}
