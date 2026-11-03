@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
+import TriageHint from '../components/TriageHint';
 import {
   clearJobs,
   dispatchRepair,
@@ -19,7 +20,7 @@ import type { RepairStatusResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import type { IssueRow } from '../reviewTypes';
 import { mergeBlockReason } from '../reviewTypes';
-import { TRIAGE_HINT, useTriageKeys } from '../triageKeys';
+import { useTriageKeys } from '../triageKeys';
 import { loadJobs, useMock } from './mockViews';
 
 interface TdCommand {
@@ -814,7 +815,7 @@ export default function JobsView({
         </ul>
       </section>
 
-      <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT}</p>
+      <TriageHint />
       {list.length === 0 ? (
         <div data-testid="jobs-empty">
           <h3>No batch runs</h3>

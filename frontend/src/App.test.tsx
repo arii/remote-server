@@ -5,6 +5,7 @@ import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { InboxFeed, SystemHealthResponse } from './apiClient';
 import HoldToConfirm from './components/HoldToConfirm';
+import TriageHint from './components/TriageHint';
 import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
 import BriefingView, { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
 import {
@@ -736,5 +737,21 @@ describe('now stack condense', () => {
     h.containers[1] = { service: 'svc-1', state: 'exited' };
     const html = renderToStaticMarkup(<StackSection health={h} />);
     expect(html).toContain('container-pill');
+  });
+});
+
+describe('triage hints', () => {
+  const noop = () => {};
+  it('marks hints so coarse pointers can hide them', () => {
+    const html = renderToStaticMarkup(<TriageHint extra=" · d defers" />);
+    expect(html).toContain('data-testid="triage-hint"');
+    expect(html).toContain('triage-hint');
+    expect(html).toContain('j/k move');
+    expect(html).toContain('d defers');
+  });
+  it('wires the shared hint into Review', () => {
+    const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} />);
+    expect(html).toContain('data-testid="triage-hint"');
+    expect(html).toContain('triage-hint');
   });
 });

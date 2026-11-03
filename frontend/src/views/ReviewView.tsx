@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
+import TriageHint from '../components/TriageHint';
 import {
   createIssue,
   deferRow,
@@ -15,7 +16,7 @@ import {
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
 import { detailsMergeBlockReason } from '../reviewTypes';
-import { TRIAGE_HINT, useTriageKeys } from '../triageKeys';
+import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
 export function applyOptimisticMerge(merging: ReadonlySet<number>, n: number): ReadonlySet<number> {
@@ -413,7 +414,7 @@ export default function ReviewView({
       {notice && (
         <p className="row-meta" data-testid="review-notice" role="status">{notice}</p>
       )}
-      <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT} · d defers</p>
+      <TriageHint extra=" · d defers" />
       <div className="columns">
         <div>
           <h3>Pull requests</h3>

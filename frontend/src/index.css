@@ -428,3 +428,5 @@ label.row-meta { display: grid; gap: 0.3rem; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+/* Phone-first: keyboard triage hints are unactionable on touch. */
+@media (pointer: coarse) { .triage-hint { display: none; } }
