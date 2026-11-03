@@ -14,8 +14,19 @@ import cli
 
 # EVAL_LEDGER lets parallel eval gates isolate their ledgers; the eval
 # scorer reads the same knob, so writer and scorer stay consistent.
+def state_dir():
+    """Writable state dir for the run ledger + traces.
+
+    DEEP_AGENT_STATE_DIR points it at persisted storage (the buttons
+    image sets /var/lib/buttons/deep-agent so Past-runs survive
+    recreates); default is this source dir for dev.
+    """
+    return os.environ.get("DEEP_AGENT_STATE_DIR") or os.path.dirname(
+        os.path.abspath(__file__))
+
+
 LEDGER = (os.environ.get("EVAL_LEDGER") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "ledger.jsonl"))
+    state_dir(), "ledger.jsonl"))
 
 
 def _as_dict(obj):
@@ -122,6 +133,9 @@ def record(script, model, thread_id, messages, started, extra=None,
             "final_preview": final,
             "extra": extra or {},
         }
+        parent = os.path.dirname(LEDGER)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(LEDGER, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
         return entry
