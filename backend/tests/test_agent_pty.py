@@ -40,19 +40,25 @@ class ProviderAllowlistTest(unittest.TestCase):
 
     def test_provider_argv_rejects_unknown(self):
         with self.assertRaises(ValueError):
-            agent_pty.provider_argv("copilot")
+            agent_pty.provider_argv("copilot", "/srv/remote-server")
 
     def test_provider_argv_missing_binary(self):
-        with mock.patch.object(agent_pty.shutil, "which",
-                               return_value=None):
+        run = mock.Mock(
+            return_value=mock.Mock(returncode=1, stdout=""))
+        with mock.patch.object(agent_pty.subprocess, "run", run):
             with self.assertRaises(RuntimeError):
-                agent_pty.provider_argv("muse")
+                agent_pty.provider_argv("muse", "/srv/remote-server")
 
     def test_provider_argv_resolves_without_flags(self):
-        with mock.patch.object(agent_pty.shutil, "which",
-                               return_value="/root/.local/bin/muse"):
-            self.assertEqual(agent_pty.provider_argv("muse"),
-                             ["/root/.local/bin/muse"])
+        run = mock.Mock(return_value=mock.Mock(
+            returncode=0, stdout="/root/.local/bin/muse\n"))
+        with mock.patch.object(agent_pty.subprocess, "run", run):
+            argv = agent_pty.provider_argv("muse", "/srv/remote-server")
+        # via compose exec into terminal (binaries live there, not in
+        # buttons); provider itself gets a bare argv, no flags.
+        self.assertIn("terminal", argv)
+        self.assertEqual(argv[-1], "muse")
+        self.assertIn("/srv/remote-server", argv)
 
 
 class SpawnValidationTest(unittest.TestCase):
@@ -88,6 +94,12 @@ class SpawnValidationTest(unittest.TestCase):
         resp = self.client.post("/api/agent/abort",
                                 json={"session_id": "aaaaaaaaaaaa"})
         self.assertEqual(resp.status_code, 404)
+
+    def test_providers_lists_allowlist(self):
+        resp = self.client.get("/api/agent/providers")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["providers"],
+                         ["muse", "agy", "pi"])
 
     def test_ws_unknown_session(self):
         from starlette.websockets import WebSocketDisconnect

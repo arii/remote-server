@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
+import AgentDrawer, { TRANSCRIPT_MAX, appendCapped } from './views/AgentDrawer';
 import { cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
@@ -408,5 +409,26 @@ describe('app', () => {
     expect(html).toContain('History');
     expect(html).not.toContain('sessions');
     expect(html).not.toContain('briefing');
+  });
+});
+
+describe('agent drawer', () => {
+  it('renders provider picker, prompt, and hold-to-launch idle', () => {
+    const html = renderToStaticMarkup(
+      <AgentDrawer repo="remote-server" initialProviders={['muse', 'agy', 'pi']} />,
+    );
+    expect(html).toContain('data-testid="agent-drawer"');
+    expect(html).toContain('data-testid="agent-provider"');
+    expect(html).toContain('data-testid="agent-prompt"');
+    expect(html).toContain('Launch');
+    expect(html).toContain('muse');
+    expect(html).not.toContain('data-testid="agent-transcript"');
+  });
+
+  it('caps the transcript tail', () => {
+    expect(appendCapped('ab', 'cd')).toBe('abcd');
+    const big = appendCapped('x'.repeat(TRANSCRIPT_MAX), 'yz');
+    expect(big.length).toBe(TRANSCRIPT_MAX);
+    expect(big.endsWith('yz')).toBe(true);
   });
 });

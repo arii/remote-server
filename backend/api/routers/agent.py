@@ -50,6 +50,10 @@ class AbortResult(BaseModel):
     exit: int | None = None
 
 
+class ProviderList(BaseModel):
+    providers: list[str] = []
+
+
 def _repo_target(repo: str) -> tuple[str, str]:
     """Validate a repo name; return (name, cwd). Raises ValueError."""
     from backend.core import get_repo_status, resolve_repo_path, \
@@ -67,6 +71,11 @@ def _repo_target(repo: str) -> tuple[str, str]:
         if (stack / ".git").exists():
             return name, str(stack)
     return name, str(path)
+
+
+@router.get("/providers", response_model=ProviderList)
+def agent_providers() -> dict:
+    return {"providers": list(agent_pty.PROVIDERS)}
 
 
 @router.post("/spawn", response_model=SpawnResult)

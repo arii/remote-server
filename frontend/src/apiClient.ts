@@ -304,6 +304,35 @@ export function fetchAgentRun(runId: string): Promise<AgentRunDetail> {
   return getJson<AgentRunDetail>(`api/agents/runs/${encodeURIComponent(runId)}`);
 }
 
+export function fetchAgentProviders(): Promise<{ providers: string[] }> {
+  return getJson<{ providers: string[] }>('api/agent/providers');
+}
+
+export function spawnAgentSession(
+  provider: string,
+  repo: string,
+): Promise<{ session_id: string }> {
+  return postJson<{ session_id: string }>('api/agent/spawn', {
+    provider,
+    repo,
+    intent: 'agent-spawn',
+    confirmed: true,
+  });
+}
+
+export function abortAgentSession(
+  sessionId: string,
+): Promise<{ ok: boolean; exit: number | null }> {
+  return postJson<{ ok: boolean; exit: number | null }>('api/agent/abort', {
+    session_id: sessionId,
+  });
+}
+
+export function agentWsUrl(protocol: string, host: string, sessionId: string): string {
+  const ws = protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${ws}//${host}${apiUrl(`api/agent/ws/${sessionId}`)}`;
+}
+
 export interface ApprovalPayload {
   session_id: string;
   action_requests?: Array<{ args?: Record<string, unknown> } & Record<string, unknown>>;

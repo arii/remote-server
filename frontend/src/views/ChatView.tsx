@@ -14,6 +14,7 @@ import type {
   TraceEvent,
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
+import AgentDrawer from './AgentDrawer';
 
 // Streamed tokens carry raw agent stdout, which ends with the
 // INTERRUPT blob on approval turns. The backend strips markers
@@ -501,6 +502,7 @@ export default function ChatView({
           </button>
         </div>
       </form>
+      <AgentDrawer repo={repo} />
     </section>
   );
 }
