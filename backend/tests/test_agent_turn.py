@@ -442,6 +442,46 @@ class AgentRouterTest(unittest.TestCase):
         self.assertIn("event: error", resp.text)
         self.assertIn("bad", resp.text)
 
+    def test_unrelated_error_has_no_guidance(self):
+        with mock.patch.object(
+                agent_turn, "turn_argv",
+                return_value=["/bin/sh", "-c",
+                                "echo some weird boom >&2; exit 2"]):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("event: error", resp.text)
+        self.assertIn("some weird boom", resp.text)
+        self.assertNotIn('"code"', resp.text)
+        self.assertNotIn('"detail"', resp.text)
+
+    def _failed_turn(self, stderr_line):
+        with mock.patch.object(
+                agent_turn, "turn_argv",
+                return_value=["/bin/sh", "-c",
+                                f"echo {stderr_line} >&2; exit 1"]):
+            return self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+
+    def test_expired_creds_send_guidance(self):
+        resp = self._failed_turn(
+            "Error: access token expired, please login again")
+        self.assertIn("event: error", resp.text)
+        self.assertIn('"code": "auth-expired"', resp.text)
+        self.assertIn("switch provider", resp.text)
+        self.assertIn('"detail"', resp.text)
+        self.assertIn("token expired", resp.text)
+
+    def test_access_denied_sends_guidance(self):
+        resp = self._failed_turn("Error: access denied for key")
+        self.assertIn('"code": "access-denied"', resp.text)
+        self.assertIn("switch provider", resp.text)
+
+    def test_binary_missing_sends_guidance(self):
+        resp = self._failed_turn(
+            "executable file not found in PATH")
+        self.assertIn('"code": "binary-missing"', resp.text)
+        self.assertIn("switch provider", resp.text)
+
     def test_truncated_turn_sends_done_with_flag(self):
         async def _fake(*args, **kwargs):
             yield "partial-"

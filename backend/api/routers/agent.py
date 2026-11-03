@@ -12,6 +12,8 @@ confirmed: True}) because provider CLIs run tools; follow-up turns
 and abort are free.
 """
 
+import re
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -22,6 +24,41 @@ from backend.exec import agent_turn
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 SPAWN_INTENT = "agent-spawn"
+
+# Known provider-failure signatures: (code, pattern, guidance).
+# Anything else falls through to the raw last-stderr-line behavior.
+_FAILURE_SIGNATURES = (
+    ("auth-expired",
+     r"expir|invalid token|unauthorized|http 401|status 401|"
+     r"re-?auth|login (expired|required)|session expired|"
+     r"not authenticated|not logged in|credentials expired|"
+     r"access token|need to log in",
+     "access expired — sign in again in the terminal, "
+     "or switch provider."),
+    ("access-denied",
+     r"access denied|permission denied|forbidden|http 403|"
+     r"status 403|operation not permitted",
+     "refused access — check its key and permissions, "
+     "or switch provider."),
+    ("binary-missing",
+     r"executable file not found|command not found",
+     "CLI is not installed in the terminal — install it, "
+     "or switch provider."),
+)
+
+
+def failure_guidance(provider: str, stderr: str):
+    """Map a failed turn's stderr to (code, guidance), or None.
+
+    Pure: the three known provider-failure signatures get
+    actionable copy naming the provider; everything else returns
+    None so the caller keeps the raw last-line behavior.
+    """
+    text = stderr or ""
+    for code, pattern, advice in _FAILURE_SIGNATURES:
+        if re.search(pattern, text, re.IGNORECASE):
+            return code, f"{provider} {advice}"
+    return None
 
 
 class TurnRequest(BaseModel):
@@ -106,7 +143,14 @@ async def _turn_events(provider: str, repo: str, cwd: str,
                                  "truncated": True})
         return
     if result.get("exit") != 0:
-        detail = (result.get("stderr") or "").strip().split("\n")
+        stderr = (result.get("stderr") or "").strip()
+        guidance = failure_guidance(provider, stderr)
+        if guidance is not None:
+            code, message = guidance
+            yield sse_frame("error", {"error": message, "code": code,
+                                      "detail": stderr[-1500:]})
+            return
+        detail = stderr.split("\n")
         detail = detail[-1] if detail and detail[-1] else \
             f"exit {result.get('exit')}"
         yield sse_frame("error", {"error": detail[:500]})

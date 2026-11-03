@@ -42,12 +42,21 @@ export async function pumpTurn(
       if (!ev) continue;
       if (ev.name === 'error') {
         let detail = ev.data;
+        let code: string | undefined;
+        let raw: string | undefined;
         try {
-          detail = (JSON.parse(ev.data) as { error?: string }).error ?? ev.data;
+          const data = JSON.parse(ev.data) as {
+            error?: string;
+            code?: string;
+            detail?: string;
+          };
+          detail = data.error ?? ev.data;
+          if (typeof data.code === 'string') code = data.code;
+          if (typeof data.detail === 'string') raw = data.detail;
         } catch {
           /* raw text */
         }
-        throw new Error(detail);
+        throw Object.assign(new Error(detail), { code, detail: raw });
       }
       if (ev.name === 'token') {
         try {
@@ -82,6 +91,47 @@ export function defaultProvider(
   return providers.find((p) => status[p] !== false) ?? providers[0] ?? '';
 }
 
+// The one-tap recovery target: the first allowlisted provider that
+// is not the failed one. Empty when there is no alternative.
+export function otherProvider(provider: string, providers: string[]): string {
+  return providers.find((p) => p !== provider) ?? '';
+}
+
+export function GuidanceCard({
+  message,
+  detail,
+  other,
+  onSwitch,
+}: {
+  message: string;
+  detail: string;
+  other: string;
+  onSwitch: () => void;
+}) {
+  return (
+    <div className="detail" data-testid="agent-guidance" role="alert">
+      <span className="row-title">Agent failed: {message}</span>
+      <div className="actions">
+        {other !== '' && (
+          <button
+            type="button"
+            data-testid="agent-switch-provider"
+            onClick={onSwitch}
+          >
+            Switch to {other}
+          </button>
+        )}
+      </div>
+      {detail !== '' && (
+        <details data-testid="agent-error-detail">
+          <summary className="row-meta">Raw output</summary>
+          <pre className="row-meta">{detail}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export default function AgentDrawer({
   repo,
   initialProviders,
@@ -103,6 +153,9 @@ export default function AgentDrawer({
   const [live, setLive] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ code: string; detail: string } | null>(
+    null,
+  );
   const sidRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -188,6 +241,13 @@ export default function AgentDrawer({
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         setError(err instanceof Error ? err.message : String(err));
+        const code = (err as { code?: unknown }).code;
+        const raw = (err as { detail?: unknown }).detail;
+        setFailure(
+          typeof code === 'string' && code !== ''
+            ? { code, detail: typeof raw === 'string' ? raw : '' }
+            : null,
+        );
         // Drop the empty assistant bubble so retry sends cleanly.
         setTurns((t) => {
           const last = t[t.length - 1];
@@ -209,6 +269,7 @@ export default function AgentDrawer({
       return;
     }
     setError(null);
+    setFailure(null);
     setTurns([{ role: 'user', text }]);
     setPrompt('');
     setLive(true);
@@ -220,6 +281,7 @@ export default function AgentDrawer({
     const text = prompt.trim();
     if (working || !text) return;
     setError(null);
+    setFailure(null);
     setTurns((t) => [...t, { role: 'user', text }]);
     setPrompt('');
     await sendTurn(text);
@@ -242,14 +304,35 @@ export default function AgentDrawer({
     sidRef.current = null;
     setTurns([]);
     setError(null);
+    setFailure(null);
     setWorking(false);
     setLive(false);
+  }
+
+  function onSwitchProvider() {
+    const other = otherProvider(provider, providers);
+    if (!other) return;
+    // Fresh session on the new provider: session ids are
+    // provider-side state (agy --continue would resume the wrong
+    // conversation), so the sid must not cross over.
+    sidRef.current = null;
+    setProvider(other);
+    setError(null);
+    setFailure(null);
   }
 
   return (
     <section data-testid="agent-drawer">
       <h3>Agent session</h3>
-      {error && (
+      {error && failure && (
+        <GuidanceCard
+          message={error}
+          detail={failure.detail}
+          other={otherProvider(provider, providers)}
+          onSwitch={onSwitchProvider}
+        />
+      )}
+      {error && !failure && (
         <p className="row-meta" data-testid="agent-error" role="alert">
           Agent failed: {error}
         </p>
