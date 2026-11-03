@@ -340,7 +340,14 @@ class AgentTurnManager:
                 except Exception:
                     err_tail = ""
         finally:
+            # Abandonment (GeneratorExit from a closed SSE stream, task
+            # cancel) lands here too: the loop's _stop_proc runs only
+            # on normal exit, so stop again — it returns at once when
+            # the process already exited. Without this the CLI runs to
+            # TURN_TIMEOUT with nobody reading (chat precedent: the
+            # GeneratorExit kill, "SSE zombie, #294").
             self._unregister(session_id)
+            await _stop_proc(proc)
             for pipe in (proc.stdout, proc.stderr):
                 try:
                     if pipe is not None:

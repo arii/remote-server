@@ -306,6 +306,37 @@ class RunTurnTest(unittest.TestCase):
     def test_abort_unknown_is_false(self):
         self.assertFalse(asyncio.run(self.mgr.abort("nope")))
 
+    def test_abandoned_generator_reaps_proc_and_frees_session(self):
+        # Client disconnect (New session, navigate away, tab close)
+        # closes the SSE generator mid-stream: the CLI must die
+        # promptly and the session slot must free, mirroring chat's
+        # GeneratorExit kill (chat.py "SSE zombie, #294").
+        async def go():
+            gen = self.mgr.run_turn(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-abandon", prompt="hi",
+                continued=False,
+                argv=["/bin/sh", "-c",
+                     "head -c 70000 /dev/zero | tr '\\0' 'y'; "
+                     "sleep 30"])
+            # Text-mode read(READ_CHUNK) yields only full 64KB
+            # buffers, so the fake emits 70KB then hangs: the first
+            # chunk arrives while the CLI is still running.
+            chunk = await gen.__anext__()
+            self.assertEqual(len(chunk), agent_turn.READ_CHUNK)
+            proc = self.mgr._running.get("s-abandon")
+            self.assertIsNotNone(proc)
+            await gen.aclose()
+            alive_after_close = proc.poll() is None
+            if alive_after_close:
+                proc.kill()  # pre-fix hermeticity: never leak sleep
+                proc.wait()
+            return alive_after_close
+
+        self.assertFalse(asyncio.run(go()))
+        self.assertNotIn("s-abandon", self.mgr._running)
+        self.assertFalse(asyncio.run(self.mgr.abort("s-abandon")))
+
     def test_hung_turn_times_out_and_reaps(self):
         with mock.patch.object(agent_turn, "TURN_TIMEOUT", 1), \
                 mock.patch.object(agent_turn, "KILL_GRACE", 1):
