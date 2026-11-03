@@ -205,6 +205,8 @@ async function pumpStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
   onApproval: (payload: ApprovalPayload) => void,
+  onPhase: (message: string | null) => void,
+  onDone: (text: string) => void,
 ): Promise<void> {
   const decoder = new TextDecoder();
   let buf = '';
@@ -222,6 +224,14 @@ async function pumpStream(
       if (ev.name === 'approval') {
         const payload = parseJson<ApprovalPayload>(ev.data);
         if (payload) onApproval(payload);
+      }
+      if (ev.name === 'phase') {
+        const msg = parseJson<{ message?: string }>(ev.data)?.message;
+        onPhase(msg && msg.length > 0 ? msg : null);
+      }
+      if (ev.name === 'done') {
+        onPhase(null);
+        onDone(parseJson<{ text?: string }>(ev.data)?.text ?? '');
       }
     }
   }
@@ -251,6 +261,7 @@ export default function ChatView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -295,6 +306,17 @@ export default function ChatView({
     });
   }
 
+  function backfillDone(text: string) {
+    if (!text) return;
+    setMessages((m) => {
+      const next = [...m];
+      const last = next[next.length - 1];
+      if (!last || last.role !== 'assistant' || last.text.length > 0) return m;
+      next[next.length - 1] = { role: 'assistant', text };
+      return next;
+    });
+  }
+
   async function streamLive(text: string, sessionId: string) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -308,6 +330,8 @@ export default function ChatView({
           setApproval(payload);
           setDecided(null);
         },
+        setPhase,
+        backfillDone,
       );
     } catch (err) {
       if ((err as Error).name !== 'AbortError') throw err;
@@ -326,6 +350,7 @@ export default function ChatView({
     const text = prompt.trim();
     if (!text || streaming) return;
     setError(null);
+    setPhase(null);
     setApproval(null);
     setDecided(null);
     const sessionId = newSessionId();
@@ -351,6 +376,7 @@ export default function ChatView({
     abortRef.current?.abort();
     const sid = sessionRef.current;
     setStreaming(false);
+    setPhase(null);
     if (!sid || useMock()) return;
     try {
       await abortChat(sid);
@@ -396,6 +422,11 @@ export default function ChatView({
       {error && (
         <p className="row-meta" data-testid="chat-error" role="alert">
           Chat failed: {error}
+        </p>
+      )}
+      {streaming && phase && (
+        <p className="row-meta" data-testid="chat-phase">
+          {phase}
         </p>
       )}
       <ul className="session-list" data-testid="chat-history">
