@@ -36,15 +36,21 @@ ENV PATH="/opt/venvs/td/bin:${PATH}"
 WORKDIR /app
 COPY backend/requirements.txt ./backend-requirements.txt
 COPY deep-agent/requirements.txt ./deep-agent-requirements.txt
-RUN pip install --no-cache-dir -r backend-requirements.txt -r deep-agent-requirements.txt
+# Backend runs ON the td venv (single python): boomtick's agent stack and
+# our server share it. Absolute pip path: never depend on PATH order.
+RUN /opt/venvs/td/bin/pip install --no-cache-dir -r backend-requirements.txt -r deep-agent-requirements.txt
 COPY backend/ ./backend/
 COPY deep-agent/ ./deep-agent/
 COPY buttons/briefing_summary.py ./buttons/
 COPY --from=spa /build/frontend/dist ./frontend/dist/
-# Agent runtime runs under the system python (langchain stack above).
+# Build-time smoke: CLI intact after our pins, server + agent imports resolve.
+RUN /opt/venvs/td/bin/td --help > /dev/null \
+ && /opt/venvs/td/bin/python -c "import fastapi, uvicorn, httpx, langchain; print('deps ok')" \
+ && /opt/venvs/td/bin/python -c "import backend.server; print('server imports ok')"
+# Agent runtime = same venv (chat spawn inherits the langchain stack).
 # Repo state (git status, compose file, .env) resolves to the mounted
 # live checkout, not the baked code.
-ENV DEEP_AGENT_VENV=/usr/local/bin/python \
+ENV DEEP_AGENT_VENV=/opt/venvs/td/bin/python \
     BUTTONS_STACK=/home/ari/remote-server
 EXPOSE 8000
-CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/opt/venvs/td/bin/python", "-m", "uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
