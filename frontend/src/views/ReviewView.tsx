@@ -29,6 +29,21 @@ export function revertOptimisticMerge(merging: ReadonlySet<number>, n: number): 
   return next;
 }
 
+// Next PR row to auto-advance to after a successful merge, in current
+// list order. Skips the merged row; wraps to the first row when the
+// merged one was last. Returns null when there is no other PR (single
+// row, empty list, or merged number not in the list) so callers keep
+// today's notice-only behavior.
+export function nextPrAfterMerge(
+  prNumbers: readonly number[],
+  mergedNumber: number,
+): number | null {
+  if (prNumbers.length <= 1) return null;
+  const idx = prNumbers.indexOf(mergedNumber);
+  if (idx === -1) return null;
+  return prNumbers[(idx + 1) % prNumbers.length] ?? null;
+}
+
 function labelOf(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
@@ -111,7 +126,7 @@ export default function ReviewView({
     ...(prs ?? []).map((p) => ({ kind: 'pr' as const, number: p.number })),
     ...(issues ?? []).map((i) => ({ kind: 'issue' as const, number: i.number })),
   ];
-  const [cursor] = useTriageKeys({
+  const [cursor, setCursor] = useTriageKeys({
     count: rows.length,
     suspended: triageSuspended,
     onOpen: (i) => {
@@ -174,6 +189,13 @@ export default function ReviewView({
     try {
       await mergePr(repo, n);
       setNotice(`Merged PR #${n}.`);
+      const numbers = (prs ?? []).map((p) => p.number);
+      const next = nextPrAfterMerge(numbers, n);
+      if (next !== null) {
+        const at = numbers.indexOf(next);
+        if (at !== -1) setCursor(at);
+        void selectPr(next);
+      }
     } catch (err) {
       setMerging((prev) => revertOptimisticMerge(prev, n));
       setError(err instanceof Error ? err.message : String(err));
