@@ -70,5 +70,16 @@ class TestArgvValidation(unittest.TestCase):
         self.assertIn("history", p.stderr)
 
 
+class TestSystemPrompt(unittest.TestCase):
+    def test_how_to_reads_docs_first(self):
+        # Regression pin for the turn-docs early-stop guess: the agent
+        # must read docs/README/compose before answering how-to, never
+        # guess run commands from directory names.
+        self.assertIn("read the relevant docs, README, or ",
+                      chat_agent.SYSTEM)
+        self.assertIn("never guess run commands from ",
+                      chat_agent.SYSTEM)
+
+
 if __name__ == "__main__":
     unittest.main()
