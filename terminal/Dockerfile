@@ -96,6 +96,16 @@ RUN mkdir -p /etc/ttyd \
 COPY bin/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/pi-*
 
+# Muse resume hint on interactive shell start (#377): one line naming the
+# latest session. /root/.bashrc is image content (not volume-mounted), so
+# this applies on rebuild+recreate. Smoke test runs the no-store path.
+RUN touch /root/.bashrc \
+ && (grep -q "muse-resume-hint" /root/.bashrc || printf '%s\n' \
+      '# Muse resume hint (one line, interactive shells only).' \
+      'if [ -n "$PS1" ] && command -v muse-resume-hint >/dev/null 2>&1; then muse-resume-hint; fi' \
+      >> /root/.bashrc) \
+ && muse-resume-hint > /dev/null
+
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
 COPY config.kdl /root/.config/zellij/config.kdl

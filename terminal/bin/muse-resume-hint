@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""One-line muse resume hint for interactive shell start (#377).
+
+Prints the latest session name + recency so users know sessions
+survived a restart and how to reattach:
+  Last muse session: hollow-canes (12m ago) - run 'muse resume' to reattach
+
+Prefers the current workspace (argv[1], default cwd), falls back to
+the global latest. Silent exit 0 on any missing/corrupt input: shell
+start must never break.
+"""
+
+import os
+import sqlite3
+import sys
+import time
+
+
+def recency(updated_us, now):
+    if updated_us is None:
+        return "time unknown"
+    secs = max(0, int(now - updated_us / 1_000_000))
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
+
+
+def latest_session(conn, workspace):
+    row = conn.execute(
+        "SELECT session_id, logged_session_name, updated_at_us"
+        " FROM sessions WHERE workspace_root = ?"
+        " ORDER BY updated_at_us DESC LIMIT 1",
+        (workspace,),
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT session_id, logged_session_name, updated_at_us"
+            " FROM sessions ORDER BY updated_at_us DESC LIMIT 1"
+        ).fetchone()
+    return row
+
+
+def claimed_name(muse_dir, session_id):
+    db = os.path.join(muse_dir, "session-name-authority", "session-names.db")
+    if not os.path.isfile(db):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT normalized_name FROM session_name_claims_v2"
+            " WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def hint_line(workspace):
+    home = os.path.expanduser("~")
+    data_home = os.environ.get("XDG_DATA_HOME", os.path.join(home, ".local", "share"))
+    muse_dir = os.path.join(data_home, "muse")
+    db = os.path.join(muse_dir, "session-index.db")
+    if not os.path.isfile(db):
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+    except sqlite3.Error:
+        return None
+    try:
+        row = latest_session(conn, workspace)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    session_id, logged_name, updated_us = row
+    name = logged_name or claimed_name(muse_dir, session_id) or session_id[:8]
+    return (
+        f"Last muse session: {name} ({recency(updated_us, time.time())})"
+        " - run 'muse resume' to reattach"
+    )
+
+
+def main(argv):
+    try:
+        workspace = argv[1] if len(argv) > 1 else os.getcwd()
+        line = hint_line(workspace)
+    except Exception:
+        return 0
+    if line:
+        print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
