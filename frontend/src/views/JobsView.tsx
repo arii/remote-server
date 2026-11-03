@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
+import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
   clearJobs,
@@ -28,7 +28,6 @@ interface TdCommand {
   label: string;
   desc: string;
   needsPr: boolean;
-  hold: boolean;
   build: (pr: string) => string;
 }
 
@@ -38,7 +37,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Fix CI failures',
     desc: 'Pushes automated CI fixes to the PR branch.',
     needsPr: true,
-    hold: true,
     build: (pr) => `td --json agent fix-ci --pr ${pr} --execute`,
   },
   {
@@ -46,7 +44,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Read PR reviews',
     desc: 'Review verdicts and threads for the PR.',
     needsPr: true,
-    hold: false,
     build: (pr) => `td gh read-pr-reviews --pr ${pr}`,
   },
   {
@@ -54,7 +51,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Read PR comments',
     desc: 'All comments on the PR.',
     needsPr: true,
-    hold: false,
     build: (pr) => `td gh read-pr-comments --pr ${pr}`,
   },
   {
@@ -62,7 +58,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Resolve conflicts',
     desc: 'Attempts merge-conflict resolution on the PR.',
     needsPr: true,
-    hold: true,
     build: (pr) => `td gh resolve-conflicts --pr ${pr}`,
   },
   {
@@ -70,7 +65,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Agent sessions',
     desc: 'Active background agent sessions.',
     needsPr: false,
-    hold: false,
     build: () => 'td --json agent list-sessions',
   },
   {
@@ -78,7 +72,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Feedback check',
     desc: 'Pending agent run feedback.',
     needsPr: false,
-    hold: false,
     build: () => 'td --json agent run-feedback-check',
   },
 ];
@@ -87,6 +80,9 @@ interface DangerAction {
   action: string;
   label: string;
   consequence: string;
+  // Inline-confirm finality note; only irreversible / session-loss
+  // actions carry one. The rest tap-fire directly.
+  confirm?: string;
 }
 
 const DANGER: DangerAction[] = [
@@ -94,6 +90,7 @@ const DANGER: DangerAction[] = [
     action: 'merge-approved',
     label: 'Merge approved PR',
     consequence: 'Merges every approved, green PR.',
+    confirm: 'This cannot be undone.',
   },
   {
     action: 'create-plan',
@@ -104,16 +101,19 @@ const DANGER: DangerAction[] = [
     action: 'deploy-buttons',
     label: 'Redeploy this console',
     consequence: 'Pulls, rebuilds and restarts the console container.',
+    confirm: 'The console will restart.',
   },
   {
     action: 'recreate',
     label: 'Restart terminal',
     consequence: 'Force-restarts the terminal container; drops live sessions.',
+    confirm: 'Live terminal sessions will drop.',
   },
   {
     action: 'recreate-code',
     label: 'Restart code editor',
     consequence: 'Force-restarts the code-server container.',
+    confirm: 'The code editor will restart.',
   },
 ];
 
@@ -603,6 +603,12 @@ export default function JobsView({
   const conflictBlock =
     prStateCurrent && !prStateCurrent.conflicted ? 'No conflicts on this PR.' : null;
 
+  function tdBlock(slug: string): string | null {
+    if (slug === 'fix-ci') return fixCiBlock;
+    if (slug === 'resolve-conflicts') return conflictBlock;
+    return null;
+  }
+
   return (
     <section data-testid="jobs-view">
       <header className="page-head">
@@ -680,32 +686,18 @@ export default function JobsView({
             </p>
           )}
           <div className="actions">
-            {TD_COMMANDS.filter((c) => c.needsPr && !c.hold).map((c) => (
+            {TD_COMMANDS.filter((c) => c.needsPr).map((c) => (
               <button
                 key={c.slug}
                 type="button"
                 data-testid={`dispatch-td-${c.slug}`}
                 title={c.desc}
-                disabled={!prOk}
+                disabled={!prOk || tdBlock(c.slug) !== null}
                 onClick={() => onDispatchTd(c)}
               >
                 {c.label}
               </button>
             ))}
-          </div>
-          <div className="actions">
-            <span className="row-meta">Change (hold to run):</span>
-            {TD_COMMANDS.filter((c) => c.needsPr && c.hold).map((c) => {
-              const block = c.slug === 'fix-ci' ? fixCiBlock : conflictBlock;
-              return (
-                <HoldToConfirm
-                  key={c.slug}
-                  label={c.label}
-                  disabled={!prOk || block !== null}
-                  onFire={() => onDispatchTd(c)}
-                />
-              );
-            })}
           </div>
           {(fixCiBlock || conflictBlock) && (
             <p className="row-meta" data-testid="td-change-block">
@@ -716,25 +708,17 @@ export default function JobsView({
         <div className="cmd-group" data-testid="td-repo-group">
           <p className="row-meta">Whole repo</p>
           <div className="actions">
-            {TD_COMMANDS.filter((c) => !c.needsPr).map((c) =>
-              c.hold ? (
-                <HoldToConfirm
-                  key={c.slug}
-                  label={c.label}
-                  onFire={() => onDispatchTd(c)}
-                />
-              ) : (
-                <button
-                  key={c.slug}
-                  type="button"
-                  data-testid={`dispatch-td-${c.slug}`}
-                  title={c.desc}
-                  onClick={() => onDispatchTd(c)}
-                >
-                  {c.label}
-                </button>
-              ),
-            )}
+            {TD_COMMANDS.filter((c) => !c.needsPr).map((c) => (
+              <button
+                key={c.slug}
+                type="button"
+                data-testid={`dispatch-td-${c.slug}`}
+                title={c.desc}
+                onClick={() => onDispatchTd(c)}
+              >
+                {c.label}
+              </button>
+            ))}
           </div>
         </div>
       </section>
@@ -765,8 +749,9 @@ export default function JobsView({
                     )}
                   </p>
                 </div>
-                <HoldToConfirm
+                <TapToFire
                   label={d.label}
+                  confirm={d.confirm}
                   disabled={d.action === 'merge-approved' && mergeReady === 0}
                   onFire={() =>
                     void guarded(() =>
@@ -786,7 +771,7 @@ export default function JobsView({
                   : 'Drops finished runs from the list below.'}
               </p>
             </div>
-            <HoldToConfirm
+            <TapToFire
               label="Clear finished"
               disabled={finishedCount === 0}
               onFire={() => void guarded(() => onClear(false))}
@@ -799,8 +784,9 @@ export default function JobsView({
                 {list.length === 0 ? 'No runs to clear.' : 'Drops all runs, including running ones.'}
               </p>
             </div>
-            <HoldToConfirm
+            <TapToFire
               label="Clear everything"
+              confirm="Running runs will be killed."
               disabled={list.length === 0}
               onFire={() => void guarded(() => onClear(true))}
             />
@@ -810,7 +796,11 @@ export default function JobsView({
               <span className="row-title">Take over terminal</span>
               <p className="row-meta">Disconnects other viewers of the shared terminal.</p>
             </div>
-            <HoldToConfirm label="Take over terminal" onFire={() => void guarded(onTakeover)} />
+            <TapToFire
+              label="Take over terminal"
+              confirm="Other viewers will be disconnected."
+              onFire={() => void guarded(onTakeover)}
+            />
           </li>
         </ul>
       </section>

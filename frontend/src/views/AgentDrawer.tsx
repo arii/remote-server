@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
+import TapToFire from '../components/TapToFire';
 import { abortAgentSession, fetchAgentProviders, postAgentTurn } from '../apiClient';
 import { useMock } from './mockViews';
 
@@ -263,7 +263,7 @@ export default function AgentDrawer({
             />
           </label>
           <div className="actions">
-            <HoldToConfirm
+            <TapToFire
               label="Launch"
               disabled={providers.length === 0}
               onFire={() => void onLaunch()}
