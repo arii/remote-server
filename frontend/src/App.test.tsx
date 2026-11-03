@@ -10,8 +10,8 @@ import {
   traceLine,
 } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
-import { jobPassesKindFilter, plainLanguage, toHistoryRows } from './views/historyUtils';
-import { planNameFromResult, resultLine } from './views/JobsView';
+import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
+import { attachIdFromConflict, planNameFromResult, resultLine } from './views/JobsView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -161,6 +161,64 @@ describe('history utils', () => {
     expect(rows[0].detail).toContain('session: abc123');
     expect(rows[0].detail).toContain('elapsed: 34.6s');
   });
+
+  it('keeps every collapsed group member with its own full fields', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'webhook', event: 'webhook pull failed: fetch first (non-fast-forward)', repo: 'r', ts: 3 },
+        { kind: 'webhook', event: 'webhook pull failed: fetch first (non-fast-forward)', repo: 'r', ts: 2 },
+        { kind: 'webhook', event: 'webhook pull failed: fetch first (non-fast-forward)', repo: 'r', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].repeat).toBe(3);
+    expect(rows[0].members).toHaveLength(3);
+    for (const m of rows[0].members) {
+      expect(m.detail).toContain('event: webhook pull failed');
+      expect(m.at).not.toContain('unknown time');
+    }
+  });
+
+  it('carries chat prompts and run command/elapsed into member details', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'run', action: 'td', command: 'td audit-pr 12', exit: 0, elapsed_s: 12.5, repo: 'r', ts: 2 },
+        { kind: 'chat', event: 'chat started', session_id: 's1', prompt: 'why is CI red?', repo: 'r', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0].members[0].detail).toContain('command: td audit-pr 12');
+    expect(rows[0].members[0].detail).toContain('elapsed: 12.5s');
+    expect(rows[1].members[0].detail).toContain('prompt: why is CI red?');
+    expect(rows[1].members[0].detail).toContain('session: s1');
+  });
+
+  it('tags job members with their run id for output fetch', () => {
+    const rows = toHistoryRows([{ id: 'abc123def456', kind: 'briefing', at: 1000 }], []);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].members[0].runId).toBe('abc123def456');
+  });
+});
+
+describe('tailText', () => {
+  it('returns short output unchanged', () => {
+    expect(tailText('a\nb\nc')).toBe('a\nb\nc');
+    expect(tailText('')).toBe('');
+  });
+
+  it('keeps the last N lines and reports hidden count', () => {
+    const out = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n');
+    const tailed = tailText(out, 3);
+    expect(tailed).toContain('line 8\nline 9\nline 10');
+    expect(tailed).toContain('7 earlier lines hidden');
+    expect(tailed).not.toContain('line 7\n');
+  });
+
+  it('uses the singular for one hidden line', () => {
+    expect(tailText('a\nb', 1)).toContain('1 earlier line hidden');
+  });
 });
 
 describe('history fixtures (?mock=1)', () => {
@@ -292,6 +350,19 @@ describe('job result line', () => {
     );
     expect(planNameFromResult('Already up to date.')).toBeNull();
     expect(planNameFromResult('')).toBeNull();
+  });
+});
+
+describe('conflict attach', () => {
+  it('extracts the active run id from a 409 detail', () => {
+    expect(
+      attachIdFromConflict(
+        'POST api/jobs/run-td failed: 409 {"detail":"a run is already in progress: 799c6006012d"}',
+      ),
+    ).toBe('799c6006012d');
+    expect(attachIdFromConflict('POST api/jobs/run failed: 400 {"Detail":"bad"}')).toBeNull();
+    expect(attachIdFromConflict('a run is already in progress: 799c6006012d')).toBeNull();
+    expect(attachIdFromConflict('failed: 409 {"Detail":"busy"}')).toBeNull();
   });
 });
 

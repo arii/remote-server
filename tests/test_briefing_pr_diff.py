@@ -45,13 +45,19 @@ class TestRunJsonErrorDetail(unittest.TestCase):
     def test_plain_line_unchanged(self):
         self.assertEqual(self.run_err("boom went wrong\n"), "boom went wrong")
 
-    def test_skips_bare_braces(self):
-        # td sometimes dumps JSON to stderr; the last line is a bare
+    def test_json_blob_message_extracted(self):
+        # td --json failures print a JSON error blob ending in a bare
         # brace, which used to render as e.g. 'Overlap scan
-        # unavailable: }'. Take the last line carrying meaning.
+        # unavailable: }'. Take the blob's message, not a raw line.
         self.assertEqual(
             self.run_err('{\n  "message": "nope"\n}\n'),
-            '"message": "nope"')
+            "nope")
+
+    def test_json_blob_none_message_falls_back_to_type(self):
+        self.assertEqual(
+            self.run_err('{"status": "error", "message": null,'
+                         ' "type": "AssertionError"}'),
+            "AssertionError")
 
     def test_falls_back_to_stdout(self):
         self.assertEqual(

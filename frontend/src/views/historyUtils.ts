@@ -28,6 +28,14 @@ export function plainLanguage(raw: string, fallbackKind: string): string {
 
 export type HistoryTone = 'bad' | 'ok' | 'muted';
 
+// One collapsed group member: its own time, full detail block, and the
+// run id when it came from a job record (for lazy run-output fetch).
+export interface HistoryMember {
+  at: string;
+  detail: string;
+  runId?: string;
+}
+
 export interface HistoryRow {
   key: string;
   kind: string;
@@ -37,6 +45,7 @@ export interface HistoryRow {
   recovery: string;
   tone: HistoryTone;
   detail: string;
+  members: HistoryMember[];
 }
 
 interface FlatEntry {
@@ -47,6 +56,7 @@ interface FlatEntry {
   failed: boolean;
   routine: boolean;
   detail: string;
+  runId?: string;
 }
 
 // Routine lifecycle chatter (chat start/finish/abort, job step progress):
@@ -123,6 +133,7 @@ function jobToEntry(j: JobRecord): FlatEntry {
     failed: /fail|error/i.test(status),
     routine: false,
     detail: lines.join('\n'),
+    runId: j.id,
   };
 }
 
@@ -144,8 +155,11 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
   if (e.detail) lines.push(`detail: ${e.detail}`.slice(0, 1500));
   if (e.repo) lines.push(`repo: ${e.repo}`);
   if (e.session_id) lines.push(`session: ${e.session_id}`);
+  if (e.prompt) lines.push(`prompt: ${e.prompt}`.slice(0, 500));
+  if (e.command) lines.push(`command: ${e.command}`.slice(0, 1500));
   if (typeof e.exit === 'number') lines.push(`exit: ${e.exit}`);
-  if (typeof e.elapsed === 'number') lines.push(`elapsed: ${e.elapsed}s`);
+  const elapsed = e.elapsed ?? e.elapsed_s;
+  if (typeof elapsed === 'number') lines.push(`elapsed: ${elapsed}s`);
   return {
     kind: e.kind,
     summary,
@@ -173,7 +187,19 @@ export function jobPassesKindFilter(jobKind: string | undefined, filter: string)
   return (jobKind || 'job') === filter;
 }
 
-function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
+// Keep run-output disclosures readable: show the last maxLines lines and
+// say how many earlier lines were hidden. Empty output stays empty.
+export function tailText(output: string, maxLines = 40): string {
+  const text = (output ?? '').replace(/\n$/, '');
+  if (!text) return '';
+  const lines = text.split('\n');
+  if (lines.length <= maxLines) return text;
+  const hidden = lines.length - maxLines;
+  return `… (${hidden} earlier line${hidden === 1 ? '' : 's'} hidden)\n${lines.slice(-maxLines).join('\n')}`;
+}
+
+function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRow {
+  const count = members.length;
   const routineRun = entry.routine && count > 1;
   const failed = entry.failed && !entry.routine;
   const repeated = count > 1 && !routineRun
@@ -190,6 +216,11 @@ function toRow(entry: FlatEntry, count: number, index: number): HistoryRow {
     recovery: failed ? recoveryFor(entry.kind, entry.summary) : '',
     tone: failed ? 'bad' : entry.routine ? 'muted' : 'ok',
     detail: entry.detail,
+    members: members.map((m) => ({
+      at: m.at,
+      detail: m.detail,
+      ...(m.runId ? { runId: m.runId } : {}),
+    })),
   };
 }
 
@@ -225,7 +256,7 @@ export function toHistoryRows(
     ) {
       count++;
     }
-    rows.push(toRow(flat[i], count, i));
+    rows.push(toRow(flat[i], flat.slice(i, i + count), i));
     i += count;
   }
   return rows;

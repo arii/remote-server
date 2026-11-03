@@ -54,6 +54,11 @@ export interface LedgerEntry {
   session_id?: string;
   exit?: number;
   elapsed?: number;
+  // Full-field extras the backend writes on some kinds: chat entries
+  // carry the session prompt, run entries the td command + elapsed_s.
+  prompt?: string;
+  command?: string;
+  elapsed_s?: number;
 }
 
 export interface LedgerResponse {

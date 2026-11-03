@@ -493,7 +493,8 @@ class RunRegistry:
             return None, "unknown action"
         with self._lock:
             if self.active_id is not None:
-                return None, "a run is already in progress"
+                return (None, "a run is already in progress: "
+                              f"{self.active_id}")
             run_id = uuid.uuid4().hex[:12]
             now = time.time()
             run = {
