@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 
-from backend.exec.engine import compose_argv
+from backend.exec.engine import compose_argv, exec_argv
 from backend.ledger import append as ledger_append
 
 PROVIDERS = ("muse", "agy")
@@ -115,6 +115,94 @@ def new_session_id() -> str:
     rejects anything else (12-hex ids fail the turn with a CLI
     usage error). Continued turns reuse the minted id."""
     return str(uuid.uuid4())
+
+
+# Availability probing (issue #397): the picker must show dead
+# providers before the user fires. Only a real (trivial) turn proves
+# API access — `muse usage` exits 0 even with no_allowance, and
+# --version only proves install — so the probe fires one tiny turn
+# per provider. Results cache briefly; each probe orphans one CLI
+# session (fresh uuid / new agy conversation), so TTL stays long.
+PROBE_TTL = 300
+PROBE_TIMEOUT = 25
+PROBE_PROMPT = "Reply with exactly: ok"
+
+_probe_cache: dict = {}
+_probe_lock = threading.Lock()
+
+
+def clear_probe_cache() -> None:
+    """Test reset for the availability cache."""
+    with _probe_lock:
+        _probe_cache.clear()
+
+
+def _run_probe(argv: list, timeout: int):
+    """Blocking probe run (executed off the event loop)."""
+    return subprocess.run(argv, input=None, capture_output=True,
+                          text=True, timeout=timeout)
+
+
+async def probe_provider(provider: str, cwd: str) -> dict:
+    """Probe one provider: binary present, then a trivial turn.
+
+    Returns {name, available, checked_at, detail}. Unknown provider
+    raises ValueError like turn_argv.
+    """
+    if provider not in PROVIDERS:
+        raise ValueError("unknown provider")
+    checked_at = int(time.time())
+    binary = exec_argv("command -v %s" % provider)
+    try:
+        found = await asyncio.to_thread(_run_probe, binary, 15)
+    except Exception as exc:
+        return {"name": provider, "available": False,
+                "checked_at": checked_at,
+                "detail": "binary check failed: %s" % exc}
+    if found.returncode != 0:
+        return {"name": provider, "available": False,
+                "checked_at": checked_at, "detail": "binary missing"}
+    argv = turn_argv(provider, cwd, new_session_id(), PROBE_PROMPT,
+                     False)
+    try:
+        completed = await asyncio.to_thread(_run_probe, argv,
+                                            PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {"name": provider, "available": False,
+                "checked_at": checked_at,
+                "detail": "probe timed out"}
+    except Exception as exc:
+        return {"name": provider, "available": False,
+                "checked_at": checked_at,
+                "detail": "probe error: %s" % exc}
+    if completed.returncode != 0:
+        tail = (completed.stderr or "").strip().split("\n")
+        detail = tail[-1][:200] if tail and tail[-1] else \
+            "exit %s" % completed.returncode
+        return {"name": provider, "available": False,
+                "checked_at": checked_at, "detail": detail}
+    return {"name": provider, "available": True,
+            "checked_at": checked_at, "detail": "ok"}
+
+
+async def provider_status(cwd: str) -> list:
+    """Availability for every provider, cached PROBE_TTL seconds.
+
+    Stale providers probe concurrently; the endpoint awaits them so
+    the picker never renders a blind default.
+    """
+    now = time.time()
+    with _probe_lock:
+        fresh = {name: entry for name, (at, entry)
+                 in _probe_cache.items()
+                 if now - at < PROBE_TTL}
+    todo = [p for p in PROVIDERS if p not in fresh]
+    probed = await asyncio.gather(
+        *(probe_provider(p, cwd) for p in todo))
+    with _probe_lock:
+        for entry in probed:
+            _probe_cache[entry["name"]] = (time.time(), entry)
+        return [_probe_cache[p][1] for p in PROVIDERS]
 
 
 class AgentTurnManager:

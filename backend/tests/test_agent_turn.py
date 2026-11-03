@@ -115,6 +115,68 @@ class TurnArgvTest(unittest.TestCase):
         uuid.UUID(carried)
 
 
+class ProbeTest(unittest.TestCase):
+    def setUp(self):
+        agent_turn.clear_probe_cache()
+
+    def _completed(self, code=0, stdout="ok", stderr=""):
+        m = mock.Mock()
+        m.returncode = code
+        m.stdout = stdout
+        m.stderr = stderr
+        return m
+
+    @mock.patch("backend.exec.agent_turn.subprocess.run")
+    def test_probe_available_on_clean_turn(self, run):
+        run.return_value = self._completed()
+        status = asyncio.run(
+            agent_turn.probe_provider("muse", "/srv/remote-server"))
+        self.assertTrue(status["available"])
+        self.assertEqual(status["name"], "muse")
+        self.assertGreater(status["checked_at"], 0)
+        self.assertEqual(run.call_count, 2)
+
+    @mock.patch("backend.exec.agent_turn.subprocess.run")
+    def test_probe_dead_when_binary_missing(self, run):
+        run.return_value = self._completed(code=1, stdout="",
+                                           stderr="not found")
+        status = asyncio.run(
+            agent_turn.probe_provider("muse", "/srv/remote-server"))
+        self.assertFalse(status["available"])
+        self.assertEqual(run.call_count, 1)
+
+    @mock.patch("backend.exec.agent_turn.subprocess.run")
+    def test_probe_dead_on_turn_failure(self, run):
+        run.side_effect = [self._completed(),
+                           self._completed(code=1,
+                                           stderr="auth revoked")]
+        status = asyncio.run(
+            agent_turn.probe_provider("muse", "/srv/remote-server"))
+        self.assertFalse(status["available"])
+        self.assertIn("auth revoked", status["detail"])
+
+    @mock.patch("backend.exec.agent_turn.subprocess.run")
+    def test_probe_dead_on_timeout(self, run):
+        import subprocess as sp
+
+        run.side_effect = [self._completed(),
+                           sp.TimeoutExpired("muse", 25)]
+        status = asyncio.run(
+            agent_turn.probe_provider("muse", "/srv/remote-server"))
+        self.assertFalse(status["available"])
+
+    @mock.patch("backend.exec.agent_turn.subprocess.run")
+    def test_status_caches_within_ttl(self, run):
+        run.return_value = self._completed()
+        asyncio.run(agent_turn.provider_status("/srv/remote-server"))
+        asyncio.run(agent_turn.provider_status("/srv/remote-server"))
+        self.assertEqual(run.call_count, 4)
+
+    def test_probe_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            asyncio.run(agent_turn.probe_provider("nope", "/srv/x"))
+
+
 class RunTurnTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -234,10 +296,27 @@ class AgentRouterTest(unittest.TestCase):
             os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
 
     def test_providers_lists_allowlist(self):
-        resp = self.client.get("/api/agent/providers")
+        async def fake_status(cwd):
+            return []
+        with mock.patch.object(agent.agent_turn, "provider_status",
+                               side_effect=fake_status):
+            resp = self.client.get("/api/agent/providers")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(set(resp.json()["providers"]),
                          {"muse", "agy"})
+
+    def test_providers_reports_status(self):
+        async def fake_status(cwd):
+            return [{"name": "muse", "available": False,
+                     "checked_at": 1700000000,
+                     "detail": "auth revoked"}]
+        with mock.patch.object(agent.agent_turn, "provider_status",
+                               side_effect=fake_status):
+            resp = self.client.get("/api/agent/providers")
+        body = resp.json()
+        self.assertEqual(body["providers"], ["muse", "agy"])
+        self.assertEqual(len(body["status"]), 1)
+        self.assertFalse(body["status"][0]["available"])
 
     def test_turn_rejects_unknown_provider(self):
         body = dict(TURN_BODY, provider="pi")

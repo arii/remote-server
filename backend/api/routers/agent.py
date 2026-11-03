@@ -42,8 +42,16 @@ class AbortResult(BaseModel):
     killed: bool = False
 
 
+class ProviderStatus(BaseModel):
+    name: str = ""
+    available: bool = False
+    checked_at: int = 0
+    detail: str = ""
+
+
 class ProviderList(BaseModel):
     providers: list[str] = []
+    status: list[ProviderStatus] = []
 
 
 def _repo_target(repo: str) -> tuple[str, str]:
@@ -64,8 +72,11 @@ def _repo_target(repo: str) -> tuple[str, str]:
 
 
 @router.get("/providers", response_model=ProviderList)
-def agent_providers() -> dict:
-    return {"providers": list(agent_turn.PROVIDERS)}
+async def agent_providers() -> dict:
+    status = await agent_turn.provider_status(
+        agent_turn.terminal_cwd("remote-server"))
+    return {"providers": list(agent_turn.PROVIDERS),
+            "status": status}
 
 
 async def _turn_events(provider: str, repo: str, cwd: str,

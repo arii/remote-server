@@ -75,15 +75,29 @@ export async function pumpTurn(
   return { sessionId, text, truncated };
 }
 
+export function defaultProvider(
+  providers: string[],
+  status: Record<string, boolean>,
+): string {
+  return providers.find((p) => status[p] !== false) ?? providers[0] ?? '';
+}
+
 export default function AgentDrawer({
   repo,
   initialProviders,
+  initialStatus,
 }: {
   repo: string;
   initialProviders?: string[];
+  initialStatus?: Record<string, boolean>;
 }) {
   const [providers, setProviders] = useState<string[]>(initialProviders ?? []);
-  const [provider, setProvider] = useState('');
+  const [status, setStatus] = useState<Record<string, boolean>>(
+    initialStatus ?? {},
+  );
+  const [provider, setProvider] = useState(
+    defaultProvider(initialProviders ?? [], initialStatus ?? {}),
+  );
   const [prompt, setPrompt] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
   const [live, setLive] = useState(false);
@@ -102,6 +116,9 @@ export default function AgentDrawer({
       try {
         const liveProviders = await fetchAgentProviders();
         setProviders(liveProviders.providers);
+        const next: Record<string, boolean> = {};
+        for (const s of liveProviders.status ?? []) next[s.name] = s.available;
+        setStatus(next);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -109,8 +126,10 @@ export default function AgentDrawer({
   }, [initialProviders]);
 
   useEffect(() => {
-    if (!provider && providers.length > 0) setProvider(providers[0]);
-  }, [provider, providers]);
+    if (!provider && providers.length > 0) {
+      setProvider(defaultProvider(providers, status));
+    }
+  }, [provider, providers, status]);
 
   useEffect(
     () => () => {
@@ -248,6 +267,7 @@ export default function AgentDrawer({
               {providers.map((p) => (
                 <option key={p} value={p}>
                   {p}
+                  {status[p] === false ? ' (unreachable)' : ''}
                 </option>
               ))}
             </select>
@@ -265,9 +285,17 @@ export default function AgentDrawer({
           <div className="actions">
             <TapToFire
               label="Launch"
-              disabled={providers.length === 0}
+              disabled={
+                providers.length === 0 ||
+                (provider !== '' && status[provider] === false)
+              }
               onFire={() => void onLaunch()}
             />
+            {provider !== '' && status[provider] === false && (
+              <p className="row-meta" data-testid="agent-provider-dead" role="status">
+                {provider} is unreachable — pick a live provider.
+              </p>
+            )}
           </div>
         </div>
       )}
