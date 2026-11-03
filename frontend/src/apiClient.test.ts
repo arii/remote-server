@@ -5,6 +5,7 @@ import {
   apiUrl,
   fetchAgentProviders,
   fetchAttention,
+  fetchInbox,
   fetchJobs,
   fetchLedger,
   fetchPrDetails,
@@ -68,6 +69,19 @@ describe('apiClient (fetch with inline shapes)', () => {
   it('throws visibly on HTTP errors (no silent fallback)', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
     await expect(fetchJobs()).rejects.toThrow('GET api/jobs failed: 500');
+  });
+
+  it('fetches the aggregated inbox feed for a repo', async () => {
+    const feed = {
+      repo: 'remote-server',
+      updated_at: 1,
+      attention: [],
+      merge_ready: { count: 0, top: [] },
+      runs: { active: null, recent: [] },
+    };
+    vi.stubGlobal('fetch', mockFetchJson(feed));
+    expect(await fetchInbox('remote-server')).toEqual(feed);
+    expect(fetch).toHaveBeenCalledWith('/api/inbox?repo=remote-server');
   });
 
   it('fetches the pr diff for a repo and number', async () => {

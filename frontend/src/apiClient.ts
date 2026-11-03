@@ -68,6 +68,24 @@ export function fetchAttention(repo: string): Promise<import('./attentionTypes')
   );
 }
 
+export interface InboxFeed {
+  repo: string;
+  updated_at: number;
+  attention: import('./attentionTypes').AttentionItem[];
+  merge_ready: {
+    count: number;
+    top: Array<{ number: number; title: string }>;
+  };
+  runs: {
+    active: { id: string; action: string; started: number | null } | null;
+    recent: Array<{ id: string; action: string; exit: number | null }>;
+  };
+}
+
+export function fetchInbox(repo: string): Promise<InboxFeed> {
+  return getJson<InboxFeed>(`api/inbox?repo=${encodeURIComponent(repo)}`);
+}
+
 export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
   const resp = await fetch(apiUrl('api/create-issue'), {
     method: 'POST',

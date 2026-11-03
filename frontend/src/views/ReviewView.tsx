@@ -337,8 +337,7 @@ export default function ReviewView({
     <section data-testid="review-view">
       <header className="page-head">
         <div>
-          <h2>Review</h2>
-          <p className="row-meta" data-testid="review-repo">Repo: {repo}</p>
+          <h3>Review</h3>
         </div>
       </header>
       {error && (

@@ -606,7 +606,7 @@ export default function JobsView({
     <section data-testid="jobs-view">
       <header className="page-head">
         <div>
-          <h2>Jobs</h2>
+          <h3>Jobs</h3>
           <p className="row-meta">
             {list.length} run{list.length === 1 ? '' : 's'}
             {jobsListActive(list) || running ? ' · Live' : ''}

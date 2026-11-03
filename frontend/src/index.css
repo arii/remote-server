@@ -313,6 +313,12 @@ nav.actions button[aria-pressed="true"] {
   color: #fff;
   font-weight: 650;
 }
+nav.actions.secondary {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+nav.actions.secondary button { min-height: 36px; }
 
 button, select, input, textarea {
   font: inherit;
