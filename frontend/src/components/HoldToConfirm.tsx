@@ -22,6 +22,16 @@ export function shouldTickHaptic(prevProgress: number, nextProgress: number, red
   return Math.floor(nextProgress * 4) > Math.floor(prevProgress * 4);
 }
 
+// Firing requires a gesture separate from the arming press: the
+// click that ends a mouse hold, or the tap that instantly arms under
+// reduced motion, must never fire on its own. Only a later,
+// deliberate tap confirms.
+export const SEPARATE_GESTURE_MS = 300;
+
+export function fireAllowed(armedAtMs: number, nowMs: number): boolean {
+  return nowMs - armedAtMs >= SEPARATE_GESTURE_MS;
+}
+
 // Press-and-hold to arm, then tap to fire. Respects prefers-reduced-motion
 // (arming is instant, no animated progress).
 export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }: HoldToConfirmProps) {
@@ -30,6 +40,7 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
   const timer = useRef<number | null>(null);
   const startRef = useRef(0);
   const prevRef = useRef(0);
+  const armedAtRef = useRef(0);
   const reduced =
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&
@@ -49,6 +60,7 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
     if ('repeat' in e && e.repeat) return;
     if ('key' in e && e.key !== ' ' && e.key !== 'Enter') return;
     if (reduced) {
+      armedAtRef.current = Date.now();
       setArmed(true);
       setProgress(1);
       buzz(40);
@@ -66,6 +78,7 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
       setProgress(p);
       if (p >= 1) {
         clear();
+        armedAtRef.current = Date.now();
         setArmed(true);
         buzz(40);
       }
@@ -93,7 +106,7 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
         if ('key' in e && (e.key === ' ' || e.key === 'Enter') && !armed) cancel();
       }}
       onClick={() => {
-        if (armed && !disabled) {
+        if (armed && !disabled && fireAllowed(armedAtRef.current, Date.now())) {
           setArmed(false);
           setProgress(0);
           onFire();

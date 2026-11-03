@@ -563,7 +563,7 @@ export default function ChatView({
         </p>
       )}
       {streaming && phase && (
-        <p className="row-meta" data-testid="chat-phase">
+        <p className="row-meta" data-testid="chat-phase" role="status">
           {phase}
         </p>
       )}

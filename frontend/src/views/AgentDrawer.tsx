@@ -281,7 +281,15 @@ export default function AgentDrawer({
               // eslint-disable-next-line react/no-array-index-key
               <li key={i} className="detail" data-testid={`agent-msg-${t.role}-${i}`}>
                 <span className="row-title">{t.role === 'user' ? 'You' : provider}</span>
-                <p>{t.text || (working && i === turns.length - 1 ? 'Working…' : '')}</p>
+                <p
+                  role={
+                    t.role === 'assistant' && working && i === turns.length - 1
+                      ? 'status'
+                      : undefined
+                  }
+                >
+                  {t.text || (working && i === turns.length - 1 ? 'Working…' : '')}
+                </p>
               </li>
             ))}
           </ul>

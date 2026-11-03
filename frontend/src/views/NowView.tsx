@@ -156,6 +156,7 @@ export default function NowView({
     try {
       const live = await fetchInbox(repo);
       setData(live);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -208,14 +209,12 @@ export default function NowView({
     }
   }
 
-  if (error) {
-    return (
-      <section data-testid="now-error" role="alert">
-        Couldn&apos;t load what needs you: {error}
-      </section>
-    );
+  if (!data && !error) return <section data-testid="now-loading">Loading…</section>;
+
+  async function onRetry() {
+    setError(null);
+    await refresh();
   }
-  if (!data) return <section data-testid="now-loading">Loading…</section>;
 
   return (
     <section data-testid="now-view">
@@ -223,15 +222,25 @@ export default function NowView({
         <div>
           <h2>
             Now{' '}
-            <span className="head-stamp" title={formatStamp(data.updated_at)}>
-              Updated {relativeStamp(data.updated_at)}
-            </span>
+            {data && (
+              <span className="head-stamp" title={formatStamp(data.updated_at)}>
+                Updated {relativeStamp(data.updated_at)}
+              </span>
+            )}
           </h2>
         </div>
         <button type="button" data-testid="report-bug" onClick={() => setDialogOpen(true)}>
           Report a bug
         </button>
       </header>
+      {error && (
+        <div data-testid="now-error" role="alert">
+          Couldn&apos;t load what needs you: {error}{' '}
+          <button type="button" data-testid="now-retry" onClick={() => void onRetry()}>
+            Retry
+          </button>
+        </div>
+      )}
       {dialogOpen && (
         <ReportDialog
           initialBody={reportContext}
@@ -257,11 +266,13 @@ export default function NowView({
           <p className="row-meta">Stack status: loading…</p>
         )}
       </section>
-      <InboxStrips
-        feed={data}
-        onOpenReview={() => setSection('review')}
-        onOpenJobs={() => setSection('jobs')}
-      />
+      {data && (
+        <>
+          <InboxStrips
+            feed={data}
+            onOpenReview={() => setSection('review')}
+            onOpenJobs={() => setSection('jobs')}
+          />
       {data.attention.length === 0 ? (
         <div data-testid="now-empty">
           <h3>Nothing needs you right now</h3>
@@ -321,8 +332,10 @@ export default function NowView({
           Jobs{data.runs.active ? ' •' : ''}
         </button>
       </div>
-      {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} />}
-      {section === 'jobs' && <JobsView repo={repo} />}
+          {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} />}
+          {section === 'jobs' && <JobsView repo={repo} />}
+        </>
+      )}
     </section>
   );
 }
