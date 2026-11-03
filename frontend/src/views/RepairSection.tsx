@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { dispatchRepair, fetchIssues, fetchRepairStatus } from '../apiClient';
+import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus } from '../apiClient';
 import type { RepairStatusResponse } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
 import { useMock } from './mockViews';
@@ -13,11 +13,19 @@ const IDLE_REPAIR: RepairStatusResponse = {
   exit_code: null,
 };
 
-export default function RepairSection({ repo }: { repo: string }) {
+export default function RepairSection({
+  repo,
+  initialStatus,
+}: {
+  repo: string;
+  initialStatus?: RepairStatusResponse;
+}) {
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [picked, setPicked] = useState('');
   const [manual, setManual] = useState('');
-  const [status, setStatus] = useState<RepairStatusResponse>(IDLE_REPAIR);
+  const [status, setStatus] = useState<RepairStatusResponse>(
+    initialStatus ?? IDLE_REPAIR,
+  );
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -50,12 +58,27 @@ export default function RepairSection({ repo }: { repo: string }) {
     try {
       const next = await fetchRepairStatus();
       setStatus(next);
-      if (next.status === 'done' || next.status === 'failed') {
+      if (next.status === 'done' || next.status === 'failed' || next.status === 'aborted') {
         stopWatch();
         setError(repairFailureMessage(next.status, next.issue, next.exit_code));
       }
     } catch {
       stopWatch();
+    }
+  }
+
+  async function onAbortRepair() {
+    stopWatch();
+    setError(null);
+    try {
+      if (useMock()) {
+        setStatus({ ...IDLE_REPAIR, status: 'aborted', issue: status.issue });
+        return;
+      }
+      await abortRepair();
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -109,6 +132,11 @@ export default function RepairSection({ repo }: { repo: string }) {
         >
           Dispatch repair
         </button>
+        {status.status === 'running' && (
+          <button type="button" data-testid="repair-abort" onClick={() => void onAbortRepair()}>
+            Abort
+          </button>
+        )}
       </div>
       {issues && repairCandidates(issues).length === 0 && (
         <p className="row-meta" data-testid="repair-empty">

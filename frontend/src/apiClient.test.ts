@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __clearPrCaches,
   abortAgentSession,
+  abortRepair,
   apiUrl,
   fetchAgentProviders,
   fetchAttention,
@@ -48,6 +49,15 @@ describe('apiClient (fetch with inline shapes)', () => {
     vi.stubGlobal('fetch', mockFetchJson(jobs));
     expect(await fetchJobs()).toEqual(jobs);
     expect(fetch).toHaveBeenCalledWith('/api/jobs');
+  });
+
+  it('posts repair aborts', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, killed: true }));
+    expect(await abortRepair()).toEqual({ ok: true, killed: true });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/repair/abort',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
   it('fetches ledger entries', async () => {

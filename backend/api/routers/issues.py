@@ -9,6 +9,7 @@ this backend serves /api/* like its sibling routers):
 - POST /api/issue-draft           build a structured issue draft
 - POST /api/repair/dispatch       start the repair worker for an issue
 - GET  /api/repair/status         repair worker state
+- POST /api/repair/abort          abort the in-flight repair worker
 
 Repair runs the worker the same way the legacy handler does: the
 same argv (python3 -m core_cli repair --issue N) with no new
@@ -45,6 +46,9 @@ repair_state = {
 repair_state_lock = threading.Lock()
 
 _repair_runner = None
+# In-flight worker proc + abort flag, guarded by repair_state_lock.
+_repair_proc = None
+_repair_abort = False
 
 
 def parse_issue_number(val) -> int | None:
@@ -121,6 +125,7 @@ class RepairStatus(BaseModel):
 def _repair_worker_thread(issue_number: int) -> None:
     """Run the repair worker, same argv as the legacy handler, and
     record state and logs. Never raises out."""
+    global _repair_proc, _repair_abort
     with repair_state_lock:
         repair_state["status"] = "running"
         repair_state["timestamp"] = time.time()
@@ -128,6 +133,8 @@ def _repair_worker_thread(issue_number: int) -> None:
         repair_state["log_buffer"] = (
             f"Dispatched repair worker for issue #{issue_number}\n")
         repair_state["exit_code"] = None
+        _repair_proc = None
+        _repair_abort = False
     run = _repair_runner or subprocess
     cmd = ["python3", "-m", "core_cli", "repair",
            "--issue", str(issue_number)]
@@ -137,6 +144,15 @@ def _repair_worker_thread(issue_number: int) -> None:
         proc = run.Popen(cmd, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, bufsize=1,
                          cwd=stack_dir())
+        with repair_state_lock:
+            _repair_proc = proc
+            spawned_aborted = _repair_abort
+        if spawned_aborted:
+            # Abort landed during spawn: stop immediately.
+            try:
+                proc.terminate()
+            except Exception:
+                pass
         if proc.stdout:
             for line in proc.stdout:
                 with repair_state_lock:
@@ -146,15 +162,28 @@ def _repair_worker_thread(issue_number: int) -> None:
                             repair_state["log_buffer"][-MAX_OUTPUT:]
         code = proc.wait()
         with repair_state_lock:
-            repair_state["status"] = "done" if code == 0 else "failed"
-            repair_state["exit_code"] = code
-            repair_state["log_buffer"] += f"\nProcess exited with code {code}\n"
+            _repair_proc = None
+            if _repair_abort:
+                repair_state["status"] = "aborted"
+                repair_state["exit_code"] = None
+                repair_state["log_buffer"] += "\nAborted by user.\n"
+            else:
+                repair_state["status"] = "done" if code == 0 else "failed"
+                repair_state["exit_code"] = code
+                repair_state["log_buffer"] += (
+                    f"\nProcess exited with code {code}\n")
     except Exception as exc:
         with repair_state_lock:
+            _repair_proc = None
             repair_state["status"] = "failed"
             repair_state["exit_code"] = 1
             repair_state["log_buffer"] += (
                 f"\nFailed to spawn repair worker: {exc}\n")
+
+
+class RepairAbortResult(BaseModel):
+    ok: bool = True
+    killed: bool = False
 
 
 def trigger_repair(issue_number: int):
@@ -238,3 +267,32 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
 def repair_status() -> dict:
     with repair_state_lock:
         return dict(repair_state)
+
+
+@router.post("/repair/abort", response_model=RepairAbortResult)
+def repair_abort() -> dict:
+    """Abort the in-flight repair worker, if any. Mirrors the agent
+    turn abort: flag first (the worker records "aborted", not an
+    error), then terminate with a kill fallback."""
+    global _repair_abort
+    with repair_state_lock:
+        if repair_state["status"] != "running":
+            return {"ok": True, "killed": False}
+        _repair_abort = True
+        proc = _repair_proc
+    if proc is None:
+        return {"ok": True, "killed": False}
+    try:
+        if proc.poll() is not None:
+            return {"ok": True, "killed": False}
+    except Exception:
+        return {"ok": True, "killed": False}
+    try:
+        proc.terminate()
+        proc.wait(5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return {"ok": True, "killed": True}

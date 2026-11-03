@@ -13,6 +13,24 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).toContain('data-testid="repair-status"');
   });
 
+  it('repair abort shows only while running', () => {
+    const idle = renderToStaticMarkup(<RepairSection repo="remote-server" />);
+    expect(idle).not.toContain('data-testid="repair-abort"');
+    const running = renderToStaticMarkup(
+      <RepairSection
+        repo="remote-server"
+        initialStatus={{
+          status: 'running',
+          timestamp: null,
+          log_buffer: '',
+          issue: 9,
+          exit_code: null,
+        }}
+      />,
+    );
+    expect(running).toContain('data-testid="repair-abort"');
+  });
+
   it('td commands render pr and whole-repo groups', () => {
     const html = renderToStaticMarkup(
       <TdCommands
