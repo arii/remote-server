@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
 import { abortAgentSession, fetchAgentProviders, postAgentTurn } from '../apiClient';
 import { useMock } from './mockViews';
 
@@ -263,11 +262,14 @@ export default function AgentDrawer({
             />
           </label>
           <div className="actions">
-            <HoldToConfirm
-              label="Launch"
+            <button
+              type="button"
+              data-testid="agent-launch"
               disabled={providers.length === 0}
-              onFire={() => void onLaunch()}
-            />
+              onClick={() => void onLaunch()}
+            >
+              Launch
+            </button>
           </div>
         </div>
       )}

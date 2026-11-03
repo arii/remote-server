@@ -592,13 +592,14 @@ describe('inbox strips', () => {
 });
 
 describe('agent drawer', () => {
-  it('renders provider picker, prompt, and hold-to-launch idle', () => {
+  it('renders provider picker, prompt, and launch button idle', () => {
     const html = renderToStaticMarkup(
       <AgentDrawer repo="remote-server" initialProviders={['muse', 'agy']} />,
     );
     expect(html).toContain('data-testid="agent-drawer"');
     expect(html).toContain('data-testid="agent-provider"');
     expect(html).toContain('data-testid="agent-prompt"');
+    expect(html).toContain('data-testid="agent-launch"');
     expect(html).toContain('Launch');
     expect(html).toContain('muse');
     expect(html).not.toContain('data-testid="agent-transcript"');

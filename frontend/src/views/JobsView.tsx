@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
+import InlineConfirm from '../components/InlineConfirm';
 import {
   clearJobs,
   dispatchRepair,
@@ -27,7 +27,6 @@ interface TdCommand {
   label: string;
   desc: string;
   needsPr: boolean;
-  hold: boolean;
   build: (pr: string) => string;
 }
 
@@ -37,7 +36,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Fix CI failures',
     desc: 'Pushes automated CI fixes to the PR branch.',
     needsPr: true,
-    hold: true,
     build: (pr) => `td --json agent fix-ci --pr ${pr} --execute`,
   },
   {
@@ -45,7 +43,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Read PR reviews',
     desc: 'Review verdicts and threads for the PR.',
     needsPr: true,
-    hold: false,
     build: (pr) => `td gh read-pr-reviews --pr ${pr}`,
   },
   {
@@ -53,7 +50,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Read PR comments',
     desc: 'All comments on the PR.',
     needsPr: true,
-    hold: false,
     build: (pr) => `td gh read-pr-comments --pr ${pr}`,
   },
   {
@@ -61,7 +57,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Resolve conflicts',
     desc: 'Attempts merge-conflict resolution on the PR.',
     needsPr: true,
-    hold: true,
     build: (pr) => `td gh resolve-conflicts --pr ${pr}`,
   },
   {
@@ -69,7 +64,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Agent sessions',
     desc: 'Active background agent sessions.',
     needsPr: false,
-    hold: false,
     build: () => 'td --json agent list-sessions',
   },
   {
@@ -77,7 +71,6 @@ const TD_COMMANDS: TdCommand[] = [
     label: 'Feedback check',
     desc: 'Pending agent run feedback.',
     needsPr: false,
-    hold: false,
     build: () => 'td --json agent run-feedback-check',
   },
 ];
@@ -86,6 +79,7 @@ interface DangerAction {
   action: string;
   label: string;
   consequence: string;
+  prompt: string;
 }
 
 const DANGER: DangerAction[] = [
@@ -93,26 +87,31 @@ const DANGER: DangerAction[] = [
     action: 'merge-approved',
     label: 'Merge approved PR',
     consequence: 'Merges every approved, green PR.',
+    prompt: 'Merge approved PRs? This cannot be undone.',
   },
   {
     action: 'create-plan',
     label: 'Write briefing plan',
     consequence: 'Writes a dated plan file into .agents/plans.',
+    prompt: 'Write briefing plan now?',
   },
   {
     action: 'deploy-buttons',
     label: 'Redeploy this console',
     consequence: 'Pulls, rebuilds and restarts the console container.',
+    prompt: 'Redeploy this console? Service will briefly restart.',
   },
   {
     action: 'recreate',
     label: 'Restart terminal',
     consequence: 'Force-restarts the terminal container; drops live sessions.',
+    prompt: 'Restart terminal? This will drop live sessions.',
   },
   {
     action: 'recreate-code',
     label: 'Restart code editor',
     consequence: 'Force-restarts the code-server container.',
+    prompt: 'Restart code editor? This will drop live sessions.',
   },
 ];
 
@@ -679,7 +678,7 @@ export default function JobsView({
             </p>
           )}
           <div className="actions">
-            {TD_COMMANDS.filter((c) => c.needsPr && !c.hold).map((c) => (
+            {TD_COMMANDS.filter((c) => c.needsPr && c.slug !== 'fix-ci' && c.slug !== 'resolve-conflicts').map((c) => (
               <button
                 key={c.slug}
                 type="button"
@@ -693,16 +692,20 @@ export default function JobsView({
             ))}
           </div>
           <div className="actions">
-            <span className="row-meta">Change (hold to run):</span>
-            {TD_COMMANDS.filter((c) => c.needsPr && c.hold).map((c) => {
+            <span className="row-meta">Change:</span>
+            {TD_COMMANDS.filter((c) => c.slug === 'fix-ci' || c.slug === 'resolve-conflicts').map((c) => {
               const block = c.slug === 'fix-ci' ? fixCiBlock : conflictBlock;
               return (
-                <HoldToConfirm
+                <button
                   key={c.slug}
-                  label={c.label}
+                  type="button"
+                  data-testid={`dispatch-td-${c.slug}`}
+                  title={c.desc}
                   disabled={!prOk || block !== null}
-                  onFire={() => onDispatchTd(c)}
-                />
+                  onClick={() => onDispatchTd(c)}
+                >
+                  {c.label}
+                </button>
               );
             })}
           </div>
@@ -715,25 +718,17 @@ export default function JobsView({
         <div className="cmd-group" data-testid="td-repo-group">
           <p className="row-meta">Whole repo</p>
           <div className="actions">
-            {TD_COMMANDS.filter((c) => !c.needsPr).map((c) =>
-              c.hold ? (
-                <HoldToConfirm
-                  key={c.slug}
-                  label={c.label}
-                  onFire={() => onDispatchTd(c)}
-                />
-              ) : (
-                <button
-                  key={c.slug}
-                  type="button"
-                  data-testid={`dispatch-td-${c.slug}`}
-                  title={c.desc}
-                  onClick={() => onDispatchTd(c)}
-                >
-                  {c.label}
-                </button>
-              ),
-            )}
+            {TD_COMMANDS.filter((c) => !c.needsPr).map((c) => (
+              <button
+                key={c.slug}
+                type="button"
+                data-testid={`dispatch-td-${c.slug}`}
+                title={c.desc}
+                onClick={() => onDispatchTd(c)}
+              >
+                {c.label}
+              </button>
+            ))}
           </div>
         </div>
       </section>
@@ -764,10 +759,12 @@ export default function JobsView({
                     )}
                   </p>
                 </div>
-                <HoldToConfirm
+                <InlineConfirm
                   label={d.label}
+                  prompt={d.prompt}
                   disabled={d.action === 'merge-approved' && mergeReady === 0}
-                  onFire={() =>
+                  data-testid={`danger-${d.action}-btn`}
+                  onConfirm={() =>
                     void guarded(() =>
                       launch(d.label, () => startJobRun(d.action, repo, true)),
                     )
@@ -785,10 +782,12 @@ export default function JobsView({
                   : 'Drops finished runs from the list below.'}
               </p>
             </div>
-            <HoldToConfirm
+            <InlineConfirm
               label="Clear finished"
+              prompt="Clear finished runs? This cannot be undone."
               disabled={finishedCount === 0}
-              onFire={() => void guarded(() => onClear(false))}
+              data-testid="danger-clear-finished-btn"
+              onConfirm={() => void guarded(() => onClear(false))}
             />
           </li>
           <li className="danger-row" data-testid="danger-clear-all">
@@ -798,10 +797,12 @@ export default function JobsView({
                 {list.length === 0 ? 'No runs to clear.' : 'Drops all runs, including running ones.'}
               </p>
             </div>
-            <HoldToConfirm
+            <InlineConfirm
               label="Clear everything"
+              prompt="Clear everything? Drops all runs."
               disabled={list.length === 0}
-              onFire={() => void guarded(() => onClear(true))}
+              data-testid="danger-clear-all-btn"
+              onConfirm={() => void guarded(() => onClear(true))}
             />
           </li>
           <li className="danger-row" data-testid="danger-takeover">
@@ -809,7 +810,12 @@ export default function JobsView({
               <span className="row-title">Take over terminal</span>
               <p className="row-meta">Disconnects other viewers of the shared terminal.</p>
             </div>
-            <HoldToConfirm label="Take over terminal" onFire={() => void guarded(onTakeover)} />
+            <InlineConfirm
+              label="Take over terminal"
+              prompt="Take over terminal? Disconnects other viewers."
+              data-testid="danger-takeover-btn"
+              onConfirm={() => void guarded(onTakeover)}
+            />
           </li>
         </ul>
       </section>
