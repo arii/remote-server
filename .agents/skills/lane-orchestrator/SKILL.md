@@ -18,7 +18,8 @@ Write the lane registry to memory file `lanes/registry.md` (personal_project sco
 3. Merge green, pre-approved PRs whose checks pass.
 4. Deploy the buttons service only — never the terminal service.
 5. Live-verify every deploy: `curl` the service, then check it in BrowserMCP.
-6. Prune your own stale worktrees and branches.
+6. After each deploy, message audit-impeccable-slop for targeted UX re-verification: `verify: #<n> <expected-live-behavior>`. Event-driven per deploy — never wait for their loop.
+7. Prune your own stale worktrees and branches.
 7. Answer lane questions from the other roles.
 8. On `role: <role> <session>` announce messages, update `lanes/registry.md` and reply confirming registration.
 
