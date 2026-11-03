@@ -44,18 +44,20 @@ class DigestResult(BaseModel):
 
 def _resolve_repo_path(repo_full_name: str):
     """Map a GitHub full_name to a local checkout path, or None."""
-    try:
-        from backend.core import resolve_repo_path
-    except Exception:
-        return None
+    import os
     short = (repo_full_name or "").split("/")[-1].strip()
     if not short:
         return None
+    # The stack checkout itself lives outside the repos dir.
+    stack = os.environ.get("BUTTONS_STACK", "/home/ari/remote-server")
+    if short == os.path.basename(stack.rstrip("/")) \
+            and os.path.isdir(stack):
+        return stack
     try:
+        from backend.core import resolve_repo_path
         path = resolve_repo_path(short)
     except Exception:
         return None
-    import os
     return str(path) if os.path.isdir(str(path)) else None
 
 

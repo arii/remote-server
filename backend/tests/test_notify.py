@@ -119,6 +119,32 @@ class HmacTableTest(unittest.TestCase):
             notify_router._resolve_repo_path = orig
 
 
+@unittest.skipUnless(HAS_CLIENT, "notify router not importable")
+class ResolveRepoPathTest(unittest.TestCase):
+    def test_stack_checkout_resolves(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = os.path.join(tmp, "remote-server")
+            os.mkdir(stack)
+            old = os.environ.get("BUTTONS_STACK")
+            os.environ["BUTTONS_STACK"] = stack
+            try:
+                self.assertEqual(
+                    notify_router._resolve_repo_path(
+                        "arii/remote-server"),
+                    stack)
+            finally:
+                if old is None:
+                    del os.environ["BUTTONS_STACK"]
+                else:
+                    os.environ["BUTTONS_STACK"] = old
+
+    def test_unknown_repo_is_none(self):
+        self.assertIsNone(
+            notify_router._resolve_repo_path(
+                "arii/definitely-not-a-repo-xyz"))
+
+
 class WebhookWorkerTest(unittest.TestCase):
     def test_crash_releases_pending_and_records_state(self):
         orig_pull = N.webhook_pull
