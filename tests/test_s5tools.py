@@ -68,6 +68,25 @@ class TestS5Tools(unittest.TestCase):
             self.assertTrue(s5tools.list_dir(d, "..").startswith("REJECTED"))
             self.assertTrue(s5tools.list_dir(d, "nope").startswith("list failed"))
 
+    def test_falsy_checkout_rejected_never_content(self):
+        for checkout in ("", None):
+            self.assertTrue(
+                s5tools.read_repo_file(
+                    checkout, "/etc/hostname").startswith("REJECTED"))
+            self.assertTrue(
+                s5tools.list_dir(
+                    checkout, "/etc").startswith("REJECTED"))
+
+    def test_absolute_path_rejected_with_checkout(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(
+                s5tools.read_repo_file(
+                    d, "/etc/hostname").startswith("REJECTED"))
+            self.assertTrue(
+                s5tools.list_dir(d, "/etc").startswith("REJECTED"))
+
     def test_grep_repo(self):
         import tempfile
 

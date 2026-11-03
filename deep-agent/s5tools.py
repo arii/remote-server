@@ -76,11 +76,30 @@ def td(args, cwd, timeout=300):
     return run(["td", *args], cwd=cwd, timeout=timeout)
 
 
+def _checkout_root(checkout):
+    """Real checkout root, or None when the checkout is missing.
+
+    The sandbox must not trust callers: a falsy/non-str checkout
+    rejects instead of collapsing the prefix guard (empty string)
+    or crashing it (None).
+    """
+    if not isinstance(checkout, str) or not checkout:
+        return None
+    return os.path.realpath(checkout)
+
+
+def _inside(root, full):
+    return full == root or full.startswith(root + os.sep)
+
+
 def list_dir(checkout, path="", limit=200):
     """List names in a checkout directory. Returns newline-separated
     names or an error string (routine outcomes, not exceptions)."""
-    full = os.path.realpath(os.path.join(checkout or "", path or ""))
-    if full != checkout and not full.startswith(checkout + os.sep):
+    root = _checkout_root(checkout)
+    if root is None:
+        return "REJECTED: bad checkout"
+    full = os.path.realpath(os.path.join(root, path or ""))
+    if not _inside(root, full):
         return "REJECTED: path escapes the checkout"
     try:
         names = sorted(os.listdir(full))
@@ -92,8 +111,11 @@ def list_dir(checkout, path="", limit=200):
 def read_repo_file(checkout, path, limit=3000):
     """Read a repo-relative file. Returns content or a not-found/REJECTED
     string (routine outcomes, not exceptions)."""
-    full = os.path.realpath(os.path.join(checkout or "", path or ""))
-    if full != checkout and not full.startswith(checkout + os.sep):
+    root = _checkout_root(checkout)
+    if root is None:
+        return "REJECTED: bad checkout"
+    full = os.path.realpath(os.path.join(root, path or ""))
+    if not _inside(root, full):
         return "REJECTED: path escapes the checkout"
     if not os.path.isfile(full):
         return "not found: no such file"
