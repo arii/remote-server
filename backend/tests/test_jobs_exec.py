@@ -79,12 +79,20 @@ class TruncationTest(unittest.TestCase):
 class ClearSemanticsTest(unittest.TestCase):
     def test_clear_terminal_only_by_default(self):
         reg = RunRegistry()
-        reg.jobs["a"] = {"id": "a", "state": "terminal", "created_at": 1}
-        reg.jobs["b"] = {"id": "b", "state": "active", "created_at": 2}
+        done_id, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(done_id, 0)
+        active_id, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        # Same store the list reads: finished runs go, active stays.
         self.assertEqual(reg.clear_jobs(), 1)
-        self.assertIn("b", reg.jobs)
+        self.assertNotIn(done_id, reg.runs)
+        self.assertIn(active_id, reg.runs)
         self.assertEqual(reg.clear_jobs(all_jobs=True), 1)
-        self.assertEqual(reg.jobs, {})
+        self.assertEqual(reg.runs, {})
+        # Clearing records never releases single-flight: the orphaned
+        # run's finish still owns the active slot.
+        self.assertEqual(reg.active_id, active_id)
 
     def test_clear_run_output(self):
         reg = RunRegistry()
