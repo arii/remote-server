@@ -26,7 +26,7 @@ export function plainLanguage(raw: string, fallbackKind: string): string {
   return first;
 }
 
-export type HistoryTone = 'bad' | 'ok' | 'muted';
+type HistoryTone = 'bad' | 'ok' | 'muted';
 
 // One collapsed group member: its own time, full detail block, and the
 // run id when it came from a job record (for lazy run-output fetch).

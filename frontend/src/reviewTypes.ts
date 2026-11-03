@@ -27,14 +27,14 @@ export interface PrListResponse {
   prs: PrRow[];
 }
 
-export interface PrFileStat {
+interface PrFileStat {
   path: string;
   additions: number;
   deletions: number;
   changes: number;
 }
 
-export interface AiPrompt {
+interface AiPrompt {
   id: string;
   label: string;
   prompt: string;

@@ -4,7 +4,7 @@ import type {
   LedgerResponse,
 } from './apiTypes';
 
-export interface DiskSummary {
+interface DiskSummary {
   summary?: string;
   percent?: number;
   error?: string | null;
@@ -156,7 +156,7 @@ export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListRe
   );
 }
 
-export interface HiddenStructural {
+interface HiddenStructural {
   count: number;
   files: string[];
 }

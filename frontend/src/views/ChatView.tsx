@@ -62,7 +62,7 @@ export function traceLine(ev: TraceEvent, t0: number): string {
   }
 }
 
-export const NARROW_VIEWPORT_QUERY = '(max-width: 767px)';
+const NARROW_VIEWPORT_QUERY = '(max-width: 767px)';
 
 export interface TraceSummary {
   action: string;
@@ -101,7 +101,7 @@ export function traceSummary(ev: TraceEvent, t0: number): TraceSummary {
   }
 }
 
-export function useIsNarrowViewport(): boolean {
+function useIsNarrowViewport(): boolean {
   const [narrow, setNarrow] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
