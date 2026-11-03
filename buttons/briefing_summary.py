@@ -106,12 +106,12 @@ def getf(d, *names, default=None):
     return default
 
 
-def run_json(cmd, timeout):
+def run_json(cmd, timeout, cwd=None):
     """Run cmd, return (parsed JSON or None, raw stdout, error str)."""
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=timeout,
-                              text=True)
+                              text=True, cwd=cwd)
     except Exception as exc:
         return None, "", str(exc)
     raw = proc.stdout or ""
@@ -129,10 +129,29 @@ def run_json(cmd, timeout):
         return None, raw, "output was not JSON"
 
 
+def _config_repo():
+    """github_repo of the checkout td discovers from our cwd (or '')."""
+    try:
+        with open("project_config.json", encoding="utf-8") as fh:
+            return json.load(fh).get("github_repo", "") or ""
+    except Exception:
+        return ""
+
+
+def _target_checkout_cwd():
+    """Local checkout dir for the briefing target, if it has td config."""
+    for base in ("/home/ari/repos", "/srv/repos"):
+        path = os.path.join(base, REPO_KEY)
+        if os.path.isfile(os.path.join(path, "project_config.json")):
+            return path
+    return ""
+
+
 def fetch_pr_diff(pr_number: int, max_file_lines: int = 200) -> str:
     """Fetch PR diff via td and pre-filter using context_filter.filter_diff()."""
     data, _, _ = run_json(
-        ["td", "--json", "gh", "pr-diff", "--pr", str(pr_number)], 30)
+        ["td", "--json", "gh", "pr-diff", "--pr", str(pr_number),
+         "--repo", REPO_GH], 30)
     text = (data or {}).get("diffText") or ""
     if not text:
         return ""
@@ -180,7 +199,8 @@ def _deep_list(node, key, depth=0):
 
 def _excerpt(body, limit=200):
     """One line of review text, whitespace-collapsed, truncated."""
-    text = " ".join(str(body or "").split())
+    text = re.sub(r"<!--.*?-->", "", str(body or ""))
+    text = " ".join(text.split())
     if len(text) > limit:
         return text[:limit].rstrip() + "…"
     return text
@@ -299,13 +319,28 @@ def fetch():
     """Gather everything; each source degrades independently."""
     data = {}
     data["prs"], data["prs_raw"], data["prs_err"] = run_json(
-        ["td", "--json", "gh", "search-prs", "--state", "open"], 60)
-    data["board"], data["board_raw"], data["board_err"] = run_json(
-        ["td", "--json", "gh", "status-board"], 60)
-    data["conf"], data["conf_raw"], data["conf_err"] = run_json(
-        ["td", "--json", "gh", "detect-conflicts", "--all"], 120)
+        ["td", "--json", "gh", "search-prs", "--state", "open",
+         "--repo", REPO_GH], 60)
+    # status-board/detect-conflicts have no --repo flag: they read the
+    # checkout td discovers from cwd. Scope via the target checkout
+    # when it exists; otherwise say so instead of showing the wrong
+    # repo's data.
+    scoped_cwd = _target_checkout_cwd() or None
+    if not scoped_cwd and REPO_GH != _config_repo():
+        unscoped = (f"unavailable for {REPO_GH} "
+                    "(needs a local checkout)")
+        data["board"], data["board_raw"], data["board_err"] = \
+            None, "", unscoped
+        data["conf"], data["conf_raw"], data["conf_err"] = \
+            None, "", unscoped
+    else:
+        data["board"], data["board_raw"], data["board_err"] = run_json(
+            ["td", "--json", "gh", "status-board"], 60, cwd=scoped_cwd)
+        data["conf"], data["conf_raw"], data["conf_err"] = run_json(
+            ["td", "--json", "gh", "detect-conflicts", "--all"], 120,
+            cwd=scoped_cwd)
     data["runs"], data["runs_raw"], data["runs_err"] = run_json(
-        ["td", "--json", "repo", "workflow-runs"], 60)
+        ["td", "--json", "repo", "workflow-runs", "--repo", REPO_GH], 60)
     prs = getf(data["prs"], "prs", default=[]) if data["prs"] else []
     data["pr_list"] = prs if isinstance(prs, list) else []
     # gh enrichment, one call per open PR (counts here are small).
@@ -315,7 +350,7 @@ def fetch():
         if not isinstance(num, int):
             continue
         view, _, _ = run_json([
-            "gh", "pr", "view", str(num), "--json",
+            "gh", "pr", "view", str(num), "--repo", REPO_GH, "--json",
             "number,title,headRefName,mergeable,mergeStateStatus,"
             "reviewDecision,statusCheckRollup,updatedAt,author,isDraft,url",
         ], 30)
@@ -331,7 +366,8 @@ def fetch():
         if not isinstance(num, int):
             continue
         payload, raw, err = run_json(
-            ["td", "--json", "gh", "read-pr-reviews", "--pr", str(num)],
+            ["td", "--json", "gh", "read-pr-reviews", "--pr", str(num),
+             "--repo", REPO_GH],
             30)
         if raw:
             data["reviews_raw_parts"].append(raw[:4000])
@@ -546,14 +582,14 @@ def analyze(data):
                         break
                 if len(picked) >= 2:
                     break
-            for user, state, body in picked:
-                line = f"- #{num}: @{user} {state}"
+            for i, (user, state, body) in enumerate(picked):
+                verb = state.lower().replace("_", " ")
+                line = f"- PR #{num} — {verb} by @{user}"
                 if body:
                     line += f" — '{body}'"
+                if i == len(picked) - 1 and len(items) > len(picked):
+                    line += f" (+{len(items) - len(picked)} more)"
                 reviews_lines.append(line)
-            states = sorted({state for _u, state, _b, _s in items})
-            reviews_lines.append(f"  ({len(items)} review(s): "
-                                 f"{', '.join(states).lower() or 'none'})")
         if not shown_any:
             reviews_lines.append("No reviews on open PRs.")
     elif reviews_err:
@@ -572,14 +608,25 @@ def analyze(data):
         board_lines.append(f"Work board unavailable: {data['board_err']}")
     elif isinstance(board, list) and board:
         for item in board:
+            # td marks missing fields with an em dash; treat it,
+            # "" and "?" all as absent so lines never double-dash.
+            def _present(value):
+                value = (value or "").strip()
+                return "" if value in ("", "?", "—") else value
+            branch = _present(getf(item, "branch", default="?")) or "?"
+            issue = _present(getf(item, "issue", default="?"))
+            status = _present(getf(item, "status", default="?"))
             board_items.append({
-                "branch": getf(item, "branch", default="?"),
-                "issue": getf(item, "issue", default="?"),
-                "status": getf(item, "status", default="?"),
+                "branch": branch,
+                "issue": issue,
+                "status": status,
             })
-            board_lines.append(f"- {getf(item, 'branch', default='?')} "
-                               f"— issue {getf(item, 'issue', default='?')} "
-                               f"— {getf(item, 'status', default='?')}")
+            parts = [branch]
+            if issue:
+                parts.append(f"issue {issue}")
+            if status:
+                parts.append(status)
+            board_lines.append("- " + " — ".join(parts))
     else:
         board_lines.append("No work-board items.")
 

@@ -85,6 +85,7 @@ h1, h2, h3 { text-wrap: balance; }
   font-size: 0.82rem;
   white-space: nowrap;
 }
+.chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
 .pills {
   list-style: none;

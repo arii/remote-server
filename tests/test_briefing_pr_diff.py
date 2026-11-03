@@ -19,7 +19,8 @@ class TestFetchPrDiff(unittest.TestCase):
             out = briefing_summary.fetch_pr_diff(153)
         argv = m.call_args[0][0]
         self.assertEqual(
-            argv, ["td", "--json", "gh", "pr-diff", "--pr", "153"])
+            argv, ["td", "--json", "gh", "pr-diff", "--pr", "153",
+                  "--repo", "arii/tech-dancer"])
         self.assertIn("hi", out)
 
     def test_empty_on_missing_difftext(self):
