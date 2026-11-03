@@ -432,8 +432,21 @@ def _resume_decision(session_id: str, decision: str,
         with pending_resumes_lock:
             pending_resumes[session_id]["busy"] = False
         return None, 500, "agent runtime misconfigured (exit 2)"
+    if code not in (0, 1, 3):
+        with pending_resumes_lock:
+            pending_resumes[session_id]["busy"] = False
+        return None, 500, f"agent exited {code}"
+    text = strip_agent_markers(out)
+    if code == 1 and not text:
+        # Blank exit-1: nothing to show (e.g. the approval was already
+        # consumed) — a stale/duplicate resume, not a server failure.
+        with pending_resumes_lock:
+            st = pending_resumes[session_id]
+            st["busy"] = False
+            st["pending"] = False
+        return None, 409, "no pending approval"
     body: dict = {"ok": True, "resumed": True, "session_id": session_id,
-                  "text": strip_agent_markers(out), "exit": code}
+                  "text": text, "exit": code}
     with pending_resumes_lock:
         st = pending_resumes[session_id]
         st["busy"] = False
@@ -451,8 +464,44 @@ def _resume_decision(session_id: str, decision: str,
                     body["approval"] = {"session_id": session_id, **value,
                                         "proposals": st["proposals"]}
                     return body, 202, ""
+            # Uninterpretable re-interrupt: auto-reject once (bounded)
+            # so the thread never strands behind an unshowable card.
+            rej = base64.b64encode(b"unreadable proposal").decode()
+            try:
+                code2, out2 = run_resume_spawn(gh, session_id,
+                                               "reject", rej)
+            except Exception:
+                code2, out2 = 1, ""
             st["pending"] = False
-            return None, 500, "approval requested but no proposal found"
+            ledger_append({"kind": "chat", "session_id": session_id,
+                           "repo": st["repo"],
+                           "event": "chat auto-rejected",
+                           "error": "follow-up approval unreadable"})
+            if code2 == 3:
+                blob2 = _interrupt_payload([out2])
+                ivs2 = (blob2.get("interrupts") or []) if blob2 else []
+                value2 = ivs2[0].get("value") if ivs2 else None
+                requests2 = approval_requests(value2)
+                if requests2:
+                    checked2 = [validate_action_request(a)
+                                for a in requests2]
+                    if all(ok for ok, _ in checked2):
+                        st["pending"] = True
+                        st["value"] = value2
+                        st["proposals"] = [t for _, t in checked2]
+                        body["text"] = strip_agent_markers(out2)
+                        body["exit"] = code2
+                        body["approval"] = {"session_id": session_id,
+                                            **value2,
+                                            "proposals": st["proposals"]}
+                        return body, 202, ""
+            body["text"] = (strip_agent_markers(out2)
+                            or "The agent asked for approval in a form I "
+                               "can't display, so I rejected it. Ask again "
+                               "if still needed.")
+            body["exit"] = code2
+            body.pop("approval", None)
+            return body, 202, ""
         st["pending"] = False
     done_word = "approved" if decision == "approve" else "rejected"
     ledger_append({"kind": "chat", "session_id": session_id,

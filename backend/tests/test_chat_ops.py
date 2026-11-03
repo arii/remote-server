@@ -298,6 +298,47 @@ class ChatOpsTest(unittest.TestCase):
                                      "decision": "maybe"})
         self.assertEqual(resp.status_code, 400)
 
+    def test_chat_resume_unreadable_reinterrupt_autorejects(self):
+        chat.pending_resumes["rsm000000003"] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"kind": "td"}, "proposals": ["P"],
+            "pending": True, "busy": False}
+        weird = 'INTERRUPT: {"thread_id": "t", "interrupts": [{"value": "?"}]}\n'
+        calls = []
+        outs = [(3, weird), (0, "stood down.")]
+        chat.run_resume_spawn = lambda *a: calls.append(a) or outs.pop(0)
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000003",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(body["text"], "stood down.")
+        self.assertNotIn("approval", body)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][2], "reject")
+        self.assertFalse(chat.pending_resumes["rsm000000003"]["pending"])
+
+    def test_chat_resume_stale_and_weird_exits(self):
+        chat.pending_resumes["rsm000000004"] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"kind": "td"}, "proposals": ["P"],
+            "pending": True, "busy": False}
+        chat.run_resume_spawn = lambda *a: (1, "")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000004",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 409)
+        chat.pending_resumes["rsm000000005"] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"kind": "td"}, "proposals": ["P"],
+            "pending": True, "busy": False}
+        chat.run_resume_spawn = lambda *a: (-15, "")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "rsm000000005",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("exited -15", resp.json()["detail"])
+
     def test_chat_resume_reject_defaults_message(self):
         import base64
         chat.pending_resumes["rsm000000002"] = {
