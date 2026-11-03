@@ -238,8 +238,16 @@ export default function ChatView({
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState(seed ?? '');
+  // One tap on Ask agent anywhere lands here with a seed and the agent
+  // starts working immediately; the ref survives StrictMode's double
+  // effect-invoke so dev never double-sends.
+  const seedSentRef = useRef(false);
   useEffect(() => {
-    if (seed) onSeedUsed();
+    if (seed && !seedSentRef.current) {
+      seedSentRef.current = true;
+      onSeedUsed();
+      void onSend();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
