@@ -62,6 +62,115 @@ export function traceLine(ev: TraceEvent, t0: number): string {
   }
 }
 
+export const NARROW_VIEWPORT_QUERY = '(max-width: 767px)';
+
+export interface TraceSummary {
+  action: string;
+  timing: string;
+  status: 'ok' | 'failed' | 'info';
+}
+
+function offsetClock(ev: TraceEvent, t0: number): string {
+  const dt = num(ev.ts) - t0;
+  return `+${dt >= 0 ? dt.toFixed(1) : '0.0'}s`;
+}
+
+// Collapsed summary row for narrow viewports: action + timing +
+// ok/failed status, derived from existing event fields only.
+export function traceSummary(ev: TraceEvent, t0: number): TraceSummary {
+  const at = offsetClock(ev, t0);
+  switch (ev.type) {
+    case 'run_start':
+      return { action: `START ${str(ev.script) || '?'}`, timing: at, status: 'info' };
+    case 'model_request':
+      return { action: 'LLM req', timing: at, status: 'info' };
+    case 'model_response':
+      return { action: 'LLM resp', timing: at, status: 'info' };
+    case 'tool_call': {
+      const dur = typeof ev.duration_s === 'number' ? `${ev.duration_s.toFixed(2)}s` : at;
+      const status = ev.ok === true ? 'ok' : ev.ok === false ? 'failed' : 'info';
+      return { action: str(ev.name) || '?', timing: dur, status };
+    }
+    case 'run_end': {
+      const dur = typeof ev.duration_s === 'number' ? `${ev.duration_s.toFixed(2)}s` : at;
+      const status = ev.ok === true ? 'ok' : ev.ok === false ? 'failed' : 'info';
+      return { action: 'END', timing: dur, status };
+    }
+    default:
+      return { action: `? ${ev.type}`, timing: at, status: 'info' };
+  }
+}
+
+export function useIsNarrowViewport(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia(NARROW_VIEWPORT_QUERY);
+    setNarrow(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', onChange);
+      return () => mq.removeEventListener('change', onChange);
+    }
+    mq.addListener(onChange);
+    return () => mq.removeListener(onChange);
+  }, []);
+  return narrow;
+}
+
+// Run-timeline trace: the full expanded log on desktop, collapsed
+// per-event summary rows (tap to expand inline) on narrow viewports.
+// The narrow prop overrides the media query (used by tests).
+export function TraceTimeline({
+  trace,
+  t0,
+  narrow,
+}: {
+  trace: TraceEvent[];
+  t0: number;
+  narrow?: boolean;
+}) {
+  const queryNarrow = useIsNarrowViewport();
+  const isNarrow = narrow ?? queryNarrow;
+  if (!isNarrow) {
+    return (
+      <pre className="row-meta">
+        {trace.length > 0
+          ? trace.map((ev) => traceLine(ev, t0)).join('\n')
+          : 'No trace events recorded.'}
+      </pre>
+    );
+  }
+  if (trace.length === 0) {
+    return <p className="row-meta">No trace events recorded.</p>;
+  }
+  return (
+    <ol className="trace-fold" data-testid="chat-trace-fold">
+      {trace.map((ev, i) => {
+        const s = traceSummary(ev, t0);
+        const dotCls = s.status === 'ok' ? 'dot-ok' : s.status === 'failed' ? 'dot-bad' : '';
+        return (
+          // Trace events carry no ids; order is stable.
+          // eslint-disable-next-line react/no-array-index-key
+          <li key={i} className="trace-fold-row">
+            <details>
+              <summary>
+                <span className={`dot ${dotCls}`} aria-hidden="true" />
+                <span className="trace-fold-action">{s.action}</span>
+                <span className="trace-fold-timing">{s.timing}</span>
+                {s.status !== 'info' && (
+                  <span className={`trace-fold-status ${s.status}`}>{s.status}</span>
+                )}
+              </summary>
+              <pre className="row-meta">{traceLine(ev, t0)}</pre>
+            </details>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 function runMeta(run: AgentRun): string {
   const when = run.started_ts
     ? new Date(run.started_ts * 1000).toLocaleString()
@@ -106,11 +215,7 @@ function RunsPane({
       {selected && detail && (
         <div className="detail" data-testid="chat-run-detail">
           <span className="row-title">{detail.id}</span>
-          <pre className="row-meta">
-            {detail.trace.length > 0
-              ? detail.trace.map((ev) => traceLine(ev, t0)).join('\n')
-              : 'No trace events recorded.'}
-          </pre>
+          <TraceTimeline trace={detail.trace} t0={t0} />
         </div>
       )}
     </section>

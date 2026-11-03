@@ -217,6 +217,57 @@ li.detail.merging { opacity: 0.55; }
 .tone-ok { color: var(--ok); }
 .tone-muted { color: var(--muted); }
 
+/* Trace folding: collapsed per-event summary rows on narrow
+   viewports; tap a row to expand the full line inline. */
+.trace-fold { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.4rem; }
+.trace-fold-row { min-width: 0; }
+.trace-fold-row details {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+.trace-fold-row summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+.trace-fold-row summary::-webkit-details-marker { display: none; }
+.trace-fold-row summary .dot { background: var(--muted); }
+.trace-fold-action {
+  font-weight: 650;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.trace-fold-timing {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
+}
+.trace-fold-status { font-size: 0.78rem; font-weight: 700; white-space: nowrap; flex: none; }
+.trace-fold-status.ok { color: var(--ok); }
+.trace-fold-status.failed { color: var(--bad); }
+.trace-fold-row details > pre {
+  margin: 0;
+  padding: 0.5rem 0.6rem 0.6rem;
+  border-top: 1px solid var(--border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
 .sev {
   display: inline-block;
   border-radius: 999px;

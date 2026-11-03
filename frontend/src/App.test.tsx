@@ -5,10 +5,12 @@ import AgentDrawer, { TRANSCRIPT_MAX, appendCapped } from './views/AgentDrawer';
 import { cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
+  TraceTimeline,
   TypingIndicator,
   awaitingFirstToken,
   cleanAgentText,
   traceLine,
+  traceSummary,
 } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
@@ -281,6 +283,64 @@ describe('chat agent text', () => {
       'END ok=true',
     );
     expect(traceLine({ ts: 105, type: 'future_thing' }, 100)).toContain('? future_thing');
+  });
+
+  it('summarizes tool calls with action, duration, and status', () => {
+    expect(
+      traceSummary({ ts: 102, type: 'tool_call', name: 'grep', duration_s: 0.4, ok: true }, 100),
+    ).toEqual({ action: 'grep', timing: '0.40s', status: 'ok' });
+    expect(
+      traceSummary(
+        { ts: 103, type: 'tool_call', name: 'patch', duration_s: 0.8, ok: false, error: 'nope' },
+        100,
+      ),
+    ).toEqual({ action: 'patch', timing: '0.80s', status: 'failed' });
+  });
+
+  it('summarizes run boundaries and model events from existing fields', () => {
+    expect(
+      traceSummary({ ts: 100, type: 'run_start', script: 's.py', thread: 't', model: 'm' }, 100),
+    ).toEqual({ action: 'START s.py', timing: '+0.0s', status: 'info' });
+    expect(traceSummary({ ts: 101, type: 'model_request', n_messages: 3 }, 100)).toEqual({
+      action: 'LLM req',
+      timing: '+1.0s',
+      status: 'info',
+    });
+    expect(traceSummary({ ts: 104, type: 'run_end', duration_s: 2, ok: true }, 100)).toEqual({
+      action: 'END',
+      timing: '2.00s',
+      status: 'ok',
+    });
+  });
+
+  it('falls back to offsets and neutral status when fields are missing', () => {
+    expect(traceSummary({ ts: 105, type: 'future_thing' }, 100)).toEqual({
+      action: '? future_thing',
+      timing: '+5.0s',
+      status: 'info',
+    });
+    expect(traceSummary({ ts: 106, type: 'tool_call' }, 100)).toEqual({
+      action: '?',
+      timing: '+6.0s',
+      status: 'info',
+    });
+  });
+
+  it('folds trace events on narrow viewports and keeps the full log on desktop', () => {
+    const trace = [
+      { ts: 100, type: 'run_start', script: 's.py', thread: 't', model: 'm' },
+      { ts: 101, type: 'tool_call', name: 'grep', duration_s: 0.4, ok: true },
+    ];
+    const narrow = renderToStaticMarkup(<TraceTimeline trace={trace} t0={100} narrow />);
+    expect(narrow).toContain('data-testid="chat-trace-fold"');
+    expect(narrow).toContain('START s.py');
+    expect(narrow).toContain('grep');
+    expect(narrow).toContain('0.40s');
+    expect(narrow).toContain('<details>');
+    expect(narrow).not.toContain('open');
+    const wide = renderToStaticMarkup(<TraceTimeline trace={trace} t0={100} narrow={false} />);
+    expect(wide).not.toContain('<details>');
+    expect(wide).toContain('START s.py');
   });
 
   it('renders the approval card with proposals and decisions', () => {
