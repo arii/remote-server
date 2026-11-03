@@ -497,42 +497,70 @@ export default function JobsView({ repo }: { repo: string }) {
 
       <section aria-label="Agent commands">
         <h3>Agent commands</h3>
-        <div className="actions">
-          <label className="row-meta" htmlFor="td-pr">
-            PR number{' '}
-            <input
-              id="td-pr"
-              data-testid="td-pr"
-              inputMode="numeric"
-              value={pr}
-              onChange={(e) => setPr(e.target.value)}
-              placeholder="123"
-            />
-          </label>
-        </div>
-        <div className="actions">
-          {TD_COMMANDS.map((c) => {
-            const disabled = c.needsPr && !prOk;
-            return c.hold ? (
-              <HoldToConfirm
-                key={c.slug}
-                label={c.label}
-                disabled={disabled}
-                onFire={() => onDispatchTd(c)}
+        <div className="cmd-group" data-testid="td-pr-group">
+          <p className="row-meta">For a PR</p>
+          <div className="actions">
+            <label className="row-meta" htmlFor="td-pr">
+              PR number{' '}
+              <input
+                id="td-pr"
+                data-testid="td-pr"
+                inputMode="numeric"
+                value={pr}
+                onChange={(e) => setPr(e.target.value)}
+                placeholder="123"
               />
-            ) : (
+            </label>
+          </div>
+          <div className="actions">
+            {TD_COMMANDS.filter((c) => c.needsPr && !c.hold).map((c) => (
               <button
                 key={c.slug}
                 type="button"
                 data-testid={`dispatch-td-${c.slug}`}
                 title={c.desc}
-                disabled={disabled}
+                disabled={!prOk}
                 onClick={() => onDispatchTd(c)}
               >
                 {c.label}
               </button>
-            );
-          })}
+            ))}
+          </div>
+          <div className="actions">
+            <span className="row-meta">Change (hold to run):</span>
+            {TD_COMMANDS.filter((c) => c.needsPr && c.hold).map((c) => (
+              <HoldToConfirm
+                key={c.slug}
+                label={c.label}
+                disabled={!prOk}
+                onFire={() => onDispatchTd(c)}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="cmd-group" data-testid="td-repo-group">
+          <p className="row-meta">Whole repo</p>
+          <div className="actions">
+            {TD_COMMANDS.filter((c) => !c.needsPr).map((c) =>
+              c.hold ? (
+                <HoldToConfirm
+                  key={c.slug}
+                  label={c.label}
+                  onFire={() => onDispatchTd(c)}
+                />
+              ) : (
+                <button
+                  key={c.slug}
+                  type="button"
+                  data-testid={`dispatch-td-${c.slug}`}
+                  title={c.desc}
+                  onClick={() => onDispatchTd(c)}
+                >
+                  {c.label}
+                </button>
+              ),
+            )}
+          </div>
         </div>
       </section>
 
