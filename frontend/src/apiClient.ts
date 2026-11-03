@@ -144,15 +144,73 @@ export interface PrDiffResponse {
   truncated: boolean;
 }
 
+// Short-lived in-memory cache + in-flight dedup for PR details/diff,
+// backing silent next-item prefetch in Review triage. Keyed by
+// repo+number; successes cached briefly, failures never cached.
+const PR_CACHE_TTL_MS = 60_000;
+
+interface PrCacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+const prDetailsCache = new Map<string, PrCacheEntry<import('./reviewTypes').PrDetailsResponse>>();
+const prDiffCache = new Map<string, PrCacheEntry<PrDiffResponse>>();
+const prDetailsInflight = new Map<string, Promise<import('./reviewTypes').PrDetailsResponse>>();
+const prDiffInflight = new Map<string, Promise<PrDiffResponse>>();
+
+function prCacheKey(repo: string, pr: number): string {
+  return `${repo}#${pr}`;
+}
+
+function cachedPrFetch<T>(
+  cache: Map<string, PrCacheEntry<T>>,
+  inflight: Map<string, Promise<T>>,
+  key: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  const hit = cache.get(key);
+  if (hit) {
+    if (hit.expiresAt > Date.now()) return Promise.resolve(hit.value);
+    cache.delete(key);
+  }
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const p = load();
+  inflight.set(key, p);
+  p.then(
+    (value) => {
+      cache.set(key, { value, expiresAt: Date.now() + PR_CACHE_TTL_MS });
+      inflight.delete(key);
+    },
+    () => {
+      inflight.delete(key);
+    },
+  );
+  return p;
+}
+
+/** Test-only reset for the PR details/diff caches. */
+export function __clearPrCaches(): void {
+  prDetailsCache.clear();
+  prDiffCache.clear();
+  prDetailsInflight.clear();
+  prDiffInflight.clear();
+}
+
 export function fetchPrDiff(repo: string, pr: number): Promise<PrDiffResponse> {
-  return getJson<PrDiffResponse>(
-    `api/pr-diff?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+  return cachedPrFetch(prDiffCache, prDiffInflight, prCacheKey(repo, pr), () =>
+    getJson<PrDiffResponse>(
+      `api/pr-diff?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+    ),
   );
 }
 
 export function fetchPrDetails(repo: string, pr: number): Promise<import('./reviewTypes').PrDetailsResponse> {
-  return getJson<import('./reviewTypes').PrDetailsResponse>(
-    `api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+  return cachedPrFetch(prDetailsCache, prDetailsInflight, prCacheKey(repo, pr), () =>
+    getJson<import('./reviewTypes').PrDetailsResponse>(
+      `api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+    ),
   );
 }
 
