@@ -1,9 +1,11 @@
+import briefingFixture from '../mocks/briefing.json';
 import historyFixture from '../mocks/history.json';
 import jobsFixture from '../mocks/jobs.json';
 import chatFixture from '../mocks/chat.json';
 import systemHealthFixture from '../mocks/system-health.json';
 import workflowHealthFixture from '../mocks/workflow-health.json';
 import type {
+  BriefingResponse,
   JobsResponse,
   LedgerResponse,
 } from '../apiTypes';
@@ -31,6 +33,11 @@ export function useMock(): boolean {
 
 // Unified history fixture: includes a repeat-failure incident run
 // (webhook fast-forward conflict ×3) so ?mock=1 exercises collapse.
+export function loadBriefing(): BriefingResponse {
+  const b = briefingFixture as unknown as BriefingResponse;
+  return { ...b, attention: [...b.attention] };
+}
+
 export function loadHistory(): { jobs: JobsResponse['jobs']; entries: LedgerResponse['entries'] } {
   const h = historyFixture as unknown as { jobs: JobsResponse['jobs']; entries: LedgerResponse['entries'] };
   return { jobs: [...h.jobs], entries: [...h.entries] };

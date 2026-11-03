@@ -6,6 +6,7 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 
 - GET/POST /api/chat/stream  SSE stream of a chat session
 - POST     /api/chat/abort   abort an active chat session
+- POST     /api/chat/resume  decide a pending approval, return the turn result
 - POST     /api/ask          start an ask background run, return {id}
 - POST     /api/suggest      start a suggest background run, return {id}
 - GET      /api/pi-progress/{rid}  live tail of a background run
@@ -14,6 +15,17 @@ SSE framing is identical to buttons: one frame per event,
 ``event: <name>\\ndata: <json>\\n\\n``. Event names are the same:
 ``phase`` (prefill/tool_call/generating/done/aborted/error),
 ``token`` ({token}), ``done`` ({text, aborted, elapsed}).
+A turn that needs approval adds ``approval`` ({session_id,
+action_requests, proposals}) and sets ``approval_pending`` on
+``done``; the client decides via POST /api/chat/resume
+({session_id, decision, message?}) -> 202 {resumed, text, exit,
+approval?}. Errors: 400 bad shape, 404 unknown session,
+409 no pending approval / turn in progress.
+
+Chat turns spawn deep-agent/deep_chat.py (exit 0 done, 1 failed
+with Sorry line on stdout, 2 server bug, 3 approval needed);
+ask/suggest spawn deep-agent/ask_investigator.py and parse its
+REPORT/FINAL/PROPOSE shapes.
 
 Ask/suggest runs are reads-only background work (like briefing
 reads): starting one is not a ledger entry, but chat start/finish/
@@ -25,6 +37,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -50,6 +63,27 @@ chat_sessions: dict = {}
 chat_sessions_lock = threading.Lock()
 pi_runs: dict = {}
 pi_runs_lock = threading.Lock()
+pending_resumes: dict = {}
+pending_resumes_lock = threading.Lock()
+
+REPO_ROOT = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+def deep_agent_dir() -> str:
+    return os.environ.get("DEEP_AGENT_DIR",
+                           os.path.join(REPO_ROOT, "deep-agent"))
+
+
+def deep_agent_python() -> str:
+    return os.environ.get(
+        "DEEP_AGENT_VENV",
+        os.path.join(deep_agent_dir(), ".venv", "bin", "python"))
+
+
+def deep_agent_script(name: str) -> str:
+    return os.path.join(deep_agent_dir(), name)
 
 
 def sse_frame(event: str, data: dict) -> str:
@@ -73,28 +107,170 @@ def get_repo_info(repo: str) -> dict:
     return {"gh": f"arii/{name}", "td_cwd": f"/srv/repos/{name}"}
 
 
-def spawn_chat_process(cmd: str):
-    """Spawn the chat agent subprocess. Injectable for tests."""
+def spawn_chat_process(argv: list):
+    """Spawn the chat agent subprocess. Injectable for tests.
+
+    Stdout only: the agent contract keeps banners and trace paths
+    on stderr, and merging them would leak machine lines into the
+    streamed reply tokens.
+    """
     return subprocess.Popen(
-        ["bash", "-c", cmd],
+        argv,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
     )
 
 
+def spawn_pipeline_process(argv: list):
+    """Spawn the ask/suggest agent subprocess. Injectable for tests."""
+    return subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+
+
+def validate_action_request(args: dict) -> tuple[bool, str]:
+    """Validate one action_request via deep_chat --validate-proposal.
+
+    Stdlib-only; runs under the server python. Injectable for tests.
+    Returns (ok, proposal_text_or_reject_reason).
+    """
+    raw = base64.b64encode(json.dumps(args).encode()).decode()
+    try:
+        proc = subprocess.run(
+            [sys.executable, deep_agent_script("deep_chat.py"),
+             "--validate-proposal", raw],
+            capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        return False, f"REJECTED: validator failed: {exc}"
+    try:
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return False, "REJECTED: validator output unreadable"
+    return bool(out.get("ok")), str(out.get("text", ""))
+
+
+def run_resume_spawn(gh: str, thread: str, verdict: str,
+                     message_b64: str | None) -> tuple[int, str]:
+    """Run deep_chat --resume synchronously. Injectable for tests."""
+    argv = [deep_agent_python(), deep_agent_script("deep_chat.py"),
+           gh, thread, "--resume", verdict]
+    if message_b64:
+        argv.append(message_b64)
+    proc = subprocess.run(argv, capture_output=True, text=True,
+                          timeout=600)
+    return proc.returncode, proc.stdout
+
+
+def _interrupt_payload(chunks: list[str]) -> dict | None:
+    for line in reversed("".join(chunks).splitlines()):
+        if line.startswith("INTERRUPT:"):
+            try:
+                return json.loads(line[len("INTERRUPT:"):])
+            except ValueError:
+                return None
+    return None
+
+
+def approval_requests(value) -> list[dict]:
+    """Extract validatable action_request args from an interrupt value."""
+    if isinstance(value, dict):
+        reqs = value.get("action_requests")
+        if isinstance(reqs, list):
+            out = []
+            for r in reqs:
+                if not isinstance(r, dict):
+                    continue
+                args = r.get("args", r)
+                if isinstance(args, dict):
+                    out.append(args)
+            return out
+        if "kind" in value:
+            return [value]
+    return []
+
+
+def strip_agent_markers(text: str) -> str:
+    """Drop machine lines (INTERRUPT blobs, trace paths) from replies."""
+    kept = [ln for ln in text.splitlines()
+            if not ln.startswith("INTERRUPT:") and not ln.startswith("trace:")]
+    return "\n".join(kept).strip()
+
+
+def _parse_propose_block(lines: list[str]) -> dict | None:
+    for i, line in enumerate(lines):
+        if line.startswith("PROPOSE "):
+            kind = line[len("PROPOSE "):].strip()
+            body: dict = {"kind": kind}
+            acc: list[str] = []
+            for rest in lines[i + 1:]:
+                if rest.strip() == "END PROPOSE":
+                    break
+                if rest.startswith("TITLE:"):
+                    body["title"] = rest[len("TITLE:"):].strip()
+                elif rest.startswith("COMMAND:"):
+                    body["command"] = rest[len("COMMAND:"):].strip()
+                elif rest.startswith("BODY:"):
+                    tail = rest[len("BODY:"):].strip()
+                    if tail:
+                        acc.append(tail)
+                else:
+                    acc.append(rest)
+            if acc:
+                body["body"] = "\n".join(acc).strip()
+            return body
+    return None
+
+
 def run_pi_pipeline(kind: str, repo: str, instruction: str | None,
                     log_path: str) -> dict:
-    """Run the full ask/suggest pipeline; return the result dict.
+    """Run ask/suggest via ask_investigator; return the result dict.
 
-    Default backend implementation: the buttons pipeline shells out
-    to the terminal container (docker compose exec), a transport this
-    backend does not own. Override this in deployment; tests
-    monkeypatch it. The error path matches buttons (last line,
-    capped at 500 chars).
+    Streams progress lines to log_path (the pi-progress tail) and
+    parses the REPORT/FINAL/PROPOSE shapes. The error path matches
+    buttons (last line, capped at 500 chars).
     """
-    raise RuntimeError("pi pipeline not configured")
+    venv = deep_agent_python()
+    script = deep_agent_script("ask_investigator.py")
+    if not (os.path.isfile(venv) and os.path.isfile(script)):
+        raise RuntimeError("agent runtime not installed")
+    info = get_repo_info(repo)
+    prompt = (instruction.strip() if kind == "ask" and instruction
+              else "Suggest the next actions for this repo as td commands.")
+    b64 = base64.b64encode(prompt.encode()).decode()
+    proc = spawn_pipeline_process([venv, script, info["gh"], b64])
+    report: list[str] = []
+    in_report = False
+    final_lines: list[str] = []
+    last = ""
+    assert proc.stdout is not None
+    with open(log_path, "a") as log:
+        for line in proc.stdout:
+            last = line.rstrip("\n")
+            log.write(line)
+            log.flush()
+            if last.startswith("REPORT"):
+                in_report = True
+                continue
+            if last.startswith("FINAL:"):
+                in_report = False
+                final_lines.append(last[len("FINAL:"):].strip())
+                continue
+            if in_report:
+                report.append(last.strip())
+            elif final_lines:
+                final_lines.append(last)
+    code = proc.wait()
+    if code != 0:
+        raise RuntimeError((last or f"ask failed (exit {code})")[:500])
+    return {"reply": "\n".join(final_lines).strip(),
+            "report": [r for r in report if r],
+            "proposal": _parse_propose_block(final_lines)}
 
 
 def _pi_progress_path(rid: str) -> str:
@@ -180,6 +356,110 @@ def _abort_session(session_id: str) -> tuple[bool, str | None]:
         return True, None
 
 
+def _approval_events(session_id: str, repo: str, info: dict,
+                     chunks: list[str], elapsed: float):
+    blob = _interrupt_payload(chunks)
+    ivs = (blob.get("interrupts") or []) if blob else []
+    value = ivs[0].get("value") if ivs else None
+    requests = approval_requests(value)
+    if not requests:
+        yield sse_frame("phase", {"phase": "error",
+                                  "error": "approval requested but no proposal found",
+                                  "elapsed": elapsed})
+        yield sse_frame("error",
+                        {"error": "approval requested but no proposal found"})
+        ledger_append({"kind": "chat", "session_id": session_id,
+                       "repo": repo, "event": "chat failed",
+                       "error": "approval requested but no proposal found",
+                       "exit": 3, "elapsed": elapsed})
+        return
+    checked = [validate_action_request(a) for a in requests]
+    if not all(ok for ok, _ in checked):
+        reason = next(t for ok, t in checked if not ok)
+        rej = base64.b64encode(b"invalid proposal").decode()
+        try:
+            run_resume_spawn(info["gh"], session_id, "reject", rej)
+        except Exception:
+            pass
+        yield sse_frame("phase", {"phase": "error",
+                                  "error": f"proposal rejected: {reason}",
+                                  "elapsed": elapsed})
+        yield sse_frame("error", {"error": f"proposal rejected: {reason}"})
+        ledger_append({"kind": "chat", "session_id": session_id,
+                       "repo": repo, "event": "chat auto-rejected",
+                       "error": reason, "elapsed": elapsed})
+        return
+    proposals = [t for _, t in checked]
+    with pending_resumes_lock:
+        pending_resumes[session_id] = {
+            "gh": info["gh"], "repo": repo, "value": value,
+            "proposals": proposals, "pending": True, "busy": False,
+        }
+    yield sse_frame("approval", {"session_id": session_id, **value,
+                                 "proposals": proposals})
+    yield sse_frame("done", {"text": strip_agent_markers("".join(chunks)),
+                             "aborted": False, "elapsed": elapsed,
+                             "approval_pending": True})
+    ledger_append({"kind": "chat", "session_id": session_id,
+                   "repo": repo, "event": "chat approval requested",
+                   "elapsed": elapsed})
+
+
+def _resume_decision(session_id: str, decision: str,
+                     message: str) -> tuple[dict | None, int, str]:
+    """Validate + run one resume. Returns (body, http_status, error)."""
+    with pending_resumes_lock:
+        st = pending_resumes.get(session_id)
+        if st is None:
+            return None, 404, "unknown session"
+        if st.get("busy"):
+            return None, 409, "turn in progress"
+        if not st.get("pending"):
+            return None, 409, "no pending approval"
+        st["busy"] = True
+        gh = st["gh"]
+    msg = message.strip() if decision == "reject" else ""
+    if decision == "reject" and not msg:
+        msg = "Declined by reviewer."
+    msg_b64 = base64.b64encode(msg.encode()).decode() if msg else None
+    try:
+        code, out = run_resume_spawn(gh, session_id, decision, msg_b64)
+    except Exception as exc:
+        with pending_resumes_lock:
+            pending_resumes[session_id]["busy"] = False
+        return None, 500, f"resume failed: {exc}"
+    if code == 2:
+        with pending_resumes_lock:
+            pending_resumes[session_id]["busy"] = False
+        return None, 500, "agent runtime misconfigured (exit 2)"
+    body: dict = {"ok": True, "resumed": True, "session_id": session_id,
+                  "text": strip_agent_markers(out), "exit": code}
+    with pending_resumes_lock:
+        st = pending_resumes[session_id]
+        st["busy"] = False
+        if code == 3:
+            blob = _interrupt_payload([out])
+            ivs = (blob.get("interrupts") or []) if blob else []
+            value = ivs[0].get("value") if ivs else None
+            requests = approval_requests(value)
+            if requests:
+                checked = [validate_action_request(a) for a in requests]
+                if all(ok for ok, _ in checked):
+                    st["pending"] = True
+                    st["value"] = value
+                    st["proposals"] = [t for _, t in checked]
+                    body["approval"] = {"session_id": session_id, **value,
+                                        "proposals": st["proposals"]}
+                    return body, 202, ""
+            st["pending"] = False
+            return None, 500, "approval requested but no proposal found"
+        st["pending"] = False
+    done_word = "approved" if decision == "approve" else "rejected"
+    ledger_append({"kind": "chat", "session_id": session_id,
+                   "repo": st["repo"], "event": f"chat {done_word}"})
+    return body, 202, ""
+
+
 def _chat_events(prompt: str, repo: str, session_id: str):
     try:
         info = get_repo_info(repo)
@@ -190,6 +470,11 @@ def _chat_events(prompt: str, repo: str, session_id: str):
         yield sse_frame("error", {"error": "empty prompt"})
         return
     prompt = prompt.strip()[:CHAT_MAX_PROMPT]
+    venv = deep_agent_python()
+    script = deep_agent_script("deep_chat.py")
+    if not (os.path.isfile(venv) and os.path.isfile(script)):
+        yield sse_frame("error", {"error": "agent runtime not installed"})
+        return
 
     with chat_sessions_lock:
         chat_sessions[session_id] = {
@@ -202,14 +487,13 @@ def _chat_events(prompt: str, repo: str, session_id: str):
     yield sse_frame("phase", {"phase": "prefill",
                               "message": "Analyzing context and preparing request..."})
     b64 = base64.b64encode(prompt.encode()).decode()
-    cmd = ("cd /srv/remote-server/deep-agent && "
-           f".venv/bin/python ask_investigator.py {info['gh']} {b64}")
+    argv = [venv, script, info["gh"], session_id, b64]
     if any(k in prompt.lower() for k in TOOL_HINTS):
         time.sleep(0.05)
         yield sse_frame("phase", {"phase": "tool_call",
                                   "message": "Inspecting repository context with tools..."})
     try:
-        proc = spawn_chat_process(cmd)
+        proc = spawn_chat_process(argv)
         with chat_sessions_lock:
             if session_id in chat_sessions:
                 chat_sessions[session_id]["proc"] = proc
@@ -220,6 +504,9 @@ def _chat_events(prompt: str, repo: str, session_id: str):
         yield sse_frame("error", {"error": str(exc)})
         with chat_sessions_lock:
             chat_sessions.pop(session_id, None)
+        ledger_append({"kind": "chat", "session_id": session_id,
+                       "repo": repo, "event": "chat failed",
+                       "error": str(exc)[:500]})
         return
     yield sse_frame("phase", {"phase": "generating",
                               "message": "Streaming response from model..."})
@@ -255,6 +542,22 @@ def _chat_events(prompt: str, repo: str, session_id: str):
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat aborted",
                        "elapsed": elapsed})
+        return
+    if code == 2:
+        yield sse_frame("phase", {"phase": "error",
+                                  "error": "agent runtime misconfigured (exit 2)",
+                                  "elapsed": elapsed})
+        yield sse_frame("error",
+                        {"error": "agent runtime misconfigured (exit 2)"})
+        ledger_append({"kind": "chat", "session_id": session_id,
+                       "repo": repo, "event": "chat failed",
+                       "error": "agent runtime misconfigured (exit 2)",
+                       "exit": 2, "elapsed": elapsed})
+        return
+    if code == 3:
+        yield from _approval_events(session_id, repo, info,
+                                    full_response, elapsed)
+        return
     else:
         yield sse_frame("phase", {"phase": "done",
                                   "message": "Complete ✓",
@@ -279,6 +582,12 @@ class ChatAbortRequest(BaseModel):
 class ChatAbortResult(BaseModel):
     ok: bool = True
     session_id: str = ""
+
+
+class ChatResumeRequest(BaseModel):
+    session_id: str = ""
+    decision: str = ""
+    message: str = ""
 
 
 class AskRequest(BaseModel):
@@ -326,6 +635,20 @@ def chat_abort(body: ChatAbortRequest) -> dict:
     ledger_append({"kind": "chat", "session_id": body.session_id,
                    "event": "chat aborted via api"})
     return {"ok": True, "session_id": body.session_id}
+
+
+@router.post("/chat/resume", status_code=202)
+def chat_resume(body: ChatResumeRequest) -> dict:
+    if not body.session_id or not isinstance(body.session_id, str):
+        raise HTTPException(status_code=400, detail="invalid session_id")
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="invalid decision")
+    message = body.message if isinstance(body.message, str) else ""
+    result, status, err = _resume_decision(body.session_id,
+                                           body.decision, message)
+    if result is None:
+        raise HTTPException(status_code=status, detail=err)
+    return result
 
 
 @router.post("/ask", response_model=RunStarted)

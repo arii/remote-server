@@ -1,3 +1,18 @@
+export interface BriefingResponse {
+  repo: string;
+  attention: string[];
+  prs: Array<Record<string, unknown>>;
+  prs_err: string;
+  reviews_lines: string[];
+  board_lines: string[];
+  board_err: string;
+  conflicts_lines: string[];
+  overlaps_lines: string[];
+  failing_runs: Array<Record<string, unknown>>;
+  workflow_lines: string[];
+  runs_err: string;
+}
+
 export interface JobRecord {
   id: string;
   title?: string;

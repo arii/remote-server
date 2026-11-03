@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
+import { cleanBriefingLine } from './views/BriefingView';
+import { cleanAgentText, traceLine } from './views/ChatView';
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { plainLanguage, toHistoryRows } from './views/historyUtils';
 
@@ -47,6 +49,48 @@ describe('history utils', () => {
     expect(rows[0].recovery).toBe('');
   });
 
+  it('collapses consecutive job lifecycle chatter into one activity row', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'job', event: 'step auto-done', ts: 3 },
+        { kind: 'job', event: 'created', ts: 2 },
+        { kind: 'job', event: 'step done', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toMatch(/Job activity ×3/);
+    expect(rows[0].recovery).toBe('');
+  });
+
+  it('prefers backend error reasons over generic failure text', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        {
+          kind: 'chat',
+          event: 'chat failed',
+          error: 'agent runtime misconfigured (exit 2)',
+          ts: 1,
+        },
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toContain('misconfigured');
+    expect(rows[0].recovery).toBeTruthy();
+  });
+
+  it('keeps mixed-kind routine chatter in separate rows', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'chat', event: 'chat started', ts: 2 },
+        { kind: 'job', event: 'created', ts: 1 },
+      ],
+    );
+    expect(rows).toHaveLength(2);
+  });
+
   it('sorts newest first using real job timestamps', () => {
     const rows = toHistoryRows(
       [
@@ -70,6 +114,55 @@ describe('history fixtures (?mock=1)', () => {
     const w = loadWorkflowHealth();
     expect(w.workflows.length).toBeGreaterThanOrEqual(1);
     expect(w.workflows[0].diagnosed_cause).toBeTruthy();
+  });
+});
+
+describe('briefing sanitation', () => {
+  it('strips reviewer HTML comments and caps length', () => {
+    const line =
+      "- #243: @boomtick[bot] APPROVED — '<!-- ai-review-count: 1 --> <!-- x -->'" +
+      ` ${'detail '.repeat(60)}`;
+    const clean = cleanBriefingLine(line);
+    expect(clean).not.toContain('<!--');
+    expect(clean).toContain('APPROVED');
+    expect(clean.length).toBeLessThanOrEqual(280);
+  });
+
+  it('strips unclosed trailing comments and review-state blobs', () => {
+    const clean = cleanBriefingLine(
+      "- #243: APPROVED '<!-- ai-review-state: eyJmaW5kaW5ncyI6W10",
+    );
+    expect(clean).not.toContain('<!--');
+    expect(clean).not.toContain('eyJmaW5kaW5ncyI6W10');
+    expect(clean).toContain('APPROVED');
+  });
+});
+
+describe('chat agent text', () => {
+  it('strips INTERRUPT blobs and trace paths from replies', () => {
+    const text = cleanAgentText(
+      'Looking into it…\nINTERRUPT: {"thread_id":"x"}\ntrace: /tmp/t.jsonl',
+    );
+    expect(text).toBe('Looking into it…');
+  });
+
+  it('renders trace events as terse timeline lines', () => {
+    expect(
+      traceLine({ ts: 100, type: 'run_start', script: 's.py', thread: 't', model: 'm' }, 100),
+    ).toContain('START s.py');
+    expect(traceLine({ ts: 101.5, type: 'model_request', n_messages: 3 }, 100)).toContain(
+      'LLM req n_msgs=3',
+    );
+    expect(
+      traceLine({ ts: 102, type: 'tool_call', name: 'g', duration_s: 0.4, ok: true }, 100),
+    ).toMatch(/ok g/);
+    expect(
+      traceLine({ ts: 103, type: 'tool_call', name: 'p', duration_s: 0.8, ok: false, error: 'nope' }, 100),
+    ).toMatch(/ERR p/);
+    expect(traceLine({ ts: 104, type: 'run_end', duration_s: 2, ok: true }, 100)).toContain(
+      'END ok=true',
+    );
+    expect(traceLine({ ts: 105, type: 'future_thing' }, 100)).toContain('? future_thing');
   });
 });
 

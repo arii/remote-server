@@ -2,11 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
 import {
   clearJobs,
+  dispatchRepair,
+  fetchJobRun,
   fetchJobs,
   fetchPiProgress,
+  fetchRepairStatus,
   requestTakeover,
   startJobRun,
 } from '../apiClient';
+import type { RepairStatusResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import { loadJobs, useMock } from './mockViews';
 
@@ -18,16 +22,124 @@ const ACTIONS = [
   'preflight',
   'run-td',
   'merge-approved',
-  'sync-agents',
-  'nudge-agents',
   'warm-context',
+  'create-plan',
+  'deploy-buttons',
+  'recreate',
+  'recreate-code',
 ];
+
+// Mirrors backend DESTRUCTIVE_ACTIONS: dispatched behind hold-to-confirm
+// with {intent: 'jobs-run', confirmed: true}.
+const DESTRUCTIVE_ACTIONS = new Set([
+  'merge-approved',
+  'create-plan',
+  'deploy-buttons',
+  'recreate',
+  'recreate-code',
+]);
 
 function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
 }
 
-function JobListItem({ job, repo }: { job: JobRecord; repo: string }) {
+const IDLE_REPAIR: RepairStatusResponse = {
+  status: 'idle',
+  timestamp: null,
+  log_buffer: '',
+  issue: null,
+  exit_code: null,
+};
+
+function RepairSection() {
+  const [issue, setIssue] = useState('');
+  const [status, setStatus] = useState<RepairStatusResponse>(IDLE_REPAIR);
+  const [error, setError] = useState<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  function stopWatch() {
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  useEffect(() => stopWatch, []);
+
+  async function refresh() {
+    try {
+      setStatus(await fetchRepairStatus());
+    } catch {
+      stopWatch();
+    }
+  }
+
+  async function onDispatchRepair() {
+    const target = issue.trim();
+    if (!target) return;
+    setError(null);
+    try {
+      if (useMock()) {
+        setStatus({ ...IDLE_REPAIR, status: 'running', issue: Number(target) || null });
+        return;
+      }
+      const started = await dispatchRepair(target);
+      setStatus({ ...IDLE_REPAIR, status: started.status, issue: started.issue });
+      stopWatch();
+      timerRef.current = window.setInterval(() => void refresh(), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <section data-testid="repair-section">
+      <h3>Repair worker</h3>
+      <p className="row-meta">Trigger a repair run from an issue number or URL.</p>
+      <div className="actions">
+        <label className="row-meta" htmlFor="repair-issue">
+          Issue{' '}
+          <input
+            id="repair-issue"
+            data-testid="repair-issue"
+            value={issue}
+            onChange={(e) => setIssue(e.target.value)}
+            placeholder="42 or issue URL"
+          />
+        </label>
+        <button
+          type="button"
+          data-testid="repair-dispatch"
+          disabled={!issue.trim()}
+          onClick={() => void onDispatchRepair()}
+        >
+          Dispatch repair
+        </button>
+      </div>
+      {error && (
+        <p className="row-meta" role="alert">
+          Repair failed: {error}
+        </p>
+      )}
+      <p className="row-meta" data-testid="repair-status">
+        Status: {status.status}
+        {status.issue !== null ? ` · #${status.issue}` : ''}
+        {status.exit_code !== null ? ` · exit ${status.exit_code}` : ''}
+      </p>
+      {status.log_buffer && <pre className="row-meta">{status.log_buffer}</pre>}
+    </section>
+  );
+}
+
+function JobListItem({
+  job,
+  repo,
+  onSelect,
+}: {
+  job: JobRecord;
+  repo: string;
+  onSelect: (id: string) => void;
+}) {
   return (
     <li key={job.id} className="detail" data-testid={`job-${job.id}`}>
       <span className="row-title">{labelOf(job)}</span>
@@ -36,6 +148,11 @@ function JobListItem({ job, repo }: { job: JobRecord; repo: string }) {
         {typeof job.exit_code === 'number' ? ` · exit ${job.exit_code}` : ''}
       </p>
       {(job.error || job.detail) && <p>{job.error || job.detail}</p>}
+      <div className="actions">
+        <button type="button" onClick={() => onSelect(job.id)}>
+          View output
+        </button>
+      </div>
     </li>
   );
 }
@@ -66,9 +183,13 @@ function DispatchBar({ action, onAction, onDispatch, onClear, onTakeover }: Disp
           ))}
         </select>
       </label>
-      <button type="button" data-testid="jobs-dispatch" onClick={onDispatch}>
-        Dispatch
-      </button>
+      {DESTRUCTIVE_ACTIONS.has(action) ? (
+        <HoldToConfirm label={`Dispatch ${action}`} onFire={onDispatch} />
+      ) : (
+        <button type="button" data-testid="jobs-dispatch" onClick={onDispatch}>
+          Dispatch
+        </button>
+      )}
       <HoldToConfirm label="Clear jobs" onFire={() => onClear(false)} />
       <HoldToConfirm label="Clear all" onFire={() => onClear(true)} />
       <HoldToConfirm label="Take over terminal" onFire={onTakeover} />
@@ -125,21 +246,36 @@ export default function JobsView({ repo }: { repo: string }) {
 
   async function pollOnce(rid: string) {
     try {
-      const p = await fetchPiProgress(rid);
-      setTail(p.output);
-      if (!p.done) return;
+      const r = await fetchJobRun(rid);
+      setTail(r.output);
+      if (!r.done) return;
+      if (r.exit_code !== 0 && r.exit_code !== null) {
+        setNotice(`Run ${rid} failed (exit ${r.exit_code}).`);
+      }
       stopPoll();
       await load();
     } catch {
-      // No pi-progress entry for plain job runs; fall back to job list refresh.
+      try {
+        const p = await fetchPiProgress(rid);
+        setTail(p.output);
+        if (!p.done) return;
+      } catch {
+        // No progress entry at all; fall back to job list refresh.
+      }
       stopPoll();
       await load();
     }
   }
 
+  async function onSelectRun(id: string) {
+    const r = await fetchJobRun(id);
+    setRunId(id);
+    setTail(r.output || 'No output yet.');
+  }
+
   async function onDispatch() {
     setNotice(null);
-    const started = await startJobRun(action, repo);
+    const started = await startJobRun(action, repo, DESTRUCTIVE_ACTIONS.has(action));
     setRunId(started.id);
     setNotice(`Started ${action}: ${started.id}`);
     if (useMock()) return;
@@ -198,7 +334,12 @@ export default function JobsView({ repo }: { repo: string }) {
       ) : (
         <ul className="session-list" data-testid="jobs-list">
           {jobs.map((j) => (
-            <JobListItem key={j.id} job={j} repo={repo} />
+            <JobListItem
+              key={j.id}
+              job={j}
+              repo={repo}
+              onSelect={(id) => void guarded(() => onSelectRun(id))}
+            />
           ))}
         </ul>
       )}
@@ -208,6 +349,7 @@ export default function JobsView({ repo }: { repo: string }) {
           <pre className="row-meta">{tail || 'Waiting for output…'}</pre>
         </div>
       )}
+      <RepairSection />
     </section>
   );
 }

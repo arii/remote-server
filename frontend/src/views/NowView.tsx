@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
 import { createIssue, fetchAttention } from '../apiClient';
+import type { SystemHealthResponse } from '../apiClient';
 import type { AttentionItem, AttentionResponse } from '../attentionTypes';
 import { loadAttention, loadAttentionEmpty } from '../mocks/attention';
+import { ContainerPills } from './ObservabilitySection';
 import { useMock } from './mockViews';
 
 function isGetAction(item: AttentionItem): boolean {
@@ -24,14 +26,16 @@ function formatStamp(epochSeconds: number): string {
 }
 
 function ReportDialog({
+  initialBody,
   onSubmit,
   onCancel,
 }: {
+  initialBody: string;
   onSubmit: (title: string, body: string) => void;
   onCancel: () => void;
 }) {
   const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
+  const [body, setBody] = useState(initialBody);
   return (
     <form
       data-testid="report-dialog"
@@ -101,7 +105,15 @@ function ActionControl({
   );
 }
 
-export default function NowView({ repo }: { repo: string }) {
+export default function NowView({
+  repo,
+  health,
+  reportContext,
+}: {
+  repo: string;
+  health: SystemHealthResponse | null;
+  reportContext: string;
+}) {
   const [data, setData] = useState<AttentionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fired, setFired] = useState<string | null>(null);
@@ -171,6 +183,7 @@ export default function NowView({ repo }: { repo: string }) {
       </header>
       {dialogOpen && (
         <ReportDialog
+          initialBody={reportContext}
           onSubmit={(t, b) => void onSubmitReport(t, b)}
           onCancel={() => setDialogOpen(false)}
         />
@@ -185,6 +198,14 @@ export default function NowView({ repo }: { repo: string }) {
           Done: {fired}
         </p>
       )}
+      <section data-testid="now-stack" aria-label="Stack">
+        <h2>Stack</h2>
+        {health ? (
+          <ContainerPills containers={health.containers} />
+        ) : (
+          <p className="row-meta">Stack status: loading…</p>
+        )}
+      </section>
       {data.items.length === 0 ? (
         <div data-testid="now-empty">
           <h3>Nothing needs you right now</h3>

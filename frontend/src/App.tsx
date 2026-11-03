@@ -3,19 +3,34 @@ import NowView from './views/NowView';
 import ReviewView from './views/ReviewView';
 import JobsView from './views/JobsView';
 import ChatView from './views/ChatView';
+import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
 import RepoPicker from './components/RepoPicker';
-import { fetchRepos } from './apiClient';
+import { fetchRepos, fetchSystemHealth } from './apiClient';
+import type { SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
-import { loadRepos, useMock } from './views/mockViews';
+import { loadRepos, loadSystemHealth, useMock } from './views/mockViews';
 
-type Tab = 'now' | 'review' | 'jobs' | 'chat' | 'history';
+// Stack root for Terminal/Code links: relative in production (same host),
+// VITE_STACK_URL override for `vite dev` on a port without those routes.
+function stackBase(): string {
+  return import.meta.env.VITE_STACK_URL ?? '';
+}
+
+function healthSummary(health: SystemHealthResponse | null): string {
+  if (!health) return 'Status: loading…';
+  const up = health.containers.filter((c) => c.state === 'running').length;
+  return `Status: ${up}/${health.containers.length} containers up`;
+}
+
+type Tab = 'now' | 'review' | 'jobs' | 'chat' | 'briefing' | 'history';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'now', label: 'Now' },
   { id: 'review', label: 'Review' },
   { id: 'jobs', label: 'Jobs' },
   { id: 'chat', label: 'Chat' },
+  { id: 'briefing', label: 'Briefing' },
   { id: 'history', label: 'History' },
 ];
 
@@ -27,12 +42,14 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('now');
   const [repos, setRepos] = useState<RepoInfo[]>(FALLBACK_REPOS);
   const [repo, setRepo] = useState('remote-server');
+  const [health, setHealth] = useState<SystemHealthResponse | null>(null);
 
   useEffect(() => {
     if (useMock()) {
       const r = loadRepos();
       setRepos(r);
       if (!r.some((x) => x.name === repo) && r.length > 0) setRepo(r[0].name);
+      setHealth(loadSystemHealth());
       return;
     }
     (async () => {
@@ -45,27 +62,39 @@ export default function App() {
       } catch {
         // Keep fallback repo; header still renders the picker.
       }
+      try {
+        setHealth(await fetchSystemHealth());
+      } catch {
+        // Header pill stays in loading state; History shows the error.
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <main className="layout">
-      <header className="page-head">
-        <div>
-          <h1>Now</h1>
-          <p className="row-meta">What needs your attention.</p>
-        </div>
-        <div className="actions">
-          <RepoPicker repos={repos} value={repo} onChange={setRepo} />
-          <span
-            data-testid="repo-chip"
-            className="repo-chip"
-            aria-label={`Active repo: ${repo}`}
-          >
-            {repo}
-          </span>
-        </div>
+      <header className="toolbar">
+        <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+        <span
+          data-testid="repo-chip"
+          className="repo-chip"
+          aria-label={`Active repo: ${repo}`}
+        >
+          {repo}
+        </span>
+        <span data-testid="stack-status" className="row-meta">
+          {healthSummary(health)}
+        </span>
+        <span className="spacer" />
+        <a data-testid="tool-terminal" href={`${stackBase()}/`}>
+          Terminal
+        </a>
+        <a data-testid="tool-code" href={`${stackBase()}/code`}>
+          Code
+        </a>
+        <button type="button" data-testid="tool-chat" onClick={() => setTab('chat')}>
+          Chat
+        </button>
       </header>
       <nav className="actions" aria-label="Views">
         {TABS.map((t) => (
@@ -79,11 +108,18 @@ export default function App() {
           </button>
         ))}
       </nav>
-      {tab === 'now' && <NowView repo={repo} />}
+      {tab === 'now' && (
+        <NowView
+          repo={repo}
+          health={health}
+          reportContext={`Repo ${repo} · ${healthSummary(health)}`}
+        />
+      )}
       {tab === 'review' && <ReviewView repo={repo} />}
       {tab === 'jobs' && <JobsView repo={repo} />}
       {tab === 'chat' && <ChatView repo={repo} />}
-      {tab === 'history' && <HistoryView repo={repo} />}
+      {tab === 'briefing' && <BriefingView repo={repo} />}
+      {tab === 'history' && <HistoryView repo={repo} health={health} />}
     </main>
   );
 }

@@ -1,12 +1,27 @@
 import type {
+  BriefingResponse,
   JobsResponse,
   LedgerResponse,
 } from './apiTypes';
 
+export interface DiskSummary {
+  summary?: string;
+  percent?: number;
+  error?: string | null;
+}
+
+export interface ContainerStatus {
+  name?: string;
+  service?: string;
+  state?: string;
+  status?: string;
+  health?: string;
+}
+
 export interface SystemHealthResponse {
-  disk: Record<string, unknown>;
-  memory: Record<string, unknown>;
-  containers: Array<Record<string, unknown>>;
+  disk: DiskSummary;
+  memory: DiskSummary;
+  containers: ContainerStatus[];
 }
 
 async function readJson<T>(resp: Response, method: string, path: string): Promise<T> {
@@ -27,6 +42,12 @@ export function fetchSystemHealth(): Promise<SystemHealthResponse> {
 
 export function fetchJobs(): Promise<JobsResponse> {
   return getJson<JobsResponse>('/api/jobs');
+}
+
+export function fetchBriefing(repo: string): Promise<BriefingResponse> {
+  return getJson<BriefingResponse>(
+    `/api/briefing?repo=${encodeURIComponent(repo)}`,
+  );
 }
 
 export function fetchAttention(repo: string): Promise<import('./attentionTypes').AttentionResponse> {
@@ -121,8 +142,26 @@ export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; 
   });
 }
 
-export function startJobRun(action: string, repo: string): Promise<{ id: string }> {
-  return postJson<{ id: string }>('/api/jobs/run', { action, repo });
+export function startJobRun(
+  action: string,
+  repo: string,
+  confirmed = false,
+): Promise<{ id: string }> {
+  return postJson<{ id: string }>(
+    '/api/jobs/run',
+    confirmed ? { action, repo, intent: 'jobs-run', confirmed: true } : { action, repo },
+  );
+}
+
+export interface JobRunProgress {
+  done: boolean;
+  output: string;
+  exit_code: number | null;
+  action: string;
+}
+
+export function fetchJobRun(rid: string): Promise<JobRunProgress> {
+  return getJson<JobRunProgress>(`/api/jobs/runs/${encodeURIComponent(rid)}`);
 }
 
 export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number }> {
@@ -172,5 +211,84 @@ export function requestTakeover(): Promise<{ ok: boolean; output: string }> {
   return postJson<{ ok: boolean; output: string }>('/api/terminal/takeover', {
     intent: 'terminal-takeover',
     confirmed: true,
+  });
+}
+
+export interface RepairStatusResponse {
+  status: string;
+  timestamp: number | null;
+  log_buffer: string;
+  issue: number | null;
+  exit_code: number | null;
+}
+
+export function dispatchRepair(issue: string): Promise<{ ok: boolean; issue: number; status: string }> {
+  return postJson<{ ok: boolean; issue: number; status: string }>('/api/repair/dispatch', {
+    issue,
+  });
+}
+
+export function fetchRepairStatus(): Promise<RepairStatusResponse> {
+  return getJson<RepairStatusResponse>('/api/repair/status');
+}
+
+export interface AgentRun {
+  id: string;
+  script: string;
+  model: string;
+  thread: string;
+  started_ts: number;
+  duration_s: number;
+  ok: boolean;
+  tools: string[];
+  tokens: number;
+  preview: string;
+}
+
+export interface TraceEvent {
+  ts: number;
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface AgentRunDetail {
+  id: string;
+  entry: Record<string, unknown>;
+  trace: TraceEvent[];
+}
+
+export function fetchAgentRuns(limit = 50): Promise<{ runs: AgentRun[] }> {
+  return getJson<{ runs: AgentRun[] }>(`/api/agents/runs?limit=${limit}`);
+}
+
+export function fetchAgentRun(runId: string): Promise<AgentRunDetail> {
+  return getJson<AgentRunDetail>(`/api/agents/runs/${encodeURIComponent(runId)}`);
+}
+
+export interface ApprovalPayload {
+  session_id: string;
+  action_requests?: Array<{ args?: Record<string, unknown> } & Record<string, unknown>>;
+  proposals?: string[];
+  [key: string]: unknown;
+}
+
+export interface ResumeResponse {
+  ok: boolean;
+  resumed: boolean;
+  session_id: string;
+  text: string;
+  exit: number;
+  approval?: ApprovalPayload;
+}
+
+export function resumeChat(
+  sessionId: string,
+  decision: 'approve' | 'reject',
+  message = '',
+): Promise<ResumeResponse> {
+  return postJson<ResumeResponse>('/api/chat/resume', {
+    session_id: sessionId,
+    decision,
+    message,
   });
 }

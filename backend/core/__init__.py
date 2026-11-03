@@ -21,7 +21,19 @@ def get_env(name: str, default: str = "") -> str:
 
 
 def get_repos_dir() -> Path:
-    return Path(os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos"))
+    """Repos root: env override, host path, then container bind path.
+
+    The terminal/dev container bind-mounts the host repos dir at
+    /srv/repos without a /home/ari/repos alias; fall through so
+    discovery works in both containers.
+    """
+    configured = Path(os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos"))
+    if configured.is_dir():
+        return configured
+    sibling = Path("/srv/repos")
+    if sibling.is_dir():
+        return sibling
+    return configured
 
 
 def resolve_repo_path(repo: str) -> Path:
