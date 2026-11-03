@@ -27,6 +27,23 @@ RATE_CARD = {
 
 FREE_PREFIX = "ollama:"
 
+SPEND_CAP_ENV = "NEBIUS_SPEND_CAP_USD"
+
+
+def spend_cap():
+    """Configured metered-spend cap in USD, or None when uncapped.
+
+    Unset/blank/unparseable means uncapped (status quo); 0 blocks
+    every metered call; negatives clamp to 0. Never raises.
+    """
+    try:
+        raw = (os.environ.get(SPEND_CAP_ENV) or "").strip()
+        if not raw:
+            return None
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
 
 def _env_rates():
     """Override rate for uncarded models, or None. Never raises."""

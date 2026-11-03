@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { isStalled, meteredTotal, runCost, runDecisions, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import { budgetLine, isStalled, meteredTotal, runCost, runDecisions, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 
 describe('stream progress (issue #376)', () => {
@@ -52,7 +53,11 @@ function pastRun(over: Partial<AgentRun> = {}): AgentRun {
   };
 }
 
-function paneHtml(runs: AgentRun[], notice: string | null = null): string {
+function paneHtml(
+  runs: AgentRun[],
+  notice: string | null = null,
+  budget: BudgetStatus | null = null,
+): string {
   return renderToStaticMarkup(
     <RunsPane
       runs={runs}
@@ -63,6 +68,7 @@ function paneHtml(runs: AgentRun[], notice: string | null = null): string {
       onDelete={() => {}}
       onClearFinished={() => {}}
       notice={notice}
+      budget={budget}
     />,
   );
 }
@@ -139,6 +145,7 @@ describe('run decisions (issue #414)', () => {
         onDelete={() => {}}
         onClearFinished={() => {}}
         notice={null}
+        budget={null}
       />,
     );
     expect(html).toContain('data-testid="chat-run-decisions"');
@@ -157,6 +164,7 @@ describe('run decisions (issue #414)', () => {
         onDelete={() => {}}
         onClearFinished={() => {}}
         notice={null}
+        budget={null}
       />,
     );
     expect(html).not.toContain('chat-run-decisions');
@@ -208,5 +216,48 @@ describe('run cost (issue #398)', () => {
     ]);
     expect(html).toContain('metered');
     expect(html).toContain('(+1 unknown rate)');
+  });
+});
+
+function budget(over: Partial<BudgetStatus> = {}): BudgetStatus {
+  return {
+    cap_usd: 5.0,
+    spent_usd: 0.0008,
+    remaining_usd: 4.9992,
+    blocked: false,
+    unknown: 0,
+    ...over,
+  };
+}
+
+describe('spend budget (issue #409)', () => {
+  it('shows remaining budget when capped', () => {
+    expect(budgetLine(budget())).toBe('Budget $4.9992 left of $5');
+  });
+
+  it('says plainly when no cap is set', () => {
+    expect(
+      budgetLine(budget({ cap_usd: null, remaining_usd: null })),
+    ).toBe('No spend cap set');
+  });
+
+  it('states the block with figures when capped out', () => {
+    expect(
+      budgetLine(
+        budget({ cap_usd: 1.0, spent_usd: 1.2, remaining_usd: 0.0, blocked: true }),
+      ),
+    ).toBe('Budget cap hit — metered calls blocked ($1.2 of $1 used)');
+  });
+
+  it('renders the budget line in the pane', () => {
+    const html = paneHtml([pastRun()], null, budget());
+    expect(html).toContain('data-testid="chat-runs-budget"');
+    expect(html).toContain('Budget $4.9992 left of $5');
+  });
+
+  it('omits the budget line until loaded', () => {
+    expect(paneHtml([pastRun()], null, null)).not.toContain(
+      'chat-runs-budget',
+    );
   });
 });

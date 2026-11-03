@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(
     "deep-agent"))
 
 import runs  # noqa: E402
+import pricing  # noqa: E402
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -43,6 +44,14 @@ class DeleteRunResult(BaseModel):
     id: str = ""
 
 
+class BudgetStatus(BaseModel):
+    cap_usd: float | None = None
+    spent_usd: float = 0.0
+    remaining_usd: float | None = None
+    blocked: bool = False
+    unknown: int = 0
+
+
 @router.get("/health", response_model=AgentsHealth)
 def health() -> dict:
     return {"ok": True}
@@ -59,6 +68,18 @@ def agent_run(run_id: str) -> dict:
     if row is None:
         raise HTTPException(status_code=404, detail="unknown run")
     return row
+
+
+@router.get("/budget", response_model=BudgetStatus)
+def agent_budget() -> dict:
+    cap = pricing.spend_cap()
+    total = runs.total_metered_spend()
+    spent = total["spent"]
+    blocked = cap is not None and spent >= cap
+    return {"cap_usd": cap, "spent_usd": spent,
+            "remaining_usd": round(max(0.0, cap - spent), 6)
+            if cap is not None else None,
+            "blocked": blocked, "unknown": total["unknown"]}
 
 
 @router.post("/runs/clear", response_model=ClearRunsResult)

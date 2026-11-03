@@ -518,6 +518,18 @@ export function clearAgentRuns(): Promise<{ ok: boolean; cleared: number }> {
   });
 }
 
+export interface BudgetStatus {
+  cap_usd: number | null;
+  spent_usd: number;
+  remaining_usd: number | null;
+  blocked: boolean;
+  unknown: number;
+}
+
+export function fetchBudget(): Promise<BudgetStatus> {
+  return getJson<BudgetStatus>('api/agents/budget');
+}
+
 export interface AgentProviderStatus {
   name: string;
   available: boolean;
