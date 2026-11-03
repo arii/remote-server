@@ -178,6 +178,18 @@ export default function ReviewView({
     }
     try {
       setDetails(await fetchPrDetails(repo, n));
+      // Silent next-item prefetch: warm the details+diff cache for the
+      // next PR in list order so advancing renders instantly.
+      const next = nextPrAfterMerge(
+        (prs ?? []).map((p) => p.number),
+        n,
+      );
+      if (next !== null && next !== n) {
+        void Promise.all([
+          fetchPrDetails(repo, next),
+          fetchPrDiff(repo, next),
+        ]).catch(() => {});
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

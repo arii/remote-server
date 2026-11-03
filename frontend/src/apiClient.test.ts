@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  __clearPrCaches,
   abortAgentSession,
   agentWsUrl,
   apiUrl,
@@ -7,6 +8,7 @@ import {
   fetchAttention,
   fetchJobs,
   fetchLedger,
+  fetchPrDetails,
   fetchPrDiff,
   fetchSystemHealth,
   fetchWorkflowHealth,
@@ -24,6 +26,8 @@ function mockFetchJson(body: unknown, ok = true, status = 200) {
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+  __clearPrCaches();
 });
 
 describe('apiClient (fetch with inline shapes)', () => {
@@ -117,5 +121,66 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(agentWsUrl('http:', 'localhost:5173', 'abc123')).toBe(
       'ws://localhost:5173/api/agent/ws/abc123',
     );
+  });
+});
+
+describe('pr details/diff cache + in-flight dedup', () => {
+  const detailsBody = { number: 7, title: 'cached' };
+  const diffBody = { number: 7, diff: 'x', truncated: false };
+
+  it('dedups concurrent details fetches into one network request', async () => {
+    const fetchMock = mockFetchJson(detailsBody);
+    vi.stubGlobal('fetch', fetchMock);
+    const [a, b] = await Promise.all([
+      fetchPrDetails('demo', 7),
+      fetchPrDetails('demo', 7),
+    ]);
+    expect(a).toEqual(detailsBody);
+    expect(b).toEqual(detailsBody);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves cached details within TTL and refetches after expiry', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = mockFetchJson(detailsBody);
+      vi.stubGlobal('fetch', fetchMock);
+      await fetchPrDetails('demo', 8);
+      await fetchPrDetails('demo', 8);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(61_000);
+      await fetchPrDetails('demo', 8);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never caches failures', async () => {
+    const failing = mockFetchJson({ detail: 'boom' }, false, 500);
+    vi.stubGlobal('fetch', failing);
+    await expect(fetchPrDetails('demo', 9)).rejects.toThrow('GET api/pr-details');
+    const succeeding = mockFetchJson(detailsBody);
+    vi.stubGlobal('fetch', succeeding);
+    await expect(fetchPrDetails('demo', 9)).resolves.toEqual(detailsBody);
+    expect(failing).toHaveBeenCalledTimes(1);
+    expect(succeeding).toHaveBeenCalledTimes(1);
+    // The retry success is cached.
+    await fetchPrDetails('demo', 9);
+    expect(succeeding).toHaveBeenCalledTimes(1);
+  });
+
+  it('dedups concurrent diff fetches and serves diffs from cache', async () => {
+    const fetchMock = mockFetchJson(diffBody);
+    vi.stubGlobal('fetch', fetchMock);
+    const [a, b] = await Promise.all([
+      fetchPrDiff('demo', 7),
+      fetchPrDiff('demo', 7),
+    ]);
+    expect(a).toEqual(diffBody);
+    expect(b).toEqual(diffBody);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await fetchPrDiff('demo', 7);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
