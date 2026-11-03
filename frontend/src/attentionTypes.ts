@@ -1,6 +1,6 @@
-export type AttentionSeverity = 'crit' | 'warn' | 'info';
+type AttentionSeverity = 'crit' | 'warn' | 'info';
 
-export interface AttentionAction {
+interface AttentionAction {
   label: string;
   method: string;
   href: string;
