@@ -1,0 +1,136 @@
+import { tdBlockReason } from './jobsUtils';
+import type { PrRefState } from './jobsUtils';
+
+export interface TdCommand {
+  slug: string;
+  label: string;
+  desc: string;
+  needsPr: boolean;
+  build: (pr: string) => string;
+}
+
+const TD_COMMANDS: TdCommand[] = [
+  {
+    slug: 'fix-ci',
+    label: 'Fix CI failures',
+    desc: 'Pushes automated CI fixes to the PR branch.',
+    needsPr: true,
+    build: (pr) => `td --json agent fix-ci --pr ${pr} --execute`,
+  },
+  {
+    slug: 'read-reviews',
+    label: 'Read PR reviews',
+    desc: 'Review verdicts and threads for the PR.',
+    needsPr: true,
+    build: (pr) => `td gh read-pr-reviews --pr ${pr}`,
+  },
+  {
+    slug: 'read-comments',
+    label: 'Read PR comments',
+    desc: 'All comments on the PR.',
+    needsPr: true,
+    build: (pr) => `td gh read-pr-comments --pr ${pr}`,
+  },
+  {
+    slug: 'resolve-conflicts',
+    label: 'Resolve conflicts',
+    desc: 'Attempts merge-conflict resolution on the PR.',
+    needsPr: true,
+    build: (pr) => `td gh resolve-conflicts --pr ${pr}`,
+  },
+  {
+    slug: 'list-sessions',
+    label: 'Agent sessions',
+    desc: 'Active background agent sessions.',
+    needsPr: false,
+    build: () => 'td --json agent list-sessions',
+  },
+  {
+    slug: 'feedback-check',
+    label: 'Feedback check',
+    desc: 'Pending agent run feedback.',
+    needsPr: false,
+    build: () => 'td --json agent run-feedback-check',
+  },
+];
+
+export default function TdCommands({
+  pr,
+  onPrChange,
+  prStateCurrent,
+  prOk,
+  fixCiBlock,
+  conflictBlock,
+  onDispatch,
+}: {
+  pr: string;
+  onPrChange: (value: string) => void;
+  prStateCurrent: PrRefState | null;
+  prOk: boolean;
+  fixCiBlock: string | null;
+  conflictBlock: string | null;
+  onDispatch: (cmd: TdCommand) => void;
+}) {
+  return (
+    <section aria-label="Agent commands">
+      <h3>Agent commands</h3>
+      <div className="cmd-group" data-testid="td-pr-group">
+        <p className="row-meta">For a PR</p>
+        <div className="actions">
+          <label className="row-meta" htmlFor="td-pr">
+            PR number{' '}
+            <input
+              id="td-pr"
+              data-testid="td-pr"
+              inputMode="numeric"
+              value={pr}
+              onChange={(e) => onPrChange(e.target.value)}
+              placeholder="123"
+            />
+          </label>
+        </div>
+        {prStateCurrent && (
+          <p className="row-meta" data-testid="td-pr-state">
+            PR #{prStateCurrent.n}: CI {prStateCurrent.ci} ·{' '}
+            {prStateCurrent.conflicted ? 'conflicted' : 'clean'}
+          </p>
+        )}
+        <div className="actions">
+          {TD_COMMANDS.filter((c) => c.needsPr).map((c) => (
+            <button
+              key={c.slug}
+              type="button"
+              data-testid={`dispatch-td-${c.slug}`}
+              title={c.desc}
+              disabled={!prOk || tdBlockReason(c.slug, prStateCurrent) !== null}
+              onClick={() => onDispatch(c)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        {(fixCiBlock || conflictBlock) && (
+          <p className="row-meta" data-testid="td-change-block">
+            {[fixCiBlock, conflictBlock].filter(Boolean).join(' ')}
+          </p>
+        )}
+      </div>
+      <div className="cmd-group" data-testid="td-repo-group">
+        <p className="row-meta">Whole repo</p>
+        <div className="actions">
+          {TD_COMMANDS.filter((c) => !c.needsPr).map((c) => (
+            <button
+              key={c.slug}
+              type="button"
+              data-testid={`dispatch-td-${c.slug}`}
+              title={c.desc}
+              onClick={() => onDispatch(c)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}

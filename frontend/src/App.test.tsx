@@ -18,13 +18,14 @@ import {
   traceSummary,
 } from './views/ChatView';
 import HistoryView from './views/HistoryView';
-import JobsView, {
+import JobsView from './views/JobsView';
+import {
   attachIdFromConflict,
   jobsListActive,
   planNameFromResult,
   repairCandidates,
   resultLine,
-} from './views/JobsView';
+} from './views/jobsUtils';
 import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
 import ReviewView, { PrDetails, detailsPromptVisible } from './views/ReviewView';
 import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
