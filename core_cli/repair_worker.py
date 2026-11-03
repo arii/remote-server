@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -32,15 +31,30 @@ except ImportError:
 try:
     from core_cli.ast_validator import validate_source_syntax
     from core_cli.parse_task_spec import parse_task_spec
+    from core_cli.verify_allowlist import (
+        VERIFY_TIMEOUT,
+        VERIFY_VERB_HELP,
+        validate_verify_command,
+    )
 except ImportError:
     try:
         from ast_validator import validate_source_syntax
         from parse_task_spec import parse_task_spec
+        from verify_allowlist import (
+            VERIFY_TIMEOUT,
+            VERIFY_VERB_HELP,
+            validate_verify_command,
+        )
     except ImportError:
         # Fallback when running from different relative paths
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         from ast_validator import validate_source_syntax  # type: ignore
         from parse_task_spec import parse_task_spec  # type: ignore
+        from verify_allowlist import (  # type: ignore
+            VERIFY_TIMEOUT,
+            VERIFY_VERB_HELP,
+            validate_verify_command,
+        )
 
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
@@ -118,10 +132,19 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
             raise RuntimeError(f"Failed to fetch issue #{issue_number}: {proc.stderr.strip()}")
 
     spec = parse_task_spec(issue_body)
+    verification_cmd = spec.get("verification_command", "")
+    # Security gate (issue #483): issue text is untrusted — reject
+    # non-allowlisted commands here, before the worktree stage, so
+    # they never reach an executor.
+    if not validate_verify_command(verification_cmd):
+        raise RuntimeError(
+            "verification command not allowlisted: "
+            f"{verification_cmd[:200]!r} "
+            f"(allowed: {VERIFY_VERB_HELP})")
     return {
         "issue_body": issue_body,
         "target_files": spec.get("target_files", []),
-        "verification_cmd": spec.get("verification_command", ""),
+        "verification_cmd": verification_cmd,
     }
 
 
@@ -238,15 +261,37 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
     if not verification_cmd:
         return {"tests_passed": True, "current_errors": ""}
 
-    cmd_args = shlex.split(verification_cmd)
-    proc = subprocess.run(
-        cmd_args,
-        cwd=worktree_dir,
-        shell=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    # Defense in depth: the parse node already gated this, but state
+    # reaching verify directly must never execute untrusted text.
+    # Retry is exhausted — a rejected command never passes on retry.
+    cmd_args = validate_verify_command(verification_cmd)
+    if cmd_args is None:
+        return {
+            "tests_passed": False,
+            "current_errors": (
+                "verification command not allowlisted: "
+                f"{verification_cmd[:200]!r} "
+                f"(allowed: {VERIFY_VERB_HELP})"),
+            "retry_count": MAX_RETRIES,
+        }
+    try:
+        proc = subprocess.run(
+            cmd_args,
+            cwd=worktree_dir,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=VERIFY_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "tests_passed": False,
+            "current_errors": (
+                "verification command timed out after "
+                f"{VERIFY_TIMEOUT}s: {verification_cmd[:200]}"),
+            "retry_count": retry_count + 1,
+        }
 
     if proc.returncode == 0:
         return {

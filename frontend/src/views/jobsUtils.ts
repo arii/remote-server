@@ -106,6 +106,30 @@ export function repairFailureMessage(
   return `Repair run for #${issue ?? '?'} failed${exitCode !== null ? ` (exit ${exitCode})` : ''}.`;
 }
 
+// Verify-command preview line for the repair picker: the confirmer
+// sees exactly what the worker would run. Null when there is no
+// target yet or the preview failed to load (dispatch then reports
+// the server verdict).
+export function repairVerifyLine(preview: {
+  command: string;
+  allowlisted: boolean;
+  error: string;
+} | null): string | null {
+  if (!preview) return null;
+  if (preview.allowlisted) return `Verify: ${preview.command}`;
+  if (preview.command) return `Verify blocked: ${preview.error}`;
+  return `Verify unavailable: ${preview.error}`;
+}
+
+// Dispatch is refused up front only for an explicitly rejected
+// command; unparseable issues stay clickable so the server explains.
+export function repairVerifyBlocksDispatch(preview: {
+  command: string;
+  allowlisted: boolean;
+} | null): boolean {
+  return preview !== null && !preview.allowlisted && preview.command !== '';
+}
+
 // The settled outcome of a polled run: notice line plus the plan card
 // a create-plan run produced (if its result line names one).
 export interface CompletionInput {

