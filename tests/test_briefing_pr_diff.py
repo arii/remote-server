@@ -28,6 +28,38 @@ class TestFetchPrDiff(unittest.TestCase):
                 briefing_summary.subprocess, "run",
                 return_value=self._completed('{"status": "success"}')):
             self.assertEqual(briefing_summary.fetch_pr_diff(153), "")
+
+
+class TestRunJsonErrorDetail(unittest.TestCase):
+    def _failed(self, stderr, stdout=""):
+        return subprocess.CompletedProcess(
+            args=["td"], returncode=1, stdout=stdout, stderr=stderr)
+
+    def run_err(self, stderr, stdout=""):
+        with mock.patch.object(
+                briefing_summary.subprocess, "run",
+                return_value=self._failed(stderr, stdout)):
+            _, _, err = briefing_summary.run_json(["td"], 5)
+        return err
+
+    def test_plain_line_unchanged(self):
+        self.assertEqual(self.run_err("boom went wrong\n"), "boom went wrong")
+
+    def test_skips_bare_braces(self):
+        # td sometimes dumps JSON to stderr; the last line is a bare
+        # brace, which used to render as e.g. 'Overlap scan
+        # unavailable: }'. Take the last line carrying meaning.
+        self.assertEqual(
+            self.run_err('{\n  "message": "nope"\n}\n'),
+            '"message": "nope"')
+
+    def test_falls_back_to_stdout(self):
+        self.assertEqual(
+            self.run_err("", stdout='{\n"oops": true}\n'),
+            '"oops": true}')
+
+    def test_all_braces_gives_exit(self):
+        self.assertEqual(self.run_err("{\n}\n"), "exit 1")
         failed = subprocess.CompletedProcess(
             args=["td"], returncode=1, stdout="", stderr="boom")
         with mock.patch.object(
