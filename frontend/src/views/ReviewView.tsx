@@ -15,6 +15,20 @@ import { detailsMergeBlockReason } from '../reviewTypes';
 import { TRIAGE_HINT, useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
+export function applyOptimisticMerge(merging: ReadonlySet<number>, n: number): ReadonlySet<number> {
+  if (merging.has(n)) return merging;
+  const next = new Set(merging);
+  next.add(n);
+  return next;
+}
+
+export function revertOptimisticMerge(merging: ReadonlySet<number>, n: number): ReadonlySet<number> {
+  if (!merging.has(n)) return merging;
+  const next = new Set(merging);
+  next.delete(n);
+  return next;
+}
+
 function labelOf(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
@@ -88,6 +102,8 @@ export default function ReviewView({
   const [draftCause, setDraftCause] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
+  const [merging, setMerging] = useState<ReadonlySet<number>>(new Set());
+  const [creatingIssue, setCreatingIssue] = useState(false);
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
   // a PR row; issue rows have no detail view, so Enter is a no-op there.
@@ -154,10 +170,12 @@ export default function ReviewView({
 
   async function onMerge(n: number) {
     setError(null);
+    setMerging((prev) => applyOptimisticMerge(prev, n));
     try {
       await mergePr(repo, n);
       setNotice(`Merged PR #${n}.`);
     } catch (err) {
+      setMerging((prev) => revertOptimisticMerge(prev, n));
       setError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -168,6 +186,7 @@ export default function ReviewView({
       setError('Issue title is required.');
       return;
     }
+    setCreatingIssue(true);
     try {
       const r = await createIssue(repo, newTitle.trim(), newBody);
       setNotice(`Filed issue: ${r.url || 'created'}`);
@@ -175,6 +194,8 @@ export default function ReviewView({
       setNewBody('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingIssue(false);
     }
   }
 
@@ -219,7 +240,7 @@ export default function ReviewView({
               {prs.map((p, pi) => (
                 <li
                   key={p.number}
-                  className={`detail${selected === p.number ? ' selected' : ''}${cursor === pi ? ' kbd-focus' : ''}`}
+                  className={`detail${selected === p.number ? ' selected' : ''}${cursor === pi ? ' kbd-focus' : ''}${merging.has(p.number) ? ' merging' : ''}`}
                   data-testid={`review-pr-${p.number}`}
                   aria-current={selected === p.number ? true : undefined}
                 >
@@ -227,6 +248,7 @@ export default function ReviewView({
                   <p className="row-meta">
                     {p.author} · {p.branch} · CI {p.ciLabel}
                     {p.isDraft ? ' · draft' : ''}
+                    {merging.has(p.number) ? ' · Merging…' : ''}
                   </p>
                   <button type="button" onClick={() => void selectPr(p.number)}>
                     Open
@@ -294,7 +316,7 @@ export default function ReviewView({
               <div className="actions">
                 <HoldToConfirm
                   label={`Merge PR #${sel.number}`}
-                  disabled={detailsMergeBlockReason(sel) !== null}
+                  disabled={detailsMergeBlockReason(sel) !== null || merging.has(sel.number)}
                   onFire={() => void onMerge(sel.number)}
                 />
                 <button
@@ -339,7 +361,9 @@ export default function ReviewView({
               />
             </label>
             <div className="actions">
-              <button type="submit">Create issue</button>
+              <button type="submit" disabled={creatingIssue}>
+                {creatingIssue ? 'Creating…' : 'Create issue'}
+              </button>
             </div>
           </form>
           </details>
