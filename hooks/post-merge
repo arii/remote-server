@@ -22,6 +22,11 @@
 # - An oauth2-proxy config change only prints a restart reminder:
 #   restarting the auth edge is a brief terminal outage and stays a
 #   human decision.
+# - It only rebuilds when the merge landed in the live project
+#   checkout itself AND that checkout is on main. Merges in linked
+#   worktrees or on side branches print a skip note instead of
+#   deploying whatever the live tree happens to hold (that deployed
+#   peer-branch code twice).
 # - Exit code never blocks the merge: every failure prints and the
 #   hook exits 0. A failed hook must not make a good merge look bad.
 set -u
@@ -42,18 +47,32 @@ changed="$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null \
 if printf '%s\n' "$changed" | grep -Eq '^(core_cli/|backend/|frontend/|deep-agent/|Dockerfile|docker-compose\.yml|caddy/Caddyfile)'; then
   if [ -f /app/server.py ]; then
     echo "[post-merge] buttons changed, but refusing to rebuild from inside the buttons container — press Deploy buttons or run: docker compose up -d --build buttons"
-  elif command -v docker >/dev/null 2>&1; then
-    echo "[post-merge] buttons changed — rebuilding buttons container..."
+  else
     COMPOSE_FILE="docker-compose.yml"
-    if [ -f /srv/remote-server/docker-compose.yml ]; then
+    if [ -n "${REMOTE_BUTTONS_PROJECT_DIR:-}" ]; then
+      COMPOSE_FILE="$REMOTE_BUTTONS_PROJECT_DIR/docker-compose.yml"
+    elif [ -f /srv/remote-server/docker-compose.yml ]; then
       COMPOSE_FILE="/srv/remote-server/docker-compose.yml"
     elif [ -f /home/ari/remote-server/docker-compose.yml ]; then
       COMPOSE_FILE="/home/ari/remote-server/docker-compose.yml"
     fi
-    HOST_HOME=/home/ari HOME=/home/ari docker compose -f "$COMPOSE_FILE" up -d --build buttons \
-      || echo "[post-merge] buttons rebuild failed (page may be stale)"
-  else
-    echo "[post-merge] buttons changed — docker not found; rebuild manually: docker compose up -d --build buttons"
+    case "$COMPOSE_FILE" in
+      /*) proj_dir="${COMPOSE_FILE%/*}" ;;
+      *) proj_dir="$PWD" ;;
+    esac
+    top_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    if [ "$top_dir" != "$proj_dir" ]; then
+      echo "[post-merge] buttons changed in $top_dir, but that is not the live project ($proj_dir) — skipping auto-rebuild (merge into main and pull there instead)"
+    elif [ "$branch" != "main" ]; then
+      echo "[post-merge] buttons changed, but this checkout is on '$branch', not main — skipping auto-rebuild (merge into main first)"
+    elif command -v docker >/dev/null 2>&1; then
+      echo "[post-merge] buttons changed — rebuilding buttons container..."
+      HOST_HOME=/home/ari HOME=/home/ari docker compose -f "$COMPOSE_FILE" up -d --build buttons \
+        || echo "[post-merge] buttons rebuild failed (page may be stale)"
+    else
+      echo "[post-merge] buttons changed — docker not found; rebuild manually: docker compose up -d --build buttons"
+    fi
   fi
 fi
 

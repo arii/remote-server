@@ -35,6 +35,11 @@ PROVIDERS = ("muse", "agy")
 READ_CHUNK = 65536
 STDERR_TAIL = 4000
 
+# A runaway CLI must not stream forever: past this many stdout chars
+# the turn is killed and the done event carries truncated=true.
+TURN_OUTPUT_MAX = 262144
+STDERR_READ_MAX = 65536
+
 
 def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
                continued: bool) -> list:
@@ -82,8 +87,8 @@ class AgentTurnManager:
                        session_id: str, prompt: str, continued: bool,
                        argv: list | None = None):
         """Yield stdout text chunks for one turn. Afterwards
-        pop_result(session_id) holds {exit, stderr}. `argv` overrides
-        the allowlist lookup (tests)."""
+        pop_result(session_id) holds {exit, stderr, truncated}.
+        `argv` overrides the allowlist lookup (tests)."""
         cmd = list(argv) if argv is not None else turn_argv(
             provider, cwd, session_id, prompt, continued)
         started = time.time()
@@ -93,6 +98,8 @@ class AgentTurnManager:
             text=True)
         self._register(session_id, proc)
         out_text: list[str] = []
+        out_len = 0
+        truncated = False
         err_tail = ""
         try:
             assert proc.stdout is not None
@@ -101,12 +108,25 @@ class AgentTurnManager:
                     proc.stdout.read, READ_CHUNK)
                 if not chunk:
                     break
+                room = TURN_OUTPUT_MAX - out_len
+                out_len += len(chunk)
+                if out_len > TURN_OUTPUT_MAX:
+                    truncated = True
+                    if room > 0:
+                        out_text.append(chunk[:room])
+                        yield chunk[:room]
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
                 out_text.append(chunk)
                 yield chunk
             await asyncio.to_thread(proc.wait)
             if proc.stderr is not None:
                 try:
-                    err_tail = proc.stderr.read()[-STDERR_TAIL:]
+                    err = proc.stderr.read(STDERR_READ_MAX + 1)
+                    err_tail = (err or "")[-STDERR_TAIL:]
                 except Exception:
                     err_tail = ""
         finally:
@@ -123,10 +143,11 @@ class AgentTurnManager:
                        "exit": code,
                        "duration_s": round(time.time() - started, 2),
                        "tail": "".join(out_text)[-STDERR_TAIL:],
-                       "stderr": err_tail})
+                       "stderr": err_tail, "truncated": truncated})
         with self._lock:
             self._results[session_id] = {"exit": code,
-                                         "stderr": err_tail}
+                                         "stderr": err_tail,
+                                         "truncated": truncated}
 
     def pop_result(self, session_id: str) -> dict | None:
         """Completion record for a finished turn, once."""

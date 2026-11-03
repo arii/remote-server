@@ -160,6 +160,17 @@ class RunTurnTest(unittest.TestCase):
     def test_abort_unknown_is_false(self):
         self.assertFalse(asyncio.run(self.mgr.abort("nope")))
 
+    def test_runaway_output_is_capped_and_killed(self):
+        with mock.patch.object(agent_turn, "TURN_OUTPUT_MAX", 16):
+            chunks = self._collect(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s6", prompt="hi", continued=False,
+                argv=["/bin/sh", "-c",
+                     "yes ABCDEFGH | head -c 100000"])
+        self.assertEqual(len("".join(chunks)), 16)
+        result = self.mgr.pop_result("s6")
+        self.assertTrue(result["truncated"])
+
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class AgentRouterTest(unittest.TestCase):
@@ -243,6 +254,22 @@ class AgentRouterTest(unittest.TestCase):
                                     json=TURN_BODY)
         self.assertIn("event: error", resp.text)
         self.assertIn("bad", resp.text)
+
+    def test_truncated_turn_sends_done_with_flag(self):
+        async def _fake(*args, **kwargs):
+            yield "partial-"
+
+        with mock.patch.object(agent_turn.manager, "run_turn",
+                               _fake), \
+                mock.patch.object(
+                    agent_turn.manager, "pop_result",
+                    return_value={"exit": -15, "stderr": "",
+                                  "truncated": True}):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("event: done", resp.text)
+        self.assertIn('"truncated": true', resp.text)
+        self.assertNotIn("event: error", resp.text)
 
     def test_abort_requires_session(self):
         resp = self.client.post("/api/agent/abort", json={})
