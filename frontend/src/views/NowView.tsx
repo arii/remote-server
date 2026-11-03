@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
-import { createIssue, fetchAttention } from '../apiClient';
+import { apiUrl, createIssue, fetchAttention } from '../apiClient';
 import type { SystemHealthResponse } from '../apiClient';
 import type { AttentionItem, AttentionResponse } from '../attentionTypes';
 import { loadAttention, loadAttentionEmpty } from '../mocks/attention';
@@ -12,7 +12,7 @@ function isGetAction(item: AttentionItem): boolean {
 }
 
 async function firePostAction(item: AttentionItem): Promise<void> {
-  const resp = await fetch(item.action.href, {
+  const resp = await fetch(apiUrl(item.action.href), {
     method: item.action.method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ intent: item.action.intent, confirmed: true }),
@@ -93,7 +93,7 @@ function ActionControl({
     }
   }
   if (isGetAction(item)) {
-    return <a href={item.action.href}>{item.action.label}</a>;
+    return <a href={apiUrl(item.action.href)}>{item.action.label}</a>;
   }
   if (item.action.destructive) {
     return <HoldToConfirm label={item.action.label} onFire={() => void handlePost()} />;

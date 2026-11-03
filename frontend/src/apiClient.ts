@@ -24,6 +24,18 @@ export interface SystemHealthResponse {
   containers: ContainerStatus[];
 }
 
+// Absolute API URLs from Vite's base: '/' in dev, '/buttons/' in the
+// image build. Relative 'api/…' breaks on slashless page URLs (the
+// browser resolves them to /), and root-absolute '/api/…' bypasses
+// the /buttons prefix Caddy strips. Server-sent hrefs stay
+// 'api/…'-relative; apiUrl() absolutizes both shapes at the edge.
+const API_BASE: string = import.meta.env.BASE_URL;
+
+export function apiUrl(path: string): string {
+  if (/^(https?:)?\/\//.test(path) || path.startsWith('/')) return path;
+  return `${API_BASE}${path}`;
+}
+
 async function readJson<T>(resp: Response, method: string, path: string): Promise<T> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
@@ -33,7 +45,7 @@ async function readJson<T>(resp: Response, method: string, path: string): Promis
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  return readJson<T>(await fetch(path), 'GET', path);
+  return readJson<T>(await fetch(apiUrl(path)), 'GET', path);
 }
 
 export function fetchSystemHealth(): Promise<SystemHealthResponse> {
@@ -57,7 +69,7 @@ export function fetchAttention(repo: string): Promise<import('./attentionTypes')
 }
 
 export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
-  const resp = await fetch('api/create-issue', {
+  const resp = await fetch(apiUrl('api/create-issue'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repo, title, body }),
@@ -108,7 +120,7 @@ export interface PiProgressResponse {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetch(path, {
+  const resp = await fetch(apiUrl(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -198,7 +210,7 @@ export function fetchPiProgress(rid: string): Promise<PiProgressResponse> {
 
 export function chatStreamUrl(prompt: string, repo: string, sessionId: string): string {
   const q = new URLSearchParams({ prompt, repo, session_id: sessionId });
-  return `api/chat/stream?${q.toString()}`;
+  return apiUrl(`api/chat/stream?${q.toString()}`);
 }
 
 export function abortChat(sessionId: string): Promise<{ ok: boolean; session_id: string }> {
