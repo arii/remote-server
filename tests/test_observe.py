@@ -64,6 +64,34 @@ class TestRecorder(unittest.TestCase):
         self.assertNotIn("..", evil)
 
 
+class TestTotals(unittest.TestCase):
+    def test_aggregates_usage_and_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = observe.TraceRecorder(os.path.join(d, "t.jsonl"))
+            rec.model_response({"input_tokens": 100, "output_tokens": 20,
+                                "total_tokens": 120})
+            rec.model_response({"input_tokens": 50, "output_tokens": 10,
+                                "total_tokens": 60})
+            rec.tool_call("grep_repo", {"pattern": "x"}, 0.5, True,
+                          result="hit")
+            rec.tool_call("bad", {}, 0.1, False, error="boom")
+            rec.close()
+            usage, calls = rec.totals()
+            self.assertEqual(usage, {"input_tokens": 150,
+                                     "output_tokens": 30,
+                                     "total_tokens": 180})
+            self.assertEqual([c["name"] for c in calls],
+                             ["grep_repo", "bad"])
+
+    def test_empty_totals_are_zeros(self):
+        with tempfile.TemporaryDirectory() as d:
+            rec = observe.TraceRecorder(os.path.join(d, "t.jsonl"))
+            rec.close()
+            usage, calls = rec.totals()
+            self.assertEqual(usage["total_tokens"], 0)
+            self.assertEqual(calls, [])
+
+
 class TestMiddleware(unittest.TestCase):
     def test_wrap_tool_call_ok_and_error(self):
         with tempfile.TemporaryDirectory() as d:

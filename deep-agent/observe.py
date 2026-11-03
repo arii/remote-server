@@ -57,6 +57,9 @@ class TraceRecorder:
         self.path = path
         self._fh = None
         self.started = time.time()
+        self._usage = {"input_tokens": 0, "output_tokens": 0,
+                       "total_tokens": 0}
+        self._calls = []
         try:
             self._fh = open(path, "a", encoding="utf-8")
         except OSError:
@@ -80,9 +83,11 @@ class TraceRecorder:
         self.event("model_request", n_messages=n_messages)
 
     def model_response(self, usage):
-        self.event("model_response", usage={
-            k: (usage or {}).get(k, 0) or 0
-            for k in ("input_tokens", "output_tokens", "total_tokens")})
+        snap = {k: (usage or {}).get(k, 0) or 0
+                for k in ("input_tokens", "output_tokens", "total_tokens")}
+        self.event("model_response", usage=snap)
+        for k in self._usage:
+            self._usage[k] += snap[k]
 
     def tool_call(self, name, args, duration_s, ok, result=None,
                   error=None):
@@ -93,6 +98,16 @@ class TraceRecorder:
         else:
             payload["error"] = str(error or "")[:500]
         self.event("tool_call", **payload)
+        self._calls.append({"name": name,
+                            "args": str(args or "")[:300]})
+
+    def totals(self):
+        """Aggregated (usage, tool_calls) for ledger rows. Never raises."""
+        try:
+            return dict(self._usage), list(self._calls)
+        except Exception:  # noqa: BLE001 - totals must never break a run
+            return ({"input_tokens": 0, "output_tokens": 0,
+                     "total_tokens": 0}, [])
 
     def run_end(self, ok=True):
         self.event("run_end", duration_s=round(time.time() - self.started, 3),

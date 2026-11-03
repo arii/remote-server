@@ -48,15 +48,20 @@ def _usage_total(messages):
 
 
 def record(script, model, thread_id, messages, started, extra=None,
-           usage=None):
+           usage=None, calls=None):
     """Append one run entry; returns it. Never raises on odd inputs.
 
     usage: optional pre-aggregated {"input_tokens", "output_tokens",
     "total_tokens"} mapping. Streaming callers that discard message
     chunks (so _usage_total would see zeros) pass their own totals.
+    calls: optional pre-aggregated [{"name", "args"}] list, used when
+    the message list no longer carries the tool-call records
+    (streaming reassembly, failure paths).
     """
     try:
-        calls = []
+        derived = calls is None
+        if derived:
+            calls = []
         results = []
         for m in messages or []:
             if m is None:
@@ -67,9 +72,11 @@ def record(script, model, thread_id, messages, started, extra=None,
             for tc in tool_calls:
                 if not isinstance(tc, dict):
                     continue
-                calls.append(
-                    {"name": tc.get("name"), "args": str(tc.get("args"))[:300]}
-                )
+                if derived:
+                    calls.append(
+                        {"name": tc.get("name"),
+                         "args": str(tc.get("args"))[:300]}
+                    )
             cls = d.get("type", "") if d else m.__class__.__name__
             if cls in ("ToolMessage", "tool"):
                 name = d.get("name", "?") if d else getattr(m, "name", "?")

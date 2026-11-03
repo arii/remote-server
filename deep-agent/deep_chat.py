@@ -58,6 +58,9 @@ THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
 
 THREAD_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_PROMPT = 3000
+# Trace middleware nodes consume budget (~4 steps per tool call,
+# measured); 40 preserves room for ~9 tool calls per turn.
+RECURSION_LIMIT = 40
 EXIT_NEEDS_APPROVAL = 3
 
 # Mirror of ALLOWED_TD in ask_investigator.py (which mirrors
@@ -380,9 +383,7 @@ def _stream(agent, first_input, config):
     last_ai = ""
     stream = agent.stream(
         first_input,
-        # 20: trace middleware nodes consume budget (~4 steps per
-        # tool call, measured); preserves room for ~4 tool calls.
-        config={**config, "recursion_limit": 20},
+        config={**config, "recursion_limit": RECURSION_LIMIT},
         stream_mode=["messages", "updates"],
     )
     for mode, payload in stream:
@@ -471,11 +472,13 @@ def _cmd_turn(repo, thread_id, raw_prompt):
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         recorder.run_end(False)
         recorder.close()
+        _usage, _calls = recorder.totals()
         ledger.record(
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, messages, started,
             extra={"repo": repo, "mode": "turn", "trace": recorder.path,
                    "error": str(exc)[:200]},
+            usage=_usage, calls=_calls,
         )
         return cli.sorry(reply)
     from langchain_core.messages import AIMessage  # noqa: E402
@@ -483,11 +486,13 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     recorder.run_end(True)
     recorder.close()
     print(f"trace: {recorder.path}", file=sys.stderr)
+    _usage, _calls = recorder.totals()
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, messages + tool_msgs + [AIMessage(content=reply)],
         started, extra={"repo": repo, "mode": "turn",
                         "trace": recorder.path},
+        usage=_usage, calls=_calls,
     )
     pending = _pending_interrupts(agent, config)
     if pending:
@@ -550,21 +555,25 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         recorder.run_end(False)
         recorder.close()
+        _usage, _calls = recorder.totals()
         ledger.record(
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, [AIMessage(content=reply)], started,
             extra={"repo": repo, "mode": "resume", "verdict": verdict,
                    "trace": recorder.path, "error": str(exc)[:200]},
+            usage=_usage, calls=_calls,
         )
         return cli.sorry(reply)
     recorder.run_end(True)
     recorder.close()
     print(f"trace: {recorder.path}", file=sys.stderr)
+    _usage, _calls = recorder.totals()
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, tool_msgs + [AIMessage(content=reply)], started,
         extra={"repo": repo, "mode": "resume", "verdict": verdict,
                "trace": recorder.path},
+        usage=_usage, calls=_calls,
     )
     pending = _pending_interrupts(agent, config)
     if pending:
