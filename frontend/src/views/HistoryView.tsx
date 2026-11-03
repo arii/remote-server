@@ -48,6 +48,27 @@ function filterByKind(entries: LedgerEntry[], kind: string): LedgerEntry[] {
   return entries.filter((e) => e.kind === kind);
 }
 
+function StatusIcon({ tone }: { tone: HistoryRow['tone'] }) {
+  return (
+    <svg
+      className={`history-icon tone-${tone}`}
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      {tone === 'ok' && <path d="M8.5 12.5l2.5 2.5 4.5-5" />}
+      {tone === 'bad' && <path d="M9 9l6 6M15 9l-6 6" />}
+      {tone === 'muted' && <path d="M8.5 12h7" />}
+    </svg>
+  );
+}
+
 function RowsList({ rows }: { rows: HistoryRow[] }) {
   if (rows.length === 0) {
     return (
@@ -69,11 +90,13 @@ function RowsList({ rows }: { rows: HistoryRow[] }) {
             className="history-row"
             data-testid={r.repeat > 1 ? 'history-incident' : 'history-row'}
           >
-            <span className="row-title">{r.summary}</span>{' '}
+            <span className="row-title">
+              <StatusIcon tone={r.tone} /> {r.summary}
+            </span>
             <span className="row-meta">
               {r.kind} · {r.at}
+              {advice && <> · Recovery: {advice}</>}
             </span>
-            {advice && <span className="row-meta"> · Recovery: {advice}</span>}
           </li>
         );
       })}

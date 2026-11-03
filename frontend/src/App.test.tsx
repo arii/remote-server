@@ -105,6 +105,18 @@ describe('history utils', () => {
     expect(rows[0].summary).toContain('new');
     expect(rows[1].summary).toContain('old');
   });
+
+  it('marks failures bad, routine chatter muted, rest ok', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        { kind: 'webhook', event: 'fetch failed', ts: 3, ok: false },
+        { kind: 'chat', event: 'chat started', ts: 2 },
+        { kind: 'system', event: 'buttons started', ts: 1 },
+      ],
+    );
+    expect(rows.map((r) => r.tone)).toEqual(['bad', 'muted', 'ok']);
+  });
 });
 
 describe('history fixtures (?mock=1)', () => {
