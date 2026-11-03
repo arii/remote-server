@@ -72,6 +72,43 @@ class TestRuns(unittest.TestCase):
             run = runs.get_run("run-0", ledger_path=path)
             self.assertEqual(run["trace"], [])
 
+    def test_delete_run_hides_row_and_keeps_ids_stable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [_row(thread_id="t0"),
+                                    _row(thread_id="t1")])
+            self.assertTrue(runs.delete_run("run-0", ledger_path=path))
+            self.assertIsNone(runs.get_run("run-0", ledger_path=path))
+            out = runs.list_runs(ledger_path=path)
+            self.assertEqual([r["id"] for r in out], ["run-1"])
+            self.assertEqual(runs.get_run("run-1",
+                                          ledger_path=path)["id"], "run-1")
+
+    def test_delete_run_unknown_or_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [_row(thread_id="t0")])
+            self.assertFalse(runs.delete_run("run-9", ledger_path=path))
+            self.assertFalse(runs.delete_run("nope", ledger_path=path))
+            self.assertTrue(runs.delete_run("run-0", ledger_path=path))
+            self.assertFalse(runs.delete_run("run-0", ledger_path=path))
+
+    def test_clear_finished_removes_all_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [_row(thread_id="t0"),
+                                    _row(thread_id="t1")])
+            self.assertEqual(runs.clear_finished_runs(ledger_path=path), 2)
+            self.assertEqual(runs.list_runs(ledger_path=path), [])
+            self.assertEqual(runs.clear_finished_runs(ledger_path=path), 0)
+
+    def test_summary_has_prompt_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(extra={"prompt": "do the thing"}),
+                _row(extra={}),
+            ])
+            out = runs.list_runs(ledger_path=path)
+            self.assertFalse(out[0]["has_prompt"])
+            self.assertTrue(out[1]["has_prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()

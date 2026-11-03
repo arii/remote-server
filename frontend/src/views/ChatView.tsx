@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
+import TapToFire from '../components/TapToFire';
 import {
   abortChat,
   chatStreamUrl,
+  clearAgentRuns,
+  deleteAgentRun,
   fetchAgentRun,
   fetchAgentRuns,
   resumeChat,
@@ -179,22 +182,43 @@ function runMeta(run: AgentRun): string {
   return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok${tools} · ${when}`;
 }
 
-function RunsPane({
+export function RunsPane({
   runs,
   selected,
   detail,
   onSelect,
+  onContinue,
+  onDelete,
+  onClearFinished,
+  notice,
 }: {
   runs: AgentRun[];
   selected: string | null;
   detail: AgentRunDetail | null;
   onSelect: (id: string) => void;
+  onContinue: (id: string) => void;
+  onDelete: (id: string) => void;
+  onClearFinished: () => void;
+  notice: string | null;
 }) {
   if (runs.length === 0) return null;
   const t0 = detail && detail.trace.length > 0 ? num(detail.trace[0].ts) : 0;
   return (
     <section data-testid="chat-runs">
       <h3>Past runs</h3>
+      <div className="actions">
+        <TapToFire
+          label="Clear finished"
+          confirm="This clears all finished runs."
+          testid="chat-runs-clear"
+          onFire={onClearFinished}
+        />
+      </div>
+      {notice && (
+        <p className="row-meta" data-testid="chat-runs-notice" role="status">
+          {notice}
+        </p>
+      )}
       <ul className="session-list">
         {runs.map((r) => (
           <li key={r.id} className="detail">
@@ -209,6 +233,23 @@ function RunsPane({
                 {r.id} · {runMeta(r)}
               </span>
             </button>
+            <div className="actions">
+              <button
+                type="button"
+                data-testid={`chat-run-continue-${r.id}`}
+                disabled={!r.has_prompt}
+                title={r.has_prompt ? undefined : 'No stored prompt for this run'}
+                onClick={() => onContinue(r.id)}
+              >
+                Continue
+              </button>
+              <TapToFire
+                label="Delete"
+                confirm="This cannot be undone."
+                testid={`chat-run-delete-${r.id}`}
+                onFire={() => onDelete(r.id)}
+              />
+            </div>
           </li>
         ))}
       </ul>
@@ -443,6 +484,8 @@ export default function ChatView({
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
+  const [runsNotice, setRunsNotice] = useState<string | null>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [approval, setApproval] = useState<ApprovalPayload | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -473,6 +516,57 @@ export default function ChatView({
     setDetail(null);
     try {
       setDetail(await fetchAgentRun(id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function refreshRuns() {
+    try {
+      setRuns((await fetchAgentRuns()).runs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onContinueRun(id: string) {
+    try {
+      const d = selected === id && detail ? detail : await fetchAgentRun(id);
+      const extra = d.entry.extra as Record<string, unknown> | undefined;
+      const stored = str(extra?.prompt);
+      if (!stored) {
+        setRunsNotice('That run has no stored prompt to continue from.');
+        return;
+      }
+      setPrompt(stored);
+      setRunsNotice(null);
+      promptRef.current?.focus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onDeleteRun(id: string) {
+    try {
+      await deleteAgentRun(id);
+      if (selected === id) {
+        setSelected(null);
+        setDetail(null);
+      }
+      await refreshRuns();
+      setRunsNotice(`Deleted ${id}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onClearFinished() {
+    try {
+      const result = await clearAgentRuns();
+      setSelected(null);
+      setDetail(null);
+      await refreshRuns();
+      setRunsNotice(`Cleared ${result.cleared} finished run(s).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -673,6 +767,10 @@ export default function ChatView({
         selected={selected}
         detail={detail}
         onSelect={(id) => void onSelectRun(id)}
+        onContinue={(id) => void onContinueRun(id)}
+        onDelete={(id) => void onDeleteRun(id)}
+        onClearFinished={() => void onClearFinished()}
+        notice={runsNotice}
       />
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
@@ -680,6 +778,7 @@ export default function ChatView({
           <textarea
             id="chat-prompt"
             data-testid="chat-prompt"
+            ref={promptRef}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             disabled={streaming}

@@ -5,6 +5,7 @@ token usage, final preview. Usage totals power Nebius spend tracking.
 Reader: python ledger.py [n]  (prints last n entries, compact)
 """
 
+import fcntl
 import json
 import os
 import sys
@@ -119,6 +120,11 @@ def record(script, model, thread_id, messages, started, extra=None,
                         str(p.get("text", "")) if isinstance(p, dict)
                         else str(p) for p in content)
                 final = str(content)[:500]
+        extra = dict(extra or {})
+        # Cap stored prompts: Continue needs the text, not unbounded input.
+        prompt = extra.get("prompt")
+        if isinstance(prompt, str) and len(prompt) > 4000:
+            extra["prompt"] = prompt[:4000]
         entry = {
             "kind": "deep-agent-run",
             "ts": time.time(),
@@ -131,13 +137,19 @@ def record(script, model, thread_id, messages, started, extra=None,
             "usage": dict(usage) if isinstance(usage, dict)
             else _usage_total(messages),
             "final_preview": final,
-            "extra": extra or {},
+            "extra": extra,
         }
         parent = os.path.dirname(LEDGER)
         if parent:
             os.makedirs(parent, exist_ok=True)
         with open(LEDGER, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+            # Matches runs._tombstone_lines: appends never interleave
+            # with a delete/clear rewrite from another process.
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(entry) + "\n")
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         return entry
     except Exception as exc:  # noqa: BLE001 - ledger must never break a run
         print(f"ledger record failed: {exc}", file=sys.stderr)

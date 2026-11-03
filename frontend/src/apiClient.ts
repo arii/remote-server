@@ -469,6 +469,7 @@ export interface AgentRun {
   tools: string[];
   tokens: number;
   preview: string;
+  has_prompt: boolean;
 }
 
 export interface TraceEvent {
@@ -489,6 +490,26 @@ export function fetchAgentRuns(limit = 50): Promise<{ runs: AgentRun[] }> {
 
 export function fetchAgentRun(runId: string): Promise<AgentRunDetail> {
   return getJson<AgentRunDetail>(`api/agents/runs/${encodeURIComponent(runId)}`);
+}
+
+export function deleteAgentRun(runId: string): Promise<{ ok: boolean; id: string }> {
+  return deleteJson<{ ok: boolean; id: string }>(
+    `api/agents/runs/${encodeURIComponent(runId)}`,
+    { intent: 'agents-delete', confirmed: true },
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function clearAgentRuns(): Promise<{ ok: boolean; cleared: number }> {
+  return postJson<{ ok: boolean; cleared: number }>('api/agents/runs/clear', {
+    intent: 'agents-clear',
+    confirmed: true,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export interface AgentProviderStatus {

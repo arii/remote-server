@@ -252,7 +252,8 @@ def main() -> int:
                     messages + trace_messages
                     + [AIMessage(content=reply)],
                     started,
-                    extra={"repo": repo, "salvaged": True},
+                    extra={"repo": repo, "salvaged": True,
+                           "prompt": prompt},
                     usage=usage,
                 )
                 return 0
@@ -265,14 +266,15 @@ def main() -> int:
             messages + trace_messages
             + [AIMessage(content=partial or reply)],
             started,
-            extra={"repo": repo, "error": str(exc)[:200]},
+            extra={"repo": repo, "error": str(exc)[:200],
+                   "prompt": prompt},
             usage=usage,
         )
         return cli.sorry(reply)
     ledger.record(
         "chat_agent.py", f"{spec['provider']}:{spec['model']}",
         session_id, messages + trace_messages + [AIMessage(content=reply)],
-        started, extra={"repo": repo}, usage=usage,
+        started, extra={"repo": repo, "prompt": prompt}, usage=usage,
     )
     return 0
 

@@ -15,10 +15,12 @@ Reader CLI: `python3 runs.py [n|ref]`
              its trace path.
 """
 
+import fcntl
 import json
 import os
 import re
 import sys
+import time
 
 import cli
 import ledger
@@ -37,6 +39,11 @@ def _read_lines(path):
         return []
 
 
+def _is_deleted(row):
+    """Tombstoned rows stay in place so positional run-N ids stay stable."""
+    return isinstance(row, dict) and row.get("deleted") is True
+
+
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
     usage = row.get("usage") or {}
@@ -52,6 +59,8 @@ def _entry_summary(index, row):
                   for c in row.get("tool_calls", []) or []],
         "tokens": usage.get("total_tokens", 0) or 0,
         "preview": (row.get("final_preview", "") or "")[:200],
+        "has_prompt": isinstance(extra.get("prompt"), str)
+        and bool(extra.get("prompt")),
     }
 
 
@@ -67,7 +76,7 @@ def list_runs(limit=50, ledger_path=None):
             row = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
-        if isinstance(row, dict):
+        if isinstance(row, dict) and not _is_deleted(row):
             rows.append(_entry_summary(index, row))
     rows.reverse()
     return rows[:limit]
@@ -86,7 +95,7 @@ def get_run(run_id, ledger_path=None):
         row = json.loads(lines[index])
     except (json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(row, dict):
+    if not isinstance(row, dict) or _is_deleted(row):
         return None
     trace = []
     tpath = (row.get("extra") or {}).get("trace") or ""
@@ -101,6 +110,61 @@ def get_run(run_id, ledger_path=None):
             if isinstance(event, dict):
                 trace.append(event)
     return {"id": f"run-{index}", "entry": row, "trace": trace}
+
+
+def delete_run(run_id, ledger_path=None):
+    """Tombstone one ledger row. True when a live row was deleted."""
+    match = RUN_RE.match(run_id or "")
+    if not match:
+        return False
+    return _tombstone_lines({int(match.group(1))},
+                            ledger_path or LEDGER) == 1
+
+
+def clear_finished_runs(ledger_path=None):
+    """Tombstone every live ledger row (all ledger rows are finished
+    turns; in-flight runs live only in traces/). Returns the count."""
+    try:
+        with open(ledger_path or LEDGER, encoding="utf-8") as f:
+            total = len(f.readlines())
+    except OSError:
+        return 0
+    return _tombstone_lines(set(range(total)), ledger_path or LEDGER)
+
+
+def _tombstone_lines(indexes, path):
+    """Replace indexed lines with tombstones under an exclusive lock.
+
+    The lock matches ledger.record's, so a concurrent turn append
+    cannot interleave with the rewrite. Returns tombstoned count.
+    """
+    try:
+        f = open(path, "r+", encoding="utf-8")
+    except OSError:
+        return 0
+    with f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            lines = f.readlines()
+            tombstoned = 0
+            for i in sorted(indexes):
+                if i >= len(lines):
+                    continue
+                try:
+                    row = json.loads(lines[i])
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if _is_deleted(row):
+                    continue
+                lines[i] = json.dumps({"deleted": True,
+                                       "ts": time.time()}) + "\n"
+                tombstoned += 1
+            f.seek(0)
+            f.writelines(lines)
+            f.truncate()
+            return tombstoned
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def _trace_files(traces_dir=None):
@@ -188,7 +252,8 @@ def _ledger_trace_for_thread(ref, ledger_path, traces_dir):
             entry = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(entry, dict) or entry.get("thread_id") != ref:
+        if not isinstance(entry, dict) or _is_deleted(entry) \
+                or entry.get("thread_id") != ref:
             continue
         extra = entry.get("extra") or {}
         trace = extra.get("trace") if isinstance(extra, dict) else None

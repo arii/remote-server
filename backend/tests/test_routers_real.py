@@ -101,6 +101,69 @@ class RealRoutersTest(unittest.TestCase):
             agents.runs.list_runs = real_list
             agents.runs.get_run = real_get
 
+    def test_delete_agent_run(self):
+        import json
+        import tempfile
+
+        from backend.api.routers import agents
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                for thread in ("t0", "t1"):
+                    f.write(json.dumps(
+                        {"kind": "deep-agent-run", "thread_id": thread,
+                         "extra": {}}) + "\n")
+            real_ledger = agents.runs.LEDGER
+            agents.runs.LEDGER = path
+            try:
+                bad = self.client.request(
+                    "DELETE", "/api/agents/runs/run-0",
+                    json={"intent": "agents-delete"})
+                self.assertEqual(bad.status_code, 400)
+                resp = self.client.request(
+                    "DELETE", "/api/agents/runs/run-0",
+                    json={"intent": "agents-delete", "confirmed": True})
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.json(), {"ok": True, "id": "run-0"})
+                again = self.client.request(
+                    "DELETE", "/api/agents/runs/run-0",
+                    json={"intent": "agents-delete", "confirmed": True})
+                self.assertEqual(again.status_code, 404)
+                listed = self.client.get("/api/agents/runs")
+                self.assertEqual(
+                    [r["id"] for r in listed.json()["runs"]], ["run-1"])
+            finally:
+                agents.runs.LEDGER = real_ledger
+
+    def test_clear_agent_runs(self):
+        import json
+        import tempfile
+
+        from backend.api.routers import agents
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                for thread in ("t0", "t1"):
+                    f.write(json.dumps(
+                        {"kind": "deep-agent-run", "thread_id": thread,
+                         "extra": {}}) + "\n")
+            real_ledger = agents.runs.LEDGER
+            agents.runs.LEDGER = path
+            try:
+                bad = self.client.post(
+                    "/api/agents/runs/clear",
+                    json={"intent": "agents-clear"})
+                self.assertEqual(bad.status_code, 400)
+                resp = self.client.post(
+                    "/api/agents/runs/clear",
+                    json={"intent": "agents-clear", "confirmed": True})
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.json(), {"ok": True, "cleared": 2})
+                listed = self.client.get("/api/agents/runs")
+                self.assertEqual(listed.json(), {"runs": []})
+            finally:
+                agents.runs.LEDGER = real_ledger
+
 
 if __name__ == "__main__":
     unittest.main()
