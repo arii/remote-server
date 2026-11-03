@@ -335,7 +335,7 @@ export default function NowView({
       {data.attention.length === 0 ? (
         <div data-testid="now-empty">
           <h3>Nothing needs you right now</h3>
-          <p className="row-meta">All clear. Check back later.</p>
+          <p className="row-meta">All clear.</p>
         </div>
       ) : (
         <ul className="session-list" data-testid="now-list">
