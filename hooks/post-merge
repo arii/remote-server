@@ -5,10 +5,11 @@
 # truth; re-run the setup script after a fresh clone.)
 #
 # What it does, and what it deliberately does NOT do:
-# - If the merge touched buttons code, the compose file, or the
-#   caddy config, it rebuilds ONLY the buttons container — never the
-#   terminal (a terminal rebuild would kill live Pi sessions) and
-#   never on top of an automated pull.
+# - If the merge touched anything baked into the buttons image
+#   (buttons/, backend/, frontend/, deep-agent/, Dockerfile, compose
+#   file, caddy config), it rebuilds ONLY the buttons container —
+#   never the terminal (a terminal rebuild would kill live sessions)
+#   and never on top of an automated pull.
 # - It refuses to rebuild from inside the buttons container itself
 #   (/app/server.py exists there): rebuilding the container that is
 #   running the pull would kill the pulling process mid-flight.
@@ -38,7 +39,7 @@ changed="$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null \
   || git diff --name-only 'HEAD@{1}' HEAD 2>/dev/null || true)"
 [ -z "$changed" ] && exit 0
 
-if printf '%s\n' "$changed" | grep -Eq '^(buttons/|docker-compose\.yml|caddy/Caddyfile)'; then
+if printf '%s\n' "$changed" | grep -Eq '^(buttons/|backend/|frontend/|deep-agent/|Dockerfile|docker-compose\.yml|caddy/Caddyfile)'; then
   if [ -f /app/server.py ]; then
     echo "[post-merge] buttons changed, but refusing to rebuild from inside the buttons container — press Deploy buttons or run: docker compose up -d --build buttons"
   elif command -v docker >/dev/null 2>&1; then

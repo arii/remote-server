@@ -7,6 +7,8 @@ scope) and a tmp ledger dir via BUTTONS_LEDGER_PATH.
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -116,6 +118,30 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["kind"], "system")
         self.assertEqual(entries[0]["event"], "ledger cleared")
+
+
+class BriefingScriptSmokeTest(unittest.TestCase):
+    """The router shells out to buttons/briefing_summary.py; it must import.
+
+    Regression: the buttons image shipped the script without its sibling
+    buttons/context_filter.py, so /api/briefing 500'd in prod while the
+    fixture-based router tests stayed green.
+    """
+
+    def test_script_imports_resolve(self):
+        root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script = os.path.join(root, "buttons", "briefing_summary.py")
+        # No args -> usage to stderr, exit 2 (the script has no --help).
+        # Any ModuleNotFoundError would traceback and exit 1 instead.
+        proc = subprocess.run(
+            [sys.executable, script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True)
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 2, out[-500:])
+        self.assertIn("usage:", out)
+        self.assertNotIn("Traceback", out)
 
 
 if __name__ == "__main__":
