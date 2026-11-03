@@ -145,6 +145,7 @@ services:
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
       NEBIUS_MODEL: ${NEBIUS_MODEL:-}
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
+      NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
@@ -250,6 +251,8 @@ services:
       # terminal). Empty/unset = public read-only GitHub ops only.
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
+      # Metered-spend cap (gate + budget UI). Empty/unset = uncapped.
+      NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
     healthcheck:

@@ -135,6 +135,50 @@ class RealRoutersTest(unittest.TestCase):
             finally:
                 agents.runs.LEDGER = real_ledger
 
+    def test_agent_budget(self):
+        import json
+        import tempfile
+        from unittest import mock
+
+        from backend.api.routers import agents
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(
+                    {"kind": "deep-agent-run",
+                     "model": "nebius:zai-org/GLM-5.3-Flash",
+                     "usage": {"input_tokens": 2000,
+                               "output_tokens": 1000,
+                               "total_tokens": 3000},
+                     "cost_usd": 0.0008, "metered": True}) + "\n")
+            real_ledger = agents.runs.LEDGER
+            agents.runs.LEDGER = path
+            try:
+                with mock.patch.dict(
+                        os.environ,
+                        {"NEBIUS_SPEND_CAP_USD": "5.00"}, clear=True):
+                    resp = self.client.get("/api/agents/budget")
+                self.assertEqual(resp.status_code, 200)
+                body = resp.json()
+                self.assertEqual(body["cap_usd"], 5.0)
+                self.assertAlmostEqual(body["spent_usd"], 0.0008)
+                self.assertAlmostEqual(body["remaining_usd"], 4.9992)
+                self.assertFalse(body["blocked"])
+                self.assertEqual(body["unknown"], 0)
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    resp = self.client.get("/api/agents/budget")
+                body = resp.json()
+                self.assertIsNone(body["cap_usd"])
+                self.assertIsNone(body["remaining_usd"])
+                self.assertFalse(body["blocked"])
+                with mock.patch.dict(
+                        os.environ, {"NEBIUS_SPEND_CAP_USD": "0"},
+                        clear=True):
+                    resp = self.client.get("/api/agents/budget")
+                self.assertTrue(resp.json()["blocked"])
+            finally:
+                agents.runs.LEDGER = real_ledger
+
     def test_clear_agent_runs(self):
         import json
         import tempfile

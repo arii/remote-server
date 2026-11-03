@@ -67,5 +67,31 @@ class TestQuote(unittest.TestCase):
         self.assertTrue(metered)
 
 
+class TestSpendCap(unittest.TestCase):
+    def test_unset_means_uncapped(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(pricing.spend_cap())
+
+    def test_zero_blocks_everything(self):
+        with mock.patch.dict(os.environ,
+                             {"NEBIUS_SPEND_CAP_USD": "0"}, clear=True):
+            self.assertEqual(pricing.spend_cap(), 0.0)
+
+    def test_parses_dollars(self):
+        with mock.patch.dict(os.environ,
+                             {"NEBIUS_SPEND_CAP_USD": "5.50"}, clear=True):
+            self.assertEqual(pricing.spend_cap(), 5.5)
+
+    def test_junk_means_uncapped(self):
+        for raw in ("", "  ", "free", "-3"):
+            with mock.patch.dict(
+                    os.environ, {"NEBIUS_SPEND_CAP_USD": raw},
+                    clear=True):
+                if raw == "-3":
+                    self.assertEqual(pricing.spend_cap(), 0.0)
+                else:
+                    self.assertIsNone(pricing.spend_cap())
+
+
 if __name__ == "__main__":
     unittest.main()

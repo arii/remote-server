@@ -20,6 +20,8 @@ Env contract:
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
   NEBIUS_ONLY=1 (force cloud), OLLAMA_STRICT=1 (fail instead of falling back).
+  NEBIUS_SPEND_CAP_USD (optional lifetime metered cap; 0 blocks
+  every metered call, unset means uncapped).
 
 Routing ladder (policy, 2026-11-02):
   deterministic command -> Ollama qwen3:8b -> Ollama qwen3:14b ->
@@ -35,6 +37,9 @@ Routing ladder (policy, 2026-11-02):
 
 import os
 import urllib.request
+
+import pricing
+import runs
 
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
@@ -72,6 +77,16 @@ def _nebius_spec():
         raise RuntimeError(
             "Nebius fallback needs NEBIUS_API_KEY in the environment"
         )
+    cap = pricing.spend_cap()
+    if cap is not None:
+        # Single choke point: every metered path flows through here.
+        # Spend is recorded ledger cost (in-flight turns land at
+        # turn end, so one turn may cross the line; the next blocks).
+        spent = runs.total_metered_spend()["spent"]
+        if spent >= cap:
+            raise RuntimeError(
+                f"Nebius spend cap hit: ${spent:.4f} of ${cap:.4f} "
+                "used — raise NEBIUS_SPEND_CAP_USD to continue")
     return {
         "provider": "nebius",
         "model": _env("NEBIUS_MODEL", DEFAULT_NEBIUS_MODEL),

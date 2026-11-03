@@ -8,12 +8,14 @@ import {
   deleteAgentRun,
   fetchAgentRun,
   fetchAgentRuns,
+  fetchBudget,
   resumeChat,
 } from '../apiClient';
 import type {
   AgentRun,
   AgentRunDetail,
   ApprovalPayload,
+  BudgetStatus,
   TraceEvent,
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
@@ -182,13 +184,31 @@ function runMeta(run: AgentRun): string {
   return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok · ${runCost(run)}${tools} · ${when}`;
 }
 
+// Dollars trimmed for phone lines: $5 not $5.0000, $0.0008 kept.
+function usd(n: number): string {
+  return `$${n.toFixed(4).replace(/\.?0+$/, '')}`;
+}
+
 // Per-row cost slot: local runs are free, metered runs show the
 // recorded/derived quote, unrated metered runs stay honest with a
 // bare tag instead of an invented number.
 export function runCost(run: AgentRun): string {
   if (!run.metered) return 'free';
   if (run.cost_usd === null || run.cost_usd === undefined) return 'metered';
-  return `$${run.cost_usd.toFixed(4)}`;
+  return usd(run.cost_usd);
+}
+
+// Remaining-budget line for the runs header. Uncapped is stated
+// plainly (an unset cap is itself useful to see); a hit cap names
+// the block and the figures.
+export function budgetLine(budget: BudgetStatus): string {
+  if (budget.cap_usd === null || budget.cap_usd === undefined) {
+    return 'No spend cap set';
+  }
+  if (budget.blocked) {
+    return `Budget cap hit — metered calls blocked (${usd(budget.spent_usd)} of ${usd(budget.cap_usd)} used)`;
+  }
+  return `Budget ${usd(budget.remaining_usd ?? 0)} left of ${usd(budget.cap_usd)}`;
 }
 
 export interface MeteredTotal {
@@ -244,6 +264,7 @@ export function RunsPane({
   onDelete,
   onClearFinished,
   notice,
+  budget,
 }: {
   runs: AgentRun[];
   selected: string | null;
@@ -253,6 +274,7 @@ export function RunsPane({
   onDelete: (id: string) => void;
   onClearFinished: () => void;
   notice: string | null;
+  budget: BudgetStatus | null;
 }) {
   if (runs.length === 0) return null;
   const t0 = detail && detail.trace.length > 0 ? num(detail.trace[0].ts) : 0;
@@ -261,10 +283,15 @@ export function RunsPane({
     <section data-testid="chat-runs">
       <h3>Past runs</h3>
       <p className="row-meta" data-testid="chat-runs-metered-total">
-        Metered total ${metered.total.toFixed(4)}
+        Metered total {usd(metered.total)}
         {metered.unknown > 0 &&
           ` (+${metered.unknown} unknown rate${metered.unknown === 1 ? '' : 's'})`}
       </p>
+      {budget && (
+        <p className="row-meta" data-testid="chat-runs-budget">
+          {budgetLine(budget)}
+        </p>
+      )}
       <div className="actions">
         <TapToFire
           label="Clear finished"
@@ -554,6 +581,7 @@ export default function ChatView({
   const [phase, setPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [runsNotice, setRunsNotice] = useState<string | null>(null);
@@ -579,6 +607,11 @@ export default function ChatView({
         setRuns(live.runs);
       } catch {
         // Past runs stay hidden; live chat still works.
+      }
+      try {
+        setBudget(await fetchBudget());
+      } catch {
+        // Budget line stays hidden; runs still render.
       }
     })();
   }, []);
@@ -843,6 +876,7 @@ export default function ChatView({
         onDelete={(id) => void onDeleteRun(id)}
         onClearFinished={() => void onClearFinished()}
         notice={runsNotice}
+        budget={budget}
       />
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">

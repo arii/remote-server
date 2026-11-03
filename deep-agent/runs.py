@@ -45,16 +45,21 @@ def _is_deleted(row):
     return isinstance(row, dict) and row.get("deleted") is True
 
 
+def _row_cost(row):
+    """(cost_usd | None, metered) for one ledger row, live or
+    tombstoned. Recorded quote wins; otherwise derive at the
+    current card (display estimate, the row is untouched)."""
+    cost_usd = row.get("cost_usd")
+    metered = row.get("metered")
+    if isinstance(cost_usd, (int, float)) and isinstance(metered, bool):
+        return cost_usd, metered
+    return pricing.quote(row.get("model"), row.get("usage") or {})
+
+
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
     usage = row.get("usage") or {}
-    cost_usd = row.get("cost_usd")
-    metered = row.get("metered")
-    if not isinstance(cost_usd, (int, float)) \
-            or not isinstance(metered, bool):
-        # Old rows predate record-time quotes: derive at the
-        # current card (display estimate, the row is untouched).
-        cost_usd, metered = pricing.quote(row.get("model"), usage)
+    cost_usd, metered = _row_cost(row)
     return {
         "id": f"run-{index}",
         "script": row.get("script", "?"),
@@ -166,8 +171,13 @@ def _tombstone_lines(indexes, path):
                     continue
                 if _is_deleted(row):
                     continue
-                lines[i] = json.dumps({"deleted": True,
-                                       "ts": time.time()}) + "\n"
+                # Spend is spend: the tombstone keeps cost evidence
+                # so deletes hide runs without erasing the meter.
+                tomb = {"deleted": True, "ts": time.time()}
+                for key in ("model", "usage", "cost_usd", "metered"):
+                    if key in row:
+                        tomb[key] = row[key]
+                lines[i] = json.dumps(tomb) + "\n"
                 tombstoned += 1
             f.seek(0)
             f.writelines(lines)
@@ -175,6 +185,40 @@ def _tombstone_lines(indexes, path):
             return tombstoned
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def total_metered_spend(ledger_path=None):
+    """Lifetime metered spend over the whole ledger (uncapped scan).
+
+    Returns {"spent": float, "unknown": int}: priced metered rows
+    sum into spent; metered rows without a rate count as unknown.
+    Tombstoned rows count — deletes hide runs, not spend. The
+    spend-cap gate and the budget endpoint share this. Never raises.
+    """
+    spent = 0.0
+    unknown = 0
+    try:
+        lines = _read_lines(ledger_path or LEDGER)
+    except Exception:
+        return {"spent": 0.0, "unknown": 0}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        try:
+            cost_usd, metered = _row_cost(row)
+        except Exception:
+            continue
+        if not metered:
+            continue
+        if cost_usd is None:
+            unknown += 1
+        else:
+            spent += cost_usd
+    return {"spent": round(spent, 6), "unknown": unknown}
 
 
 def _trace_files(traces_dir=None):

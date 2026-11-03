@@ -134,6 +134,44 @@ class TestRuns(unittest.TestCase):
             self.assertTrue(out[1]["metered"])
             self.assertAlmostEqual(out[1]["cost_usd"], 0.0008)
 
+    def test_total_metered_spend(self):
+        usage = {"input_tokens": 2000, "output_tokens": 1000,
+                 "total_tokens": 3000}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     usage=usage, cost_usd=0.0008, metered=True),
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     usage=usage),
+                _row(model="ollama:qwen3:8b", usage=usage),
+                _row(model="nebius:Some/Future-Model",
+                     usage=usage),
+            ])
+            total = runs.total_metered_spend(ledger_path=path)
+            self.assertAlmostEqual(total["spent"], 0.0016)
+            self.assertEqual(total["unknown"], 1)
+
+    def test_spend_survives_delete_and_clear(self):
+        usage = {"input_tokens": 2000, "output_tokens": 1000,
+                 "total_tokens": 3000}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     usage=usage, cost_usd=0.0008, metered=True),
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     usage=usage),
+            ])
+            before = runs.total_metered_spend(ledger_path=path)
+            self.assertTrue(runs.delete_run("run-0", ledger_path=path))
+            after_delete = runs.total_metered_spend(ledger_path=path)
+            self.assertAlmostEqual(after_delete["spent"],
+                                   before["spent"])
+            runs.clear_finished_runs(ledger_path=path)
+            after_clear = runs.total_metered_spend(ledger_path=path)
+            self.assertAlmostEqual(after_clear["spent"],
+                                   before["spent"])
+            self.assertEqual(runs.list_runs(ledger_path=path), [])
+
 
 if __name__ == "__main__":
     unittest.main()
