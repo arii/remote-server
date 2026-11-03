@@ -1,5 +1,5 @@
 import unittest
-from buttons import briefing_summary
+from core_cli import briefing_summary
 
 
 def _make_briefing_data(**overrides):

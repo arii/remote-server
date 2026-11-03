@@ -296,7 +296,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     if action == "briefing-td":
         return [
             exec_argv(prefix +
-                      "python3 /srv/remote-server/buttons/briefing_summary.py "
+                      "python3 /srv/remote-server/core_cli/briefing_summary.py "
                       f"--briefing --repo {repo} --gh {gh}"),
         ], None
     if action == "warm-context":
@@ -304,12 +304,12 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     if action == "preflight":
         return [
             exec_argv(prefix + "set -o pipefail; td --json preflight | "
-                      "python3 /srv/remote-server/buttons/preflight_digest.py"),
+                      "python3 /srv/remote-server/core_cli/preflight_digest.py"),
         ], None
     if action == "create-plan":
         return [
             exec_argv(prefix + "mkdir -p .agents/plans && "
-                      "python3 /srv/remote-server/buttons/briefing_summary.py "
+                      "python3 /srv/remote-server/core_cli/briefing_summary.py "
                       "--plan-dir .agents/plans "
                       f"--repo {repo} --gh {gh} && "
                       "git status --short .agents/plans/"),

@@ -120,7 +120,7 @@ def _collect(node, checks, depth=0, key_name=None):
             _collect(v, checks, depth + 1)
 
 
-def main():
+def main(argv=None):
     raw = sys.stdin.read()
     try:
         data = json.loads(raw)

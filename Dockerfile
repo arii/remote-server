@@ -45,14 +45,13 @@ COPY deep-agent/requirements.txt ./deep-agent-requirements.txt
 RUN /opt/venvs/td/bin/pip install --no-cache-dir -r backend-requirements.txt -r deep-agent-requirements.txt
 COPY backend/ ./backend/
 COPY deep-agent/ ./deep-agent/
-COPY buttons/briefing_summary.py ./buttons/
-COPY buttons/context_filter.py ./buttons/
+COPY core_cli/ ./core_cli/
 COPY --from=spa /build/frontend/dist ./frontend/dist/
 # Build-time smoke: CLI intact after our pins, server + agent imports resolve.
 RUN /opt/venvs/td/bin/td --help > /dev/null \
  && /opt/venvs/td/bin/python -c "import fastapi, uvicorn, httpx, langchain; print('deps ok')" \
  && /opt/venvs/td/bin/python -c "import backend.server; print('server imports ok')" \
- && /opt/venvs/td/bin/python /app/buttons/briefing_summary.py 2>&1 | grep -q "usage:" \
+ && /opt/venvs/td/bin/python /app/core_cli/briefing_summary.py 2>&1 | grep -q "usage:" \
  && echo "briefing script imports ok"
 # Agent runtime = same venv (chat spawn inherits the langchain stack).
 # Repo state (git status, compose file, .env) resolves to the mounted

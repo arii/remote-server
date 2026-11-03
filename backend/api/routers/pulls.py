@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.gh import repo_gh, run_gh, run_gh_json
-from buttons import context_filter
+from core_cli import context_filter
 
 router = APIRouter(prefix="/api", tags=["pulls"])
 
@@ -97,7 +97,7 @@ FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT",
 
 
 def ci_label(rollup) -> str:
-    """Port of buttons/briefing_summary.py::ci_summary label."""
+    """Port of core_cli/briefing_summary.py::ci_summary label."""
     if rollup is None:
         return "unknown"
     if not rollup:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import unittest
-from buttons import context_filter
+from core_cli import context_filter
 
 
 class TestDiffPreFiltering(unittest.TestCase):

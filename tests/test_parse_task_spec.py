@@ -3,7 +3,7 @@
 
 import os
 import unittest
-from scripts.parse_task_spec import parse_task_spec
+from core_cli.parse_task_spec import parse_task_spec
 
 
 class TestParseTaskSpec(unittest.TestCase):

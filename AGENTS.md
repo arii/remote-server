@@ -27,7 +27,8 @@ When using BoomTick MCP tools:
 
 ## Code Map
 
-- `buttons` — application source
+- `backend` — application source
+- `core_cli` — unified repo tooling CLI (`python3 -m core_cli …`)
 - `tests` — automated tests
 - `docs` — project documentation
 - `config` — project configuration

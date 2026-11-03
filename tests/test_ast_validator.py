@@ -7,7 +7,7 @@ import os
 # Ensure repo root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from scripts.ast_validator import validate_source_syntax, _check_bracket_balance
+from core_cli.ast_validator import validate_source_syntax, _check_bracket_balance
 
 
 class TestAstValidator(unittest.TestCase):
@@ -50,7 +50,7 @@ class TestAstValidator(unittest.TestCase):
         self.assertEqual(res["line"], 1)
 
     def test_js_syntax_fallback_when_node_unavailable(self):
-        with patch("scripts.ast_validator.shutil.which", return_value=None):
+        with patch("core_cli.ast_validator.shutil.which", return_value=None):
             # Valid brackets
             valid_code = "function test() { const arr = [1, 2, (3 + 4)]; return arr; }"
             res_valid = validate_source_syntax("app.js", valid_code)

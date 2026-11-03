@@ -76,7 +76,7 @@ import sys
 from datetime import date, datetime, timezone
 
 try:
-    from buttons import context_filter
+    from core_cli import context_filter
 except ImportError:
     import context_filter
 

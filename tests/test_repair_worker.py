@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
 
-import scripts.repair_worker as rw
+import core_cli.repair_worker as rw
 
 
 class TestRepairWorkerStateGraph(unittest.TestCase):
@@ -113,7 +113,7 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    @patch("scripts.repair_worker._query_ollama")
+    @patch("core_cli.repair_worker._query_ollama")
     def test_edit_file_node_strips_markdown_fences(self, mock_query):
         mock_query.return_value = "```python\ndef add(a, b):\n    return a + b\n```"
 
@@ -135,7 +135,7 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         self.assertEqual(updates["file_contents"]["calc.py"], "def add(a, b):\n    return a + b")
         mock_query.assert_called_once()
 
-    @patch("scripts.repair_worker._query_ollama")
+    @patch("core_cli.repair_worker._query_ollama")
     def test_edit_file_node_truncates_large_error_context(self, mock_query):
         mock_query.return_value = "```python\ndef add(a, b):\n    return a + b\n```"
 
@@ -346,12 +346,12 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         self.assertEqual(rw.route_after_verify(s6), "cleanup_node")
 
     @unittest.skipIf(rw.StateGraph is None, "langgraph is not installed")
-    @patch("scripts.repair_worker.create_pr_node")
-    @patch("scripts.repair_worker.verify_code_node")
-    @patch("scripts.repair_worker.ast_check_node")
-    @patch("scripts.repair_worker.edit_file_node")
-    @patch("scripts.repair_worker.setup_worktree_node")
-    @patch("scripts.repair_worker.parse_issue_node")
+    @patch("core_cli.repair_worker.create_pr_node")
+    @patch("core_cli.repair_worker.verify_code_node")
+    @patch("core_cli.repair_worker.ast_check_node")
+    @patch("core_cli.repair_worker.edit_file_node")
+    @patch("core_cli.repair_worker.setup_worktree_node")
+    @patch("core_cli.repair_worker.parse_issue_node")
     def test_full_graph_progression_happy_path(
         self,
         mock_parse,
@@ -409,12 +409,12 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         mock_pr.assert_called_once()
 
     @unittest.skipIf(rw.StateGraph is None, "langgraph is not installed")
-    @patch("scripts.repair_worker.create_pr_node")
-    @patch("scripts.repair_worker.verify_code_node")
-    @patch("scripts.repair_worker.ast_check_node")
-    @patch("scripts.repair_worker.edit_file_node")
-    @patch("scripts.repair_worker.setup_worktree_node")
-    @patch("scripts.repair_worker.parse_issue_node")
+    @patch("core_cli.repair_worker.create_pr_node")
+    @patch("core_cli.repair_worker.verify_code_node")
+    @patch("core_cli.repair_worker.ast_check_node")
+    @patch("core_cli.repair_worker.edit_file_node")
+    @patch("core_cli.repair_worker.setup_worktree_node")
+    @patch("core_cli.repair_worker.parse_issue_node")
     def test_full_graph_loop_routing_on_ast_failure(
         self,
         mock_parse,
@@ -485,12 +485,12 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         mock_pr.assert_called_once()
 
     @unittest.skipIf(rw.StateGraph is None, "langgraph is not installed")
-    @patch("scripts.repair_worker.create_pr_node")
-    @patch("scripts.repair_worker.verify_code_node")
-    @patch("scripts.repair_worker.ast_check_node")
-    @patch("scripts.repair_worker.edit_file_node")
-    @patch("scripts.repair_worker.setup_worktree_node")
-    @patch("scripts.repair_worker.parse_issue_node")
+    @patch("core_cli.repair_worker.create_pr_node")
+    @patch("core_cli.repair_worker.verify_code_node")
+    @patch("core_cli.repair_worker.ast_check_node")
+    @patch("core_cli.repair_worker.edit_file_node")
+    @patch("core_cli.repair_worker.setup_worktree_node")
+    @patch("core_cli.repair_worker.parse_issue_node")
     def test_full_graph_loop_routing_on_test_failure_and_max_retries(
         self,
         mock_parse,

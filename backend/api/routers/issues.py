@@ -11,7 +11,7 @@ this backend serves /api/* like its sibling routers):
 - GET  /api/repair/status         repair worker state
 
 Repair runs the worker the same way the legacy handler does: the
-same argv (python3 scripts/repair_worker.py --issue N) with no new
+same argv (python3 -m core_cli repair --issue N) with no new
 capabilities. No labeled-event wiring here (later follow-up, and
 no notify.py changes in this port). No Jules dispatch surface.
 """
@@ -129,7 +129,7 @@ def _repair_worker_thread(issue_number: int) -> None:
             f"Dispatched repair worker for issue #{issue_number}\n")
         repair_state["exit_code"] = None
     run = _repair_runner or subprocess
-    cmd = ["python3", "scripts/repair_worker.py",
+    cmd = ["python3", "-m", "core_cli", "repair",
            "--issue", str(issue_number)]
     try:
         # cwd = live checkout: the worker path is repo-relative and the
