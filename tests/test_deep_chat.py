@@ -144,6 +144,12 @@ class TestProposalValidation(unittest.TestCase):
             self.assertIn("REJECTED", text)
 
 
+class TestRecursionBudget(unittest.TestCase):
+    def test_room_for_multi_tool_turns(self):
+        # ~4 graph steps per tool call (measured); 40 covers ~9 calls.
+        self.assertEqual(deep_chat.RECURSION_LIMIT, 40)
+
+
 class TestVerdictMapping(unittest.TestCase):
     def test_approve(self):
         self.assertEqual(deep_chat.decision_for_verdict("approve"),
