@@ -528,7 +528,15 @@ describe('agent drawer', () => {
       (t) => tokens.push(t),
     );
     expect(tokens).toEqual(['AG', 'Y-OK']);
-    expect(result).toEqual({ sessionId: 'abc123', text: 'AGY-OK' });
+    expect(result).toEqual({ sessionId: 'abc123', text: 'AGY-OK', truncated: false });
+  });
+
+  it('surfaces the truncated flag from done', async () => {
+    const result = await pumpTurn(
+      streamReader('event: done\ndata: {"text": "big", "session_id": "s", "truncated": true}\n\n'),
+      () => {},
+    );
+    expect(result.truncated).toBe(true);
   });
 
   it('rejects with the server error detail', async () => {

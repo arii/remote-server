@@ -89,6 +89,11 @@ async def _turn_events(provider: str, repo: str, cwd: str,
         yield sse_frame("error", {"error": "turn failed to start"})
         return
     result = agent_turn.manager.pop_result(session_id) or {}
+    if result.get("truncated"):
+        yield sse_frame("done", {"text": "".join(text),
+                                 "session_id": session_id,
+                                 "truncated": True})
+        return
     if result.get("exit") != 0:
         detail = (result.get("stderr") or "").strip().split("\n")
         detail = detail[-1] if detail and detail[-1] else \

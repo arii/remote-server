@@ -21,15 +21,16 @@ function parseSsePart(part: string): SseEvent | null {
 }
 
 // Pump one turn's SSE stream: token chunks append to the live answer,
-// done resolves {session id, full text}, error rejects with the detail.
+// done resolves {session id, full text, truncated}, error rejects.
 export async function pumpTurn(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
-): Promise<{ sessionId: string; text: string }> {
+): Promise<{ sessionId: string; text: string; truncated: boolean }> {
   const decoder = new TextDecoder();
   let buf = '';
   let sessionId = '';
   let text = '';
+  let truncated = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -57,16 +58,21 @@ export async function pumpTurn(
       }
       if (ev.name === 'done') {
         try {
-          const data = JSON.parse(ev.data) as { session_id?: string; text?: string };
+          const data = JSON.parse(ev.data) as {
+            session_id?: string;
+            text?: string;
+            truncated?: boolean;
+          };
           if (data.session_id) sessionId = data.session_id;
           if (data.text) text = data.text;
+          if (data.truncated) truncated = true;
         } catch {
           /* ignore */
         }
       }
     }
   }
-  return { sessionId, text };
+  return { sessionId, text, truncated };
 }
 
 export default function AgentDrawer({
@@ -152,9 +158,14 @@ export default function AgentDrawer({
       const resp = await postAgentTurn(provider, repo, text, sidRef.current, ctrl.signal);
       if (!resp.ok || !resp.body) throw new Error(`Agent turn failed: ${resp.status}`);
       streamedRef.current = 0;
-      const { sessionId, text: full } = await pumpTurn(resp.body.getReader(), appendAnswer);
+      const {
+        sessionId,
+        text: full,
+        truncated,
+      } = await pumpTurn(resp.body.getReader(), appendAnswer);
       if (sessionId) sidRef.current = sessionId;
       backfillAnswer(full);
+      if (truncated) appendAnswer('\n\n[output truncated — the turn exceeded the size cap]');
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         setError(err instanceof Error ? err.message : String(err));
