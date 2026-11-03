@@ -14,6 +14,7 @@ from langchain_chroma import Chroma
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 
+import cli
 import ledger
 import triage_common
 
@@ -61,8 +62,7 @@ def search_docs(query: str) -> str:
 
 def main() -> int:
     if len(sys.argv) < 2 or not triage_common.valid_repo(sys.argv[1]):
-        print("usage: triage_explainer.py owner/repo", file=sys.stderr)
-        return 2
+        return cli.usage_error("usage: triage_explainer.py owner/repo")
     repo = sys.argv[1]
     started = time.time()
     # qwen3:8b emits valid tool calls; qwen2.5-coder:7b narrates them

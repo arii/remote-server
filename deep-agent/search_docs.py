@@ -6,28 +6,26 @@ Retriever comes from the shared retrieval factory so index/query
 embeddings stay consistent (S5_* / OLLAMA_URL overrides honored).
 """
 
-import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli
+
+cli.bootstrap()
 
 import retrieval  # noqa: E402
 
 
 def main() -> int:
     if len(sys.argv) < 2 or not sys.argv[1].strip():
-        print('usage: search_docs.py "<question>" [k]', file=sys.stderr)
-        return 2
+        return cli.usage_error('usage: search_docs.py "<question>" [k]')
     try:
         k = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     except ValueError:
-        print("k must be an integer", file=sys.stderr)
-        return 2
+        return cli.usage_error("k must be an integer")
     try:
         retriever = retrieval.get_retriever(k)
     except ValueError:
-        print("k must be a positive integer", file=sys.stderr)
-        return 2
+        return cli.usage_error("k must be a positive integer")
     except Exception as exc:
         print(f"error: cannot open index: {exc}", file=sys.stderr)
         return 1

@@ -23,8 +23,10 @@ import re
 import sys
 import time
 
+import cli
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+cli.bootstrap()
 
 import eval_lib  # noqa: E402
 
@@ -39,7 +41,10 @@ SCRIPT_NAME = "ask_investigator.py"
 PROMPTS = [
     {
         "name": "docs-howto",
-        "prompt": "How do I run the buttons server locally?",
+        # "Locally" alone retrieves the mock UX-preview toolkit
+        # (docs/ux-preview.md: serve.sh on :18099, no live stack);
+        # the intent is the real server via compose, so ask for it.
+        "prompt": "How do I run the real buttons server with docker compose?",
         "tools": ["*"],
         # "buttons" alone is near-guaranteed (it names the subject);
         # the real answer is a compose/docker invocation.
@@ -114,6 +119,21 @@ PROMPTS = [
             r"not found|no such|does not exist|error|404|could not|"
             r"unable|missing|no pr", re.I
         )],
+        "gating": False,
+    },
+    {
+        "name": "propose-dispatch",
+        "prompt": "Dispatch implementation of a typo fix to a "
+                  "worktree session on arii/remote-server main.",
+        "tools": [],
+        # TASK text may be inline or block form (8b compresses);
+        # the server parser must accept both.
+        "anchor": re.compile(
+            r"PROPOSE dispatch\nREPO: arii/remote-server\n"
+            r"BRANCH: main\nTASK:\s*[\s\S]+?\nEND PROPOSE",
+            re.I,
+        ),
+        "max_propose_blocks": 1,
         "gating": False,
     },
 ]
@@ -235,8 +255,7 @@ def main(argv=None) -> int:
     if "--json" in args:
         i = args.index("--json")
         if i + 1 >= len(args):
-            print("error: --json needs a path", file=sys.stderr)
-            return 2
+            return cli.usage_error("error: --json needs a path")
         json_path = args.pop(i + 1)
         args.pop(i)
     repo = args[0] if args else "arii/remote-server"

@@ -8,14 +8,15 @@ repo's checkout. Local model first (qwen3:8b via Ollama).
 Every run is recorded to the ledger with tool results.
 """
 
-import base64
 import json
 import os
 import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli
+
+cli.bootstrap()
 
 from langchain.agents import create_agent  # noqa: E402
 from langchain_core.messages import ToolMessage  # noqa: E402
@@ -163,10 +164,13 @@ SYSTEM = (
     "anything except via the PROPOSE protocol below.\n"
     "If the instruction asks for a write action, investigate first, "
     "then propose the exact change and STOP. Allowed proposal kinds: "
-    "creating a GitHub issue, or running one allowlisted td command.\n"
+    "creating a GitHub issue, running one allowlisted td command, or "
+    "dispatching implementation to a worktree session.\n"
     "Emit a proposal ONLY in exactly this form, on its own lines:\n"
     "PROPOSE issue\nTITLE: <one line>\nBODY:\n<markdown>\nEND PROPOSE\n"
     "or\nPROPOSE td\nCOMMAND: <exact td command>\nEND PROPOSE\n"
+    "or\nPROPOSE dispatch\nREPO: <owner/name>\nBRANCH: <base branch>\n"
+    "TASK:\n<implementation brief>\nEND PROPOSE\n"
     "A PROPOSE td COMMAND must be one of the allowed shapes "
     "verbatim, changing only N to digits — never invent td "
     "subcommands or flags.\n"
@@ -191,20 +195,16 @@ def _short_line(content, limit=160):
 
 def main() -> int:
     if len(sys.argv) < 3 or not s5tools.valid_repo(sys.argv[1]):
-        print("usage: ask_investigator.py owner/repo <b64-instruction>",
-              file=sys.stderr)
-        return 2
+        return cli.usage_error(
+            "usage: ask_investigator.py owner/repo <b64-instruction>")
     global _repo, _checkout
     _repo = sys.argv[1]
     _checkout = s5tools.checkout_for(_repo)
-    try:
-        instruction = base64.b64decode(sys.argv[2]).decode()
-    except Exception:
-        print("bad base64 instruction", file=sys.stderr)
-        return 2
+    instruction = cli.b64decode(sys.argv[2])
+    if instruction is None:
+        return cli.usage_error("bad base64 instruction")
     if not instruction.strip() or len(instruction) > 2000:
-        print("bad instruction", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad instruction")
     started = time.time()
     # No-think is the production setting: on this CPU-only box a
     # qwen3 thinking trace takes 15+ min per prompt, unshippable for

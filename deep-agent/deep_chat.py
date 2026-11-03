@@ -38,14 +38,15 @@ propose_action, and it only formats a proposal; execution stays
 server-side behind the existing validated endpoints.
 """
 
-import base64
 import json
 import os
 import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli
+
+cli.bootstrap()
 
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
@@ -57,6 +58,9 @@ THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
 
 THREAD_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_PROMPT = 3000
+# Trace middleware nodes consume budget (~4 steps per tool call,
+# measured); 40 preserves room for ~9 tool calls per turn.
+RECURSION_LIMIT = 40
 EXIT_NEEDS_APPROVAL = 3
 
 # Mirror of ALLOWED_TD in ask_investigator.py (which mirrors
@@ -128,6 +132,18 @@ def _td_shape_re(shape):
 
 _TD_RES = [_td_shape_re(s) for s in ALLOWED_TD]
 
+BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+DISPATCH_TASK_LIMIT = 4000
+
+
+def _valid_branch(branch):
+    """git-plausible branch name: charset, length, no dot-dot."""
+    return (isinstance(branch, str)
+            and 1 <= len(branch) <= 120
+            and bool(BRANCH_RE.match(branch))
+            and ".." not in branch
+            and branch[0] not in "/-.")
+
 
 def validate_proposal(payload):
     """Validate a propose_action payload. Returns (ok, text).
@@ -167,7 +183,25 @@ def validate_proposal(payload):
             "REJECTED: td command is not an allowlisted shape "
             "(verbatim, changing only N to digits)"
         )
-    return False, "REJECTED: kind must be 'issue' or 'td'"
+    if kind == "dispatch":
+        repo = payload.get("repo")
+        branch = payload.get("branch")
+        task = payload.get("task")
+        if not s5tools.valid_repo(repo):
+            return False, "REJECTED: dispatch needs a repo (owner/name)"
+        branch = branch.strip() if isinstance(branch, str) else branch
+        if not _valid_branch(branch):
+            return False, ("REJECTED: dispatch needs a branch "
+                           "(1-120 chars, [A-Za-z0-9._/-], no ..)")
+        if not isinstance(task, str) or not task.strip() \
+                or len(task) > DISPATCH_TASK_LIMIT:
+            return False, ("REJECTED: dispatch needs a task "
+                           "(1-4000 chars)")
+        return True, (
+            f"PROPOSE dispatch\nREPO: {repo}\nBRANCH: {branch}\n"
+            f"TASK:\n{task.strip()}\nEND PROPOSE"
+        )
+    return False, "REJECTED: kind must be 'issue', 'td', or 'dispatch'"
 
 
 def decision_for_verdict(verdict, message=""):
@@ -242,7 +276,9 @@ def build_tools(checkout):
 
     @tool
     def propose_action(kind: str, title: str = "",
-                       body: str = "", command: str = "") -> str:
+                       body: str = "", command: str = "",
+                       repo: str = "", branch: str = "",
+                       task: str = "") -> str:
         """Propose the ONE write action this turn needs (human-approved).
 
         Call at most once per turn, after read-only investigation, then
@@ -251,15 +287,21 @@ def build_tools(checkout):
         proposal text for the server to run.
 
         Args:
-            kind: 'issue' (file a GitHub issue) or 'td' (run one
-                allowlisted td command).
+            kind: 'issue' (file a GitHub issue), 'td' (run one
+                allowlisted td command), or 'dispatch' (implement via
+                a BoomTick worktree session).
             title: Issue title (kind='issue').
             body: Issue body markdown (kind='issue').
             command: Exact td command (kind='td'; allowlisted shapes
                 only, changing N to digits).
+            repo: Target repo owner/name (kind='dispatch').
+            branch: Base branch to work from (kind='dispatch').
+            task: Implementation brief (kind='dispatch').
         """
         ok, text = validate_proposal(
-            {"kind": kind, "title": title, "body": body, "command": command}
+            {"kind": kind, "title": title, "body": body,
+             "command": command, "repo": repo, "branch": branch,
+             "task": task}
         )
         return text
 
@@ -341,9 +383,7 @@ def _stream(agent, first_input, config):
     last_ai = ""
     stream = agent.stream(
         first_input,
-        # 20: trace middleware nodes consume budget (~4 steps per
-        # tool call, measured); preserves room for ~4 tool calls.
-        config={**config, "recursion_limit": 20},
+        config={**config, "recursion_limit": RECURSION_LIMIT},
         stream_mode=["messages", "updates"],
     )
     for mode, payload in stream:
@@ -387,7 +427,7 @@ def _emit_interrupt(thread_id, interrupts):
 
 def _cmd_validate(raw):
     try:
-        payload = json.loads(base64.b64decode(raw).decode())
+        payload = json.loads(cli.b64decode(raw))
     except Exception:
         print(json.dumps({"ok": False, "text": "REJECTED: bad input"}))
         return 2
@@ -397,25 +437,22 @@ def _cmd_validate(raw):
 
 
 def _cmd_turn(repo, thread_id, raw_prompt):
-    try:
-        prompt = base64.b64decode(raw_prompt).decode()
-    except Exception:
-        print("bad base64 prompt", file=sys.stderr)
-        return 2
+    prompt = cli.b64decode(raw_prompt)
+    if prompt is None:
+        return cli.usage_error("bad base64 prompt")
     if not prompt.strip() or len(prompt) > MAX_PROMPT:
-        print("bad prompt", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad prompt")
     started = time.time()
     try:
         model, spec = build_model()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, no model is available right now: {_short_err(exc)}")
     except ImportError as exc:
         # Stdout, like every other Sorry line: exit 1 promises the
         # reply on stdout so the SSE chunk reader shows it on the phone.
-        print(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, the chat backend is not installed: {_short_err(exc)}")
     print(f"deep_chat via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
     from langchain_core.messages import HumanMessage  # noqa: E402
@@ -433,26 +470,29 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             agent, {"messages": messages}, config)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
-        print(reply, flush=True)
         recorder.run_end(False)
         recorder.close()
+        _usage, _calls = recorder.totals()
         ledger.record(
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, messages, started,
             extra={"repo": repo, "mode": "turn", "trace": recorder.path,
                    "error": str(exc)[:200]},
+            usage=_usage, calls=_calls,
         )
-        return 1
+        return cli.sorry(reply)
     from langchain_core.messages import AIMessage  # noqa: E402
 
     recorder.run_end(True)
     recorder.close()
     print(f"trace: {recorder.path}", file=sys.stderr)
+    _usage, _calls = recorder.totals()
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, messages + tool_msgs + [AIMessage(content=reply)],
         started, extra={"repo": repo, "mode": "turn",
                         "trace": recorder.path},
+        usage=_usage, calls=_calls,
     )
     pending = _pending_interrupts(agent, config)
     if pending:
@@ -464,31 +504,27 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     try:
         decision = decision_for_verdict(verdict)
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        return cli.usage_error(str(exc))
     message = ""
     if raw_message is not None:
-        try:
-            message = base64.b64decode(raw_message).decode()
-        except Exception:
-            print("bad base64 message", file=sys.stderr)
-            return 2
+        message = cli.b64decode(raw_message)
+        if message is None:
+            return cli.usage_error("bad base64 message")
         try:
             decision = decision_for_verdict(verdict, message)
         except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
+            return cli.usage_error(str(exc))
     started = time.time()
     try:
         model, spec = build_model()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, no model is available right now: {_short_err(exc)}")
     except ImportError as exc:
         # Stdout, like every other Sorry line: exit 1 promises the
         # reply on stdout so the SSE chunk reader shows it on the phone.
-        print(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, the chat backend is not installed: {_short_err(exc)}")
     print(f"deep_chat resume via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
     from langgraph.types import Command  # noqa: E402
@@ -517,24 +553,27 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
             config)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
-        print(reply, flush=True)
         recorder.run_end(False)
         recorder.close()
+        _usage, _calls = recorder.totals()
         ledger.record(
             "deep_chat.py", f"{spec['provider']}:{spec['model']}",
             thread_id, [AIMessage(content=reply)], started,
             extra={"repo": repo, "mode": "resume", "verdict": verdict,
                    "trace": recorder.path, "error": str(exc)[:200]},
+            usage=_usage, calls=_calls,
         )
-        return 1
+        return cli.sorry(reply)
     recorder.run_end(True)
     recorder.close()
     print(f"trace: {recorder.path}", file=sys.stderr)
+    _usage, _calls = recorder.totals()
     ledger.record(
         "deep_chat.py", f"{spec['provider']}:{spec['model']}",
         thread_id, tool_msgs + [AIMessage(content=reply)], started,
         extra={"repo": repo, "mode": "resume", "verdict": verdict,
                "trace": recorder.path},
+        usage=_usage, calls=_calls,
     )
     pending = _pending_interrupts(agent, config)
     if pending:
@@ -547,26 +586,21 @@ def main(argv=None) -> int:
     if len(argv) == 3 and argv[1] == "--validate-proposal":
         return _cmd_validate(argv[2])
     if len(argv) < 4 or not s5tools.valid_repo(argv[1]):
-        print("usage: deep_chat.py owner/repo <thread-id> <b64-prompt>",
-              file=sys.stderr)
-        print("   or: deep_chat.py owner/repo <thread-id> --resume "
-              "approve|reject [b64-message]", file=sys.stderr)
-        print("   or: deep_chat.py --validate-proposal <b64-json>",
-              file=sys.stderr)
-        return 2
+        return cli.usage_error(
+            "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>",
+            "   or: deep_chat.py owner/repo <thread-id> --resume "
+            "approve|reject [b64-message]",
+            "   or: deep_chat.py --validate-proposal <b64-json>")
     if not valid_thread_id(argv[2]):
-        print("bad thread-id", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad thread-id")
     repo, thread_id = argv[1], argv[2]
     try:
         s5tools.checkout_for(repo)
     except ValueError:
-        print(f"bad repo: {repo!r}", file=sys.stderr)
-        return 2
+        return cli.usage_error(f"bad repo: {repo!r}")
     if argv[3] == "--resume":
         if len(argv) < 5:
-            print("resume needs a verdict", file=sys.stderr)
-            return 2
+            return cli.usage_error("resume needs a verdict")
         return _cmd_resume(repo, thread_id, argv[4],
                            argv[5] if len(argv) > 5 else None)
     return _cmd_turn(repo, thread_id, argv[3])

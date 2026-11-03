@@ -17,14 +17,15 @@ Cutover (peer's lane, not done here): swap the `pi -p ...` command in
 _handle_chat_stream for this script; the SSE plumbing stays identical.
 """
 
-import base64
 import json
 import os
 import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli
+
+cli.bootstrap()
 
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
@@ -98,7 +99,7 @@ def list_dir(path: str = "") -> str:
 
 def _decode_history(raw):
     try:
-        items = json.loads(base64.b64decode(raw).decode())
+        items = json.loads(cli.b64decode(raw))
     except Exception:
         return None
     if not isinstance(items, list) or len(items) > MAX_HISTORY:
@@ -121,40 +122,34 @@ def _decode_history(raw):
 
 def main() -> int:
     if len(sys.argv) < 4 or not s5tools.valid_repo(sys.argv[1]):
-        print("usage: chat_agent.py owner/repo <session-id> <b64-prompt>"
-              " [b64-history]", file=sys.stderr)
-        return 2
+        return cli.usage_error(
+            "usage: chat_agent.py owner/repo <session-id> <b64-prompt>"
+            " [b64-history]")
     if not SESSION_RE.match(sys.argv[2]):
-        print("bad session-id", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad session-id")
     repo, session_id = sys.argv[1], sys.argv[2]
     global _checkout
     try:
         _checkout = s5tools.checkout_for(repo)
     except ValueError:
-        print(f"bad repo: {repo!r}", file=sys.stderr)
-        return 2
-    try:
-        prompt = base64.b64decode(sys.argv[3]).decode()
-    except Exception:
-        print("bad base64 prompt", file=sys.stderr)
-        return 2
+        return cli.usage_error(f"bad repo: {repo!r}")
+    prompt = cli.b64decode(sys.argv[3])
+    if prompt is None:
+        return cli.usage_error("bad base64 prompt")
     if not prompt.strip() or len(prompt) > 3000:
-        print("bad prompt", file=sys.stderr)
-        return 2
+        return cli.usage_error("bad prompt")
     history = []
     if len(sys.argv) > 4:
         history = _decode_history(sys.argv[4])
         if history is None:
-            print("bad history", file=sys.stderr)
-            return 2
+            return cli.usage_error("bad history")
 
     started = time.time()
     try:
         spec = model_router.resolve_llm()
     except (RuntimeError, ValueError) as exc:
-        print(f"Sorry, no model is available right now: {_short_err(exc)}")
-        return 1
+        return cli.sorry(
+            f"Sorry, no model is available right now: {_short_err(exc)}")
     print(f"chat via {spec['provider']}:{spec['model']}", file=sys.stderr)
     kwargs = model_router.chat_kwargs(spec)
     # No-think is the production setting: on this CPU-only box a qwen3
@@ -208,14 +203,13 @@ def main() -> int:
         reply = "".join(text_parts).strip()
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
-        print(reply, flush=True)
         messages = history + [HumanMessage(content=prompt)]
         ledger.record(
             "chat_agent.py", f"{spec['provider']}:{spec['model']}",
             session_id, messages, started,
             extra={"repo": repo, "error": str(exc)[:200]},
         )
-        return 1
+        return cli.sorry(reply)
     ledger.record(
         "chat_agent.py", f"{spec['provider']}:{spec['model']}",
         session_id, messages + trace_messages + [AIMessage(content=reply)],

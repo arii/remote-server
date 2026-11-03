@@ -88,10 +88,12 @@ data: {"session_id": "abc123", "action_requests": [{"name": "propose_action", "a
 ## 4. Validation rules (both sides enforce)
 
 1. The agent re-validates inside `propose_action` post-approve
-   (`validate_proposal` in `deep_chat.py`): `kind` is `issue` or
-   `td`; issue needs title 1–120 chars + body 1–4000 chars; td
-   commands must match an allowlisted shape verbatim except `N` →
-   digits (`[1-9][0-9]*`). Anything else returns `REJECTED: ...`
+   (`validate_proposal` in `deep_chat.py`): `kind` is `issue`,
+   `td`, or `dispatch`; issue needs title 1–120 chars + body
+   1–4000 chars; td commands must match an allowlisted shape
+   verbatim except `N` → digits (`[1-9][0-9]*`); dispatch needs
+   `repo` (owner/name), `branch` (git-plausible, no `..`), and
+   `task` (1–4000 chars). Anything else returns `REJECTED: ...`
    to the model, which then answers without the proposal.
 2. The server MUST pre-validate every `action_request` before
    rendering Approve, via the stdlib-only helper (no venv needed):
@@ -106,6 +108,12 @@ data: {"session_id": "abc123", "action_requests": [{"name": "propose_action", "a
    emit a `phase` `error` event instead of `approval`.
 3. Execution stays server-side behind the existing validated
    endpoints (jobs approve flow). The agent never executes writes.
+   `dispatch` proposals execute as BoomTick `agent_dispatch`
+   worktree sessions (implement → test → open PR); the executor
+   never reviews its own work — review stays GitHub-native.
+   Parse note: TASK text may be inline (`TASK: <brief>`) or block
+   form (`TASK:\n<brief>`); accept all text after `TASK:` up to
+   `END PROPOSE` (small models compress the form).
 
 ## 5. Agent process protocol (deep-agent lane owns)
 

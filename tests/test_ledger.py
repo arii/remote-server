@@ -139,6 +139,25 @@ class TestRecord(unittest.TestCase):
         self.assertIsInstance(
             ledger.record("s.py", "m", "t1", None, time.time()), dict)
 
+    def test_calls_override_used_as_is(self):
+        provided = [{"name": "grep_repo", "args": "{'pattern': 'x'}"}]
+        entry = ledger.record("s.py", "m", "t1", [ai("x")], time.time(),
+                              calls=provided)
+        self.assertEqual(entry["tool_calls"], provided)
+
+    def test_calls_override_wins_over_messages(self):
+        msgs = [ai("y", calls=[{"name": "stale", "args": {}}])]
+        provided = [{"name": "fresh", "args": "{}"}]
+        entry = ledger.record("s.py", "m", "t1", msgs, time.time(),
+                              calls=provided)
+        self.assertEqual(entry["tool_calls"], provided)
+
+    def test_calls_omitted_derives_from_messages(self):
+        msgs = [ai("z", calls=[{"name": "derived", "args": {}}])]
+        entry = ledger.record("s.py", "m", "t1", msgs, time.time())
+        self.assertEqual(entry["tool_calls"],
+                         [{"name": "derived", "args": "{}"}])
+
 
 class TestMain(unittest.TestCase):
     def test_skips_corrupt_lines(self):

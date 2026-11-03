@@ -105,6 +105,50 @@ class TestProposalValidation(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("COMMAND: td --json preflight", text)
 
+    def test_dispatch_ok(self):
+        ok, text = deep_chat.validate_proposal(
+            {"kind": "dispatch", "repo": "arii/boomtick",
+             "branch": "main", "task": "Fix the typo."})
+        self.assertTrue(ok)
+        self.assertIn("PROPOSE dispatch", text)
+        self.assertIn("REPO: arii/boomtick", text)
+        self.assertIn("BRANCH: main", text)
+        self.assertIn("TASK:\nFix the typo.", text)
+        self.assertIn("END PROPOSE", text)
+
+    def test_dispatch_rejects(self):
+        good = {"kind": "dispatch", "repo": "arii/boomtick",
+                "branch": "fix/x-1.0", "task": "Do it."}
+        ok, _ = deep_chat.validate_proposal(good)
+        self.assertTrue(ok)
+        for field, bad in (
+            ("repo", "noslash"),
+            ("repo", "a/b/c"),
+            ("repo", ""),
+            ("repo", 42),
+            ("branch", ""),
+            ("branch", "has space"),
+            ("branch", "dot..dot"),
+            ("branch", "/leading"),
+            ("branch", "-leading"),
+            ("branch", "x" * 121),
+            ("branch", None),
+            ("task", ""),
+            ("task", "   "),
+            ("task", "x" * 4001),
+            ("task", 42),
+        ):
+            payload = dict(good, **{field: bad})
+            ok, text = deep_chat.validate_proposal(payload)
+            self.assertFalse(ok, (field, bad))
+            self.assertIn("REJECTED", text)
+
+
+class TestRecursionBudget(unittest.TestCase):
+    def test_room_for_multi_tool_turns(self):
+        # ~4 graph steps per tool call (measured); 40 covers ~9 calls.
+        self.assertEqual(deep_chat.RECURSION_LIMIT, 40)
+
 
 class TestVerdictMapping(unittest.TestCase):
     def test_approve(self):

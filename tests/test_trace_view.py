@@ -210,7 +210,7 @@ class TestCli(unittest.TestCase):
 
     def test_missing_file_sorry_nonzero(self):
         proc = self._run("/nonexistent-xyz.jsonl")
-        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.returncode, 1)
         self.assertIn("Sorry,", proc.stdout)
         self.assertEqual(proc.stderr, "")
 

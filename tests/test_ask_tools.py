@@ -9,10 +9,13 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 _spec = importlib.util.spec_from_file_location(
     "ask_investigator",
