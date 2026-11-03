@@ -23,6 +23,25 @@ async function firePostAction(item: AttentionItem): Promise<void> {
   if (!resp.ok) throw new Error(`Action failed: ${resp.status}`);
 }
 
+// GET actions fetch in-page and report back inline. They must never render
+// as plain links: that navigates the SPA away to raw JSON.
+async function fireGetAction(item: AttentionItem): Promise<string> {
+  const resp = await fetch(apiUrl(item.action.href), { method: 'GET' });
+  if (!resp.ok) throw new Error(`Action failed: ${resp.status}`);
+  let summary = '';
+  try {
+    const body: unknown = await resp.json();
+    if (body && typeof body === 'object') {
+      const o = body as Record<string, unknown>;
+      const cand = o.message ?? o.detail ?? o.status ?? o.url;
+      if (typeof cand === 'string' && cand) summary = cand;
+    }
+  } catch {
+    summary = '';
+  }
+  return summary ? `${item.action.label}: ${summary}` : `${item.action.label}: done.`;
+}
+
 function formatStamp(epochSeconds: number): string {
   if (!epochSeconds) return 'unknown time';
   return new Date(epochSeconds * 1000).toLocaleString();
@@ -51,7 +70,7 @@ function sevClass(severity: string): string {
   return 'sev sev-info';
 }
 
-function ReportDialog({
+export function ReportDialog({
   initialBody,
   onSubmit,
   onCancel,
@@ -62,9 +81,19 @@ function ReportDialog({
 }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState(initialBody);
+  // Inline (non-modal) dialog: labelled, Escape-dismissible, focus lands in
+  // the title field on open. No focus trap: the page behind stays usable.
   return (
     <form
       data-testid="report-dialog"
+      role="dialog"
+      aria-label="Report a bug"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
       onSubmit={(e) => {
         e.preventDefault();
         onSubmit(title.trim(), body);
@@ -79,6 +108,7 @@ function ReportDialog({
           onChange={(e) => setTitle(e.target.value)}
           required
           aria-required="true"
+          autoFocus
         />
       </label>
       <label className="row-meta" htmlFor="report-body">
@@ -119,8 +149,19 @@ function ActionControl({
       onError(err instanceof Error ? err.message : String(err));
     }
   }
+  async function handleGet() {
+    try {
+      onDone(await fireGetAction(item));
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  }
   if (isGetAction(item)) {
-    return <a href={apiUrl(item.action.href)}>{item.action.label}</a>;
+    return (
+      <button type="button" onClick={() => void handleGet()}>
+        {item.action.label}
+      </button>
+    );
   }
   if (item.action.destructive) {
     return <HoldToConfirm label={item.action.label} onFire={() => void handlePost()} />;
@@ -209,7 +250,7 @@ export default function NowView({
     }
   }
 
-  if (!data && !error) return <section data-testid="now-loading">Loading…</section>;
+  if (!data && !error) return <section data-testid="now-loading" role="status">Loading…</section>;
 
   async function onRetry() {
     setError(null);
@@ -249,12 +290,12 @@ export default function NowView({
         />
       )}
       {reported && (
-        <p className="row-meta" data-testid="report-done">
+        <p className="row-meta" data-testid="report-done" role="status">
           Thanks — filed{reported !== 'created' ? `: ${reported}` : '.'}
         </p>
       )}
       {fired && (
-        <p className="row-meta" data-testid="now-fired">
+        <p className="row-meta" data-testid="now-fired" role="status">
           Done: {fired}
         </p>
       )}
@@ -263,7 +304,7 @@ export default function NowView({
         {health ? (
           <ContainerPills containers={health.containers} />
         ) : (
-          <p className="row-meta">Stack status: loading…</p>
+          <p className="row-meta" role="status">Stack status: loading…</p>
         )}
       </section>
       {data && (

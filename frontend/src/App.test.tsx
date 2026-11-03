@@ -4,7 +4,8 @@ import App from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { InboxFeed } from './apiClient';
-import { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
+import HoldToConfirm from './components/HoldToConfirm';
+import BriefingView, { briefingAllClear, cleanBriefingLine } from './views/BriefingView';
 import {
   ApprovalCard,
   TraceTimeline,
@@ -14,10 +15,18 @@ import {
   traceLine,
   traceSummary,
 } from './views/ChatView';
-import { loadHistory, loadWorkflowHealth } from './views/mockViews';
+import HistoryView from './views/HistoryView';
+import JobsView, {
+  attachIdFromConflict,
+  jobsListActive,
+  planNameFromResult,
+  repairCandidates,
+  resultLine,
+} from './views/JobsView';
+import NowView, { ReportDialog, nowPollMs } from './views/NowView';
+import ReviewView, { PrDetails } from './views/ReviewView';
+import { loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
-import { attachIdFromConflict, jobsListActive, planNameFromResult, repairCandidates, resultLine } from './views/JobsView';
-import { nowPollMs } from './views/NowView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -632,5 +641,60 @@ describe('agent drawer', () => {
     await expect(
       pumpTurn(streamReader('event: error\ndata: {"error": "exit 2"}\n\n'), () => {}),
     ).rejects.toThrow('exit 2');
+  });
+});
+
+describe('p2 a11y batch', () => {
+  it('loading states across views use role=status', () => {
+    const noop = () => {};
+    expect(renderToStaticMarkup(
+      <NowView repo="r" health={null} reportContext="" onAskAgent={noop} />,
+    )).toContain('data-testid="now-loading" role="status"');
+    expect(renderToStaticMarkup(<BriefingView repo="r" />)).toContain(
+      'data-testid="briefing-loading" role="status"',
+    );
+    expect(renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} />)).toContain(
+      'data-testid="review-prs-loading" role="status"',
+    );
+    expect(renderToStaticMarkup(<JobsView repo="r" />)).toContain(
+      'data-testid="jobs-loading" role="status"',
+    );
+    expect(renderToStaticMarkup(<HistoryView repo="r" health={null} />)).toContain(
+      'data-testid="history-loading" role="status"',
+    );
+  });
+
+  it('report dialog carries dialog semantics and autofocus', () => {
+    const html = renderToStaticMarkup(
+      <ReportDialog initialBody="ctx" onSubmit={() => {}} onCancel={() => {}} />,
+    );
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-label="Report a bug"');
+    expect(html).toContain('autofocus');
+  });
+
+  it('hold-to-confirm renders a polite live region for arm state', () => {
+    const html = renderToStaticMarkup(
+      <HoldToConfirm label="Merge it" onFire={() => {}} />,
+    );
+    expect(html).toContain('data-testid="hold-disarmed"');
+    expect(html).toContain('data-testid="hold-notice"');
+    expect(html).toContain('role="status"');
+  });
+
+  it('PR details keep heading order (h3 title, h4 prompts, no h2)', () => {
+    const html = renderToStaticMarkup(
+      <PrDetails
+        repo="r"
+        details={loadPrDetails()}
+        mergeBlocked={null}
+        mergeDisabled={false}
+        onMerge={() => {}}
+        onAskAgent={() => {}}
+      />,
+    );
+    expect(html).toContain('<h3>');
+    expect(html).toContain('<h4>Review prompts</h4>');
+    expect(html).not.toContain('<h2>');
   });
 });
