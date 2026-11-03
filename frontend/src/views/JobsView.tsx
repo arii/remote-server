@@ -17,6 +17,7 @@ import {
   conflictBlockReason,
   fixCiBlockReason,
   jobsListActive,
+  planExecuteSeed,
   resultLine,
 } from './jobsUtils';
 import DangerZone from './DangerZone';
@@ -119,11 +120,13 @@ function PlanCardPanel({
   open,
   content,
   onToggle,
+  onExecute,
 }: {
   card: { repo: string; name: string } | null;
   open: boolean;
   content: string | null;
   onToggle: () => void;
+  onExecute: () => void;
 }) {
   if (!card) return null;
   return (
@@ -135,6 +138,9 @@ function PlanCardPanel({
       <div className="actions">
         <button type="button" data-testid="jobs-plan-toggle" onClick={onToggle}>
           {open ? 'Hide plan' : 'View plan'}
+        </button>{' '}
+        <button type="button" data-testid="jobs-plan-execute" onClick={onExecute}>
+          Execute plan
         </button>
       </div>
       {open && <pre className="row-meta">{content ?? 'Loading…'}</pre>}
@@ -181,11 +187,13 @@ function JobsListPanel({
 export default function JobsView({
   repo,
   triageSuspended = false,
+  onAskAgent,
 }: {
   repo: string;
   // Drawer-open flag: while true (agent drawer / PTY terminal open),
   // triage keys are disabled.
   triageSuspended?: boolean;
+  onAskAgent: (seed: string) => void;
 }) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -214,6 +222,14 @@ export default function JobsView({
     rowTestId: (i) => `job-${jobsRef.current?.[i]?.id ?? ''}`,
   });
 
+  async function tryLoadPlan(card: { repo: string; name: string }): Promise<string> {
+    try {
+      return (await fetchPlan(card.repo, card.name)).content;
+    } catch (err) {
+      return `Couldn't load plan: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
   async function onTogglePlan() {
     if (!planCard) return;
     if (planOpen) {
@@ -222,12 +238,18 @@ export default function JobsView({
     }
     setPlanOpen(true);
     if (planContent !== null) return;
-    try {
-      const p = await fetchPlan(planCard.repo, planCard.name);
-      setPlanContent(p.content);
-    } catch (err) {
-      setPlanContent(`Couldn't load plan: ${err instanceof Error ? err.message : String(err)}`);
+    setPlanContent(await tryLoadPlan(planCard));
+  }
+
+  async function onExecutePlan() {
+    if (!planCard) return;
+    let content = planContent;
+    if (content === null) {
+      content = await tryLoadPlan(planCard);
+      setPlanContent(content);
     }
+    if (content.startsWith("Couldn't load plan:")) return;
+    onAskAgent(planExecuteSeed(planCard.name, content));
   }
 
   async function guarded(fn: () => Promise<void>) {
@@ -375,6 +397,7 @@ export default function JobsView({
         open={planOpen}
         content={planContent}
         onToggle={() => void onTogglePlan()}
+        onExecute={() => void onExecutePlan()}
       />
       <RepairSection repo={repo} />
 

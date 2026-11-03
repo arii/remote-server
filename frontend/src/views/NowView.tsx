@@ -392,7 +392,7 @@ export default function NowView({
         </button>
       </div>
           {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} />}
-          {section === 'jobs' && <JobsView repo={repo} />}
+          {section === 'jobs' && <JobsView repo={repo} onAskAgent={onAskAgent} />}
         </>
       )}
     </section>

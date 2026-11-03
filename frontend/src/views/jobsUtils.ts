@@ -26,6 +26,12 @@ export function planNameFromResult(result: string): string | null {
   return parts[parts.length - 1] || null;
 }
 
+// Chat seed that hands a written plan to the agent for execution.
+// Chat auto-sends seeds, so one tap dispatches with live progress.
+export function planExecuteSeed(name: string, content: string): string {
+  return `Execute this plan step by step (${name}). Report progress as you go.\n\n${content}`;
+}
+
 // Repair worker candidates: skip issues that are not actionable
 // right now (blocked on a decision/lane, or scheduled future work).
 // A manual number still overrides the filter.

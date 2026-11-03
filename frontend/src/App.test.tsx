@@ -22,6 +22,7 @@ import JobsView from './views/JobsView';
 import {
   attachIdFromConflict,
   jobsListActive,
+  planExecuteSeed,
   planNameFromResult,
   repairCandidates,
   resultLine,
@@ -659,7 +660,7 @@ describe('p2 a11y batch', () => {
     expect(renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} />)).toContain(
       'data-testid="review-prs-loading" role="status"',
     );
-    expect(renderToStaticMarkup(<JobsView repo="r" />)).toContain(
+    expect(renderToStaticMarkup(<JobsView repo="r" onAskAgent={noop} />)).toContain(
       'data-testid="jobs-loading" role="status"',
     );
     expect(renderToStaticMarkup(<HistoryView repo="r" health={null} />)).toContain(
@@ -766,5 +767,18 @@ describe('review details prompt', () => {
   it('renders the prompt in Review while loading', () => {
     const html = renderToStaticMarkup(<ReviewView repo="r" onAskAgent={() => {}} />);
     expect(html).toContain('data-testid="review-details-empty"');
+  });
+});
+
+describe('plan dispatch', () => {
+  it('builds an execute seed carrying the plan name and content', () => {
+    const seed = planExecuteSeed('2026-11-03-plan.md', '## Steps\n1. Merge #1');
+    expect(seed).toContain('Execute');
+    expect(seed).toContain('2026-11-03-plan.md');
+    expect(seed).toContain('Merge #1');
+  });
+  it('wires the agent opener into Jobs', () => {
+    const html = renderToStaticMarkup(<JobsView repo="r" onAskAgent={() => {}} />);
+    expect(html).toContain('data-testid="jobs-loading"');
   });
 });
