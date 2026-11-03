@@ -100,6 +100,23 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertIn("×3", runs[0]["title"])
 
+    def test_resolved_webhook_failures_hidden(self):
+        import backend.ledger as ledger_mod
+        orig_read = ledger_mod.read
+        ledger_mod.read = lambda kind="all", limit=50: [
+            {"id": "w-ok", "ts": 3.0, "ok": True,
+             "event": "pull ok"},
+            {"id": "w-old", "ts": 1.0, "ok": False,
+             "error": "timeout"},
+            {"id": "w-new", "ts": 5.0, "ok": False,
+             "error": "timeout"},
+        ]
+        try:
+            out = attention.list_failed_webhooks()
+        finally:
+            ledger_mod.read = orig_read
+        self.assertEqual([e["id"] for e in out], ["w-new"])
+
     def test_identical_failed_webhooks_collapse(self):
         hooks = [
             {"id": "w1", "ts": 1.0, "error": "timeout"},

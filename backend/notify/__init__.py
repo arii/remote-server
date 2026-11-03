@@ -287,7 +287,10 @@ def webhook_pull(path):
 
 
 def webhook_worker(repo, path):
-    ok, detail, advanced = webhook_pull(path)
+    try:
+        ok, detail, advanced = webhook_pull(path)
+    except Exception as exc:  # never stick pending: coalesce would
+        ok, detail, advanced = False, f"worker crashed: {exc}", False
     with webhook_state_lock:
         webhook_state[repo] = {"at": time.time(), "ok": ok,
                                "detail": detail, "advanced": advanced}
