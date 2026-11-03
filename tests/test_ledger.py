@@ -183,5 +183,24 @@ class TestMain(unittest.TestCase):
             os.unlink(name)
 
 
+class TestLedgerPath(unittest.TestCase):
+    def test_eval_ledger_override(self):
+        # Parallel gates isolate ledgers: the writer must honor the
+        # same EVAL_LEDGER knob the eval scorer reads. Env is read at
+        # import, so this runs a child interpreter.
+        import subprocess
+        deep_agent = os.path.join(os.path.dirname(__file__), "..",
+                                  "deep-agent")
+        env = dict(os.environ, EVAL_LEDGER="/tmp/eval-t.jsonl")
+        p = subprocess.run(
+            [sys.executable, "-c",
+             "import ledger, cli; cli.bootstrap(); print(ledger.LEDGER)"],
+            capture_output=True, text=True, timeout=120, cwd=deep_agent,
+            env=env,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), "/tmp/eval-t.jsonl")
+
+
 if __name__ == "__main__":
     unittest.main()

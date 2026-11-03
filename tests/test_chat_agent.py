@@ -70,6 +70,35 @@ class TestArgvValidation(unittest.TestCase):
         self.assertIn("history", p.stderr)
 
 
+class TestSalvageMessages(unittest.TestCase):
+    def test_order_and_instruction(self):
+        from langchain_core.messages import HumanMessage, ToolMessage
+        history = [HumanMessage(content="earlier")]
+        trace = [ToolMessage(content="r1", tool_call_id="1"),
+                 ToolMessage(content="r2", tool_call_id="2")]
+        msgs = chat_agent._salvage_messages("how to run?", history, trace)
+        self.assertEqual(
+            [m.content for m in msgs[:2]], ["earlier", "how to run?"])
+        self.assertIsInstance(msgs[2], ToolMessage)
+        self.assertIsInstance(msgs[3], ToolMessage)
+        self.assertIn("any more tool calls", msgs[-1].content.lower())
+
+    def test_tail_cap(self):
+        from langchain_core.messages import ToolMessage
+        trace = [ToolMessage(content=f"r{i}", tool_call_id=str(i))
+                 for i in range(20)]
+        msgs = chat_agent._salvage_messages("q", [], trace)
+        tools = [m for m in msgs
+                 if m.__class__.__name__ == "ToolMessage"]
+        self.assertEqual(len(tools), chat_agent.SALVAGE_TOOL_TAIL)
+        self.assertEqual(tools[0].content, "r8")
+
+    def test_empty_trace_still_answerable(self):
+        msgs = chat_agent._salvage_messages("q", [], [])
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual(msgs[0].content, "q")
+
+
 class TestSystemPrompt(unittest.TestCase):
     def test_how_to_reads_docs_first(self):
         # Regression pin for the turn-docs early-stop guess: the agent

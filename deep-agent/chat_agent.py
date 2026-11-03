@@ -30,6 +30,7 @@ cli.bootstrap()
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
 import ledger  # noqa: E402
+from langgraph.errors import GraphRecursionError  # noqa: E402
 from langchain.agents import create_agent  # noqa: E402
 from langchain_core.messages import (  # noqa: E402
     AIMessage,
@@ -40,6 +41,8 @@ from langchain_core.tools import tool  # noqa: E402
 
 SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_HISTORY = 20
+# Tool results carried into the salvage pass after a recursion cutoff.
+SALVAGE_TOOL_TAIL = 12
 
 _checkout = ""
 
@@ -123,6 +126,22 @@ def _decode_history(raw):
     return messages
 
 
+def _salvage_messages(prompt, history, trace, limit=SALVAGE_TOOL_TAIL):
+    """Final-answer message list after a tool-loop recursion cutoff.
+
+    Pure (no LLM): the original question plus the most recent tool
+    results, with an instruction to answer from gathered evidence and
+    make no more tool calls.
+    """
+    tail = [m for m in trace[-limit:]
+            if m.__class__.__name__ == "ToolMessage"]
+    if not tail:
+        tail = trace[-limit:]
+    return history + [HumanMessage(content=prompt)] + tail + [HumanMessage(
+        content="Answer the original question now using only the tool "
+        "results above. Do not make any more tool calls.")]
+
+
 def main() -> int:
     if len(sys.argv) < 4 or not s5tools.valid_repo(sys.argv[1]):
         return cli.usage_error(
@@ -148,6 +167,12 @@ def main() -> int:
             return cli.usage_error("bad history")
 
     started = time.time()
+    # Initialized ahead of the run so failure paths can record partial
+    # progress (streamed text, tool trace, usage) instead of nothing.
+    text_parts = []
+    trace_messages = []
+    usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    model = None
     try:
         spec = model_router.resolve_llm()
     except (RuntimeError, ValueError) as exc:
@@ -175,9 +200,6 @@ def main() -> int:
             system_prompt=f"Repo: {repo}. " + SYSTEM,
         )
         messages = history + [HumanMessage(content=prompt)]
-        text_parts = []
-        trace_messages = []
-        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         stream = agent.stream(
             {"messages": messages},
             config={"recursion_limit": 12},
@@ -205,12 +227,44 @@ def main() -> int:
         print("", flush=True)
         reply = "".join(text_parts).strip()
     except Exception as exc:
+        if isinstance(exc, GraphRecursionError) and model is not None:
+            # Tool-loop cutoff with findings in hand: one final no-tools
+            # pass answers from the gathered evidence instead of dying.
+            salvaged = ""
+            try:
+                answer = model.invoke(
+                    _salvage_messages(prompt, history, trace_messages))
+                salvaged = (answer.content or "").strip()
+                meta = getattr(answer, "usage_metadata", None) or {}
+                for k in usage:
+                    usage[k] += meta.get(k, 0) or 0
+            except Exception:
+                salvaged = ""
+            if salvaged:
+                print(salvaged, flush=True)
+                reply = salvaged
+                ledger.record(
+                    "chat_agent.py",
+                    f"{spec['provider']}:{spec['model']}",
+                    session_id,
+                    messages + trace_messages
+                    + [AIMessage(content=reply)],
+                    started,
+                    extra={"repo": repo, "salvaged": True},
+                    usage=usage,
+                )
+                return 0
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
+        partial = "".join(text_parts).strip()
         messages = history + [HumanMessage(content=prompt)]
         ledger.record(
             "chat_agent.py", f"{spec['provider']}:{spec['model']}",
-            session_id, messages, started,
+            session_id,
+            messages + trace_messages
+            + [AIMessage(content=partial or reply)],
+            started,
             extra={"repo": repo, "error": str(exc)[:200]},
+            usage=usage,
         )
         return cli.sorry(reply)
     ledger.record(
