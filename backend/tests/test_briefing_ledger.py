@@ -68,6 +68,31 @@ class BriefingLedgerTest(unittest.TestCase):
         resp = self.client.get("/api/briefing", params={"repo": "a/b/c"})
         self.assertEqual(resp.status_code, 400)
 
+    def _fake_run(self, returncode, stdout, stderr=""):
+        proc = mock.Mock()
+        proc.returncode = returncode
+        proc.stdout = stdout
+        proc.stderr = stderr
+        return mock.patch.object(subprocess, "run",
+                                 return_value=proc)
+
+    def test_briefing_uses_json_despite_exit_1(self):
+        payload = {"repo": "previous_workouts", "prs": [],
+                   "runs_err": "nope"}
+        with self._fake_run(1, json.dumps(payload)):
+            resp = self.client.get("/api/briefing",
+                                   params={"repo":
+                                           "previous_workouts"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["runs_err"], "nope")
+
+    def test_briefing_fails_without_usable_stdout(self):
+        with self._fake_run(1, "", "boom"):
+            resp = self.client.get("/api/briefing",
+                                   params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("boom", resp.json()["detail"])
+
     def test_status_shape(self):
         resp = self.client.get("/api/status")
         self.assertEqual(resp.status_code, 200)

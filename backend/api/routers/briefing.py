@@ -99,11 +99,19 @@ def _run_briefing(repo: str, gh: str) -> dict:
          "--repo", repo, "--gh", gh],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=180, text=True, cwd=stack_dir())
+    # The script exits 1 when no main source worked (no PRs + no
+    # board), but its stdout JSON is still complete and carries the
+    # structured errs/empties the app renders. Only fail when stdout
+    # is unusable.
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        pass
     if proc.returncode != 0:
         raise RuntimeError(
             (proc.stderr or "").strip().splitlines()[-1]
             if proc.stderr.strip() else "briefing failed")
-    return json.loads(proc.stdout)
+    raise RuntimeError("briefing returned invalid JSON")
 
 
 @router.get("/briefing", response_model=Briefing)
