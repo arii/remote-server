@@ -217,7 +217,7 @@ export default function HistoryView({
             History unavailable: {error}
           </div>
         )}
-        {loading && <div data-testid="history-loading">Loading history…</div>}
+        {loading && <div data-testid="history-loading" role="status">Loading history…</div>}
         {!loading && !error && <RowsList rows={rows} />}
       </section>
     </div>

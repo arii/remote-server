@@ -589,7 +589,7 @@ export default function JobsView({
     setNotice('Takeover requested.');
   }
 
-  if (!jobs && !error) return <section data-testid="jobs-loading">Loading…</section>;
+  if (!jobs && !error) return <section data-testid="jobs-loading" role="status">Loading…</section>;
 
   const prOk = /^\d+$/.test(pr.trim());
   const prStateCurrent = prState && String(prState.n) === pr.trim() ? prState : null;

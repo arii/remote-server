@@ -48,7 +48,7 @@ function HealthLine({
 }) {
   if (!health) {
     return (
-      <p className="row-meta" data-testid="observability-health">
+      <p className="row-meta" data-testid="observability-health" role="status">
         Stack health: loading…
       </p>
     );

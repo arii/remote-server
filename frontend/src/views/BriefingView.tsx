@@ -134,15 +134,28 @@ export default function BriefingView({ repo }: { repo: string }) {
   }
 
   useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError(null);
     if (useMock()) {
       setData(loadBriefing());
       return;
     }
-    void load();
+    (async () => {
+      try {
+        const live = await fetchBriefing(repo);
+        if (!cancelled) setData(live);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
-  if (!data && !error) return <section data-testid="briefing-loading">Loading…</section>;
+  if (!data && !error) return <section data-testid="briefing-loading" role="status">Loading…</section>;
 
   return (
     <section data-testid="briefing-view">

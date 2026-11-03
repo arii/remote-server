@@ -113,9 +113,76 @@ function PrDiff({ repo, pr }: { repo: string; pr: number }) {
           </pre>
         </>
       ) : (
-        !error && <p className="row-meta">Loading…</p>
+        !error && <p className="row-meta" role="status">Loading…</p>
       )}
     </details>
+  );
+}
+
+// Headings stay in order: h3 PR title under the view h2, h4 prompts under
+// it. (The "Details" h3 only renders for the empty state.)
+export function PrDetails({
+  repo,
+  details,
+  mergeBlocked,
+  mergeDisabled,
+  onMerge,
+  onAskAgent,
+}: {
+  repo: string;
+  details: PrDetailsResponse;
+  mergeBlocked: string | null;
+  mergeDisabled: boolean;
+  onMerge: (n: number) => void;
+  onAskAgent: (seed: string) => void;
+}) {
+  return (
+    <div className="detail" data-testid="review-details">
+      <h3>#{details.number} {details.title}</h3>
+      <p className="row-meta">
+        {details.branch} into {details.base} · CI {details.ci} · merge {details.merge} ·{' '}
+        {details.stats.total_files} files (+{details.stats.additions}/-{details.stats.deletions})
+      </p>
+      <ul data-testid="review-files">
+        {details.files.map((f) => (
+          <li key={f.path}>
+            {f.path} (+{f.additions}/-{f.deletions})
+          </li>
+        ))}
+      </ul>
+      <h4>Review prompts</h4>
+      <ul data-testid="review-prompts">
+        {details.ai_prompts.map((p) => (
+          <li key={p.id}>
+            <strong>{p.label}:</strong> {p.prompt}
+          </li>
+        ))}
+      </ul>
+      <PrDiff repo={repo} pr={details.number} />
+      {mergeBlocked && (
+        <p className="row-meta" data-testid="review-merge-block">
+          {mergeBlocked}
+        </p>
+      )}
+      <div className="actions">
+        <HoldToConfirm
+          label={`Merge PR #${details.number}`}
+          disabled={mergeDisabled}
+          onFire={() => onMerge(details.number)}
+        />
+        <button
+          type="button"
+          data-testid={`ask-agent-pr-${details.number}`}
+          onClick={() =>
+            onAskAgent(
+              `PR #${details.number} ${details.title} (${repo}): ${details.branch} into ${details.base}, CI ${details.ci}, merge ${details.merge}.`,
+            )
+          }
+        >
+          Ask agent
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -344,14 +411,14 @@ export default function ReviewView({
         <p role="alert" data-testid="review-error">{error}</p>
       )}
       {notice && (
-        <p className="row-meta" data-testid="review-notice">{notice}</p>
+        <p className="row-meta" data-testid="review-notice" role="status">{notice}</p>
       )}
       <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT} · d defers</p>
       <div className="columns">
         <div>
           <h3>Pull requests</h3>
           {!prs ? (
-            <p className="row-meta" data-testid="review-prs-loading">Loading…</p>
+            <p className="row-meta" data-testid="review-prs-loading" role="status">Loading…</p>
           ) : visiblePrs.length === 0 ? (
             <p className="row-meta" data-testid="review-prs-empty">No open PRs.</p>
           ) : (
@@ -381,7 +448,7 @@ export default function ReviewView({
           )}
           <h3>Issues</h3>
           {!issues ? (
-            <p className="row-meta" data-testid="review-issues-loading">Loading…</p>
+            <p className="row-meta" data-testid="review-issues-loading" role="status">Loading…</p>
           ) : visibleIssues.length === 0 ? (
             <p className="row-meta" data-testid="review-issues-empty">No open issues.</p>
           ) : (
@@ -433,58 +500,22 @@ export default function ReviewView({
           )}
         </div>
         <div>
-          <h3>Details</h3>
           {!sel ? (
-            <p className="row-meta" data-testid="review-details-empty">
-              Select a PR to see file stats and review prompts.
-            </p>
-          ) : (
-            <div className="detail" data-testid="review-details">
-              <h2>#{sel.number} {sel.title}</h2>
-              <p className="row-meta">
-                {sel.branch} into {sel.base} · CI {sel.ci} · merge {sel.merge} ·{' '}
-                {sel.stats.total_files} files (+{sel.stats.additions}/-{sel.stats.deletions})
+            <>
+              <h3>Details</h3>
+              <p className="row-meta" data-testid="review-details-empty">
+                Select a PR to see file stats and review prompts.
               </p>
-              <ul data-testid="review-files">
-                {sel.files.map((f) => (
-                  <li key={f.path}>
-                    {f.path} (+{f.additions}/-{f.deletions})
-                  </li>
-                ))}
-              </ul>
-              <h4>Review prompts</h4>
-              <ul data-testid="review-prompts">
-                {sel.ai_prompts.map((p) => (
-                  <li key={p.id}>
-                    <strong>{p.label}:</strong> {p.prompt}
-                  </li>
-                ))}
-              </ul>
-              <PrDiff repo={repo} pr={sel.number} />
-              {detailsMergeBlockReason(sel) && (
-                <p className="row-meta" data-testid="review-merge-block">
-                  {detailsMergeBlockReason(sel)}
-                </p>
-              )}
-              <div className="actions">
-                <HoldToConfirm
-                  label={`Merge PR #${sel.number}`}
-                  disabled={detailsMergeBlockReason(sel) !== null || merging.has(sel.number)}
-                  onFire={() => void onMerge(sel.number)}
-                />
-                <button
-                  type="button"
-                  data-testid={`ask-agent-pr-${sel.number}`}
-                  onClick={() =>
-                    onAskAgent(
-                      `PR #${sel.number} ${sel.title} (${repo}): ${sel.branch} into ${sel.base}, CI ${sel.ci}, merge ${sel.merge}.`,
-                    )
-                  }
-                >
-                  Ask agent
-                </button>
-              </div>
-            </div>
+            </>
+          ) : (
+            <PrDetails
+              repo={repo}
+              details={sel}
+              mergeBlocked={detailsMergeBlockReason(sel)}
+              mergeDisabled={detailsMergeBlockReason(sel) !== null || merging.has(sel.number)}
+              onMerge={(n) => void onMerge(n)}
+              onAskAgent={onAskAgent}
+            />
           )}
           <details data-testid="review-create-disclosure">
             <summary className="details-title">New issue</summary>
