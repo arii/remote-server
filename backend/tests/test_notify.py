@@ -4,7 +4,9 @@ import hashlib
 import hmac
 import json
 import os
+import subprocess
 import unittest
+from types import SimpleNamespace
 
 try:
     from fastapi import FastAPI
@@ -181,6 +183,61 @@ class WebhookWorkerTest(unittest.TestCase):
         self.assertEqual(len(appended), 1)
         self.assertTrue(appended[0]["ok"])
         self.assertEqual(appended[0]["repo"], "arii/x")
+
+
+class WebhookPullSkipTest(unittest.TestCase):
+    def _pull(self, script):
+        calls = []
+        it = iter(script)
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            code, out, err = next(it)
+            return SimpleNamespace(returncode=code, stdout=out,
+                                   stderr=err)
+
+        orig = subprocess.run
+        subprocess.run = fake_run
+        try:
+            return N.webhook_pull("/tmp"), calls
+        finally:
+            subprocess.run = orig
+
+    def test_not_ancestor_skips_quietly(self):
+        (ok, detail, advanced), calls = self._pull([
+            (0, "aaa\n", ""),   # rev-parse HEAD
+            (0, "", ""),        # fetch
+            (1, "", ""),        # merge-base: not ff-able
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(detail, "skipped: tree not ff-able")
+        self.assertFalse(advanced)
+        self.assertEqual(len(calls), 3)  # merge never attempted
+
+    def test_dirty_tree_skips_quietly(self):
+        (ok, detail, _), calls = self._pull([
+            (0, "aaa\n", ""),
+            (0, "", ""),
+            (0, "", ""),        # merge-base: ff-able
+            (0, " M x\n", ""),  # status: dirty
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(detail, "skipped: tree dirty")
+        self.assertEqual(len(calls), 4)
+
+    def test_clean_ffable_merges(self):
+        (ok, detail, advanced), calls = self._pull([
+            (0, "aaa\n", ""),
+            (0, "", ""),
+            (0, "", ""),
+            (0, "", ""),
+            (0, "Already up to date.\n", ""),
+            (0, "aaa\n", ""),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(detail, "Already up to date.")
+        self.assertFalse(advanced)
+        self.assertTrue(any("merge" in c for c in calls))
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")

@@ -264,6 +264,20 @@ def webhook_pull(path):
                 raise RuntimeError(
                     (fetch.stderr or "").strip().splitlines()[-1]
                     if fetch.stderr.strip() else "fetch failed")
+            ancestor = subprocess.run(
+                git + ["merge-base", "--is-ancestor",
+                       "HEAD", "origin/main"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, text=True, env=env)
+            if ancestor.returncode == 1:
+                # Mid-work checkout: quiet skip, not a failure alert.
+                return True, "skipped: tree not ff-able", False
+            tree = subprocess.run(
+                git + ["status", "--porcelain"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, text=True, env=env)
+            if (tree.stdout or "").strip():
+                return True, "skipped: tree dirty", False
             merge = subprocess.run(
                 git + ["merge", "--ff-only", "origin/main"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
