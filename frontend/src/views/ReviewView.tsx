@@ -12,6 +12,7 @@ import {
 import type { PrDiffResponse } from '../apiClient';
 import type { IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
 import { detailsMergeBlockReason } from '../reviewTypes';
+import { TRIAGE_HINT, useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
 function labelOf(v: unknown): string {
@@ -69,9 +70,13 @@ function PrDiff({ repo, pr }: { repo: string; pr: number }) {
 export default function ReviewView({
   repo,
   onAskAgent,
+  triageSuspended = false,
 }: {
   repo: string;
   onAskAgent: (seed: string) => void;
+  // Drawer-open flag: while true (agent drawer / PTY terminal open),
+  // triage keys are disabled.
+  triageSuspended?: boolean;
 }) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
@@ -83,6 +88,26 @@ export default function ReviewView({
   const [draftCause, setDraftCause] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
+
+  // Keyboard triage cursor across PR rows then issue rows. Enter opens
+  // a PR row; issue rows have no detail view, so Enter is a no-op there.
+  const rows: Array<{ kind: 'pr' | 'issue'; number: number }> = [
+    ...(prs ?? []).map((p) => ({ kind: 'pr' as const, number: p.number })),
+    ...(issues ?? []).map((i) => ({ kind: 'issue' as const, number: i.number })),
+  ];
+  const [cursor] = useTriageKeys({
+    count: rows.length,
+    suspended: triageSuspended,
+    onOpen: (i) => {
+      const r = rows[i];
+      if (r && r.kind === 'pr') void selectPr(r.number);
+    },
+    rowTestId: (i) => {
+      const r = rows[i];
+      return r.kind === 'pr' ? `review-pr-${r.number}` : `review-issue-${r.number}`;
+    },
+  });
+  const prCount = prs?.length ?? 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -181,6 +206,7 @@ export default function ReviewView({
       {notice && (
         <p className="row-meta" data-testid="review-notice">{notice}</p>
       )}
+      <p className="row-meta" data-testid="triage-hint">{TRIAGE_HINT}</p>
       <div className="columns">
         <div>
           <h3>Pull requests</h3>
@@ -190,10 +216,10 @@ export default function ReviewView({
             <p className="row-meta" data-testid="review-prs-empty">No open PRs.</p>
           ) : (
             <ul className="session-list" data-testid="review-pr-list">
-              {prs.map((p) => (
+              {prs.map((p, pi) => (
                 <li
                   key={p.number}
-                  className={`detail${selected === p.number ? ' selected' : ''}`}
+                  className={`detail${selected === p.number ? ' selected' : ''}${cursor === pi ? ' kbd-focus' : ''}`}
                   data-testid={`review-pr-${p.number}`}
                   aria-current={selected === p.number ? true : undefined}
                 >
@@ -216,8 +242,12 @@ export default function ReviewView({
             <p className="row-meta" data-testid="review-issues-empty">No open issues.</p>
           ) : (
             <ul className="session-list" data-testid="review-issue-list">
-              {issues.map((iss) => (
-                <li key={iss.number} className="detail" data-testid={`review-issue-${iss.number}`}>
+              {issues.map((iss, ii) => (
+                <li
+                  key={iss.number}
+                  className={`detail${cursor === prCount + ii ? ' kbd-focus' : ''}`}
+                  data-testid={`review-issue-${iss.number}`}
+                >
                   <span className="row-title">#{iss.number} {iss.title}</span>
                   <p className="row-meta">
                     {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
