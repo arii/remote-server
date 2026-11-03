@@ -35,6 +35,12 @@ function relativeStamp(epochSeconds: number): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+// Live queue cadence: re-fetch fast while items need the operator,
+// back off to a slow heartbeat when the queue is clear.
+export function nowPollMs(itemCount: number): number {
+  return itemCount > 0 ? 15000 : 60000;
+}
+
 function sevClass(severity: string): string {
   const s = severity.toLowerCase();
   if (s === 'crit' || s === 'critical') return 'sev sev-crit';
@@ -167,7 +173,22 @@ export default function NowView({
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
+
+  // Live queue: re-fetch on the adaptive cadence so new items land
+  // without a reload. Paused in a hidden tab and while reporting.
+  useEffect(() => {
+    if (useMock() || !data || dialogOpen) return;
+    const timer = window.setInterval(
+      () => {
+        if (!document.hidden) void refresh();
+      },
+      nowPollMs(data.items.length),
+    );
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo, data, dialogOpen]);
 
   async function onSubmitReport(title: string, body: string) {
     setError(null);
