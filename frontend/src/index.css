@@ -266,12 +266,23 @@ button[data-testid="hold-armed"] > [data-testid="hold-progress"] {
 }
 
 select, input[type="text"], input:not([type]), textarea {
-  background: var(--surface);
+  background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.4rem 0.55rem;
   max-width: 100%;
 }
+textarea { border-color: var(--accent); border-width: 1px; opacity: 1; }
+
+/* Command groups: associate an input with the buttons that need it. */
+.cmd-group {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.6rem 0.75rem 0.75rem;
+  margin-top: 0.75rem;
+}
+.cmd-group > .row-meta:first-child { margin: 0; }
+.cmd-group .actions { margin-top: 0.5rem; }
 ::placeholder { color: var(--muted); opacity: 1; }
 textarea { width: 100%; min-height: 4.5rem; resize: vertical; }
 label.row-meta { display: grid; gap: 0.3rem; }

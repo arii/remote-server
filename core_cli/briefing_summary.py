@@ -119,7 +119,15 @@ def run_json(cmd, timeout, cwd=None):
         err = (proc.stderr or "").strip().splitlines()
         if not err:
             # td sometimes reports the failure on stdout instead.
-            out = raw.strip().splitlines()
+            # Skip JSON-dump lines (bare "}" or a partial object):
+            # they are not an error message.
+            def _is_dump(line):
+                s = line.strip()
+                return (not s) or (not s.strip("[]{}")) \
+                    or s.startswith(("{", "["))
+
+            out = [ln for ln in raw.strip().splitlines()
+                   if not _is_dump(ln)]
             err = [out[-1]] if out else []
         return None, raw, (err[-1][:160] if err
                            else f"exit {proc.returncode}")

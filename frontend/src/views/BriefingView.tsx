@@ -38,7 +38,11 @@ function Section({ title, lines, err }: { title: string; lines: string[]; err?: 
           {err}
         </p>
       )}
-      <Lines lines={lines} />
+      {lines.length === 1 && !err ? (
+        <p>{cleanBriefingLine(lines[0])}</p>
+      ) : (
+        <Lines lines={lines} />
+      )}
     </section>
   );
 }
