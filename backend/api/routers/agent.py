@@ -89,6 +89,11 @@ async def _turn_events(provider: str, repo: str, cwd: str,
         yield sse_frame("error", {"error": "turn failed to start"})
         return
     result = agent_turn.manager.pop_result(session_id) or {}
+    if result.get("timed_out"):
+        yield sse_frame("error", {
+            "error": "turn timed out after "
+                     f"{agent_turn.TURN_TIMEOUT // 60}m"})
+        return
     if result.get("truncated"):
         yield sse_frame("done", {"text": "".join(text),
                                  "session_id": session_id,

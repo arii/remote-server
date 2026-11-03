@@ -40,6 +40,38 @@ STDERR_TAIL = 4000
 TURN_OUTPUT_MAX = 262144
 STDERR_READ_MAX = 65536
 
+# A hung CLI must not hold a turn forever either: past this many
+# seconds the turn is killed and the stream ends with an error event.
+# Observed turns finish in under a minute; ten minutes is headroom.
+TURN_TIMEOUT = 600
+KILL_GRACE = 5
+
+
+async def _stop_proc(proc: subprocess.Popen) -> None:
+    """Terminate, escalate to kill, wait bounded. Never raises and
+    returns at once when the process already exited."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        await asyncio.wait_for(asyncio.to_thread(proc.wait),
+                               KILL_GRACE)
+    except (asyncio.TimeoutError, Exception):
+        pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(proc.wait), KILL_GRACE)
+        except (asyncio.TimeoutError, Exception):
+            pass
+
 
 def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
                continued: bool) -> list:
@@ -87,8 +119,8 @@ class AgentTurnManager:
                        session_id: str, prompt: str, continued: bool,
                        argv: list | None = None):
         """Yield stdout text chunks for one turn. Afterwards
-        pop_result(session_id) holds {exit, stderr, truncated}.
-        `argv` overrides the allowlist lookup (tests)."""
+        pop_result(session_id) holds {exit, stderr, truncated,
+        timed_out}. `argv` overrides the allowlist lookup (tests)."""
         cmd = list(argv) if argv is not None else turn_argv(
             provider, cwd, session_id, prompt, continued)
         started = time.time()
@@ -100,12 +132,24 @@ class AgentTurnManager:
         out_text: list[str] = []
         out_len = 0
         truncated = False
+        timed_out = False
         err_tail = ""
+        deadline = started + TURN_TIMEOUT
         try:
             assert proc.stdout is not None
             while True:
-                chunk = await asyncio.to_thread(
-                    proc.stdout.read, READ_CHUNK)
+                budget = deadline - time.time()
+                if budget <= 0:
+                    timed_out = True
+                    break
+                try:
+                    chunk = await asyncio.wait_for(
+                        asyncio.to_thread(proc.stdout.read,
+                                          READ_CHUNK),
+                        budget)
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
                 if not chunk:
                     break
                 room = TURN_OUTPUT_MAX - out_len
@@ -115,14 +159,10 @@ class AgentTurnManager:
                     if room > 0:
                         out_text.append(chunk[:room])
                         yield chunk[:room]
-                    try:
-                        proc.terminate()
-                    except Exception:
-                        pass
                     break
                 out_text.append(chunk)
                 yield chunk
-            await asyncio.to_thread(proc.wait)
+            await _stop_proc(proc)
             if proc.stderr is not None:
                 try:
                     err = proc.stderr.read(STDERR_READ_MAX + 1)
@@ -143,11 +183,13 @@ class AgentTurnManager:
                        "exit": code,
                        "duration_s": round(time.time() - started, 2),
                        "tail": "".join(out_text)[-STDERR_TAIL:],
-                       "stderr": err_tail, "truncated": truncated})
+                       "stderr": err_tail, "truncated": truncated,
+                       "timed_out": timed_out})
         with self._lock:
             self._results[session_id] = {"exit": code,
                                          "stderr": err_tail,
-                                         "truncated": truncated}
+                                         "truncated": truncated,
+                                         "timed_out": timed_out}
 
     def pop_result(self, session_id: str) -> dict | None:
         """Completion record for a finished turn, once."""
