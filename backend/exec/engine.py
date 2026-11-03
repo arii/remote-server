@@ -220,12 +220,15 @@ def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     real subprocess.
     """
     run = runner or subprocess
+    # cwd = live checkout: td discovers project_config.json upward from
+    # cwd, and the image workdir (/app) has none.
     proc = run.run(
         ["bash", "-c", cmd],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
         text=True,
+        cwd=stack_dir(),
     )
     if proc.returncode != 0:
         raise RuntimeError(

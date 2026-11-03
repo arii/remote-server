@@ -122,6 +122,7 @@ class RouterTest(unittest.TestCase):
         self.assertIn("last line", str(ctx.exception))
         args, kwargs = runner.run.call_args
         self.assertEqual(kwargs["timeout"], 120)
+        self.assertEqual(kwargs["cwd"], engine.stack_dir())
 
     def test_full_run_flow_mocked(self):
         import backend.api.routers.jobs as jobs_router
