@@ -1,7 +1,9 @@
 # Deep Agents spikes (deep-agent/). Rebuild the env with:
 #   cd deep-agent && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # NOTE: needs deepagents>=0.7 API (backend instances, no factories).
-deepagents
+# Pinned: gate_chat_harness uses the beta HarnessProfile API; bump
+# deliberately and re-run the TestAgentMechanics gate tests.
+deepagents==0.7.32
 langchain
 langchain-openai
 langchain-ollama

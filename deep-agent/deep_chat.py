@@ -33,9 +33,12 @@ need them, so system python can import the validators and run
 Harness note: create_deep_agent also installs its built-in tools
 (write_todos, ls/read_file/write_file/edit_file/glob/grep, task).
 Those run on the default ephemeral StateBackend — scratch state that
-never touches disk or the checkout. The only repo-write path is
-propose_action, and it only formats a proposal; execution stays
-server-side behind the existing validated endpoints.
+never touches disk or the checkout. gate_chat_harness removes task
+from the model (ungated subagent spend) and denies virtual-fs writes
+(scratch the model could mistake for repo state); reads stay. The
+only repo-write path is propose_action, and it only formats a
+proposal; execution stays server-side behind the existing validated
+endpoints.
 """
 
 import base64
@@ -112,6 +115,33 @@ INTERRUPT_ON = {
         "description": "Review the proposed write action before it runs.",
     }
 }
+
+# deepagents resolves harness profiles by the BUILT instance's
+# (provider, identifier): ChatOllama -> ollama:<model>, ChatOpenAI
+# (our Nebius path) -> openai:<model>. Translate our spec provider
+# names; anything else passes through for custom model classes.
+PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
+
+
+def gate_chat_harness(spec):
+    """Exclude task + deny virtual-fs writes for one chat model.
+
+    Venv-only. Registers an exact provider:model harness profile
+    excluding the task tool (spawns an ungated general-purpose
+    subagent: unbounded spend with no approval gate) and returns the
+    permissions list denying virtual-fs writes (scratch the model
+    could mistake for repo state). Reads stay allowed; our 5 real
+    tools are untouched. (#306)
+    """
+    from deepagents import HarnessProfileConfig, register_harness_profile
+    from deepagents.middleware.filesystem import FilesystemPermission
+
+    provider = PROFILE_PROVIDERS.get(spec["provider"], spec["provider"])
+    register_harness_profile(
+        f"{provider}:{spec['model']}",
+        HarnessProfileConfig(excluded_tools={"task"}))
+    return [FilesystemPermission(operations=["write"], paths=["/**"],
+                                 mode="deny")]
 
 SYSTEM = (
     "You are helping Ari from his phone. Be terse, no filler. "
@@ -388,15 +418,16 @@ def open_checkpointer(path=THREAD_DB):
 
 
 def build_agent(repo, checkpointer, model=None, recorder=None,
-                intent_hint=None):
+                intent_hint=None, spec=None):
     """create_deep_agent chat slice. Venv-only. Model injectable."""
     from deepagents import create_deep_agent  # noqa: E402
 
     if model is None:
-        model, _ = build_model()
+        model, spec = build_model()
     kwargs = {}
     if recorder is not None:
         kwargs["middleware"] = observe.trace_middleware(recorder)
+    permissions = gate_chat_harness(spec) if spec is not None else None
     system = f"Repo: {repo}. " + SYSTEM
     if intent_hint:
         system += " " + intent_hint
@@ -405,6 +436,7 @@ def build_agent(repo, checkpointer, model=None, recorder=None,
         tools=build_tools(s5tools.checkout_for(repo)),
         system_prompt=system,
         interrupt_on=dict(INTERRUPT_ON),
+        permissions=permissions,
         checkpointer=checkpointer,
         **kwargs,
     )
@@ -604,7 +636,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     turn_intent = intent.classify(prompt)
     agent = build_agent(repo, saver, model=model, recorder=recorder,
                         intent_hint=skills.system_addition(turn_intent)
-                        or None)
+                        or None, spec=spec)
     config = {"configurable": {"thread_id": thread_id}}
     trimmed = trim_thread_history(agent, config)
     if trimmed:
@@ -682,7 +714,8 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     recorder.run_start("deep_chat.py", thread_id,
                        f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
-    agent = build_agent(repo, saver, model=model, recorder=recorder)
+    agent = build_agent(repo, saver, model=model, recorder=recorder,
+                        spec=spec)
     config = {"configurable": {"thread_id": thread_id}}
     pending = _pending_interrupts(agent, config)
     if not pending:
