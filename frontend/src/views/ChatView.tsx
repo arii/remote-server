@@ -449,6 +449,19 @@ export function isStalled(lastEventMs: number, nowMs: number): boolean {
   return nowMs - lastEventMs > STALL_SECONDS * 1000;
 }
 
+// Retry re-sends the last prompt after a failed stream (deploy cut the
+// connection, backend hiccup). Shown only when there is something to
+// re-send and nothing running — never auto-runs.
+export function shouldShowChatRetry(
+  error: string | null,
+  streaming: boolean,
+  lastSent: string,
+): boolean {
+  return (
+    !streaming && error !== null && error.length > 0 && lastSent.trim().length > 0
+  );
+}
+
 // Streaming progress line: elapsed always, plus phase and token count
 // once known. "Working… 45s · prefill · 12 tok".
 export function streamProgress(
@@ -580,6 +593,7 @@ export default function ChatView({
   const [streaming, setStreaming] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastSent, setLastSent] = useState('');
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -730,14 +744,12 @@ export default function ChatView({
     setMessages((m) => [...m, { role: 'assistant', text }]);
   }
 
-  async function onSend(e?: React.FormEvent) {
-    e?.preventDefault();
-    const text = prompt.trim();
-    if (!text || streaming) return;
+  async function sendText(text: string) {
     setError(null);
     setPhase(null);
     setApproval(null);
     setDecided(null);
+    setLastSent(text);
     const sessionId = newSessionId();
     sessionRef.current = sessionId;
     setMessages((m) => [...m, { role: 'user', text }]);
@@ -760,6 +772,18 @@ export default function ChatView({
     } finally {
       setStreaming(false);
     }
+  }
+
+  async function onSend(e?: React.FormEvent) {
+    e?.preventDefault();
+    const text = prompt.trim();
+    if (!text || streaming) return;
+    await sendText(text);
+  }
+
+  function onRetry() {
+    if (!lastSent.trim() || streaming) return;
+    void sendText(lastSent);
   }
 
   function stopStream() {
@@ -845,6 +869,11 @@ export default function ChatView({
         <p className="row-meta" data-testid="chat-error" role="alert">
           Chat failed: {error}
         </p>
+      )}
+      {shouldShowChatRetry(error, streaming, lastSent) && (
+        <button type="button" data-testid="chat-retry" onClick={() => onRetry()}>
+          Retry
+        </button>
       )}
       {streaming && <StreamProgress elapsed={elapsed} phase={phase} tokens={tokenCount} />}
       <span className="sr-only" role="status" data-testid="chat-phase">

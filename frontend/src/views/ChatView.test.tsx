@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, isStalled, meteredTotal, runCost, runDecisions, RunsPane, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import { budgetLine, isStalled, meteredTotal, runCost, runDecisions, RunsPane, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 
@@ -22,6 +22,17 @@ describe('stream progress (issue #376)', () => {
     );
     expect(html).toContain('data-testid="chat-progress"');
     expect(html).toContain('Working… 45s · prefill · 12 tok');
+  });
+});
+
+describe('chat retry visibility (issue #433)', () => {
+  it('shows retry only after an error with something to re-send', () => {
+    expect(shouldShowChatRetry('network error', false, 'hi')).toBe(true);
+    expect(shouldShowChatRetry(null, false, 'hi')).toBe(false);
+    expect(shouldShowChatRetry('', false, 'hi')).toBe(false);
+    expect(shouldShowChatRetry('network error', true, 'hi')).toBe(false);
+    expect(shouldShowChatRetry('network error', false, '')).toBe(false);
+    expect(shouldShowChatRetry('network error', false, '   ')).toBe(false);
   });
 });
 
