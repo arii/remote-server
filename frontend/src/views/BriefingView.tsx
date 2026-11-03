@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { fetchBriefing } from '../apiClient';
-import type { BriefingResponse } from '../apiTypes';
+import type { BoardItem, BriefingResponse } from '../apiTypes';
 import { loadBriefing, useMock } from './mockViews';
 
 // Briefing lines come from the legacy briefing_summary passthrough and may
@@ -39,6 +39,49 @@ function Section({ title, lines, err }: { title: string; lines: string[]; err?: 
         </p>
       )}
       <Lines lines={lines} />
+    </section>
+  );
+}
+
+function BoardSection({
+  board,
+  lines,
+  err,
+}: {
+  board: BoardItem[];
+  lines: string[];
+  err?: string;
+}) {
+  if (board.length === 0) {
+    return <Section title="Board" lines={lines} err={err} />;
+  }
+  return (
+    <section>
+      <h3>Board</h3>
+      {err && (
+        <p className="row-meta" role="alert">
+          {err}
+        </p>
+      )}
+      <ul className="session-list" data-testid="board-chips">
+        {board.map((b, i) => {
+          const chips = [b.branch, b.issue ? `issue ${b.issue}` : '', b.status]
+            .map((v) => (v ?? '').trim())
+            .filter((v) => v.length > 0 && v !== '?');
+          // eslint-disable-next-line react/no-array-index-key
+          return (
+            <li key={i} className="detail">
+              <div className="chip-row">
+                {chips.map((c) => (
+                  <span key={c} className="repo-chip">
+                    {c}
+                  </span>
+                ))}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
@@ -110,7 +153,7 @@ export default function BriefingView({ repo }: { repo: string }) {
         </section>
       )}
       <Section title="Reviews" lines={data.reviews_lines} />
-      <Section title="Board" lines={data.board_lines} err={data.board_err} />
+      <BoardSection board={data.board ?? []} lines={data.board_lines} err={data.board_err} />
       <Section title="Conflicts" lines={data.conflicts_lines} />
       <Section title="Overlaps" lines={data.overlaps_lines} />
       <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
