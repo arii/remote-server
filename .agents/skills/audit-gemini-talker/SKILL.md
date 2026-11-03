@@ -17,7 +17,7 @@ Announce yourself: read `lanes/registry.md` for the orchestrator session (see Di
 2. Import per the `gemini-repo-ask` user skill: `Upload & tools` (+) → `More uploads` → `Import code`, fill the full `https://github.com/arii/remote-server` URL, verify the repo chip appears.
 3. Ask one structured audit round (keep the chip attached, name the repo in every prompt). Example: "Based on the attached `arii/remote-server` code, audit for persisting issues and technical debt. Respond in Markdown with exactly these sections: `## Top Issues` (Severity | Area | File/Path | Issue | Suggested fix), `## Technical Debt`, `## Quick Wins (<30 min)`, `## Risks`. Be specific with file paths, keep it concise."
 4. For each credible finding: dedup with `gh issue list --search "<distinctive keywords>"` (also try the file path as search text). Skip anything already open.
-5. File new findings: `gh issue create --label insight --title "[<area>] <finding>"` with file path, why it matters, and the suggested fix. One issue per finding.
+5. File new findings: `gh issue create --label insight --title "[<area>] <finding>"`. Every body MUST conform to `td gh scaffold-issue` sections (Problem Statement, Goal, Non-Goals, Proposed Approach, Alternatives Considered, Architectural Impact, Scope with files touched, UNDERSTAND THE ISSUE, DETERMINE APPROACH, SPECIFY SCOPE, DEFINITION OF DONE) plus explicit acceptance criteria. One issue per finding. After filing, run `td gh validate-issue --all-open --dry-run` and fix any findings on your numbers before handing off.
 6. Message the orchestrator (see Discovery) one line per issue filed: `#<n> [<area>] <finding>`.
 7. Sleep ~1 hour, repeat from step 1 with a fresh `tab list` (tab IDs rotate).
 
