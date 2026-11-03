@@ -129,6 +129,13 @@ export function resultLine(output: string): string {
   return lines.length > 0 ? lines[lines.length - 1] : '';
 }
 
+// Active run id from a 409 conflict message
+// ("... 409 {...already in progress: <id>...}"), or null.
+export function attachIdFromConflict(message: string): string | null {
+  if (!/: 409\b/.test(message)) return null;
+  return /already in progress: ([0-9a-f]{12})/.exec(message)?.[1] ?? null;
+}
+
 // Plan filename from a create-plan result line ("wrote <path>.md").
 export function planNameFromResult(result: string): string | null {
   const m = result.trim().match(/^wrote\s+(.+\.md)$/);
@@ -473,11 +480,25 @@ export default function JobsView({ repo }: { repo: string }) {
     setPlanOpen(false);
     setPlanContent(null);
     launchRepoRef.current = repo;
-    const started = await start();
-    setRunId(started.id);
-    setNotice(`Started ${label}: ${started.id}`);
+    let id: string;
+    try {
+      id = (await start()).id;
+    } catch (err) {
+      // Single-flight conflict: attach to the run already going
+      // instead of erroring (double-tap, slow poll).
+      const attached = attachIdFromConflict(
+        err instanceof Error ? err.message : String(err),
+      );
+      if (!attached) throw err;
+      setRunId(attached);
+      setNotice(`Already running — attached to ${attached}.`);
+      if (!useMock()) startPolling(attached, label);
+      return;
+    }
+    setRunId(id);
+    setNotice(`Started ${label}: ${id}`);
     if (useMock()) return;
-    if (/^[0-9a-f]{12}$/.test(started.id)) startPolling(started.id, label);
+    if (/^[0-9a-f]{12}$/.test(id)) startPolling(id, label);
     else await load();
   }
 
@@ -508,18 +529,12 @@ export default function JobsView({ repo }: { repo: string }) {
     setNotice('Takeover requested.');
   }
 
-  if (error) {
-    return (
-      <section data-testid="jobs-error" role="alert">
-        Couldn&apos;t load jobs: {error}
-      </section>
-    );
-  }
-  if (!jobs) return <section data-testid="jobs-loading">Loading…</section>;
+  if (!jobs && !error) return <section data-testid="jobs-loading">Loading…</section>;
 
   const prOk = /^\d+$/.test(pr.trim());
   const prStateCurrent = prState && String(prState.n) === pr.trim() ? prState : null;
-  const finishedCount = jobs.filter((j) => j.done).length;
+  const list = jobs ?? [];
+  const finishedCount = list.filter((j) => j.done).length;
   const fixCiBlock =
     prStateCurrent && prStateCurrent.ci !== 'failing'
       ? `CI is ${prStateCurrent.ci} — nothing to fix.`
@@ -533,13 +548,18 @@ export default function JobsView({ repo }: { repo: string }) {
         <div>
           <h2>Jobs</h2>
           <p className="row-meta">
-            {jobs.length} run{jobs.length === 1 ? '' : 's'}
+            {list.length} run{list.length === 1 ? '' : 's'}
           </p>
         </div>
         <button type="button" data-testid="jobs-refresh" onClick={() => void guarded(load)}>
           Refresh
         </button>
       </header>
+      {error && (
+        <p role="alert" data-testid="jobs-error">
+          Couldn&apos;t load jobs: {error}
+        </p>
+      )}
       {notice && (
         <p className="row-meta" data-testid="jobs-notice">
           {notice}
@@ -714,12 +734,12 @@ export default function JobsView({ repo }: { repo: string }) {
             <div>
               <span className="row-title">Clear everything</span>
               <p className="row-meta">
-                {jobs.length === 0 ? 'No runs to clear.' : 'Drops all runs, including running ones.'}
+                {list.length === 0 ? 'No runs to clear.' : 'Drops all runs, including running ones.'}
               </p>
             </div>
             <HoldToConfirm
               label="Clear everything"
-              disabled={jobs.length === 0}
+              disabled={list.length === 0}
               onFire={() => void guarded(() => onClear(true))}
             />
           </li>
@@ -733,14 +753,14 @@ export default function JobsView({ repo }: { repo: string }) {
         </ul>
       </section>
 
-      {jobs.length === 0 ? (
+      {list.length === 0 ? (
         <div data-testid="jobs-empty">
           <h3>No runs</h3>
           <p className="row-meta">Dispatch one above or check back later.</p>
         </div>
       ) : (
         <ul className="session-list" data-testid="jobs-list">
-          {jobs.map((j) => (
+          {list.map((j) => (
             <JobListItem
               key={j.id}
               job={j}

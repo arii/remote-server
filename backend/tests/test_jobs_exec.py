@@ -95,6 +95,19 @@ class ClearSemanticsTest(unittest.TestCase):
         self.assertEqual(got, rid)
         self.assertEqual(reg.runs[rid]["output"], "")
 
+    def test_second_start_carries_active_id(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        rid2, err2 = reg.start_run("logs")
+        self.assertIsNone(rid2)
+        self.assertIn("already in progress", err2)
+        self.assertIn(rid, err2)
+        reg.finish_run(rid, 0)
+        rid3, err3 = reg.start_run("logs")
+        self.assertIsNone(err3)
+        self.assertIsNotNone(rid3)
+
 
 class RouterTest(unittest.TestCase):
     def setUp(self):
