@@ -15,6 +15,7 @@ import {
 import { loadHistory, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { attachIdFromConflict, jobsListActive, planNameFromResult, repairCandidates, resultLine } from './views/JobsView';
+import { nowPollMs } from './views/NowView';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
 
@@ -431,6 +432,14 @@ describe('jobs live gate', () => {
     expect(jobsListActive([])).toBe(false);
     expect(jobsListActive([{ id: 'a', done: true }, { id: 'b', done: false }])).toBe(true);
     expect(jobsListActive([{ id: 'b' }])).toBe(true);
+  });
+});
+
+describe('now live cadence', () => {
+  it('polls fast with items, slow heartbeat when clear', () => {
+    expect(nowPollMs(3)).toBe(15000);
+    expect(nowPollMs(1)).toBe(15000);
+    expect(nowPollMs(0)).toBe(60000);
   });
 });
 
