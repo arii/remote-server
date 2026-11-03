@@ -446,6 +446,10 @@ export function fetchRepairStatus(): Promise<RepairStatusResponse> {
   return getJson<RepairStatusResponse>('api/repair/status');
 }
 
+export function abortRepair(): Promise<{ ok: boolean; killed: boolean }> {
+  return postJson<{ ok: boolean; killed: boolean }>('api/repair/abort', {});
+}
+
 export interface PlanReadResponse {
   repo: string;
   name: string;

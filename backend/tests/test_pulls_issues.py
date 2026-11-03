@@ -7,6 +7,7 @@ POST /issue-draft: shapes, validation errors, and pr-action gates.
 """
 
 import json
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -341,7 +342,90 @@ class ParseIssueNumberTest(unittest.TestCase):
             self.assertIsNone(parse_issue_number(bad), bad)
 
 
+class BlockingProc:
+    """Fake repair worker that runs until terminated."""
+
+    def __init__(self):
+        self._done = threading.Event()
+        self.terminated = False
+
+    @property
+    def stdout(self):
+        yield "working\n"
+        self._done.wait(10)
+
+    def poll(self):
+        return None if not self._done.is_set() else -15
+
+    def wait(self, timeout=None):
+        self._done.wait(timeout)
+        return -15
+
+    def terminate(self):
+        self.terminated = True
+        self._done.set()
+
+    def kill(self):
+        self._done.set()
+
+
+def reset_repair_state():
+    with repair_state_lock:
+        repair_state.update(
+            {"status": "idle", "timestamp": None, "log_buffer": "",
+             "issue": None, "exit_code": None})
+        issues_mod._repair_proc = None
+        issues_mod._repair_abort = False
+
+
+def wait_repair_status(want, timeout=5):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with repair_state_lock:
+            if repair_state["status"] in want:
+                return repair_state["status"]
+        time.sleep(0.05)
+    with repair_state_lock:
+        return repair_state["status"]
+
+
 class RepairTest(unittest.TestCase):
+    def test_abort_kills_running_worker(self):
+        proc = BlockingProc()
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            issues_mod.repair_dispatch(
+                issues_mod.RepairDispatchRequest(issue="#9"))
+            deadline = time.time() + 5
+            while (time.time() < deadline
+                   and issues_mod._repair_proc is None):
+                time.sleep(0.05)
+            self.assertIsNotNone(issues_mod._repair_proc)
+            out = issues_mod.repair_abort()
+            self.assertEqual((out["ok"], out["killed"]), (True, True))
+            self.assertTrue(proc.terminated)
+            self.assertEqual(wait_repair_status(("aborted",)), "aborted")
+            status = issues_mod.repair_status()
+            self.assertEqual(status["issue"], 9)
+            self.assertIsNone(status["exit_code"])
+            self.assertIn("Aborted by user", status["log_buffer"])
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_abort_idle_kills_nothing(self):
+        reset_repair_state()
+        try:
+            out = issues_mod.repair_abort()
+            self.assertEqual((out["ok"], out["killed"]), (True, False))
+            self.assertEqual(issues_mod.repair_status()["status"], "idle")
+        finally:
+            reset_repair_state()
+
     def test_dispatch_and_status(self):
         from fastapi import HTTPException
 
