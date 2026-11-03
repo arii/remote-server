@@ -27,14 +27,27 @@
 <script>
 window.__switchTerminal = async function() {
   const btn = document.getElementById('takeover-btn');
+  const fail = (msg) => {
+    if (btn) { btn.disabled = false; btn.textContent = msg; }
+  };
   if (btn) { btn.disabled = true; btn.textContent = 'Switching...'; }
   try {
-    const res = await fetch('/buttons/api/terminal/takeover', { method: 'POST' });
+    const res = await fetch('/buttons/api/terminal/takeover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent: 'terminal-takeover', confirmed: true }),
+    });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      console.warn('Takeover request returned status ' + res.status);
+      fail('Takeover failed (' + res.status + ') — tap to retry');
+      return;
+    }
+    if (btn && data.output && data.output.indexOf('hup_exit=1') !== -1) {
+      btn.textContent = 'No other session — reloading...';
     }
   } catch (e) {
-    console.error('Takeover request error:', e);
+    fail('Takeover request failed — tap to retry');
+    return;
   }
   setTimeout(() => {
     location.reload();

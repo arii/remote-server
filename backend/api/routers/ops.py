@@ -31,11 +31,21 @@ router = APIRouter(prefix="/api", tags=["ops"])
 
 
 def run_takeover() -> str:
-    """Send SIGHUP to the zellij attach client. Injectable for tests."""
+    """SIGHUP the zellij attach client inside the terminal container.
+
+    zellij lives in remote-terminal-1, not here: pkill must run over
+    there (compose exec through the mounted docker socket). The
+    pattern is start-anchored so it hits only the attach client,
+    never ttyd (whose argv contains the same words) nor the zellij
+    server. The hup_exit marker tells callers whether a client was
+    actually signaled (0) or none matched (1). Injectable for tests.
+    """
+    from backend.exec.engine import exec_argv
+
     proc = subprocess.run(
-        ["bash", "-c", "pkill -HUP -f 'zellij attach' || true"],
+        exec_argv("pkill -HUP -f '^zellij attach'; echo hup_exit=$?"),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=10, text=True)
+        timeout=30, text=True)
     return proc.stdout
 
 
