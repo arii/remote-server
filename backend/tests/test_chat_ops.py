@@ -207,6 +207,18 @@ class ChatOpsTest(unittest.TestCase):
                                json={"session_id": "missing00000"})
         self.assertEqual(resp.status_code, 404)
 
+    def test_chat_disconnect_terminates_child(self):
+        proc = FakeProc("hello world")
+        chat.spawn_chat_process = lambda argv: proc
+        gen = chat._chat_events("hi", "remote-server", "disc00000001")
+        self.assertIn("prefill", next(gen))
+        self.assertIn("generating", next(gen))
+        self.assertIn("token", next(gen))
+        with self.assertRaises(GeneratorExit):
+            gen.throw(GeneratorExit)
+        self.assertTrue(proc.terminated)
+        self.assertNotIn("disc00000001", chat.chat_sessions)
+
     def _interrupt_text(self, value):
         blob = json.dumps({"thread_id": "sess00000001",
                            "interrupts": [{"id": "x", "value": value}]})

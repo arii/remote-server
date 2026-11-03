@@ -1,8 +1,13 @@
 """Tests for the jobs + execution port (stdlib unittest only).
 
-Subprocess is mocked: no real commands run.
+Subprocess is mocked except for the watchdog tests, which must run a
+real hung process (a short python sleep) to prove the kill.
 """
 
+import asyncio
+import inspect
+import sys
+import time
 import unittest
 from unittest import mock
 
@@ -117,8 +122,8 @@ class RouterTest(unittest.TestCase):
         with mock.patch.object(
             engine, "subprocess"
         ) as _sp, mock.patch(
-            "backend.api.routers.jobs.td_run",
-            return_value='{"plan_path": "p.md"}',
+            "backend.api.routers.jobs.td_run_async",
+            new=mock.AsyncMock(return_value='{"plan_path": "p.md"}'),
         ):
             resp = self.client.post(
                 "/api/jobs/run-plan", json={"plan": "issue-audit"}
@@ -314,6 +319,119 @@ class ExecuteRunTest(unittest.TestCase):
         self.assertEqual(reg2.runs[rid2]["exit_code"], 1)
         self.assertIn("validated td command",
                       reg2.runs[rid2]["output"])
+
+
+def _sleep_step(seconds):
+    return [sys.executable, "-c",
+            f"import time;time.sleep({seconds})"]
+
+
+class WatchdogTest(unittest.TestCase):
+    def test_hung_step_killed_by_watchdog(self):
+        chunks = []
+        start = time.time()
+        code = engine.run_step_pipe(_sleep_step(3), chunks.append,
+                                    timeout=0.2)
+        elapsed = time.time() - start
+        self.assertEqual(code, 124)
+        self.assertIn("watchdog", "".join(chunks))
+        self.assertLess(elapsed, 3)
+
+    def test_hung_step_finishes_run(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        reg = jobs_router.registry
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        with mock.patch.object(engine, "action_steps",
+                               return_value=([_sleep_step(3)], None)), \
+                mock.patch.object(engine, "STEP_TIMEOUT", 0.2):
+            engine.execute_run(reg, rid, "logs", "remote-server", "", "")
+        run = reg.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertEqual(run["exit_code"], 124)
+        self.assertIn("watchdog", run["output"])
+        self.assertIsNone(reg.active_id)
+
+    def test_normal_step_unaffected(self):
+        chunks = []
+        code = engine.run_step_pipe(
+            [sys.executable, "-c", "print('hi')"], chunks.append)
+        self.assertEqual(code, 0)
+        self.assertIn("hi", "".join(chunks))
+
+
+class FinishGuaranteeTest(unittest.TestCase):
+    def test_append_failure_still_finishes(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        with mock.patch.object(reg, "append",
+                               side_effect=RuntimeError("store down")):
+            engine.execute_run(reg, rid, "logs", "remote-server", "", "",
+                               runner=lambda argv: (0, "ok\n"))
+        run = reg.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertEqual(run["exit_code"], 1)
+        self.assertIsNone(reg.active_id)
+
+    def test_finish_run_clears_missing_record(self):
+        reg = RunRegistry()
+        reg.active_id = "deadbeefcafe"
+        reg.finish_run("deadbeefcafe", 1)
+        self.assertIsNone(reg.active_id)
+
+    def test_launch_failure_releases_lock(self):
+        import backend.api.routers.jobs as jobs_router
+        from backend.server import app
+
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app, raise_server_exceptions=False)
+        for path, payload in (
+            ("/api/jobs/run", {"action": "logs"}),
+            ("/api/jobs/run-td", {"command": "td context-warm"}),
+        ):
+            jobs_router.registry = RunRegistry()
+            with mock.patch(
+                "backend.api.routers.jobs._launch",
+                side_effect=RuntimeError("thread starved"),
+            ):
+                resp = client.post(path, json=payload)
+            self.assertEqual(resp.status_code, 500)
+            self.assertIsNone(jobs_router.registry.active_id)
+            rid, err = jobs_router.registry.start_run("logs")
+            self.assertIsNone(err)
+            jobs_router.registry.finish_run(rid, 0)
+
+
+class AsyncPlanTest(unittest.TestCase):
+    def test_run_plan_route_is_coroutine(self):
+        import backend.api.routers.jobs as jobs_router
+
+        self.assertTrue(
+            inspect.iscoroutinefunction(jobs_router.start_run_plan))
+
+    def test_td_run_async_echo(self):
+        out = asyncio.run(engine.td_run_async("echo hi"))
+        self.assertEqual(out, "hi\n")
+
+    def test_td_run_async_timeout_kills(self):
+        start = time.time()
+        with self.assertRaises(RuntimeError) as ctx:
+            asyncio.run(engine.td_run_async("sleep 5", timeout=0.2))
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertLess(time.time() - start, 5)
+
+    def test_td_run_async_overlaps(self):
+        async def _two():
+            await asyncio.gather(
+                engine.td_run_async("sleep 0.5"),
+                engine.td_run_async("sleep 0.5"))
+        start = time.time()
+        asyncio.run(_two())
+        self.assertLess(time.time() - start, 1.0)
 
 
 if __name__ == "__main__":
