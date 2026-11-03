@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { fetchBriefing } from '../apiClient';
-import type { BoardItem, BriefingResponse } from '../apiTypes';
-import { loadBriefing, useMock } from './mockViews';
+import { fetchBriefing, fetchLedger } from '../apiClient';
+import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
+import { toHistoryRows } from './historyUtils';
+import { loadBriefing, loadHistory, useMock } from './mockViews';
 
 // Briefing lines come from the legacy briefing_summary passthrough and may
 // carry reviewer HTML-comment markers or run long. Present the human part.
@@ -90,6 +91,80 @@ function BoardSection({
   );
 }
 
+// One-line condensation of briefing state, always visible.
+export function briefingSummary(data: BriefingResponse): string {
+  if (briefingAllClear(data)) return 'All clear — nothing open.';
+  const parts: string[] = [];
+  if (data.prs.length > 0) {
+    parts.push(`${data.prs.length} open PR${data.prs.length === 1 ? '' : 's'}`);
+  }
+  if (data.attention.length > 0) {
+    parts.push(`${data.attention.length} flagged`);
+  }
+  if (data.conflicts_lines.length > 0) {
+    parts.push(
+      `${data.conflicts_lines.length} conflict${data.conflicts_lines.length === 1 ? '' : 's'}`,
+    );
+  }
+  if (data.workflow_lines.length > 0) {
+    parts.push(
+      `${data.workflow_lines.length} failing run${data.workflow_lines.length === 1 ? '' : 's'}`,
+    );
+  }
+  return parts.join(' · ');
+}
+
+export interface BriefingAction {
+  label: string;
+  seed: string;
+}
+
+// Next actions derived from state, most urgent first, capped at three.
+// Each seeds agent chat, which auto-sends.
+export function briefingActions(data: BriefingResponse): BriefingAction[] {
+  const actions: BriefingAction[] = [];
+  if (data.workflow_lines.length > 0) {
+    actions.push({
+      label: 'Explain the failures',
+      seed: 'What failed recently and how do I fix it?',
+    });
+  }
+  if (data.conflicts_lines.length > 0) {
+    actions.push({
+      label: 'Resolve the conflicts',
+      seed: 'How do I resolve these merge conflicts?',
+    });
+  }
+  if (data.prs.length > 0) {
+    actions.push({
+      label: 'Summarize open PRs',
+      seed: 'Summarize the open pull requests.',
+    });
+  }
+  if (data.attention.length > 0) {
+    actions.push({
+      label: 'Triage attention items',
+      seed: 'Help me triage these attention items.',
+    });
+  }
+  if (actions.length === 0) {
+    actions.push({
+      label: 'Plan my day',
+      seed: 'What should I work on next?',
+    });
+  }
+  return actions.slice(0, 3);
+}
+
+// 24h activity counts from ledger timestamps.
+export function dayTrend(entries: LedgerEntry[], nowSec: number): string {
+  const recent = entries.filter(
+    (e) => typeof e.ts === 'number' && e.ts >= nowSec - 86400,
+  );
+  const failures = recent.filter((e) => e.ok === false).length;
+  return `Last 24h: ${recent.length} event${recent.length === 1 ? '' : 's'}, ${failures} failure${failures === 1 ? '' : 's'}.`;
+}
+
 // Condense-empties: when every section is empty and nothing errored,
 // the view shows one all-clear instead of five bare headings.
 export function briefingAllClear(data: BriefingResponse): boolean {
@@ -120,9 +195,18 @@ function PrRow({ pr }: { pr: Record<string, unknown> }) {
   );
 }
 
-export default function BriefingView({ repo }: { repo: string }) {
+export default function BriefingView({
+  repo,
+  onAskAgent,
+  onOpenHistory,
+}: {
+  repo: string;
+  onAskAgent: (seed: string) => void;
+  onOpenHistory: () => void;
+}) {
   const [data, setData] = useState<BriefingResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ledger, setLedger] = useState<LedgerEntry[] | null>(null);
 
   async function load() {
     setError(null);
@@ -137,8 +221,10 @@ export default function BriefingView({ repo }: { repo: string }) {
     let cancelled = false;
     setData(null);
     setError(null);
+    setLedger(null);
     if (useMock()) {
       setData(loadBriefing());
+      setLedger(loadHistory().entries);
       return;
     }
     (async () => {
@@ -147,6 +233,16 @@ export default function BriefingView({ repo }: { repo: string }) {
         if (!cancelled) setData(live);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    // Secondary: recent-activity highlights. Failure degrades to the
+    // empty state instead of breaking the briefing.
+    (async () => {
+      try {
+        const live = await fetchLedger('all', 100);
+        if (!cancelled) setLedger(live.entries);
+      } catch {
+        if (!cancelled) setLedger([]);
       }
     })();
     return () => {
@@ -177,14 +273,36 @@ export default function BriefingView({ repo }: { repo: string }) {
           Briefing unavailable — {error}
         </div>
       )}
-      {data && <BriefingBody data={data} />}
+      {data && (
+        <BriefingBody
+          data={data}
+          ledger={ledger}
+          onAskAgent={onAskAgent}
+          onOpenHistory={onOpenHistory}
+        />
+      )}
     </section>
   );
 }
 
-function BriefingBody({ data }: { data: BriefingResponse }) {
+export function BriefingBody({
+  data,
+  ledger,
+  onAskAgent,
+  onOpenHistory,
+}: {
+  data: BriefingResponse;
+  ledger: LedgerEntry[] | null;
+  onAskAgent: (seed: string) => void;
+  onOpenHistory: () => void;
+}) {
+  const actions = briefingActions(data);
+  const highlights = toHistoryRows([], ledger ?? []).slice(0, 3);
   return (
     <>
+      <p className="row-meta" data-testid="briefing-summary">
+        {briefingSummary(data)}
+      </p>
       {data.prs_err && (
         <p className="row-meta" role="alert">
           {data.prs_err}
@@ -216,6 +334,39 @@ function BriefingBody({ data }: { data: BriefingResponse }) {
           <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
         </>
       )}
+      <section aria-label="Next actions">
+        <h3>Next actions</h3>
+        <div className="actions" data-testid="briefing-actions">
+          {actions.map((a) => (
+            <button key={a.label} type="button" onClick={() => onAskAgent(a.seed)}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section aria-label="Recent activity">
+        <h3>Recent activity</h3>
+        {highlights.length > 0 ? (
+          <ul className="session-list" data-testid="briefing-highlights">
+            {highlights.map((r) => (
+              <li key={r.key} className="detail">
+                <span className="row-title">{r.summary}</span>
+                <p className="row-meta">
+                  {r.kind} · {r.at}
+                </p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="row-meta">No recent activity to show.</p>
+        )}
+        <p className="row-meta">{dayTrend(ledger ?? [], Date.now() / 1000)}</p>
+        <div className="actions">
+          <button type="button" data-testid="briefing-history" onClick={onOpenHistory}>
+            Full log in History
+          </button>
+        </div>
+      </section>
     </>
   );
 }

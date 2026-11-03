@@ -136,7 +136,9 @@ export default function App() {
       {tab === 'chat' && (
         <ChatView repo={repo} seed={chatSeed} onSeedUsed={() => setChatSeed(null)} />
       )}
-      {tab === 'briefing' && <BriefingView repo={repo} />}
+      {tab === 'briefing' && (
+        <BriefingView repo={repo} onAskAgent={askAgent} onOpenHistory={() => setTab('history')} />
+      )}
       {tab === 'history' && <HistoryView repo={repo} health={health} />}
     </main>
   );
