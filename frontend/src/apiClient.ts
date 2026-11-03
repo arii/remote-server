@@ -197,10 +197,6 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
   );
 }
 
-export function assignIssue(repo: string, issue: string, assignee: string): Promise<{ ok: boolean }> {
-  return postJson<{ ok: boolean }>('api/assign-issue', { repo, issue, assignee });
-}
-
 export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<import('./reviewTypes').IssueDraftResponse> {
   return postJson<import('./reviewTypes').IssueDraftResponse>('api/issue-draft', {
     repo,

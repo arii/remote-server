@@ -2,7 +2,7 @@
 
 Covers the ports of buttons/server.py GET /prs, GET /pr-details,
 POST /pr-action, POST /repair/dispatch, GET /repair/status,
-GET /issues, POST /assign-issue, POST /create-issue,
+GET /issues, POST /create-issue,
 POST /issue-draft: shapes, validation errors, and pr-action gates.
 """
 
@@ -232,20 +232,6 @@ class IssuesTest(unittest.TestCase):
         self.assertTrue(out["issues"][0]["body"].endswith("…"))
         self.assertEqual(len(out["issues"][0]["body"]), 601)
 
-    def test_assign_validation(self):
-        from fastapi import HTTPException
-
-        with self.assertRaises(HTTPException):
-            issues_mod.assign_issue(issues_mod.AssignIssueRequest(
-                repo="remote-server", issue="abc", assignee="octo"))
-        with self.assertRaises(HTTPException):
-            issues_mod.assign_issue(issues_mod.AssignIssueRequest(
-                repo="remote-server", issue="3", assignee="a b"))
-        with patch.object(issues_mod, "run_gh", return_value=""):
-            out = issues_mod.assign_issue(issues_mod.AssignIssueRequest(
-                repo="remote-server", issue="3", assignee="octo"))
-        self.assertEqual(out, {"ok": True})
-
     def test_create_validation_and_url(self):
         from fastapi import HTTPException
 
@@ -336,7 +322,6 @@ class RouteTableTest(unittest.TestCase):
         self.assertIn(("/api/pr-details", ("GET",)), pulls_routes)
         self.assertIn(("/api/pr-action", ("POST",)), pulls_routes)
         self.assertIn(("/api/issues", ("GET",)), issues_routes)
-        self.assertIn(("/api/assign-issue", ("POST",)), issues_routes)
         self.assertIn(("/api/create-issue", ("POST",)), issues_routes)
         self.assertIn(("/api/issue-draft", ("POST",)), issues_routes)
         self.assertIn(("/api/repair/dispatch", ("POST",)), issues_routes)

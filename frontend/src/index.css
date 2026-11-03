@@ -66,6 +66,14 @@ h1, h2, h3 { text-wrap: balance; }
 }
 .page-head:first-child { margin-top: 0; }
 
+.details-title {
+  font-size: 1.12rem;
+  font-weight: 650;
+  margin: 1.25rem 0 0.35rem;
+  cursor: pointer;
+  display: inline-block;
+}
+
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
 .row-title { display: block; font-weight: 650; font-size: 1rem; }
 
