@@ -79,7 +79,12 @@ export default function HoldToConfirm({ label, holdMs = 800, disabled, onFire }:
       }}
     >
       {armed ? `Confirm ${label}` : label}
-      <span aria-hidden="true" data-testid="hold-progress" data-progress={progress.toFixed(2)} />
+      <span
+        aria-hidden="true"
+        data-testid="hold-progress"
+        data-progress={progress.toFixed(2)}
+        style={{ '--hold-p': progress.toFixed(3) } as React.CSSProperties}
+      />
     </button>
   );
 }

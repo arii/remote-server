@@ -100,6 +100,30 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertIn("×3", runs[0]["title"])
 
+    def test_identical_failed_webhooks_collapse(self):
+        hooks = [
+            {"id": "w1", "ts": 1.0, "error": "timeout"},
+            {"id": "w2", "ts": 2.0, "error": "timeout"},
+            {"id": "w3", "ts": 3.0, "error": "refused"},
+        ]
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: hooks,
+            list_pending_approvals=lambda: [],
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        items = [i for i in body["items"]
+                 if i["kind"] == "failed-webhook"]
+        self.assertEqual(len(items), 2)
+        by_detail = {i["detail"]: i for i in items}
+        self.assertIn("×2", by_detail["timeout"]["title"])
+        self.assertEqual(
+            by_detail["refused"]["title"], "Failed webhook delivery")
+
 
 class WorkflowHealthCacheTest(unittest.TestCase):
     def test_second_call_served_from_cache(self):

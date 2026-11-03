@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 try:
     from fastapi import FastAPI
@@ -142,6 +143,22 @@ class BriefingScriptSmokeTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, out[-500:])
         self.assertIn("usage:", out)
         self.assertNotIn("Traceback", out)
+
+    @unittest.skipUnless(HAS_CLIENT, "briefing router not importable")
+    def test_run_briefing_uses_stack_cwd(self):
+        # td discovers project_config.json upward from cwd; the image
+        # workdir (/app) has none, so the router must run the script
+        # from the live checkout.
+        from backend.exec.engine import stack_dir
+        proc = mock.Mock(returncode=0, stdout='{"repo": "x"}', stderr="")
+        with mock.patch.object(
+                briefing_router.subprocess, "run",
+                return_value=proc) as run_mock:
+            out = briefing_router._run_briefing("x", "arii/x")
+        self.assertEqual(out, {"repo": "x"})
+        self.assertEqual(run_mock.call_args.kwargs.get("cwd"), stack_dir())
+        self.assertTrue(
+            run_mock.call_args.args[0][1].endswith("briefing_summary.py"))
 
 
 if __name__ == "__main__":

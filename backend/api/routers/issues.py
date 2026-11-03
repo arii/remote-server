@@ -5,7 +5,6 @@ backend's /api prefix convention (buttons serves /buttons/api/*;
 this backend serves /api/* like its sibling routers):
 
 - GET  /api/issues?repo=          open issues, body truncated
-- POST /api/assign-issue          add an assignee to an issue
 - POST /api/create-issue          create an issue (confirm-tap shape)
 - POST /api/issue-draft           build a structured issue draft
 - POST /api/repair/dispatch       start the repair worker for an issue
@@ -27,13 +26,13 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.exec.engine import stack_dir
 from backend.gh import repo_gh, run_gh, run_gh_json
 
 router = APIRouter(prefix="/api", tags=["issues"])
 
 ISSUE_LIST_FIELDS = ("number,title,state,assignees,labels,updatedAt,"
                      "url,body")
-ASSIGNEE_RE = re.compile(r"[A-Za-z0-9-]{1,39}\Z")
 MAX_OUTPUT = 200_000
 
 repair_state = {
@@ -74,16 +73,6 @@ def parse_issue_number(val) -> int | None:
 class IssueList(BaseModel):
     repo: str = ""
     issues: list = Field(default_factory=list)
-
-
-class AssignIssueRequest(BaseModel):
-    repo: str = "remote-server"
-    issue: str = ""
-    assignee: str = ""
-
-
-class AssignIssueResult(BaseModel):
-    ok: bool = True
 
 
 class CreateIssueRequest(BaseModel):
@@ -143,8 +132,11 @@ def _repair_worker_thread(issue_number: int) -> None:
     cmd = ["python3", "scripts/repair_worker.py",
            "--issue", str(issue_number)]
     try:
+        # cwd = live checkout: the worker path is repo-relative and the
+        # image workdir (/app) has no scripts/ dir.
         proc = run.Popen(cmd, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, bufsize=1)
+                         stderr=subprocess.STDOUT, text=True, bufsize=1,
+                         cwd=stack_dir())
         if proc.stdout:
             for line in proc.stdout:
                 with repair_state_lock:
@@ -189,25 +181,6 @@ def issues(repo: str = "remote-server") -> dict:
                 and len(row["body"]) > 600:
             row["body"] = row["body"][:600] + "…"
     return {"repo": repo, "issues": rows}
-
-
-@router.post("/assign-issue", response_model=AssignIssueResult)
-def assign_issue(body: AssignIssueRequest) -> dict:
-    try:
-        gh = repo_gh(body.repo)
-    except ValueError:
-        raise HTTPException(
-            status_code=400, detail="bad repo, issue or assignee")
-    if (not body.issue.isdigit()
-            or not ASSIGNEE_RE.fullmatch(body.assignee.strip())):
-        raise HTTPException(
-            status_code=400, detail="bad repo, issue or assignee")
-    try:
-        run_gh(gh, ["issue", "edit", body.issue, "--repo", gh,
-                    "--add-assignee", body.assignee.strip()], timeout=60)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)[:500])
-    return {"ok": True}
 
 
 @router.post("/create-issue", response_model=CreateIssueResult)

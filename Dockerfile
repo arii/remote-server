@@ -12,7 +12,7 @@ RUN npm install -g "pnpm@10.28.2" \
  && printf 'onlyBuiltDependencies:\n  - esbuild\n' > pnpm-workspace.yaml \
  && pnpm install --frozen-lockfile
 COPY frontend/ ./
-RUN pnpm build
+RUN VITE_BASE=/buttons/ pnpm build
 
 # ---- Runtime ----
 FROM python:3.11-slim

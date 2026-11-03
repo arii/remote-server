@@ -57,11 +57,11 @@ function isFailure(kind: string, raw: string, summary: string): boolean {
 }
 
 const RECOVERY_RULES: Array<[RegExp, string]> = [
-  [/fast-forward|remote has new/, 'How to recover: pull, resolve, push'],
-  [/browser|playwright/, 'How to recover: reinstall browsers and rerun'],
-  [/network|could not be reached/, 'How to recover: retry when the service is reachable'],
-  [/not permitted|check access/, 'How to recover: check access and retry'],
-  [/conflict/, 'How to recover: review and resolve conflicts'],
+  [/fast-forward|remote has new/, 'pull, resolve, push'],
+  [/browser|playwright/, 'reinstall browsers and rerun'],
+  [/network|could not be reached/, 'retry when the service is reachable'],
+  [/not permitted|check access/, 'check access and retry'],
+  [/conflict/, 'review and resolve conflicts'],
 ];
 
 function recoveryFor(kind: string, summary: string): string {
@@ -69,7 +69,7 @@ function recoveryFor(kind: string, summary: string): string {
   for (const [re, label] of RECOVERY_RULES) {
     if (re.test(s)) return label;
   }
-  return 'How to recover: check status and retry';
+  return 'check status and retry';
 }
 
 function rowTime(at: number | string | undefined): string {

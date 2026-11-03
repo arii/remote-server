@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
-import { createIssue, fetchAttention } from '../apiClient';
+import { apiUrl, createIssue, fetchAttention } from '../apiClient';
 import type { SystemHealthResponse } from '../apiClient';
 import type { AttentionItem, AttentionResponse } from '../attentionTypes';
 import { loadAttention, loadAttentionEmpty } from '../mocks/attention';
@@ -12,7 +12,7 @@ function isGetAction(item: AttentionItem): boolean {
 }
 
 async function firePostAction(item: AttentionItem): Promise<void> {
-  const resp = await fetch(item.action.href, {
+  const resp = await fetch(apiUrl(item.action.href), {
     method: item.action.method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ intent: item.action.intent, confirmed: true }),
@@ -23,6 +23,23 @@ async function firePostAction(item: AttentionItem): Promise<void> {
 function formatStamp(epochSeconds: number): string {
   if (!epochSeconds) return 'unknown time';
   return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+function relativeStamp(epochSeconds: number): string {
+  if (!epochSeconds) return 'unknown time';
+  const mins = Math.max(0, Math.round((Date.now() / 1000 - epochSeconds) / 60));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function sevClass(severity: string): string {
+  const s = severity.toLowerCase();
+  if (s === 'crit' || s === 'critical') return 'sev sev-crit';
+  if (s === 'warn' || s === 'warning') return 'sev sev-warn';
+  return 'sev sev-info';
 }
 
 function ReportDialog({
@@ -93,7 +110,7 @@ function ActionControl({
     }
   }
   if (isGetAction(item)) {
-    return <a href={item.action.href}>{item.action.label}</a>;
+    return <a href={apiUrl(item.action.href)}>{item.action.label}</a>;
   }
   if (item.action.destructive) {
     return <HoldToConfirm label={item.action.label} onFire={() => void handlePost()} />;
@@ -109,10 +126,12 @@ export default function NowView({
   repo,
   health,
   reportContext,
+  onAskAgent,
 }: {
   repo: string;
   health: SystemHealthResponse | null;
   reportContext: string;
+  onAskAgent: (seed: string) => void;
 }) {
   const [data, setData] = useState<AttentionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -175,7 +194,9 @@ export default function NowView({
       <header className="page-head">
         <div>
           <h2>Now</h2>
-          <p className="row-meta">Updated {formatStamp(data.updated_at)}</p>
+          <p className="row-meta" title={formatStamp(data.updated_at)}>
+            Updated {relativeStamp(data.updated_at)}
+          </p>
         </div>
         <button type="button" data-testid="report-bug" onClick={() => setDialogOpen(true)}>
           Report a bug
@@ -217,17 +238,32 @@ export default function NowView({
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
               <span className="row-title">{item.title}</span>
               <p className="row-meta">
-                {item.kind} · {item.severity} · {formatStamp(item.created_at)}
+                {item.kind} · <span className={sevClass(item.severity)}>{item.severity}</span>
+                {' · '}
+                <span title={formatStamp(item.created_at)}>
+                  {relativeStamp(item.created_at)}
+                </span>
               </p>
               <p>{item.detail}</p>
-              <ActionControl
-                item={item}
-                onDone={(title) => {
-                  setFired(title);
-                  void refresh();
-                }}
-                onError={setError}
-              />
+              <div className="actions">
+                <ActionControl
+                  item={item}
+                  onDone={(title) => {
+                    setFired(title);
+                    void refresh();
+                  }}
+                  onError={setError}
+                />
+                <button
+                  type="button"
+                  data-testid={`ask-agent-${item.id}`}
+                  onClick={() =>
+                    onAskAgent(`${item.title} (${item.repo}): ${item.detail}`)
+                  }
+                >
+                  Ask agent
+                </button>
+              </div>
             </li>
           ))}
         </ul>

@@ -174,20 +174,37 @@ def attention(repo: str = "remote-server") -> dict:
                        "href": "api/jobs", "destructive": False, "intent": ""},
             "created_at": float(job.get("created_at", now) or now),
         })
+    # One row per incident: repeat failures with the same repo+detail
+    # collapse into a single item with a count (latest first).
+    webhook_incidents: dict = {}
     for e in list_failed_webhooks():
-        eid = e.get("id", e.get("ts", "?"))
-        items.append({
-            "id": f"webhook-{eid}",
-            "kind": "failed-webhook",
-            "title": "Failed webhook delivery",
-            "detail": str(e.get("error", e.get("event", "webhook failed"))),
-            "repo": str(e.get("repo", name)),
-            "severity": "warn",
-            "action": {"label": "View notifications", "method": "GET",
-                       "href": "api/notifications/status",
-                       "destructive": False, "intent": ""},
-            "created_at": float(e.get("ts", now) or now),
-        })
+        repo = str(e.get("repo", name))
+        detail = str(e.get("error", e.get("event", "webhook failed")))
+        key = (repo, detail)
+        ts = float(e.get("ts", now) or now)
+        prev = webhook_incidents.get(key)
+        if prev is None or ts >= prev["created_at"]:
+            eid = e.get("id", e.get("ts", "?"))
+            webhook_incidents[key] = {
+                "id": f"webhook-{eid}",
+                "kind": "failed-webhook",
+                "title": "Failed webhook delivery",
+                "detail": detail,
+                "repo": repo,
+                "severity": "warn",
+                "action": {"label": "View notifications", "method": "GET",
+                           "href": "api/notifications/status",
+                           "destructive": False, "intent": ""},
+                "created_at": ts,
+                "count": (prev["count"] + 1) if prev else 1,
+            }
+        else:
+            prev["count"] += 1
+    for item in webhook_incidents.values():
+        if item["count"] > 1:
+            item["title"] += f" (×{item['count']})"
+        del item["count"]
+        items.append(item)
     for e in list_pending_approvals():
         eid = e.get("id", e.get("ts", "?"))
         items.append({

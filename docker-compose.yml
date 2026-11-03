@@ -202,9 +202,9 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
-  # Phone UI: fixed action buttons (status, deploy, recreate, pull
-  # models, logs). No free-text input anywhere; see buttons/server.py
-  # and docs/buttons.md. Built locally on the S5 (no GHCR image).
+  # Phone UI: FastAPI backend + Vite SPA in one image (see root
+  # Dockerfile). No free-text input anywhere. Built locally on the S5
+  # (no GHCR image).
   # The checkout mount MUST use the host-identical path
   # (/home/ari/remote-server): this container runs docker compose
   # against the host daemon, and compose resolves relative paths

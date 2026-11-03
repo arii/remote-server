@@ -293,9 +293,9 @@ class TestEvalLib(unittest.TestCase):
 
 class TestAllowlistSync(unittest.TestCase):
     # ask_investigator.ALLOWED_TD is a hand mirror of
-    # buttons/server.py ALLOWED_TD_COMMANDS; the propose-td eval case
-    # asserts the mirrored text, so drift must fail loudly. Parsed via
-    # ast (no imports: both files pull langchain/server deps).
+    # backend/exec/engine.py ALLOWED_TD_COMMANDS; the propose-td eval
+    # case asserts the mirrored text, so drift must fail loudly.
+    # Parsed via ast (no imports: both files pull langchain deps).
     def load_list(self, path, var):
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
@@ -309,7 +309,7 @@ class TestAllowlistSync(unittest.TestCase):
     def test_mirror_matches_source_of_truth(self):
         root = os.path.join(os.path.dirname(__file__), "..")
         truth = self.load_list(
-            os.path.join(root, "buttons", "server.py"),
+            os.path.join(root, "backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
         mirror = self.load_list(
             os.path.join(root, "deep-agent", "ask_investigator.py"),
@@ -319,7 +319,7 @@ class TestAllowlistSync(unittest.TestCase):
     def test_propose_td_case_uses_allowlisted_shape(self):
         root = os.path.join(os.path.dirname(__file__), "..")
         truth = self.load_list(
-            os.path.join(root, "buttons", "server.py"),
+            os.path.join(root, "backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
         td_case = [c for c in eval_ask.PROMPTS
                    if c["name"] == "propose-td"][0]

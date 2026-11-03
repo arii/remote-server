@@ -220,12 +220,15 @@ def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     real subprocess.
     """
     run = runner or subprocess
+    # cwd = live checkout: td discovers project_config.json upward from
+    # cwd, and the image workdir (/app) has none.
     proc = run.run(
         ["bash", "-c", cmd],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
         text=True,
+        cwd=stack_dir(),
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -275,7 +278,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
                       "-f /srv/remote-server/docker-compose.yml up -d "
                       "--build buttons"),
             exec_argv("for i in $(seq 1 30); do if curl -sf "
-                      "http://buttons:8000/buttons/api/status >/dev/null; "
+                      "http://buttons:8000/api/status >/dev/null; "
                       "then echo buttons up; exit 0; fi; sleep 2; done; "
                       "HOST_HOME=/home/ari HOME=/home/ari docker compose "
                       "-f /srv/remote-server/docker-compose.yml ps buttons; "

@@ -56,17 +56,27 @@ function RowsList({ rows }: { rows: HistoryRow[] }) {
       </p>
     );
   }
+  // Identical recovery advice repeats across incidents; show each once.
+  const shown = new Set<string>();
   return (
     <ul className="session-list" data-testid="history-list">
-      {rows.map((r) => (
-        <li key={r.key} data-testid={r.repeat > 1 ? 'history-incident' : 'history-row'}>
-          <span className="row-title">{r.summary}</span>{' '}
-          <span className="row-meta">
-            {r.kind} · {r.at}
-          </span>{' '}
-          <span className="row-meta">{r.recovery}</span>
-        </li>
-      ))}
+      {rows.map((r) => {
+        const advice = r.recovery && !shown.has(r.recovery) ? r.recovery : '';
+        if (advice) shown.add(advice);
+        return (
+          <li
+            key={r.key}
+            className="history-row"
+            data-testid={r.repeat > 1 ? 'history-incident' : 'history-row'}
+          >
+            <span className="row-title">{r.summary}</span>{' '}
+            <span className="row-meta">
+              {r.kind} · {r.at}
+            </span>
+            {advice && <span className="row-meta"> · Recovery: {advice}</span>}
+          </li>
+        );
+      })}
     </ul>
   );
 }

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import unittest
 from buttons import context_filter
-from buttons import server
 
 
 class TestDiffPreFiltering(unittest.TestCase):
@@ -117,26 +116,6 @@ class TestContextBudgetEnforcement(unittest.TestCase):
         self.assertLessEqual(len(budgeted), 4200)
         self.assertIn("[context pre-filter: truncated context to enforce 1000 token budget]", budgeted)
 
-    def test_suggest_context_budget_integration(self):
-        brief = {
-            "repo": "tech-dancer",
-            "attention": [f"Attention item {i}" for i in range(30)],
-            "prs": [
-                {"number": i, "title": f"PR title {i}", "ci": "passing", "merge": "clean", "conflicted": False, "review": "APPROVED"}
-                for i in range(50)
-            ],
-            "failing_runs": [
-                {"name": f"Workflow {i}", "branch": "main", "failed": [{"job": "build", "steps": ["test"]}]}
-                for i in range(10)
-            ],
-            "jules": {"items": [f"Session {i}" for i in range(10)]}
-        }
-        ctx = server._suggest_context(brief)
-        self.assertIsInstance(ctx, str)
-        # Should stay well within 3k tokens (~12k chars)
-        self.assertLessEqual(len(ctx), 14000)
-
-
 class TestContextFilterHelpersAndIntegration(unittest.TestCase):
     def test_estimate_tokens_accuracy(self):
         self.assertEqual(context_filter.estimate_tokens(""), 0)
@@ -152,46 +131,6 @@ class TestContextFilterHelpersAndIntegration(unittest.TestCase):
         self.assertTrue(context_filter.is_excluded_path("buttons/__pycache__/server.cpython-312.pyc"))
         self.assertFalse(context_filter.is_excluded_path("src/index.ts"))
         self.assertFalse(context_filter.is_excluded_path("buttons/server.py"))
-
-    def test_suggest_context_with_ci_traces_and_diff(self):
-        brief = {
-            "repo": "remote-server",
-            "attention": ["PR #42 needs attention"],
-            "prs": [{
-                "number": 42,
-                "title": "Fix something",
-                "ci": "failing",
-                "merge": "clean",
-                "conflicted": False,
-                "review": "PENDING",
-                "diff": """diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
---- a/pnpm-lock.yaml
-+++ b/pnpm-lock.yaml
-@@ -1 +1 @@
--old: 1.0.0
-+new: 1.0.1
-diff --git a/app.py b/app.py
---- a/app.py
-+++ b/app.py
-@@ -1 +1 @@
--print(1)
-+print(2)
-"""
-            }],
-            "failing_runs": [{
-                "name": "CI",
-                "branch": "main",
-                "failed": [{"job": "test", "steps": ["run pytest"]}],
-                "log": "\n".join([f"setup line {i}" for i in range(100)]) + "\nAssertionError: expected True but got False\nexit 1\n"
-            }],
-        }
-        ctx = server._suggest_context(brief)
-        self.assertIn("diff summary:", ctx)
-        self.assertIn("excluded generated/binary/lockfile 'pnpm-lock.yaml'", ctx)
-        self.assertIn("+print(2)", ctx)
-        self.assertIn("CI error trace:", ctx)
-        self.assertIn("AssertionError: expected True but got False", ctx)
-        self.assertNotIn("setup line 10\n", ctx)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
 import {
-  assignIssue,
   createIssue,
   draftIssue,
   fetchIssues,
@@ -22,14 +21,19 @@ function labelOf(v: unknown): string {
   return '';
 }
 
-export default function ReviewView({ repo }: { repo: string }) {
+export default function ReviewView({
+  repo,
+  onAskAgent,
+}: {
+  repo: string;
+  onAskAgent: (seed: string) => void;
+}) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [details, setDetails] = useState<PrDetailsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [assignee, setAssignee] = useState<Record<number, string>>({});
   const [draftTitle, setDraftTitle] = useState('');
   const [draftCause, setDraftCause] = useState('');
   const [newTitle, setNewTitle] = useState('');
@@ -83,21 +87,6 @@ export default function ReviewView({ repo }: { repo: string }) {
     try {
       await mergePr(repo, n);
       setNotice(`Merged PR #${n}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function onAssign(issueNumber: number) {
-    setError(null);
-    const who = (assignee[issueNumber] || '').trim();
-    if (!who) {
-      setError('Enter an assignee first.');
-      return;
-    }
-    try {
-      await assignIssue(repo, String(issueNumber), who);
-      setNotice(`Assigned #${issueNumber} to ${who}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -183,20 +172,6 @@ export default function ReviewView({ repo }: { repo: string }) {
                   <p className="row-meta">
                     {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
                   </p>
-                  <div className="actions">
-                    <input
-                      data-testid={`assign-input-${iss.number}`}
-                      aria-label={`Assignee for issue ${iss.number}`}
-                      placeholder="assignee"
-                      value={assignee[iss.number] || ''}
-                      onChange={(e) =>
-                        setAssignee((a) => ({ ...a, [iss.number]: e.target.value }))
-                      }
-                    />
-                    <button type="button" onClick={() => void onAssign(iss.number)}>
-                      Assign
-                    </button>
-                  </div>
                 </li>
               ))}
             </ul>
@@ -230,10 +205,24 @@ export default function ReviewView({ repo }: { repo: string }) {
                   </li>
                 ))}
               </ul>
-              <HoldToConfirm label={`Merge PR #${sel.number}`} onFire={() => void onMerge(sel.number)} />
+              <div className="actions">
+                <HoldToConfirm label={`Merge PR #${sel.number}`} onFire={() => void onMerge(sel.number)} />
+                <button
+                  type="button"
+                  data-testid={`ask-agent-pr-${sel.number}`}
+                  onClick={() =>
+                    onAskAgent(
+                      `PR #${sel.number} ${sel.title} (${repo}): ${sel.branch} into ${sel.base}, CI ${sel.ci}, merge ${sel.merge}.`,
+                    )
+                  }
+                >
+                  Ask agent
+                </button>
+              </div>
             </div>
           )}
-          <h3>Create issue</h3>
+          <details data-testid="review-create-disclosure">
+            <summary className="details-title">New issue</summary>
           <form
             data-testid="review-create-form"
             onSubmit={(e) => {
@@ -263,7 +252,9 @@ export default function ReviewView({ repo }: { repo: string }) {
               <button type="submit">Create issue</button>
             </div>
           </form>
-          <h3>Draft from finding</h3>
+          </details>
+          <details data-testid="review-draft-disclosure">
+            <summary className="details-title">Draft from finding</summary>
           <div className="actions">
             <input
               data-testid="review-draft-title"
@@ -283,6 +274,7 @@ export default function ReviewView({ repo }: { repo: string }) {
               Draft issue
             </button>
           </div>
+          </details>
         </div>
       </div>
     </section>
