@@ -37,27 +37,27 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 export function fetchSystemHealth(): Promise<SystemHealthResponse> {
-  return getJson<SystemHealthResponse>('/api/system/health');
+  return getJson<SystemHealthResponse>('api/system/health');
 }
 
 export function fetchJobs(): Promise<JobsResponse> {
-  return getJson<JobsResponse>('/api/jobs');
+  return getJson<JobsResponse>('api/jobs');
 }
 
 export function fetchBriefing(repo: string): Promise<BriefingResponse> {
   return getJson<BriefingResponse>(
-    `/api/briefing?repo=${encodeURIComponent(repo)}`,
+    `api/briefing?repo=${encodeURIComponent(repo)}`,
   );
 }
 
 export function fetchAttention(repo: string): Promise<import('./attentionTypes').AttentionResponse> {
   return getJson<import('./attentionTypes').AttentionResponse>(
-    `/api/attention?repo=${encodeURIComponent(repo)}`,
+    `api/attention?repo=${encodeURIComponent(repo)}`,
   );
 }
 
 export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
-  const resp = await fetch('/api/create-issue', {
+  const resp = await fetch('api/create-issue', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repo, title, body }),
@@ -71,7 +71,7 @@ export function fetchLedger(
   limit = 50,
 ): Promise<LedgerResponse> {
   return getJson<LedgerResponse>(
-    `/api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`,
+    `api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`,
   );
 }
 
@@ -96,7 +96,7 @@ export interface WorkflowHealthResponse {
 
 export function fetchWorkflowHealth(repo: string): Promise<WorkflowHealthResponse> {
   return getJson<WorkflowHealthResponse>(
-    `/api/workflow-health?repo=${encodeURIComponent(repo)}`,
+    `api/workflow-health?repo=${encodeURIComponent(repo)}`,
   );
 }
 
@@ -117,23 +117,23 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
-  return getJson<import('./reviewTypes').ReposResponse>('/api/repos');
+  return getJson<import('./reviewTypes').ReposResponse>('api/repos');
 }
 
 export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListResponse> {
   return getJson<import('./reviewTypes').PrListResponse>(
-    `/api/prs?repo=${encodeURIComponent(repo)}`,
+    `api/prs?repo=${encodeURIComponent(repo)}`,
   );
 }
 
 export function fetchPrDetails(repo: string, pr: number): Promise<import('./reviewTypes').PrDetailsResponse> {
   return getJson<import('./reviewTypes').PrDetailsResponse>(
-    `/api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,
+    `api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,
   );
 }
 
 export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; output: string }> {
-  return postJson<{ ok: boolean; output: string }>('/api/pr-action', {
+  return postJson<{ ok: boolean; output: string }>('api/pr-action', {
     repo,
     pr_number: prNumber,
     action: 'merge',
@@ -148,7 +148,7 @@ export function startJobRun(
   confirmed = false,
 ): Promise<{ id: string }> {
   return postJson<{ id: string }>(
-    '/api/jobs/run',
+     'api/jobs/run',
     confirmed ? { action, repo, intent: 'jobs-run', confirmed: true } : { action, repo },
   );
 }
@@ -161,11 +161,11 @@ export interface JobRunProgress {
 }
 
 export function fetchJobRun(rid: string): Promise<JobRunProgress> {
-  return getJson<JobRunProgress>(`/api/jobs/runs/${encodeURIComponent(rid)}`);
+  return getJson<JobRunProgress>(`api/jobs/runs/${encodeURIComponent(rid)}`);
 }
 
 export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number }> {
-  return postJson<{ ok: boolean; cleared: number }>('/api/jobs/clear', {
+  return postJson<{ ok: boolean; cleared: number }>('api/jobs/clear', {
     all,
     intent: 'jobs-clear',
     confirmed: true,
@@ -174,16 +174,16 @@ export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number 
 
 export function fetchIssues(repo: string): Promise<import('./reviewTypes').IssueListResponse> {
   return getJson<import('./reviewTypes').IssueListResponse>(
-    `/api/issues?repo=${encodeURIComponent(repo)}`,
+    `api/issues?repo=${encodeURIComponent(repo)}`,
   );
 }
 
 export function assignIssue(repo: string, issue: string, assignee: string): Promise<{ ok: boolean }> {
-  return postJson<{ ok: boolean }>('/api/assign-issue', { repo, issue, assignee });
+  return postJson<{ ok: boolean }>('api/assign-issue', { repo, issue, assignee });
 }
 
 export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<import('./reviewTypes').IssueDraftResponse> {
-  return postJson<import('./reviewTypes').IssueDraftResponse>('/api/issue-draft', {
+  return postJson<import('./reviewTypes').IssueDraftResponse>('api/issue-draft', {
     repo,
     source: 'finding',
     title,
@@ -193,22 +193,22 @@ export function draftIssue(repo: string, title: string, cause: string, details: 
 }
 
 export function fetchPiProgress(rid: string): Promise<PiProgressResponse> {
-  return getJson<PiProgressResponse>(`/api/pi-progress/${encodeURIComponent(rid)}`);
+  return getJson<PiProgressResponse>(`api/pi-progress/${encodeURIComponent(rid)}`);
 }
 
 export function chatStreamUrl(prompt: string, repo: string, sessionId: string): string {
   const q = new URLSearchParams({ prompt, repo, session_id: sessionId });
-  return `/api/chat/stream?${q.toString()}`;
+  return `api/chat/stream?${q.toString()}`;
 }
 
 export function abortChat(sessionId: string): Promise<{ ok: boolean; session_id: string }> {
-  return postJson<{ ok: boolean; session_id: string }>('/api/chat/abort', {
+  return postJson<{ ok: boolean; session_id: string }>('api/chat/abort', {
     session_id: sessionId,
   });
 }
 
 export function requestTakeover(): Promise<{ ok: boolean; output: string }> {
-  return postJson<{ ok: boolean; output: string }>('/api/terminal/takeover', {
+  return postJson<{ ok: boolean; output: string }>('api/terminal/takeover', {
     intent: 'terminal-takeover',
     confirmed: true,
   });
@@ -223,13 +223,13 @@ export interface RepairStatusResponse {
 }
 
 export function dispatchRepair(issue: string): Promise<{ ok: boolean; issue: number; status: string }> {
-  return postJson<{ ok: boolean; issue: number; status: string }>('/api/repair/dispatch', {
+  return postJson<{ ok: boolean; issue: number; status: string }>('api/repair/dispatch', {
     issue,
   });
 }
 
 export function fetchRepairStatus(): Promise<RepairStatusResponse> {
-  return getJson<RepairStatusResponse>('/api/repair/status');
+  return getJson<RepairStatusResponse>('api/repair/status');
 }
 
 export interface AgentRun {
@@ -258,11 +258,11 @@ export interface AgentRunDetail {
 }
 
 export function fetchAgentRuns(limit = 50): Promise<{ runs: AgentRun[] }> {
-  return getJson<{ runs: AgentRun[] }>(`/api/agents/runs?limit=${limit}`);
+  return getJson<{ runs: AgentRun[] }>(`api/agents/runs?limit=${limit}`);
 }
 
 export function fetchAgentRun(runId: string): Promise<AgentRunDetail> {
-  return getJson<AgentRunDetail>(`/api/agents/runs/${encodeURIComponent(runId)}`);
+  return getJson<AgentRunDetail>(`api/agents/runs/${encodeURIComponent(runId)}`);
 }
 
 export interface ApprovalPayload {
@@ -286,7 +286,7 @@ export function resumeChat(
   decision: 'approve' | 'reject',
   message = '',
 ): Promise<ResumeResponse> {
-  return postJson<ResumeResponse>('/api/chat/resume', {
+  return postJson<ResumeResponse>('api/chat/resume', {
     session_id: sessionId,
     decision,
     message,

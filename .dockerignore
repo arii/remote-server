@@ -1,0 +1,21 @@
+# Keep the buttons build context to what the image needs.
+**
+!Dockerfile
+!backend/
+!backend/**
+!deep-agent/
+!deep-agent/**
+!frontend/
+!frontend/**
+!buttons/
+!buttons/briefing_summary.py
+# Build inputs excluded even from the above.
+backend/tests/
+backend/**/__pycache__/
+deep-agent/.venv/
+deep-agent/traces/
+deep-agent/.chat_threads/
+deep-agent/ledger.jsonl
+deep-agent/tests/
+frontend/node_modules/
+frontend/dist/

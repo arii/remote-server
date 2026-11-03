@@ -152,7 +152,7 @@ def attention(repo: str = "remote-server") -> dict:
             "repo": name,
             "severity": "crit",
             "action": {"label": "View health", "method": "GET",
-                       "href": f"/api/workflow-health?repo={name}",
+                       "href": f"api/workflow-health?repo={name}",
                        "destructive": False, "intent": ""},
             "created_at": now,
         }
@@ -171,7 +171,7 @@ def attention(repo: str = "remote-server") -> dict:
             "repo": str(job.get("repo", name)),
             "severity": "warn",
             "action": {"label": "View jobs", "method": "GET",
-                       "href": "/api/jobs", "destructive": False, "intent": ""},
+                       "href": "api/jobs", "destructive": False, "intent": ""},
             "created_at": float(job.get("created_at", now) or now),
         })
     for e in list_failed_webhooks():
@@ -184,7 +184,7 @@ def attention(repo: str = "remote-server") -> dict:
             "repo": str(e.get("repo", name)),
             "severity": "warn",
             "action": {"label": "View notifications", "method": "GET",
-                       "href": "/api/notifications/status",
+                       "href": "api/notifications/status",
                        "destructive": False, "intent": ""},
             "created_at": float(e.get("ts", now) or now),
         })
@@ -198,7 +198,7 @@ def attention(repo: str = "remote-server") -> dict:
             "repo": str(e.get("repo", name)),
             "severity": "info",
             "action": {"label": "Review", "method": "GET",
-                       "href": "/api/prs?repo=" + name,
+                       "href": "api/prs?repo=" + name,
                        "destructive": False, "intent": ""},
             "created_at": float(e.get("ts", e.get("created_at", now)) or now),
         })
