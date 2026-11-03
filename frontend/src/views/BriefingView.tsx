@@ -124,37 +124,54 @@ export default function BriefingView({ repo }: { repo: string }) {
   const [data, setData] = useState<BriefingResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  async function load() {
+    setError(null);
+    try {
+      setData(await fetchBriefing(repo));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   useEffect(() => {
     if (useMock()) {
       setData(loadBriefing());
       return;
     }
-    (async () => {
-      try {
-        setData(await fetchBriefing(repo));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
-  if (error) {
-    return (
-      <section data-testid="briefing-error" role="alert">
-        Briefing unavailable — {error}
-      </section>
-    );
-  }
-  if (!data) return <section data-testid="briefing-loading">Loading…</section>;
+  if (!data && !error) return <section data-testid="briefing-loading">Loading…</section>;
 
   return (
     <section data-testid="briefing-view">
       <header className="page-head">
         <div>
           <h2>Briefing</h2>
-          <p className="row-meta">Repo: {data.repo || repo}</p>
+          <p className="row-meta">Repo: {data?.repo || repo}</p>
         </div>
+        {error && (
+          <div className="actions">
+            <button type="button" data-testid="briefing-retry" onClick={() => void load()}>
+              Retry
+            </button>
+          </div>
+        )}
       </header>
+      {error && (
+        <div data-testid="briefing-error" role="alert">
+          Briefing unavailable — {error}
+        </div>
+      )}
+      {data && <BriefingBody data={data} />}
+    </section>
+  );
+}
+
+function BriefingBody({ data }: { data: BriefingResponse }) {
+  return (
+    <>
       {data.prs_err && (
         <p className="row-meta" role="alert">
           {data.prs_err}
@@ -186,6 +203,6 @@ export default function BriefingView({ repo }: { repo: string }) {
           <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
         </>
       )}
-    </section>
+    </>
   );
 }
