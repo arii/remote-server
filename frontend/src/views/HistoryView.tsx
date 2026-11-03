@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { fetchJobs, fetchLedger } from '../apiClient';
+import { fetchJobRun, fetchJobs, fetchLedger } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
-import { jobPassesKindFilter, toHistoryRows } from './historyUtils';
-import type { HistoryRow } from './historyUtils';
+import { jobPassesKindFilter, tailText, toHistoryRows } from './historyUtils';
+import type { HistoryMember, HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
 
 function useHistoryData() {
@@ -69,6 +69,60 @@ function StatusIcon({ tone }: { tone: HistoryRow['tone'] }) {
   );
 }
 
+// Lazy run-output disclosure, same onToggle pattern as the review diff:
+// fetch only when opened. The runs registry is in-memory, so output for
+// old runs 404s — surfaced as a plain note, not a crash.
+function RunOutput({ runId }: { runId: string }) {
+  const [output, setOutput] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const mock = useMock();
+
+  async function load() {
+    if (output !== null || error || mock) return;
+    try {
+      const p = await fetchJobRun(runId);
+      setOutput(p.output || '');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <details
+      className="history-run-output"
+      data-testid={`history-run-output-${runId}`}
+      onToggle={(e) => {
+        if ((e.target as HTMLDetailsElement).open) void load();
+      }}
+    >
+      <summary className="row-meta">Run output</summary>
+      {mock && <p className="row-meta">Run output is unavailable in preview mode.</p>}
+      {!mock && error && (
+        <p className="row-meta" role="alert">
+          Couldn&apos;t load run output: {error}
+        </p>
+      )}
+      {!mock && !error && output !== null && (
+        <pre className="row-meta" data-testid={`history-run-output-body-${runId}`}>
+          {tailText(output) || 'No output recorded.'}
+        </pre>
+      )}
+      {!mock && !error && output === null && <p className="row-meta">Loading…</p>}
+    </details>
+  );
+}
+
+function MemberBlock({ member, grouped }: { member: HistoryMember; grouped: boolean }) {
+  return (
+    <>
+      <pre className="row-meta" data-testid="history-group-entry">
+        {grouped ? `${member.at}\n${member.detail}` : member.detail}
+      </pre>
+      {member.runId && <RunOutput runId={member.runId} />}
+    </>
+  );
+}
+
 function RowsList({ rows }: { rows: HistoryRow[] }) {
   if (rows.length === 0) {
     return (
@@ -100,7 +154,9 @@ function RowsList({ rows }: { rows: HistoryRow[] }) {
                   {advice && <> · Recovery: {advice}</>}
                 </span>
               </summary>
-              <pre className="row-meta">{r.detail}</pre>
+              {r.members.map((m, mi) => (
+                <MemberBlock key={mi} member={m} grouped={r.members.length > 1} />
+              ))}
             </details>
           </li>
         );
