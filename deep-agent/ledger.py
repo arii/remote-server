@@ -12,7 +12,10 @@ import time
 
 import cli
 
-LEDGER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ledger.jsonl")
+# EVAL_LEDGER lets parallel eval gates isolate their ledgers; the eval
+# scorer reads the same knob, so writer and scorer stay consistent.
+LEDGER = (os.environ.get("EVAL_LEDGER") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ledger.jsonl"))
 
 
 def _as_dict(obj):
