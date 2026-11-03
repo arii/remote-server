@@ -1,7 +1,7 @@
 """Deterministic intent routing for deep_chat turns (roadmap item 3).
 
-classify() maps a prompt to implement/fix/review/explain with
-keyword rules only — no LLM call. hint() returns a one-line system
+classify() maps a prompt to trivial/implement/fix/review/explain
+with keyword rules only — no LLM call. hint() returns a one-line system
 addition nudging the matching tool path, or None for the default
 explain intent. deep_chat appends the hint to the turn's system
 prompt; the model still decides, but the nudge points at the right
@@ -21,16 +21,25 @@ _INTERROGATIVE = ("how", "what", "why", "when", "where", "which", "who",
 _ACTION_REQUEST = re.compile(
     r"\b(can you|could you|please)\b\s+(\w+)", re.I)
 
+# Whole-prompt greetings only: exact match after case/punctuation
+# folding, so any added work ("hi, fix X") falls through to routing.
+_TRIVIAL = ("hi", "hello", "hey", "yo", "howdy", "sup", "thanks",
+            "thank you", "thx", "bye", "goodbye", "good morning",
+            "good afternoon", "good evening", "good night", "morning",
+            "night")
+
 
 def _words(text):
     return re.findall(r"[a-z0-9#]+", text.lower())
 
 
 def classify(prompt):
-    """implement/fix/review/explain for one turn prompt."""
+    """trivial/implement/fix/review/explain for one turn prompt."""
     text = (prompt or "").strip()
     if not text:
         return "explain"
+    if text.lower().rstrip(".?!…").strip() in _TRIVIAL:
+        return "trivial"
     words = set(_words(text))
     first = _words(text)[:1]
     # 'Can you <verb> ...' is an action request in question form.

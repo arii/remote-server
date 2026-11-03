@@ -172,6 +172,10 @@ SYSTEM = (
     "list, no wide tables."
 )
 
+# Trivial-turn system prompt: no tools, no repo context, no history.
+TRIVIAL_SYSTEM = ("You are helping Ari from his phone. Be terse, no "
+                  "filler. Answer briefly in one or two sentences.")
+
 
 def _short_err(exc, limit=160):
     """Cap exception detail for Sorry lines (the prefix is kept verbatim,
@@ -672,6 +676,36 @@ def _cmd_validate(raw):
     return 0
 
 
+def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
+    """Fast path for greetings: one direct model call, no tools, no
+    history, no trace. Still ledgered (usage when reported)."""
+    from langchain_core.messages import (  # noqa: E402
+        AIMessage, HumanMessage, SystemMessage)
+    messages = [SystemMessage(content=TRIVIAL_SYSTEM),
+                HumanMessage(content=prompt)]
+    try:
+        answer = model.invoke(messages)
+        reply = (answer.content or "").strip()
+    except Exception as exc:
+        ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
+                      thread_id, messages, started,
+                      extra={"repo": repo, "mode": "turn",
+                             "intent": "trivial",
+                             "error": str(exc)[:200]})
+        return cli.sorry(f"Sorry, the assistant failed: {_short_err(exc)}")
+    print(reply, flush=True)
+    raw_usage = getattr(answer, "usage_metadata", None)
+    usage = None
+    if isinstance(raw_usage, dict):
+        usage = {k: raw_usage.get(k, 0)
+                 for k in ("input_tokens", "output_tokens", "total_tokens")}
+    ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
+                  thread_id, messages + [AIMessage(content=reply)], started,
+                  extra={"repo": repo, "mode": "turn", "intent": "trivial"},
+                  usage=usage, calls=[])
+    return 0
+
+
 def _cmd_turn(repo, thread_id, raw_prompt):
     prompt = cli.b64decode(raw_prompt)
     if prompt is None:
@@ -691,6 +725,10 @@ def _cmd_turn(repo, thread_id, raw_prompt):
             f"Sorry, the chat backend is not installed: {_short_err(exc)}")
     print(f"deep_chat via {spec['provider']}:{spec['model']}",
           file=sys.stderr)
+    turn_intent = intent.classify(prompt)
+    if turn_intent == "trivial":
+        return _cmd_trivial_turn(repo, thread_id, prompt, started,
+                                 model, spec)
     from langchain_core.messages import HumanMessage  # noqa: E402
 
     recorder = observe.TraceRecorder(
@@ -698,7 +736,6 @@ def _cmd_turn(repo, thread_id, raw_prompt):
     recorder.run_start("deep_chat.py", thread_id,
                        f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
-    turn_intent = intent.classify(prompt)
     agent = build_agent(repo, saver, model=model, recorder=recorder,
                         intent_hint=skills.system_addition(turn_intent)
                         or None, spec=spec)

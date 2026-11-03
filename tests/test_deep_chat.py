@@ -322,6 +322,34 @@ class TestSuperviseMode(unittest.TestCase):
         turn.assert_not_called()
 
 
+class TestTrivialFastPath(unittest.TestCase):
+    def test_trivial_skips_harness(self):
+        from unittest import mock
+
+        seen = {}
+
+        def fake_trivial(repo, thread_id, prompt, started, model, spec):
+            seen["prompt"] = prompt
+            return 0
+
+        def boom(*args, **kwargs):
+            raise AssertionError("harness entered for trivial prompt")
+
+        with mock.patch.object(
+                deep_chat, "build_model",
+                return_value=(object(), {"provider": "x",
+                                        "model": "y"})), \
+             mock.patch.object(deep_chat, "build_agent",
+                               side_effect=boom), \
+             mock.patch.object(deep_chat, "_cmd_trivial_turn",
+                               side_effect=fake_trivial):
+            with redirect_stdout(io.StringIO()):
+                code = deep_chat._cmd_turn(
+                    "arii/remote-server", "t1", b64("hi"))
+        self.assertEqual(code, 0)
+        self.assertEqual(seen.get("prompt"), "hi")
+
+
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
     def test_five_tools(self):
