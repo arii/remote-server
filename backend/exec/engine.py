@@ -32,6 +32,13 @@ ALLOWED_TD_COMMANDS = [
     "td --json preflight",
     "td --json agent list-sessions",
     "td --json agent run-feedback-check",
+    # One-tap phone diagnostics (#393): read-only shapes only. audit-pr
+    # pins the read-only stages; --submit is never allowlisted, and the
+    # bare no-flag form is a server-side no-op so it stays rejected.
+    "td doctor",
+    "td preflight",
+    "td gh audit-pr --pr N --fetch --audit",
+    "td ai review N",
 ]
 ALLOWED_TD_SHAPES = [cmd.split() for cmd in ALLOWED_TD_COMMANDS]
 
