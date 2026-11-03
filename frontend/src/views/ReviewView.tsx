@@ -15,7 +15,7 @@ import {
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
-import { detailsMergeBlockReason } from '../reviewTypes';
+import { detailsMergeBlockReason, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
@@ -192,6 +192,29 @@ export function PrDetails({
         </button>
       </div>
     </div>
+  );
+}
+
+// Inline row merge: tap-to-fire with the same finality confirm as the
+// Details merge, gated on the row-level block reasons. Merge is
+// irreversible, so no undo — the inline confirm is the guard.
+export function PrRowMerge({
+  pr,
+  merging,
+  onMerge,
+}: {
+  pr: PrRow;
+  merging: boolean;
+  onMerge: (n: number) => void;
+}) {
+  return (
+    <TapToFire
+      label="Merge"
+      testid={`merge-pr-${pr.number}`}
+      confirm="This cannot be undone."
+      disabled={mergeBlockReason(pr) !== null || merging}
+      onFire={() => onMerge(pr.number)}
+    />
   );
 }
 
@@ -451,7 +474,8 @@ export default function ReviewView({
                   </button>{' '}
                   <button type="button" data-testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)}>
                     Defer
-                  </button>
+                  </button>{' '}
+                  <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />
                 </li>
               ))}
             </ul>
