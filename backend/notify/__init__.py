@@ -18,6 +18,8 @@ import threading
 import time
 import urllib.request
 
+from backend import ledger
+
 WEBHOOK_MAX_BODY = 10_000_000
 
 webhook_state: dict = {}  # repo -> {"at": epoch, "ok": bool, "detail": str}
@@ -295,5 +297,9 @@ def webhook_worker(repo, path):
         webhook_state[repo] = {"at": time.time(), "ok": ok,
                                "detail": detail, "advanced": advanced}
         webhook_pending.discard(repo)
+    # Every outcome hits the ledger: successes resolve the attention
+    # incidents that failures raise. append() never raises.
+    ledger.append({"kind": "webhook", "repo": repo, "ok": ok,
+                   "advanced": advanced, "detail": detail[:200]})
     print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
           flush=True)

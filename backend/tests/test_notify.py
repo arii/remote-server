@@ -151,14 +151,36 @@ class WebhookWorkerTest(unittest.TestCase):
         N.webhook_pull = lambda path: (_ for _ in ()).throw(
             RuntimeError("boom"))
         N.webhook_pending.add("arii/x")
+        appended = []
+        orig_append = N.ledger.append
+        N.ledger.append = appended.append
         try:
             N.webhook_worker("arii/x", "/tmp")
         finally:
             N.webhook_pull = orig_pull
+            N.ledger.append = orig_append
         self.assertNotIn("arii/x", N.webhook_pending)
         state = N.webhook_state.get("arii/x", {})
         self.assertFalse(state.get("ok"))
         self.assertIn("boom", state.get("detail", ""))
+        self.assertEqual(len(appended), 1)
+        self.assertEqual(appended[0]["kind"], "webhook")
+        self.assertFalse(appended[0]["ok"])
+
+    def test_success_appends_ledger(self):
+        orig_pull = N.webhook_pull
+        N.webhook_pull = lambda path: (True, "up to date", False)
+        appended = []
+        orig_append = N.ledger.append
+        N.ledger.append = appended.append
+        try:
+            N.webhook_worker("arii/x", "/tmp")
+        finally:
+            N.webhook_pull = orig_pull
+            N.ledger.append = orig_append
+        self.assertEqual(len(appended), 1)
+        self.assertTrue(appended[0]["ok"])
+        self.assertEqual(appended[0]["repo"], "arii/x")
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
