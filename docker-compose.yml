@@ -211,7 +211,8 @@ services:
   # against the project directory as seen by the CLI.
   buttons:
     build:
-      context: ./buttons
+      context: .
+      dockerfile: Dockerfile
     image: remote-buttons:local
     # Locally built only: bare `docker compose pull` would otherwise try
     # Docker Hub for remote-buttons:local and warn/fail. This skips it
@@ -245,11 +246,15 @@ services:
       DIGEST_INTERVAL_HOURS: ${DIGEST_INTERVAL_HOURS:-12}
       NOTIFY_EVENTS: ${NOTIFY_EVENTS:-ci_fail,jules,conflict}
       NOTIFIER_INTERVAL_SECONDS: ${NOTIFIER_INTERVAL_SECONDS:-300}
+      # GitHub identity for gh/td inside the console backend (mirrors
+      # terminal). Empty/unset = public read-only GitHub ops only.
+      GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
+      GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
     healthcheck:
-      # Plain python stdlib (image has no curl/wget): 200 on /buttons.
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/buttons')"]
+      # Plain python stdlib (image has no curl/wget): 200 on /health.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3

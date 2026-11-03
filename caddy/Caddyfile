@@ -5,6 +5,7 @@
 # only and is never published to the host.
 :8080 {
 	handle /buttons* {
+		uri strip_prefix /buttons
 		reverse_proxy buttons:8000
 	}
 

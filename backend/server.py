@@ -1,6 +1,9 @@
 """Minimal FastAPI application entrypoint."""
 
+import os
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from backend.api.routers import agents, attention, briefing, chat, issues, jobs, notify, ops, pulls, repo, system
 
@@ -23,3 +26,12 @@ app.include_router(attention.router)
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+_DIST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend", "dist")
+if os.path.isdir(_DIST):
+    # Production image: serve the built SPA under every non-API path.
+    # Dev checkouts have no dist/ (untracked build output) and skip this.
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="spa")
