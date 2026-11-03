@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Central config contracts for the loose JSON + env files (issue #202). Validated by core_cli/validate_config.py, which implements the subset used here: type, required, properties, items, enum, minimum. Model names and server commands are intentionally NOT enum-pinned: they drift faster than this file should.",
+  "project_config.json": {
+    "type": "object",
+    "required": ["github_repo", "packageName", "vite_base_path", "triage_chain", "code_review_chain"],
+    "properties": {
+      "github_repo": {"type": "string"},
+      "packageName": {"type": "string"},
+      "vite_base_path": {"type": "string"},
+      "triage_chain": {"$ref": "#/$defs/model_chain"},
+      "code_review_chain": {"$ref": "#/$defs/model_chain"}
+    }
+  },
+  "terminal/pi-config/settings.json": {
+    "type": "object",
+    "required": ["defaultModel", "defaultProvider"],
+    "properties": {
+      "defaultModel": {"type": "string"},
+      "defaultProvider": {"type": "string"}
+    }
+  },
+  "terminal/pi-config/models.json": {
+    "type": "object",
+    "required": ["providers"],
+    "properties": {
+      "providers": {
+        "type": "object",
+        "minProperties": 1
+      }
+    }
+  },
+  "terminal/pi-config/mcp.json": {
+    "type": "object",
+    "required": ["mcpServers"],
+    "properties": {
+      "mcpServers": {
+        "type": "object",
+        "minProperties": 1
+      }
+    }
+  },
+  ".env.example": {
+    "type": "env-keys",
+    "$comment": "Every non-defaulted ${VAR} in docker-compose.yml must be documented (set or commented) in .env.example. Derived, not hand-listed."
+  },
+  "$defs": {
+    "model_chain": {
+      "type": "object",
+      "required": ["primary", "fallbacks", "max_retries"],
+      "properties": {
+        "primary": {"type": "string"},
+        "fallbacks": {"type": "array", "items": {"type": "string"}},
+        "max_retries": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}
