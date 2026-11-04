@@ -1,5 +1,8 @@
 import type {
   BriefingResponse,
+  DispatchGatesResponse,
+  DispatchItem,
+  DispatchQueueResponse,
   JobRecord,
   JobsResponse,
   LedgerResponse,
@@ -969,6 +972,54 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
   );
 }
 
+// Cross-repo lane dispatch queue (issue #853). Reads are plain
+// GETs; mutations ride the outbox like other console taps.
+export function fetchDispatchQueue(): Promise<DispatchQueueResponse> {
+  return getJson<DispatchQueueResponse>('api/dispatch/queue');
+}
+
+export function fetchDispatchGates(repo: string, issue: number): Promise<DispatchGatesResponse> {
+  return getJson<DispatchGatesResponse>(
+    `api/dispatch/gates?repo=${encodeURIComponent(repo)}&issue=${issue}`,
+  );
+}
+
+export function enqueueDispatch(
+  repo: string,
+  issue: string,
+): Promise<DispatchItem> {
+  return postJson<DispatchItem>('api/dispatch/enqueue', { repo, issue }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function startDispatch(
+  repo: string,
+  issue: number,
+): Promise<{ ok: boolean; repo: string; issue: number; status: string }> {
+  return postJson<{ ok: boolean; repo: string; issue: number; status: string }>(
+    'api/dispatch/start',
+    { repo, issue, intent: 'dispatch-start', confirmed: true },
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function cancelDispatch(
+  repo: string,
+  issue: number,
+): Promise<{ ok: boolean; removed: boolean }> {
+  return postJson<{ ok: boolean; removed: boolean }>('api/dispatch/cancel', {
+    repo,
+    issue,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
 async function deleteJson<T>(path: string, body: unknown, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
   return mutateWith<T>('DELETE', path, body, (resp) => readJson<T>(resp, 'DELETE', path), timeoutMs);
 }
@@ -1275,12 +1326,16 @@ export function postAgentTurn(
   prompt: string,
   sessionId: string | null,
   signal?: AbortSignal,
+  reclaim?: boolean,
 ): Promise<Response> {
   // Raw Response: the caller pumps the SSE stream. A new conversation
   // (no session id) carries the hold-to-confirm intent; follow-ups
-  // reuse the session the done event returned. Streaming turns
-  // bypass the offline outbox: a replayed stream has no consumer,
-  // so they fail as today when offline.
+  // reuse the session the done event returned. A reclaimed orphan
+  // (issue #856) keeps its id but confirms like a new spawn, since
+  // the server no longer knows it. Streaming turns bypass the
+  // offline outbox: a replayed stream has no consumer, so they fail
+  // as today when offline.
+  const fresh = !sessionId || reclaim === true;
   return fetch(apiUrl('api/agent/turn'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1289,11 +1344,48 @@ export function postAgentTurn(
       repo,
       prompt,
       session_id: sessionId ?? '',
-      intent: sessionId ? '' : 'agent-spawn',
-      confirmed: !sessionId,
+      intent: fresh ? 'agent-spawn' : '',
+      confirmed: fresh,
     }),
     signal,
   });
+}
+
+// Reattach state for one agent session (issue #856): a reloaded
+// console polls this to resume a live turn's text or learn the
+// verdict without firing a duplicate turn.
+export interface AgentSessionFinished {
+  exit: number | null;
+  stderr: string;
+  truncated: boolean;
+  timed_out: boolean;
+  timeout: number;
+  rescue: {
+    branch: string | null;
+    commit: string | null;
+    committed: boolean;
+    pushed: boolean;
+  } | null;
+  guidance_code?: string | null;
+  guidance_message?: string;
+  guidance_detail?: string;
+}
+
+export interface AgentSessionState {
+  session_id: string;
+  known: boolean;
+  running: boolean;
+  transcript: string;
+  transcript_truncated: boolean;
+  finished: AgentSessionFinished | null;
+}
+
+export function fetchAgentSession(
+  sessionId: string,
+): Promise<AgentSessionState> {
+  return getJson<AgentSessionState>(
+    `api/agent/session?session_id=${encodeURIComponent(sessionId)}`,
+  );
 }
 
 export function abortAgentSession(

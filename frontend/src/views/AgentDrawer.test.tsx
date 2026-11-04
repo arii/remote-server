@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import AgentDrawer, {
   GuidanceCard,
@@ -6,6 +6,7 @@ import AgentDrawer, {
   otherProvider,
   pumpTurn,
 } from './AgentDrawer';
+import { AGENT_SESSION_KEY } from './agentSessionStore';
 
 function streamOf(text: string): ReadableStreamDefaultReader<Uint8Array> {
   const stream = new ReadableStream<Uint8Array>({
@@ -226,5 +227,72 @@ describe('timeout salvage + resume (issue #838)', () => {
       />,
     );
     expect(html).not.toContain('agent-salvage');
+  });
+});
+
+describe('session restore on mount (issue #856)', () => {
+  function stubLocalStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function snapshot(repo: string) {
+    return {
+      [AGENT_SESSION_KEY]: JSON.stringify({
+        version: 1,
+        sessionId: 'sid-9',
+        provider: 'agy',
+        repo,
+        turns: [
+          { role: 'user', text: 'ship it' },
+          { role: 'assistant', text: 'working' },
+        ],
+        lastPrompt: 'ship it',
+        live: true,
+        updatedAt: Date.now(),
+      }),
+    };
+  }
+
+  it('restores the transcript instead of the launch form', () => {
+    stubLocalStorage(snapshot('remote-server'));
+    const html = renderToStaticMarkup(
+      <AgentDrawer repo="remote-server" />,
+    );
+    expect(html).toContain('data-testid="agent-msg-user-0"');
+    expect(html).toContain('ship it');
+    expect(html).toContain('working');
+    expect(html).toContain('data-testid="agent-followup"');
+    expect(html).not.toContain('data-testid="agent-prompt"');
+  });
+
+  it('ignores a snapshot from another repo', () => {
+    stubLocalStorage(snapshot('other-repo'));
+    const html = renderToStaticMarkup(
+      <AgentDrawer repo="remote-server" />,
+    );
+    expect(html).toContain('data-testid="agent-prompt"');
+    expect(html).not.toContain('ship it');
+  });
+
+  it('starts fresh on a corrupt snapshot', () => {
+    stubLocalStorage({ [AGENT_SESSION_KEY]: 'not-json{{' });
+    const html = renderToStaticMarkup(
+      <AgentDrawer repo="remote-server" />,
+    );
+    expect(html).toContain('data-testid="agent-prompt"');
   });
 });

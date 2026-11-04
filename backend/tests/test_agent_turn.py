@@ -1475,3 +1475,190 @@ class TurnSurvivalRouterTest(unittest.TestCase):
                                     json=TURN_BODY)
         self.assertIn("turn timed out after 10m", resp.text)
         self.assertNotIn('"salvage"', resp.text)
+
+
+class SessionSnapshotTest(unittest.TestCase):
+    """Live transcript buffer + reattach snapshot (issue #856)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp.name, "ledger.jsonl")
+        self.addCleanup(self._restore_ledger)
+        self.mgr = agent_turn.AgentTurnManager()
+
+    def _restore_ledger(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
+
+    def _collect(self, **kw):
+        async def go():
+            return [c async for c in self.mgr.run_turn(**kw)]
+        return asyncio.run(go())
+
+    def test_unknown_id_reports_not_known(self):
+        snap = self.mgr.session_snapshot("never-seen")
+        self.assertEqual(snap["session_id"], "never-seen")
+        self.assertFalse(snap["known"])
+        self.assertFalse(snap["running"])
+        self.assertEqual(snap["transcript"], "")
+        self.assertFalse(snap["transcript_truncated"])
+        self.assertIsNone(snap["finished"])
+        self.assertFalse(self.mgr.is_running("never-seen"))
+
+    def test_completed_turn_buffers_transcript_and_verdict(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-snap", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "hello"])
+        snap = self.mgr.session_snapshot("s-snap")
+        self.assertTrue(snap["known"])
+        self.assertFalse(snap["running"])
+        self.assertEqual(snap["transcript"], "hello\n")
+        self.assertIsNotNone(snap["finished"])
+        self.assertEqual(snap["finished"]["exit"], 0)
+        self.assertFalse(snap["finished"]["timed_out"])
+        # The durable verdict survives the owning stream's pop.
+        self.assertIsNotNone(self.mgr.pop_result("s-snap"))
+        kept = self.mgr.session_snapshot("s-snap")
+        self.assertIsNotNone(kept["finished"])
+        self.assertEqual(kept["transcript"], "hello\n")
+
+    def test_failed_turn_records_stderr_in_verdict(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-snap-fail", prompt="hi",
+                      continued=False,
+                      argv=["/bin/sh", "-c",
+                            "echo oops >&2; exit 3"])
+        fin = self.mgr.session_snapshot("s-snap-fail")["finished"]
+        self.assertEqual(fin["exit"], 3)
+        self.assertIn("oops", fin["stderr"])
+
+    def test_new_turn_resets_buffer_and_verdict(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-reset", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "first"])
+        self.assertEqual(
+            self.mgr.session_snapshot("s-reset")["transcript"],
+            "first\n")
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-reset", prompt="again",
+                      continued=True,
+                      argv=["/bin/echo", "second"])
+        snap = self.mgr.session_snapshot("s-reset")
+        self.assertEqual(snap["transcript"], "second\n")
+        self.assertEqual(snap["finished"]["exit"], 0)
+
+    def test_note_guidance_attaches_to_finish_record(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-guide", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "ok"])
+        self.mgr.note_guidance("s-guide", "auth-expired",
+                               "muse access expired", "token bad")
+        fin = self.mgr.session_snapshot("s-guide")["finished"]
+        self.assertEqual(fin["guidance_code"], "auth-expired")
+        self.assertEqual(fin["guidance_message"],
+                         "muse access expired")
+        self.assertEqual(fin["guidance_detail"], "token bad")
+        # No record, no crash.
+        self.mgr.note_guidance("never-seen", "x", "y")
+
+    def test_sweep_drops_stale_live_entries(self):
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-stale", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "old"])
+        old = time.time() - agent_turn.RESULT_TTL - 10
+        with self.mgr._lock:
+            self.mgr._live_at["s-stale"] = old
+        self.mgr._sweep_results()
+        snap = self.mgr.session_snapshot("s-stale")
+        self.assertEqual(snap["transcript"], "")
+        self.assertIsNone(snap["finished"])
+        # Still server-known: only the live state sweeps.
+        self.assertTrue(snap["known"])
+
+
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class SessionReattachRouterTest(unittest.TestCase):
+    """GET /api/agent/session (issue #856)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp.name, "ledger.jsonl")
+        self.addCleanup(self._restore_ledger)
+        _patch_repo(self)
+        app = FastAPI()
+        app.include_router(agent.router)
+        self.client = TestClient(app)
+
+    def _restore_ledger(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
+
+    def test_unknown_id_reports_not_known(self):
+        resp = self.client.get(
+            "/api/agent/session",
+            params={"session_id": agent_turn.new_session_id()})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["known"])
+        self.assertFalse(body["running"])
+        self.assertEqual(body["transcript"], "")
+        self.assertIsNone(body["finished"])
+
+    def test_empty_session_id_is_rejected(self):
+        resp = self.client.get("/api/agent/session",
+                               params={"session_id": ""})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_finished_turn_is_reattachable(self):
+        with mock.patch.object(
+                agent_turn, "turn_argv",
+                return_value=["/bin/echo", "REATTACH-OK"]):
+            turn = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        done = [json.loads(line[6:]) for line in
+                turn.text.splitlines()
+                if line.startswith("data: ")][-1]
+        sid = done["session_id"]
+        resp = self.client.get("/api/agent/session",
+                               params={"session_id": sid})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["known"])
+        self.assertFalse(body["running"])
+        self.assertIn("REATTACH-OK", body["transcript"])
+        self.assertEqual(body["finished"]["exit"], 0)
+
+    def test_failure_guidance_lands_on_finish_record(self):
+        # Unknown id + spawn confirm runs fresh; the failure's
+        # guidance must land on the finish record so a reattached
+        # console renders the same card the live stream showed.
+        sid = agent_turn.new_session_id()
+        body = dict(TURN_BODY, session_id=sid)
+        argv = ["/bin/sh", "-c",
+                "echo 'error: invalid token' >&2; exit 1"]
+        with mock.patch.object(agent_turn, "turn_argv",
+                               return_value=argv):
+            turn = self.client.post("/api/agent/turn",
+                                    json=body)
+        self.assertIn('"code": "auth-expired"', turn.text)
+        resp = self.client.get("/api/agent/session",
+                               params={"session_id": sid})
+        self.assertEqual(resp.status_code, 200)
+        fin = resp.json()["finished"]
+        self.assertEqual(fin["exit"], 1)
+        self.assertEqual(fin["guidance_code"], "auth-expired")
+        self.assertIn("muse", fin["guidance_message"])
