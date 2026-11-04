@@ -45,7 +45,8 @@ changed="$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null \
 [ -z "$changed" ] && exit 0
 
 if printf '%s\n' "$changed" | grep -Eq '^(core_cli/|backend/|frontend/|deep-agent/|Dockerfile|docker-compose\.yml|caddy/Caddyfile)'; then
-  if [ -f /app/server.py ]; then
+  # BUTTONS_CONTAINER_MARKER overrides the in-container probe for tests.
+  if [ -f "${BUTTONS_CONTAINER_MARKER:-/app/server.py}" ]; then
     echo "[post-merge] buttons changed, but refusing to rebuild from inside the buttons container — press Deploy buttons or run: docker compose up -d --build buttons"
   else
     COMPOSE_FILE="docker-compose.yml"

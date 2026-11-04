@@ -142,3 +142,70 @@ class PostMergeHookTest(unittest.TestCase):
             self.assertNotIn("buttons changed", proc.stdout)
         finally:
             tmp.cleanup()
+
+    def test_refuses_rebuild_inside_container(self):
+        tmp = _fixture()
+        shim, marker, path = _docker_shim()
+        try:
+            container_probe = os.path.join(tmp.name, "backend",
+                                           "x.py")
+            proc = _run_hook(
+                tmp.name,
+                {"REMOTE_BUTTONS_PROJECT_DIR": tmp.name,
+                 "BUTTONS_CONTAINER_MARKER": container_probe,
+                 "PATH": path})
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("refusing to rebuild from inside",
+                          proc.stdout)
+            self.assertNotIn("rebuilding buttons container",
+                             proc.stdout)
+            self.assertFalse(os.path.exists(marker))
+        finally:
+            tmp.cleanup()
+            shim.cleanup()
+
+    def test_prints_oauth2_proxy_restart_reminder(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            cwd = tmp.name
+            _git(cwd, "init", "-b", "main")
+            _git(cwd, "config", "user.email", "t@e.com")
+            _git(cwd, "config", "user.name", "t")
+            _git(cwd, "commit", "--allow-empty", "-m", "root")
+            os.makedirs(os.path.join(cwd, "config"), exist_ok=True)
+            with open(os.path.join(cwd, "config",
+                                   "oauth2-proxy.cfg"), "w") as fh:
+                fh.write("x = 1\n")
+            _git(cwd, "add", ".")
+            _git(cwd, "commit", "-m", "touch oauth2-proxy cfg")
+            _git(cwd, "update-ref", "ORIG_HEAD", "HEAD~1")
+            shim, marker, path = _docker_shim()
+            try:
+                proc = _run_hook(cwd, {"PATH": path})
+                self.assertFalse(os.path.exists(marker))
+            finally:
+                shim.cleanup()
+            self.assertEqual(proc.returncode, 0)
+            self.assertIn("oauth2-proxy config changed",
+                          proc.stdout)
+            self.assertIn("restart it:", proc.stdout)
+            self.assertNotIn("rebuilding buttons container",
+                             proc.stdout)
+        finally:
+            tmp.cleanup()
+
+    def test_restores_exec_bits_on_scripts(self):
+        tmp = _fixture()
+        try:
+            script = os.path.join(tmp.name, "scripts", "deploy.sh")
+            os.makedirs(os.path.dirname(script), exist_ok=True)
+            with open(script, "w") as fh:
+                fh.write("#!/bin/sh\necho hi\n")
+            os.chmod(script, 0o644)
+            proc = _run_hook(tmp.name)
+            self.assertEqual(proc.returncode, 0)
+            mode = os.stat(script).st_mode
+            self.assertTrue(mode & 0o111,
+                            f"{script} is not executable: {oct(mode)}")
+        finally:
+            tmp.cleanup()
