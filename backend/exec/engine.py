@@ -730,13 +730,28 @@ class RunRegistry:
             return run["id"], None
 
     def clear_jobs(self, all_jobs=False):
-        """Clear finished runs (or all). Returns count removed.
+        """Clear finished runs (or all). Returns (count, None).
 
         Operates on the runs store (the same store GET /api/jobs
-        lists), not the legacy jobs dict. Clearing records never
-        releases single-flight: a cleared active run's finish still
-        owns the active slot."""
+        lists), not the legacy jobs dict. The all-path refuses
+        with (None, err) while a run is active (#512): deleting
+        the active record would orphan its procs and haunt
+        single-flight with 409s naming an invisible run. Cancel
+        the active run first, then clear-all. Refusals bump
+        nothing, like any other no-op.
+        """
         with self._lock:
+            if all_jobs:
+                if self.active_id is not None:
+                    return (None,
+                            "a run is still active: "
+                            f"{self.active_id}")
+                unfinished = [rid for rid, run in self.runs.items()
+                              if not run.get("done")]
+                if unfinished:
+                    return (None,
+                            "a run is still active: "
+                            f"{unfinished[0]}")
             to_del = [
                 rid
                 for rid, run in self.runs.items()
@@ -746,7 +761,7 @@ class RunRegistry:
                 del self.runs[rid]
             if to_del:
                 self._bump()
-        return len(to_del)
+        return len(to_del), None
 
     def list_jobs(self):
         with self._lock:

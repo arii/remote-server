@@ -107,14 +107,36 @@ class ClearSemanticsTest(unittest.TestCase):
         active_id, err = reg.start_run("logs")
         self.assertIsNone(err)
         # Same store the list reads: finished runs go, active stays.
-        self.assertEqual(reg.clear_jobs(), 1)
+        self.assertEqual(reg.clear_jobs(), (1, None))
         self.assertNotIn(done_id, reg.runs)
         self.assertIn(active_id, reg.runs)
-        self.assertEqual(reg.clear_jobs(all_jobs=True), 1)
-        self.assertEqual(reg.runs, {})
-        # Clearing records never releases single-flight: the orphaned
-        # run's finish still owns the active slot.
+        # Clear-all refuses while a run is active (#512): the
+        # active record stays visible and keeps the slot.
+        count, err = reg.clear_jobs(all_jobs=True)
+        self.assertIsNone(count)
+        self.assertIn("still active", err)
+        self.assertIn(active_id, err)
+        self.assertIn(active_id, reg.runs)
         self.assertEqual(reg.active_id, active_id)
+        # Once the run finishes, clear-all goes through.
+        reg.finish_run(active_id, 0)
+        self.assertEqual(reg.clear_jobs(all_jobs=True), (1, None))
+        self.assertEqual(reg.runs, {})
+
+    def test_clear_all_refusal_names_visible_run(self):
+        # Regression (#512): a refused clear-all deletes nothing,
+        # bumps nothing, and the 409 names a run that still lists.
+        reg = RunRegistry()
+        done_id, _ = reg.start_run("logs")
+        reg.finish_run(done_id, 0)
+        active_id, _ = reg.start_run("logs")
+        before = reg._version
+        count, err = reg.clear_jobs(all_jobs=True)
+        self.assertIsNone(count)
+        self.assertIn(active_id, err)
+        self.assertIn(done_id, reg.runs)
+        self.assertIn(active_id, reg.runs)
+        self.assertEqual(reg._version, before)
 
     def test_clear_run_output(self):
         reg = RunRegistry()
@@ -223,6 +245,36 @@ class RouterTest(unittest.TestCase):
             json={"intent": "jobs-clear", "confirmed": True})
         self.assertEqual(resp3.json(), {"ok": True, "cleared": 0})
         jobs_router.registry.finish_run(rid, 0)
+
+    def test_clear_all_conflicts_while_active(self):
+        # Endpoint pins #512: clear-all refuses with 409 naming the
+        # still-visible active run; post-clear conflicts never name
+        # an invisible run.
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        rid, err = jobs_router.registry.start_run("logs")
+        self.assertIsNone(err)
+        try:
+            resp = self.client.post(
+                "/api/jobs/clear",
+                json={"all": True, "intent": "jobs-clear",
+                      "confirmed": True})
+            self.assertEqual(resp.status_code, 409)
+            self.assertIn(rid, resp.json()["detail"])
+            listed = self.client.get("/api/jobs").json()["jobs"]
+            self.assertEqual([j["id"] for j in listed], [rid])
+            resp2 = self.client.post(
+                "/api/jobs/run", json={"action": "logs"})
+            self.assertEqual(resp2.status_code, 409)
+            self.assertIn(rid, resp2.json()["detail"])
+        finally:
+            jobs_router.registry.finish_run(rid, 0)
+        resp3 = self.client.post(
+            "/api/jobs/clear",
+            json={"all": True, "intent": "jobs-clear",
+                  "confirmed": True})
+        self.assertEqual(resp3.json(), {"ok": True, "cleared": 1})
 
     def test_run_destructive_requires_confirm(self):
         import backend.api.routers.jobs as jobs_router
@@ -572,7 +624,11 @@ class PushStreamTest(unittest.TestCase):
         rid, _ = reg.start_run("logs")
         gen = self.jobs_router._run_events(rid, heartbeat=60)
         next(gen)
-        reg.clear_jobs(all_jobs=True)
+        # Finished-only clear between frames: the stream ends gone
+        # once the record disappears (clear-all refuses active
+        # runs, so finish before clearing, #512).
+        reg.finish_run(rid, 0)
+        reg.clear_jobs(all_jobs=False)
         frames = _parse_frames(next(gen))
         self.assertEqual(frames[0][0], "gone")
         with self.assertRaises(StopIteration):

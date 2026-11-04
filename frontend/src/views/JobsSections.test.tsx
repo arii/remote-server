@@ -252,12 +252,18 @@ describe('extracted jobs sections (issue #363)', () => {
           onTakeover={() => {}}
         />,
       );
+    // Scope disabled assertions to the merge row: clear-all is
+    // separately disabled here (2 of 3 runs still active, #512).
+    const mergeRow = (html: string) => {
+      const start = html.indexOf('data-testid="danger-merge-approved"');
+      return html.slice(start, html.indexOf('</li>', start));
+    };
     const unknown = renderZone(null);
     expect(unknown).toContain('data-testid="danger-merge-approved"');
     expect(unknown).toContain('Merges every approved, green PR.');
     expect(unknown).toContain('merge set unknown');
-    expect(unknown).toContain('disabled');
-    expect(renderZone(0)).toContain('disabled');
-    expect(renderZone(2)).not.toContain('disabled');
+    expect(mergeRow(unknown)).toContain('disabled');
+    expect(mergeRow(renderZone(0))).toContain('disabled');
+    expect(mergeRow(renderZone(2))).not.toContain('disabled');
   });
 });

@@ -3,7 +3,7 @@
 Ports of the buttons/server.py handlers:
 - GET  /api/jobs        (job list, newest first)
 - GET  /api/jobs/stream (SSE job-list push; polling fallback stays)
-- POST /api/jobs/clear  (clear terminal jobs, or all with {"all": true})
+- POST /api/jobs/clear  (clear terminal jobs, or all with {"all": true}; 409 while a run is active)
 - POST /api/jobs/run     (start a run for an allowlisted action)
 - POST /api/jobs/run-td  (start a run for one validated td command)
 - GET  /api/jobs/runs/{rid} (run progress snapshot)
@@ -191,7 +191,9 @@ def clear_jobs(body: ClearRequest) -> dict:
     from backend.core import require_confirm
 
     require_confirm(body, "jobs-clear")
-    count = registry.clear_jobs(all_jobs=bool(body.all))
+    count, err = registry.clear_jobs(all_jobs=bool(body.all))
+    if err is not None:
+        raise HTTPException(status_code=409, detail=err)
     return {"ok": True, "cleared": count}
 
 
