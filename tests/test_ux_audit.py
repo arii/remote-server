@@ -3,6 +3,7 @@ no network, no gh, no live model (stub model_factory instead).
 Run: python3 tests/test_ux_audit.py"""
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -396,37 +397,97 @@ class IssueRenderTest(unittest.TestCase):
 
 
 class FileIssueTest(unittest.TestCase):
-    def test_success_parses_number(self):
-        proc = mock.Mock(returncode=0,
-                         stdout='{"number": 12, "url": "u"}',
-                         stderr="")
-        out = ux_audit.file_issue("boomtick.blog", "t", "b",
-                                  run=mock.Mock(
-                                      return_value=proc))
-        self.assertEqual(out, {"number": 12, "url": "u",
+    def _stub_gh(self, tmp, stdout="", stderr="", exit=0):
+        """Executable stub gh: records argv, captures the --body-file
+        content, then plays canned output. No mocks: file_issue
+        shells the real command line against this binary."""
+        argv_file = os.path.join(tmp, "gh-argv")
+        body_file = os.path.join(tmp, "gh-body.md")
+        script = os.path.join(tmp, "gh")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(
+                "#!/bin/sh\n"
+                f'echo "$@" > {shlex.quote(argv_file)}\n'
+                "prev=\"\"\n"
+                'for a in "$@"; do\n'
+                '  if [ "$prev" = "--body-file" ]; then '
+                f'cp "$a" {shlex.quote(body_file)}; fi\n'
+                '  prev="$a"\n'
+                "done\n"
+                f"printf %s {shlex.quote(stdout)}\n"
+                f"printf %s {shlex.quote(stderr)} >&2\n"
+                f"exit {exit}\n")
+        os.chmod(script, 0o755)
+        return argv_file, body_file
+
+    def _path_with(self, tmp):
+        return mock.patch.dict(
+            os.environ,
+            {"PATH": tmp + os.pathsep + os.environ.get("PATH", "")})
+
+    def test_success_parses_url_and_number(self):
+        url = "https://github.com/arii/boomtick/issues/12"
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub_gh(tmp, stdout=url + "\n")
+            with self._path_with(tmp):
+                out = ux_audit.file_issue("boomtick.blog", "t", "b")
+        self.assertEqual(out, {"number": 12, "url": url,
                                "repo": "arii/boomtick"})
 
-    def test_unknown_site_rejected_before_gh(self):
-        runner = mock.Mock()
-        with self.assertRaises(ValueError):
-            ux_audit.file_issue("nope", "t", "b", run=runner)
-        runner.assert_not_called()
+    def test_argv_has_no_unsupported_flags(self):
+        # Regression guard for #876: gh issue create has no --json,
+        # and a fake run seam hid the bad flag from the suite.
+        url = "https://github.com/arii/boomtick/issues/3"
+        with tempfile.TemporaryDirectory() as tmp:
+            argv_file, body_file = self._stub_gh(
+                tmp, stdout=url + "\n")
+            with self._path_with(tmp):
+                ux_audit.file_issue("boomtick.blog", "t", "b")
+            with open(argv_file, encoding="utf-8") as fh:
+                argv = fh.read().strip().split(" ")
+            self.assertEqual(
+                argv[:7],
+                ["issue", "create", "--repo", "arii/boomtick",
+                 "--title", "t", "--body-file"])
+            self.assertNotIn("--json", argv)
+            with open(body_file, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "b")
 
-    def test_gh_failure_raises_capped(self):
-        proc = mock.Mock(returncode=1, stdout="", stderr="nope")
-        with self.assertRaises(RuntimeError):
-            ux_audit.file_issue("boomtick.blog", "t", "b",
-                                run=mock.Mock(
-                                    return_value=proc))
+    def test_unknown_site_rejected_before_gh(self):
+        with self.assertRaises(ValueError):
+            ux_audit.file_issue("nope", "t", "b")
+
+    def test_failure_surfaces_full_output(self):
+        stderr = ("unknown flag: --json\n"
+                  "Usage:  gh issue create [flags]\n"
+                  "  -w, --web  Open the browser to create an issue")
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub_gh(tmp, stderr=stderr, exit=1)
+            with self._path_with(tmp):
+                with self.assertRaises(RuntimeError) as ctx:
+                    ux_audit.file_issue("boomtick.blog", "t", "b")
+        msg = str(ctx.exception)
+        for line in stderr.splitlines():
+            self.assertIn(line, msg)
+
+    def test_garbage_stdout_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._stub_gh(tmp, stdout="nothing useful here\n")
+            with self._path_with(tmp):
+                with self.assertRaises(RuntimeError) as ctx:
+                    ux_audit.file_issue("boomtick.blog", "t", "b")
+        self.assertIn("no issue URL", str(ctx.exception))
 
     def test_files_to_mapped_repo(self):
-        proc = mock.Mock(returncode=0,
-                         stdout='{"number": 3, "url": "u"}',
-                         stderr="")
-        runner = mock.Mock(return_value=proc)
-        ux_audit.file_issue("arii.github.io", "t", "b", run=runner)
-        argv = runner.call_args[0][0]
-        self.assertIn("arii/arii.github.io", argv)
+        url = "https://github.com/arii/arii.github.io/issues/3"
+        with tempfile.TemporaryDirectory() as tmp:
+            argv_file, _ = self._stub_gh(tmp, stdout=url + "\n")
+            with self._path_with(tmp):
+                out = ux_audit.file_issue("arii.github.io", "t", "b")
+            with open(argv_file, encoding="utf-8") as fh:
+                self.assertIn("arii/arii.github.io",
+                              fh.read().split(" "))
+        self.assertEqual(out["repo"], "arii/arii.github.io")
 
 
 class ModelSynthesisTest(unittest.TestCase):
