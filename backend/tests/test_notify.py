@@ -632,14 +632,14 @@ class WebhookPullNonMainDefaultTest(unittest.TestCase):
         self._git(["push", "origin", branch], cwd=seed)
         v2 = self._git(["rev-parse", "HEAD"], cwd=seed)
         self.assertNotEqual(v1, v2)
-        return work, v1, v2
+        return work, v1, v2, origin
 
     def tearDown(self):
         shutil.rmtree(getattr(self, "tmp", None) or "",
                       ignore_errors=True)
 
     def test_leader_default_fast_forwards_leader(self):
-        work, v1, v2 = self._seed_repo("leader")
+        work, v1, v2, _origin = self._seed_repo("leader")
         # Fixture has no origin/main ref at all (the hrm layout).
         missing = self._git_raw(["rev-parse", "--verify",
                                  "origin/main"], cwd=work)
@@ -655,14 +655,19 @@ class WebhookPullNonMainDefaultTest(unittest.TestCase):
                          v2)
 
     def test_missing_target_skips_quietly(self):
-        work, v1, _v2 = self._seed_repo("leader")
-        # Delete the remote default locally: no origin/HEAD target
-        # and no origin/main — the pull must skip, never FAILED.
+        work, v1, _v2, origin = self._seed_repo("leader")
+        # Empty the remote entirely (HEAD -> nonexistent main) and
+        # drop local remote-tracking refs: fetch restores nothing,
+        # so no target resolves — the pull must skip, never FAILED.
+        # (Deleting local refs alone is not enough: fetch recreates
+        # origin/HEAD on newer git.)
+        self._git(["update-ref", "-d", "refs/heads/leader"],
+                  cwd=origin)
+        self._git(["symbolic-ref", "HEAD", "refs/heads/main"],
+                  cwd=origin)
         self._git(["remote", "set-head", "origin", "-d"], cwd=work)
         self._git(["update-ref", "-d",
                    "refs/remotes/origin/leader"], cwd=work)
-        self._git(["update-ref", "-d",
-                   "refs/remotes/origin/HEAD"], cwd=work)
         ok, detail, advanced, observed = N.webhook_pull(work)
         self.assertTrue(ok, detail)
         self.assertEqual(detail, "skipped: no remote default branch")
