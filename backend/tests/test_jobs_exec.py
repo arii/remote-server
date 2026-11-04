@@ -466,19 +466,41 @@ class RouterTest(unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
-        resp = self.client.post("/api/jobs/run", json={"action": "recreate"})
+        resp = self.client.post(
+            "/api/jobs/run", json={"action": "recreate-code"})
         self.assertEqual(resp.status_code, 400)
         with mock.patch(
             "backend.api.routers.jobs._launch"
         ) as launched:
             resp = self.client.post(
                 "/api/jobs/run",
-                json={"action": "recreate", "intent": "jobs-run",
+                json={"action": "recreate-code", "intent": "jobs-run",
                       "confirmed": True})
             self.assertEqual(resp.status_code, 200)
             launched.assert_called_once_with(
-                resp.json()["id"], "recreate", "remote-server")
+                resp.json()["id"], "recreate-code", "remote-server")
         jobs_router.registry.finish_run(resp.json()["id"], 0)
+
+    def test_run_recreate_rejected_no_resume_path(self):
+        # Terminal restart drops live agent sessions with no resume
+        # path, so the console must not offer it (#444): the engine
+        # allowlist, the destructive set, and the step builder all
+        # reject it, and the router answers 400 even with confirm.
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        self.assertNotIn("recreate", engine.ALLOWED_ACTIONS)
+        self.assertNotIn("recreate", engine.DESTRUCTIVE_ACTIONS)
+        steps, err = engine.action_steps(
+            "recreate", "remote-server", "", "")
+        self.assertIsNone(steps)
+        self.assertEqual(err, "unknown action")
+        for body in ({"action": "recreate"},
+                     {"action": "recreate", "intent": "jobs-run",
+                      "confirmed": True}):
+            resp = self.client.post("/api/jobs/run", json=body)
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.json()["detail"], "unknown action")
 
     def test_run_repo_scoped_validates_repo(self):
         resp = self.client.post(

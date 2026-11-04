@@ -73,12 +73,13 @@ def step_timeout(action) -> int:
     return ACTION_STEP_TIMEOUTS.get(action, STEP_TIMEOUT)
 
 # Action names ported from buttons/server.py::ACTIONS (Jules actions
-# cut: sync-agents/nudge-agents are dead with Jules).
+# cut: sync-agents/nudge-agents are dead with Jules). "recreate"
+# (terminal restart) is cut too: it drops live agent sessions with
+# no resume path, so the console must not offer it (#444).
 ALLOWED_ACTIONS = (
     "health",
     "status",
     "deploy-buttons",
-    "recreate",
     "recreate-code",
     "logs",
     "briefing-td",
@@ -95,7 +96,6 @@ ALLOWED_ACTIONS = (
 # {intent: "jobs-run", confirmed: True} for these.
 DESTRUCTIVE_ACTIONS = (
     "deploy-buttons",
-    "recreate",
     "recreate-code",
     "create-plan",
     "merge-approved",
@@ -403,10 +403,6 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
                       "HOST_HOME=/home/ari HOME=/home/ari docker compose "
                       "-f /srv/remote-server/docker-compose.yml ps buttons; "
                       "exit 1"),
-        ], None
-    if action == "recreate":
-        return [
-            compose_argv("up", "-d", "--force-recreate", "terminal"),
         ], None
     if action == "recreate-code":
         return [

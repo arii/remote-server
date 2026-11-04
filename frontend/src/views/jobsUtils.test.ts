@@ -50,8 +50,8 @@ describe('td block reasons', () => {
 
 describe('mergeNoteFor', () => {
   it('returns null for other actions', () => {
-    expect(mergeNoteFor('recreate', 3)).toBeNull();
-    expect(mergeNoteFor('recreate', null)).toBeNull();
+    expect(mergeNoteFor('recreate-code', 3)).toBeNull();
+    expect(mergeNoteFor('recreate-code', null)).toBeNull();
   });
 
   it('fails closed on unknown readiness (issue #513)', () => {

@@ -34,7 +34,9 @@ function renderDrawer(over: Record<string, unknown> = {}): string {
 
 describe('container drawer (issue #663)', () => {
   it('maps restartable services to engine actions', () => {
-    expect(restartActionFor('terminal')).toBe('recreate');
+    // Terminal has no restart path: sessions cannot survive a
+    // recreate and there is no resume path (issue #444).
+    expect(restartActionFor('terminal')).toBeNull();
     expect(restartActionFor('code-server')).toBe('recreate-code');
     expect(restartActionFor('buttons')).toBe('deploy-buttons');
     expect(restartActionFor('ollama')).toBeNull();
@@ -69,18 +71,27 @@ describe('container drawer (issue #663)', () => {
   it('offers confirm-guarded restart only on mapped rows', () => {
     const html = renderDrawer({
       rows: [
-        row(),
+        row({ name: 'remote-code-1', service: 'code-server' }),
         row({ name: 'remote-ollama-1', service: 'ollama' }),
       ],
     });
-    expect(html).toContain('data-testid="container-restart-terminal"');
+    expect(html).toContain('data-testid="container-restart-code-server"');
     expect(html).toContain('aria-label="Restart (asks for confirmation)"');
     expect(html).not.toContain('container-restart-ollama');
-    expect(dangerEntryFor('recreate')).toEqual({ confirm: 'Live terminal sessions will drop.' });
+    expect(dangerEntryFor('recreate-code')).toEqual({ confirm: 'The code editor will restart.' });
+  });
+
+  it('offers no restart for terminal: sessions cannot survive it (issue #444)', () => {
+    const html = renderDrawer();
+    expect(html).toContain('remote-terminal-1');
+    expect(html).not.toContain('container-restart-terminal');
   });
 
   it('shows the requested note after dispatch', () => {
-    const html = renderDrawer({ restartRequested: 'recreate' });
+    const html = renderDrawer({
+      rows: [row({ name: 'remote-code-1', service: 'code-server' })],
+      restartRequested: 'recreate-code',
+    });
     expect(html).toContain('restart requested');
   });
 
