@@ -13,6 +13,9 @@ stdout even when findings land. Capture errors fail the run (exit
 
 Invoked by the engine's ``impact-pass`` action step; never imported
 by the API (steps are subprocesses, not in-process calls).
+``--check`` reports toolchain presence (the #881 gate) without
+capturing; main() preflights the same probe so a missing dep fails
+with an actionable message instead of a cryptic td error.
 """
 
 from __future__ import annotations
@@ -25,6 +28,20 @@ import sys
 DEFAULT_STATE_DIR = "/var/lib/buttons/impact-pass"
 DEFAULT_ROUTES = "/:desktop,/:mobile"
 VIEWPORTS = ("desktop", "mobile")
+
+# Everything a live fire shells to or reads (#881): td drives the
+# capture, node/pnpm run the checkout's ux scripts, tsx/playwright
+# bins prove the root pnpm install landed, and chromium must be
+# downloaded (playwright alone is not enough).
+TOOL_BINS = ("td", "node", "pnpm")
+UX_SCRIPTS = (
+    "scripts/ux-discover-routes.ts",
+    "scripts/ux-audit-runner.ts",
+    "scripts/ux-lighthouse-runner.ts",
+    "scripts/ux-config.ts",
+    "scripts/config/ux-audit.config.json",
+)
+UX_BINS = ("tsx", "playwright")
 
 
 def state_dir() -> str:
@@ -69,6 +86,73 @@ def route_key(route: str, viewport: str) -> str:
     return f"{slug}-{viewport}"
 
 
+def _browser_dirs():
+    """Playwright browser roots, highest precedence first."""
+    override = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if override:
+        return [override]
+    cands = []
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if xdg:
+        cands.append(os.path.join(xdg, "ms-playwright"))
+    cands.append(os.path.join(os.path.expanduser("~"), ".cache",
+                              "ms-playwright"))
+    return cands
+
+
+def _chromium_present():
+    """True when a downloaded chromium binary exists (no subprocess)."""
+    for base in _browser_dirs():
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith("chromium"):
+                continue
+            root = os.path.join(base, name)
+            for rel in ("chrome-linux/chrome",
+                        "chrome-linux64/chrome",
+                        "chrome-linux/headless_shell"):
+                full = os.path.join(root, rel)
+                if os.path.isfile(full):
+                    return True, full
+    return False, ""
+
+
+def check_toolchain(checkout=None):
+    """Presence probe for everything a live fire needs (#881).
+
+    Pure: PATH lookups + file existence only — no subprocess, no
+    network, no console. Returns [(name, ok, detail)].
+    """
+    root = checkout or checkout_dir()
+    results = []
+    for tool in TOOL_BINS:
+        path = shutil.which(tool)
+        results.append((tool, bool(path), path or "not on PATH"))
+    for rel in UX_SCRIPTS:
+        full = os.path.join(root, rel)
+        ok = os.path.isfile(full)
+        results.append((rel, ok, full if ok else f"missing {full}"))
+    for tool in UX_BINS:
+        full = os.path.join(root, "node_modules", ".bin", tool)
+        ok = os.path.isfile(full) and os.access(full, os.X_OK)
+        results.append((f"node_modules/.bin/{tool}", ok,
+                        full if ok else f"missing {full}"))
+    ok, where = _chromium_present()
+    results.append(("playwright chromium", ok,
+                    where if ok else
+                    "no chromium under the browsers path"))
+    return results
+
+
+def toolchain_errors(checks):
+    """Human lines for the failing entries of check_toolchain()."""
+    return [f"{name}: {detail}" for name, ok, detail in checks
+            if not ok]
+
+
 def _load_impact():
     """deep-agent/impact on sys.path (review.py pattern)."""
     here = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +173,12 @@ def run_pass(routes, checkout, root, ledger_append) -> int:
         if not impact.valid_route(route):
             print(f"error [{route} {viewport}] bad route", flush=True)
             return 1
+        # Fresh capture only: td never cleans the checkout's last
+        # artifacts, so without this a failed capture would diff
+        # (and re-seed) the previous fire's stale results.
+        fresh = impact.capture_paths(checkout)
+        for stale in (fresh["results"], fresh["screenshots"]):
+            shutil.rmtree(stale, ignore_errors=True)
         try:
             res = impact.run_ux_capture(
                 checkout, route=route,
@@ -105,6 +195,15 @@ def run_pass(routes, checkout, root, ledger_append) -> int:
         if not src or not os.path.isdir(src):
             print(f"error [{route} {viewport}] capture ok but no "
                   f"artifacts at {src!r}", flush=True)
+            return 1
+        try:
+            names = os.listdir(os.path.join(src, "results"))
+        except OSError:
+            names = []
+        if not any(n.endswith(".json") for n in names):
+            print(f"error [{route} {viewport}] capture wrote no "
+                  f"results (console down at the baseUrl?)",
+                  flush=True)
             return 1
         key = route_key(route, viewport)
         key_dir = os.path.join(root, key)
@@ -144,11 +243,32 @@ def run_pass(routes, checkout, root, ledger_append) -> int:
 
 
 def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["--check"]:
+        checks = check_toolchain()
+        for name, ok, detail in checks:
+            print(f"{'ok' if ok else 'MISSING'} {name} {detail}",
+                  flush=True)
+        errors = toolchain_errors(checks)
+        if errors:
+            print(f"impact-pass toolchain incomplete "
+                  f"({len(errors)} missing, see runbook)", flush=True)
+            return 1
+        print("impact-pass toolchain ok", flush=True)
+        return 0
     try:
         routes = parse_routes(
             os.environ.get("IMPACT_PASS_ROUTES", DEFAULT_ROUTES))
     except ValueError as exc:
         print(f"impact-pass config error: {exc}", flush=True)
+        return 1
+
+    errors = toolchain_errors(check_toolchain())
+    if errors:
+        print("impact-pass toolchain missing "
+              "(capture would fail; see runbook):", flush=True)
+        for err in errors:
+            print(f"  - {err}", flush=True)
         return 1
 
     from backend.ledger import append as ledger_append
