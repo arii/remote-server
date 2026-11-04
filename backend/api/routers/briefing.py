@@ -7,7 +7,8 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 - GET /api/briefing?repo=  structured briefing passthrough
 - GET /api/status           backend status (health + empty run lists)
 - GET /api/ledger?kind=&limit=&since=  newest-first audit entries
-- POST /api/ledger/clear    truncate + tombstone
+- POST /api/ledger/clear    truncate + tombstone (gated: intent
+  "ledger-clear" + confirmed, same as jobs/clear)
 
 Briefing reads are NOT ledgered: reads are not actions.
 """
@@ -133,6 +134,11 @@ class BackendStatus(BaseModel):
 
 class LedgerList(BaseModel):
     entries: list = Field(default_factory=list)
+
+
+class LedgerClearRequest(BaseModel):
+    intent: str = ""
+    confirmed: bool = False
 
 
 class LedgerClearResult(BaseModel):
@@ -524,7 +530,13 @@ def ledger(kind: str = "all", limit: int = 50,
 
 
 @router.post("/ledger/clear", response_model=LedgerClearResult)
-def ledger_clear_route() -> dict:
+def ledger_clear_route(body: LedgerClearRequest | None = None) -> dict:
+    from backend.core import require_confirm
+
+    # Same deliberate-confirm gate as jobs/clear (#454): the body
+    # defaults to None (not a required model) so a bare POST with no
+    # body also lands on the 400 gate instead of a 422 shape error.
+    require_confirm(body, "ledger-clear")
     if ledger_clear():
         return {"ok": True}
     raise HTTPException(status_code=500, detail="ledger clear failed")

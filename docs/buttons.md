@@ -72,7 +72,9 @@ Routes by router (verbs + paths; see router files for shapes):
   `POST /api/agent/turn|abort`, `GET /api/agents/runs…|budget|health`.
 - `briefing.py` — `GET /api/briefing?repo=`, `GET /api/status`,
   `GET /api/ledger?kind=&limit=&since=`, `POST /api/ledger/clear`
-  (truncates + tombstone; briefing reads are not ledgered).
+  (truncates + tombstone; gated like jobs/clear on
+  `{intent: "ledger-clear", confirmed: true}`; briefing reads are not
+  ledgered).
 - `ops.py` — `POST /api/terminal/takeover`,
   `GET /api/workflow-health?repo=`, `POST /api/clear`, `GET /api/health`.
 - `notify.py` — `POST /api/webhook` (GitHub push auto-pull, see below),
