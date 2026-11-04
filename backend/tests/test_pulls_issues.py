@@ -29,8 +29,14 @@ class FakeProc:
         self.stderr = stderr
         self.returncode = returncode
 
-    def wait(self):
+    def wait(self, timeout=None):
         return self.returncode
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
 
 
 class FakeRunner:
@@ -607,17 +613,35 @@ class LateAbortProc(FakeProc):
     def poll(self):
         return self.returncode
 
-    def wait(self):
+    def wait(self, timeout=None):
         with repair_state_lock:
             issues_mod._repair_abort = True
         return self.returncode
+
+
+class TimeoutProc(FakeProc):
+    """Fake worker stuck in wait(): raises TimeoutExpired until killed."""
+
+    def __init__(self):
+        super().__init__(stdout=iter([]), returncode=-9)
+        self.killed = False
+
+    def wait(self, timeout=None):
+        import subprocess as _sub
+
+        if not self.killed:
+            raise _sub.TimeoutExpired(cmd="repair", timeout=timeout)
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
 
 
 def reset_repair_state():
     with repair_state_lock:
         repair_state.update(
             {"status": "idle", "timestamp": None, "log_buffer": "",
-             "issue": None, "exit_code": None})
+             "issue": None, "repo": None, "exit_code": None})
         issues_mod._repair_proc = None
         issues_mod._repair_abort = False
         issues_mod.repair_schedules.clear()
@@ -652,7 +676,9 @@ class RepairTest(unittest.TestCase):
             with patch.object(issues_mod, "run_gh_json",
                               return_value={"body": _TASK_SPEC_PYTEST}):
                 issues_mod.repair_dispatch(
-                    issues_mod.RepairDispatchRequest(issue="#9"))
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", intent="repair-dispatch",
+                        confirmed=True))
             deadline = time.time() + 5
             while (time.time() < deadline
                    and issues_mod._repair_proc is None):
@@ -669,7 +695,7 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(
                 runner.calls,
                 [["python3", "-m", "core_cli", "repair",
-                  "--issue", "9"]])
+                  "--issue", "9", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()
@@ -707,7 +733,9 @@ class RepairTest(unittest.TestCase):
             with patch.object(issues_mod, "run_gh_json",
                               return_value={"body": _TASK_SPEC_PYTEST}):
                 issues_mod.repair_dispatch(
-                    issues_mod.RepairDispatchRequest(issue="#9"))
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", intent="repair-dispatch",
+                        confirmed=True))
             self.assertEqual(
                 wait_repair_status(("done", "failed", "aborted")), "done")
             status = issues_mod.repair_status()
@@ -717,7 +745,7 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(
                 runner.calls,
                 [["python3", "-m", "core_cli", "repair",
-                  "--issue", "9"]])
+                  "--issue", "9", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()
@@ -727,7 +755,9 @@ class RepairTest(unittest.TestCase):
 
         with self.assertRaises(HTTPException):
             issues_mod.repair_dispatch(
-                issues_mod.RepairDispatchRequest(issue="nope"))
+                issues_mod.RepairDispatchRequest(
+                    issue="nope", intent="repair-dispatch",
+                    confirmed=True))
 
         proc = FakeProc(stdout=iter(["line1\n"]), returncode=0)
         runner = FakeRunner()
@@ -738,7 +768,9 @@ class RepairTest(unittest.TestCase):
             with patch.object(issues_mod, "run_gh_json",
                               return_value={"body": _TASK_SPEC_PYTEST}):
                 out = issues_mod.repair_dispatch(
-                    issues_mod.RepairDispatchRequest(issue="#5"))
+                    issues_mod.RepairDispatchRequest(
+                        issue="#5", intent="repair-dispatch",
+                        confirmed=True))
             self.assertEqual(
                 (out["ok"], out["issue"], out["status"]),
                 (True, 5, "running"))
@@ -757,7 +789,7 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(
                 runner.calls[0],
                 ["python3", "-m", "core_cli", "repair",
-                 "--issue", "5"])
+                 "--issue", "5", "--repo", "remote-server"])
         finally:
             issues_mod._repair_runner = old
 
@@ -797,7 +829,9 @@ class RepairTest(unittest.TestCase):
                               return_value={"body": _TASK_SPEC_EVIL}):
                 with self.assertRaises(HTTPException) as ctx:
                     issues_mod.repair_dispatch(
-                        issues_mod.RepairDispatchRequest(issue="#9"))
+                        issues_mod.RepairDispatchRequest(
+                            issue="#9", intent="repair-dispatch",
+                            confirmed=True))
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("not allowlisted", ctx.exception.detail)
             self.assertEqual(runner.calls, [])
@@ -805,21 +839,31 @@ class RepairTest(unittest.TestCase):
             issues_mod._repair_runner = old
 
     def test_dispatch_accepts_branch_for_stack_checkout(self):
-        # Explicit branch (#708): repair targets the stack repo
-        # only, so the branch validates against remote-server.
-        with patch.object(
-                issues_mod, "_repair_verify_preview",
-                return_value={"allowlisted": True, "error": ""}), \
-                patch.object(issues_mod, "trigger_repair") as fired, \
-                patch("backend.core.validate_action_branch",
-                      return_value="main") as branch_mock:
-            out = issues_mod.repair_dispatch(
-                issues_mod.RepairDispatchRequest(issue="#9",
-                                                 branch="main"))
-            self.assertEqual(
-                out, {"ok": True, "issue": 9, "status": "running"})
-            branch_mock.assert_called_once_with("remote-server", "main")
-            fired.assert_called_once_with(9)
+        # Explicit branch (#708): the default repo is remote-server,
+        # so the branch validates against it. trigger_repair is
+        # mocked, so the dispatch claim is reset by hand.
+        reset_repair_state()
+        try:
+            with patch.object(
+                    issues_mod, "_repair_verify_preview",
+                    return_value={"allowlisted": True,
+                                  "error": ""}), \
+                    patch.object(issues_mod,
+                                 "trigger_repair") as fired, \
+                    patch("backend.core.validate_action_branch",
+                          return_value="main") as branch_mock:
+                out = issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", branch="main",
+                        intent="repair-dispatch", confirmed=True))
+                self.assertEqual(
+                    out, {"ok": True, "issue": 9, "status": "running",
+                          "repo": "remote-server"})
+                branch_mock.assert_called_once_with(
+                    "remote-server", "main")
+                fired.assert_called_once_with(9, "remote-server")
+        finally:
+            reset_repair_state()
 
     def test_dispatch_rejects_unknown_branch(self):
         from fastapi import HTTPException
@@ -832,11 +876,231 @@ class RepairTest(unittest.TestCase):
                       side_effect=ValueError("unknown branch: 'gone'")):
             with self.assertRaises(HTTPException) as ctx:
                 issues_mod.repair_dispatch(
-                    issues_mod.RepairDispatchRequest(issue="#9",
-                                                     branch="gone"))
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", branch="gone",
+                        intent="repair-dispatch", confirmed=True))
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("unknown branch", ctx.exception.detail)
             fired.assert_not_called()
+
+
+class RepairDispatchGuardTest(unittest.TestCase):
+    """Confirm gate, single-flight, timeout, and repo scope (#435)."""
+
+    def test_dispatch_requires_confirm(self):
+        from fastapi import HTTPException
+
+        runner = FakeRunner()
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}):
+                for kw in ({}, {"intent": "repair-dispatch"},
+                           {"intent": "repair-dispatch",
+                            "confirmed": False},
+                           {"intent": "pr-merge", "confirmed": True}):
+                    with self.assertRaises(HTTPException,
+                                           msg=kw) as ctx:
+                        issues_mod.repair_dispatch(
+                            issues_mod.RepairDispatchRequest(
+                                issue="#9", **kw))
+                    self.assertEqual(ctx.exception.status_code, 400)
+                    self.assertIn("confirmation required",
+                                  ctx.exception.detail)
+            self.assertEqual(runner.calls, [])
+            with repair_state_lock:
+                self.assertEqual(repair_state["status"], "idle")
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_second_dispatch_while_running_returns_409(self):
+        from fastapi import HTTPException
+
+        proc = BlockingProc()
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}):
+                issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", intent="repair-dispatch",
+                        confirmed=True))
+                # Back-to-back: the atomic claim 409s even before the
+                # worker thread writes running.
+                with self.assertRaises(HTTPException) as ctx:
+                    issues_mod.repair_dispatch(
+                        issues_mod.RepairDispatchRequest(
+                            issue="#10", intent="repair-dispatch",
+                            confirmed=True))
+                self.assertEqual(ctx.exception.status_code, 409)
+                self.assertIn("busy", ctx.exception.detail)
+                deadline = time.time() + 5
+                while (time.time() < deadline
+                       and issues_mod._repair_proc is None):
+                    time.sleep(0.05)
+                self.assertIsNotNone(issues_mod._repair_proc)
+                # Still busy once the worker thread is up.
+                with self.assertRaises(HTTPException) as ctx:
+                    issues_mod.repair_dispatch(
+                        issues_mod.RepairDispatchRequest(
+                            issue="#10", intent="repair-dispatch",
+                            confirmed=True))
+                self.assertEqual(ctx.exception.status_code, 409)
+                self.assertEqual(len(runner.calls), 1)
+            out = issues_mod.repair_abort()
+            self.assertTrue(out["killed"])
+            self.assertEqual(wait_repair_status(("aborted",)), "aborted")
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_stuck_worker_times_out_to_failed(self):
+        proc = BlockingProc()
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "REPAIR_WORKER_TIMEOUT",
+                              0.3), \
+                    patch.object(issues_mod, "run_gh_json",
+                                 return_value={"body": _TASK_SPEC_PYTEST}):
+                issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", intent="repair-dispatch",
+                        confirmed=True))
+                self.assertEqual(
+                    wait_repair_status(("failed",), timeout=10),
+                    "failed")
+                status = issues_mod.repair_status()
+            self.assertEqual(status["exit_code"], -15)
+            self.assertTrue(proc.terminated)
+            self.assertIn("timed out", status["log_buffer"])
+            self.assertIn("killed", status["log_buffer"])
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_wait_timeout_kills_and_fails(self):
+        proc = TimeoutProc()
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}):
+                issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", intent="repair-dispatch",
+                        confirmed=True))
+                self.assertEqual(
+                    wait_repair_status(("failed",), timeout=10),
+                    "failed")
+                status = issues_mod.repair_status()
+            self.assertTrue(proc.killed)
+            self.assertEqual(status["exit_code"], -9)
+            self.assertIn("timed out", status["log_buffer"])
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_dispatch_scopes_repo(self):
+        proc = FakeProc(stdout=iter(["line1\n"]), returncode=0)
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}) as m:
+                out = issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#5", repo="boomtick",
+                        intent="repair-dispatch", confirmed=True))
+            self.assertEqual(out["repo"], "boomtick")
+            gh, argv = m.call_args[0][0], m.call_args[0][1]
+            self.assertEqual(gh, "arii/boomtick")
+            self.assertEqual(
+                argv, ["issue", "view", "5", "--repo", "arii/boomtick",
+                      "--json", "body"])
+            self.assertEqual(
+                runner.calls[0],
+                ["python3", "-m", "core_cli", "repair",
+                 "--issue", "5", "--repo", "boomtick"])
+            self.assertEqual(
+                wait_repair_status(("done", "failed", "aborted")), "done")
+            self.assertEqual(
+                issues_mod.repair_status()["repo"], "boomtick")
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_dispatch_rejects_bad_repo(self):
+        from fastapi import HTTPException
+
+        runner = FakeRunner()
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#5", repo="../evil",
+                        intent="repair-dispatch", confirmed=True))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertEqual(runner.calls, [])
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_verify_command_scopes_repo(self):
+        from fastapi import HTTPException
+
+        with patch.object(issues_mod, "run_gh_json",
+                          return_value={"body": _TASK_SPEC_PYTEST}) as m:
+            out = issues_mod.repair_verify_command("#9", "boomtick")
+        self.assertTrue(out["allowlisted"])
+        gh, argv = m.call_args[0][0], m.call_args[0][1]
+        self.assertEqual(gh, "arii/boomtick")
+        self.assertIn("arii/boomtick", argv)
+        with self.assertRaises(HTTPException) as ctx:
+            issues_mod.repair_verify_command("#9", "../evil")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_dispatch_branch_validates_against_scoped_repo(self):
+        # trigger_repair is mocked, so the dispatch claim is reset
+        # by hand (same as the #708 test above).
+        reset_repair_state()
+        try:
+            with patch.object(
+                    issues_mod, "_repair_verify_preview",
+                    return_value={"allowlisted": True,
+                                  "error": ""}), \
+                    patch.object(issues_mod,
+                                 "trigger_repair") as fired, \
+                    patch("backend.core.validate_action_branch",
+                          return_value="main") as branch_mock:
+                out = issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(
+                        issue="#9", repo="boomtick", branch="main",
+                        intent="repair-dispatch", confirmed=True))
+                self.assertEqual(out["repo"], "boomtick")
+                branch_mock.assert_called_once_with("boomtick", "main")
+                fired.assert_called_once_with(9, "boomtick")
+        finally:
+            reset_repair_state()
 
 
 class RepairScheduleTest(unittest.TestCase):
@@ -929,7 +1193,7 @@ class RepairScheduleTest(unittest.TestCase):
             self.assertEqual(
                 runner.calls[0],
                 ["python3", "-m", "core_cli", "repair",
-                 "--issue", "13"])
+                 "--issue", "13", "--repo", "remote-server"])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()
@@ -1003,7 +1267,9 @@ class RepairScheduleTest(unittest.TestCase):
                 self.assertIsNone(issues_mod.fire_due_schedules())
                 self.assertEqual(runner.calls, [])
                 out = issues_mod.repair_dispatch(
-                    issues_mod.RepairDispatchRequest(issue="#16"))
+                    issues_mod.RepairDispatchRequest(
+                        issue="#16", intent="repair-dispatch",
+                        confirmed=True))
             self.assertEqual(
                 (out["ok"], out["issue"], out["status"]),
                 (True, 16, "running"))
@@ -1013,7 +1279,7 @@ class RepairScheduleTest(unittest.TestCase):
             self.assertEqual(
                 runner.calls,
                 [["python3", "-m", "core_cli", "repair",
-                  "--issue", "16"]])
+                  "--issue", "16", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()

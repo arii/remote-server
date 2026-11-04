@@ -312,7 +312,6 @@ export default function App() {
         <NowView
           repo={repo}
           defaultBranch={repos.find((r) => r.name === repo)?.branch}
-          stackBranch={repos.find((r) => r.name === 'remote-server')?.branch}
           health={health}
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}

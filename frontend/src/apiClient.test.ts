@@ -104,6 +104,11 @@ describe('apiClient (fetch with inline shapes)', () => {
       '/api/repair/verify-command?issue=9',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+    expect(await fetchVerifyCommand('9', 'boomtick')).toEqual(preview);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/repair/verify-command?issue=9&repo=boomtick',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('posts repair aborts', async () => {
@@ -1032,17 +1037,33 @@ describe('explicit action branch (issue #708)', () => {
   });
 
   it('sends the branch with repair dispatch, omits when blank', async () => {
-    vi.stubGlobal('fetch', mockFetchJson({ ok: true, issue: 9, status: 'running' }));
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, issue: 9, status: 'running', repo: 'remote-server' }));
     await dispatchRepair('9', 'main');
     expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
       ...postHeaders,
-      body: JSON.stringify({ issue: '9', branch: 'main' }),
+      body: JSON.stringify({ issue: '9', intent: 'repair-dispatch', confirmed: true, branch: 'main' }),
       signal: expect.any(AbortSignal),
     });
     await dispatchRepair('9', '');
     expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
       ...postHeaders,
-      body: JSON.stringify({ issue: '9' }),
+      body: JSON.stringify({ issue: '9', intent: 'repair-dispatch', confirmed: true }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('scopes repair dispatch to the repo (issue #435)', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, issue: 5, status: 'running', repo: 'boomtick' }));
+    await dispatchRepair('5', 'main', 'boomtick');
+    expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
+      ...postHeaders,
+      body: JSON.stringify({
+        issue: '5',
+        repo: 'boomtick',
+        intent: 'repair-dispatch',
+        confirmed: true,
+        branch: 'main',
+      }),
       signal: expect.any(AbortSignal),
     });
   });

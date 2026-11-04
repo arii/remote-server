@@ -12,6 +12,7 @@ const IDLE_REPAIR: RepairStatusResponse = {
   log_buffer: '',
   issue: null,
   exit_code: null,
+  repo: null,
 };
 
 // Filterable repair-target picker. The native select stays (a11y);
@@ -75,8 +76,8 @@ export default function RepairSection({
   initialPicked,
 }: {
   repo: string;
-  // Repair targets the stack checkout only, so this default is the
-  // stack repo's branch (#708), not necessarily the viewed repo's.
+  // Checkout branch of the viewed repo: dispatch validates the
+  // branch against that repo (#435, #708).
   defaultBranch?: string;
   initialStatus?: RepairStatusResponse;
   initialPreview?: RepairVerifyPreview | null;
@@ -143,7 +144,7 @@ export default function RepairSection({
     setPreview(null);
     (async () => {
       try {
-        const live = await fetchVerifyCommand(target);
+        const live = await fetchVerifyCommand(target, repo);
         if (!cancelled) setPreview(live);
       } catch {
         if (!cancelled) setPreview(null);
@@ -153,7 +154,7 @@ export default function RepairSection({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picked, manual]);
+  }, [picked, manual, repo]);
 
   async function refresh() {
     try {
@@ -213,8 +214,8 @@ export default function RepairSection({
         setStatus({ ...IDLE_REPAIR, status: 'running', issue: Number(target) || null });
         return;
       }
-      const started = await dispatchRepair(target, branch);
-      setStatus({ ...IDLE_REPAIR, status: started.status, issue: started.issue });
+      const started = await dispatchRepair(target, branch, repo);
+      setStatus({ ...IDLE_REPAIR, status: started.status, issue: started.issue, repo: started.repo });
       stopWatch();
       timerRef.current = window.setInterval(() => void refresh(), 3000);
     } catch (err) {
@@ -258,7 +259,7 @@ export default function RepairSection({
         <button
           type="button"
           data-testid="repair-dispatch"
-          disabled={!target || repairVerifyBlocksDispatch(preview)}
+          disabled={!target || repairVerifyBlocksDispatch(preview) || status.status === 'running'}
           onClick={() => void onDispatchRepair()}
         >
           Dispatch repair
@@ -335,6 +336,7 @@ export default function RepairSection({
       <p className="row-meta" data-testid="repair-status">
         Status: {status.status}
         {status.issue !== null ? ` · #${status.issue}` : ''}
+        {status.repo ? ` · ${status.repo}` : ''}
         {status.exit_code !== null ? ` · exit ${status.exit_code}` : ''}
       </p>
       {status.log_buffer && <pre className="row-meta">{status.log_buffer}</pre>}
