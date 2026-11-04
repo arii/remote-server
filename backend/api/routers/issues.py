@@ -574,21 +574,60 @@ def create_issue(body: CreateIssueRequest) -> dict:
     return {"ok": True, "url": (lines[-1] if lines else "")[:500]}
 
 
+# Scaffold sections required by the lane gate (td gh validate-issue,
+# `td gh scaffold-issue` skeleton). issue_draft must emit every one so
+# the generated body validates clean as generated (#437).
+DRAFT_SCAFFOLD_SECTIONS = (
+    "Problem Statement",
+    "Goal",
+    "Non-Goals",
+    "Proposed Approach",
+    "Alternatives Considered",
+    "Architectural Impact",
+    "Scope",
+    "UNDERSTAND THE ISSUE",
+    "DETERMINE APPROACH",
+    "SPECIFY SCOPE",
+    "DEFINITION OF DONE",
+)
+
+DRAFT_DONE_CHECKLIST = (
+    "- [ ] Investigate root cause\n"
+    "- [ ] Apply automated or manual fix\n"
+    "- [ ] Verify test suite passes\n"
+)
+
+
 @router.post("/issue-draft", response_model=IssueDraft)
 def issue_draft(body: IssueDraftRequest) -> dict:
     try:
         repo_gh(body.repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    md = (f"### Summary\nReported from {body.source} findings on "
-          f"{body.repo}.\n\n")
-    if body.cause:
-        md += f"### Likely Cause / Finding\n{body.cause}\n\n"
-    if body.details:
-        md += f"### Details & Context\n```\n{body.details}\n```\n\n"
-    md += ("### Recommended Remediation\n- [ ] Investigate root cause\n"
-           "- [ ] Apply automated or manual fix\n"
-           "- [ ] Verify test suite passes\n")
+    cause = body.cause.strip()
+    details = body.details.strip()
+    problem = (f"Reported from {body.source} findings on {body.repo}."
+               + (f"\n\n{cause}" if cause else ""))
+    understand = (cause if cause
+                  else "[Provide content for UNDERSTAND THE ISSUE]")
+    scope = (f"```\n{details}\n```" if details
+             else "[Provide content for Scope]")
+    sections = {
+        "Problem Statement": problem,
+        "Goal": "[Provide content for Goal]",
+        "Non-Goals": "[Provide content for Non-Goals]",
+        "Proposed Approach": "[Provide content for Proposed Approach]",
+        "Alternatives Considered":
+            "[Provide content for Alternatives Considered]",
+        "Architectural Impact": "[Provide content for Architectural Impact]",
+        "Scope": scope,
+        "UNDERSTAND THE ISSUE": understand,
+        "DETERMINE APPROACH": "[Provide content for DETERMINE APPROACH]",
+        "SPECIFY SCOPE": "[Provide content for SPECIFY SCOPE]",
+        "DEFINITION OF DONE": DRAFT_DONE_CHECKLIST.rstrip("\n"),
+    }
+    md = "".join(f"# {name}\n\n{sections[name]}\n\n"
+                 for name in DRAFT_SCAFFOLD_SECTIONS)
     return {"ok": True, "title": body.title, "body": md}
 
 

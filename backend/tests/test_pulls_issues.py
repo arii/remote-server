@@ -615,8 +615,33 @@ class IssuesTest(unittest.TestCase):
             repo="remote-server", source="ci", title="T",
             cause="c", details="d"))
         self.assertTrue(out["ok"])
-        self.assertIn("### Recommended Remediation", out["body"])
+        self.assertEqual(out["title"], "T")
         self.assertIn("ci", out["body"])
+        self.assertIn("c", out["body"])
+        self.assertIn("d", out["body"])
+        self.assertIn("- [ ] Investigate root cause", out["body"])
+
+    def test_issue_draft_pins_scaffold_sections(self):
+        # #437: every lane-gate section (td gh validate-issue) is
+        # emitted as a `# <section>` header; the old
+        # Summary/Cause/Details/Remediation template is gone.
+        out = issues_mod.issue_draft(issues_mod.IssueDraftRequest(
+            repo="remote-server", source="ci", title="T",
+            cause="c", details="d"))
+        for section in issues_mod.DRAFT_SCAFFOLD_SECTIONS:
+            with self.subTest(section=section):
+                self.assertIn(f"# {section}\n", out["body"])
+        for old in ("### Summary", "### Likely Cause",
+                    "### Details & Context",
+                    "### Recommended Remediation"):
+            self.assertNotIn(old, out["body"])
+
+    def test_issue_draft_empty_inputs_keep_sections(self):
+        out = issues_mod.issue_draft(issues_mod.IssueDraftRequest(
+            repo="remote-server", source="ci", title="T"))
+        for section in issues_mod.DRAFT_SCAFFOLD_SECTIONS:
+            with self.subTest(section=section):
+                self.assertIn(f"# {section}\n", out["body"])
 
 
 class ParseIssueNumberTest(unittest.TestCase):
