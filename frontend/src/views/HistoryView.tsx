@@ -236,9 +236,11 @@ export function RowsList({
 export default function HistoryView({
   repo,
   health,
+  onOpenStats,
 }: {
   repo: string;
   health: import('../apiClient').SystemHealthResponse | null;
+  onOpenStats?: () => void;
 }) {
   const { data, error, loading, load } = useSnapshotData(loadHistorySnapshot, EMPTY_HISTORY);
   const { jobs, entries } = data;
@@ -280,7 +282,7 @@ export default function HistoryView({
 
   return (
     <div data-testid="history-view">
-      <ObservabilitySection repo={repo} health={health} />
+      <ObservabilitySection repo={repo} health={health} onOpenStats={onOpenStats} />
 
       <ActivityTimeline />
 

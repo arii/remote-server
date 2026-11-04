@@ -186,7 +186,13 @@ export function SnoozedStub({
   );
 }
 
-export function StackSection({ health }: { health: SystemHealthResponse | null }) {
+export function StackSection({
+  health,
+  onOpenStats,
+}: {
+  health: SystemHealthResponse | null;
+  onOpenStats?: () => void;
+}) {
   const allUp =
     health !== null &&
     health.containers.length > 0 &&
@@ -205,7 +211,7 @@ export function StackSection({ health }: { health: SystemHealthResponse | null }
           Stack: all {health.containers.length} containers up.
         </p>
       ) : (
-        <ContainerPills containers={health.containers} error={health.containers_error} />
+        <ContainerPills containers={health.containers} error={health.containers_error} onOpenStats={onOpenStats} />
       )}
     </section>
   );
@@ -384,7 +390,7 @@ export function ActionControl({
   }
   if (isGetAction(item)) {
     return (
-      <button type="button" onClick={() => void handleGet()}>
+      <button type="button" className="btn-primary" onClick={() => void handleGet()}>
         {item.action.label}
       </button>
     );
@@ -400,7 +406,7 @@ export function ActionControl({
     );
   }
   return (
-    <button type="button" onClick={() => void handlePost()}>
+    <button type="button" className="btn-primary" onClick={() => void handlePost()}>
       {item.action.label}
     </button>
   );
@@ -634,6 +640,36 @@ export interface AttentionRowCallbacks {
   onSnooze: (item: AttentionItem, minutes: number) => void;
 }
 
+// Source-line destination (#896): when the action resolves to an
+// in-app target, the "opens X" run navigates there (same dispatch
+// as ActionControl); fetch-only actions keep plain text.
+export function SourceDestination({
+  item,
+  onSection,
+  onTab,
+}: {
+  item: AttentionItem;
+  onSection: (section: 'review' | 'jobs') => void;
+  onTab: (tab: AttentionNavTab) => void;
+}) {
+  const target = resolveAttentionTarget(item.action.href);
+  const name = attentionTargetName(item.action.href);
+  if (target === null) return <>{name}</>;
+  return (
+    <button
+      type="button"
+      className="btn-link"
+      data-testid={`now-source-open-${item.id}`}
+      onClick={() => {
+        if (target === 'jobs' || target === 'review') onSection(target);
+        else onTab(target);
+      }}
+    >
+      {name}
+    </button>
+  );
+}
+
 // One attention row (issue #839): the primary action + Ask agent
 // stay visible; snooze presets collapse into a More overflow so a
 // queued item costs one line of buttons, not four. The source line
@@ -683,7 +719,7 @@ export function AttentionRow({
         </span>
       </p>
       <p className="row-meta" data-testid={`now-source-${item.id}`}>
-        source: {item.repo} · opens {attentionTargetName(item.action.href)}
+        source: {item.repo} · opens <SourceDestination item={item} onSection={onSection} onTab={onTab} />
       </p>
       <p>{item.detail}</p>
       <div className="actions">
@@ -696,6 +732,7 @@ export function AttentionRow({
         />
         <button
           type="button"
+          className="btn-secondary"
           data-testid={`ask-agent-${item.id}`}
           onClick={() => onAskAgent(askAgentSeed(item))}
         >
@@ -792,6 +829,8 @@ export default function NowView({
   sectionRequest = null,
   reportRequest = 0,
   createRequest = 0,
+  onSectionChange,
+  onOpenStats,
 }: {
   repo: string;
   // Checkout branch of the viewed repo, seeding the Review/Jobs
@@ -803,12 +842,20 @@ export default function NowView({
   onOpenTab: (tab: AttentionNavTab) => void;
   // Command-palette requests (issue #810): nonce bumps from App that
   // open a section or the report dialog, including on a fresh mount
-  // after the palette navigates here from another tab.
-  sectionRequest?: { section: 'review' | 'jobs'; nonce: number } | null;
+  // after the palette navigates here from another tab. The nav bar
+  // (#896) reuses the same path; a null section closes whichever is
+  // open (Now = inbox home).
+  sectionRequest?: { section: 'review' | 'jobs' | null; nonce: number } | null;
   reportRequest?: number;
   // Palette request (issue #839): a nonce bump opens the Review
   // section's New-issue form (threaded through to ReviewView).
   createRequest?: number;
+  // Section mirror for the nav active state (#896): notified on
+  // every section change (including mount and repo-switch resets),
+  // so App never shows a stale entry pressed.
+  onSectionChange?: (section: 'review' | 'jobs' | 'queue' | null) => void;
+  // Opens the container stats drawer (#896): Stack pills navigate.
+  onOpenStats?: () => void;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The
@@ -858,6 +905,13 @@ export default function NowView({
       setSection(sectionRequest.section);
     }
   }, [sectionRequest]);
+  // Mirror the open section up for the nav active state (#896). One
+  // effect covers every path (internal toggles, palette/nav nonces,
+  // repo-switch resets, mount) with no call-site edits.
+  useEffect(() => {
+    onSectionChange?.(section);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section]);
   const handledReportNonce = useRef(0);
   useEffect(() => {
     if (reportRequest !== handledReportNonce.current) {
@@ -1216,7 +1270,7 @@ export default function NowView({
           Done: {fired}
         </p>
       )}
-      <StackSection health={health} />
+      <StackSection health={health} onOpenStats={onOpenStats} />
       {data && (
         <>
           {!rollup && (
