@@ -515,7 +515,32 @@ class NotificationsEndpointsTest(unittest.TestCase):
     def test_test_endpoint_unconfigured(self):
         r = self.client.post("/api/notifications/test")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json(), {"ok": True, "results": {}})
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["results"], {})
+        self.assertIn("NTFY_TOPIC", body["reason"])
+        self.assertIn("NOTIFICATION_WEBHOOK_URL", body["reason"])
+
+    def test_test_endpoint_ok_reflects_send(self):
+        sent = {"ntfy": {"ok": True, "status": 200}}
+        with mock.patch.object(N, "send_notification",
+                               return_value=sent):
+            r = self.client.post("/api/notifications/test")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["results"], sent)
+        self.assertEqual(body["reason"], "")
+
+    def test_test_endpoint_failed_send_reports_failure(self):
+        failed = {"ntfy": {"ok": False, "error": "boom"}}
+        with mock.patch.object(N, "send_notification",
+                               return_value=failed):
+            r = self.client.post("/api/notifications/test")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["results"], failed)
 
     def test_trigger_digest_records_last_sent(self):
         before = N.load_notifier_state().get("last_digest", 0)

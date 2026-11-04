@@ -38,6 +38,7 @@ class NotificationsStatus(BaseModel):
 class NotificationResult(BaseModel):
     ok: bool = True
     results: dict = Field(default_factory=dict)
+    reason: str = ""
 
 
 class DigestResult(BaseModel):
@@ -171,7 +172,15 @@ def notifications_test() -> dict:
         "Test Notification", "Test push from S5 backend.",
         priority="default", tags=["test"], event_type="test",
         bypass_quiet=True)
-    return {"ok": True, "results": res}
+    # Truth in response (#430): empty results mean no channel is
+    # configured, so report failure with guidance instead of ok:true.
+    # Note delivered()'s empty→True rule is digest-stamp specific
+    # (nothing to retry) and must not leak into this endpoint.
+    if not res:
+        return {"ok": False, "results": res,
+                "reason": "no notification channel configured "
+                          "(set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL)"}
+    return {"ok": N.delivered(res), "results": res}
 
 
 @router.post("/api/notifications/trigger-digest",

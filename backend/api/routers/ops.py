@@ -18,6 +18,7 @@ functions so tests never touch docker or the network.
 
 import json
 import os
+import re
 import shlex
 import subprocess
 
@@ -182,6 +183,7 @@ def _fixture_workflow_health(repo: str) -> dict | None:
 
 class TakeoverResult(BaseModel):
     ok: bool = True
+    matched: bool = True
     output: str = ""
 
 
@@ -222,9 +224,16 @@ def takeover(body: TakeoverRequest) -> dict:
         out = run_takeover()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
+    # Truth in response (#431): the hup_exit marker tells whether a
+    # client was actually signaled (0) or none matched (1). ok mirrors
+    # it so a no-match takeover no longer reports success. A missing
+    # marker (unreachable in the real path — the echo always runs)
+    # keeps the historical ok:true contract.
+    marker = re.search(r"hup_exit=(\d+)", out or "")
+    matched = (int(marker.group(1)) == 0) if marker else True
     ledger_append({"kind": "system",
                    "event": "terminal session takeover requested"})
-    return {"ok": True, "output": out}
+    return {"ok": matched, "matched": matched, "output": out}
 
 
 @router.get("/workflow-health", response_model=WorkflowHealth)
