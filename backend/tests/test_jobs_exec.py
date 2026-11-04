@@ -2278,5 +2278,212 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
         self.assertIn("Target Files", group["body"])
 
 
+class ImpactPassActionTest(_LedgerTmpDir, unittest.TestCase):
+    """impact-pass as a first-class jobs action (#869)."""
+
+    def setUp(self):
+        import backend.api.routers.jobs as jobs_router
+
+        self._ledger_setup()
+        self._jobs_router = jobs_router
+        self._old_registry = jobs_router.registry
+        jobs_router.registry = RunRegistry()
+        from backend.server import app
+
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._jobs_router.registry = self._old_registry
+        self._ledger_teardown()
+
+    def test_registered_not_destructive_not_repo_scoped(self):
+        self.assertIn("impact-pass", engine.ALLOWED_ACTIONS)
+        self.assertNotIn("impact-pass", engine.DESTRUCTIVE_ACTIONS)
+        # Console-wide, not repo-scoped: the console is one target.
+        self.assertNotIn("impact-pass", engine.REPO_SCOPED_ACTIONS)
+        # Two captures x 600s worst case, like the ux-audit budget.
+        self.assertEqual(engine.step_timeout("impact-pass"), 1200)
+
+    def test_steps_run_local_runner(self):
+        steps, err = engine.action_steps(
+            "impact-pass", "remote-server", "", "")
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[sys.executable, "-m", "core_cli.impact_pass"]])
+        # -m steps execute FROM the deployed tree (step_cwd), so the
+        # pass reads/writes the same state the API serves.
+        self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
+
+    def test_schedulable_through_action_schedules(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sched.json")
+            old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = path
+            try:
+                with mock.patch(
+                    "backend.api.routers.issues._ensure_schedule_ticker"
+                ):
+                    resp = self.client.post(
+                        "/api/jobs/schedule",
+                        json={"action": "impact-pass",
+                              "cadence": "daily"})
+                    self.assertEqual(resp.status_code, 200)
+                    sched = resp.json()["schedule"]
+                    self.assertEqual(sched["action"], "impact-pass")
+            finally:
+                if old is None:
+                    os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+                else:
+                    os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = old
+
+
+class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
+    """Scheduled pass: seed, silence, findings, errors (#869)."""
+
+    def setUp(self):
+        import io
+        import json
+        import tempfile
+
+        self._ledger_setup()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.checkout = os.path.join(self._tmp.name, "checkout")
+        os.makedirs(self.checkout)
+        self.state_root = os.path.join(self._tmp.name, "impact-pass")
+        self._old_state = os.environ.get("IMPACT_PASS_STATE_DIR")
+        self._old_checkout = os.environ.get("IMPACT_PASS_CHECKOUT")
+        self._old_routes = os.environ.get("IMPACT_PASS_ROUTES")
+        os.environ["IMPACT_PASS_STATE_DIR"] = self.state_root
+        os.environ["IMPACT_PASS_CHECKOUT"] = self.checkout
+        os.environ["IMPACT_PASS_ROUTES"] = "/:desktop"
+        deep_agent = os.path.join(engine.ENGINE_ROOT, "deep-agent")
+        if deep_agent not in sys.path:
+            sys.path.insert(0, deep_agent)
+        import impact
+
+        from backend import ledger
+        from core_cli import impact_pass
+
+        self.impact = impact
+        self.ledger = ledger
+        self.runner = impact_pass
+        self._json = json
+        self._io = io
+        self.fixture_doc = {"route": "/", "viewport": "desktop",
+                            "overflow": [],
+                            "accessibility": {"violations": []},
+                            "images": [], "tapTargets": []}
+        self.fixture_png = impact.png_encode_rgb(
+            2, 2, [bytes(6), bytes(6)])
+        self.capture_ok = True
+        self._run_patch = mock.patch("subprocess.run",
+                                     side_effect=self._fake_td)
+        self._run_patch.start()
+
+    def tearDown(self):
+        self._run_patch.stop()
+        for key, old in (("IMPACT_PASS_STATE_DIR", self._old_state),
+                         ("IMPACT_PASS_CHECKOUT", self._old_checkout),
+                         ("IMPACT_PASS_ROUTES", self._old_routes)):
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+        self._tmp.cleanup()
+        self._ledger_teardown()
+
+    def _fake_td(self, argv, **kwargs):
+        # Stubbed td ux subprocess (gh-stub style): materialize one
+        # route+viewport capture, then report success.
+        if not self.capture_ok:
+            return FakeProc(1, "", "td ux exploded")
+        checkout = kwargs.get("cwd", "")
+        base = os.path.join(checkout, "artifacts", "ux-audit")
+        results = os.path.join(base, "results")
+        shots = os.path.join(base, "screenshots")
+        os.makedirs(results, exist_ok=True)
+        os.makedirs(shots, exist_ok=True)
+        with open(os.path.join(results, "root-desktop.json"),
+                  "w", encoding="utf-8") as f:
+            self._json.dump(self.fixture_doc, f)
+        with open(os.path.join(shots, "root-desktop.png"),
+                  "wb") as f:
+            f.write(self.fixture_png)
+        return FakeProc(
+            0, self._json.dumps({"status": "success", "results": []}),
+            "")
+
+    def _run_main(self):
+        buf = self._io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            code = self.runner.main([])
+        return code, buf.getvalue()
+
+    def _ux_rows(self):
+        return self.ledger.read(kind="ux-finding", limit=50)
+
+    def test_first_run_seeds_baseline_without_findings(self):
+        code, out = self._run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("seeded", out)
+        baseline = os.path.join(self.state_root, "root-desktop",
+                                "baseline", "results",
+                                "root-desktop.json")
+        self.assertTrue(os.path.isfile(baseline))
+        self.assertEqual(self._ux_rows(), [])
+
+    def test_no_change_run_is_silent(self):
+        code, _ = self._run_main()
+        self.assertEqual(code, 0)
+        code, out = self._run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("findings=0", out)
+        self.assertEqual(self._ux_rows(), [])
+
+    def test_changed_route_ledgers_findings_with_severity(self):
+        code, _ = self._run_main()
+        self.assertEqual(code, 0)
+        self.fixture_doc = {**self.fixture_doc, "overflow": [
+            {"tagName": "div", "id": "hero", "className": "wide",
+             "rect": {"left": 0, "right": 2000, "width": 2000}}]}
+        code, out = self._run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("findings=1", out)
+        rows = self._ux_rows()
+        self.assertEqual(len(rows), 1)
+        hit = rows[0]
+        self.assertEqual(hit["kind"], "ux-finding")
+        self.assertEqual(hit["source"], "impact-pass")
+        self.assertEqual(hit["severity"], "high")
+        self.assertEqual(hit["title"],
+                         "1 new layout-overflow issue(s)")
+        self.assertEqual(hit["route"], "/")
+        self.assertEqual(hit["viewport"], "desktop")
+        self.assertIn("<div>", hit["evidence"])
+        self.assertIsInstance(hit["ts"], float)
+        # Rolling baseline: a third identical fire is silent again.
+        code, out = self._run_main()
+        self.assertEqual(code, 0)
+        self.assertIn("findings=0", out)
+        self.assertEqual(len(self._ux_rows()), 1)
+
+    def test_capture_error_fails_the_run(self):
+        self.capture_ok = False
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("error", out)
+        self.assertFalse(os.path.isdir(self.state_root))
+        self.assertEqual(self._ux_rows(), [])
+
+    def test_bad_route_config_fails_fast(self):
+        os.environ["IMPACT_PASS_ROUTES"] = "nope"
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("config error", out)
+
+
 if __name__ == "__main__":
     unittest.main()
