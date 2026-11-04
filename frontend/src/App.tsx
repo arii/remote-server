@@ -4,7 +4,7 @@ import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
-import { fetchRepos, fetchSystemHealth } from './apiClient';
+import { fetchRepos, fetchSystemHealth, subscribeApiFailures } from './apiClient';
 import type { SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
 import { loadRepos, loadSystemHealth, useMock } from './views/mockViews';
@@ -13,6 +13,25 @@ import { loadRepos, loadSystemHealth, useMock } from './views/mockViews';
 // VITE_STACK_URL override for `vite dev` on a port without those routes.
 function stackBase(): string {
   return import.meta.env.VITE_STACK_URL ?? '';
+}
+
+// Header health revalidation cadence (issue #588): slow enough to
+// never storm, fast enough that outages surface within a minute.
+export const HEALTH_POLL_MS = 60_000;
+
+// Single-in-flight async trigger: concurrent calls collapse into
+// the in-flight run, so failure bursts can't stack refreshes. The
+// guard releases on resolve and on reject alike.
+export function singleFlight(fn: () => Promise<void>): () => void {
+  let inflight = false;
+  return () => {
+    if (inflight) return;
+    inflight = true;
+    void fn().then(
+      () => { inflight = false; },
+      () => { inflight = false; },
+    );
+  };
 }
 
 function healthSummary(health: SystemHealthResponse | null): string {
@@ -91,6 +110,30 @@ export default function App() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Revalidate the header snapshot past mount (issue #588): slow
+  // poll plus a refresh on any API failure, so the pill stops
+  // reading stale all-clear through outages. Single in-flight;
+  // failures keep the last good snapshot and retry next tick.
+  useEffect(() => {
+    if (useMock()) return;
+    let cancelled = false;
+    const refresh = singleFlight(async () => {
+      try {
+        const next = await fetchSystemHealth();
+        if (!cancelled) setHealth(next);
+      } catch {
+        // Keep the last good snapshot; the next tick retries.
+      }
+    });
+    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const unsubscribe = subscribeApiFailures(refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      unsubscribe();
+    };
   }, []);
 
   return (

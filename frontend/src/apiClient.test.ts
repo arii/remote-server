@@ -28,6 +28,7 @@ import {
   setDigestSchedule,
   snoozeAttention,
   startJobRun,
+  subscribeApiFailures,
   subscribeJobsPush,
   subscribeRunPush,
   triggerDigest,
@@ -183,6 +184,45 @@ describe('apiClient (fetch with inline shapes)', () => {
   it('throws visibly on HTTP errors (no silent fallback)', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
     await expect(fetchJobs()).rejects.toThrow('GET api/jobs failed: 500');
+  });
+
+  it('notifies failure subscribers on HTTP errors, not on success (issue #588)', async () => {
+    const seen: number[] = [];
+    const unsubscribe = subscribeApiFailures(() => seen.push(1));
+    try {
+      vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 502));
+      await expect(fetchAttention('remote-server')).rejects.toThrow('GET api/attention');
+      expect(seen).toHaveLength(1);
+      vi.stubGlobal('fetch', mockFetchJson({ updated_at: 1, items: [] }));
+      await fetchAttention('remote-server');
+      expect(seen).toHaveLength(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('notifies failure subscribers on POST errors and network failures (issue #588)', async () => {
+    const seen: number[] = [];
+    const unsubscribe = subscribeApiFailures(() => seen.push(1));
+    try {
+      vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
+      await expect(triggerDigest()).rejects.toThrow('POST api/notifications/trigger-digest');
+      expect(seen).toHaveLength(1);
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+      await expect(fetchAttention('remote-server')).rejects.toThrow('network down');
+      expect(seen).toHaveLength(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('stops notifying after unsubscribe (issue #588)', async () => {
+    const seen: number[] = [];
+    const unsubscribe = subscribeApiFailures(() => seen.push(1));
+    unsubscribe();
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'boom' }, false, 500));
+    await expect(fetchJobs()).rejects.toThrow('GET api/jobs failed: 500');
+    expect(seen).toHaveLength(0);
   });
 
   it('fetches the aggregated inbox feed for a repo', async () => {

@@ -40,13 +40,42 @@ export function apiUrl(path: string): string {
 async function readJson<T>(resp: Response, method: string, path: string): Promise<T> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
+    notifyApiFailure();
     throw new Error(`${method} ${path} failed: ${resp.status} ${text}`.trim());
   }
   return (await resp.json()) as T;
 }
 
+// API failure broadcast (issue #588): the header health pill
+// revalidates on any failure so outages stop reading as stale
+// all-clear. Returns an unsubscribe function.
+type ApiFailureListener = () => void;
+
+const apiFailureListeners = new Set<ApiFailureListener>();
+
+export function subscribeApiFailures(listener: ApiFailureListener): () => void {
+  apiFailureListeners.add(listener);
+  return () => {
+    apiFailureListeners.delete(listener);
+  };
+}
+
+function notifyApiFailure(): void {
+  for (const listener of [...apiFailureListeners]) listener();
+}
+
+async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    // No init arg on plain GETs: tests assert exact fetch call shapes.
+    return init === undefined ? await fetch(apiUrl(path)) : await fetch(apiUrl(path), init);
+  } catch (err) {
+    notifyApiFailure();
+    throw err;
+  }
+}
+
 async function getJson<T>(path: string): Promise<T> {
-  return readJson<T>(await fetch(apiUrl(path)), 'GET', path);
+  return readJson<T>(await fetchApi(path), 'GET', path);
 }
 
 export function fetchSystemHealth(): Promise<SystemHealthResponse> {
@@ -145,12 +174,15 @@ export function fetchInbox(repo: string): Promise<InboxFeed> {
 }
 
 export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
-  const resp = await fetch(apiUrl('api/create-issue'), {
+  const resp = await fetchApi('api/create-issue', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ repo, title, body }),
   });
-  if (!resp.ok) throw new Error(`POST /api/create-issue failed: ${resp.status}`);
+  if (!resp.ok) {
+    notifyApiFailure();
+    throw new Error(`POST /api/create-issue failed: ${resp.status}`);
+  }
   return (await resp.json()) as { ok: boolean; url: string };
 }
 
@@ -197,7 +229,7 @@ export interface PiProgressResponse {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetch(apiUrl(path), {
+  const resp = await fetchApi(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -534,7 +566,7 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
 }
 
 async function deleteJson<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetch(apiUrl(path), {
+  const resp = await fetchApi(path, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
