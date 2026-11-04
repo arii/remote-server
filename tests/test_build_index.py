@@ -1,10 +1,12 @@
-"""build_index pattern/skip/metadata tests + retrieval smoke (#668).
+"""build_index pattern/skip/metadata/gh-pass tests + retrieval smoke.
 
-Collector + metadata tests are stdlib-only (build_index keeps its
-langchain imports inside build()). The smoke test needs the
-deep-agent venv AND a reachable Ollama (real nomic embeddings into
-a temp Chroma dir — never the prod chroma_db); it skips otherwise.
-Run: python3 tests/test_build_index.py (smoke needs the venv python)
+Collector + metadata + gh-pass tests are stdlib-only (build_index
+keeps its langchain imports inside build(); gh tests stub the
+subprocess runner or inject a stub fetcher — no network). The smoke
+test needs the deep-agent venv AND a reachable Ollama (real nomic
+embeddings into a temp Chroma dir — never the prod chroma_db); it
+skips otherwise. Run: python3 tests/test_build_index.py (smoke
+needs the venv python)
 """
 import os
 import sys
@@ -185,6 +187,36 @@ _FAKE_MODULE_NAMES = (
 )
 
 
+def _install_fake_langchain(testcase):
+    """Install fake langchain modules; restore on testcase cleanup."""
+    import types
+
+    saved = {
+        name: sys.modules.get(name) for name in _FAKE_MODULE_NAMES
+    }
+    chroma_mod = types.ModuleType("langchain_chroma")
+    chroma_mod.Chroma = _FakeChroma
+    core_mod = types.ModuleType("langchain_core")
+    docs_mod = types.ModuleType("langchain_core.documents")
+    docs_mod.Document = _FakeDocument
+    core_mod.documents = docs_mod
+    split_mod = types.ModuleType("langchain_text_splitters")
+    split_mod.RecursiveCharacterTextSplitter = _FakeSplitter
+    sys.modules["langchain_chroma"] = chroma_mod
+    sys.modules["langchain_core"] = core_mod
+    sys.modules["langchain_core.documents"] = docs_mod
+    sys.modules["langchain_text_splitters"] = split_mod
+
+    def restore():
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+    testcase.addCleanup(restore)
+
+
 class TestClearFailure(unittest.TestCase):
     """A failed clear fails loud; only the fresh-index signal passes.
 
@@ -195,33 +227,9 @@ class TestClearFailure(unittest.TestCase):
     """
 
     def setUp(self):
-        import types
-
-        self._saved_modules = {
-            name: sys.modules.get(name) for name in _FAKE_MODULE_NAMES
-        }
-        chroma_mod = types.ModuleType("langchain_chroma")
-        chroma_mod.Chroma = _FakeChroma
-        core_mod = types.ModuleType("langchain_core")
-        docs_mod = types.ModuleType("langchain_core.documents")
-        docs_mod.Document = _FakeDocument
-        core_mod.documents = docs_mod
-        split_mod = types.ModuleType("langchain_text_splitters")
-        split_mod.RecursiveCharacterTextSplitter = _FakeSplitter
-        sys.modules["langchain_chroma"] = chroma_mod
-        sys.modules["langchain_core"] = core_mod
-        sys.modules["langchain_core.documents"] = docs_mod
-        sys.modules["langchain_text_splitters"] = split_mod
+        _install_fake_langchain(self)
         _FakeChroma.delete_error = None
         _FakeChroma.added = None
-        self.addCleanup(self._restore_modules)
-
-    def _restore_modules(self):
-        for name, mod in self._saved_modules.items():
-            if mod is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = mod
 
     def _root(self):
         tmp = tempfile.TemporaryDirectory()
@@ -258,7 +266,8 @@ class TestClearFailure(unittest.TestCase):
             "Collection [s5-docs] does not exist")
         n_docs, counts = self._build()
         self.assertEqual(n_docs, 1)
-        self.assertEqual(counts, {"doc": 1, "code": 0})
+        self.assertEqual(
+            counts, {"doc": 1, "code": 0, "issue": 0, "pr": 0})
         self.assertIsNotNone(_FakeChroma.added)
         self.assertEqual(len(_FakeChroma.added), 1)
 
@@ -275,6 +284,9 @@ class TestClearFailure(unittest.TestCase):
 
         import retrieval
 
+        # Hermetic: main() would otherwise run the real gh pass.
+        os.environ["S5_GH_INDEX"] = "0"
+        self.addCleanup(os.environ.pop, "S5_GH_INDEX", None)
         _FakeChroma.delete_error = OSError("lock stuck")
         real_embeddings = retrieval.get_embeddings
         retrieval.get_embeddings = lambda: object()
@@ -286,6 +298,345 @@ class TestClearFailure(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("failed to clear collection", err.getvalue())
         self.assertIsNone(_FakeChroma.added)
+
+
+def _gh_item(number, kind="issue", state="OPEN",
+             updated="2026-11-04T16:00:00Z", title="title",
+             body="body", labels=(), url=None):
+    base = "issues" if kind == "issue" else "pull"
+    return {
+        "number": number,
+        "title": f"{title} {number}",
+        "body": f"{body} {number}",
+        "state": state,
+        "labels": [{"name": name} for name in labels],
+        "updatedAt": updated,
+        "url": url or f"https://github.com/arii/remote-server/"
+                       f"{base}/{number}",
+    }
+
+
+class _StubProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _StubRunner:
+    """Subprocess-like stub: canned gh stdout, records argv + kwargs."""
+
+    def __init__(self, stdout="[]", returncode=0, stderr=""):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = stderr
+        self.calls = []
+
+    def run(self, argv, **kwargs):
+        self.calls.append((list(argv), dict(kwargs)))
+        return _StubProc(
+            returncode=self.returncode,
+            stdout=self.stdout,
+            stderr=self.stderr)
+
+
+class TestFetchGhItems(unittest.TestCase):
+    """gh argv shape + MRU sort + cap. No network (stub runner)."""
+
+    def test_issue_argv_scopes_repo_state_all_and_fields(self):
+        import json
+
+        runner = _StubRunner(stdout=json.dumps([]))
+        build_index.fetch_gh_items(
+            "issue", "arii/remote-server", 500, runner=runner)
+        self.assertEqual(len(runner.calls), 1)
+        argv, kwargs = runner.calls[0]
+        self.assertEqual(argv[:4], ["gh", "issue", "list", "-R"])
+        self.assertIn("arii/remote-server", argv)
+        self.assertEqual(argv[argv.index("--state") + 1], "all")
+        self.assertEqual(argv[argv.index("--limit") + 1], "500")
+        self.assertEqual(
+            argv[argv.index("--json") + 1], build_index.GH_FIELDS)
+        self.assertEqual(kwargs.get("timeout"), build_index.GH_TIMEOUT)
+
+    def test_pr_uses_pr_subcommand(self):
+        import json
+
+        runner = _StubRunner(stdout=json.dumps([]))
+        build_index.fetch_gh_items(
+            "pr", "arii/remote-server", 10, runner=runner)
+        argv, _ = runner.calls[0]
+        self.assertEqual(argv[:3], ["gh", "pr", "list"])
+        self.assertEqual(argv[argv.index("--limit") + 1], "10")
+
+    def test_sorts_mru_first_and_caps(self):
+        import json
+
+        items = [
+            _gh_item(1, updated="2026-11-01T00:00:00Z"),
+            _gh_item(2, updated="2026-11-04T00:00:00Z"),
+            _gh_item(3, updated="2026-11-02T00:00:00Z"),
+        ]
+        runner = _StubRunner(stdout=json.dumps(items))
+        got = build_index.fetch_gh_items(
+            "issue", "arii/remote-server", 2, runner=runner)
+        self.assertEqual(
+            [item["number"] for item in got], [2, 3])
+
+    def test_missing_updated_at_sorts_last(self):
+        import json
+
+        items = [
+            {"number": 9, "title": "t", "body": "b", "state": "OPEN",
+             "labels": [], "url": "u"},
+            _gh_item(2, updated="2026-11-04T00:00:00Z"),
+        ]
+        runner = _StubRunner(stdout=json.dumps(items))
+        got = build_index.fetch_gh_items(
+            "issue", "arii/remote-server", 5, runner=runner)
+        self.assertEqual(
+            [item["number"] for item in got], [2, 9])
+
+    def test_bad_kind_raises_without_spawning(self):
+        runner = _StubRunner()
+        with self.assertRaises(ValueError):
+            build_index.fetch_gh_items(
+                "comment", "arii/remote-server", 5, runner=runner)
+        self.assertEqual(runner.calls, [])
+
+    def test_zero_limit_spawns_nothing(self):
+        runner = _StubRunner()
+        self.assertEqual(
+            build_index.fetch_gh_items(
+                "issue", "arii/remote-server", 0, runner=runner),
+            [])
+        self.assertEqual(runner.calls, [])
+
+    def test_gh_failure_raises_last_stderr_line(self):
+        runner = _StubRunner(
+            returncode=1, stderr="first\nlast line\n")
+        with self.assertRaisesRegex(RuntimeError, "last line"):
+            build_index.fetch_gh_items(
+                "issue", "arii/remote-server", 5, runner=runner)
+
+    def test_empty_stdout_raises(self):
+        runner = _StubRunner(stdout="  \n")
+        with self.assertRaisesRegex(RuntimeError, "empty output"):
+            build_index.fetch_gh_items(
+                "pr", "arii/remote-server", 5, runner=runner)
+
+
+class TestGhMetadata(unittest.TestCase):
+    def test_metadata_exact(self):
+        item = _gh_item(
+            826, state="OPEN", labels=("ready", "insight"))
+        self.assertEqual(
+            build_index.gh_metadata(item, "issue"),
+            {
+                "source": "issue#826",
+                "repo": "remote-server",
+                "kind": "issue",
+                "language": "markdown",
+                "number": 826,
+                "state": "OPEN",
+                "url": "https://github.com/arii/remote-server/issues/826",
+                "labels": "ready,insight",
+            },
+        )
+
+    def test_pr_metadata_kind_and_source(self):
+        item = _gh_item(830, kind="pr", state="MERGED")
+        meta = build_index.gh_metadata(item, "pr")
+        self.assertEqual(meta["kind"], "pr")
+        self.assertEqual(meta["source"], "pr#830")
+        self.assertEqual(meta["number"], 830)
+        self.assertEqual(meta["state"], "MERGED")
+        self.assertTrue(meta["url"].endswith("/pull/830"))
+        self.assertEqual(meta["labels"], "")
+
+    def test_labels_tolerate_missing_and_nameless(self):
+        self.assertEqual(build_index.gh_labels({"labels": None}), "")
+        self.assertEqual(build_index.gh_labels({}), "")
+        self.assertEqual(
+            build_index.gh_labels(
+                {"labels": [{"name": "a"}, {}, {"name": ""}]}),
+            "a")
+
+    def test_page_content_carries_header_and_body(self):
+        item = _gh_item(826, labels=("ready", "insight"))
+        text = build_index.gh_page_content(item, "issue")
+        self.assertIn("issue #826: title 826", text)
+        self.assertIn("State: OPEN", text)
+        self.assertIn("Labels: ready,insight", text)
+        self.assertIn("body 826", text)
+
+    def test_page_content_tolerates_empty_body(self):
+        item = _gh_item(1, title="t", body="")
+        item["body"] = None
+        item["title"] = None
+        text = build_index.gh_page_content(item, "pr")
+        self.assertIn("pr #1:", text)
+        self.assertIn("State: OPEN", text)
+
+    def test_collect_orders_issues_before_prs(self):
+        calls = []
+
+        def stub(kind, repo, cap):
+            calls.append((kind, repo, cap))
+            if kind == "issue":
+                return [_gh_item(826)]
+            return [_gh_item(830, kind="pr")]
+
+        docs = build_index.collect_gh_documents(
+            fetcher=stub, cap=7, repo="arii/remote-server")
+        self.assertEqual(calls, [("issue", "arii/remote-server", 7),
+                                 ("pr", "arii/remote-server", 7)])
+        self.assertEqual(
+            [meta["source"] for _, meta in docs],
+            ["issue#826", "pr#830"])
+
+
+class TestGhBuildPass(unittest.TestCase):
+    """Stub-fetcher build(): metadata attached, cap passed through,
+    failure degrades to file-only, rebuild idempotent."""
+
+    def setUp(self):
+        _install_fake_langchain(self)
+        _FakeChroma.delete_error = None
+        _FakeChroma.added = None
+
+    def _root(self, with_file=True):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        if with_file:
+            _write(tmp.name, "docs/guide.md", "# guide\n")
+        return tmp.name
+
+    def _build(self, root, fetcher, cap=build_index.GH_CAP):
+        return build_index.build(
+            root, "/nonexistent-db", "s5-docs", object(),
+            gh_fetcher=fetcher, gh_cap=cap)
+
+    def test_appends_gh_chunks_with_metadata(self):
+        def stub(kind, repo, cap):
+            if kind == "issue":
+                return [_gh_item(826, labels=("ready",)),
+                        _gh_item(825, state="CLOSED")]
+            return [_gh_item(830, kind="pr", state="MERGED")]
+
+        n_docs, counts = self._build(self._root(), stub)
+        self.assertEqual(n_docs, 4)
+        self.assertEqual(
+            counts, {"doc": 1, "code": 0, "issue": 2, "pr": 1})
+        metas = [doc.metadata for doc in _FakeChroma.added]
+        gh_metas = [m for m in metas if m["kind"] in ("issue", "pr")]
+        self.assertEqual(len(gh_metas), 3)
+        by_source = {m["source"]: m for m in gh_metas}
+        self.assertEqual(by_source["issue#826"]["number"], 826)
+        self.assertEqual(by_source["issue#826"]["state"], "OPEN")
+        self.assertEqual(
+            by_source["issue#826"]["url"],
+            "https://github.com/arii/remote-server/issues/826")
+        self.assertEqual(by_source["issue#826"]["labels"], "ready")
+        self.assertEqual(by_source["issue#825"]["state"], "CLOSED")
+        self.assertEqual(by_source["pr#830"]["kind"], "pr")
+        for meta in gh_metas:
+            self.assertEqual(meta["repo"], "remote-server")
+
+    def test_cap_passed_through_per_kind(self):
+        seen = []
+
+        def stub(kind, repo, cap):
+            seen.append((kind, cap))
+            return []
+
+        self._build(self._root(), stub, cap=11)
+        self.assertEqual(seen, [("issue", 11), ("pr", 11)])
+
+    def test_cap_zero_never_calls_fetcher(self):
+        def stub(kind, repo, cap):
+            raise AssertionError("fetcher must not run")
+
+        n_docs, counts = self._build(self._root(), stub, cap=0)
+        self.assertEqual(n_docs, 1)
+        self.assertEqual(counts["issue"], 0)
+        self.assertEqual(counts["pr"], 0)
+
+    def test_default_build_skips_gh(self):
+        real = build_index.fetch_gh_items
+
+        def boom(*args, **kwargs):
+            raise AssertionError("gh must not run")
+
+        build_index.fetch_gh_items = boom
+        try:
+            n_docs, counts = build_index.build(
+                self._root(), "/nonexistent-db", "s5-docs", object())
+        finally:
+            build_index.fetch_gh_items = real
+        self.assertEqual(n_docs, 1)
+        self.assertEqual(counts["issue"], 0)
+
+    def test_gh_failure_warns_and_continues_file_only(self):
+        import io
+        from contextlib import redirect_stderr
+
+        def stub(kind, repo, cap):
+            raise RuntimeError("gh: auth failed")
+
+        err = io.StringIO()
+        with redirect_stderr(err):
+            n_docs, counts = self._build(self._root(), stub)
+        self.assertEqual(n_docs, 1)
+        self.assertEqual(
+            counts, {"doc": 1, "code": 0, "issue": 0, "pr": 0})
+        self.assertIn("GitHub pass skipped", err.getvalue())
+        self.assertIsNotNone(_FakeChroma.added)
+        self.assertEqual(len(_FakeChroma.added), 1)
+
+    def test_rebuild_idempotent_with_gh(self):
+        def stub(kind, repo, cap):
+            if kind == "issue":
+                return [_gh_item(826)]
+            return [_gh_item(830, kind="pr")]
+
+        root = self._root()
+        self._build(root, stub)
+        first = len(_FakeChroma.added)
+        self.assertGreater(first, 0)
+        self._build(root, stub)
+        self.assertEqual(len(_FakeChroma.added), first)
+
+    def test_gh_only_builds_without_files(self):
+        def stub(kind, repo, cap):
+            if kind == "issue":
+                return [_gh_item(826)]
+            return []
+
+        n_docs, counts = self._build(
+            self._root(with_file=False), stub)
+        self.assertEqual(n_docs, 1)
+        self.assertEqual(counts["issue"], 1)
+
+    def test_no_files_no_gh_still_raises(self):
+        def stub(kind, repo, cap):
+            return []
+
+        with self.assertRaisesRegex(
+                RuntimeError, "no source documents matched"):
+            self._build(self._root(with_file=False), stub)
+        self.assertIsNone(_FakeChroma.added)
+
+    def test_kind_renders_in_format_hits(self):
+        from types import SimpleNamespace
+
+        import retrieval
+
+        meta = build_index.gh_metadata(_gh_item(826), "issue")
+        out = retrieval.format_hits(
+            [SimpleNamespace(metadata=meta, page_content="decided X")])
+        self.assertIn("[remote-server/issue#826]", out)
+        self.assertIn("decided X", out)
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")

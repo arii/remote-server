@@ -1,18 +1,23 @@
 """Build the shared S5 RAG index (Chroma, local embeddings).
 
 Usage: build_index.py
-Indexes repo docs + source code into deep-agent/chroma_db with `repo`,
-`kind` (doc|code), and `language` metadata so per-repo agents filter
-to their own slice. Purely local (Ollama nomic-embed-text); no hosted
-calls. Re-run after docs or code change or whenever chroma_db is
-wiped. Each run clears the collection first, so re-runs never stack
-stale duplicates. Embedding model/URL come from
+Indexes repo docs + source code + GitHub issues/PRs into
+deep-agent/chroma_db with `repo`, `kind` (doc|code|issue|pr), and
+`language` metadata so per-repo agents filter to their own slice.
+Purely local (Ollama nomic-embed-text); no hosted calls, except the
+gh-sourced pass which shells out to `gh issue/pr list` (bodies only,
+no comments, v1). Re-run after docs or code change or whenever
+chroma_db is wiped. Each run clears the collection first, so re-runs
+never stack stale duplicates. Embedding model/URL come from
 retrieval.get_embeddings() (S5_EMBED_MODEL / OLLAMA_URL overrides);
-S5_CHROMA_DIR / S5_COLLECTION override the target.
+S5_CHROMA_DIR / S5_COLLECTION override the target, S5_GH_INDEX=0
+skips the GitHub pass (offline builds).
 """
 
 import glob
+import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -112,6 +117,115 @@ def doc_metadata(relpath, kind, language):
     }
 
 
+# GitHub-sourced pass (#826): issues + PRs share the same collection,
+# labeled by kind. Bodies only in v1 (no comments, no live sync).
+GH_REPO = "arii/remote-server"
+GH_CAP = 500
+GH_FIELDS = "number,title,body,state,labels,updatedAt,url"
+GH_TIMEOUT = 60
+
+
+def fetch_gh_items(kind, repo, limit, runner=None):
+    """Raw issue/PR dicts, most-recently-updated first, capped.
+
+    Stdlib-only (subprocess + json): system-python tests stub
+    `runner` (a subprocess-like module) with canned gh stdout, so no
+    network in the suite. Sort-then-cap is client-side: gh list order
+    is not updatedAt order, so the cap alone would keep stale items.
+    Raises RuntimeError when gh fails, ValueError on a bad kind.
+    """
+    if kind not in ("issue", "pr"):
+        raise ValueError(f"bad gh kind: {kind!r}")
+    if limit is None or limit <= 0:
+        return []
+    argv = [
+        "gh", kind, "list",
+        "-R", repo,
+        "--state", "all",
+        "--limit", str(int(limit)),
+        "--json", GH_FIELDS,
+    ]
+    run = runner or subprocess
+    proc = run.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=GH_TIMEOUT,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            (proc.stderr or "").strip().splitlines()[-1]
+            if (proc.stderr or "").strip()
+            else "gh command failed"
+        )
+    if not (proc.stdout or "").strip():
+        raise RuntimeError("gh returned empty output")
+    items = json.loads(proc.stdout)
+    ordered = sorted(
+        items,
+        key=lambda item: item.get("updatedAt") or "",
+        reverse=True,
+    )
+    return ordered[:int(limit)]
+
+
+def gh_labels(item):
+    """Comma-joined label names (Chroma metadata holds no lists)."""
+    return ",".join(
+        label.get("name", "")
+        for label in item.get("labels") or []
+        if label.get("name")
+    )
+
+
+def gh_metadata(item, kind):
+    """Chunk metadata: kind/number/state/url + doc-style attribution.
+
+    `source` carries the kind prefix (issue#N / pr#N) so the generic
+    `[repo/source]` rendering in search_docs/format_hits surfaces the
+    kind with no query-side change.
+    """
+    return {
+        "source": f"{kind}#{item.get('number')}",
+        "repo": "remote-server",
+        "kind": kind,
+        "language": "markdown",
+        "number": item.get("number"),
+        "state": item.get("state"),
+        "url": item.get("url"),
+        "labels": gh_labels(item),
+    }
+
+
+def gh_page_content(item, kind):
+    """Indexable text: header line + labels + body."""
+    lines = [
+        f"{kind} #{item.get('number')}: {item.get('title') or ''}".rstrip(),
+        f"State: {item.get('state')}",
+    ]
+    labels = gh_labels(item)
+    if labels:
+        lines.append(f"Labels: {labels}")
+    lines.extend(["", item.get("body") or ""])
+    return "\n".join(lines)
+
+
+def collect_gh_documents(fetcher=None, cap=GH_CAP, repo=None):
+    """[(page_content, metadata)] for issues + PRs, issues first.
+
+    `fetcher` is fetch_gh_items by default; tests inject a stub.
+    `cap` bounds EACH kind (500 issues + 500 PRs max).
+    """
+    fetch = fetcher or fetch_gh_items
+    target = repo or GH_REPO
+    out = []
+    for kind in ("issue", "pr"):
+        for item in fetch(kind, target, cap):
+            out.append(
+                (gh_page_content(item, kind), gh_metadata(item, kind)))
+    return out
+
+
 def _is_missing_collection_error(exc: BaseException) -> bool:
     """True only for delete_collection on a collection that isn't there.
 
@@ -132,19 +246,33 @@ def _is_missing_collection_error(exc: BaseException) -> bool:
     )
 
 
-def build(root, db_dir, collection, embeddings):
+def build(root, db_dir, collection, embeddings,
+          gh_fetcher=None, gh_cap=GH_CAP):
     """Read, split, embed, upsert. Returns (n_docs, counts).
 
     Clears the collection first (#542: re-runs never stack stale
     duplicates). Raises RuntimeError when nothing matches, leaving
     the index untouched.
+
+    gh_fetcher=None skips the GitHub pass (hermetic tests); main()
+    passes the real fetcher. A failing gh pass warns on stderr and
+    the build continues file-only — a gh auth hiccup must never nuke
+    doc search. counts always carries all four kinds.
     """
     from langchain_chroma import Chroma
     from langchain_core.documents import Document
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     infos = collect_source_files(root)
-    if not infos:
+    gh_texts = []
+    if gh_fetcher is not None and gh_cap is not None and gh_cap > 0:
+        try:
+            gh_texts = collect_gh_documents(
+                fetcher=gh_fetcher, cap=gh_cap)
+        except Exception as exc:
+            print(f"warning: GitHub pass skipped ({exc})",
+                  file=sys.stderr)
+    if not infos and not gh_texts:
         raise RuntimeError(
             "no source documents matched; index left untouched")
     docs = []
@@ -156,10 +284,13 @@ def build(root, db_dir, collection, embeddings):
                     metadata=doc_metadata(relpath, kind, language),
                 )
             )
+    for page_content, metadata in gh_texts:
+        docs.append(
+            Document(page_content=page_content, metadata=metadata))
     splits = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=200
     ).split_documents(docs)
-    counts = {"doc": 0, "code": 0}
+    counts = {"doc": 0, "code": 0, "issue": 0, "pr": 0}
     for split in splits:
         kind = split.metadata.get("kind")
         if kind in counts:
@@ -195,15 +326,25 @@ def main() -> int:
     print(f"embeddings: model={getattr(embeddings, 'model', '?')} "
           f"base_url={getattr(embeddings, 'base_url', '?')}")
     print(f"target: {db_dir} [{collection}]")
+    gh_fetcher = None
+    if os.environ.get("S5_GH_INDEX") != "0":
+        gh_fetcher = fetch_gh_items
+        print(f"github: {GH_REPO} (cap {GH_CAP} per kind, "
+              f"most-recently-updated first)")
+    else:
+        print("github: skipped (S5_GH_INDEX=0)")
     try:
-        n_docs, counts = build(ROOT, db_dir, collection, embeddings)
+        n_docs, counts = build(
+            ROOT, db_dir, collection, embeddings,
+            gh_fetcher=gh_fetcher)
     except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 1
     print(f"loaded {n_docs} documents")
-    total = counts["doc"] + counts["code"]
+    total = sum(counts.values())
     print(f"split into {total} chunks "
-          f"({counts['doc']} doc, {counts['code']} code)")
+          f"({counts['doc']} doc, {counts['code']} code, "
+          f"{counts['issue']} issue, {counts['pr']} pr)")
     print(f"indexed into {db_dir}")
     return 0
 

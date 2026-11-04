@@ -75,7 +75,14 @@ Chroma collection at `deep-agent/chroma_db/`, built by
 The index covers repo docs plus Python/TS/TSX sources
 (`backend/`, `deep-agent/` top level, `frontend/src/`, `core_cli/`;
 tests, fixtures, venvs, `node_modules/`, and `dist/` are skipped),
-tagged with `kind` (`doc`|`code`) and `language` metadata.
+plus GitHub issues and PRs from `gh issue/pr list` (open + closed +
+merged, title + body + state + labels; bodies only, no comments in
+v1), tagged with `kind` (`doc`|`code`|`issue`|`pr`) and `language`
+metadata. Issue/PR chunks carry `number`, `state`, `url`, and
+`labels` metadata; the gh pass is capped at 500 per kind,
+most-recently-updated first, and a failed gh fetch warns and leaves
+a file-only index rather than failing the build. `S5_GH_INDEX=0`
+skips the GitHub pass (offline builds).
 
 Rebuild after docs or code change, or whenever `chroma_db/` is wiped:
 
