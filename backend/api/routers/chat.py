@@ -36,6 +36,7 @@ original.
 import base64
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -60,6 +61,15 @@ PI_PROGRESS_TAIL = 6000
 # records; the tail never streams to clients (see #449).
 SPAWN_STDERR_TAIL = 4000
 SPAWN_STDERR_CHUNK = 65536
+# A hung deep_chat.py must not hold an SSE stream forever: past this
+# many seconds the turn is killed and the stream ends with an error
+# event, mirroring agent_turn.TURN_TIMEOUT.
+CHAT_TURN_TIMEOUT = 600
+# Bounded wait after SIGTERM before SIGKILL (agent_turn.KILL_GRACE).
+CHAT_KILL_GRACE = 5
+# Abandoned approval cards must not leak forever: entries older than
+# this are swept opportunistically, mirroring RESULT_TTL.
+PENDING_RESUME_TTL = 3600
 RID_RE = re.compile(r"^[0-9a-f]{12}$")
 TOOL_HINTS = ("read", "find", "grep", "search", "list", "check",
               "file", "code", "where", "log")
@@ -316,6 +326,58 @@ def _pi_progress_path(rid: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
 
 
+def _stop_proc(proc) -> None:
+    """Terminate, escalate to kill, reap bounded. Never raises.
+
+    Sync mirror of agent_turn._stop_proc: SIGTERM, wait
+    CHAT_KILL_GRACE, SIGKILL, wait again. Returns at once when the
+    child already exited.
+    """
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:
+        pass
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=CHAT_KILL_GRACE)
+    except Exception:
+        pass
+    try:
+        alive = proc.poll() is None
+    except Exception:
+        alive = True
+    if alive:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=CHAT_KILL_GRACE)
+        except Exception:
+            pass
+
+
+def _sweep_pending_resumes(now: float | None = None) -> int:
+    """Evict approval entries older than PENDING_RESUME_TTL.
+
+    Busy entries (a resume call in flight) are spared so a slow
+    decide never loses its row mid-spawn. Entries without a stamp
+    predate the TTL and count as stale.
+    """
+    now = time.time() if now is None else now
+    with pending_resumes_lock:
+        stale = [sid for sid, st in pending_resumes.items()
+                 if not st.get("busy")
+                 and now - st.get("created_at", 0) > PENDING_RESUME_TTL]
+        for sid in stale:
+            pending_resumes.pop(sid, None)
+    return len(stale)
+
+
 def _abort_session(session_id: str) -> tuple[bool, str | None]:
     with chat_sessions_lock:
         sess = chat_sessions.get(session_id)
@@ -323,12 +385,12 @@ def _abort_session(session_id: str) -> tuple[bool, str | None]:
             return False, "session not found"
         sess["aborted"] = True
         proc = sess.get("proc")
-        if proc:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-        return True, None
+    if proc is not None:
+        # Bounded wait + SIGKILL escalation outside the lock, so a
+        # SIGTERM-ignoring child is still reaped instead of leaving
+        # the abort a silent lie.
+        _stop_proc(proc)
+    return True, None
 
 
 def _approval_events(session_id: str, repo: str, info: dict,
@@ -369,6 +431,7 @@ def _approval_events(session_id: str, repo: str, info: dict,
         pending_resumes[session_id] = {
             "gh": info["gh"], "repo": repo, "value": value,
             "proposals": proposals, "pending": True, "busy": False,
+            "created_at": time.time(),
         }
     yield sse_frame("approval", {"session_id": session_id, **value,
                                  "proposals": proposals})
@@ -383,6 +446,7 @@ def _approval_events(session_id: str, repo: str, info: dict,
 def _resume_decision(session_id: str, decision: str,
                      message: str) -> tuple[dict | None, int, str]:
     """Validate + run one resume. Returns (body, http_status, error)."""
+    _sweep_pending_resumes()
     with pending_resumes_lock:
         st = pending_resumes.get(session_id)
         if st is None:
@@ -436,6 +500,7 @@ def _resume_decision(session_id: str, decision: str,
                     st["pending"] = True
                     st["value"] = value
                     st["proposals"] = [t for _, t in checked]
+                    st["created_at"] = time.time()
                     body["approval"] = {"session_id": session_id, **value,
                                         "proposals": st["proposals"]}
                     return body, 202, ""
@@ -464,6 +529,7 @@ def _resume_decision(session_id: str, decision: str,
                         st["pending"] = True
                         st["value"] = value2
                         st["proposals"] = [t for _, t in checked2]
+                        st["created_at"] = time.time()
                         body["text"] = strip_agent_markers(out2)
                         body["exit"] = code2
                         body["approval"] = {"session_id": session_id,
@@ -634,6 +700,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
             "id": session_id, "repo": repo, "prompt": prompt,
             "started_at": time.time(), "aborted": False, "proc": None,
         }
+    _sweep_pending_resumes()
     ledger_append({"kind": "chat", "session_id": session_id, "repo": repo,
                    "prompt": user_text[:150], "event": "chat started"})
     start_time = time.time()
@@ -667,48 +734,85 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     full_response: list[str] = []
     scrubber = _TokenScrubber()
     is_aborted = False
+    timed_out = False
     code = 0
     err_tail = ""
+    # A hung child must not hold the stream forever: stdout drains on
+    # a daemon reader thread into a queue, and the loop takes each
+    # chunk with the remaining turn budget (CHAT_TURN_TIMEOUT total,
+    # mirroring agent_turn.TURN_TIMEOUT). On expiry the child is
+    # killed and the stream ends with an error event.
+    deadline = start_time + CHAT_TURN_TIMEOUT
+    _EOF = object()
+    read_q: queue.Queue = queue.Queue()
+
+    def _read_stdout() -> None:
+        try:
+            if proc.stdout is None:
+                return
+            for chunk in iter(lambda: proc.stdout.read(16), ""):
+                read_q.put(chunk)
+        except Exception as exc:
+            read_q.put(exc)
+        finally:
+            read_q.put(_EOF)
+
+    reader = threading.Thread(target=_read_stdout, daemon=True)
+    reader.start()
     try:
         yield sse_frame("phase", {"phase": "generating",
                                   "message": "Streaming response from model..."})
-        if proc.stdout:
-            for chunk in iter(lambda: proc.stdout.read(16), ""):
-                with chat_sessions_lock:
-                    sess = chat_sessions.get(session_id)
-                    if sess and sess.get("aborted"):
-                        is_aborted = True
-                        try:
-                            proc.terminate()
-                        except Exception:
-                            pass
-                        break
-                full_response.append(chunk)
-                clean = scrubber.feed(chunk)
-                if clean:
-                    yield sse_frame("token", {"token": clean})
-            tail = scrubber.flush()
-            if tail:
-                yield sse_frame("token", {"token": tail})
-        proc.wait()
+        while True:
+            with chat_sessions_lock:
+                sess = chat_sessions.get(session_id)
+                if sess and sess.get("aborted"):
+                    is_aborted = True
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    break
+            budget = deadline - time.time()
+            if budget <= 0:
+                timed_out = True
+                break
+            try:
+                chunk = read_q.get(timeout=budget)
+            except queue.Empty:
+                timed_out = True
+                break
+            if chunk is _EOF:
+                break
+            if isinstance(chunk, Exception):
+                raise chunk
+            full_response.append(chunk)
+            clean = scrubber.feed(chunk)
+            if clean:
+                yield sse_frame("token", {"token": clean})
+        tail = scrubber.flush()
+        if tail:
+            yield sse_frame("token", {"token": tail})
+        if timed_out or is_aborted:
+            _stop_proc(proc)
+        else:
+            try:
+                proc.wait(timeout=max(deadline - time.time(),
+                                      CHAT_KILL_GRACE))
+            except Exception:
+                timed_out = True
+                _stop_proc(proc)
         code = proc.returncode
-        err_tail = drained.tail()
+        err_tail = drained.tail(timeout=CHAT_KILL_GRACE)
     except GeneratorExit:
         # Client disconnected mid-stream: GeneratorExit is not an
         # Exception, so without this the LLM child keeps running
         # detached (SSE zombie, #294). Kill it, drop the session.
-        try:
-            proc.terminate()
-        except Exception:
-            pass
+        _stop_proc(proc)
         with chat_sessions_lock:
             chat_sessions.pop(session_id, None)
         raise
     except Exception as exc:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
+        _stop_proc(proc)
         code = 1
         yield sse_frame("error", {"error": str(exc)})
     with chat_sessions_lock:
@@ -726,6 +830,19 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat aborted",
                        "elapsed": elapsed})
+        return
+    if timed_out:
+        msg = f"chat timed out after {CHAT_TURN_TIMEOUT}s"
+        yield sse_frame("phase", {"phase": "error",
+                                  "error": msg,
+                                  "elapsed": elapsed})
+        yield sse_frame("error", {"error": msg})
+        record = {"kind": "chat", "session_id": session_id,
+                  "repo": repo, "event": "chat failed",
+                  "error": msg, "exit": code, "elapsed": elapsed}
+        if err_tail:
+            record["stderr"] = err_tail
+        ledger_append(record)
         return
     if code == 2:
         yield sse_frame("phase", {"phase": "error",

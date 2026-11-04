@@ -31,11 +31,18 @@ class FakeProc:
     def __init__(self, text="", code=0):
         self.stdout = FakeStdout(text)
         self.returncode = code
+        self.terminated = False
 
-    def wait(self):
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
         return self.returncode
 
     def terminate(self):
+        self.terminated = True
+
+    def kill(self):
         pass
 
 

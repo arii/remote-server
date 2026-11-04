@@ -3,8 +3,10 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -31,21 +33,38 @@ class FakeStdout(io.StringIO):
 
 
 class FakeProc:
-    def __init__(self, text="", block=None, code=0, err=None):
+    def __init__(self, text="", block=None, code=0, err=None,
+                 ignore_term=False):
         self.stdout = FakeStdout(text, block)
         if err is not None:
             self.stderr = io.StringIO(err)
         self.returncode = code
         self.terminated = False
+        self.killed = False
         self._block = block
+        self._ignore_term = ignore_term
 
-    def wait(self):
+    def poll(self):
+        if self.killed:
+            return self.returncode
+        if self.terminated and not self._ignore_term:
+            return self.returncode
+        return None
+
+    def wait(self, timeout=None):
+        if self._ignore_term and not self.killed:
+            raise subprocess.TimeoutExpired("fake", timeout)
         if self._block is not None:
             self._block.wait(timeout=10)
         return self.returncode
 
     def terminate(self):
         self.terminated = True
+        if not self._ignore_term and self._block is not None:
+            self._block.set()
+
+    def kill(self):
+        self.killed = True
         if self._block is not None:
             self._block.set()
 
@@ -357,6 +376,81 @@ class ChatOpsTest(unittest.TestCase):
         self.assertTrue(proc.terminated)
         self.assertNotIn("disc00000001", chat.chat_sessions)
 
+    def test_chat_stream_timeout_kills_hung_child(self):
+        block = threading.Event()
+        proc = FakeProc("hung", block)
+        chat.spawn_chat_process = lambda argv: proc
+        with mock.patch.object(chat, "CHAT_TURN_TIMEOUT", 0.2):
+            text = "".join(chat._chat_events(
+                "hi", "remote-server", "timeout00001"))
+        events = self._sse_events(type("R", (), {"text": text})())
+        self.assertEqual(events[-1][0], "error")
+        self.assertIn("timed out", events[-1][1]["error"])
+        phases = [p["phase"] for e, p in events if e == "phase"]
+        self.assertEqual(phases[-1], "error")
+        self.assertTrue(proc.terminated)
+        self.assertIsNotNone(proc.poll())
+        self.assertNotIn("timeout00001", chat.chat_sessions)
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            logged = [json.loads(line) for line in fh if line.strip()]
+        failed = [e for e in logged if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("timed out", failed[0]["error"])
+
+    def test_chat_abort_reaps_sigterm_ignoring_child(self):
+        block = threading.Event()
+        proc = FakeProc("partial", block, ignore_term=True)
+        with chat.chat_sessions_lock:
+            chat.chat_sessions["reap00000001"] = {
+                "id": "reap00000001", "aborted": False, "proc": proc}
+        try:
+            ok, err = chat._abort_session("reap00000001")
+        finally:
+            with chat.chat_sessions_lock:
+                chat.chat_sessions.pop("reap00000001", None)
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertTrue(proc.terminated)
+        self.assertTrue(proc.killed)
+        self.assertIsNotNone(proc.poll())
+
+    def test_pending_resumes_sweep_evicts_stale(self):
+        now = time.time()
+        old = now - chat.PENDING_RESUME_TTL - 1
+
+        def _entry(**kw):
+            base = {"gh": "arii/remote-server", "repo": "remote-server",
+                    "value": {"kind": "td"}, "proposals": ["P"],
+                    "pending": True, "busy": False, "created_at": now}
+            base.update(kw)
+            return base
+
+        chat.pending_resumes["stale0000001"] = _entry(created_at=old)
+        chat.pending_resumes["fresh0000001"] = _entry()
+        chat.pending_resumes["busy00000001"] = _entry(created_at=old,
+                                                     busy=True)
+        legacy = _entry(created_at=old)
+        del legacy["created_at"]
+        chat.pending_resumes["legacy000001"] = legacy
+        chat.spawn_chat_process = lambda argv: FakeProc("ok", code=0)
+        "".join(chat._chat_events("hi", "remote-server", "sweep0000001"))
+        self.assertNotIn("stale0000001", chat.pending_resumes)
+        self.assertNotIn("legacy000001", chat.pending_resumes)
+        self.assertIn("fresh0000001", chat.pending_resumes)
+        self.assertIn("busy00000001", chat.pending_resumes)
+
+    def test_chat_resume_stale_entry_is_unknown(self):
+        chat.pending_resumes["stale0000002"] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"kind": "td"}, "proposals": ["P"],
+            "pending": True, "busy": False,
+            "created_at": time.time() - chat.PENDING_RESUME_TTL - 1}
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "stale0000002",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 404)
+        self.assertNotIn("stale0000002", chat.pending_resumes)
+
     def _interrupt_text(self, value):
         blob = json.dumps({"thread_id": "sess00000001",
                            "interrupts": [{"id": "x", "value": value}]})
@@ -559,7 +653,11 @@ class ChatOpsTest(unittest.TestCase):
         events = self._sse_events(type("R", (), {"text": text})())
         done = [p for e, p in events if e == "done"][-1]
         self.assertTrue(done["aborted"])
-        self.assertEqual(done["text"], "ok")
+        # How many chunks land before the abort is noticed is timing
+        # (reader thread); the contract is stripped partial text.
+        self.assertNotIn("INTERRUPT:", done["text"])
+        self.assertNotIn("trace:", done["text"])
+        self.assertIn(done["text"], ("", "ok", "ok\nmore"))
 
     def test_token_scrubber_mirrors_strip_agent_markers(self):
         cases = [
@@ -590,7 +688,7 @@ class ChatOpsTest(unittest.TestCase):
         chat.pending_resumes["rsm000000001"] = {
             "gh": "arii/remote-server", "repo": "remote-server",
             "value": {"kind": "td"}, "proposals": ["P"],
-            "pending": True, "busy": False}
+            "pending": True, "busy": False, "created_at": time.time()}
         seen = []
         chat.run_resume_spawn = lambda *a: seen.append(a) or (0, "All done.")
         resp = self.client.post("/api/chat/resume",
@@ -621,7 +719,7 @@ class ChatOpsTest(unittest.TestCase):
         chat.pending_resumes["rsm000000003"] = {
             "gh": "arii/remote-server", "repo": "remote-server",
             "value": {"kind": "td"}, "proposals": ["P"],
-            "pending": True, "busy": False}
+            "pending": True, "busy": False, "created_at": time.time()}
         weird = 'INTERRUPT: {"thread_id": "t", "interrupts": [{"value": "?"}]}\n'
         calls = []
         outs = [(3, weird), (0, "stood down.")]
@@ -641,7 +739,7 @@ class ChatOpsTest(unittest.TestCase):
         chat.pending_resumes["rsm000000004"] = {
             "gh": "arii/remote-server", "repo": "remote-server",
             "value": {"kind": "td"}, "proposals": ["P"],
-            "pending": True, "busy": False}
+            "pending": True, "busy": False, "created_at": time.time()}
         chat.run_resume_spawn = lambda *a: (1, "")
         resp = self.client.post("/api/chat/resume",
                                json={"session_id": "rsm000000004",
@@ -650,7 +748,7 @@ class ChatOpsTest(unittest.TestCase):
         chat.pending_resumes["rsm000000005"] = {
             "gh": "arii/remote-server", "repo": "remote-server",
             "value": {"kind": "td"}, "proposals": ["P"],
-            "pending": True, "busy": False}
+            "pending": True, "busy": False, "created_at": time.time()}
         chat.run_resume_spawn = lambda *a: (-15, "")
         resp = self.client.post("/api/chat/resume",
                                json={"session_id": "rsm000000005",
@@ -663,7 +761,7 @@ class ChatOpsTest(unittest.TestCase):
         chat.pending_resumes["rsm000000002"] = {
             "gh": "arii/remote-server", "repo": "remote-server",
             "value": {"kind": "td"}, "proposals": ["P"],
-            "pending": True, "busy": False}
+            "pending": True, "busy": False, "created_at": time.time()}
         seen = []
         chat.run_resume_spawn = lambda *a: seen.append(a) or (0, "Declined.")
         resp = self.client.post("/api/chat/resume",
