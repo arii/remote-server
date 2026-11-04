@@ -6,7 +6,7 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 
 - GET /api/briefing?repo=  structured briefing passthrough
 - GET /api/status           backend status (health + empty run lists)
-- GET /api/ledger?kind=&limit=  newest-first audit entries
+- GET /api/ledger?kind=&limit=&since=  newest-first audit entries
 - POST /api/ledger/clear    truncate + tombstone
 
 Briefing reads are NOT ledgered: reads are not actions.
@@ -230,11 +230,13 @@ def status() -> dict:
 
 
 @router.get("/ledger", response_model=LedgerList)
-def ledger(kind: str = "all", limit: int = 50) -> dict:
+def ledger(kind: str = "all", limit: int = 50,
+           since: float = 0) -> dict:
     if kind != "all" and kind not in LEDGER_KINDS:
         raise HTTPException(status_code=400, detail="unknown kind")
     limit = max(1, min(200, limit))
-    return {"entries": ledger_read(kind, limit)}
+    since = max(0.0, since)
+    return {"entries": ledger_read(kind, limit, since)}
 
 
 @router.post("/ledger/clear", response_model=LedgerClearResult)

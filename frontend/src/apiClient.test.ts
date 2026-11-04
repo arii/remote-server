@@ -128,6 +128,13 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=10');
   });
 
+  it('passes since for windowed ledger reads (issue #609)', async () => {
+    const ledger = { entries: [] };
+    vi.stubGlobal('fetch', mockFetchJson(ledger));
+    expect(await fetchLedger('all', 200, 123.5)).toEqual(ledger);
+    expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=200&since=123.5');
+  });
+
   it('fetches system health', async () => {
     const sys = { disk: {}, memory: {}, containers: [] };
     vi.stubGlobal('fetch', mockFetchJson(sys));

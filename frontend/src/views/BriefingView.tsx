@@ -331,13 +331,41 @@ export function briefingActions(data: BriefingResponse): BriefingAction[] {
   return actions.slice(0, 3);
 }
 
-// 24h activity counts from ledger timestamps.
-export function dayTrend(entries: LedgerEntry[], nowSec: number): string {
-  const recent = entries.filter(
-    (e) => typeof e.ts === 'number' && e.ts >= nowSec - 86400,
-  );
+// Activity window presets (issue #609): the Recent activity
+// section counts + rows narrow to one fetch with ?since=.
+export type ActivityWindow = '1h' | '24h' | '7d';
+
+export const ACTIVITY_WINDOWS: Array<{ value: ActivityWindow; label: string; seconds: number }> = [
+  { value: '1h', label: '1h', seconds: 3600 },
+  { value: '24h', label: '24h', seconds: 86400 },
+  { value: '7d', label: '7d', seconds: 604800 },
+];
+
+export function activityWindowSeconds(window: ActivityWindow): number {
+  return ACTIVITY_WINDOWS.find((o) => o.value === window)?.seconds ?? 86400;
+}
+
+// Client-side window filter: the server pre-filters live reads via
+// ?since=, but mock data arrives unfiltered, so rows + counts narrow
+// here in every mode.
+export function inActivityWindow(
+  entries: LedgerEntry[],
+  window: ActivityWindow,
+  nowSec: number,
+): LedgerEntry[] {
+  const cutoff = nowSec - activityWindowSeconds(window);
+  return entries.filter((e) => typeof e.ts === 'number' && e.ts >= cutoff);
+}
+
+// Activity counts from ledger timestamps, labelled by window.
+export function dayTrend(
+  entries: LedgerEntry[],
+  nowSec: number,
+  window: ActivityWindow = '24h',
+): string {
+  const recent = inActivityWindow(entries, window, nowSec);
   const failures = recent.filter((e) => e.ok === false).length;
-  return `Last 24h: ${recent.length} event${recent.length === 1 ? '' : 's'}, ${failures} failure${failures === 1 ? '' : 's'}.`;
+  return `Last ${window}: ${recent.length} event${recent.length === 1 ? '' : 's'}, ${failures} failure${failures === 1 ? '' : 's'}.`;
 }
 
 // Condense-empties: when every section is empty and nothing errored,
@@ -384,6 +412,7 @@ export default function BriefingView({
   const [data, setData] = useState<BriefingResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[] | null>(null);
+  const [window, setWindow] = useState<ActivityWindow>('24h');
 
   async function load() {
     setError(null);
@@ -412,11 +441,23 @@ export default function BriefingView({
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
     })();
-    // Secondary: recent-activity highlights. Failure degrades to the
-    // empty state instead of breaking the briefing.
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
+  // Secondary: recent-activity highlights, narrowed server-side to
+  // the selected window (limit 200, the server max, so 7d keeps its
+  // older rows). Failure degrades to the empty state instead of
+  // breaking the briefing. Mock mode keeps its canned entries.
+  useEffect(() => {
+    let cancelled = false;
+    if (useMock()) return;
     (async () => {
       try {
-        const live = await fetchLedger('all', 100);
+        const since = Date.now() / 1000 - activityWindowSeconds(window);
+        const live = await fetchLedger('all', 200, since);
         if (!cancelled) setLedger(live.entries);
       } catch {
         if (!cancelled) setLedger([]);
@@ -426,7 +467,7 @@ export default function BriefingView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repo]);
+  }, [repo, window]);
 
   if (!data && !error) return <section data-testid="briefing-loading" role="status">Loading…</section>;
 
@@ -457,6 +498,8 @@ export default function BriefingView({
           ledger={ledger}
           onAskAgent={onAskAgent}
           onOpenHistory={onOpenHistory}
+          window={window}
+          onWindowChange={setWindow}
         />
       )}
     </section>
@@ -468,14 +511,20 @@ export function BriefingBody({
   ledger,
   onAskAgent,
   onOpenHistory,
+  window = '24h',
+  onWindowChange = () => {},
 }: {
   data: BriefingResponse;
   ledger: LedgerEntry[] | null;
   onAskAgent: (seed: string) => void;
   onOpenHistory: () => void;
+  window?: ActivityWindow;
+  onWindowChange?: (window: ActivityWindow) => void;
 }) {
   const actions = briefingActions(data);
-  const highlights = toHistoryRows([], ledger ?? []).slice(0, 3);
+  const nowSec = Date.now() / 1000;
+  const inWindow = inActivityWindow(ledger ?? [], window, nowSec);
+  const highlights = toHistoryRows([], inWindow).slice(0, 3);
   const freshness = briefingFreshness(data);
   return (
     <>
@@ -530,6 +579,24 @@ export function BriefingBody({
       </section>
       <section aria-label="Recent activity">
         <h3>Recent activity</h3>
+        <div
+          className="actions"
+          role="group"
+          aria-label="Activity window"
+          data-testid="briefing-activity-window"
+        >
+          {ACTIVITY_WINDOWS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              data-testid={`briefing-window-${o.value}`}
+              aria-pressed={window === o.value}
+              onClick={() => onWindowChange(o.value)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
         {highlights.length > 0 ? (
           <ul className="session-list" data-testid="briefing-highlights">
             {highlights.map((r) => (
@@ -544,7 +611,9 @@ export function BriefingBody({
         ) : (
           <p className="row-meta">No recent activity to show.</p>
         )}
-        <p className="row-meta">{dayTrend(ledger ?? [], Date.now() / 1000)}</p>
+        <p className="row-meta" data-testid="briefing-trend">
+          {dayTrend(inWindow, nowSec, window)}
+        </p>
         <div className="actions">
           <button type="button" data-testid="briefing-history" onClick={onOpenHistory}>
             Full log in History

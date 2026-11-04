@@ -230,6 +230,27 @@ class BriefingLedgerTest(unittest.TestCase):
         resp = self.client.get("/api/ledger", params={"kind": "jules"})
         self.assertEqual(resp.status_code, 400)
 
+    def test_ledger_since_filter(self):
+        now = time.time()
+        rows = [
+            {"kind": "run", "event": "old", "ts": now - 90000},
+            {"kind": "run", "event": "new", "ts": now - 10},
+            {"kind": "run", "event": "ageless"},
+        ]
+        with open(os.environ["BUTTONS_LEDGER_PATH"], "w") as fh:
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+        resp = self.client.get("/api/ledger", params={"since": now - 3600})
+        self.assertEqual(resp.status_code, 200)
+        events = [e["event"] for e in resp.json()["entries"]]
+        # Old entry dropped, newest first, ageless kept.
+        self.assertEqual(events, ["ageless", "new"])
+        # since=0 (and negative) disables the filter.
+        resp = self.client.get("/api/ledger", params={"since": 0})
+        self.assertEqual(len(resp.json()["entries"]), 3)
+        resp = self.client.get("/api/ledger", params={"since": -5})
+        self.assertEqual(len(resp.json()["entries"]), 3)
+
     def test_ledger_clear_semantics(self):
         ledger.append({"kind": "run", "action": "x"})
         resp = self.client.post("/api/ledger/clear")

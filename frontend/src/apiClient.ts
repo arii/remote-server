@@ -157,10 +157,11 @@ export async function createIssue(repo: string, title: string, body: string): Pr
 export function fetchLedger(
   kind = 'all',
   limit = 50,
+  since?: number,
 ): Promise<LedgerResponse> {
-  return getJson<LedgerResponse>(
-    `api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`,
-  );
+  const qs = `api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`
+    + (since !== undefined ? `&since=${since}` : '');
+  return getJson<LedgerResponse>(qs);
 }
 
 export interface WorkflowRun {
