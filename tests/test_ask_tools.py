@@ -228,6 +228,14 @@ class TestAskTools(unittest.TestCase):
         self.assertFalse(os.path.exists(
             os.path.join(self.tmp.name, "SMUGGLED")))
 
+    def test_fetch_url_registered_and_guarded(self):
+        self.assertIn("256KB", ai.fetch_url.description)
+        # Guarded shapes fail without touching the network.
+        out = ai.fetch_url.invoke({"url": "http://10.0.0.1/"})
+        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+        out = ai.fetch_url.invoke({"url": "gopher://x/y"})
+        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+
 
 class TestAskModelConfig(unittest.TestCase):
     def test_blank_env_falls_back_to_defaults(self):

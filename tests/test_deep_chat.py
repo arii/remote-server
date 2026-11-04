@@ -451,13 +451,13 @@ class TestTrivialTrace(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
-    def test_six_tools(self):
+    def test_seven_tools(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 6)
+        self.assertEqual(len(tools), 7)
         self.assertEqual(
             {t.name for t in tools},
             {"read_repo_file", "grep_repo", "list_dir", "search_docs",
-             "propose_action", "run_repo_command"},
+             "propose_action", "run_repo_command", "fetch_url"},
         )
 
     def test_read_grep_list_delegate(self):
@@ -523,6 +523,16 @@ class TestToolSurface(unittest.TestCase):
             out = by_name["run_repo_command"].invoke(
                 {"command": "npx tsc --noEmit"})
             self.assertIn("REJECTED", out)
+
+    def test_fetch_url_tool(self):
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        tool = by_name["fetch_url"]
+        self.assertIn("256KB", tool.description)
+        # Guarded shapes fail without touching the network.
+        out = tool.invoke({"url": "http://169.254.169.254/"})
+        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+        out = tool.invoke({"url": "file:///etc/passwd"})
+        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
@@ -599,6 +609,35 @@ class TestAgentMechanics(unittest.TestCase):
             self.assertEqual(
                 done["messages"][-1].content,
                 "exit was 0, tail shows TURN-MARKER")
+
+    def test_fetch_tool_runs_in_turn(self):
+        from unittest import mock
+
+        from langchain_core.messages import AIMessage
+
+        import s5tools
+
+        call = AIMessage(content="", tool_calls=[{
+            "name": "fetch_url",
+            "args": {"url": "https://docs.example.com/x"},
+            "id": "call-fetch", "type": "tool_call"}])
+        agent, config = self._stub_agent(
+            [call, AIMessage(content="the docs say FROBNICATE")],
+            thread="t-fetch")
+        with mock.patch.object(
+                s5tools, "fetch_url",
+                return_value="upstream text FROBNICATE") as fetch:
+            done = agent.invoke(
+                {"messages": [{"role": "user",
+                               "content": "read the upstream docs"}]},
+                config)
+        fetch.assert_called_once_with("https://docs.example.com/x")
+        joined = "\n".join(
+            str(m.content) for m in done["messages"]
+            if m.__class__.__name__ == "ToolMessage")
+        self.assertIn("FROBNICATE", joined)
+        self.assertEqual(done["messages"][-1].content,
+                         "the docs say FROBNICATE")
 
     def test_pause_then_approve_executes(self):
         from langchain_core.messages import AIMessage
