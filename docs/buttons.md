@@ -587,14 +587,16 @@ deliberate. td defaults to JSON output, and its human mode for
 search-prs only prints "Found N PRs", so neither td mode gives a
 briefing a person can act on. The summarizer (`buttons/
 briefing_summary.py`, stdlib only, run with cwd = the picked
-repo's checkout) parses `td --json gh search-prs --state open`,
-`td --json gh status-board`, `td --json gh detect-conflicts --all`,
-and `td --json repo workflow-runs` (`--json` is a top-level td
-flag — per-subcommand `--json` fails on real td for all but
-search-prs), then enriches each open PR with `gh pr view` (CI
-from `statusCheckRollup`, review decision, merge state) — td's
-PR data carries no CI state, so this step is what makes
-"CI: failing" a real claim. `gh` is authed in the terminal
+repo's checkout) parses `gh pr list --state open` (REST, not
+search — the search index lags merges by minutes), `td --json gh
+status-board`, `td --json gh detect-conflicts --all`, and `td --json
+repo workflow-runs` (`--json` is a top-level td flag —
+per-subcommand `--json` fails on real td for all but search-prs),
+plus `gh pr list --state merged` to relabel board rows whose branch
+still shows Open after its PR merged, then enriches each open PR
+with `gh pr view` (CI from `statusCheckRollup`, review decision,
+merge state) — the list source carries no CI state, so this step is
+what makes "CI: failing" a real claim. `gh` is authed in the terminal
 container; if a `gh` call fails, that PR's CI reads "unknown"
 instead of failing the whole briefing, and any source that fails
 degrades only its own section.

@@ -34,10 +34,16 @@ Modes:
 
 Data (all stdlib, all defensive — an unknown field shape degrades
 one section, never the whole briefing):
-  td --json gh search-prs --state open
-      PRSummary: number, title, author, headRefName, baseRefName,
-      isDraft, mergeStateStatus, updatedAt, url. NOTE: no CI state,
-      no reviews, no changed files — that is why gh enrichment exists.
+  gh pr list --state open
+      number, title, author, headRefName, baseRefName, isDraft,
+      mergeStateStatus, updatedAt, url. REST, not search: GitHub's
+      search index lags merges by minutes and briefing surfaced
+      merged PRs as open (#446). NOTE: no CI state, no reviews,
+      no changed files — that is why gh enrichment exists.
+  gh pr list --state merged
+      Recently-merged heads, to relabel status-board rows whose
+      branch still shows Open after its PR merged (branches here
+      are not auto-deleted, so the board row lingers).
   gh pr view N --json ...statusCheckRollup,reviewDecision,mergeable...
       CI from statusCheckRollup (failing / pending / passing /
       no checks), reviewDecision, mergeable.
@@ -352,12 +358,27 @@ def _overlap_prs(node, out, in_conf=False):
             _overlap_prs(item, out, in_conf)
 
 
+PR_LIST_FIELDS = ("number,title,author,headRefName,baseRefName,"
+                  "isDraft,mergeStateStatus,updatedAt,url")
+
+
 def fetch():
     """Gather everything; each source degrades independently."""
     data = {}
+    # REST source, not td search-prs: the search index lags merges
+    # by minutes (#446). gh pr list returns a bare list.
     data["prs"], data["prs_raw"], data["prs_err"] = run_json(
-        ["td", "--json", "gh", "search-prs", "--state", "open",
-         "--repo", REPO_GH], 60)
+        ["gh", "pr", "list", "--state", "open", "--repo", REPO_GH,
+         "--limit", "50", "--json", PR_LIST_FIELDS], 60)
+    # Recently-merged heads for the board relabel below. Failure
+    # degrades to today's board rendering (no relabel), never an
+    # error section: this is enrichment, like the per-PR gh views.
+    merged, _, _ = run_json(
+        ["gh", "pr", "list", "--state", "merged", "--repo", REPO_GH,
+         "--limit", "50", "--json", "number,headRefName"], 30)
+    data["merged_heads"] = {
+        row.get("headRefName") for row in (merged or [])
+        if isinstance(row, dict) and row.get("headRefName")}
     # status-board/detect-conflicts have no --repo flag: they read the
     # checkout td discovers from cwd. Scope via the target checkout
     # when it exists; otherwise say so instead of showing the wrong
@@ -378,8 +399,8 @@ def fetch():
             cwd=scoped_cwd)
     data["runs"], data["runs_raw"], data["runs_err"] = run_json(
         ["td", "--json", "repo", "workflow-runs", "--repo", REPO_GH], 60)
-    prs = getf(data["prs"], "prs", default=[]) if data["prs"] else []
-    data["pr_list"] = prs if isinstance(prs, list) else []
+    prs = data["prs"] if isinstance(data["prs"], list) else []
+    data["pr_list"] = [p for p in prs if isinstance(p, dict)]
     # gh enrichment, one call per open PR (counts here are small).
     data["gh"] = {}
     for pr in data["pr_list"]:
@@ -637,6 +658,16 @@ def analyze(data):
     board = getf(data["board"], "work", default=[]) if data["board"] else []
     board_items = []
     board_lines = []
+    # Branches whose PR already merged but whose board row still says
+    # Open (status-board lags like search did; branches here are not
+    # auto-deleted so the row lingers). Relabel, never drop: the row
+    # still names a live branch. A branch with an open PR is never
+    # relabeled, even if an older same-branch PR merged.
+    merged_heads = {h for h in (data.get("merged_heads") or set())
+                    if h}
+    open_heads = {getf(p, "headRefName", "head_ref_name")
+                  for p in prs if isinstance(p, dict)}
+    open_heads = {h for h in open_heads if h}
     if data["board_err"]:
         board_lines.append(f"Work board unavailable: {data['board_err']}")
     elif isinstance(board, list) and board:
@@ -649,6 +680,10 @@ def analyze(data):
             branch = _present(getf(item, "branch", default="?")) or "?"
             issue = _present(getf(item, "issue", default="?"))
             status = _present(getf(item, "status", default="?"))
+            if (status.lower() == "open" and branch != "?"
+                    and branch in merged_heads
+                    and branch not in open_heads):
+                status = "Merged"
             board_items.append({
                 "branch": branch,
                 "issue": issue,
@@ -866,7 +901,7 @@ def build(data, analysis=None):
     lines.append("")
 
     raw_parts = []
-    for name, key in (("search-prs", "prs_raw"), ("status-board", "board_raw"),
+    for name, key in (("pr-list", "prs_raw"), ("status-board", "board_raw"),
                       ("detect-conflicts", "conf_raw"),
                       ("workflow-runs", "runs_raw")):
         raw = data[key]

@@ -14,9 +14,11 @@ import core_cli.briefing_summary as bs
 
 
 def _payload_for(argv):
-    if "search-prs" in argv:
-        return {"prs": [{"number": 1095, "title": "t",
-                          "headRefName": "b"}]}, "", ""
+    if argv[:3] == ["gh", "pr", "list"]:
+        if "merged" in argv:
+            return [{"number": 1094, "headRefName": "old"}], "", ""
+        return [{"number": 1095, "title": "t",
+                 "headRefName": "b"}], "", ""
     if argv[:3] == ["gh", "pr", "view"]:
         return {"number": 1095}, "", ""
     if "read-pr-reviews" in argv:
