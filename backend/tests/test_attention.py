@@ -66,7 +66,8 @@ class AttentionShapeTest(unittest.TestCase):
                 "error": "timeout"}],
             list_skipped_webhooks=lambda: [{
                 "id": "s1", "ts": 2.5, "ok": True, "advanced": False,
-                "repo": "r", "detail": "skipped: tree dirty"}],
+                "repo": "remote-server",
+                "detail": "skipped: tree dirty"}],
             list_pending_approvals=lambda: [{
                 "id": "a1", "ts": 3.0, "title": "Approve?",
                 "event": "approval requested"}],
@@ -267,7 +268,7 @@ class AttentionShapeTest(unittest.TestCase):
             ollama_up=lambda: True,
         )
         try:
-            body = attention.attention("remote-server")
+            body = attention.attention("boomtick")
         finally:
             self._restore(orig)
         items = [i for i in body["items"]
@@ -279,6 +280,96 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertIn("skipped: tree dirty", item["detail"])
         self.assertTrue(item["action"]["label"])
         self.assertTrue(item["action"]["href"])
+
+    def test_single_repo_filters_global_sources(self):
+        # Issue #723: a single-repo feed carries only its own
+        # items — foreign failed jobs/webhooks/skips/approvals
+        # stay out, in both repo spellings. Legacy records with
+        # no repo stay visible under the queried repo.
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [
+                {"id": "own", "name": "n", "state": "failed",
+                 "repo": "remote-server", "created_at": 1.0},
+                {"id": "foreign", "name": "n", "state": "failed",
+                 "repo": "boomtick", "created_at": 1.0},
+                {"id": "legacy", "name": "n", "state": "failed",
+                 "created_at": 1.0},
+            ],
+            list_failed_webhooks=lambda: [
+                {"id": "w-own", "ts": 2.0, "ok": False,
+                 "repo": "arii/remote-server", "error": "timeout"},
+                {"id": "w-foreign", "ts": 2.0, "ok": False,
+                 "repo": "arii/boomtick", "error": "timeout"},
+            ],
+            list_skipped_webhooks=lambda: [
+                {"id": "s-own", "ts": 2.5, "ok": True,
+                 "advanced": False, "repo": "remote-server",
+                 "detail": "skipped: tree dirty"},
+                {"id": "s-foreign", "ts": 2.5, "ok": True,
+                 "advanced": False, "repo": "boomtick",
+                 "detail": "skipped: tree dirty"},
+            ],
+            list_pending_approvals=lambda: [
+                {"id": "a-own", "ts": 3.0, "title": "Approve?",
+                 "repo": "remote-server",
+                 "event": "approval requested"},
+                {"id": "a-foreign", "ts": 3.0, "title": "Approve?",
+                 "repo": "boomtick",
+                 "event": "approval requested"},
+            ],
+            ollama_up=lambda: True,
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        items = body["items"]
+        self.assertTrue(items)
+        for item in items:
+            self.assertEqual(item["repo"], "remote-server")
+        ids = {i["id"] for i in items}
+        self.assertIn("job-own", ids)
+        self.assertIn("job-legacy", ids)
+        self.assertNotIn("job-foreign", ids)
+        self.assertTrue(any(i["kind"] == "failed-webhook"
+                            for i in items))
+        self.assertTrue(any(i["kind"] == "skipped-webhook"
+                            for i in items))
+        self.assertTrue(any(i["kind"] == "pending-approval"
+                            for i in items))
+        # Symmetric: the foreign repo sees its own rows only.
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [
+                {"id": "own", "name": "n", "state": "failed",
+                 "repo": "remote-server", "created_at": 1.0},
+                {"id": "foreign", "name": "n", "state": "failed",
+                 "repo": "boomtick", "created_at": 1.0},
+            ],
+            list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [
+                {"id": "s-own", "ts": 2.5, "ok": True,
+                 "advanced": False, "repo": "remote-server",
+                 "detail": "skipped: tree dirty"},
+                {"id": "s-foreign", "ts": 2.5, "ok": True,
+                 "advanced": False, "repo": "boomtick",
+                 "detail": "skipped: tree dirty"},
+            ],
+            list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
+        )
+        try:
+            body = attention.attention("boomtick")
+        finally:
+            self._restore(orig)
+        ids = {i["id"] for i in body["items"]}
+        self.assertIn("job-foreign", ids)
+        self.assertNotIn("job-own", ids)
+        self.assertEqual(
+            {i["id"] for i in body["items"]
+             if i["kind"] == "skipped-webhook"},
+            {"webhook-skip-s-foreign"})
 
 
 class SnoozeAttentionTest(unittest.TestCase):

@@ -191,14 +191,27 @@ export function StackSection({ health }: { health: SystemHealthResponse | null }
   );
 }
 
-// Rollup-only repo tag (issue #610): single-repo rows render no
-// tag, so single-repo mode stays pixel-identical.
+// Repo tag (issue #610, extended #723): rollup rows always tag;
+// single-repo rows tag only when the row's repo differs from the
+// view — foreign rows should not occur after the backend scoping
+// fix, so single-repo mode stays pixel-identical and the tag is
+// the backstop that keeps a leak distinguishable.
 export function RepoTag({ repo }: { repo: string }) {
   return (
     <span className="repo-chip" data-testid={`now-repo-${repo}`}>
       {repo}
     </span>
   );
+}
+
+export function showRepoTag(rollup: boolean, itemRepo: string, viewRepo: string): boolean {
+  return rollup || itemRepo !== viewRepo;
+}
+
+// Ask-agent seed (issue #723): always the row's own repo, never
+// the view repo — a foreign row must still seed its own context.
+export function askAgentSeed(item: AttentionItem): string {
+  return `${item.title} (${item.repo}): ${item.detail}`;
 }
 
 function sevClass(severity: string): string {
@@ -390,8 +403,8 @@ export default function NowView({
     setSnoozeBusy(item.id);
     try {
       // Snooze against the row's own repo: the view repo is the
-      // rollup pseudo-repo in All repos mode, and cross-repo rows
-      // (failed jobs, webhooks) already carry a foreign repo.
+      // rollup pseudo-repo in All repos mode, where rows carry
+      // their own repos.
       const res = await snoozeAttention(item.id, minutes, item.repo);
       // Re-assert with the server timestamp: a poll refresh may have
       // dropped the optimistic stub mid-flight.
@@ -590,7 +603,7 @@ export default function NowView({
               />
             ) : (
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
-              {rollup ? (
+              {showRepoTag(rollup, item.repo, repo) ? (
                 <span className="row-title">
                   <RepoTag repo={item.repo} /> {item.title}
                 </span>
@@ -617,9 +630,7 @@ export default function NowView({
                 <button
                   type="button"
                   data-testid={`ask-agent-${item.id}`}
-                  onClick={() =>
-                    onAskAgent(`${item.title} (${item.repo}): ${item.detail}`)
-                  }
+                  onClick={() => onAskAgent(askAgentSeed(item))}
                 >
                   Ask agent
                 </button>

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  askAgentSeed,
   reconcileSnoozed,
   RepoTag,
+  showRepoTag,
   SnoozedStub,
   SNOOZE_PRESETS,
   SnoozeButtons,
@@ -10,6 +12,7 @@ import {
   snoozePresetLabel,
 } from './NowView';
 import { ALL_REPOS, isRollupRepo } from '../components/RepoPicker';
+import type { AttentionItem } from '../attentionTypes';
 
 describe('snooze presets (issue #614)', () => {
   it('offers 1h and 8h', () => {
@@ -101,5 +104,30 @@ describe('rollup repo (issue #610)', () => {
     expect(html).toContain('data-testid="now-repo-boomtick"');
     expect(html).toContain('repo-chip');
     expect(html).toContain('boomtick');
+  });
+});
+
+describe('single-repo scoping (issue #723)', () => {
+  it('tags rollup rows and foreign single-mode rows only', () => {
+    expect(showRepoTag(true, 'boomtick', 'all')).toBe(true);
+    expect(showRepoTag(true, 'remote-server', 'all')).toBe(true);
+    expect(showRepoTag(false, 'boomtick', 'boomtick')).toBe(false);
+    expect(showRepoTag(false, 'remote-server', 'boomtick')).toBe(true);
+  });
+
+  it('seeds Ask agent from the row repo, never the view repo', () => {
+    const item: AttentionItem = {
+      id: 'webhook-skip-1',
+      kind: 'skipped-webhook',
+      title: 'Webhook pull skipped — checkout lagging',
+      detail: 'skipped: tree not ff-able',
+      repo: 'remote-server',
+      severity: 'info',
+      action: { label: '', method: 'GET', href: '', destructive: false, intent: '' },
+      created_at: 1,
+    };
+    expect(askAgentSeed(item)).toBe(
+      'Webhook pull skipped — checkout lagging (remote-server): skipped: tree not ff-able',
+    );
   });
 });
