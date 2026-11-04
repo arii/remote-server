@@ -30,6 +30,9 @@ class RealRoutersTest(unittest.TestCase):
         self.assertIsInstance(body["containers"], list)
 
     def test_repo_status_validated(self):
+        import subprocess
+        import tempfile
+
         # Bad name -> 400.
         resp = self.client.get("/api/repo/status", params={"repo": "a/b/c"})
         self.assertEqual(resp.status_code, 400)
@@ -37,20 +40,34 @@ class RealRoutersTest(unittest.TestCase):
         resp = self.client.get(
             "/api/repo/status", params={"repo": "no-such-repo-xyz"})
         self.assertEqual(resp.status_code, 404)
-        # Real checkout honours BUTTONS_REPOS_DIR; fall back to this repo.
-        os.environ.setdefault("BUTTONS_REPOS_DIR", "/tmp")
-        from backend import core
-        real = os.path.dirname(
-            os.path.dirname(os.path.abspath(core.__file__)))
-        os.environ["BUTTONS_REPOS_DIR"] = os.path.dirname(real)
-        name = os.path.basename(real)
-        resp = self.client.get("/api/repo/status", params={"repo": name})
-        if resp.status_code == 200:
-            body = resp.json()
-            self.assertEqual(body["repo"], name)
-            self.assertIn("branch", body)
-            self.assertIn("short", body)
-            self.assertIn("clean", body)
+        # Real checkout honours BUTTONS_REPOS_DIR.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "demo")
+            os.makedirs(path)
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                   "GIT_COMMITTER_NAME": "t",
+                   "GIT_COMMITTER_EMAIL": "t@t"}
+            subprocess.run(["git", "init", "-q"], cwd=path, env=env,
+                           check=True)
+            old_repos_dir = os.environ.get("BUTTONS_REPOS_DIR")
+            self.addCleanup(self._restore_repos_dir, old_repos_dir)
+            os.environ["BUTTONS_REPOS_DIR"] = tmp
+            resp = self.client.get(
+                "/api/repo/status", params={"repo": "demo"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["repo"], "demo")
+        self.assertIn("branch", body)
+        self.assertIn("short", body)
+        self.assertIn("clean", body)
+
+    @staticmethod
+    def _restore_repos_dir(old):
+        if old is None:
+            os.environ.pop("BUTTONS_REPOS_DIR", None)
+        else:
+            os.environ["BUTTONS_REPOS_DIR"] = old
 
     def test_system_stats_shape(self):
         resp = self.client.get("/api/system/stats")
