@@ -20,6 +20,8 @@ import {
   invalidateViewCaches,
   postAgentTurn,
   startJobRun,
+  subscribeJobsPush,
+  subscribeRunPush,
   warmViewCaches,
 } from './apiClient';
 
@@ -331,5 +333,127 @@ describe('route hint', () => {
     const hint = await fetchRouteHint('cloud');
     expect(hint).toEqual(body);
     expect(String(fetchMock.mock.calls[0][0])).toContain('prefer=cloud');
+  });
+});
+
+describe('jobs push subscriptions', () => {
+  interface FakeSource {
+    url: string;
+    listeners: Record<string, Array<(e: { data: string }) => void>>;
+    onmessage: ((e: { data: string }) => void) | null;
+    onerror: (() => void) | null;
+    closed: boolean;
+    addEventListener(type: string, fn: (e: { data: string }) => void): void;
+    close(): void;
+    emit(type: string, data: string): void;
+    fail(): void;
+  }
+
+  function makeFactory(seen: FakeSource[]) {
+    return (url: string): FakeSource => {
+      const src: FakeSource = {
+        url,
+        listeners: {},
+        onmessage: null,
+        onerror: null,
+        closed: false,
+        addEventListener(type, fn) {
+          (src.listeners[type] ??= []).push(fn);
+        },
+        close() {
+          src.closed = true;
+        },
+        emit(type, data) {
+          for (const fn of src.listeners[type] ?? []) fn({ data });
+        },
+        fail() {
+          src.onerror?.();
+        },
+      };
+      seen.push(src);
+      return src;
+    };
+  }
+
+  it('streams job lists and reports liveness', () => {
+    const seen: FakeSource[] = [];
+    const jobs: unknown[] = [];
+    const live: boolean[] = [];
+    const unsub = subscribeJobsPush(
+      {
+        onJobs: (j) => jobs.push(j),
+        onLive: (l) => live.push(l),
+      },
+      makeFactory(seen),
+    );
+    expect(seen[0].url).toContain('api/jobs/stream');
+    seen[0].emit('jobs', JSON.stringify({ jobs: [{ id: 'a' }] }));
+    expect(live).toEqual([true]);
+    expect(jobs).toEqual([[{ id: 'a' }]]);
+    seen[0].emit('jobs', 'not json');
+    expect(jobs).toHaveLength(1);
+    unsub();
+    expect(seen[0].closed).toBe(true);
+  });
+
+  it('closes on channel error and reports dead', () => {
+    const seen: FakeSource[] = [];
+    const live: boolean[] = [];
+    subscribeJobsPush({ onJobs: () => {}, onLive: (l) => live.push(l) }, makeFactory(seen));
+    seen[0].fail();
+    expect(live).toEqual([false]);
+    expect(seen[0].closed).toBe(true);
+  });
+
+  it('streams run progress, ends on done, falls back on death', () => {
+    const seen: FakeSource[] = [];
+    const tails: string[] = [];
+    let done = 0;
+    let dead = 0;
+    subscribeRunPush(
+      'abc123def456',
+      {
+        onProgress: (p) => tails.push(p.output),
+        onDone: () => done++,
+        onDead: () => dead++,
+      },
+      makeFactory(seen),
+    );
+    expect(seen[0].url).toContain('api/jobs/runs/abc123def456/stream');
+    seen[0].emit(
+      'progress',
+      JSON.stringify({ done: false, output: 'half', exit_code: null, action: 'logs' }),
+    );
+    expect(tails).toEqual(['half']);
+    seen[0].emit(
+      'progress',
+      JSON.stringify({ done: true, output: 'full', exit_code: 0, action: 'logs' }),
+    );
+    expect(done).toBe(1);
+    expect(seen[0].closed).toBe(true);
+    // Death before done triggers fallback; after done it is ignored.
+    const seen2: FakeSource[] = [];
+    let dead2 = 0;
+    subscribeRunPush(
+      'abc123def456',
+      { onProgress: () => {}, onDone: () => {}, onDead: () => dead2++ },
+      makeFactory(seen2),
+    );
+    seen2[0].fail();
+    expect(dead2).toBe(1);
+    expect(dead).toBe(0);
+  });
+
+  it('treats a gone frame as dead', () => {
+    const seen: FakeSource[] = [];
+    let dead = 0;
+    subscribeRunPush(
+      'abc123def456',
+      { onProgress: () => {}, onDone: () => {}, onDead: () => dead++ },
+      makeFactory(seen),
+    );
+    seen[0].emit('gone', JSON.stringify({ error: 'unknown run' }));
+    expect(dead).toBe(1);
+    expect(seen[0].closed).toBe(true);
   });
 });

@@ -27,7 +27,8 @@ import RepairSection from './RepairSection';
 import TdCommands from './TdCommands';
 import type { TdCommand } from './TdCommands';
 import { useMergeReady, usePrRefState } from './useJobsData';
-import { useRunPolling } from './useRunPolling';
+import { useJobsPush } from './useJobsPush';
+import { useRunSubscription } from './useRunSubscription';
 
 function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
@@ -276,7 +277,7 @@ export default function JobsView({
     setJobs(live.jobs);
   }, []);
 
-  const { startPolling } = useRunPolling({
+  const { trackRun } = useRunSubscription({
     setTail,
     setRunning,
     setNotice,
@@ -284,22 +285,28 @@ export default function JobsView({
     reload: load,
   });
 
+  // Push-first list: the jobs stream replaces polling while the
+  // channel is live (Now embeds this view, so it inherits push).
+  const pushLive = useJobsPush(setJobs);
+
   useEffect(() => {
     void guarded(load);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
-  // Live list: re-fetch while a run is active so completion lands
-  // without a manual Refresh. Paused in a hidden tab.
+  // Fallback list poll: re-fetch while a run is active and the push
+  // channel is down, so completion lands without a manual Refresh.
+  // Paused in a hidden tab.
   useEffect(() => {
     if (useMock()) return;
+    if (pushLive) return;
     if (!jobs || (!jobsListActive(jobs) && !running)) return;
     const timer = window.setInterval(() => {
       if (!document.hidden) void guarded(load);
     }, 5000);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs, running, load]);
+  }, [jobs, running, load, pushLive]);
 
   async function onSelectRun(id: string) {
     const r = await fetchJobRun(id);
@@ -326,13 +333,13 @@ export default function JobsView({
       if (!attached) throw err;
       setRunId(attached);
       setNotice(`Already running — attached to ${attached}.`);
-      if (!useMock()) startPolling(attached, label, repo);
+      if (!useMock()) trackRun(attached, label, repo);
       return;
     }
     setRunId(id);
     setNotice(`Started ${label}: ${id}`);
     if (useMock()) return;
-    if (/^[0-9a-f]{12}$/.test(id)) startPolling(id, label, repo);
+    if (/^[0-9a-f]{12}$/.test(id)) trackRun(id, label, repo);
     else await load();
   }
 
