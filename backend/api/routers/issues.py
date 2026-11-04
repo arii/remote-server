@@ -169,7 +169,9 @@ def _repair_worker_thread(issue_number: int) -> None:
         code = proc.wait()
         with repair_state_lock:
             _repair_proc = None
-            if _repair_abort:
+            if _repair_abort and code is not None and code < 0:
+                # Abort only counts when it killed the proc (signal
+                # exit); a natural exit after a late abort stays done.
                 repair_state["status"] = "aborted"
                 repair_state["exit_code"] = None
                 repair_state["log_buffer"] += "\nAborted by user.\n"
@@ -344,6 +346,10 @@ def repair_abort() -> dict:
         return {"ok": True, "killed": False}
     try:
         if proc.poll() is not None:
+            # Already exited on its own: nothing to kill, so clear the
+            # flag set above instead of poisoning the status write.
+            with repair_state_lock:
+                _repair_abort = False
             return {"ok": True, "killed": False}
     except Exception:
         return {"ok": True, "killed": False}
