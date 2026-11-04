@@ -4,6 +4,7 @@ import {
   abortAgentSession,
   abortRepair,
   apiUrl,
+  cancelJobRun,
   approvePr,
   chatStreamUrl,
   fetchAgentProviders,
@@ -78,6 +79,16 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/repair/abort',
       expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('posts run cancels with an empty body (issue #589)', async () => {
+    const res = { ok: true, id: 'abc123def456' };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await cancelJobRun('abc123def456')).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/jobs/runs/abc123def456/cancel',
+      expect.objectContaining({ method: 'POST', body: '{}' }),
     );
   });
 

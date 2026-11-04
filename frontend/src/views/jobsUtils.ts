@@ -24,6 +24,12 @@ export function isNotFoundError(message: string): boolean {
   return /: 404\b/.test(message);
 }
 
+// Finished-record detection for cancel: the run completed between
+// the list snapshot and the tap, so cancel 409s.
+export function isConflictError(message: string): boolean {
+  return /: 409\b/.test(message);
+}
+
 // Plan filename from a create-plan result line ("wrote <path>.md").
 export function planNameFromResult(result: string): string | null {
   const m = result.trim().match(/^wrote\s+(.+\.md)$/);

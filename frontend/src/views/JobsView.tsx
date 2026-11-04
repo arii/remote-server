@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
+  cancelJobRun,
   clearJobs,
   fetchJobRun,
   fetchJobs,
@@ -18,6 +19,7 @@ import {
   attachIdFromConflict,
   conflictBlockReason,
   fixCiBlockReason,
+  isConflictError,
   isNotFoundError,
   jobsListActive,
   planExecuteSeed,
@@ -43,12 +45,14 @@ export function JobListItem({
   kbdFocus,
   onSelect,
   onRerun,
+  onCancel,
 }: {
   job: JobRecord;
   repo: string;
   kbdFocus?: boolean;
   onSelect: (id: string) => void;
   onRerun: (job: JobRecord, confirmed: boolean) => void;
+  onCancel: (job: JobRecord) => void;
 }) {
   const danger = dangerEntryFor(job.kind || job.name || '');
   return (
@@ -80,6 +84,11 @@ export function JobListItem({
               Re-run
             </button>
           ))}
+        {!job.done && (
+          <button type="button" data-testid="job-cancel" onClick={() => onCancel(job)}>
+            Cancel
+          </button>
+        )}
       </div>
     </li>
   );
@@ -176,12 +185,14 @@ function JobsListPanel({
   cursor,
   onSelect,
   onRerun,
+  onCancel,
 }: {
   list: JobRecord[];
   repo: string;
   cursor: number | null;
   onSelect: (id: string) => void;
   onRerun: (job: JobRecord, confirmed: boolean) => void;
+  onCancel: (job: JobRecord) => void;
 }) {
   if (list.length === 0) {
     return (
@@ -203,6 +214,7 @@ function JobsListPanel({
           kbdFocus={cursor === ji}
           onSelect={onSelect}
           onRerun={onRerun}
+          onCancel={onCancel}
         />
       ))}
     </ul>
@@ -359,6 +371,30 @@ export default function JobsView({
     );
   }
 
+  async function onCancelRun(job: JobRecord) {
+    // No confirm: cancel stops spend. Stale rows resolve to
+    // notices instead of errors: 404 when the record is gone,
+    // 409 when the run finished between render and tap.
+    try {
+      await cancelJobRun(job.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isNotFoundError(message)) {
+        setNotice(`Run ${job.id} is no longer available.`);
+        await load();
+        return;
+      }
+      if (isConflictError(message)) {
+        setNotice(`Run ${job.id} already finished.`);
+        await load();
+        return;
+      }
+      throw err;
+    }
+    setNotice(`Cancelled ${job.id}.`);
+    await load();
+  }
+
   async function launch(label: string, start: () => Promise<{ id: string }>) {
     setNotice(null);
     setTail('');
@@ -491,6 +527,7 @@ export default function JobsView({
         cursor={cursor}
         onSelect={(id) => void guarded(() => onSelectRun(id))}
         onRerun={(job, confirmed) => void guarded(() => onRerun(job, confirmed))}
+        onCancel={(job) => void guarded(() => onCancelRun(job))}
       />
     </section>
   );
