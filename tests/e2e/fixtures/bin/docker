@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Stub `docker` for the console E2E suite (tests/e2e).
+
+Emulates the two terminal-container paths the specs drive:
+
+- provider probes: `docker compose ... exec -T terminal bash -c
+  "command -v <provider>"` (both providers report present);
+- mock provider seam: `docker compose ... exec -T --workdir <cwd>
+  terminal muse exec --session-id <sid> <prompt>` prints a canned
+  answer (fast), or a slow drip when the prompt carries SLOWTURN,
+  so the abort spec has a live turn to kill;
+- run-td steps: `... exec -T terminal bash -c "<prefix> td doctor"`
+  prints a canned green report;
+- read-only probes: `compose ps` (table + --format json) and
+  `images` return one healthy container row.
+
+No real LLM, no daemon, no side effects. Unknown argv fails LOUD
+(exit 1): an unmodeled backend docker call must redden the suite,
+never slide through as a silent pass.
+"""
+
+import json
+import os
+import sys
+import time
+
+LOG_FILE = os.environ.get("E2E_DOCKER_LOG", "")
+
+SLOW_MARKER = "SLOWTURN"
+
+DOCTOR_REPORT = """e2e stub td doctor
+repository: remote-server (stub)
+providers: muse ok, agy ok
+queue: idle
+all checks pass
+"""
+
+MOCK_ANSWER_HEAD = "E2E mock turn answer for: "
+MOCK_ANSWER_TAIL = "Second line of mock answer."
+
+
+def log(argv):
+    if not LOG_FILE:
+        return
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(argv) + "\n")
+    except OSError:
+        pass
+
+
+def die(msg):
+    sys.stderr.write("stub docker: %s\n" % msg)
+    raise SystemExit(1)
+
+
+def strip_compose(argv):
+    """Drop leading [docker] compose + -f/--env-file pairs."""
+    args = list(argv)
+    if args and os.path.basename(args[0]) == "docker":
+        args = args[1:]
+    if args and args[0] == "compose":
+        args = args[1:]
+    out = []
+    skip_next = False
+    for i, tok in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-f", "--env-file", "--project-directory"):
+            skip_next = True
+            continue
+        out.append(tok)
+    return out
+
+
+def handle_ps(args):
+    if "json" in args:
+        print(json.dumps([{
+            "Service": "buttons",
+            "Name": "remote-buttons-1",
+            "State": "running",
+            "Status": "Up (stub)",
+            "Health": "healthy",
+        }]))
+    else:
+        print("NAME               STATE      STATUS")
+        print("remote-buttons-1   running    Up (stub)")
+
+
+def handle_exec(args):
+    try:
+        term = args.index("terminal")
+    except ValueError:
+        die("exec without a terminal target: %r" % args)
+    rest = args[term + 1:]
+    if rest[:2] == ["bash", "-c"] and len(rest) == 3:
+        shell = rest[2]
+        if "command -v muse" in shell:
+            print("/usr/local/bin/muse")
+            return
+        if "command -v agy" in shell:
+            print("/usr/local/bin/agy")
+            return
+        if "td doctor" in shell:
+            print(DOCTOR_REPORT, end="")
+            return
+        if shell.strip().startswith("git "):
+            # Timeout-rescue git path: fail so the rescue records
+            # unpushed without hanging the suite.
+            sys.stderr.write("stub docker: no git in harness\n")
+            raise SystemExit(1)
+        die("unhandled exec shell: %r" % shell)
+    if rest[:1] == ["muse"] and "exec" in rest:
+        prompt = rest[-1]
+        if SLOW_MARKER in prompt:
+            print("starting slow turn")
+            sys.stdout.flush()
+            time.sleep(45)
+            print("slow turn finished")
+            return
+        head = prompt.splitlines()[0] if prompt else ""
+        print("%s%s" % (MOCK_ANSWER_HEAD, head[:80]))
+        print(MOCK_ANSWER_TAIL)
+        return
+    if rest[:1] == ["agy"]:
+        # Plain-text passthrough: the backend NDJSON parser streams
+        # non-JSON lines through untouched.
+        print("E2E mock agy answer (stub).")
+        return
+    die("unhandled exec target: %r" % rest)
+
+
+def main(argv):
+    log(argv)
+    args = strip_compose(argv)
+    if not args:
+        die("no argv")
+    sub = args[0]
+    if sub == "ps":
+        handle_ps(args)
+        return
+    if sub == "exec":
+        handle_exec(args)
+        return
+    if sub == "images":
+        print("ghcr.io/arii/remote-server-terminal:latest  1.2GB  2 days ago")
+        return
+    die("unhandled argv: %r" % argv)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
