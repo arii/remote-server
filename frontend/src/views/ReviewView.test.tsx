@@ -8,6 +8,8 @@ import ReviewView, {
   PrRowRequestChanges,
   RequestChangesForm,
   RowActionButton,
+  REVIEW_REPLY_TEMPLATES,
+  appendReplyTemplate,
   applyOptimisticMerge,
   bulkDeferNotice,
   bulkRowKey,
@@ -330,6 +332,70 @@ describe('one-tap review chips (issue #616)', () => {
     expect(validateRequestChangesBody('x'.repeat(2001))).toBe(
       'Keep feedback under 2000 characters.',
     );
+  });
+});
+
+describe('canned reply chips (issue #658)', () => {
+  it('renders one chip per template above the body field', () => {
+    const html = renderToStaticMarkup(
+      <RequestChangesForm n={7} busy={false} onSubmit={() => {}} onCancel={() => {}} />,
+    );
+    expect(html).toContain('data-testid="review-reply-chips-7"');
+    expect(html).toContain('aria-label="Canned replies"');
+    const chips = html.match(/data-testid="review-reply-chip"/g) ?? [];
+    expect(chips).toHaveLength(REVIEW_REPLY_TEMPLATES.length);
+    for (const t of REVIEW_REPLY_TEMPLATES) {
+      expect(html).toContain(`aria-label="Insert canned reply: ${t.label}"`);
+      expect(html).toContain(`>${t.label}<`);
+    }
+    expect(html.indexOf('review-reply-chips-7')).toBeLessThan(
+      html.indexOf('request-changes-body-7'),
+    );
+  });
+
+  it('inserts into a blank draft verbatim', () => {
+    const text = REVIEW_REPLY_TEMPLATES[0]?.text ?? '';
+    expect(appendReplyTemplate('', text)).toBe(text);
+    expect(appendReplyTemplate('   ', text)).toBe(text);
+  });
+
+  it('composes multiple taps as separated paragraphs without double spaces', () => {
+    const [a, b] = REVIEW_REPLY_TEMPLATES.map((t) => t.text);
+    expect(appendReplyTemplate(`${a}  `, `  ${b} `)).toBe(`${a}\n\n${b}`);
+    const three = REVIEW_REPLY_TEMPLATES.slice(0, 3).map((t) => t.text);
+    const composed = three.reduce((draft, snippet) => appendReplyTemplate(draft, snippet), '');
+    expect(composed).toBe(three.join('\n\n'));
+    expect(composed).not.toContain('  ');
+  });
+
+  it('leaves the draft alone on a blank snippet', () => {
+    expect(appendReplyTemplate('  Keep me.  ', '   ')).toBe('Keep me.');
+    expect(appendReplyTemplate('', '')).toBe('');
+  });
+
+  it('refuses overflow appends via the existing validator message', () => {
+    const text = REVIEW_REPLY_TEMPLATES[0]?.text ?? '';
+    const next = appendReplyTemplate('x'.repeat(2000), text);
+    expect(next.length).toBeGreaterThan(2000);
+    expect(validateRequestChangesBody(next)).toBe('Keep feedback under 2000 characters.');
+  });
+
+  it('keeps every template short, even combined', () => {
+    for (const t of REVIEW_REPLY_TEMPLATES) {
+      expect(t.label.length).toBeLessThanOrEqual(16);
+      expect(validateRequestChangesBody(t.text)).toBeNull();
+    }
+    expect(REVIEW_REPLY_TEMPLATES.length).toBeGreaterThanOrEqual(5);
+    const all = REVIEW_REPLY_TEMPLATES.map((t) => t.text).join('\n\n');
+    expect(validateRequestChangesBody(all)).toBeNull();
+  });
+
+  it('hides the chip row while no request-changes field is open', () => {
+    const html = renderToStaticMarkup(
+      <ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />,
+    );
+    expect(html).not.toContain('review-reply-chip');
+    expect(html).not.toContain('request-changes-form-');
   });
 });
 

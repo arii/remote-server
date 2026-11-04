@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
@@ -339,6 +339,37 @@ export function PrRowRequestChanges({
   );
 }
 
+// Static canned replies for the request-changes body field: the
+// vocabulary of review asks is small, so a fixed chip row covers
+// most of it with zero backend. Chips compose (append); the human
+// still submits. Each text is short — even all combined stay well
+// under REQUEST_CHANGES_MAX.
+export interface ReviewReplyTemplate {
+  label: string;
+  text: string;
+}
+
+export const REVIEW_REPLY_TEMPLATES: ReadonlyArray<ReviewReplyTemplate> = [
+  { label: 'Formatting', text: 'Please fix formatting (run the repo formatter) and re-push.' },
+  { label: 'Tests missing', text: 'Please add tests covering this change.' },
+  { label: 'Rebase', text: 'Please rebase on main and resolve any conflicts.' },
+  { label: 'Nits only', text: 'Overall looks good — just the nits above.' },
+  { label: 'Needs context', text: 'Please add context: what changed, why, and how it was tested.' },
+  { label: 'Docs', text: 'Please update the docs or changelog for this change.' },
+];
+
+// Append a canned reply to the draft: blank line between paragraphs,
+// surrounding whitespace trimmed so taps never stack double spaces.
+// Callers re-run validateRequestChangesBody on the result and refuse
+// overflow with the existing message (no new error shape).
+export function appendReplyTemplate(draft: string, snippet: string): string {
+  const base = draft.trim();
+  const add = snippet.trim();
+  if (!base) return add;
+  if (!add) return base;
+  return `${base}\n\n${add}`;
+}
+
 // Inline request-changes body field, rendered under the row actions
 // while the chip is expanded. Stays open on submit failure (the
 // endpoint error surfaces in the view banner) so the draft survives
@@ -356,6 +387,18 @@ export function RequestChangesForm({
 }) {
   const [draft, setDraft] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  function insertTemplate(text: string) {
+    const next = appendReplyTemplate(draft, text);
+    if (next.length > REQUEST_CHANGES_MAX) {
+      setProblem(validateRequestChangesBody(next));
+      bodyRef.current?.focus();
+      return;
+    }
+    setProblem(null);
+    setDraft(next);
+    bodyRef.current?.focus();
+  }
   return (
     <form
       data-testid={`request-changes-form-${n}`}
@@ -370,11 +413,32 @@ export function RequestChangesForm({
         onSubmit(draft);
       }}
     >
+      <div
+        className="chip-row"
+        style={{ flexWrap: 'nowrap', overflowX: 'auto' }}
+        role="group"
+        aria-label="Canned replies"
+        data-testid={`review-reply-chips-${n}`}
+      >
+        {REVIEW_REPLY_TEMPLATES.map((t) => (
+          <button
+            key={t.label}
+            type="button"
+            data-testid="review-reply-chip"
+            aria-label={`Insert canned reply: ${t.label}`}
+            title={t.text}
+            onClick={() => insertTemplate(t.text)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
       <label className="row-meta" htmlFor={`request-changes-body-${n}`}>
         What needs to change?{' '}
         <textarea
           id={`request-changes-body-${n}`}
           data-testid={`request-changes-body-${n}`}
+          ref={bodyRef}
           value={draft}
           maxLength={REQUEST_CHANGES_MAX}
           onChange={(e) => setDraft(e.target.value)}
