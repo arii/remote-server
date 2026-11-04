@@ -970,6 +970,27 @@ export function triggerDigest(): Promise<DigestResult> {
   return postJson<DigestResult>('api/notifications/trigger-digest', {});
 }
 
+// Notification preferences + quiet hours (issue #656). One object,
+// one round trip: muted event classes, the quiet window (or null),
+// the toggleable vocabulary, and a held-digest timestamp (or null).
+export interface NotificationPreferences {
+  muted_events: string[];
+  quiet_hours: { start: string; end: string } | null;
+  events: string[];
+  held_until: number | null;
+}
+
+export function fetchNotificationPreferences(): Promise<NotificationPreferences> {
+  return getJson<NotificationPreferences>('api/notifications/preferences');
+}
+
+export function saveNotificationPreferences(body: {
+  muted_events?: string[];
+  quiet_hours?: { start: string; end: string } | null;
+}): Promise<NotificationPreferences> {
+  return postJson<NotificationPreferences>('api/notifications/preferences', body);
+}
+
 // Scheduled digest cadence (issue #636): daily/weekly/off plus
 // next-run and last-send bookkeeping from the tick-fired job.
 export interface DigestSchedule {
@@ -977,6 +998,7 @@ export interface DigestSchedule {
   next_run: number | null;
   last_sent: number | null;
   last_result: { ok?: boolean; at?: number; error?: string };
+  held_until: number | null;
 }
 
 export function fetchDigestSchedule(): Promise<DigestSchedule> {

@@ -16,6 +16,7 @@ import {
   fetchDigestSchedule,
   fetchLedger,
   fetchNotificationStatus,
+  fetchNotificationPreferences,
   fetchPrDetails,
   fetchPrDiff,
   fetchRepoDiff,
@@ -28,6 +29,7 @@ import {
   requestPrChanges,
   rerunJob,
   setDigestSchedule,
+  saveNotificationPreferences,
   snoozeAttention,
   startJobRun,
   subscribeApiFailures,
@@ -148,6 +150,23 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/notifications/digest-schedule',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ cadence: 'weekly' }) }),
+    );
+  });
+
+  it('fetches notification preferences (issue #656)', async () => {
+    const prefs = { muted_events: [], quiet_hours: null, events: ['ci_fail'], held_until: null };
+    vi.stubGlobal('fetch', mockFetchJson(prefs));
+    expect(await fetchNotificationPreferences()).toEqual(prefs);
+    expect(fetch).toHaveBeenCalledWith('/api/notifications/preferences');
+  });
+
+  it('saves notification preferences partially (issue #656)', async () => {
+    const prefs = { muted_events: ['ci_fail'], quiet_hours: null, events: ['ci_fail'], held_until: null };
+    vi.stubGlobal('fetch', mockFetchJson(prefs));
+    expect(await saveNotificationPreferences({ muted_events: ['ci_fail'] })).toEqual(prefs);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/notifications/preferences',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ muted_events: ['ci_fail'] }) }),
     );
   });
 

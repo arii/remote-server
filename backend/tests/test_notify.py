@@ -492,5 +492,189 @@ class DigestScheduleEndpointTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
 
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class NotificationPrefsTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        import time as time_mod
+
+        self.time = time_mod
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_sched = os.environ.get("BUTTONS_DIGEST_SCHEDULE_PATH")
+        os.environ["BUTTONS_DIGEST_SCHEDULE_PATH"] = os.path.join(
+            self.tmp, "sched.json")
+        self.client = _make_client()
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+        if self._old_sched is None:
+            os.environ.pop("BUTTONS_DIGEST_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_DIGEST_SCHEDULE_PATH"] = self._old_sched
+
+    def _prefs(self):
+        r = self.client.get("/api/notifications/preferences")
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def _set_prefs(self, body):
+        return self.client.post("/api/notifications/preferences",
+                               json=body)
+
+    def test_defaults(self):
+        body = self._prefs()
+        self.assertEqual(body["muted_events"], [])
+        self.assertIsNone(body["quiet_hours"])
+        self.assertEqual(body["events"], ["ci_fail", "conflict", "digest"])
+        self.assertIsNone(body["held_until"])
+
+    def test_mute_suppresses_and_restores(self):
+        r = self._set_prefs({"muted_events": ["ci_fail"]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["muted_events"], ["ci_fail"])
+        res = N.send_notification("t", "m", event_type="ci_fail")
+        self.assertEqual(res, {"suppressed": "event 'ci_fail' muted"})
+        # Other classes unaffected.
+        self.assertNotIn("suppressed", N.send_notification(
+            "t", "m", event_type="conflict"))
+        r = self._set_prefs({"muted_events": []})
+        self.assertEqual(r.json()["muted_events"], [])
+        self.assertNotIn("suppressed", N.send_notification(
+            "t", "m", event_type="ci_fail"))
+
+    def test_unknown_event_rejected(self):
+        r = self._set_prefs({"muted_events": ["bogus"]})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("bogus", r.json()["detail"])
+        self.assertEqual(self._prefs()["muted_events"], [])
+
+    def test_unknown_key_rejected(self):
+        r = self._set_prefs({"nope": 1})
+        self.assertEqual(r.status_code, 422)
+
+    def test_quiet_round_trip_and_clear(self):
+        r = self._set_prefs(
+            {"quiet_hours": {"start": "22:00", "end": "07:00"}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["quiet_hours"],
+                         {"start": "22:00", "end": "07:00"})
+        r = self._set_prefs({"quiet_hours": None})
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["quiet_hours"])
+
+    def test_quiet_validation(self):
+        for bad in ({"start": "22:00", "end": "22:00"},
+                    {"start": "9pm", "end": "07:00"},
+                    {"start": "24:00", "end": "07:00"}):
+            r = self._set_prefs({"quiet_hours": bad})
+            self.assertEqual(r.status_code, 400, bad)
+        # Wrong shape entirely: pydantic rejects before validation.
+        r = self._set_prefs({"quiet_hours": "22:00-07:00"})
+        self.assertEqual(r.status_code, 422)
+        self.assertIsNone(self._prefs()["quiet_hours"])
+
+    def _quiet_covering_now(self):
+        now = self.time.time()
+        fmt = lambda ts: self.time.strftime("%H:%M",  # noqa: E731
+                                            self.time.localtime(ts))
+        return {"start": fmt(now - 3600), "end": fmt(now + 3600)}
+
+    def test_quiet_gate_and_test_bypass(self):
+        self._set_prefs({"quiet_hours": self._quiet_covering_now()})
+        res = N.send_notification("t", "m", event_type="ci_fail")
+        self.assertIn("suppressed", res)
+        self.assertIn("quiet hours", res["suppressed"])
+        # Explicit taps bypass quiet...
+        res = N.send_notification("t", "m", event_type="test",
+                                  bypass_quiet=True)
+        self.assertNotIn("suppressed", res)
+        r = self.client.post("/api/notifications/test")
+        self.assertNotIn("suppressed", r.json()["results"])
+        # ...but mute wins over tap.
+        self._set_prefs({"muted_events": ["digest"]})
+        res = N.send_notification("t", "m", event_type="digest",
+                                  bypass_quiet=True)
+        self.assertIn("suppressed", res)
+
+    def test_overnight_edges(self):
+        import datetime
+
+        day = datetime.datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        at = lambda h, m: (  # noqa: E731
+            day + datetime.timedelta(hours=h, minutes=m)).timestamp()
+        q = {"start": "22:00", "end": "07:00"}
+        for h, m, want in ((21, 59, False), (22, 0, True),
+                           (0, 0, True), (6, 59, True),
+                           (7, 0, False), (12, 0, False)):
+            self.assertEqual(N.in_quiet_hours(at(h, m), q), want,
+                             (h, m))
+
+    def test_digest_hold_and_single_fire(self):
+        sched_path = os.environ["BUTTONS_DIGEST_SCHEDULE_PATH"]
+        now = self.time.time()
+        with open(sched_path, "w") as f:
+            json.dump({"cadence": "daily", "next_run": now - 10,
+                       "last_sent": None, "last_result": {},
+                       "held_until": None}, f)
+        self._set_prefs({"quiet_hours": self._quiet_covering_now()})
+        calls = []
+        orig = N.send_notification
+        N.send_notification = lambda *a, **k: calls.append(k) or {
+            "ntfy": {"ok": True}}
+        try:
+            self.assertFalse(N.fire_due_digest(now))
+            self.assertEqual(calls, [])
+            held = N.digest_schedule_status()["held_until"]
+            self.assertGreater(held, now)
+            self.assertEqual(self._prefs()["held_until"], held)
+            # Past the window: exactly one fire, hold cleared.
+            self._set_prefs({"quiet_hours": None})
+            self.assertTrue(N.fire_due_digest(now + 5))
+            self.assertEqual(len(calls), 1)
+            self.assertIsNone(
+                N.digest_schedule_status()["held_until"])
+            self.assertIsNone(self._prefs()["held_until"])
+        finally:
+            N.send_notification = orig
+
+    def test_trigger_skips_stamp_when_muted(self):
+        self._set_prefs({"muted_events": ["digest"]})
+        r = self.client.post("/api/notifications/trigger-digest")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("suppressed", r.json()["results"])
+        self.assertEqual(N.load_notifier_state().get("last_digest", 0), 0)
+        self._set_prefs({"muted_events": []})
+        r = self.client.post("/api/notifications/trigger-digest")
+        self.assertNotIn("suppressed", r.json()["results"])
+        self.assertGreater(
+            N.load_notifier_state().get("last_digest", 0), 0)
+
+    def test_legacy_digest_holds_in_quiet(self):
+        sent = []
+
+        def sender(**kw):
+            sent.append(kw)
+            return {}
+
+        self._set_prefs({"quiet_hours": self._quiet_covering_now()})
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {}, sender=sender, now=self.time.time())
+        self.assertEqual(sent, [])
+        self.assertEqual(state.get("last_digest", 0), 0)
+        self._set_prefs({"quiet_hours": None})
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {}, sender=sender, now=self.time.time())
+        self.assertEqual(len(sent), 1)
+        self.assertGreater(state.get("last_digest", 0), 0)
+
+    def test_suppressed_failure_text(self):
+        self.assertEqual(
+            N._digest_failure_text({"suppressed": "quiet hours"}, ""),
+            "quiet hours")
+
+
 if __name__ == "__main__":
     unittest.main()
