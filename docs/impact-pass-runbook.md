@@ -81,6 +81,35 @@ vision model via `NEBIUS_MODEL`).
 returns data, consumers post. Keep the shapes aligned, don't merge
 them.
 
+## Scheduled passes (`impact-pass`, #869)
+
+The engine's non-destructive `impact-pass` action fires the same
+capture/diff stack on a schedule — no API change, the generic
+run/schedule surfaces carry it:
+
+```sh
+# Opt in: weekly console self-regression (default routes: / desktop+mobile).
+curl -s -X POST localhost:8000/api/jobs/schedule \
+  -H 'content-type: application/json' \
+  -d '{"action": "impact-pass", "cadence": "weekly"}'
+```
+
+- Snapshots live at `/var/lib/buttons/impact-pass/<route>-<viewport>/`
+  (absolute paths, restart-safe; `IMPACT_PASS_STATE_DIR` overrides).
+- Rolling baselines: the first fire seeds baselines without
+  findings; each later fire diffs against the last snapshot, then
+  the fresh capture becomes the next baseline. No-change fires are
+  silent (no ledger rows, no notify).
+- New findings ledger as `kind: ux-finding` with severity, and the
+  count lands in the run output (`impact-pass routes=2 findings=3`).
+- Findings are data, not failures: the run exits 0 when findings
+  land. Capture errors (target down, `td ux` broken) exit 1 so the
+  run fails and the `job_fail` push fires.
+- More routes = config, not code: `IMPACT_PASS_ROUTES` takes
+  `route:viewport` pairs (`/:desktop,/:mobile,/jobs:desktop`).
+  Keep the list small — the step watchdog is 1200s and each
+  capture can take up to 600s.
+
 ## Troubleshooting
 
 - `CAPTURE_ERROR: ... ux-discover-routes ...` — target checkout

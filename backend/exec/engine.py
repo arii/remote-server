@@ -68,6 +68,7 @@ STEP_TIMEOUT = 300
 ACTION_STEP_TIMEOUTS = {
     "triage-fanout": 1200,
     "ux-audit": 1200,
+    "impact-pass": 1200,
 }
 
 
@@ -97,6 +98,7 @@ ALLOWED_ACTIONS = (
     "check-notifications",
     "autofile-scan",
     "ux-audit",
+    "impact-pass",
 )
 
 # Actions whose original has confirm: True. The router requires
@@ -542,6 +544,13 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             argv += ["--max-pages", td_argv[3]]
         argv.append("--file")
         return [argv], None
+    if action == "impact-pass":
+        # Scheduled console UX self-regression (#869): local exec
+        # (like check-notifications) so the pass reads/writes the
+        # same snapshot + ledger state the API serves. Console-wide,
+        # not repo-scoped (like ux-audit); findings are data (exit
+        # 0, ledgered), capture errors fail the run (job_fail push).
+        return [[sys.executable, "-m", "core_cli.impact_pass"]], None
     return None, "unknown action"
 
 
