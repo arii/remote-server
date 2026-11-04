@@ -5,12 +5,16 @@ its stdout back as text. Interactive TUIs over PTY were replaced:
 they render raw ANSI with no terminal emulator and cannot take the
 keystrokes TUIs need, so the drawer shows a chat transcript instead.
 
-Provider argv (flags verified 2026-11-03 in the terminal container;
+Provider argv (flags verified 2026-11-03/04 in the terminal container;
 binaries and credentials live in terminal, buttons execs into it):
 - muse  `muse exec --session-id <uuid> <prompt>` (stdout is the
   answer, logs go to stderr; stable --session-id continues)
-- agy   `agy -p <prompt>` first turn, `agy --continue -p <prompt>`
-  after (`--continue` resumes the most recent conversation)
+- agy   `agy --output-format stream-json -p <prompt>` first turn,
+  `agy --conversation <cid> --output-format stream-json -p <prompt>`
+  after (each turn's init event reports its conversation_id, which
+  the server pins per session; `--continue` is never used — it
+  resumes the global most-recent conversation across sessions,
+  issue #440)
 Excluded: pi (hangs in `-p` with zero output), copilot/codex/gemini/
 claude/aider/opencode (no binaries).
 
@@ -28,6 +32,7 @@ non-macOS platforms, verified by probe.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import tempfile
@@ -136,7 +141,8 @@ def terminal_cwd(name: str) -> str:
 
 
 def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
-               continued: bool) -> list:
+               continued: bool,
+               conversation_id: str | None = None) -> list:
     """Argv for one headless turn. Injectable seam: tests patch this
     to return a fake command so no real agent binary runs under test.
 
@@ -148,8 +154,16 @@ def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
         cli: list[str] = ["muse", "exec", "--session-id", session_id,
                           prompt]
     elif provider == "agy":
-        cli = ["agy"] + (["--continue"] if continued else []) + \
-            ["-p", prompt]
+        # Session pinning (issue #440): every agy turn runs in
+        # stream-json so its init event reports the conversation_id,
+        # and follow-ups resume that id — never `--continue`, which
+        # resumes the global most-recent conversation. A continued
+        # turn with no recorded id (the first turn never reported
+        # one) runs fresh: a new conversation, still no leak.
+        cli = ["agy"]
+        if continued and conversation_id:
+            cli += ["--conversation", conversation_id]
+        cli += ["--output-format", "stream-json", "-p", prompt]
     else:
         raise ValueError("unknown provider")
     return compose_argv("exec", "-T", "--workdir", cwd, "terminal",
@@ -210,10 +224,10 @@ def new_session_id() -> str:
 # providers before the user fires, but the signal has to be fast,
 # free, and non-poisoning — so the probe checks binary presence
 # only, never a live turn. A live turn per probe cost ~10s cold,
-# spent model money, and orphaned an agy conversation that the next
-# continued turn would then resume. A binary-present CLI that fails
-# still surfaces via the failure guidance card, which is the honest
-# place for it. Results cache briefly to avoid exec spam.
+# spent model money, and orphaned an agy conversation. A
+# binary-present CLI that fails still surfaces via the failure
+# guidance card, which is the honest place for it. Results cache
+# briefly to avoid exec spam.
 PROBE_TTL = 300
 PROBE_TIMEOUT = 15
 
@@ -278,6 +292,87 @@ async def provider_status(cwd: str) -> list:
         return [_probe_cache[p][1] for p in PROVIDERS]
 
 
+class AgyStreamParser:
+    """Incremental stream-json parser for agy turns (issue #440).
+
+    Fed raw stdout chunks; returns answer-text pieces. Captures the
+    turn's conversation_id from the init event (falling back to any
+    event carrying one) so follow-ups pin this session's
+    conversation. Answer text is the agent_response text_deltas,
+    which concatenate to the result response (verified live); the
+    result envelope itself is swallowed so it never double-yields.
+    Lines that are not JSON pass through as text, so the argv test
+    seam (/bin/echo) and unexpected CLI output keep streaming
+    instead of vanishing.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self.conversation_id: str | None = None
+        self._saw_answer = False
+
+    def feed(self, chunk: str) -> list[str]:
+        """Parse one stdout chunk into answer-text pieces."""
+        self._buf += chunk
+        lines = self._buf.split("\n")
+        self._buf = lines.pop()
+        pieces: list[str] = []
+        for line in lines:
+            pieces.extend(self._one(line, True))
+        return pieces
+
+    def flush(self) -> list[str]:
+        """Parse the trailing unterminated line at EOF."""
+        if not self._buf:
+            return []
+        line, self._buf = self._buf, ""
+        return self._one(line, False)
+
+    def _one(self, line: str, terminated: bool) -> list[str]:
+        if not line.strip():
+            return []
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return self._passthrough(line, terminated)
+        if not isinstance(event, dict):
+            return self._passthrough(line, terminated)
+        if self.conversation_id is None:
+            self.conversation_id = self._event_cid(event)
+        if event.get("event") == "step_update":
+            update = event.get("step_update", {})
+            if isinstance(update, dict) and \
+                    update.get("step_type") == "agent_response":
+                delta = update.get("text_delta", "")
+                if isinstance(delta, str) and delta:
+                    self._saw_answer = True
+                    return [delta]
+            return []
+        if event.get("event") == "result":
+            result = event.get("result", {})
+            if isinstance(result, dict) and not self._saw_answer:
+                response = result.get("response", "")
+                if isinstance(response, str) and response:
+                    self._saw_answer = True
+                    return [response]
+        return []
+
+    @staticmethod
+    def _event_cid(event: dict) -> str | None:
+        """Conversation id carried by one event, if any."""
+        for node in (event, event.get("step_update"),
+                     event.get("result")):
+            if isinstance(node, dict):
+                cid = node.get("conversation_id")
+                if isinstance(cid, str) and cid:
+                    return cid
+        return None
+
+    def _passthrough(self, line: str, terminated: bool) -> list[str]:
+        self._saw_answer = True
+        return [line + "\n" if terminated else line]
+
+
 class TurnSuperseded(Exception):
     """A newer turn claimed the session; this turn lost single-flight
     (issue #441) and must not store a result or pop another turn's."""
@@ -301,6 +396,11 @@ class AgentTurnManager:
         # the server never issued must confirm like a new spawn.
         # Insertion-ordered dict used as a bounded FIFO set.
         self._known: dict[str, None] = {}
+        # Agy conversation per session (issue #440): follow-ups
+        # resume this id via --conversation, never the global
+        # --continue. Bounded FIFO like _known; entries for live
+        # sessions are re-recorded every turn.
+        self._agy: dict[str, str] = {}
         self._result_at: dict[str, float] = {}
 
     def _register(self, session_id: str,
@@ -332,6 +432,17 @@ class AgentTurnManager:
         with self._lock:
             return session_id in self._known
 
+    def agy_conversation(self, session_id: str) -> str | None:
+        """Recorded agy conversation for a session, if any."""
+        with self._lock:
+            return self._agy.get(session_id)
+
+    def _remember_agy(self, session_id: str, cid: str) -> None:
+        with self._lock:
+            self._agy[session_id] = cid
+            while len(self._agy) > KNOWN_SESSIONS_MAX:
+                self._agy.pop(next(iter(self._agy)))
+
     async def run_turn(self, provider: str, repo: str, cwd: str,
                        session_id: str, prompt: str, continued: bool,
                        argv: list | None = None):
@@ -343,8 +454,11 @@ class AgentTurnManager:
         session aborts the registered prior turn, and the retired
         turn raises TurnSuperseded instead of storing — so
         pop_result never returns another turn's record."""
+        conversation_id = (self.agy_conversation(session_id)
+                           if provider == "agy" else None)
         cmd = list(argv) if argv is not None else turn_argv(
-            provider, cwd, session_id, prompt, continued)
+            provider, cwd, session_id, prompt, continued,
+            conversation_id=conversation_id)
         started = time.time()
         # Stderr lands in a temp file, never a pipe (issue #439): a
         # pipe drained only after the turn deadlocks once the child
@@ -399,6 +513,9 @@ class AgentTurnManager:
         superseded = False
         err_tail = ""
         deadline = started + TURN_TIMEOUT
+        # Agy turns stream NDJSON (issue #440); muse chunks pass
+        # through untouched.
+        parser = AgyStreamParser() if provider == "agy" else None
         try:
             assert proc.stdout is not None
             while True:
@@ -417,18 +534,31 @@ class AgentTurnManager:
                 except asyncio.TimeoutError:
                     timed_out = True
                     break
-                if not chunk:
+                if parser is not None:
+                    pieces = (parser.feed(chunk) if chunk
+                              else parser.flush())
+                else:
+                    pieces = [chunk] if chunk else []
+                for piece in pieces:
+                    room = TURN_OUTPUT_MAX - out_len
+                    out_len += len(piece)
+                    if out_len > TURN_OUTPUT_MAX:
+                        truncated = True
+                        if room > 0:
+                            out_text.append(piece[:room])
+                            yield piece[:room]
+                        break
+                    out_text.append(piece)
+                    yield piece
+                if not chunk or truncated:
                     break
-                room = TURN_OUTPUT_MAX - out_len
-                out_len += len(chunk)
-                if out_len > TURN_OUTPUT_MAX:
-                    truncated = True
-                    if room > 0:
-                        out_text.append(chunk[:room])
-                        yield chunk[:room]
-                    break
-                out_text.append(chunk)
-                yield chunk
+            if parser is not None and parser.conversation_id and \
+                    self._is_current(session_id, generation):
+                # Generation-guarded like the result store below: a
+                # retired turn must not overwrite its successor's
+                # conversation pin.
+                self._remember_agy(session_id,
+                                   parser.conversation_id)
             await _stop_proc(proc)
             err_tail = _read_stderr_tail(err_file)
         except GeneratorExit:

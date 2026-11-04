@@ -97,13 +97,44 @@ class TurnArgvTest(unittest.TestCase):
 
     def test_agy_first_turn_print(self):
         argv = agent_turn.turn_argv("agy", "/srv/x", "s", "hi", False)
-        self.assertEqual(argv[-2:], ["-p", "hi"])
+        self.assertEqual(argv[-4:],
+                         ["--output-format", "stream-json", "-p",
+                          "hi"])
+        self.assertNotIn("--continue", argv)
+        self.assertNotIn("--conversation", argv)
+
+    def test_agy_followup_pins_conversation(self):
+        argv = agent_turn.turn_argv("agy", "/srv/x", "s", "again",
+                                   True, conversation_id="cid-1")
+        self.assertEqual(
+            argv[-6:],
+            ["--conversation", "cid-1", "--output-format",
+             "stream-json", "-p", "again"])
         self.assertNotIn("--continue", argv)
 
-    def test_agy_followup_continues(self):
-        argv = agent_turn.turn_argv("agy", "/srv/x", "s", "again",
-                                   True)
-        self.assertEqual(argv[-3:], ["--continue", "-p", "again"])
+    def test_agy_followup_without_conversation_runs_fresh(self):
+        # A continued turn with no recorded id starts a new
+        # conversation instead of resuming the global most-recent.
+        argvs = (agent_turn.turn_argv("agy", "/srv/x", "s",
+                                      "again", True),
+                 agent_turn.turn_argv("agy", "/srv/x", "s",
+                                      "again", True,
+                                      conversation_id=""),
+                 agent_turn.turn_argv("agy", "/srv/x", "s",
+                                      "again", True,
+                                      conversation_id=None))
+        for argv in argvs:
+            self.assertNotIn("--continue", argv)
+            self.assertNotIn("--conversation", argv)
+            self.assertIn("stream-json", argv)
+
+    def test_agy_argv_never_uses_global_continue(self):
+        for continued, cid in ((False, None), (True, None),
+                               (False, "cid-1"), (True, "cid-1")):
+            argv = agent_turn.turn_argv("agy", "/srv/x", "s", "hi",
+                                       continued,
+                                       conversation_id=cid)
+            self.assertNotIn("--continue", argv)
 
     def test_prompt_is_single_argv_element(self):
         argv = agent_turn.turn_argv("muse", "/srv/x", "s",
@@ -221,6 +252,88 @@ class ProbeTest(unittest.TestCase):
             asyncio.run(agent_turn.probe_provider("nope", "/srv/x"))
 
 
+class AgyStreamParserTest(unittest.TestCase):
+    def _feed_all(self, parser, chunks):
+        pieces = []
+        for chunk in chunks:
+            pieces.extend(parser.feed(chunk))
+        pieces.extend(parser.flush())
+        return pieces
+
+    def test_init_reports_conversation_id(self):
+        parser = agent_turn.AgyStreamParser()
+        pieces = parser.feed(
+            '{"event":"init","conversation_id":"cid-1",'
+            '"init":{}}\n')
+        self.assertEqual(pieces, [])
+        self.assertEqual(parser.conversation_id, "cid-1")
+
+    def test_agent_deltas_stream_as_answer(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, [
+            '{"event":"step_update","step_update":'
+            '{"conversation_id":"cid-2","step_type":'
+            '"agent_response","text_delta":"PO"}}\n',
+            '{"event":"step_update","step_update":'
+            '{"conversation_id":"cid-2","step_type":'
+            '"agent_response","text_delta":"NG\\n"}}\n',
+        ])
+        self.assertEqual("".join(out), "PONG\n")
+        self.assertEqual(parser.conversation_id, "cid-2")
+
+    def test_result_envelope_does_not_double_yield(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, [
+            '{"event":"step_update","step_update":'
+            '{"step_type":"agent_response",'
+            '"text_delta":"hi"}}\n',
+            '{"event":"result","result":'
+            '{"conversation_id":"cid-3","status":"SUCCESS",'
+            '"response":"hi"}}\n',
+        ])
+        self.assertEqual(out, ["hi"])
+        self.assertEqual(parser.conversation_id, "cid-3")
+
+    def test_result_response_backfills_silent_turn(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, [
+            '{"event":"result","result":'
+            '{"conversation_id":"cid-4","status":"SUCCESS",'
+            '"response":"late answer"}}\n',
+        ])
+        self.assertEqual(out, ["late answer"])
+        self.assertEqual(parser.conversation_id, "cid-4")
+
+    def test_non_agent_steps_are_swallowed(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, [
+            '{"event":"step_update","step_update":'
+            '{"step_type":"user_input"}}\n',
+            '{"event":"step_update","step_update":'
+            '{"step_type":"tool_call",'
+            '"text_delta":"secret"}}\n',
+        ])
+        self.assertEqual(out, [])
+
+    def test_non_json_passes_through_verbatim(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, ["hello\n"])
+        self.assertEqual(out, ["hello\n"])
+
+    def test_split_line_across_chunks(self):
+        parser = agent_turn.AgyStreamParser()
+        first = '{"event":"step_update","step_update":{"step_type"'
+        second = ':"agent_response","text_delta":"split"}}\n'
+        self.assertEqual(parser.feed(first), [])
+        self.assertEqual(parser.feed(second), ["split"])
+
+    def test_flush_emits_unterminated_line(self):
+        parser = agent_turn.AgyStreamParser()
+        self.assertEqual(parser.feed("tail-no-newline"), [])
+        self.assertEqual(parser.flush(), ["tail-no-newline"])
+        self.assertEqual(parser.flush(), [])
+
+
 class RunTurnTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -319,6 +432,82 @@ class RunTurnTest(unittest.TestCase):
         self.mgr.pop_result("s-known")
         self.assertTrue(self.mgr.is_known("s-known"))
         self.assertFalse(self.mgr.is_known("s-never-ran"))
+
+    def _agy_fixture_argv(self, cid, text):
+        lines = [
+            '{"event":"init","conversation_id":"%s","init":{}}'
+            % cid,
+            '{"event":"step_update","step_update":'
+            '{"conversation_id":"%s","step_type":"agent_response",'
+            '"text_delta":"%s"}}' % (cid, text),
+            '{"event":"result","result":{"conversation_id":"%s",'
+            '"status":"SUCCESS","response":"%s"}}' % (cid, text),
+        ]
+        quoted = " ".join("'%s'" % line for line in lines)
+        return ["/bin/sh", "-c", "printf '%%s\\n' %s" % quoted]
+
+    def test_agy_turn_streams_answer_and_pins_conversation(self):
+        chunks = self._collect(
+            provider="agy", repo="r", cwd="/tmp",
+            session_id="s-agy-1", prompt="hi", continued=False,
+            argv=self._agy_fixture_argv("cid-aaa", "answer one"))
+        self.assertEqual("".join(chunks), "answer one")
+        self.assertEqual(self.mgr.agy_conversation("s-agy-1"),
+                         "cid-aaa")
+
+    def test_agy_sessions_pin_distinct_conversations(self):
+        # Issue #440: two sessions' agy turns never share context —
+        # each follow-up resumes its own recorded conversation.
+        self._collect(provider="agy", repo="r", cwd="/tmp",
+                      session_id="s-agy-A", prompt="hi",
+                      continued=False,
+                      argv=self._agy_fixture_argv("cid-A", "A"))
+        self._collect(provider="agy", repo="r", cwd="/tmp",
+                      session_id="s-agy-B", prompt="hi",
+                      continued=False,
+                      argv=self._agy_fixture_argv("cid-B", "B"))
+        seen = {}
+
+        def spy(provider, cwd, session_id, prompt, continued,
+                conversation_id=None):
+            seen[session_id] = (continued, conversation_id)
+            return ["/bin/echo", "ok"]
+
+        with mock.patch.object(agent_turn, "turn_argv",
+                               side_effect=spy):
+            self._collect(provider="agy", repo="r", cwd="/tmp",
+                          session_id="s-agy-A", prompt="again",
+                          continued=True)
+            self._collect(provider="agy", repo="r", cwd="/tmp",
+                          session_id="s-agy-B", prompt="again",
+                          continued=True)
+        self.assertEqual(seen["s-agy-A"], (True, "cid-A"))
+        self.assertEqual(seen["s-agy-B"], (True, "cid-B"))
+
+    def test_agy_followup_without_mapping_runs_fresh(self):
+        seen = {}
+
+        def spy(provider, cwd, session_id, prompt, continued,
+                conversation_id=None):
+            seen["conversation_id"] = conversation_id
+            return ["/bin/echo", "ok"]
+
+        with mock.patch.object(agent_turn, "turn_argv",
+                               side_effect=spy):
+            chunks = self._collect(
+                provider="agy", repo="r", cwd="/tmp",
+                session_id="s-agy-nomap", prompt="again",
+                continued=True)
+        self.assertIsNone(seen["conversation_id"])
+        self.assertEqual("".join(chunks), "ok\n")
+
+    def test_agy_registry_evicts_oldest_first(self):
+        with mock.patch.object(agent_turn, "KNOWN_SESSIONS_MAX", 2):
+            self.mgr._remember_agy("a", "cid-a")
+            self.mgr._remember_agy("b", "cid-b")
+            self.mgr._remember_agy("c", "cid-c")
+        self.assertIsNone(self.mgr.agy_conversation("a"))
+        self.assertEqual(self.mgr.agy_conversation("c"), "cid-c")
 
     def test_ledgers_completion(self):
         self._collect(provider="agy", repo="r", cwd="/tmp",
@@ -737,6 +926,31 @@ class AgentRouterTest(unittest.TestCase):
         continued_flags = [call[0][4] for call in
                            argv_mock.call_args_list]
         self.assertEqual(continued_flags, [False, True])
+
+    def test_agy_followup_pins_recorded_conversation(self):
+        # Issue #440 end to end: the router's continued agy turn
+        # resumes the session's recorded conversation id.
+        sid = agent_turn.new_session_id()
+        first = dict(TURN_BODY, provider="agy", session_id=sid)
+        second = {"provider": "agy", "repo": "testrepo",
+                  "session_id": sid, "prompt": "again"}
+        self.addCleanup(agent_turn.manager._agy.pop, sid, None)
+        seen = {}
+
+        def spy(provider, cwd, session_id, prompt, continued,
+                conversation_id=None):
+            seen[session_id] = (continued, conversation_id)
+            return ["/bin/echo", "ok-agy"]
+
+        with mock.patch.object(agent_turn, "turn_argv",
+                               side_effect=spy):
+            resp1 = self.client.post("/api/agent/turn", json=first)
+            agent_turn.manager._remember_agy(sid, "cid-router")
+            resp = self.client.post("/api/agent/turn", json=second)
+        self.assertEqual(resp1.status_code, 200)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("ok-agy", resp.text)
+        self.assertEqual(seen[sid], (True, "cid-router"))
 
     def test_turn_failure_sends_error_event(self):
         with mock.patch.object(
