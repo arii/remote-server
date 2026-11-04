@@ -138,6 +138,156 @@ class TestDocMetadata(unittest.TestCase):
         )
 
 
+class _FakeDocument:
+    def __init__(self, page_content, metadata):
+        self.page_content = page_content
+        self.metadata = metadata
+
+
+class _FakeSplitter:
+    def __init__(self, chunk_size, chunk_overlap):
+        pass
+
+    def split_documents(self, docs):
+        return list(docs)
+
+
+class _FakeChroma:
+    """Stand-in for langchain_chroma.Chroma (clear-path tests).
+
+    delete_error: exception delete_collection() raises (None = ok).
+    added: documents from_documents() received (None = never called).
+    """
+
+    delete_error = None
+    added = None
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def delete_collection(self):
+        if _FakeChroma.delete_error is not None:
+            raise _FakeChroma.delete_error
+
+    @classmethod
+    def from_documents(
+            cls, documents, embedding,
+            persist_directory, collection_name):
+        cls.added = list(documents)
+        return cls()
+
+
+_FAKE_MODULE_NAMES = (
+    "langchain_chroma",
+    "langchain_core",
+    "langchain_core.documents",
+    "langchain_text_splitters",
+)
+
+
+class TestClearFailure(unittest.TestCase):
+    """A failed clear fails loud; only the fresh-index signal passes.
+
+    Stdlib-only (#542): fake langchain modules stand in for the venv
+    so build() runs on system python. Triggering a real locked
+    chroma_db mid-run is nondeterministic; the raising fake is the
+    deterministic repro.
+    """
+
+    def setUp(self):
+        import types
+
+        self._saved_modules = {
+            name: sys.modules.get(name) for name in _FAKE_MODULE_NAMES
+        }
+        chroma_mod = types.ModuleType("langchain_chroma")
+        chroma_mod.Chroma = _FakeChroma
+        core_mod = types.ModuleType("langchain_core")
+        docs_mod = types.ModuleType("langchain_core.documents")
+        docs_mod.Document = _FakeDocument
+        core_mod.documents = docs_mod
+        split_mod = types.ModuleType("langchain_text_splitters")
+        split_mod.RecursiveCharacterTextSplitter = _FakeSplitter
+        sys.modules["langchain_chroma"] = chroma_mod
+        sys.modules["langchain_core"] = core_mod
+        sys.modules["langchain_core.documents"] = docs_mod
+        sys.modules["langchain_text_splitters"] = split_mod
+        _FakeChroma.delete_error = None
+        _FakeChroma.added = None
+        self.addCleanup(self._restore_modules)
+
+    def _restore_modules(self):
+        for name, mod in self._saved_modules.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+    def _root(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        _write(tmp.name, "docs/guide.md", "# guide\n")
+        return tmp.name
+
+    def _build(self):
+        return build_index.build(
+            self._root(), "/nonexistent-db", "s5-docs", object())
+
+    def test_lock_error_fails_loud_without_indexing(self):
+        import sqlite3
+
+        _FakeChroma.delete_error = sqlite3.OperationalError(
+            "database is locked")
+        with self.assertRaisesRegex(
+                RuntimeError, "failed to clear collection"):
+            self._build()
+        self.assertIsNone(_FakeChroma.added)
+
+    def test_permission_error_fails_loud_without_indexing(self):
+        _FakeChroma.delete_error = PermissionError("denied")
+        with self.assertRaisesRegex(
+                RuntimeError, "refusing to index"):
+            self._build()
+        self.assertIsNone(_FakeChroma.added)
+
+    def test_missing_collection_signal_still_passes(self):
+        class NotFoundError(Exception):
+            pass
+
+        _FakeChroma.delete_error = NotFoundError(
+            "Collection [s5-docs] does not exist")
+        n_docs, counts = self._build()
+        self.assertEqual(n_docs, 1)
+        self.assertEqual(counts, {"doc": 1, "code": 0})
+        self.assertIsNotNone(_FakeChroma.added)
+        self.assertEqual(len(_FakeChroma.added), 1)
+
+    def test_value_error_signal_still_passes(self):
+        _FakeChroma.delete_error = ValueError(
+            "Collection s5-docs does not exist.")
+        n_docs, _ = self._build()
+        self.assertEqual(n_docs, 1)
+        self.assertIsNotNone(_FakeChroma.added)
+
+    def test_main_returns_nonzero_with_stderr(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        import retrieval
+
+        _FakeChroma.delete_error = OSError("lock stuck")
+        real_embeddings = retrieval.get_embeddings
+        retrieval.get_embeddings = lambda: object()
+        self.addCleanup(
+            setattr, retrieval, "get_embeddings", real_embeddings)
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            rc = build_index.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("failed to clear collection", err.getvalue())
+        self.assertIsNone(_FakeChroma.added)
+
+
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
 class TestBuildSmoke(unittest.TestCase):
