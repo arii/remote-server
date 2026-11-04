@@ -380,9 +380,22 @@ def readiness(repo: str, issue: int, repo_status=None,
         gates["verify"] = {"command": preview.get("command", ""),
                            "allowlisted": bool(
                                preview.get("allowlisted"))}
-        if preview.get("command") and not preview.get("allowlisted"):
-            reasons.append(f"verify command not allowlisted: "
-                           f"{preview.get('error', '')}"[:200])
+        # Gates must predict worker success (#908): the worker
+        # cannot start without a parsed, allowlisted verify
+        # command, so ANY non-allowlisted preview blocks — an
+        # unparseable (unscaffolded) issue has an empty command
+        # but fails the worker in seconds, and must never read
+        # ready:true.
+        if not preview.get("allowlisted"):
+            if preview.get("command"):
+                reasons.append(f"verify command not allowlisted: "
+                               f"{preview.get('error', '')}"[:200])
+            else:
+                reasons.append(
+                    f"issue is not scaffolded for repair: "
+                    f"{preview.get('error') or 'no verify command'}; "
+                    f"add 'Target Files' + 'Verification Command' "
+                    f"sections (Deterministic Task template)"[:300])
     except Exception as exc:
         gates["verify"] = {"command": "", "allowlisted": False}
         reasons.append(f"could not read verify command: {exc}"[:200])
@@ -423,8 +436,18 @@ def _monitor_item(repo: str, issue: int,
                 else:
                     with issues_mod.repair_state_lock:
                         code = issues_mod.repair_state.get("exit_code")
-                    detail = (f"repair worker failed"
-                              f"{f' (exit {code})' if code is not None else ''}")
+                        titled = issues_mod.repair_state.get(
+                            "failure_reason")
+                    # Titled failure (#908) beats the bare exit
+                    # code: the queue row names the missing
+                    # scaffold instead of "exit 2".
+                    if isinstance(titled, str) and titled.strip():
+                        detail = (f"repair worker failed: "
+                                  f"{titled.strip()}"[:300])
+                    else:
+                        detail = (
+                            f"repair worker failed"
+                            f"{f' (exit {code})' if code is not None else ''}")
                 break
             time.sleep(poll)
     except Exception as exc:  # pragma: no cover - defensive

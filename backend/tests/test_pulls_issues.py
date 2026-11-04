@@ -910,7 +910,8 @@ def reset_repair_state():
     with repair_state_lock:
         repair_state.update(
             {"status": "idle", "timestamp": None, "log_buffer": "",
-             "issue": None, "repo": None, "exit_code": None})
+             "issue": None, "repo": None, "exit_code": None,
+             "failure_reason": None})
         issues_mod._repair_proc = None
         issues_mod._repair_abort = False
         issues_mod.repair_schedules.clear()
@@ -1226,6 +1227,50 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(ctx.exception.status_code, 400)
             self.assertIn("unknown branch", ctx.exception.detail)
             fired.assert_not_called()
+
+
+class RepairFailureReasonTest(unittest.TestCase):
+    """Titled worker failures lift into repair_state (#908)."""
+
+    def _run_thread(self, lines, returncode):
+        proc = FakeProc(stdout=iter(lines), returncode=returncode)
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            # Synchronous: the thread body runs inline, no timing.
+            issues_mod._repair_worker_thread(9, "remote-server")
+            with repair_state_lock:
+                return dict(repair_state)
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_marker_line_records_failure_reason(self):
+        state = self._run_thread(
+            ["ERROR:root:Repair pipeline encountered error: boom\n",
+             "repair-unscaffolded: issue #9 is not scaffolded for "
+             "repair: Missing required section: 'Target Files'\n"],
+            1)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["exit_code"], 1)
+        self.assertIn("not scaffolded", state["failure_reason"])
+        self.assertIn("Target Files", state["failure_reason"])
+        self.assertNotIn("repair-unscaffolded:",
+                         state["failure_reason"])
+
+    def test_plain_failure_leaves_reason_empty(self):
+        state = self._run_thread(["Traceback (most recent call)\n"], 2)
+        self.assertEqual(state["status"], "failed")
+        self.assertEqual(state["exit_code"], 2)
+        self.assertIsNone(state["failure_reason"])
+
+    def test_success_clears_reason(self):
+        state = self._run_thread(["ok\n"], 0)
+        self.assertEqual(state["status"], "done")
+        self.assertIsNone(state["failure_reason"])
 
 
 class RepairDispatchGuardTest(unittest.TestCase):
