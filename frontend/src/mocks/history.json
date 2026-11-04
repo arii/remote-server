@@ -19,6 +19,12 @@
       "repo": "remote-server"
     },
     {
+      "at": 1720000050,
+      "event": "merge: PR #123 merged into main",
+      "kind": "pr-action",
+      "repo": "remote-server"
+    },
+    {
       "at": 1720000000,
       "event": "run finished",
       "kind": "run",
