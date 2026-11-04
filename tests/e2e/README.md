@@ -44,6 +44,9 @@ through as a silent pass.
 
 - `tests/` — one spec file per flow; serial, one worker (the
   stub gh state is shared, so parallelism would race rows).
+  New spec/global files must start with the bare
+  `// fallow-ignore-file unused-file` directive (Playwright
+  loads them by glob, invisible to the dead-code audit).
 - `fixtures/bin/` — the `gh` + `docker` stubs.
 - `fixtures/state/seed.json` — PRs 101–103, one issue, viewer.
 - `playwright.config.ts` / `global-setup.ts` — backend

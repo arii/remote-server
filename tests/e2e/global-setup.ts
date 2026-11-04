@@ -1,3 +1,5 @@
+// fallow-ignore-file unused-file
+// Playwright loads this by glob/config, not by import — unreachable in fallow's graph by design.
 import { existsSync, mkdirSync, copyFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

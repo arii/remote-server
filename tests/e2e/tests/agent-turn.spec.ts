@@ -1,3 +1,5 @@
+// fallow-ignore-file unused-file
+// Playwright loads this by glob/config, not by import — unreachable in fallow's graph by design.
 import { expect, test } from '@playwright/test';
 
 // Agent launch→turn→abort through the drawer, against the mock
