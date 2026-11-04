@@ -5,7 +5,7 @@
 # Reads the payload URL and secret from the same .env the stack
 # runs on (TERMINAL_DOMAIN, TERMINAL_PORT, WEBHOOK_SECRET), so the
 # webhook GitHub calls and the secret the handler verifies can
-# never drift apart. Defaults to both auto-pull repos; pass repo
+# never drift apart. Defaults to the auto-pull repos; pass repo
 # slugs (owner/repo) as arguments to override.
 #
 # Idempotent: for each repo it lists existing hooks, matches one by
@@ -31,7 +31,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK=0
 if [ "${1:-}" = "--check" ]; then CHECK=1; shift; fi
 REPOS=("$@")
-[ "${#REPOS[@]}" -eq 0 ] && REPOS=("arii/remote-server" "arii/tech-dancer" "arii/boomtick")
+[ "${#REPOS[@]}" -eq 0 ] && REPOS=("arii/remote-server" "arii/tech-dancer" "arii/boomtick" "arii/hrm")
 
 command -v gh >/dev/null 2>&1 || {
   echo "ERROR: gh not found. Run this where gh is authenticated (terminal container: npm run webhooks:setup)." >&2
