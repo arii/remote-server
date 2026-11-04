@@ -23,8 +23,11 @@ A turn that needs approval adds ``approval`` ({session_id,
 action_requests, proposals}) and sets ``approval_pending`` on
 ``done``; the client decides via POST /api/chat/resume
 ({session_id, decision, message?}) -> 202 {resumed, text, exit,
-approval?}. Errors: 400 bad shape, 404 unknown session,
-409 no pending approval / turn in progress.
+approval?, executions?}. An approve decision also executes the
+validated proposals server-side (#823: issue filed / td run /
+dispatch started, exactly once, ledgered as "proposal executed")
+and appends the outcome to text. Errors: 400 bad shape, 404
+unknown session, 409 no pending approval / turn in progress.
 
 Chat turns spawn deep-agent/deep_chat.py (exit 0 done, 1 failed
 with Sorry line on stdout, 2 server bug, 3 approval needed).
@@ -49,6 +52,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from backend import proposals as proposal_exec
 from backend.core import get_checkout_path, validate_repo_name
 from backend.ledger import append as ledger_append
 
@@ -431,7 +435,7 @@ def _approval_events(session_id: str, repo: str, info: dict,
         pending_resumes[session_id] = {
             "gh": info["gh"], "repo": repo, "value": value,
             "proposals": proposals, "pending": True, "busy": False,
-            "created_at": time.time(),
+            "created_at": time.time(), "executed": [],
         }
     yield sse_frame("approval", {"session_id": session_id, **value,
                                  "proposals": proposals})
@@ -457,6 +461,12 @@ def _resume_decision(session_id: str, decision: str,
             return None, 409, "no pending approval"
         st["busy"] = True
         gh = st["gh"]
+        # Snapshot the just-approved batch: the code==3 path below
+        # overwrites st["value"] with follow-up requests, but the
+        # human approved THESE ones, so these are what execute.
+        approved_value = st["value"]
+        approved_repo = st["repo"]
+        approved_done = set(st.get("executed") or [])
     msg = message.strip() if decision == "reject" else ""
     if decision == "reject" and not msg:
         msg = "Declined by reviewer."
@@ -484,8 +494,41 @@ def _resume_decision(session_id: str, decision: str,
             st["busy"] = False
             st["pending"] = False
         return None, 409, "no pending approval"
+    # Approve path (#823): run the validated proposals exactly once,
+    # server-side. Rejects never execute; neither do the 500/409 paths
+    # above (the approval was not consumed, so a retry stays valid).
+    # The busy/pending gates serialize taps; the executed flags make a
+    # re-entered batch terminal per proposal.
+    exec_outcomes: list = []
+    exec_suffix = ""
+    if decision == "approve":
+        todo = [(i, a) for i, a in enumerate(
+            approval_requests(approved_value)) if i not in approved_done]
+        if todo:
+            exec_outcomes = proposal_exec.execute_proposals(
+                todo, session_id, gh, approved_repo)
+            with pending_resumes_lock:
+                st = pending_resumes.get(session_id)
+                if st is not None:
+                    done = set(st.get("executed") or [])
+                    done.update(i for i, _ in todo)
+                    st["executed"] = sorted(done)
+            for o in exec_outcomes:
+                ledger_append({
+                    "kind": "chat", "session_id": session_id,
+                    "repo": approved_repo,
+                    "event": ("proposal executed" if not o["skipped"]
+                              else "proposal skipped"),
+                    "proposal_id": o["proposal_id"],
+                    "proposal_kind": o["kind"],
+                    "target": o["target"], "ok": o["ok"],
+                    "detail": o["detail"]})
+            exec_suffix = proposal_exec.format_suffix(exec_outcomes)
     body: dict = {"ok": True, "resumed": True, "session_id": session_id,
-                  "text": text, "exit": code}
+                  "text": text + exec_suffix, "exit": code}
+    attempted = [o for o in exec_outcomes if not o["skipped"]]
+    if attempted:
+        body["executions"] = attempted
     with pending_resumes_lock:
         st = pending_resumes[session_id]
         st["busy"] = False
@@ -501,6 +544,7 @@ def _resume_decision(session_id: str, decision: str,
                     st["value"] = value
                     st["proposals"] = [t for _, t in checked]
                     st["created_at"] = time.time()
+                    st["executed"] = []
                     body["approval"] = {"session_id": session_id, **value,
                                         "proposals": st["proposals"]}
                     return body, 202, ""
@@ -530,16 +574,19 @@ def _resume_decision(session_id: str, decision: str,
                         st["value"] = value2
                         st["proposals"] = [t for _, t in checked2]
                         st["created_at"] = time.time()
-                        body["text"] = strip_agent_markers(out2)
+                        st["executed"] = []
+                        body["text"] = (strip_agent_markers(out2)
+                                        + exec_suffix)
                         body["exit"] = code2
                         body["approval"] = {"session_id": session_id,
                                             **value2,
                                             "proposals": st["proposals"]}
                         return body, 202, ""
-            body["text"] = (strip_agent_markers(out2)
-                            or "The agent asked for approval in a form I "
-                               "can't display, so I rejected it. Ask again "
-                               "if still needed.")
+            body["text"] = ((strip_agent_markers(out2)
+                             or "The agent asked for approval in a form I "
+                                "can't display, so I rejected it. Ask again "
+                                "if still needed.")
+                            + exec_suffix)
             body["exit"] = code2
             body.pop("approval", None)
             return body, 202, ""
