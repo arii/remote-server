@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toHistoryRows } from './historyUtils';
+import { sentenceCase, toHistoryRows } from './historyUtils';
 
 const TURN_DETAIL = [
   'asked: list files',
@@ -109,7 +109,9 @@ describe('collapsed outcome clauses (issue #423)', () => {
         ts: 1700000000,
       },
     ]);
-    expect(rows[0].summary).toBe('muse turn failed (exit 3): oops');
+    // #572 sentence-cases the first letter at display; the rest of
+    // the error stays verbatim and no outcome clause is appended.
+    expect(rows[0].summary).toBe('Muse turn failed (exit 3): oops');
   });
 
   it('splits rows whose outcomes differ', () => {
@@ -120,5 +122,38 @@ describe('collapsed outcome clauses (issue #423)', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].summary).toContain('skipped: tree dirty');
     expect(rows[1].summary).toContain('up to date');
+  });
+});
+
+describe('summary casing (issue #572)', () => {
+  it('capitalizes the first letter and leaves the rest verbatim', () => {
+    expect(sentenceCase('chat started')).toBe('Chat started');
+    expect(sentenceCase('Chat session activity ×3')).toBe('Chat session activity ×3');
+    expect(sentenceCase('webhook — skipped: tree not ff-able')).toBe(
+      'Webhook — skipped: tree not ff-able',
+    );
+    expect(sentenceCase('')).toBe('');
+  });
+
+  it('renders every collapsed summary capitalized', () => {
+    const rows = toHistoryRows([], [
+      { kind: 'webhook', detail: 'up to date', ts: 3 },
+      { kind: 'chat', event: 'chat started', prompt: 'hi', ts: 2 },
+      { kind: 'chat', event: 'chat finished', prompt: 'hi', ts: 1 },
+    ]);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.summary.charAt(0)).toBe(row.summary.charAt(0).toUpperCase());
+    }
+    expect(rows[1].summary).toMatch(/Chat session activity ×2/);
+  });
+
+  it('keeps grouping and counts unchanged', () => {
+    const rows = toHistoryRows(
+      [],
+      [0, 1, 2].map((i) => ({ kind: 'webhook', detail: 'up to date', ts: 3 - i })),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toBe('Webhook — up to date ×3');
   });
 });
