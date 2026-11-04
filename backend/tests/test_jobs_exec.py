@@ -366,6 +366,98 @@ class RouterTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
 
 
+class CompareEndpointTest(unittest.TestCase):
+    """GET /api/jobs/runs/compare (#657)."""
+
+    def setUp(self):
+        import backend.api.routers.jobs as jobs_router
+
+        from backend.server import app
+
+        jobs_router.registry = RunRegistry()
+        self.reg = jobs_router.registry
+        self.client = TestClient(app)
+
+    def _make_run(self, output):
+        rid, err = self.reg.start_run("logs")
+        self.assertIsNone(err)
+        self.reg.append(rid, output)
+        self.reg.finish_run(rid, 0)
+        return rid
+
+    def test_identical_outputs_empty_diff(self):
+        out = "line1\nline2\nok\n"
+        a = self._make_run(out)
+        b = self._make_run(out)
+        resp = self.client.get(
+            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["a_id"], a)
+        self.assertEqual(body["b_id"], b)
+        self.assertEqual(body["unified_diff"], "")
+        self.assertFalse(body["truncated"])
+
+    def test_same_id_empty_diff(self):
+        a = self._make_run("x\ny\n")
+        resp = self.client.get(
+            "/api/jobs/runs/compare", params={"a": a, "b": a})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["unified_diff"], "")
+
+    def test_differing_outputs_hunks(self):
+        a = self._make_run("line1\nold value\nline3\n")
+        b = self._make_run("line1\nnew value\nline3\n")
+        resp = self.client.get(
+            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        self.assertEqual(resp.status_code, 200)
+        diff = resp.json()["unified_diff"]
+        self.assertIn(f"--- a/{a}", diff)
+        self.assertIn(f"+++ b/{b}", diff)
+        self.assertIn("-old value", diff)
+        self.assertIn("+new value", diff)
+        self.assertIn("@@", diff)
+
+    def test_bad_shape_id_404(self):
+        a = self._make_run("x\n")
+        resp = self.client.get(
+            "/api/jobs/runs/compare", params={"a": a, "b": "nothex"})
+        self.assertEqual(resp.status_code, 404)
+        resp = self.client.get("/api/jobs/runs/compare",
+                               params={"a": a})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_missing_and_cleared_id_404(self):
+        a = self._make_run("x\n")
+        resp = self.client.get(
+            "/api/jobs/runs/compare",
+            params={"a": a, "b": "aaaaaaaaaaaa"})
+        self.assertEqual(resp.status_code, 404)
+        with self.reg._lock:
+            del self.reg.runs[a]
+        b = self._make_run("y\n")
+        resp = self.client.get(
+            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_cap_note_on_giant_output(self):
+        import backend.api.routers.jobs as jobs_router
+
+        a = self._make_run("small\n")
+        b = self._make_run("seed\n")
+        big = "L\n" * (jobs_router.COMPARE_MAX_PER_SIDE + 100)
+        with self.reg._lock:
+            self.reg.runs[b]["output"] = big
+        resp = self.client.get(
+            "/api/jobs/runs/compare", params={"a": a, "b": b})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["truncated"])
+        # Diff computed over the capped tail (250000 L lines), not
+        # the full 250050-line text.
+        self.assertEqual(body["unified_diff"].count("\n+L"), 250000)
+
+
 def _parse_frames(text):
     """Split SSE text into (event, data) frames; comments dropped."""
     frames = []

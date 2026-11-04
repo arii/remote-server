@@ -7,6 +7,7 @@ Ports of the buttons/server.py handlers:
 - POST /api/jobs/run     (start a run for an allowlisted action)
 - POST /api/jobs/run-td  (start a run for one validated td command)
 - GET  /api/jobs/runs/{rid} (run progress snapshot)
+- GET  /api/jobs/runs/compare (unified diff of two runs' outputs)
 - GET  /api/jobs/runs/{rid}/stream (SSE per-run push; ends on done)
 - POST /api/jobs/runs/{rid}/cancel (cancel a running run: 202/404/409)
 - POST /api/jobs/run-plan (run one allowlisted td planning guide)
@@ -16,6 +17,7 @@ backend.exec.engine, which enforces the same allowlists, timeouts,
 and output truncation as the original.
 """
 
+import difflib
 import re
 import threading
 from pathlib import Path
@@ -288,6 +290,51 @@ def _run_progress_locked(rid: str) -> dict | None:
             "action": run.get("action", ""),
             "repo": run.get("repo", ""),
             "td_argv": run.get("td_argv", [])}
+
+
+# Compare cap: ~1MB total input (500K per side, tail-kept). The
+# engine already caps stored outputs at 200K, so this is purely
+# defensive — giant logs must never OOM the diff.
+COMPARE_MAX_PER_SIDE = 500_000
+
+
+class RunCompare(BaseModel):
+    a_id: str = ""
+    b_id: str = ""
+    unified_diff: str = ""
+    truncated: bool = False
+
+
+# Declared before /runs/{rid}: Starlette matches in order, and
+# "compare" must not fall into the rid slot (RID_RE would 404 it).
+@router.get("/runs/compare", response_model=RunCompare)
+def compare_runs(a: str = "", b: str = "") -> dict:
+    """Unified diff of two runs' FULL outputs (#657).
+
+    Same RID_RE + 404 discipline as run_progress: bad-shape and
+    missing/cleared ids are both "unknown run".
+    """
+    if not RID_RE.match(a) or not RID_RE.match(b):
+        raise HTTPException(status_code=404, detail="unknown run")
+    with registry._lock:
+        run_a = registry.runs.get(a)
+        run_b = registry.runs.get(b)
+        if run_a is None or run_b is None:
+            raise HTTPException(status_code=404, detail="unknown run")
+        out_a = run_a.get("output", "")
+        out_b = run_b.get("output", "")
+    truncated = False
+    if len(out_a) > COMPARE_MAX_PER_SIDE:
+        out_a = out_a[-COMPARE_MAX_PER_SIDE:]
+        truncated = True
+    if len(out_b) > COMPARE_MAX_PER_SIDE:
+        out_b = out_b[-COMPARE_MAX_PER_SIDE:]
+        truncated = True
+    diff = "\n".join(difflib.unified_diff(
+        out_a.splitlines(), out_b.splitlines(),
+        fromfile=f"a/{a}", tofile=f"b/{b}", lineterm=""))
+    return {"a_id": a, "b_id": b, "unified_diff": diff,
+            "truncated": truncated}
 
 
 @router.get("/runs/{rid}", response_model=RunProgress)

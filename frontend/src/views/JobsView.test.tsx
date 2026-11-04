@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { dangerEntryFor } from './DangerZone';
-import { JobListItem } from './JobsView';
+import {
+  HighlightedLine,
+  JobListItem,
+  RunComparePanel,
+  RunProgressPanel,
+  SideBySideDiffView,
+  UnifiedDiffView,
+} from './JobsView';
 import type { JobRecord } from '../apiTypes';
 
 function mkJob(over: Partial<JobRecord> = {}): JobRecord {
@@ -59,5 +66,82 @@ describe('job cancel button (issue #589)', () => {
       <JobListItem job={mkJob()} repo="remote-server" onSelect={noop} onRerun={noop} onCancel={noop} />,
     );
     expect(done).not.toContain('data-testid="job-cancel"');
+  });
+});
+
+describe('output filter (issue #657)', () => {
+  it('marks query matches case-insensitively', () => {
+    const html = renderToStaticMarkup(<HighlightedLine line="FAIL: assertion boom, failed" query="fail" />);
+    expect(html).toContain('<mark>FAIL</mark>');
+    expect(html).toContain('<mark>fail</mark>');
+    expect(html).toContain('assertion boom');
+  });
+
+  it('renders the line as-is on empty query', () => {
+    const html = renderToStaticMarkup(<HighlightedLine line="plain line" query="  " />);
+    expect(html).toBe('plain line');
+    expect(html).not.toContain('<mark>');
+  });
+
+  it('shows the filter input with the full line count by default', () => {
+    const html = renderToStaticMarkup(
+      <RunProgressPanel tail={'a\nb\nc'} runId="abc123def456" running={null} panelRef={{ current: null }} />,
+    );
+    expect(html).toContain('data-testid="jobs-output-filter"');
+    expect(html).toContain('data-testid="jobs-output-count"');
+    expect(html).toContain('3 lines');
+    expect(html).not.toContain('<mark>');
+  });
+});
+
+describe('run compare (issue #657)', () => {
+  const diff = '--- a/aaa\n+++ b/bbb\n@@ -1,2 +1,2 @@\n same\n-old\n+new';
+
+  it('renders unified diff lines with added/removed coloring', () => {
+    const html = renderToStaticMarkup(<UnifiedDiffView diff={diff} />);
+    expect(html).toContain('data-testid="run-compare-diff"');
+    expect(html).toContain('class="tone-ok"');
+    expect(html).toContain('class="tone-bad"');
+    expect(html).toContain('class="tone-muted"');
+    expect(html).toContain('+new');
+    expect(html).toContain('-old');
+  });
+
+  it('renders side-by-side rows with a gap for unpaired lines', () => {
+    const html = renderToStaticMarkup(<SideBySideDiffView diff={'@@ -1 +1 @@\n-gone\n+added'} aId="aaa" bId="bbb" />);
+    expect(html).toContain('data-testid="run-compare-side"');
+    expect(html).toContain('<th>aaa</th>');
+    expect(html).toContain('<th>bbb</th>');
+    expect(html).toContain('>gone<');
+    expect(html).toContain('>added<');
+  });
+
+  it('says no differences on an empty diff', () => {
+    expect(renderToStaticMarkup(<UnifiedDiffView diff="" />)).toContain('No differences.');
+    expect(renderToStaticMarkup(<SideBySideDiffView diff="" aId="a" bId="b" />)).toContain('No differences.');
+  });
+
+  it('offers two run pickers plus a view toggle', () => {
+    const html = renderToStaticMarkup(
+      <RunComparePanel
+        jobs={[
+          mkJob({ id: 'newest111111' }),
+          mkJob({ id: 'older2222222' }),
+          mkJob({ id: 'active333333', done: false }),
+        ]}
+      />,
+    );
+    expect(html).toContain('data-testid="run-compare"');
+    expect(html).toContain('data-testid="run-compare-a"');
+    expect(html).toContain('data-testid="run-compare-b"');
+    expect(html).toContain('data-testid="run-compare-mode"');
+    expect(html).toContain('value="newest111111"');
+    expect(html).toContain('value="older2222222"');
+    expect(html).not.toContain('active333333');
+  });
+
+  it('hides with fewer than two finished runs', () => {
+    expect(renderToStaticMarkup(<RunComparePanel jobs={[mkJob()]} />)).toBe('');
+    expect(renderToStaticMarkup(<RunComparePanel jobs={[]} />)).toBe('');
   });
 });
