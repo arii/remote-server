@@ -412,6 +412,20 @@ export function fetchPiProgress(rid: string): Promise<PiProgressResponse> {
 
 export type ChatBackend = 'auto' | 'local' | 'cloud';
 
+export interface RouteHintResponse {
+  ok: boolean;
+  provider: string;
+  model: string;
+  metered: boolean;
+  rate_in_per_1m: number | null;
+  rate_out_per_1m: number | null;
+  error: string;
+}
+
+export function fetchRouteHint(prefer: ChatBackend): Promise<RouteHintResponse> {
+  return getJson<RouteHintResponse>(`api/chat/route-hint?prefer=${encodeURIComponent(prefer)}`);
+}
+
 export function chatStreamUrl(
   prompt: string,
   repo: string,

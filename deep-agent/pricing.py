@@ -80,6 +80,23 @@ def _tokens(usage):
         return 0, 0
 
 
+def rate_for(model):
+    """(in, out) $/1M card rate for a metered model, else None.
+
+    Same precedence as quote(): longest card substring wins, then
+    the METERED_RATE_* env override. Free (ollama:) models and
+    unrated models yield None — the caller shows 'free' or a bare
+    'metered' tag instead of an invented number. Never raises."""
+    try:
+        if not isinstance(model, str) or not model:
+            return None
+        if model.startswith(FREE_PREFIX):
+            return None
+        return _card_rate(model) or _env_rates()
+    except Exception:
+        return None
+
+
 def quote(model, usage):
     """(cost_usd | None, metered) for one turn. Never raises."""
     try:

@@ -214,6 +214,92 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(events[0][0], "error")
         self.assertEqual(events[0][1], {"error": "bad prefer"})
 
+    def test_route_hint_resolves_local_free(self):
+        orig = chat.model_router.resolve_llm
+        seen = {}
+
+        def fake_resolve(prefer=None):
+            seen["prefer"] = prefer
+            return {"provider": "ollama", "model": "qwen3:8b",
+                    "base_url": "http://ollama:11434"}
+
+        chat.model_router.resolve_llm = fake_resolve
+        chat.spawn_chat_process = lambda cmd: (_ for _ in ()).throw(
+            AssertionError("hint must not spawn"))
+        try:
+            resp = self.client.get("/api/chat/route-hint",
+                                   params={"prefer": "local"})
+        finally:
+            chat.model_router.resolve_llm = orig
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(seen["prefer"], "ollama")
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["provider"], "ollama")
+        self.assertEqual(body["model"], "qwen3:8b")
+        self.assertFalse(body["metered"])
+        self.assertIsNone(body["rate_in_per_1m"])
+        self.assertIsNone(body["rate_out_per_1m"])
+
+    def test_route_hint_cloud_carries_card_rate(self):
+        orig = chat.model_router.resolve_llm
+
+        def fake_resolve(prefer=None):
+            self.assertEqual(prefer, "nebius")
+            return {"provider": "nebius",
+                    "model": "zai-org/GLM-5.3-Flash",
+                    "base_url": "https://example.invalid"}
+
+        chat.model_router.resolve_llm = fake_resolve
+        try:
+            resp = self.client.get("/api/chat/route-hint",
+                                   params={"prefer": "cloud"})
+        finally:
+            chat.model_router.resolve_llm = orig
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["metered"])
+        self.assertEqual(body["rate_in_per_1m"], 0.15)
+        self.assertEqual(body["rate_out_per_1m"], 0.50)
+
+    def test_route_hint_auto_default_and_bad_prefer(self):
+        orig = chat.model_router.resolve_llm
+        seen = {}
+
+        def fake_resolve(prefer=None):
+            seen["prefer"] = prefer
+            return {"provider": "ollama", "model": "qwen3:8b",
+                    "base_url": "http://ollama:11434"}
+
+        chat.model_router.resolve_llm = fake_resolve
+        try:
+            resp = self.client.get("/api/chat/route-hint")
+        finally:
+            chat.model_router.resolve_llm = orig
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(seen["prefer"])
+        self.assertTrue(resp.json()["ok"])
+        resp = self.client.get("/api/chat/route-hint",
+                               params={"prefer": "bogus"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_route_hint_failure_degrades(self):
+        orig = chat.model_router.resolve_llm
+
+        def fake_resolve(prefer=None):
+            raise RuntimeError("Ollama unreachable at http://x")
+
+        chat.model_router.resolve_llm = fake_resolve
+        try:
+            resp = self.client.get("/api/chat/route-hint",
+                                   params={"prefer": "local"})
+        finally:
+            chat.model_router.resolve_llm = orig
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["ok"])
+        self.assertIn("Ollama unreachable", body["error"])
+
     def test_chat_abort_flow(self):
         block = threading.Event()
         procs = []
