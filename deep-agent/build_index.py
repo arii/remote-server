@@ -112,6 +112,26 @@ def doc_metadata(relpath, kind, language):
     }
 
 
+def _is_missing_collection_error(exc: BaseException) -> bool:
+    """True only for delete_collection on a collection that isn't there.
+
+    The fresh-index signal. chromadb raises NotFoundError on the
+    local-client path and ValueError on the segment path; both say
+    "does not exist" (verified against chromadb 1.5.9). Matched by
+    class name so this module stays stdlib-only at import. Anything
+    else (locks, permissions, corruption) must fail loud, never pass:
+    from_documents below would otherwise stack onto the surviving
+    collection.
+    """
+    if "does not exist" not in str(exc):
+        return False
+    if isinstance(exc, ValueError):
+        return True
+    return any(
+        cls.__name__ == "NotFoundError" for cls in type(exc).__mro__
+    )
+
+
 def build(root, db_dir, collection, embeddings):
     """Read, split, embed, upsert. Returns (n_docs, counts).
 
@@ -150,8 +170,13 @@ def build(root, db_dir, collection, embeddings):
             embedding_function=embeddings,
             collection_name=collection,
         ).delete_collection()
-    except Exception:
-        pass  # Fresh index: no prior collection to clear.
+    except Exception as exc:
+        if not _is_missing_collection_error(exc):
+            raise RuntimeError(
+                f"refusing to index: failed to clear collection "
+                f"{collection!r} ({exc})"
+            ) from exc
+        # Fresh index: no prior collection to clear.
     Chroma.from_documents(
         documents=splits,
         embedding=embeddings,
