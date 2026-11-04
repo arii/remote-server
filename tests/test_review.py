@@ -81,7 +81,7 @@ def stub_td(test, diff_payload=None, view_payload=None):
     diff_payload = PR_DIFF_PAYLOAD if diff_payload is None else diff_payload
     view_payload = PR_VIEW_PAYLOAD if view_payload is None else view_payload
 
-    def fake(argv, timeout=60):
+    def fake(argv, timeout=60, cwd=None):
         if argv[:2] == ["gh", "pr-diff"]:
             return dict(diff_payload)
         if argv[:2] == ["gh", "pr-view"]:
@@ -348,6 +348,71 @@ class TestMain(unittest.TestCase):
         blurb, func = dispatcher.COMMANDS["review"]
         self.assertTrue(blurb)
         self.assertIs(func, review.main)
+
+
+class TestTdCwd(unittest.TestCase):
+    def test_checkout_mapping(self):
+        with mock.patch.object(review.os.path, "isdir",
+                               return_value=True):
+            self.assertEqual(review._td_cwd("arii/remote-server"),
+                             "/srv/remote-server")
+            self.assertEqual(review._td_cwd("arii/boomtick"),
+                             "/srv/repos/boomtick")
+
+    def test_missing_checkout_inherits_cwd(self):
+        with mock.patch.object(review.os.path, "isdir",
+                               return_value=False):
+            self.assertIsNone(review._td_cwd("arii/remote-server"))
+            self.assertIsNone(review._td_cwd("arii/boomtick"))
+
+    def test_dry_run_from_engine_root_aims_td_at_checkout(self):
+        # Live shape (#925): the engine runs -m steps from
+        # ENGINE_ROOT, which has no project_config.json, so the td
+        # fetch calls must carry the checkout cwd explicitly.
+        import tempfile
+        bare = tempfile.mkdtemp(prefix="engine-root-")
+        checkout = tempfile.mkdtemp(prefix="checkout-")
+        prev = os.getcwd()
+        self.addCleanup(os.chdir, prev)
+        os.chdir(bare)
+
+        def fake_run(argv, **kwargs):
+            if argv[2:4] == ["gh", "pr-diff"]:
+                payload = PR_DIFF_PAYLOAD
+            elif argv[2:4] == ["gh", "pr-view"]:
+                payload = PR_VIEW_PAYLOAD
+            else:
+                raise AssertionError(f"unexpected td argv: {argv}")
+            return mock.Mock(returncode=0, stdout=json.dumps(payload),
+                             stderr="")
+
+        out = io.StringIO()
+        with mock.patch.object(review, "_td_cwd",
+                               return_value=checkout) as td_cwd, \
+             mock.patch.object(review.subprocess, "run",
+                               side_effect=fake_run) as run, \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = review.main(
+                ["--repo", "arii/remote-server", "--pr", "7", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertEqual(td_cwd.call_count, 2)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["cwd"], checkout)
+        plan = json.loads(out.getvalue())
+        self.assertEqual(plan["pr"], 7)
+
+    def test_post_carries_checkout_cwd(self):
+        import tempfile
+        checkout = tempfile.mkdtemp(prefix="checkout-")
+        with mock.patch.object(review, "_td_cwd",
+                               return_value=checkout), \
+             mock.patch.object(review.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="ok",
+                                         stderr="")
+            review.post_body("arii/remote-server", 7, "# body\n")
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.kwargs["cwd"], checkout)
 
 
 if __name__ == "__main__":
