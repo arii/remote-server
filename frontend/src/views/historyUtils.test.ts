@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { sentenceCase, toHistoryRows } from './historyUtils';
+import { historyRowMatches, sentenceCase, toHistoryRows } from './historyUtils';
+import type { HistoryRow } from './historyUtils';
 
 const TURN_DETAIL = [
   'asked: list files',
@@ -155,5 +156,45 @@ describe('summary casing (issue #572)', () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].summary).toBe('Webhook — up to date ×3');
+  });
+});
+
+describe('history text search (issue #608)', () => {
+  function mkRow(over: Partial<HistoryRow> = {}): HistoryRow {
+    return {
+      key: 'k',
+      kind: 'webhook',
+      summary: 'Webhook — skipped: tree not ff-able',
+      at: 'then',
+      repeat: 1,
+      recovery: '',
+      tone: 'ok',
+      detail: 'event: webhook',
+      members: [{ at: 'then', detail: 'session: abc123' }],
+      ...over,
+    };
+  }
+
+  it('matches summary substrings case-insensitively', () => {
+    expect(historyRowMatches(mkRow(), 'ff-able')).toBe(true);
+    expect(historyRowMatches(mkRow(), 'SKIPPED')).toBe(true);
+    expect(historyRowMatches(mkRow(), 'zzz-absent')).toBe(false);
+  });
+
+  it('matches kind and member detail, not just the summary', () => {
+    expect(historyRowMatches(mkRow(), 'webhook')).toBe(true);
+    expect(historyRowMatches(mkRow(), 'abc123')).toBe(true);
+    expect(
+      historyRowMatches(
+        mkRow({ members: [{ at: 'a', detail: 'first' }, { at: 'b', detail: 'second hit' }] }),
+        'second hit',
+      ),
+    ).toBe(true);
+    expect(historyRowMatches(mkRow(), 'chat')).toBe(false);
+  });
+
+  it('matches everything on empty query', () => {
+    expect(historyRowMatches(mkRow(), '')).toBe(true);
+    expect(historyRowMatches(mkRow(), '   ')).toBe(true);
   });
 });
