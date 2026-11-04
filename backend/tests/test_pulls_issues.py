@@ -369,6 +369,27 @@ class BlockingProc:
         self._done.set()
 
 
+class PreExitedProc(FakeProc):
+    """Fake repair worker that already exited with its returncode."""
+
+    def poll(self):
+        return self.returncode
+
+
+class LateAbortProc(FakeProc):
+    """Fake repair worker that injects a stale abort flag exactly at
+    the race point: after the proc exited, before the worker thread
+    records status."""
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self):
+        with repair_state_lock:
+            issues_mod._repair_abort = True
+        return self.returncode
+
+
 def reset_repair_state():
     with repair_state_lock:
         repair_state.update(
@@ -432,6 +453,41 @@ class RepairTest(unittest.TestCase):
             self.assertEqual((out["ok"], out["killed"]), (True, False))
             self.assertEqual(issues_mod.repair_status()["status"], "idle")
         finally:
+            reset_repair_state()
+
+    def test_abort_after_exit_clears_flag(self):
+        proc = PreExitedProc(returncode=0)
+        reset_repair_state()
+        try:
+            with repair_state_lock:
+                repair_state["status"] = "running"
+                issues_mod._repair_proc = proc
+            out = issues_mod.repair_abort()
+            self.assertEqual((out["ok"], out["killed"]), (True, False))
+            self.assertFalse(issues_mod._repair_abort)
+        finally:
+            reset_repair_state()
+
+    def test_late_abort_keeps_natural_completion(self):
+        proc = LateAbortProc(stdout=iter(["line1\n"]), returncode=0)
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}):
+                issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(issue="#9"))
+            self.assertEqual(
+                wait_repair_status(("done", "failed", "aborted")), "done")
+            status = issues_mod.repair_status()
+            self.assertEqual(status["exit_code"], 0)
+            self.assertIn("exited with code 0", status["log_buffer"])
+            self.assertNotIn("Aborted by user", status["log_buffer"])
+        finally:
+            issues_mod._repair_runner = old
             reset_repair_state()
 
     def test_dispatch_and_status(self):
