@@ -24,9 +24,10 @@ import uuid
 # pulls are verbose.
 MAX_OUTPUT = 200_000
 
-# Exact port of buttons/server.py ALLOWED_TD_COMMANDS.
+# Exact port of buttons/server.py ALLOWED_TD_COMMANDS, minus the
+# dead dispatch: fix-ci shelled to `td agent fix-ci --execute`,
+# whose backend is dead (#428).
 ALLOWED_TD_COMMANDS = [
-    "td --json agent fix-ci --pr N --execute",
     "td gh read-pr-reviews --pr N",
     "td gh read-pr-comments --pr N",
     "td gh resolve-conflicts --pr N",

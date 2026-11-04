@@ -7,7 +7,6 @@ import {
   filterOutputLines,
   filterRepairCandidates,
   parseUnifiedDiffRows,
-  fixCiBlockReason,
   isConflictError,
   isNotFoundError,
   isTabVisible,
@@ -23,18 +22,12 @@ import {
 
 describe('td block reasons', () => {
   it('fails open when PR state is unknown', () => {
-    expect(fixCiBlockReason(null)).toBeNull();
     expect(conflictBlockReason(null)).toBeNull();
-    expect(tdBlockReason('fix-ci', null)).toBeNull();
     expect(tdBlockReason('resolve-conflicts', null)).toBeNull();
   });
 
-  it('gates fix-ci on failing CI', () => {
-    expect(fixCiBlockReason({ n: 1, ci: 'failing', conflicted: false })).toBeNull();
-    expect(fixCiBlockReason({ n: 1, ci: 'passing', conflicted: false })).toBe(
-      'CI is passing — nothing to fix.',
-    );
-  });
+  // fix-ci had a failing-CI gate until #428 retired the
+  // command; no gate remains for it.
 
   it('gates resolve-conflicts on conflicted state', () => {
     expect(conflictBlockReason({ n: 1, ci: 'failing', conflicted: true })).toBeNull();

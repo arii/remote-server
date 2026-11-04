@@ -107,11 +107,11 @@ SUPERVISOR_BRIEF = (
 )
 EXIT_NEEDS_APPROVAL = 3
 
-# Mirror of ALLOWED_TD in ask_investigator.py (which mirrors
-# ALLOWED_TD_COMMANDS in buttons/server.py, the source of truth).
+# Mirror of the engine td allowlist (backend/exec/engine.py
+# ALLOWED_TD_COMMANDS, re-exported by ask_investigator.py #521).
 # "N" is a PR-number placeholder; otherwise match verbatim.
+# fix-ci was listed until #428 retired it (dead backend dispatch).
 ALLOWED_TD = [
-    "td --json agent fix-ci --pr N --execute",
     "td gh read-pr-reviews --pr N",
     "td gh read-pr-comments --pr N",
     "td gh resolve-conflicts --pr N",

@@ -371,23 +371,24 @@ class PrActionTest(unittest.TestCase):
               "repos/arii/remote-server/pulls/7/update-branch",
               "--method", "PUT"]])
 
-    def test_fix_ci_requires_failing(self):
+    def test_fix_ci_retired(self):
+        # #428: fix-ci shelled to `td agent fix-ci --execute`, a
+        # dead backend dispatch. The action is retired: direct
+        # calls fail without touching gh, and the endpoint answers
+        # 400 with a note instead of the generic bad-action error.
         runner = FakeRunner().on(
-            ["gh"], FakeProc(stdout=gh_pr_view()))
+            ["gh"], FakeProc(stdout=gh_pr_view("FAILURE", "DIRTY")))
         with self.assertRaises(ValueError):
             _pr_action("arii/remote-server", 7, "fix-ci", runner=runner)
-        self.assertEqual(runner.calls, [PR_VIEW_GATE_ARGV])
-        runner2 = FakeRunner().on(
-            ["gh"], FakeProc(stdout=gh_pr_view("FAILURE", "DIRTY"))).on(
-            ["td"], FakeProc(stdout='{"ok": true}'))
-        out = _pr_action("arii/remote-server", 7, "fix-ci",
-                         runner=runner2)
-        self.assertTrue(out["ok"])
-        self.assertEqual(
-            runner2.calls,
-            [PR_VIEW_GATE_ARGV,
-             ["td", "--json", "agent", "fix-ci", "--pr", "7",
-              "--execute"]])
+        self.assertEqual(runner.calls, [])
+        self.assertNotIn("fix-ci", pulls_mod.PR_ACTIONS)
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                repo="remote-server", pr_number=7, action="fix-ci"))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("retired", ctx.exception.detail)
 
     def test_route_validation(self):
         from fastapi import HTTPException

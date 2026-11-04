@@ -156,7 +156,6 @@ describe('extracted jobs sections (issue #363)', () => {
         onPrChange={() => {}}
         prStateCurrent={{ n: 12, ci: 'passing', conflicted: false }}
         prOk
-        fixCiBlock="CI is passing — nothing to fix."
         conflictBlock="No conflicts on this PR."
         onDispatch={() => {}}
       />,
@@ -164,7 +163,9 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).toContain('data-testid="td-pr-group"');
     expect(html).toContain('data-testid="td-repo-group"');
     expect(html).toContain('data-testid="td-pr"');
-    expect(html).toContain('data-testid="dispatch-td-fix-ci"');
+    // #428: fix-ci retired — no button.
+    expect(html).not.toContain('dispatch-td-fix-ci');
+    expect(html).toContain('data-testid="dispatch-td-resolve-conflicts"');
     expect(html).toContain('data-testid="dispatch-td-list-sessions"');
     expect(html).toContain('data-testid="dispatch-td-doctor"');
     expect(html).toContain('data-testid="dispatch-td-preflight"');

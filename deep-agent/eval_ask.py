@@ -80,12 +80,15 @@ PROMPTS = [
         "max_propose_blocks": 1,
     },
     {
+        # Anchored on read-pr-reviews since #428 retired fix-ci
+        # (dead backend dispatch): the case covers the PROPOSE td
+        # mechanism, and the anchor must stay an allowlisted shape.
         "name": "propose-td",
-        "prompt": "Run the CI fix agent on PR 153.",
+        "prompt": "Read the reviews on PR 153.",
         "tools": [],
         "anchor": re.compile(
-            r"PROPOSE td\nCOMMAND: td --json agent fix-ci "
-            r"--pr 153 --execute\nEND PROPOSE",
+            r"PROPOSE td\nCOMMAND: td gh read-pr-reviews "
+            r"--pr 153\nEND PROPOSE",
             re.I,
         ),
         "max_propose_blocks": 1,

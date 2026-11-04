@@ -49,12 +49,14 @@ class ValidateTdCommandTest(unittest.TestCase):
             engine.validate_td_command("td gh read-pr-reviews --pr 12"),
             ["td", "gh", "read-pr-reviews", "--pr", "12"],
         )
-        self.assertEqual(
-            engine.validate_td_command("td --json agent fix-ci --pr 3 --execute"),
-            ["td", "--json", "agent", "fix-ci", "--pr", "3", "--execute"],
-        )
 
     def test_reject_non_allowlisted(self):
+        # #428: fix-ci dispatches to a dead backend, cut from the allowlist.
+        self.assertIsNone(
+            engine.validate_td_command(
+                "td --json agent fix-ci --pr 3 --execute"
+            )
+        )
         self.assertIsNone(engine.validate_td_command("td rm -rf /"))
         self.assertIsNone(engine.validate_td_command("td context-warm --force"))
         self.assertIsNone(engine.validate_td_command("td gh read-pr-reviews --pr 0"))
