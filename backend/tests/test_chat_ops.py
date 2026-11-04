@@ -572,9 +572,12 @@ class ChatOpsTest(unittest.TestCase):
         finally:
             sp.run = real_run
         argv = seen["argv"]
-        self.assertIn("exec", argv)
-        self.assertIn("terminal", argv)
-        self.assertTrue(any("^zellij attach" in a for a in argv))
+        self.assertEqual(argv[:2], ["docker", "compose"])
+        self.assertIn("-f", argv)
+        self.assertEqual(
+            argv[-6:],
+            ["exec", "-T", "terminal", "bash", "-c",
+             "pkill -HUP -f '^zellij attach'; echo hup_exit=$?"])
 
     def test_workflow_health(self):
         ops.fetch_workflow_health = lambda repo, gh: {

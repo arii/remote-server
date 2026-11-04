@@ -113,12 +113,24 @@ class CiLabelTest(unittest.TestCase):
             "passing")
 
 
+PR_VIEW_GATE_ARGV = ["gh", "pr", "view", "7", "--repo",
+                     "arii/remote-server", "--json",
+                     "statusCheckRollup,mergeStateStatus"]
+PR_DIFF_ARGV = ["gh", "pr", "diff", "7", "--repo",
+                "arii/remote-server"]
+
+
 class PrsTest(unittest.TestCase):
     def test_list_shapes_rows(self):
         runner = FakeRunner().on(
             ["gh"], FakeProc(stdout=gh_list_prs()))
         out = pulls_mod.prs(repo="remote-server", runner=runner)
         self.assertEqual(out["repo"], "remote-server")
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "list", "--repo", "arii/remote-server",
+              "--state", "open", "--limit", "50",
+              "--json", pulls_mod.PR_LIST_FIELDS]])
         row = out["prs"][0]
         self.assertEqual(
             (row["number"], row["title"], row["author"], row["branch"],
@@ -142,6 +154,11 @@ class PrsTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             pulls_mod.prs(repo="remote-server", runner=runner)
         self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "list", "--repo", "arii/remote-server",
+              "--state", "open", "--limit", "50",
+              "--json", pulls_mod.PR_LIST_FIELDS]])
 
 
 class PrDetailsTest(unittest.TestCase):
@@ -155,6 +172,11 @@ class PrDetailsTest(unittest.TestCase):
             (7, "passing", "clean", False, 5))
         self.assertEqual(out["stats"]["total_files"], 1)
         self.assertEqual(out["files"][0]["changes"], 4)
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "view", "7", "--repo",
+              "arii/remote-server", "--json",
+              pulls_mod.PR_VIEW_FIELDS]])
 
     def test_details_bad_pr(self):
         from fastapi import HTTPException
@@ -164,6 +186,7 @@ class PrDetailsTest(unittest.TestCase):
             pulls_mod.pr_details(repo="remote-server", pr=0,
                                  runner=runner)
         self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(runner.calls, [])
 
 
 class PrDiffTest(unittest.TestCase):
@@ -190,9 +213,7 @@ class PrDiffTest(unittest.TestCase):
         self.assertFalse(out["truncated"])
         self.assertEqual(out["hidden_structural"],
                          {"count": 0, "files": []})
-        argv = runner.calls[0]
-        self.assertEqual(argv[:4], ["gh", "pr", "diff", "7"])
-        self.assertIn("arii/remote-server", argv)
+        self.assertEqual(runner.calls, [PR_DIFF_ARGV])
 
     def test_diff_reports_hidden_structural(self):
         runner = FakeRunner().on(
@@ -206,6 +227,7 @@ class PrDiffTest(unittest.TestCase):
         self.assertNotIn("foo: 1.0.1", out["diff"])
         self.assertNotIn("var a=2", out["diff"])
         self.assertIn("+print(2)", out["diff"])
+        self.assertEqual(runner.calls, [PR_DIFF_ARGV])
 
     def test_diff_truncates_huge_output(self):
         big = self.DIFF * 5000
@@ -214,14 +236,17 @@ class PrDiffTest(unittest.TestCase):
                                 runner=runner)
         self.assertTrue(out["truncated"])
         self.assertLessEqual(len(out["diff"]), 30000)
+        self.assertEqual(runner.calls, [PR_DIFF_ARGV])
 
     def test_diff_bad_pr(self):
         from fastapi import HTTPException
 
+        runner = FakeRunner()
         with self.assertRaises(HTTPException) as ctx:
             pulls_mod.pr_diff(repo="remote-server", pr=0,
-                              runner=FakeRunner())
+                              runner=runner)
         self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(runner.calls, [])
 
     def test_diff_gh_failure_is_500(self):
         from fastapi import HTTPException
@@ -232,6 +257,7 @@ class PrDiffTest(unittest.TestCase):
             pulls_mod.pr_diff(repo="remote-server", pr=7,
                               runner=runner)
         self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(runner.calls, [PR_DIFF_ARGV])
 
 
 class RunGhGuardTest(unittest.TestCase):
@@ -259,6 +285,12 @@ class RunGhGuardTest(unittest.TestCase):
                       "--method", "GET"],
                      runner=runner)
         self.assertEqual(out, "ok")
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "merge", "7", "--repo",
+              "arii/remote-server"],
+             ["gh", "api", "repos/arii/remote-server/pulls/7",
+              "--method", "GET"]])
 
 
 class PrActionTest(unittest.TestCase):
@@ -267,6 +299,8 @@ class PrActionTest(unittest.TestCase):
             ["gh"], FakeProc(stdout=gh_pr_view("FAILURE", "DIRTY")))
         with self.assertRaises(ValueError):
             _pr_action("arii/remote-server", 7, "merge", runner=runner)
+        # The gate refused, but the gating view still ran — scoped.
+        self.assertEqual(runner.calls, [PR_VIEW_GATE_ARGV])
 
     def test_merge_ok(self):
         runner = FakeRunner().on(
@@ -275,6 +309,12 @@ class PrActionTest(unittest.TestCase):
         out = _pr_action("arii/remote-server", 7, "merge",
                          runner=runner)
         self.assertTrue(out["ok"])
+        self.assertEqual(
+            runner.calls,
+            [PR_VIEW_GATE_ARGV,
+             ["gh", "pr", "merge", "7", "--repo",
+              "arii/remote-server", "--squash",
+              "--delete-branch"]])
 
     def test_merge_argv_scoped_to_repo(self):
         runner = FakeRunner().on(
@@ -285,18 +325,19 @@ class PrActionTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         # --repo is explicit: regression guard for #544 (an unscoped
         # merge resolves against the backend cwd, not the gated repo).
-        merge_call = [c for c in runner.calls
-                      if c[:3] == ["gh", "pr", "merge"]][0]
         self.assertEqual(
-            merge_call,
-            ["gh", "pr", "merge", "7", "--repo",
-             "arii/remote-server", "--squash", "--delete-branch"])
+            runner.calls,
+            [PR_VIEW_GATE_ARGV,
+             ["gh", "pr", "merge", "7", "--repo",
+              "arii/remote-server", "--squash",
+              "--delete-branch"]])
 
     def test_update_only_behind(self):
         runner = FakeRunner().on(
             ["gh"], FakeProc(stdout=gh_pr_view("SUCCESS", "CLEAN")))
         with self.assertRaises(ValueError):
             _pr_action("arii/remote-server", 7, "update", runner=runner)
+        self.assertEqual(runner.calls, [PR_VIEW_GATE_ARGV])
         runner2 = FakeRunner().on(
             ["gh", "pr", "view"],
             FakeProc(stdout=gh_pr_view("SUCCESS", "BEHIND"))).on(
@@ -304,22 +345,30 @@ class PrActionTest(unittest.TestCase):
         out = _pr_action("arii/remote-server", 7, "update",
                          runner=runner2)
         self.assertTrue(out["ok"])
+        self.assertEqual(
+            runner2.calls,
+            [PR_VIEW_GATE_ARGV,
+             ["gh", "api",
+              "repos/arii/remote-server/pulls/7/update-branch",
+              "--method", "PUT"]])
 
     def test_fix_ci_requires_failing(self):
         runner = FakeRunner().on(
             ["gh"], FakeProc(stdout=gh_pr_view()))
         with self.assertRaises(ValueError):
             _pr_action("arii/remote-server", 7, "fix-ci", runner=runner)
+        self.assertEqual(runner.calls, [PR_VIEW_GATE_ARGV])
         runner2 = FakeRunner().on(
             ["gh"], FakeProc(stdout=gh_pr_view("FAILURE", "DIRTY"))).on(
             ["td"], FakeProc(stdout='{"ok": true}'))
         out = _pr_action("arii/remote-server", 7, "fix-ci",
                          runner=runner2)
         self.assertTrue(out["ok"])
-        td_call = [c for c in runner2.calls if c[0] == "td"][0]
         self.assertEqual(
-            td_call,
-            ["td", "--json", "agent", "fix-ci", "--pr", "7", "--execute"])
+            runner2.calls,
+            [PR_VIEW_GATE_ARGV,
+             ["td", "--json", "agent", "fix-ci", "--pr", "7",
+              "--execute"]])
 
     def test_route_validation(self):
         from fastapi import HTTPException
@@ -413,11 +462,19 @@ class PrActionTest(unittest.TestCase):
 class IssuesTest(unittest.TestCase):
     def test_list_truncates_body(self):
         with patch.object(issues_mod, "run_gh_json",
-                          return_value=json.loads(gh_issue_list())):
+                          return_value=json.loads(gh_issue_list())
+                          ) as m:
             out = issues_mod.issues(repo="remote-server")
         self.assertEqual(len(out["issues"]), 1)
         self.assertTrue(out["issues"][0]["body"].endswith("…"))
         self.assertEqual(len(out["issues"][0]["body"]), 601)
+        gh, argv = m.call_args[0][0], m.call_args[0][1]
+        self.assertEqual(gh, "arii/remote-server")
+        self.assertEqual(
+            argv,
+            ["issue", "list", "--repo", "arii/remote-server",
+             "--state", "open", "--limit", "50",
+             "--json", issues_mod.ISSUE_LIST_FIELDS])
 
     def test_create_validation_and_url(self):
         from fastapi import HTTPException
@@ -434,8 +491,12 @@ class IssuesTest(unittest.TestCase):
         ) as m:
             out = issues_mod.create_issue(issues_mod.CreateIssueRequest(
                 repo="remote-server", title="t", body="b"))
-            argv = m.call_args[0][1]
-            self.assertEqual(argv[:3], ["issue", "create", "--repo"])
+            gh, argv = m.call_args[0][0], m.call_args[0][1]
+            self.assertEqual(gh, "arii/remote-server")
+            self.assertEqual(
+                argv,
+                ["issue", "create", "--repo", "arii/remote-server",
+                 "--title", "t", "--body", "b"])
             self.assertNotIn(";", " ".join(argv))
         self.assertTrue(out["url"].endswith("/issues/9"))
 
@@ -561,6 +622,10 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(status["issue"], 9)
             self.assertIsNone(status["exit_code"])
             self.assertIn("Aborted by user", status["log_buffer"])
+            self.assertEqual(
+                runner.calls,
+                [["python3", "-m", "core_cli", "repair",
+                  "--issue", "9"]])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()
@@ -605,6 +670,10 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(status["exit_code"], 0)
             self.assertIn("exited with code 0", status["log_buffer"])
             self.assertNotIn("Aborted by user", status["log_buffer"])
+            self.assertEqual(
+                runner.calls,
+                [["python3", "-m", "core_cli", "repair",
+                  "--issue", "9"]])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()
@@ -788,8 +857,9 @@ class RepairScheduleTest(unittest.TestCase):
             reset_repair_state()
 
     def test_due_schedule_skips_while_running(self):
+        runner = FakeRunner()
         old = issues_mod._repair_runner
-        issues_mod._repair_runner = FakeRunner()
+        issues_mod._repair_runner = runner
         reset_repair_state()
         try:
             issues_mod.repair_schedule(
@@ -800,6 +870,7 @@ class RepairScheduleTest(unittest.TestCase):
                 issues_mod.repair_schedules[14]["next_run"] = (
                     time.time() - 1)
             self.assertIsNone(issues_mod.fire_due_schedules())
+            self.assertEqual(runner.calls, [])
             with repair_state_lock:
                 self.assertLessEqual(
                     issues_mod.repair_schedules[14]["next_run"],
@@ -861,6 +932,10 @@ class RepairScheduleTest(unittest.TestCase):
             self.assertEqual(
                 wait_repair_status(("done", "failed", "aborted")),
                 "done")
+            self.assertEqual(
+                runner.calls,
+                [["python3", "-m", "core_cli", "repair",
+                  "--issue", "16"]])
         finally:
             issues_mod._repair_runner = old
             reset_repair_state()
@@ -897,9 +972,12 @@ class RepoLabelsTest(unittest.TestCase):
             out = issues_mod.repo_labels(repo="remote-server")
         self.assertEqual(out, {"repo": "remote-server",
                                "labels": ["audit", "ready"]})
-        argv = m.call_args[0][1]
-        self.assertEqual(argv[:2], ["label", "list"])
-        self.assertIn("--repo", argv)
+        gh, argv = m.call_args[0][0], m.call_args[0][1]
+        self.assertEqual(gh, "arii/remote-server")
+        self.assertEqual(
+            argv,
+            ["label", "list", "--repo", "arii/remote-server",
+             "--limit", "100", "--json", "name"])
 
     def test_list_bad_repo(self):
         from fastapi import HTTPException

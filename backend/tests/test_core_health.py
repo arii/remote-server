@@ -1,10 +1,23 @@
 """Tests for backend.core system health (subprocess mocked)."""
 
 import json
+import os
 import unittest
 from unittest import mock
 
 from backend.core import get_container_stats, get_system_health
+
+
+def _compose_ps_argv():
+    stack = os.environ.get("BACKEND_STACK_DIR",
+                           "/home/ari/remote-server")
+    return ["docker", "compose", "-f",
+            f"{stack}/docker-compose.yml",
+            "ps", "--format", "json"]
+
+
+STATS_ARGV = ["docker", "stats", "--no-stream", "--format",
+              "{{json .}}"]
 
 
 class FakeProc:
@@ -26,6 +39,8 @@ class ContainersTest(unittest.TestCase):
         with mock.patch("subprocess.run",
                         return_value=proc) as run_mock:
             body = get_system_health()
+        self.assertEqual(run_mock.call_args[0][0],
+                         _compose_ps_argv())
         return body, run_mock
 
     def test_compose_env_inherited(self):
@@ -94,8 +109,10 @@ STATS_LINES = "\n".join([
 
 
 def _stats_run_factory(compose_out=COMPOSE_PS, stats_out=STATS_LINES,
-                       stats_rc=0):
+                       stats_rc=0, seen=None):
     def fake_run(cmd, **kwargs):
+        if seen is not None:
+            seen.append(cmd)
         if "stats" in cmd:
             return FakeProc(stdout=stats_out, returncode=stats_rc)
         return FakeProc(stdout=compose_out)
@@ -104,6 +121,9 @@ def _stats_run_factory(compose_out=COMPOSE_PS, stats_out=STATS_LINES,
 
 
 class ContainerStatsTest(unittest.TestCase):
+    def _check_calls(self, seen):
+        self.assertEqual(seen, [_compose_ps_argv(), STATS_ARGV])
+
     def test_stats_join_state_and_usage(self):
         compose = json.dumps([
             {"Name": "remote-buttons-1", "Service": "buttons",
@@ -111,8 +131,10 @@ class ContainerStatsTest(unittest.TestCase):
             {"Name": "remote-terminal-1", "Service": "terminal",
              "State": "running", "Status": "Up 2 hours"},
         ])
+        seen = []
         body = get_container_stats(
-            run=_stats_run_factory(compose_out=compose))
+            run=_stats_run_factory(compose_out=compose, seen=seen))
+        self._check_calls(seen)
         self.assertEqual(body["containers"], [
             {"name": "remote-buttons-1", "service": "buttons",
              "state": "running", "cpu_pct": 0.12,
@@ -123,8 +145,10 @@ class ContainerStatsTest(unittest.TestCase):
         ])
 
     def test_missing_stats_row_yields_nulls(self):
+        seen = []
         body = get_container_stats(
-            run=_stats_run_factory(stats_out=""))
+            run=_stats_run_factory(stats_out="", seen=seen))
+        self._check_calls(seen)
         self.assertEqual(body["containers"], [{
             "name": "remote-buttons-1", "service": "buttons",
             "state": "running", "cpu_pct": None,
@@ -132,17 +156,22 @@ class ContainerStatsTest(unittest.TestCase):
         }])
 
     def test_stats_failure_keeps_state_rows(self):
+        seen = []
         body = get_container_stats(
-            run=_stats_run_factory(stats_rc=1, stats_out=""))
+            run=_stats_run_factory(stats_rc=1, stats_out="",
+                                   seen=seen))
+        self._check_calls(seen)
         self.assertEqual(len(body["containers"]), 1)
         row = body["containers"][0]
         self.assertEqual(row["state"], "running")
         self.assertIsNone(row["cpu_pct"])
 
     def test_compose_failure_degrades_to_empty(self):
+        seen = []
         body = get_container_stats(
-            run=_stats_run_factory(compose_out=""))
+            run=_stats_run_factory(compose_out="", seen=seen))
         self.assertEqual(body["containers"], [])
+        self._check_calls(seen)
 
     def test_stats_is_one_shot_not_streaming(self):
         seen = []
@@ -152,9 +181,7 @@ class ContainerStatsTest(unittest.TestCase):
             return FakeProc(stdout="")
 
         get_container_stats(run=spy)
-        stats_calls = [c for c in seen if "stats" in c]
-        self.assertEqual(len(stats_calls), 1)
-        self.assertIn("--no-stream", stats_calls[0])
+        self._check_calls(seen)
 
 
 if __name__ == "__main__":

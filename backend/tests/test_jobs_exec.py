@@ -167,7 +167,7 @@ class RouterTest(unittest.TestCase):
         ) as _sp, mock.patch(
             "backend.api.routers.jobs.td_run_async",
             new=mock.AsyncMock(return_value='{"plan_path": "p.md"}'),
-        ):
+        ) as td_mock:
             resp = self.client.post(
                 "/api/jobs/run-plan", json={"plan": "issue-audit"}
             )
@@ -175,6 +175,10 @@ class RouterTest(unittest.TestCase):
         body = resp.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["plan_path"], "p.md")
+        self.assertEqual(td_mock.await_count, 1)
+        self.assertEqual(
+            td_mock.await_args[0][0],
+            "td --json agent plan-issue-audit --all-open")
 
     def test_td_run_timeout_and_error(self):
         runner = mock.Mock()
@@ -183,6 +187,7 @@ class RouterTest(unittest.TestCase):
             engine.td_run("td context-warm", runner=runner)
         self.assertIn("last line", str(ctx.exception))
         args, kwargs = runner.run.call_args
+        self.assertEqual(args[0], ["bash", "-c", "td context-warm"])
         self.assertEqual(kwargs["timeout"], 120)
         self.assertEqual(kwargs["cwd"], engine.stack_dir())
 
@@ -192,7 +197,7 @@ class RouterTest(unittest.TestCase):
         jobs_router.registry = RunRegistry()
         with mock.patch(
             "backend.api.routers.jobs._launch"
-        ), mock.patch(
+        ) as launched, mock.patch(
             # Repo validation reads real checkouts; this test is
             # about the run flow, so the repo is stubbed.
             "backend.core.get_repo_status",
@@ -203,6 +208,9 @@ class RouterTest(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
+            launched.assert_called_once_with(
+                rid, "run-td", "remote-server",
+                td_argv=["td", "context-warm"])
             # single-flight: second run conflicts
             resp2 = self.client.post("/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp2.status_code, 409)
@@ -230,7 +238,8 @@ class RouterTest(unittest.TestCase):
                 json={"action": "recreate", "intent": "jobs-run",
                       "confirmed": True})
             self.assertEqual(resp.status_code, 200)
-            launched.assert_called_once()
+            launched.assert_called_once_with(
+                resp.json()["id"], "recreate", "remote-server")
         jobs_router.registry.finish_run(resp.json()["id"], 0)
 
     def test_run_repo_scoped_validates_repo(self):

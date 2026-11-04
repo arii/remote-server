@@ -38,6 +38,17 @@ class _SyncThread:
         self._target(*self._args)
 
 
+def _check_briefing_argv(case, argv, repo, gh):
+    """Exact argv for the briefing script spawn, except the script
+    dir prefix (checkout-dependent): interpreter, script name, and
+    every flag pinned."""
+    case.assertEqual(argv[0], "python3")
+    case.assertTrue(argv[1].endswith("briefing_summary.py"))
+    case.assertEqual(
+        argv[2:],
+        ["--briefing-json", "--repo", repo, "--gh", gh])
+
+
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class BriefingLedgerTest(unittest.TestCase):
     def setUp(self):
@@ -104,19 +115,24 @@ class BriefingLedgerTest(unittest.TestCase):
     def test_briefing_uses_json_despite_exit_1(self):
         payload = {"repo": "previous_workouts", "prs": [],
                    "runs_err": "nope"}
-        with self._fake_run(1, json.dumps(payload)):
+        with self._fake_run(1, json.dumps(payload)) as run_mock:
             resp = self.client.get("/api/briefing",
                                    params={"repo":
                                            "previous_workouts"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["runs_err"], "nope")
+        _check_briefing_argv(self, run_mock.call_args[0][0],
+                             "previous_workouts",
+                             "arii/previous_workouts")
 
     def test_briefing_fails_without_usable_stdout(self):
-        with self._fake_run(1, "", "boom"):
+        with self._fake_run(1, "", "boom") as run_mock:
             resp = self.client.get("/api/briefing",
                                    params={"repo": "remote-server"})
         self.assertEqual(resp.status_code, 500)
         self.assertIn("boom", resp.json()["detail"])
+        _check_briefing_argv(self, run_mock.call_args[0][0],
+                             "remote-server", "arii/remote-server")
 
     def test_briefing_caches_within_ttl(self):
         payload = {"repo": "remote-server", "prs": [],
@@ -129,6 +145,8 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(run_mock.call_count, 1)
+        _check_briefing_argv(self, run_mock.call_args[0][0],
+                             "remote-server", "arii/remote-server")
         self.assertFalse(first.json()["cached"])
         self.assertTrue(second.json()["cached"])
         self.assertFalse(second.json()["stale"])
@@ -177,6 +195,8 @@ class BriefingLedgerTest(unittest.TestCase):
         body = resp.json()
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(run_mock.call_count, 1)
+        _check_briefing_argv(self, run_mock.call_args[0][0],
+                             "remote-server", "arii/remote-server")
         self.assertFalse(body["cached"])
         self.assertFalse(body["stale"])
         self.assertEqual(body["attention"], ["new"])
@@ -307,8 +327,8 @@ class BriefingScriptSmokeTest(unittest.TestCase):
             out = briefing_router._run_briefing("x", "arii/x")
         self.assertEqual(out, {"repo": "x"})
         self.assertEqual(run_mock.call_args.kwargs.get("cwd"), stack_dir())
-        self.assertTrue(
-            run_mock.call_args.args[0][1].endswith("briefing_summary.py"))
+        _check_briefing_argv(self, run_mock.call_args.args[0],
+                             "x", "arii/x")
 
 
 CLI_TURN = {
