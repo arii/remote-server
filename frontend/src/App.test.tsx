@@ -474,7 +474,7 @@ describe('briefing substance', () => {
     const html = renderToStaticMarkup(
       <BriefingBody
         data={{ ...empty, prs: [{ number: 1, title: 't' }] }}
-        ledger={[{ kind: 'chat', event: 'merged #1', ts: 1793745700, ok: true }]}
+        ledger={[{ kind: 'chat', event: 'merged #1', ts: Date.now() / 1000 - 100, ok: true }]}
         onAskAgent={noop}
         onOpenHistory={noop}
       />,

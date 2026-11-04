@@ -8,7 +8,10 @@ import { expect, test } from '@playwright/test';
 test.describe('agent turn', () => {
   test('launch streams the mock answer into the transcript', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Chat' }).click();
+    await page
+      .getByRole('navigation', { name: 'Views' })
+      .getByRole('button', { name: 'Chat', exact: true })
+      .click();
     const drawer = page.getByTestId('agent-drawer');
     await expect(drawer).toBeVisible();
 
@@ -26,7 +29,10 @@ test.describe('agent turn', () => {
 
   test('a slow follow-up turn aborts cleanly', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Chat' }).click();
+    await page
+      .getByRole('navigation', { name: 'Views' })
+      .getByRole('button', { name: 'Chat', exact: true })
+      .click();
     const drawer = page.getByTestId('agent-drawer');
     await expect(drawer).toBeVisible();
     await drawer.getByTestId('agent-provider').selectOption('muse');
