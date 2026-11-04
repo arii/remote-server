@@ -409,6 +409,14 @@ interface ViewCacheEntry {
 const viewCache = new Map<string, ViewCacheEntry>();
 const viewInflight = new Map<string, Promise<unknown>>();
 
+// Generation guard (issue #511): invalidateViewCaches bumps
+// viewCacheGeneration; a settle writes the cache only when its
+// generation is still current, so an in-flight response landing
+// after an invalidation cannot re-populate the cache with stale
+// data. Settles also drop their in-flight entry only when it is
+// still theirs, so a stale settle cannot evict a newer fetch.
+let viewCacheGeneration = 0;
+
 function cachedViewFetch<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
   const hit = viewCache.get(key);
   if (hit) {
@@ -417,15 +425,17 @@ function cachedViewFetch<T>(key: string, ttlMs: number, load: () => Promise<T>):
   }
   const pending = viewInflight.get(key);
   if (pending) return pending as Promise<T>;
+  const generation = viewCacheGeneration;
   const p = load();
   viewInflight.set(key, p);
   p.then(
     (value) => {
+      if (viewInflight.get(key) === p) viewInflight.delete(key);
+      if (generation !== viewCacheGeneration) return;
       viewCache.set(key, { value, expiresAt: Date.now() + ttlMs });
-      viewInflight.delete(key);
     },
     () => {
-      viewInflight.delete(key);
+      if (viewInflight.get(key) === p) viewInflight.delete(key);
     },
   );
   return p;
@@ -433,6 +443,7 @@ function cachedViewFetch<T>(key: string, ttlMs: number, load: () => Promise<T>):
 
 /** Drop all cached view reads. Mutations call this; tests reset with it. */
 export function invalidateViewCaches(): void {
+  viewCacheGeneration += 1;
   viewCache.clear();
   viewInflight.clear();
 }

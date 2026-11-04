@@ -552,6 +552,86 @@ describe('view cache (briefing/jobs/attention)', () => {
     await fetchAttention('demo');
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+
+  it('invalidation during flight wins: the stale settle does not re-cache (issue #511)', async () => {
+    let resolveStale!: (resp: unknown) => void;
+    const gated = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveStale = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', gated);
+    const stale = fetchJobs();
+    expect(gated).toHaveBeenCalledTimes(1);
+    invalidateViewCaches();
+    const freshBody = { jobs: [{ id: 'fresh' }] };
+    const fresh = mockFetchJson(freshBody);
+    vi.stubGlobal('fetch', fresh);
+    resolveStale({
+      ok: true,
+      status: 200,
+      json: async () => jobsBody,
+      text: async () => '',
+    });
+    // The in-flight caller still gets its own response; it just is
+    // not written back to the cache.
+    await expect(stale).resolves.toEqual(jobsBody);
+    // A fresh fetch after the invalidation serves live data, and the
+    // stale settle left nothing behind: the retry hits the fresh
+    // cache entry instead of refetching.
+    await expect(fetchJobs()).resolves.toEqual(freshBody);
+    expect(fresh).toHaveBeenCalledTimes(1);
+    await fetchJobs();
+    expect(fresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refetch started after invalidation survives the stale settle (issue #511)', async () => {
+    let resolveStale!: (resp: unknown) => void;
+    const gated = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveStale = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', gated);
+    const stale = fetchJobs();
+    invalidateViewCaches();
+    let resolveFresh!: (resp: unknown) => void;
+    const freshFetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveFresh = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', freshFetch);
+    const freshBody = { jobs: [{ id: 'fresh' }] };
+    const freshResp = {
+      ok: true,
+      status: 200,
+      json: async () => freshBody,
+      text: async () => '',
+    };
+    const a = fetchJobs();
+    const b = fetchJobs();
+    resolveStale({
+      ok: true,
+      status: 200,
+      json: async () => jobsBody,
+      text: async () => '',
+    });
+    await expect(stale).resolves.toEqual(jobsBody);
+    // The stale settle must not evict the newer in-flight fetch: a
+    // third caller joins it instead of starting another request.
+    const c = fetchJobs();
+    resolveFresh(freshResp);
+    await expect(a).resolves.toEqual(freshBody);
+    await expect(b).resolves.toEqual(freshBody);
+    await expect(c).resolves.toEqual(freshBody);
+    expect(freshFetch).toHaveBeenCalledTimes(1);
+    await fetchJobs();
+    expect(freshFetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('chat stream post (issue #459)', () => {
