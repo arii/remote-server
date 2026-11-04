@@ -8,7 +8,10 @@ dependency in a default provider chain, skill content, or eval gate —
 file a follow-up per red surface; do not fix it in the drill PR.
 
 Deliberately static (imports + source scans): live probes live in
-the shell drill, which can mask PATH and reach the stack.
+the shell drill, which can mask PATH and reach the stack. The
+--proof scrub/strictness contract (issue #889) is covered here by
+source scan plus hermetic router behavior; the live proof runs in
+CI (cutoff-proof.yml) against a local Ollama service.
 """
 
 import os
@@ -107,6 +110,40 @@ class TestCutoffDrill(unittest.TestCase):
             for n, line in muse_hits(mod):
                 problems.append(f"{mod}:{n}: {line}")
         self.assertEqual(problems, [])
+
+    def test_drill_proof_mode_scrubs_credentials(self):
+        text = (REPO_ROOT / "scripts" / "cutoff-drill.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("--proof", text)
+        for var in ("NEBIUS_API_KEY", "GEMINI_API_KEY"):
+            self.assertIn(var, text, var)
+        self.assertIn("CUTOFF_SCRUB_VARS", text)
+        self.assertIn("still set after scrub", text)
+        self.assertIn("OLLAMA_STRICT=1", text)
+
+    def test_keyless_router_refuses_cloud_fallback(self):
+        dead = {"OLLAMA_URL": "http://127.0.0.1:9",
+                "OLLAMA_STRICT": "1"}
+        with mock.patch.dict(os.environ, dead, clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                model_router.resolve_llm()
+        self.assertIn("OLLAMA_STRICT=1 refuses", str(ctx.exception))
+        with mock.patch.dict(os.environ,
+                              {"OLLAMA_URL": "http://127.0.0.1:9"},
+                              clear=True):
+            with self.assertRaises(RuntimeError) as ctx:
+                model_router.resolve_llm()
+        self.assertIn("NEBIUS_API_KEY", str(ctx.exception))
+
+    def test_proof_workflow_wires_drill(self):
+        path = (REPO_ROOT / ".github" / "workflows"
+                / "cutoff-proof.yml")
+        self.assertTrue(path.is_file(), "cutoff-proof.yml missing")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("cutoff-drill.sh --proof", text)
+        self.assertIn("env -u NEBIUS_API_KEY", text)
+        self.assertIn("ollama/ollama:", text)
+        self.assertIn("deep-agent/**", text)
 
     def test_skill_content_has_no_muse(self):
         skills = REPO_ROOT / "deep-agent" / "agent_skills"
