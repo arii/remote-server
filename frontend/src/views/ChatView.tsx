@@ -1165,7 +1165,7 @@ function parseJson<T>(data: string): T | null {
   }
 }
 
-async function pumpStream(
+export async function pumpStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
   onApproval: (payload: ApprovalPayload) => void,
@@ -1183,7 +1183,10 @@ async function pumpStream(
     buf = rest;
     for (const ev of events) {
       onEvent();
-      if (ev.name === 'error') throw new Error(ev.data);
+      if (ev.name === 'error') {
+        const message = parseJson<{ error?: string }>(ev.data)?.error;
+        throw new Error(message && message.length > 0 ? message : ev.data);
+      }
       if (ev.name === 'token') {
         onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
       }
