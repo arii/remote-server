@@ -1,0 +1,17 @@
+{
+  "name": "@remote-server/console-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Console E2E smoke suite (Playwright): launch/approve/merge/assign flows against a live buttons stack with stubbed gh + docker. Standalone npm package, intentionally NOT a pnpm workspace member.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.0.0",
+    "typescript": "~5.6.3"
+  }
+}
