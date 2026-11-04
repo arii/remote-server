@@ -558,6 +558,19 @@ class AgentTurnManager:
         # sessions are re-recorded every turn.
         self._agy: dict[str, str] = {}
         self._result_at: dict[str, float] = {}
+        # Live transcript buffer per session (issue #856): every
+        # streamed piece lands here as well as on the wire, so a
+        # reloaded console reattaches and resumes the turn's text
+        # via session_snapshot(). Holds the current turn only — a
+        # new claim resets it — bounded by TURN_OUTPUT_MAX like the
+        # wire stream, and swept with results past RESULT_TTL.
+        self._live_text: dict[str, list[str]] = {}
+        self._live_len: dict[str, int] = {}
+        self._live_at: dict[str, float] = {}
+        # Durable finish record per session: the same verdict the
+        # owning stream pops from _results, kept past the pop so a
+        # reattach learns exit/truncated/timed_out after the fact.
+        self._finished: dict[str, dict] = {}
 
     def _register(self, session_id: str,
                   proc: subprocess.Popen) -> None:
@@ -592,6 +605,72 @@ class AgentTurnManager:
         """Recorded agy conversation for a session, if any."""
         with self._lock:
             return self._agy.get(session_id)
+
+    def is_running(self, session_id: str) -> bool:
+        """True when a turn is currently in flight for this session."""
+        with self._lock:
+            proc = self._running.get(session_id)
+            return proc is not None and proc.poll() is None
+
+    def _record_live(self, session_id: str, generation: int,
+                     text: str) -> None:
+        # Generation-guarded like the result store: a retired turn
+        # must not append to its successor's buffer.
+        if not text:
+            return
+        with self._lock:
+            if self._generation.get(session_id) != generation:
+                return
+            length = self._live_len.get(session_id, 0)
+            room = TURN_OUTPUT_MAX - length
+            if room <= 0:
+                return
+            self._live_text.setdefault(session_id, []).append(
+                text[:room])
+            self._live_len[session_id] = length + len(text[:room])
+            self._live_at[session_id] = time.time()
+
+    def note_guidance(self, session_id: str, code: str | None,
+                      message: str, detail: str = "") -> None:
+        """Attach the router's failure guidance to the finish record.
+
+        _turn_events calls this when a turn fails with a known
+        signature, so a reattached console renders the same
+        guidance card the live stream would have shown.
+        """
+        with self._lock:
+            record = self._finished.get(session_id)
+            if record is not None:
+                record["guidance_code"] = code
+                record["guidance_message"] = message
+                record["guidance_detail"] = detail
+
+    def session_snapshot(self, session_id: str) -> dict:
+        """Reattach state for one session (issue #856).
+
+        Returns {session_id, known, running, transcript,
+        transcript_truncated, finished}: transcript is the current
+        turn's streamed text so far, finished is the durable
+        verdict (exit/stderr/truncated/timed_out/timeout/rescue,
+        plus guidance_* when the router attached it) or None while
+        the turn is still in flight. Unknown ids report
+        known=False with empty text and no verdict.
+        """
+        self._sweep_results()
+        with self._lock:
+            proc = self._running.get(session_id)
+            finished = self._finished.get(session_id)
+            return {
+                "session_id": session_id,
+                "known": session_id in self._known,
+                "running": proc is not None and proc.poll() is None,
+                "transcript": "".join(
+                    self._live_text.get(session_id, [])),
+                "transcript_truncated": self._live_len.get(
+                    session_id, 0) >= TURN_OUTPUT_MAX,
+                "finished": dict(finished) if finished is not None
+                else None,
+            }
 
     def _remember_agy(self, session_id: str, cid: str) -> None:
         with self._lock:
@@ -646,6 +725,13 @@ class AgentTurnManager:
             prior = self._running.get(session_id)
             generation = self._generation.get(session_id, 0) + 1
             self._generation[session_id] = generation
+            # Fresh turn, fresh live buffer (issue #856): the
+            # transcript holds the current turn only, and the prior
+            # turn's verdict no longer describes this session.
+            self._live_text[session_id] = []
+            self._live_len[session_id] = 0
+            self._live_at[session_id] = time.time()
+            self._finished.pop(session_id, None)
         if prior is not None and prior.poll() is None:
             await _stop_proc(prior)
         if not self._is_current(session_id, generation):
@@ -728,9 +814,12 @@ class AgentTurnManager:
                         truncated = True
                         if room > 0:
                             out_text.append(piece[:room])
+                            self._record_live(session_id, generation,
+                                              piece[:room])
                             yield piece[:room]
                         break
                     out_text.append(piece)
+                    self._record_live(session_id, generation, piece)
                     yield piece
                 if not chunk or truncated:
                     break
@@ -826,6 +915,15 @@ class AgentTurnManager:
                                              "timeout": timeout,
                                              "rescue": rescue}
                 self._result_at[session_id] = time.time()
+                # Durable verdict for reattach (issue #856): the
+                # owning stream pops _results, but this copy stays
+                # so a reloaded console still learns the outcome.
+                self._finished[session_id] = {
+                    "exit": code, "stderr": err_tail,
+                    "truncated": truncated,
+                    "timed_out": timed_out, "timeout": timeout,
+                    "rescue": rescue}
+                self._live_at[session_id] = time.time()
         if not current:
             # A successor claimed during the ledger write: the turn
             # ran, but its record must not overwrite the owner's.
@@ -836,7 +934,9 @@ class AgentTurnManager:
 
         Backstop for results no route ever pops (issue #535):
         the store site sweeps opportunistically, so _results
-        stays bounded without a background thread.
+        stays bounded without a background thread. Live buffers
+        and finish records (issue #856) sweep on the same TTL;
+        running sessions are never swept.
         """
         at = time.time() if now is None else now
         with self._lock:
@@ -845,6 +945,14 @@ class AgentTurnManager:
             for sid in stale:
                 self._results.pop(sid, None)
                 self._result_at.pop(sid, None)
+            stale_live = [sid for sid, ts in self._live_at.items()
+                          if at - ts > RESULT_TTL
+                          and sid not in self._running]
+            for sid in stale_live:
+                self._live_text.pop(sid, None)
+                self._live_len.pop(sid, None)
+                self._live_at.pop(sid, None)
+                self._finished.pop(sid, None)
 
     def pop_result(self, session_id: str) -> dict | None:
         """Completion record for a finished turn, once."""
