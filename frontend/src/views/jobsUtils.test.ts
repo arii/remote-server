@@ -49,9 +49,13 @@ describe('td block reasons', () => {
 });
 
 describe('mergeNoteFor', () => {
-  it('returns null for other actions or unknown readiness', () => {
+  it('returns null for other actions', () => {
     expect(mergeNoteFor('recreate', 3)).toBeNull();
-    expect(mergeNoteFor('merge-approved', null)).toBeNull();
+    expect(mergeNoteFor('recreate', null)).toBeNull();
+  });
+
+  it('fails closed on unknown readiness (issue #513)', () => {
+    expect(mergeNoteFor('merge-approved', null)).toBe("Couldn't load PRs — merge set unknown.");
   });
 
   it('reports the ready count', () => {

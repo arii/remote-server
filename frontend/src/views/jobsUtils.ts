@@ -109,9 +109,12 @@ export function tdBlockReason(slug: string, pr: PrRefState | null): string | nul
   return null;
 }
 
-// Danger-zone merge note: null keeps the plain consequence line.
+// Danger-zone merge note: null keeps the plain consequence line
+// (non-merge rows only). Unknown merge set reports the load
+// failure so the row never silently enables a blind merge-all.
 export function mergeNoteFor(action: string, mergeReady: number | null): string | null {
-  if (action !== 'merge-approved' || mergeReady === null) return null;
+  if (action !== 'merge-approved') return null;
+  if (mergeReady === null) return "Couldn't load PRs — merge set unknown.";
   return mergeReady === 0
     ? 'No approved, green PRs right now.'
     : `${mergeReady} ready to merge.`;
