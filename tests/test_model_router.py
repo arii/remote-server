@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import sys
@@ -43,6 +45,48 @@ class TestModelRouter(unittest.TestCase):
                 spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "nebius")
         self.assertEqual(spec["model"], "zai-org/GLM-5.3-Flash")
+
+    def test_fallback_announces_outage_signal(self):
+        # Ollama-down default resolve is always visible: one log
+        # line for journals, one stderr line for run output. Model
+        # names and URLs only — never the spec (no-secrets rule).
+        with env(NEBIUS_API_KEY="k"):
+            with mock.patch.object(model_router, "ollama_reachable",
+                                   return_value=False):
+                with self.assertLogs("model_router",
+                                     level="WARNING") as logs:
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "nebius")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("ollama unreachable", logs.output[0])
+        self.assertIn("metered nebius", logs.output[0])
+        self.assertIn("ollama unreachable", err.getvalue())
+        self.assertIn("metered nebius", err.getvalue())
+
+    def test_explicit_nebius_stays_silent(self):
+        # prefer="nebius" is a choice, not a downgrade: no signal.
+        with env(NEBIUS_API_KEY="k"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with self.assertNoLogs("model_router", level="WARNING"):
+                    spec = model_router.resolve_llm(prefer="nebius")
+        self.assertEqual(spec["provider"], "nebius")
+        self.assertEqual(err.getvalue(), "")
+
+    def test_local_path_stays_silent(self):
+        # Ollama serving means no fallback: no signal.
+        with env():
+            with mock.patch.object(model_router, "ollama_reachable",
+                                   return_value=True):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    with self.assertNoLogs("model_router",
+                                           level="WARNING"):
+                        spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "ollama")
+        self.assertEqual(err.getvalue(), "")
 
     def test_nebius_model_override(self):
         with env(NEBIUS_API_KEY="k", NEBIUS_MODEL="custom/model"):

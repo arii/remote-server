@@ -35,12 +35,16 @@ Routing ladder (policy, 2026-11-02):
   OLLAMA_STRICT=1 keeps the box usable offline (fail, never cloud).
 """
 
+import logging
 import os
 import re
+import sys
 import urllib.request
 
 import pricing
 import runs
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
@@ -129,7 +133,26 @@ def resolve_llm(prefer=None):
         raise RuntimeError(
             "Ollama unreachable and OLLAMA_STRICT=1 refuses the Nebius fallback"
         )
-    return _nebius_spec()
+    spec = _nebius_spec()
+    _announce_fallback(spec)
+    return spec
+
+
+def _announce_fallback(spec):
+    """One-line outage signal when the default path goes metered.
+
+    Fires exactly when an Ollama outage reroutes a resolve to paid
+    Nebius (never on the explicit prefer="nebius" path — that is a
+    choice, not a downgrade). Journals get it via logging, run
+    output via stderr. Never logs the spec itself (no-secrets rule:
+    model names and URLs only).
+    """
+    url = _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
+    model = spec.get("model", "?")
+    logger.warning("ollama unreachable at %s, using metered nebius (%s)",
+                   url, model)
+    print(f"model_router: ollama unreachable at {url}, "
+          f"using metered nebius ({model})", file=sys.stderr)
 
 
 # Mid-turn failover (#649): explicit non-5xx codes worth one local
