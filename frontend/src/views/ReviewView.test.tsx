@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   IssueRowTitle,
+  RowActionButton,
   applyOptimisticMerge,
   isRowDeferred,
   nextPrAfterMerge,
@@ -104,5 +105,46 @@ describe('issue row open action', () => {
     openIssueUrl(undefined);
     openIssueUrl('');
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe('row action accessible names (issue #569)', () => {
+  it('names Open/Defer/Restore with kind + number', () => {
+    const html = renderToStaticMarkup(
+      <>
+        <RowActionButton action="Open" kind="pr" num={12} onClick={() => {}} />
+        <RowActionButton action="Defer" kind="pr" num={12} onClick={() => {}} />
+        <RowActionButton action="Defer" kind="issue" num={559} onClick={() => {}} />
+        <RowActionButton action="Restore" kind="issue" num={488} onClick={() => {}} />
+      </>,
+    );
+    expect(html).toContain('aria-label="Open PR #12"');
+    expect(html).toContain('aria-label="Defer PR #12"');
+    expect(html).toContain('aria-label="Defer issue #559"');
+    expect(html).toContain('aria-label="Restore issue #488"');
+  });
+
+  it('keeps visible text as the bare verb', () => {
+    const html = renderToStaticMarkup(
+      <RowActionButton action="Defer" kind="issue" num={559} onClick={() => {}} />,
+    );
+    expect(html).toContain('>Defer<');
+    expect(html).not.toContain('>Defer issue #559<');
+  });
+
+  it('gives every repeated row action a unique name', () => {
+    const html = renderToStaticMarkup(
+      <>
+        {[559, 560].map((n) => (
+          <RowActionButton key={n} action="Defer" kind="issue" num={n} onClick={() => {}} />
+        ))}
+        {[7, 8].map((n) => (
+          <RowActionButton key={`pr-${n}`} action="Open" kind="pr" num={n} onClick={() => {}} />
+        ))}
+      </>,
+    );
+    const names = [...html.matchAll(/aria-label="([^"]+)"/g)].map((m) => m[1]);
+    expect(names).toHaveLength(4);
+    expect(new Set(names).size).toBe(4);
   });
 });
