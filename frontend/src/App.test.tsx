@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import App from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
-import type { InboxFeed, SystemHealthResponse } from './apiClient';
+import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
 import HoldToConfirm from './components/HoldToConfirm';
 import TriageHint from './components/TriageHint';
 import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
@@ -638,6 +638,47 @@ describe('chat route hint line', () => {
     const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
     expect(html).toContain('data-testid="chat-route-hint"');
     expect(html).toContain('Next reply via …');
+  });
+});
+
+describe('chat composer order', () => {
+  const noop = () => {};
+  const runs: AgentRun[] = Array.from({ length: 8 }, (_, i) => ({
+    id: `run-${i}`,
+    script: 'deep_chat.py',
+    model: 'ollama:qwen3:8b',
+    thread: `t${i}`,
+    started_ts: 1793745700,
+    duration_s: 9.8,
+    ok: true,
+    tools: [],
+    tokens: 96,
+    preview: `run ${i}`,
+    has_prompt: true,
+    cost_usd: 0,
+    metered: false,
+  }));
+
+  it('renders Prompt + Send above Past runs with 8 runs', () => {
+    const html = renderToStaticMarkup(
+      <ChatView repo="r" seed={null} onSeedUsed={noop} initialRuns={runs} />,
+    );
+    expect(html).toContain('data-testid="chat-runs"');
+    expect(html.indexOf('data-testid="chat-send"')).toBeLessThan(
+      html.indexOf('data-testid="chat-runs"'),
+    );
+    expect(html.indexOf('data-testid="chat-prompt"')).toBeLessThan(
+      html.indexOf('data-testid="chat-runs"'),
+    );
+  });
+
+  it('keeps the agent drawer below the composer', () => {
+    const html = renderToStaticMarkup(
+      <ChatView repo="r" seed={null} onSeedUsed={noop} initialRuns={runs} />,
+    );
+    expect(html.indexOf('data-testid="chat-send"')).toBeLessThan(
+      html.indexOf('data-testid="agent-drawer"'),
+    );
   });
 });
 

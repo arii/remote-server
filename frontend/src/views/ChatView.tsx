@@ -600,10 +600,14 @@ export default function ChatView({
   repo,
   seed,
   onSeedUsed,
+  initialRuns,
 }: {
   repo: string;
   seed: string | null;
   onSeedUsed: () => void;
+  // Test seam (drawer-precedented): pins the composer-above-runs
+  // order without waiting on the runs fetch.
+  initialRuns?: AgentRun[];
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState(seed ?? '');
@@ -623,7 +627,7 @@ export default function ChatView({
   const [phase, setPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastSent, setLastSent] = useState('');
-  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>(initialRuns ?? []);
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
@@ -974,17 +978,8 @@ export default function ChatView({
       {approval && (
         <ApprovalCard approval={approval} decided={decided} onDecide={(d) => void onDecide(d)} />
       )}
-      <RunsPane
-        runs={runs}
-        selected={selected}
-        detail={detail}
-        onSelect={(id) => void onSelectRun(id)}
-        onContinue={(id) => void onContinueRun(id)}
-        onDelete={(id) => void onDeleteRun(id)}
-        onClearFinished={() => void onClearFinished()}
-        notice={runsNotice}
-        budget={budget}
-      />
+      {/* Composer above Past runs: with 8+ runs the form used to
+          drop below every run card, burying Prompt + Send (#564). */}
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
           Prompt{' '}
@@ -1020,6 +1015,17 @@ export default function ChatView({
           </button>
         </div>
       </form>
+      <RunsPane
+        runs={runs}
+        selected={selected}
+        detail={detail}
+        onSelect={(id) => void onSelectRun(id)}
+        onContinue={(id) => void onContinueRun(id)}
+        onDelete={(id) => void onDeleteRun(id)}
+        onClearFinished={() => void onClearFinished()}
+        notice={runsNotice}
+        budget={budget}
+      />
       <AgentDrawer repo={repo} />
     </section>
   );
