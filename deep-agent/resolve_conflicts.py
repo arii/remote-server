@@ -90,7 +90,7 @@ def main() -> int:
     WORKTREE = sys.argv[1]
     BASE = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_BASE
     started = time.time()
-    load_dotenv("/srv/remote-server/.env")
+    load_dotenv(os.path.join(cli.repo_root(), ".env"))
     if not os.environ.get("NEBIUS_API_KEY"):
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
         return 1

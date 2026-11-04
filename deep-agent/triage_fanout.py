@@ -59,7 +59,7 @@ def extract_prefer(argv):
 
 def main() -> int:
     started = time.time()
-    load_dotenv("/srv/remote-server/.env")
+    load_dotenv(os.path.join(cli.repo_root(), ".env"))
     try:
         prefer = extract_prefer(sys.argv)
     except ValueError as exc:
