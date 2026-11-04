@@ -1082,5 +1082,17 @@ def webhook_worker(repo, path):
     ledger.append({"kind": "webhook", "repo": repo, "ok": ok,
                    "advanced": advanced, "detail": detail[:200],
                    "observed": observed, **extras})
+    if ok:
+        # A successful pull may have moved the checkout: cached
+        # inbox/prs lists recompute on next read (#888). Failures
+        # leave the checkout unchanged, so the cache stands. Lazy
+        # router imports: backend.notify sits below the routers.
+        # Worker repo may be full (webhook) or short (retry tap).
+        from backend.api.routers import inbox as inbox_mod
+        from backend.api.routers import pulls as pulls_mod
+        short = str(repo or "").split("/")[-1].strip()
+        if short:
+            pulls_mod.invalidate_prs_cache(short)
+            inbox_mod.invalidate_inbox_cache(short)
     print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
           flush=True)
