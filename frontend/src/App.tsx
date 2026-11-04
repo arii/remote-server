@@ -5,7 +5,7 @@ import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
 import SyncBanner from './components/SyncBanner';
-import CommandPalette, { isPaletteHotkey } from './components/CommandPalette';
+import CommandPalette from './components/CommandPalette';
 import { buildCommands, type PaletteCommand } from './components/commandRegistry';
 import {
   fetchContainerStats,
@@ -142,7 +142,9 @@ export default function App() {
 
   // Cheatsheet visibility for the app-level shortcuts (#808). Tab/send
   // shortcuts suspend while a modal/drawer owns the screen; the
-  // cheatsheet itself stays reachable.
+  // cheatsheet and the palette stay reachable. Ctrl+K toggles the
+  // palette through this one listener (#902) — no second keydown
+  // subscription, so the chord can never double-fire.
   const [helpOpen, setHelpOpen] = useState(false);
   useAppShortcuts({
     suspended: diffRepo !== null || statsOpen,
@@ -151,6 +153,7 @@ export default function App() {
     onSend: () => clickChatSend(),
     onToggleHelp: () => setHelpOpen((v) => !v),
     onCloseHelp: () => setHelpOpen(false),
+    onPalette: () => setPaletteOpen((o) => !o),
   });
 
   function askAgent(seed: string) {
@@ -176,19 +179,6 @@ export default function App() {
     const section = entry.kind === 'section' ? entry.id : null;
     setSectionRequest((r) => ({ section, nonce: (r?.nonce ?? 0) + 1 }));
   }
-
-  // Ctrl+K / Cmd+K toggles the palette from anywhere. The chord
-  // never collides with plain typing, so no editable-focus guard.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (isPaletteHotkey(e)) {
-        e.preventDefault();
-        setPaletteOpen((o) => !o);
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   const commands = useMemo(
     () =>
@@ -473,6 +463,10 @@ export default function App() {
             repo={repo}
             onAskAgent={askAgent}
             onOpenHistory={() => setTab('history')}
+            onOpenReview={() => {
+              setTab('now');
+              setSectionRequest((r) => ({ section: 'review', nonce: (r?.nonce ?? 0) + 1 }));
+            }}
             reloadRequest={briefingReloadRequest}
           />
         ))}

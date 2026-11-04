@@ -2,8 +2,9 @@ import { useEffect, useRef } from 'react';
 import { isEditableFocus, type Focusable } from './triageKeys';
 import { isKeyboardSend } from './views/ChatView';
 
-// App-level keyboard shortcuts (#808): tab switches, chat send, and
-// the cheatsheet (? / Ctrl+K entry). Matching is pure (struct fakes,
+// App-level keyboard shortcuts (#808): tab switches, chat send, the
+// cheatsheet (?), and the palette chord (Ctrl+K, #902: the cheatsheet
+// yields — one shortcut, one surface). Matching is pure (struct fakes,
 // no DOM) so the suite covers it without a browser; useAppShortcuts
 // is thin wiring in the triageKeys style.
 export interface KeyPress {
@@ -16,7 +17,7 @@ export interface KeyPress {
 
 export type AppTab = 'now' | 'chat' | 'briefing' | 'history';
 
-export type AppShortcutAction = AppTab | 'send' | 'help' | 'help-close';
+export type AppShortcutAction = AppTab | 'send' | 'help' | 'help-close' | 'palette';
 
 export interface AppShortcutDef {
   key: string;
@@ -33,18 +34,19 @@ export const APP_SHORTCUTS: AppShortcutDef[] = [
   { key: '4', label: 'Go to History', action: 'history' },
   { key: 'Ctrl+Enter', label: 'Send chat message (chat tab)', action: 'send' },
   { key: '?', label: 'Toggle this cheatsheet', action: 'help' },
-  { key: 'Ctrl+K', label: 'Toggle this cheatsheet', action: 'help' },
+  { key: 'Ctrl+K', label: 'Open command palette', action: 'palette' },
   { key: 'Esc', label: 'Close cheatsheet', action: 'help-close' },
 ];
 
 export interface ShortcutState {
   // Focus sits in an editable control: bare keys must never hijack
-  // typing. Ctrl+K still fires (palette convention); Ctrl+Enter is
-  // owned by the focused control (the composer already sends on it),
-  // so the app level skips it rather than double-sending.
+  // typing. Ctrl+K still fires (the palette owns that chord from
+  // anywhere, #902); Ctrl+Enter is owned by the focused control (the
+  // composer already sends on it), so the app level skips it rather
+  // than double-sending.
   typing: boolean;
   // A modal/drawer owns the screen: tabs and send stay out of the
-  // way, but the cheatsheet remains reachable.
+  // way, but the cheatsheet and the palette remain reachable.
   suspended: boolean;
   helpOpen: boolean;
 }
@@ -53,8 +55,9 @@ export function matchAppShortcut(e: KeyPress, s: ShortcutState): AppShortcutActi
   if (e.key === 'Escape') return s.helpOpen ? 'help-close' : null;
   const mod = e.ctrlKey || e.metaKey;
   // Exact 'k', no Shift: Ctrl+Shift+K opens devtools in Firefox and
-  // must never be hijacked.
-  if (mod && !e.altKey && !e.shiftKey && e.key === 'k') return 'help';
+  // must never be hijacked. Ctrl+K is the palette's chord alone
+  // (#902); the cheatsheet answers to ? only.
+  if (mod && !e.altKey && !e.shiftKey && e.key === 'k') return 'palette';
   if (isKeyboardSend(e)) return !s.typing && !s.suspended ? 'send' : null;
   if (mod || e.altKey) return null;
   if (s.typing) return null;
@@ -101,6 +104,7 @@ export function useAppShortcuts(opts: {
   onSend: () => void;
   onToggleHelp: () => void;
   onCloseHelp: () => void;
+  onPalette: () => void;
 }): void {
   const ref = useRef(opts);
   ref.current = opts;
@@ -132,6 +136,7 @@ export function useAppShortcuts(opts: {
       if (action === 'send') o.onSend();
       else if (action === 'help') o.onToggleHelp();
       else if (action === 'help-close') o.onCloseHelp();
+      else if (action === 'palette') o.onPalette();
       else o.onTab(action);
     }
     window.addEventListener('keydown', onKey);

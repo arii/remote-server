@@ -21,6 +21,7 @@ import {
   inActivityWindow,
   PrefsControlsView,
   prefsStatusLine,
+  prChecksUrl,
   prReviewNote,
   prReviewVerdict,
   reviewsErrText,
@@ -261,6 +262,7 @@ describe('activity window (issue #609)', () => {
         ledger={liveEntries}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
         window="1h"
         onWindowChange={noop}
       />,
@@ -423,6 +425,7 @@ describe('briefing narrative lede (issue #671)', () => {
         ledger={[]}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
       />,
     );
   }
@@ -514,6 +517,7 @@ describe('briefing conflict/review errors (issue #463)', () => {
         ledger={[]}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
       />,
     );
   }
@@ -581,6 +585,7 @@ describe('briefing enrichment cap note (issue #487)', () => {
         ledger={[]}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
       />,
     );
   }
@@ -637,6 +642,7 @@ describe('actionable briefing (issue #839)', () => {
         ledger={[]}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
       />,
     );
   }
@@ -722,5 +728,58 @@ describe('actionable briefing (issue #839)', () => {
     expect(html).toContain('Explain the failures');
     expect(html).toContain('Resolve the conflicts');
     expect(html.match(/Explain the failures/g)?.length).toBe(1);
+  });
+
+  it('links pills out when the backend ships the PR url (issue #902)', () => {
+    const html = renderBody(
+      briefing({
+        prs: [
+          {
+            number: 12,
+            title: 'Fix it',
+            author: 'a',
+            branch: 'fix/it',
+            ci: 'failing',
+            merge: 'blocked',
+            url: 'https://github.com/o/r/pull/12',
+          },
+        ],
+        reviews_lines: ['#12: bot says Verdict: CHANGES REQUESTED in review'],
+      }),
+    );
+    expect(html).toContain('data-testid="briefing-ci"');
+    expect(html).toContain('href="https://github.com/o/r/pull/12/checks"');
+    expect(html).toContain('data-testid="briefing-verdict"');
+    expect(html).toContain('href="https://github.com/o/r/pull/12"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('Verdict: CHANGES REQUESTED');
+  });
+
+  it('falls back to Review buttons when the PR has no url (issue #902)', () => {
+    const html = renderBody(
+      briefing({
+        prs: [{ number: 12, title: 'Fix it', ci: 'passing', merge: 'clean' }],
+        reviews_lines: ['#12: bot says Verdict: APPROVED in review'],
+      }),
+    );
+    // Buttons, not dead spans and not href-less anchors: every pill
+    // navigates somewhere real.
+    expect(html).toMatch(/<button[^>]*data-testid="briefing-ci"/);
+    expect(html).toMatch(/<button[^>]*data-testid="briefing-verdict"/);
+    expect(html).toContain('Open #12 in Review');
+    expect(html).not.toContain('href=');
+  });
+});
+
+describe('prChecksUrl (issue #902)', () => {
+  it('appends /checks, trims slashes, empties stay empty', () => {
+    expect(prChecksUrl('https://github.com/o/r/pull/12')).toBe(
+      'https://github.com/o/r/pull/12/checks',
+    );
+    expect(prChecksUrl('https://github.com/o/r/pull/12///')).toBe(
+      'https://github.com/o/r/pull/12/checks',
+    );
+    expect(prChecksUrl('')).toBe('');
+    expect(prChecksUrl('   ')).toBe('');
   });
 });

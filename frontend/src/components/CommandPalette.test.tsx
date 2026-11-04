@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CommandPalette, { groupedRows, isPaletteHotkey, movePaletteSelection } from './CommandPalette';
+import CommandPalette, { groupedRows, movePaletteSelection } from './CommandPalette';
 import {
   buildCommands,
   commandSection,
@@ -152,15 +152,8 @@ describe('movePaletteSelection', () => {
   });
 });
 
-describe('isPaletteHotkey', () => {
-  it('accepts Ctrl+K and Cmd+K only', () => {
-    expect(isPaletteHotkey({ key: 'k', ctrlKey: true, metaKey: false })).toBe(true);
-    expect(isPaletteHotkey({ key: 'K', ctrlKey: false, metaKey: true })).toBe(true);
-    expect(isPaletteHotkey({ key: 'k', ctrlKey: false, metaKey: false })).toBe(false);
-    expect(isPaletteHotkey({ key: 'j', ctrlKey: true, metaKey: false })).toBe(false);
-    expect(isPaletteHotkey({ key: 'k', ctrlKey: true, metaKey: false, altKey: true })).toBe(false);
-  });
-});
+// The palette chord lives in shortcuts.ts (issue #902): one table,
+// one listener. Its cases are covered by shortcuts.test.ts.
 
 describe('CommandPalette markup', () => {
   const noop = () => {};

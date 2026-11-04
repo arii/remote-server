@@ -698,14 +698,67 @@ export function GroupedLines({ lines }: { lines: string[] }) {
   );
 }
 
+// Checks tab for a PR web URL: trailing slashes trimmed so the
+// suffix never doubles. Empty in, empty out (older payloads carry
+// no URL; those pills fall back to the in-app Review section).
+export function prChecksUrl(prUrl: string): string {
+  const base = prUrl.trim().replace(/\/+$/, '');
+  return base ? `${base}/checks` : '';
+}
+
+// One pipeline pill (#902): a link out when the backend shipped the
+// PR's web URL, an in-app Review hop otherwise. Every pill navigates
+// somewhere real — no dead pills.
+function PrPill({
+  testid,
+  label,
+  title,
+  href,
+  onOpenReview,
+}: {
+  testid: string;
+  label: string;
+  title: string;
+  href: string;
+  onOpenReview: () => void;
+}) {
+  if (href) {
+    return (
+      <a
+        className="repo-chip link-chip"
+        data-testid={testid}
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        title={title}
+      >
+        {label}
+      </a>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="repo-chip link-chip"
+      data-testid={testid}
+      onClick={onOpenReview}
+      title={title}
+    >
+      {label}
+    </button>
+  );
+}
+
 function PrRow({
   pr,
   board,
   reviewsLines,
+  onOpenReview,
 }: {
   pr: Record<string, unknown>;
   board: BoardItem[];
   reviewsLines: string[];
+  onOpenReview: (prNumber: string) => void;
 }) {
   const number = String(pr.number ?? '?');
   const branch = String(pr.branch ?? '').trim();
@@ -716,7 +769,6 @@ function PrRow({
   const meta = [pr.author, branch]
     .map((v) => String(v ?? '').trim())
     .filter((v) => v.length > 0);
-  if (ci) meta.push(`CI ${ci}`);
   if (merge) meta.push(`merge ${merge}`);
   if (pr.draft === true) meta.push('draft');
   if (pr.stale === true) meta.push('stale');
@@ -727,17 +779,34 @@ function PrRow({
     ? prReviewNote(number, reviewsLines) || (ownReview ? cleanBriefingLine(ownReview) : '')
     : '';
   const verdict = note ? prReviewVerdict(note) : '';
+  const prUrl = typeof pr.url === 'string' ? pr.url.trim() : '';
+  const openReview = () => onOpenReview(number);
   return (
     <li className="detail" data-testid="briefing-pr-row">
       <span className="row-title">
         #{number} {String(pr.title ?? 'Untitled')}
       </span>
       {meta.length > 0 && <p className="row-meta pipeline-meta">{meta.join(' · ')}</p>}
-      {verdict && (
-        <p className="row-meta">
-          <span className="repo-chip" data-testid="briefing-verdict">
-            Verdict: {verdict}
-          </span>
+      {(ci || verdict) && (
+        <p className="row-meta chip-row">
+          {ci && (
+            <PrPill
+              testid="briefing-ci"
+              label={`CI ${ci}`}
+              title={prUrl ? `Open checks for #${number}` : `Open #${number} in Review`}
+              href={prChecksUrl(prUrl)}
+              onOpenReview={openReview}
+            />
+          )}
+          {verdict && (
+            <PrPill
+              testid="briefing-verdict"
+              label={`Verdict: ${verdict}`}
+              title={prUrl ? `Open PR #${number}` : `Open #${number} in Review`}
+              href={prUrl}
+              onOpenReview={openReview}
+            />
+          )}
         </p>
       )}
       {note && <p className="row-meta">Review: {note}</p>}
@@ -749,11 +818,15 @@ export default function BriefingView({
   repo,
   onAskAgent,
   onOpenHistory,
+  onOpenReview,
   reloadRequest = 0,
 }: {
   repo: string;
   onAskAgent: (seed: string) => void;
   onOpenHistory: () => void;
+  // Pipeline-pill fallback (#902): pills without a backend URL hop
+  // to the in-app Review section instead of rendering dead.
+  onOpenReview: (prNumber: string) => void;
   // Palette request (issue #810): a nonce bump re-fetches the
   // briefing while mounted. Mount already loads, so the opening
   // nonce is adopted, not acted on — only later bumps reload.
@@ -864,6 +937,7 @@ export default function BriefingView({
           ledger={ledger}
           onAskAgent={onAskAgent}
           onOpenHistory={onOpenHistory}
+          onOpenReview={onOpenReview}
           window={window}
           onWindowChange={setWindow}
         />
@@ -877,6 +951,7 @@ export function BriefingBody({
   ledger,
   onAskAgent,
   onOpenHistory,
+  onOpenReview,
   window = '24h',
   onWindowChange = () => {},
 }: {
@@ -884,6 +959,7 @@ export function BriefingBody({
   ledger: LedgerEntry[] | null;
   onAskAgent: (seed: string) => void;
   onOpenHistory: () => void;
+  onOpenReview: (prNumber: string) => void;
   window?: ActivityWindow;
   onWindowChange?: (window: ActivityWindow) => void;
 }) {
@@ -949,7 +1025,13 @@ export function BriefingBody({
               <ul className="session-list" data-testid="briefing-pipeline">
                 {data.prs.map((pr, i) => (
                   // eslint-disable-next-line react/no-array-index-key
-                  <PrRow key={i} pr={pr} board={data.board ?? []} reviewsLines={data.reviews_lines} />
+                  <PrRow
+                    key={i}
+                    pr={pr}
+                    board={data.board ?? []}
+                    reviewsLines={data.reviews_lines}
+                    onOpenReview={onOpenReview}
+                  />
                 ))}
               </ul>
               {typeof data.enrichment_note === 'string' && data.enrichment_note.trim() !== '' && (

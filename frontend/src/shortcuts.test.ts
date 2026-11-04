@@ -23,7 +23,7 @@ describe('shortcut table', () => {
       expect(s.label.length).toBeGreaterThan(0);
     }
     const actions = new Set(APP_SHORTCUTS.map((s) => s.action));
-    for (const a of ['now', 'chat', 'briefing', 'history', 'send', 'help', 'help-close']) {
+    for (const a of ['now', 'chat', 'briefing', 'history', 'send', 'help', 'help-close', 'palette']) {
       expect(actions.has(a as never)).toBe(true);
     }
   });
@@ -31,6 +31,14 @@ describe('shortcut table', () => {
   it('uses each display key once', () => {
     const keys = APP_SHORTCUTS.map((s) => s.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('gives Ctrl+K to the palette alone (issue #902)', () => {
+    const ctrlK = APP_SHORTCUTS.filter((s) => s.key === 'Ctrl+K');
+    expect(ctrlK).toHaveLength(1);
+    expect(ctrlK[0].action).toBe('palette');
+    const helpKeys = APP_SHORTCUTS.filter((s) => s.action === 'help').map((s) => s.key);
+    expect(helpKeys).toEqual(['?']);
   });
 });
 
@@ -42,10 +50,18 @@ describe('matchAppShortcut', () => {
     expect(matchAppShortcut(press({ key: '4' }), state())).toBe('history');
   });
 
-  it('opens help on ? and Ctrl/Cmd+K', () => {
+  it('opens help on ? only; Ctrl/Cmd+K opens the palette (issue #902)', () => {
     expect(matchAppShortcut(press({ key: '?', shiftKey: true }), state())).toBe('help');
-    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true }), state())).toBe('help');
-    expect(matchAppShortcut(press({ key: 'k', metaKey: true }), state())).toBe('help');
+    // One shortcut, one surface: the chord never returns 'help'.
+    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true }), state())).toBe('palette');
+    expect(matchAppShortcut(press({ key: 'k', metaKey: true }), state())).toBe('palette');
+  });
+
+  it('rejects near-miss palette chords (issue #902)', () => {
+    expect(matchAppShortcut(press({ key: 'k' }), state())).toBeNull();
+    expect(matchAppShortcut(press({ key: 'j', ctrlKey: true }), state())).toBeNull();
+    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true, altKey: true }), state())).toBeNull();
+    expect(matchAppShortcut(press({ key: 'K', metaKey: true }), state())).toBeNull();
   });
 
   it('sends on Ctrl/Cmd+Enter when free', () => {
@@ -66,18 +82,18 @@ describe('matchAppShortcut', () => {
 
   it('keeps Ctrl+K alive while typing, defers Ctrl+Enter to the focused control', () => {
     const typing = state({ typing: true });
-    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true }), typing)).toBe('help');
+    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true }), typing)).toBe('palette');
     // The composer already sends on Ctrl+Enter; the app level must not
     // fire a second send.
     expect(matchAppShortcut(press({ key: 'Enter', ctrlKey: true }), typing)).toBeNull();
   });
 
-  it('suspends tabs and send under a modal, keeps help reachable', () => {
+  it('suspends tabs and send under a modal, keeps help and palette reachable', () => {
     const suspended = state({ suspended: true });
     expect(matchAppShortcut(press({ key: '1' }), suspended)).toBeNull();
     expect(matchAppShortcut(press({ key: 'Enter', ctrlKey: true }), suspended)).toBeNull();
     expect(matchAppShortcut(press({ key: '?' }), suspended)).toBe('help');
-    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true }), suspended)).toBe('help');
+    expect(matchAppShortcut(press({ key: 'k', ctrlKey: true }), suspended)).toBe('palette');
   });
 
   it('never hijacks modified chords or devtools', () => {

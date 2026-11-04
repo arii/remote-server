@@ -1,16 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { commandSection, filterCommands, type PaletteCommand } from './commandRegistry';
 
-// Ctrl+K / Cmd+K, from anywhere including inside inputs: the chord
-// never collides with plain typing, so no editable-focus guard.
-export function isPaletteHotkey(e: {
-  key: string;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  altKey?: boolean;
-}): boolean {
-  return (e.key === 'k' || e.key === 'K') && (e.ctrlKey || e.metaKey) && !e.altKey;
-}
+// The palette chord (Ctrl+K / Cmd+K) lives in shortcuts.ts beside
+// every other app chord (#902): one table, one listener, so the
+// chord can never double-fire. This module owns only the dialog.
 
 // Wrap-around cursor for ArrowUp/ArrowDown; null means "no rows".
 export function movePaletteSelection(

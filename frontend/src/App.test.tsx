@@ -465,7 +465,7 @@ describe('briefing substance', () => {
   });
   it('all-clear body shows actions and a History pointer', () => {
     const html = renderToStaticMarkup(
-      <BriefingBody data={empty} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+      <BriefingBody data={empty} ledger={[]} onAskAgent={noop} onOpenHistory={noop} onOpenReview={noop} />,
     );
     expect(html).toContain('data-testid="briefing-actions"');
     expect(html).toContain('data-testid="briefing-history"');
@@ -477,6 +477,7 @@ describe('briefing substance', () => {
         ledger={[{ kind: 'chat', event: 'merged #1', ts: Date.now() / 1000 - 100, ok: true }]}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
       />,
     );
     expect(html).toContain('data-testid="briefing-highlights"');
@@ -485,7 +486,7 @@ describe('briefing substance', () => {
   it('freshness line stays hidden for live payloads', () => {
     expect(briefingFreshness(empty, 1793745800000)).toBe(null);
     const html = renderToStaticMarkup(
-      <BriefingBody data={empty} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+      <BriefingBody data={empty} ledger={[]} onAskAgent={noop} onOpenHistory={noop} onOpenReview={noop} />,
     );
     expect(html).not.toContain('data-testid="briefing-freshness"');
   });
@@ -503,6 +504,7 @@ describe('briefing substance', () => {
         ledger={[]}
         onAskAgent={noop}
         onOpenHistory={noop}
+        onOpenReview={noop}
       />,
     );
     expect(html).toContain('data-testid="briefing-freshness"');
@@ -1177,7 +1179,7 @@ describe('p2 a11y batch', () => {
     expect(renderToStaticMarkup(
       <NowView repo="r" health={null} reportContext="" onAskAgent={noop} onOpenTab={noop} />,
     )).toContain('data-testid="now-loading" role="status"');
-    expect(renderToStaticMarkup(<BriefingView repo="r" onAskAgent={noop} onOpenHistory={noop} />)).toContain(
+    expect(renderToStaticMarkup(<BriefingView repo="r" onAskAgent={noop} onOpenHistory={noop} onOpenReview={noop} />)).toContain(
       'data-testid="briefing-loading" role="status"',
     );
     expect(renderToStaticMarkup(<ReviewView repo="r" onAskAgent={noop} onSelectPr={() => {}} />)).toContain(
@@ -1329,7 +1331,7 @@ describe('repo label', () => {
       runs_err: '',
     };
     const html = renderToStaticMarkup(
-      <BriefingBody data={data} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+      <BriefingBody data={data} ledger={[]} onAskAgent={noop} onOpenHistory={noop} onOpenReview={noop} />,
     );
     expect(html).toContain(`title="${long}"`);
     expect(html).toContain(`${long.slice(0, 31)}…`);
