@@ -226,21 +226,22 @@ def render_html(events, malformed, label):
             if not isinstance(u, dict):
                 u = {}
             cls, badge = "model", "LLM resp"
-            body = (f"in={u.get('input_tokens', 0)} "
-                    f"out={u.get('output_tokens', 0)} "
-                    f"tot={u.get('total_tokens', 0)}")
+            body = (f"in={html.escape(str(u.get('input_tokens', 0)))} "
+                    f"out={html.escape(str(u.get('output_tokens', 0)))} "
+                    f"tot={html.escape(str(u.get('total_tokens', 0)))}")
         elif t == "tool_call":
             ok = bool(e.get("ok"))
             cls = "tool-ok" if ok else "tool-err"
             badge = "ok" if ok else "ERR"
             det = _preview_block(e, ok)
             body = (f"<span class='name'>{html.escape(str(e.get('name', '?')))}"
-                    f"</span> <span class='dur'>{e.get('duration_s', '?')}s"
+                    f"</span> <span class='dur'>"
+                    f"{html.escape(str(e.get('duration_s', '?')))}s"
                     f"</span>{det}")
         elif t == "run_end":
             cls, badge = "bound", "END"
-            body = (f"ok={e.get('ok')} "
-                    f"dur={e.get('duration_s', '?')}s")
+            body = (f"ok={html.escape(str(e.get('ok')))} "
+                    f"dur={html.escape(str(e.get('duration_s', '?')))}s")
         else:
             cls, badge = "", "?"
             body = html.escape(str(t))
