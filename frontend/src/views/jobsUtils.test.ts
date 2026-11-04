@@ -4,6 +4,7 @@ import {
   conflictBlockReason,
   filterRepairCandidates,
   fixCiBlockReason,
+  isNotFoundError,
   mergeNoteFor,
   prFieldSeed,
   repairFailureMessage,
@@ -206,5 +207,14 @@ describe('repair picker filter (issue #571)', () => {
     expect(filterRepairCandidates(cands, '')).toHaveLength(3);
     expect(filterRepairCandidates(cands, '   ')).toHaveLength(3);
     expect(filterRepairCandidates(cands, 'zzz-absent')).toHaveLength(0);
+  });
+});
+
+describe('run gone detection (issue #630)', () => {
+  it('spots 404s and nothing else', () => {
+    expect(isNotFoundError('GET api/jobs/runs/abc failed: 404 {"detail":"unknown run"}')).toBe(true);
+    expect(isNotFoundError('POST api/jobs/run failed: 409')).toBe(false);
+    expect(isNotFoundError('POST api/jobs/run failed: 400')).toBe(false);
+    expect(isNotFoundError('network down')).toBe(false);
   });
 });

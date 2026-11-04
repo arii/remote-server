@@ -22,6 +22,7 @@ import {
   invalidateViewCaches,
   postAgentTurn,
   requestPrChanges,
+  rerunJob,
   snoozeAttention,
   startJobRun,
   subscribeJobsPush,
@@ -554,5 +555,51 @@ describe('pr review actions (issue #616)', () => {
   it('surfaces endpoint errors to the row', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ detail: 'nope' }, false, 400));
     await expect(approvePr('remote-server', 7)).rejects.toThrow('POST api/pr-action failed: 400');
+  });
+});
+
+describe('job re-run (issue #630)', () => {
+  it('replays td argv to run-td joined as a command', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+    expect(await rerunJob('run-td', 'remote-server', ['td', '--json', 'preflight'], false)).toEqual({
+      id: 'abc123def456',
+    });
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run-td', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'td --json preflight', repo: 'remote-server' }),
+    });
+  });
+
+  it('replays plain actions to run with the confirm intent when destructive', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+    await rerunJob('recreate', 'remote-server', [], true);
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'recreate',
+        repo: 'remote-server',
+        intent: 'jobs-run',
+        confirmed: true,
+      }),
+    });
+  });
+
+  it('replays safe plain actions without a confirm payload', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+    await rerunJob('logs', 'remote-server', [], false);
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'logs', repo: 'remote-server' }),
+    });
+  });
+
+  it('surfaces single-flight conflicts to the caller', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'x' }, false, 409));
+    await expect(rerunJob('logs', 'remote-server', [], false)).rejects.toThrow(
+      'POST api/jobs/run failed: 409',
+    );
   });
 });

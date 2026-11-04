@@ -52,6 +52,9 @@ class JobRecord(BaseModel):
     done: bool = False
     exit_code: int | None = None
     at: float | None = None
+    # Replay params for one-click re-run: recorded td argv for
+    # run-td rows, [] for plain-action rows (action+repo replay).
+    td_argv: list[str] = Field(default_factory=list)
 
 
 class JobList(BaseModel):
@@ -118,7 +121,8 @@ def _job_rows_locked() -> list:
     return [{"id": r["id"], "kind": r.get("action", ""),
              "name": r.get("action", ""), "repo": r.get("repo", ""),
              "done": r["done"], "exit_code": r.get("exit_code"),
-             "at": r.get("started_at")}
+             "at": r.get("started_at"),
+             "td_argv": r.get("td_argv", [])}
             for r in ordered]
 
 
@@ -267,6 +271,8 @@ class RunProgress(BaseModel):
     output: str = ""
     exit_code: int | None = None
     action: str = ""
+    repo: str = ""
+    td_argv: list[str] = Field(default_factory=list)
 
 
 def _run_progress_locked(rid: str) -> dict | None:
@@ -278,7 +284,9 @@ def _run_progress_locked(rid: str) -> dict | None:
     out = run.get("output", "")
     return {"done": run["done"], "output": out[-RUN_TAIL:],
             "exit_code": run.get("exit_code"),
-            "action": run.get("action", "")}
+            "action": run.get("action", ""),
+            "repo": run.get("repo", ""),
+            "td_argv": run.get("td_argv", [])}
 
 
 @router.get("/runs/{rid}", response_model=RunProgress)

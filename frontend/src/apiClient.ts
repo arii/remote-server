@@ -356,11 +356,28 @@ export function startTdRun(
   });
 }
 
+// One-click re-run of a finished run through the real launch
+// endpoints (same gates, same conflicts as a fresh launch).
+// Recorded argv replays to run-td; the join is lossless because
+// recorded argv passed validate_td_command, which splits on
+// whitespace. Callers pass confirmed=true for destructive actions.
+export function rerunJob(
+  action: string,
+  repo: string,
+  tdArgv: string[],
+  confirmed = false,
+): Promise<{ id: string }> {
+  if (tdArgv.length > 0) return startTdRun(tdArgv.join(' '), repo);
+  return startJobRun(action, repo, confirmed);
+}
+
 export interface JobRunProgress {
   done: boolean;
   output: string;
   exit_code: number | null;
   action: string;
+  repo?: string;
+  td_argv?: string[];
 }
 
 export function fetchJobRun(rid: string): Promise<JobRunProgress> {
