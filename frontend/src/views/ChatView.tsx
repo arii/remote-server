@@ -44,6 +44,45 @@ export const CHAT_BACKEND_OPTIONS: Array<{ value: ChatBackend; label: string }> 
   { value: 'cloud', label: 'Cloud allowed' },
 ];
 
+// One-tap prompt starters above the composer (#664). Tap sends the
+// preset immediately through the normal send path; alt-click fills
+// the composer for editing instead. Static set by design.
+export const CHAT_PROMPT_CHIPS: Array<{ id: string; label: string; prompt: string }> = [
+  { id: 'review', label: 'Review uncommitted changes', prompt: 'Review my uncommitted changes' },
+  { id: 'todos', label: 'Find active TODOs', prompt: 'Find active TODOs' },
+  { id: 'diff', label: 'Summarize branch diff', prompt: 'Summarize this branch diff' },
+];
+
+export function chipPickAction(text: string, altKey: boolean, streaming: boolean): 'send' | 'fill' | 'none' {
+  if (streaming || !text.trim()) return 'none';
+  return altKey ? 'fill' : 'send';
+}
+
+export function PromptChips({
+  disabled,
+  onPick,
+}: {
+  disabled: boolean;
+  onPick: (prompt: string, altKey: boolean) => void;
+}) {
+  return (
+    <div className="actions" role="group" aria-label="Prompt starters" data-testid="chat-prompt-chips">
+      {CHAT_PROMPT_CHIPS.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          data-testid={`chat-chip-${c.id}`}
+          title={`${c.label} (Alt+click fills without sending)`}
+          disabled={disabled}
+          onClick={(e) => onPick(c.prompt, e.altKey)}
+        >
+          {c.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // Streamed tokens carry raw agent stdout, which ends with the
 // INTERRUPT blob on approval turns. The backend strips markers
 // from done.text; strip them here too so the chat log stays human.
@@ -1007,6 +1046,16 @@ export default function ChatView({
     void sendText(lastSent);
   }
 
+  function onPickChip(text: string, altKey: boolean) {
+    const action = chipPickAction(text, altKey, streaming);
+    if (action === 'fill') {
+      setPrompt(text);
+      promptRef.current?.focus({ preventScroll: true });
+    } else if (action === 'send') {
+      void sendText(text);
+    }
+  }
+
   // Edit recalls a sent prompt into the composer for fix-and-resend;
   // the resend is a normal new turn (history stays append-only).
   // preventScroll keeps the recalled turn in view on phones.
@@ -1139,6 +1188,7 @@ export default function ChatView({
       )}
       {/* Composer above Past runs: with 8+ runs the form used to
           drop below every run card, burying Prompt + Send (#564). */}
+      <PromptChips disabled={streaming} onPick={(text, altKey) => onPickChip(text, altKey)} />
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
           Prompt{' '}

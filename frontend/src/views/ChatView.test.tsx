@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, ChatHistory, isStalled, meteredTotal, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, turnPrompt } from './ChatView';
+import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, isStalled, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, turnPrompt } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 import type { ChatMessage } from './mockViews';
@@ -427,5 +427,33 @@ describe('spend budget (issue #409)', () => {
     expect(paneHtml([pastRun()], null, null)).not.toContain(
       'chat-runs-budget',
     );
+  });
+});
+
+describe('prompt chips (issue #664)', () => {
+  it('offers the three starters with stable testids', () => {
+    expect(CHAT_PROMPT_CHIPS.map((c) => c.id)).toEqual(['review', 'todos', 'diff']);
+    expect(CHAT_PROMPT_CHIPS.every((c) => c.prompt.trim().length > 0)).toBe(true);
+    const html = renderToStaticMarkup(<PromptChips disabled={false} onPick={() => {}} />);
+    expect(html).toContain('data-testid="chat-prompt-chips"');
+    expect(html).toContain('data-testid="chat-chip-review"');
+    expect(html).toContain('data-testid="chat-chip-todos"');
+    expect(html).toContain('data-testid="chat-chip-diff"');
+    expect(html).toContain('Review uncommitted changes');
+    expect(html).toContain('Alt+click fills without sending');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('disables chips while streaming', () => {
+    const html = renderToStaticMarkup(<PromptChips disabled onPick={() => {}} />);
+    expect(html).toContain('disabled');
+  });
+
+  it('tap sends, alt-click fills, streaming blocks', () => {
+    expect(chipPickAction('Review my uncommitted changes', false, false)).toBe('send');
+    expect(chipPickAction('Review my uncommitted changes', true, false)).toBe('fill');
+    expect(chipPickAction('Review my uncommitted changes', false, true)).toBe('none');
+    expect(chipPickAction('Review my uncommitted changes', true, true)).toBe('none');
+    expect(chipPickAction('   ', false, false)).toBe('none');
   });
 });
