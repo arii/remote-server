@@ -81,16 +81,32 @@ export function QueueRow({
   onGates: (item: DispatchItem) => void;
 }) {
   const actions = queueRowActions(item.state);
+  const terminal = item.state === 'done' || item.state === 'failed';
+  const label = (
+    <>
+      {item.repo}#{item.issue}
+      {item.title ? ` — ${item.title}` : ''}
+    </>
+  );
   return (
     <li
       key={`${item.repo}#${item.issue}`}
       className="detail"
       data-testid={`queue-${item.repo}-${item.issue}`}
     >
-      <span className="row-title">
-        {item.repo}#{item.issue}
-        {item.title ? ` — ${item.title}` : ''}
-      </span>{' '}
+      {terminal && item.artifact_url ? (
+        <a
+          className="row-title"
+          href={item.artifact_url}
+          target="_blank"
+          rel="noreferrer"
+          data-testid={`queue-artifact-${item.repo}-${item.issue}`}
+        >
+          {label}
+        </a>
+      ) : (
+        <span className="row-title">{label}</span>
+      )}{' '}
       {ready === true && (
         <span className="row-meta" data-testid={`queue-ready-${item.repo}-${item.issue}`}>
           Ready

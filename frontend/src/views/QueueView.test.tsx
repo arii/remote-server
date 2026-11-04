@@ -225,3 +225,85 @@ describe('queue dispatch-all (issue #882)', () => {
     expect(idle).toContain('disabled');
   });
 });
+
+describe('queue completion loop (issue #883)', () => {
+  it('renders titles from enqueue through terminal states', () => {
+    const queued = renderToStaticMarkup(
+      <QueueRow
+        item={mkItem({ title: 'Fix the flake' })}
+        gates={null}
+        ready={null}
+        onDispatch={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(queued).toContain('remote-server#853 — Fix the flake');
+    const done = renderToStaticMarkup(
+      <QueueRow
+        item={mkItem({ state: 'done', title: 'Fix the flake' })}
+        gates={null}
+        ready={null}
+        onDispatch={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(done).toContain('remote-server#853 — Fix the flake');
+  });
+
+  it('links terminal rows to the artifact in one tap', () => {
+    const url = 'https://github.com/arii/remote-server/issues/853';
+    const done = renderToStaticMarkup(
+      <QueueRow
+        item={mkItem({ state: 'done', title: 'Fix the flake', artifact_url: url })}
+        gates={null}
+        ready={null}
+        onDispatch={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(done).toContain('data-testid="queue-artifact-remote-server-853"');
+    expect(done).toContain(`href="${url}"`);
+    expect(done).toContain('target="_blank"');
+    const failed = renderToStaticMarkup(
+      <QueueRow
+        item={mkItem({ state: 'failed', detail: 'exit 3', artifact_url: url })}
+        gates={null}
+        ready={null}
+        onDispatch={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(failed).toContain('data-testid="queue-artifact-remote-server-853"');
+    expect(failed).toContain('failed · exit 3');
+  });
+
+  it('keeps live and linkless terminal rows as plain text', () => {
+    const queued = renderToStaticMarkup(
+      <QueueRow
+        item={mkItem({ artifact_url: 'https://github.com/arii/remote-server/issues/853' })}
+        gates={null}
+        ready={null}
+        onDispatch={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(queued).not.toContain('queue-artifact-remote-server-853');
+    const legacy = renderToStaticMarkup(
+      <QueueRow
+        item={mkItem({ state: 'done' })}
+        gates={null}
+        ready={null}
+        onDispatch={noop}
+        onCancel={noop}
+        onGates={noop}
+      />,
+    );
+    expect(legacy).not.toContain('queue-artifact-remote-server-853');
+    expect(legacy).toContain('remote-server#853');
+  });
+});

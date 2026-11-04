@@ -38,6 +38,7 @@ class DispatchItem(BaseModel):
     finished_at: float | None = None
     detail: str = ""
     title: str = ""
+    artifact_url: str = ""
 
 
 class DispatchQueue(BaseModel):

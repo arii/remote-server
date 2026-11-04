@@ -65,6 +65,7 @@ export interface DispatchItem {
   finished_at?: number | null;
   detail?: string;
   title?: string;
+  artifact_url?: string;
 }
 
 export interface DispatchQueueResponse {
