@@ -11,6 +11,7 @@ import {
   chatStreamUrl,
   clearOutbox,
   createIssue,
+  dispatchRepair,
   fetchAgentProviders,
   fetchAttention,
   fetchBriefing,
@@ -34,6 +35,7 @@ import {
   getOutbox,
   getOutboxStatus,
   invalidateViewCaches,
+  mergePr,
   postAgentTurn,
   requestPrChanges,
   rerunJob,
@@ -42,6 +44,7 @@ import {
   saveNotificationPreferences,
   snoozeAttention,
   startJobRun,
+  startTdRun,
   subscribeApiFailures,
   subscribeJobsPush,
   subscribeOutbox,
@@ -767,6 +770,106 @@ describe('job re-run (issue #630)', () => {
     await expect(rerunJob('logs', 'remote-server', [], false)).rejects.toThrow(
       'POST api/jobs/run failed: 409',
     );
+  });
+});
+
+describe('explicit action branch (issue #708)', () => {
+  const postHeaders = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
+  };
+
+  it('sends the branch with merge and approve', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, output: 'merged' }));
+    await mergePr('remote-server', 7, 'main');
+    expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
+      ...postHeaders,
+      body: JSON.stringify({
+        repo: 'remote-server',
+        pr_number: 7,
+        action: 'merge',
+        intent: 'pr-merge',
+        confirmed: true,
+        branch: 'main',
+      }),
+    });
+    await approvePr('remote-server', 7, 'feat/x');
+    expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
+      ...postHeaders,
+      body: JSON.stringify({
+        repo: 'remote-server',
+        pr_number: 7,
+        action: 'approve',
+        intent: 'pr-approve',
+        confirmed: true,
+        branch: 'feat/x',
+      }),
+    });
+  });
+
+  it('omits a blank branch so the payload matches today', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, output: 'approved' }));
+    await approvePr('remote-server', 7, '  ');
+    expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
+      ...postHeaders,
+      body: JSON.stringify({
+        repo: 'remote-server',
+        pr_number: 7,
+        action: 'approve',
+        intent: 'pr-approve',
+        confirmed: true,
+      }),
+    });
+  });
+
+  it('sends the branch with job and td launches', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+    await startJobRun('logs', 'remote-server', false, 'main');
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
+      ...postHeaders,
+      body: JSON.stringify({ action: 'logs', repo: 'remote-server', branch: 'main' }),
+    });
+    await startTdRun('td context-warm', 'remote-server', 'feat/x');
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run-td', {
+      ...postHeaders,
+      body: JSON.stringify({
+        command: 'td context-warm',
+        repo: 'remote-server',
+        branch: 'feat/x',
+      }),
+    });
+  });
+
+  it('passes the branch through re-runs', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+    await rerunJob('run-td', 'remote-server', ['td', 'context-warm'], false, 'main');
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run-td', {
+      ...postHeaders,
+      body: JSON.stringify({
+        command: 'td context-warm',
+        repo: 'remote-server',
+        branch: 'main',
+      }),
+    });
+    await rerunJob('logs', 'remote-server', [], false, 'main');
+    expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
+      ...postHeaders,
+      body: JSON.stringify({ action: 'logs', repo: 'remote-server', branch: 'main' }),
+    });
+  });
+
+  it('sends the branch with repair dispatch, omits when blank', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, issue: 9, status: 'running' }));
+    await dispatchRepair('9', 'main');
+    expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
+      ...postHeaders,
+      body: JSON.stringify({ issue: '9', branch: 'main' }),
+    });
+    await dispatchRepair('9', '');
+    expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
+      ...postHeaders,
+      body: JSON.stringify({ issue: '9' }),
+    });
   });
 });
 

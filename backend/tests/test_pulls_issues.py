@@ -458,6 +458,50 @@ class PrActionTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("review body", ctx.exception.detail)
 
+    def test_explicit_branch_validated_then_action_runs(self):
+        # Explicit branch (#708): validated against the checkout,
+        # then the action proceeds exactly as today.
+        with patch.object(
+                pulls_mod, "_pr_action",
+                return_value={"ok": True, "output": "posted"}) as m, \
+                patch("backend.core.validate_action_branch",
+                      return_value="main") as branch_mock:
+            out = pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                repo="remote-server", pr_number=7, action="approve",
+                intent="pr-approve", confirmed=True, branch="main"))
+            self.assertTrue(out["ok"])
+            branch_mock.assert_called_once_with("remote-server", "main")
+            m.assert_called_once_with("arii/remote-server", 7,
+                                      "approve", body="")
+
+    def test_unknown_branch_rejected_before_action(self):
+        from fastapi import HTTPException
+
+        with patch.object(pulls_mod, "_pr_action") as m, \
+                patch("backend.core.validate_action_branch",
+                      side_effect=ValueError("unknown branch: 'gone'")):
+            with self.assertRaises(HTTPException) as ctx:
+                pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                    repo="remote-server", pr_number=7, action="merge",
+                    intent="pr-merge", confirmed=True, branch="gone"))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("unknown branch", ctx.exception.detail)
+            m.assert_not_called()
+
+    def test_omitted_branch_validates_blank(self):
+        # Omitted branch reaches validation as "" (short-circuited
+        # without git): behavior is today's.
+        with patch.object(
+                pulls_mod, "_pr_action",
+                return_value={"ok": True, "output": "posted"}), \
+                patch("backend.core.validate_action_branch",
+                      return_value="") as branch_mock:
+            out = pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                repo="remote-server", pr_number=7, action="approve",
+                intent="pr-approve", confirmed=True))
+            self.assertTrue(out["ok"])
+            branch_mock.assert_called_once_with("remote-server", "")
+
 
 class IssuesTest(unittest.TestCase):
     def test_list_truncates_body(self):
@@ -759,6 +803,40 @@ class RepairTest(unittest.TestCase):
             self.assertEqual(runner.calls, [])
         finally:
             issues_mod._repair_runner = old
+
+    def test_dispatch_accepts_branch_for_stack_checkout(self):
+        # Explicit branch (#708): repair targets the stack repo
+        # only, so the branch validates against remote-server.
+        with patch.object(
+                issues_mod, "_repair_verify_preview",
+                return_value={"allowlisted": True, "error": ""}), \
+                patch.object(issues_mod, "trigger_repair") as fired, \
+                patch("backend.core.validate_action_branch",
+                      return_value="main") as branch_mock:
+            out = issues_mod.repair_dispatch(
+                issues_mod.RepairDispatchRequest(issue="#9",
+                                                 branch="main"))
+            self.assertEqual(
+                out, {"ok": True, "issue": 9, "status": "running"})
+            branch_mock.assert_called_once_with("remote-server", "main")
+            fired.assert_called_once_with(9)
+
+    def test_dispatch_rejects_unknown_branch(self):
+        from fastapi import HTTPException
+
+        with patch.object(
+                issues_mod, "_repair_verify_preview",
+                return_value={"allowlisted": True, "error": ""}), \
+                patch.object(issues_mod, "trigger_repair") as fired, \
+                patch("backend.core.validate_action_branch",
+                      side_effect=ValueError("unknown branch: 'gone'")):
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(issue="#9",
+                                                     branch="gone"))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("unknown branch", ctx.exception.detail)
+            fired.assert_not_called()
 
 
 class RepairScheduleTest(unittest.TestCase):

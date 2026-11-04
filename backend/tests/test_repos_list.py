@@ -157,5 +157,90 @@ class ReposDirFallbackTest(unittest.TestCase):
             self.assertEqual(got, Path("/nonexistent-root-xyz"))
 
 
+class ValidateActionBranchTest(unittest.TestCase):
+    """Optional action branch (#708): blank is absent, otherwise the
+    name must be well-formed and exist in the checkout."""
+
+    def _checkout(self, tmp):
+        root = Path(tmp)
+        (root / "demo" / ".git").mkdir(parents=True)
+        return root
+
+    def test_blank_is_absent_without_touching_git(self):
+        from backend.core import validate_action_branch
+
+        def boom(cmd, **kwargs):
+            raise AssertionError(f"git must not run: {cmd}")
+
+        with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": "/nonexistent-root-xyz"}):
+            self.assertEqual(validate_action_branch("demo", "", run=boom), "")
+            self.assertEqual(validate_action_branch("demo", "   ", run=boom), "")
+            self.assertEqual(validate_action_branch("demo", None, run=boom), "")
+
+    def test_malformed_names_rejected(self):
+        import tempfile
+
+        from backend.core import validate_action_branch
+
+        def boom(cmd, **kwargs):
+            raise AssertionError(f"git must not run: {cmd}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._checkout(tmp)
+            with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": str(root)}):
+                for bad in ("../main", "-main", "a..b", "a//b",
+                            "a.lock", "main.lock", "a b", "a@{b}",
+                            True, 5, ["main"]):
+                    with self.assertRaises(ValueError, msg=repr(bad)):
+                        validate_action_branch("demo", bad, run=boom)
+
+    def test_unknown_branch_rejected(self):
+        import tempfile
+
+        from backend.core import validate_action_branch
+
+        def missing(cmd, **kwargs):
+            self.assertIn("refs/heads/gone", cmd)
+            return _proc(rc=1, out="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._checkout(tmp)
+            with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": str(root)}):
+                with self.assertRaises(ValueError) as ctx:
+                    validate_action_branch("demo", "gone", run=missing)
+                self.assertIn("unknown branch", str(ctx.exception))
+
+    def test_known_branch_returned_stripped(self):
+        import tempfile
+
+        from backend.core import validate_action_branch
+
+        seen = []
+
+        def present(cmd, **kwargs):
+            seen.append(cmd)
+            self.assertIn("refs/heads/feat/x", cmd)
+            return _proc(rc=0, out="abc123\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._checkout(tmp)
+            with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": str(root)}):
+                self.assertEqual(
+                    validate_action_branch("demo", "  feat/x ", run=present),
+                    "feat/x")
+                self.assertTrue(seen)
+
+    def test_missing_checkout_reads_as_unknown_branch(self):
+        import tempfile
+
+        from backend.core import validate_action_branch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": tmp}):
+                with self.assertRaises(ValueError) as ctx:
+                    validate_action_branch("demo", "main", run=_proc)
+                self.assertIn("unknown branch", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

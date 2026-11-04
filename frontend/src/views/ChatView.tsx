@@ -1154,13 +1154,11 @@ async function pumpStream(
 
 export default function ChatView({
   repo,
-  branch,
   seed,
   onSeedUsed,
   initialRuns,
 }: {
   repo: string;
-  branch?: string;
   seed: string | null;
   onSeedUsed: () => void;
   // Test seam (drawer-precedented): pins the composer-above-runs
@@ -1737,7 +1735,7 @@ export default function ChatView({
       <header className="page-head">
         <div>
           <h2>Chat</h2>
-          <RepoLabel repo={repo} branch={branch} />
+          <RepoLabel repo={repo} />
         </div>
         {streaming && (
           <button type="button" data-testid="chat-abort" onClick={() => void onAbort()}>

@@ -8,12 +8,15 @@ export function isRollupRepo(repo: string): boolean {
   return repo === ALL_REPOS;
 }
 
+// Repo-only labels (#708): the header is repo-scoped, and the
+// checkout branch never scopes a repo-generic view, so it is not
+// shown here. Coding actions carry their own branch field.
 export function repoOptionLabel(r: RepoInfo): string {
-  return `${r.name} · ${r.branch}${r.clean ? '' : ' (dirty)'}`;
+  return `${r.name}${r.clean ? '' : ' (dirty)'}`;
 }
 
 function repoOptionTitle(r: RepoInfo): string {
-  return `${r.full} · on ${r.branch}${r.clean ? '' : ' (dirty)'}`;
+  return `${r.full}${r.clean ? '' : ' (dirty)'}`;
 }
 
 export default function RepoPicker({

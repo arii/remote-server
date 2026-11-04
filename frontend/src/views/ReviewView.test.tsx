@@ -586,3 +586,21 @@ describe('issue row labels', () => {
     expect(html).toContain('>Saving…<');
   });
 });
+
+describe('explicit branch field (issue #708)', () => {
+  it('seeds merge/approve branch from the repo default', () => {
+    const html = renderToStaticMarkup(
+      <ReviewView repo="r" defaultBranch="main" onAskAgent={() => {}} onSelectPr={() => {}} />,
+    );
+    expect(html).toContain('data-testid="review-branch"');
+    expect(html).toContain('value="main"');
+  });
+
+  it('renders empty without a default', () => {
+    const html = renderToStaticMarkup(
+      <ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />,
+    );
+    expect(html).toContain('data-testid="review-branch"');
+    expect(html).toContain('value=""');
+  });
+});

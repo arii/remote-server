@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import BranchField, { useBranchField } from '../components/BranchField';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
@@ -740,11 +741,15 @@ export function BulkRestoreBar({
 
 export default function ReviewView({
   repo,
+  defaultBranch,
   onAskAgent,
   triageSuspended = false,
   onSelectPr,
 }: {
   repo: string;
+  // Checkout branch of the viewed repo: seeds the branch field
+  // that merge/approve carry (#708).
+  defaultBranch?: string;
   onAskAgent: (seed: string) => void;
   // Drawer-open flag: while true (agent drawer / PTY terminal open),
   // triage keys are disabled.
@@ -753,6 +758,7 @@ export default function ReviewView({
   onSelectPr: (n: number | null) => void;
 }) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
+  const [branch, setBranch] = useBranchField(repo, defaultBranch);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [deferred, setDeferred] = useState<DeferredRow[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -1015,7 +1021,7 @@ export default function ReviewView({
     setError(null);
     setMerging((prev) => applyOptimisticMerge(prev, n));
     try {
-      await mergePr(repo, n);
+      await mergePr(repo, n, branch);
       setNotice(`Merged PR #${n}.`);
       const numbers = visiblePrs.map((p) => p.number);
       const next = nextPrAfterMerge(numbers, n);
@@ -1049,7 +1055,7 @@ export default function ReviewView({
     setError(null);
     setReviewing((prev) => applyOptimisticMerge(prev, n));
     try {
-      await approvePr(repo, n);
+      await approvePr(repo, n, branch);
       setNotice(`Approved PR #${n}.`);
       await refreshPrs(n, 'APPROVED');
     } catch (err) {
@@ -1194,6 +1200,12 @@ export default function ReviewView({
             placeholder="number, title, or label"
           />
         </label>
+        <BranchField
+          id="review-branch"
+          testid="review-branch"
+          value={branch}
+          onChange={setBranch}
+        />
       </div>
       {bulkSelected.size > 0 && (
         <BulkDeferBar count={bulkSelected.size} busy={bulkBusy} onDefer={() => void deferBulk()} />

@@ -91,6 +91,9 @@ class RunRequest(BaseModel):
     repo: str = "remote-server"
     intent: str = ""
     confirmed: bool = False
+    # Explicit branch for the run (#708): validated against the
+    # checkout when present; blank behaves exactly as today.
+    branch: str = ""
 
 
 class RunStarted(BaseModel):
@@ -100,6 +103,9 @@ class RunStarted(BaseModel):
 class RunTdRequest(BaseModel):
     command: str = ""
     repo: str = "remote-server"
+    # Explicit branch for the run (#708): validated against the
+    # checkout when present; blank behaves exactly as today.
+    branch: str = ""
 
 
 class RunPlanRequest(BaseModel):
@@ -237,6 +243,12 @@ def start_run(body: RunRequest) -> dict:
             _repo_target(body.repo)
         except ValueError:
             raise HTTPException(status_code=400, detail="unknown repo")
+    from backend.core import validate_action_branch
+
+    try:
+        validate_action_branch(body.repo, body.branch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     run_id, err = registry.start_run(body.action, body.repo)
     if err:
         raise HTTPException(
@@ -264,6 +276,12 @@ def start_run_td(body: RunTdRequest) -> dict:
         _repo_target(body.repo)
     except ValueError:
         raise HTTPException(status_code=400, detail="bad repo or command")
+    from backend.core import validate_action_branch
+
+    try:
+        validate_action_branch(body.repo, body.branch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     run_id, err = registry.start_run("run-td", body.repo, td_argv=tokens)
     if err:
         raise HTTPException(

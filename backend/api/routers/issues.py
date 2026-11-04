@@ -162,6 +162,9 @@ def parse_label_name(val) -> str | None:
 
 class RepairDispatchRequest(BaseModel):
     issue: object = None
+    # Explicit branch for the dispatch (#708): validated against
+    # the stack checkout when present; blank behaves as today.
+    branch: str = ""
 
 
 class RepairDispatchResult(BaseModel):
@@ -507,6 +510,13 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
     if issue_number is None:
         raise HTTPException(
             status_code=400, detail="invalid issue number or url")
+    from backend.core import validate_action_branch
+
+    # Stack scope, like the worker argv and the verify preview.
+    try:
+        validate_action_branch("remote-server", body.branch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     preview = _repair_verify_preview(issue_number)
     if not preview["allowlisted"]:
         raise HTTPException(

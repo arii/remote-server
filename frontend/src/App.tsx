@@ -311,6 +311,8 @@ export default function App() {
       {tab === 'now' && (
         <NowView
           repo={repo}
+          defaultBranch={repos.find((r) => r.name === repo)?.branch}
+          stackBranch={repos.find((r) => r.name === 'remote-server')?.branch}
           health={health}
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}
@@ -322,7 +324,6 @@ export default function App() {
         ) : (
           <ChatView
             repo={repo}
-            branch={repos.find((r) => r.name === repo)?.branch}
             seed={chatSeed}
             onSeedUsed={() => setChatSeed(null)}
           />
@@ -333,7 +334,6 @@ export default function App() {
         ) : (
           <BriefingView
             repo={repo}
-            branch={repos.find((r) => r.name === repo)?.branch}
             onAskAgent={askAgent}
             onOpenHistory={() => setTab('history')}
           />

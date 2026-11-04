@@ -1194,22 +1194,18 @@ describe('p2 a11y batch', () => {
 describe('repo label', () => {
   const noop = () => {};
 
-  it('reads name and branch, bare name without a branch', () => {
-    expect(repoLabelText('r', 'main')).toBe('r · main');
+  it('reads the repo name only (issue #708)', () => {
     expect(repoLabelText('r')).toBe('r');
-    expect(repoLabelText('r', '')).toBe('r');
   });
 
-  it('shares one header format across Chat and Briefing', () => {
+  it('shares one repo-only header format across Chat and Briefing', () => {
     const chat = renderToStaticMarkup(
-      <ChatView repo="r" branch="main" seed={null} onSeedUsed={noop} />,
+      <ChatView repo="r" seed={null} onSeedUsed={noop} />,
     );
     expect(chat).toContain('data-testid="repo-label"');
-    expect(chat).toContain('r · main');
-    const bare = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
-    expect(bare).toContain('data-testid="repo-label"');
-    expect(bare).not.toContain('r · ');
-    expect(renderToStaticMarkup(<RepoLabel repo="r" branch="main" />)).toContain('r · main');
+    expect(chat).toContain('>r</p>');
+    expect(chat).not.toContain('r · ');
+    expect(renderToStaticMarkup(<RepoLabel repo="r" />)).toContain('>r</p>');
   });
 
   it('truncates long board chips with the full name on hover', () => {
@@ -1242,18 +1238,19 @@ describe('repo label', () => {
 
 describe('repo picker labels', () => {
   const dirty = { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: false };
-  it('shortens the option label but keeps branch and dirty state', () => {
+  it('shows repo and dirty state without branch (issue #708)', () => {
     const label = repoOptionLabel(dirty);
     expect(label).toContain('remote-server');
-    expect(label).toContain('main');
+    expect(label).not.toContain('main');
     expect(label).toContain('dirty');
     expect(label.length).toBeLessThan('arii/remote-server · on main (dirty)'.length);
   });
-  it('renders the full label as hover title', () => {
+  it('renders the full repo name as hover title, still branch-free', () => {
     const html = renderToStaticMarkup(
       <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
     );
     expect(html).toContain('title="arii/remote-server');
+    expect(html).not.toContain('main');
   });
   it('offers All repos first (issue #610)', () => {
     const html = renderToStaticMarkup(

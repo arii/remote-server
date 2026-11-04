@@ -92,6 +92,9 @@ class PrActionRequest(BaseModel):
     confirmed: bool = False
     # Review text for request-changes only; ignored otherwise.
     body: str = ""
+    # Explicit branch for the action (#708): validated against the
+    # checkout when present; blank behaves exactly as today.
+    branch: str = ""
 
 
 class PrActionResult(BaseModel):
@@ -350,6 +353,12 @@ def pr_action(body: PrActionRequest) -> dict:
             status_code=400, detail="bad pr_number, action or repo")
     try:
         gh = repo_gh(body.repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    from backend.core import validate_action_branch
+
+    try:
+        validate_action_branch(body.repo, body.branch)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
