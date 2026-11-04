@@ -116,6 +116,17 @@ export function briefingSummary(data: BriefingResponse): string {
   return parts.join(' · ');
 }
 
+// Freshness line for cached payloads: the endpoint serves repeat
+// visits from its stale-while-revalidate cache, so say how old the
+// data is (and that a refresh is on its way when stale).
+export function briefingFreshness(data: BriefingResponse, nowMs: number = Date.now()): string | null {
+  if (!data.cached && !data.stale) return null;
+  const at = typeof data.generated_at === 'number' ? data.generated_at : nowMs / 1000;
+  const ageS = Math.max(0, Math.round(nowMs / 1000 - at));
+  const age = ageS < 60 ? `${ageS}s` : `${Math.floor(ageS / 60)}m`;
+  return data.stale ? `Updated ${age} ago · refreshing…` : `Updated ${age} ago`;
+}
+
 export interface BriefingAction {
   label: string;
   seed: string;
@@ -300,11 +311,17 @@ export function BriefingBody({
 }) {
   const actions = briefingActions(data);
   const highlights = toHistoryRows([], ledger ?? []).slice(0, 3);
+  const freshness = briefingFreshness(data);
   return (
     <>
       <p className="row-meta" data-testid="briefing-summary">
         {briefingSummary(data)}
       </p>
+      {freshness && (
+        <p className="row-meta" data-testid="briefing-freshness">
+          {freshness}
+        </p>
+      )}
       {data.prs_err && (
         <p className="row-meta" role="alert">
           {data.prs_err}

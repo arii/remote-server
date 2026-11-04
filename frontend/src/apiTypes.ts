@@ -18,6 +18,9 @@ export interface BriefingResponse {
   failing_runs: Array<Record<string, unknown>>;
   workflow_lines: string[];
   runs_err: string;
+  cached?: boolean;
+  stale?: boolean;
+  generated_at?: number;
 }
 
 export interface JobRecord {
