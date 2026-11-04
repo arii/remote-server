@@ -2,9 +2,12 @@
 
 Ports of the buttons/server.py handlers:
 - GET  /api/jobs        (job list, newest first)
+- GET  /api/jobs/stream (SSE job-list push; polling fallback stays)
 - POST /api/jobs/clear  (clear terminal jobs, or all with {"all": true})
 - POST /api/jobs/run     (start a run for an allowlisted action)
 - POST /api/jobs/run-td  (start a run for one validated td command)
+- GET  /api/jobs/runs/{rid} (run progress snapshot)
+- GET  /api/jobs/runs/{rid}/stream (SSE per-run push; ends on done)
 - POST /api/jobs/run-plan (run one allowlisted td planning guide)
 
 No Jules dispatch surface exists here (cut). Execution goes through
@@ -17,8 +20,10 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from backend.api.routers.chat import SSE_HEADERS, sse_frame
 from backend.exec.engine import (
     ALLOWED_ACTIONS,
     DESTRUCTIVE_ACTIONS,
@@ -103,17 +108,68 @@ def health() -> dict:
     return {"ok": True}
 
 
+def _job_rows_locked() -> list:
+    """Job-list rows, newest first. Caller must hold the registry
+    lock: the push generators snapshot inside the condition wait,
+    which a locking helper could not do (threading.Lock is not
+    reentrant, and snapshot-then-read would race)."""
+    ordered = sorted(registry.runs.values(),
+                     key=lambda r: r.get("seq", 0), reverse=True)
+    return [{"id": r["id"], "kind": r.get("action", ""),
+             "name": r.get("action", ""), "repo": r.get("repo", ""),
+             "done": r["done"], "exit_code": r.get("exit_code"),
+             "at": r.get("started_at")}
+            for r in ordered]
+
+
+def _job_rows() -> list:
+    """Locking snapshot. Shared by the polling endpoint and the
+    push stream so both always agree."""
+    with registry._lock:
+        return _job_rows_locked()
+
+
 @router.get("", response_model=JobList)
 def list_jobs() -> dict:
-    with registry._lock:
-        ordered = sorted(registry.runs.values(),
-                         key=lambda r: r.get("seq", 0), reverse=True)
-        rows = [{"id": r["id"], "kind": r.get("action", ""),
-                 "name": r.get("action", ""), "repo": r.get("repo", ""),
-                 "done": r["done"], "exit_code": r.get("exit_code"),
-                 "at": r.get("started_at")}
-                for r in ordered]
-    return {"jobs": rows}
+    return {"jobs": _job_rows()}
+
+
+# Idle keepalive between snapshots: proxies drop quiet streams, and
+# EventSource treats any bytes as liveness.
+JOBS_STREAM_HEARTBEAT = 15.0
+
+_MISSING = object()
+
+
+def _jobs_events(heartbeat: float = JOBS_STREAM_HEARTBEAT):
+    """Infinite SSE: full job-list snapshot whenever the rows
+    change. First frame is immediate (last starts unmatched), so
+    clients never wait for the first paint. Output appends bump
+    the registry but leave rows identical, so the list stream
+    stays quiet while a run chats — status changes only."""
+    last = _MISSING
+    while True:
+        # Yields stay outside the lock: a suspended generator must
+        # never hold it (slow clients would stall run workers).
+        # Missed notifies are impossible anyway — the predicate is
+        # state-based, and wait_for evaluates it before waiting.
+        with registry._cond:
+            registry._cond.wait_for(
+                lambda: _job_rows_locked() != last, timeout=heartbeat)
+            rows = _job_rows_locked()
+            changed = rows != last
+            last = rows
+        if not changed:
+            yield ":heartbeat\n\n"
+            continue
+        yield sse_frame("jobs", {"jobs": rows})
+
+
+@router.get("/stream")
+def jobs_stream() -> StreamingResponse:
+    return StreamingResponse(_jobs_events(),
+                             media_type="text/event-stream",
+                             headers=SSE_HEADERS)
 
 
 @router.post("/clear", response_model=ClearResult)
@@ -213,18 +269,66 @@ class RunProgress(BaseModel):
     action: str = ""
 
 
+def _run_progress_locked(rid: str) -> dict | None:
+    """Run progress payload, or None when the run is gone. Caller
+    must hold the registry lock (see _job_rows_locked)."""
+    run = registry.runs.get(rid)
+    if run is None:
+        return None
+    out = run.get("output", "")
+    return {"done": run["done"], "output": out[-RUN_TAIL:],
+            "exit_code": run.get("exit_code"),
+            "action": run.get("action", "")}
+
+
 @router.get("/runs/{rid}", response_model=RunProgress)
 def run_progress(rid: str) -> dict:
     if not RID_RE.match(rid):
         raise HTTPException(status_code=404, detail="unknown run")
     with registry._lock:
-        run = registry.runs.get(rid)
-        if run is None:
+        payload = _run_progress_locked(rid)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="unknown run")
+    return payload
+
+
+def _run_events(rid: str, heartbeat: float = JOBS_STREAM_HEARTBEAT):
+    """SSE progress for one run: a frame per output/done change,
+    then the stream ends after the done frame. A cleared run ends
+    with an error frame instead, which tells the client to fall
+    back to a snapshot fetch."""
+    last = _MISSING
+    while True:
+        with registry._cond:
+            registry._cond.wait_for(
+                lambda: _run_progress_locked(rid) != last,
+                timeout=heartbeat)
+            payload = _run_progress_locked(rid)
+            changed = payload != last
+            last = payload
+        if payload is None:
+            # Named `gone`, not `error`: an SSE frame named error
+            # would also trip the client's onerror handler.
+            yield sse_frame("gone", {"error": "unknown run"})
+            return
+        if not changed:
+            yield ":heartbeat\n\n"
+            continue
+        yield sse_frame("progress", payload)
+        if payload["done"]:
+            return
+
+
+@router.get("/runs/{rid}/stream")
+def run_stream(rid: str) -> StreamingResponse:
+    if not RID_RE.match(rid):
+        raise HTTPException(status_code=404, detail="unknown run")
+    with registry._lock:
+        if registry.runs.get(rid) is None:
             raise HTTPException(status_code=404, detail="unknown run")
-        out = run.get("output", "")
-        return {"done": run["done"], "output": out[-RUN_TAIL:],
-                "exit_code": run.get("exit_code"),
-                "action": run.get("action", "")}
+    return StreamingResponse(_run_events(rid),
+                             media_type="text/event-stream",
+                             headers=SSE_HEADERS)
 
 
 @router.post("/run-plan", response_model=RunPlanResult)

@@ -1,5 +1,6 @@
 import type {
   BriefingResponse,
+  JobRecord,
   JobsResponse,
   LedgerResponse,
 } from './apiTypes';
@@ -338,6 +339,126 @@ export interface JobRunProgress {
 
 export function fetchJobRun(rid: string): Promise<JobRunProgress> {
   return getJson<JobRunProgress>(`api/jobs/runs/${encodeURIComponent(rid)}`);
+}
+
+export function jobsStreamUrl(): string {
+  return apiUrl('api/jobs/stream');
+}
+
+export function jobRunStreamUrl(rid: string): string {
+  return apiUrl(`api/jobs/runs/${encodeURIComponent(rid)}/stream`);
+}
+
+// Minimal EventSource surface the subscribers need; injectable so
+// tests drive the state machine with a fake.
+export interface EventSourceLike {
+  addEventListener(type: string, listener: (e: { data: string }) => void): void;
+  close(): void;
+  onmessage: ((e: { data: string }) => void) | null;
+  onerror: (() => void) | null;
+}
+
+export type EventSourceFactory = (url: string) => EventSourceLike;
+
+function defaultEventSource(url: string): EventSourceLike {
+  return new EventSource(url) as unknown as EventSourceLike;
+}
+
+function parseFrameJobs(data: string): JobRecord[] | null {
+  try {
+    const body = JSON.parse(data) as { jobs?: unknown };
+    return Array.isArray(body.jobs) ? (body.jobs as JobRecord[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseFrameProgress(data: string): JobRunProgress | null {
+  try {
+    const body = JSON.parse(data) as Partial<JobRunProgress>;
+    if (typeof body.done !== 'boolean' || typeof body.output !== 'string') return null;
+    return body as JobRunProgress;
+  } catch {
+    return null;
+  }
+}
+
+// Job-list push subscription. Reports liveness so the caller can
+// run its polling loop only while the channel is down; closes on
+// error (no retry storm — polling covers the gap, push resumes on
+// next mount). Returns an unsubscribe cleanup. No-ops when
+// EventSource is unavailable (SSR/tests): caller polls instead.
+export function subscribeJobsPush(
+  handler: { onJobs: (jobs: JobRecord[]) => void; onLive: (live: boolean) => void },
+  createSource: EventSourceFactory | null = null,
+): () => void {
+  const create = createSource ?? defaultEventSource;
+  if (createSource === null && typeof EventSource === 'undefined') {
+    handler.onLive(false);
+    return () => {};
+  }
+  const src = create(jobsStreamUrl());
+  const onJobs = (e: { data: string }) => {
+    const jobs = parseFrameJobs(e.data);
+    if (jobs === null) return;
+    handler.onLive(true);
+    handler.onJobs(jobs);
+  };
+  // The server names list frames `jobs`; accept unnamed too.
+  src.addEventListener('jobs', onJobs);
+  src.onmessage = onJobs;
+  src.onerror = () => {
+    handler.onLive(false);
+    src.close();
+  };
+  return () => src.close();
+}
+
+// Per-run push subscription. onProgress per frame, onDone on the
+// done frame (stream ends server-side), onDead when the channel
+// dies or the run vanishes before done (caller falls back to a
+// snapshot fetch, then polling).
+export function subscribeRunPush(
+  rid: string,
+  handler: {
+    onProgress: (p: JobRunProgress) => void;
+    onDone: (p: JobRunProgress) => void;
+    onDead: () => void;
+  },
+  createSource: EventSourceFactory | null = null,
+): () => void {
+  const create = createSource ?? defaultEventSource;
+  if (createSource === null && typeof EventSource === 'undefined') {
+    handler.onDead();
+    return () => {};
+  }
+  let done = false;
+  const src = create(jobRunStreamUrl(rid));
+  const onProgress = (e: { data: string }) => {
+    const p = parseFrameProgress(e.data);
+    if (p === null) return;
+    if (p.done) {
+      done = true;
+      src.close();
+      handler.onDone(p);
+      return;
+    }
+    handler.onProgress(p);
+  };
+  const onGoneFrame = () => {
+    // Server-side gone frame (run cleared): dead either way.
+    done = true;
+    src.close();
+    handler.onDead();
+  };
+  src.addEventListener('progress', onProgress);
+  src.addEventListener('gone', onGoneFrame);
+  src.onmessage = onProgress;
+  src.onerror = () => {
+    src.close();
+    if (!done) handler.onDead();
+  };
+  return () => src.close();
 }
 
 export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number }> {

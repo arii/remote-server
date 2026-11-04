@@ -492,6 +492,18 @@ class RunRegistry:
         self.active_id = None
         self.jobs = {}
         self._seq = 0
+        # Push channel state: every real mutation bumps _version and
+        # notifies _cond (which shares _lock, so waiters never miss
+        # a bump). The jobs SSE endpoints block on this instead of
+        # polling. No-ops (busy start, missing run, empty clear)
+        # bump nothing, so wakeups always mean new state.
+        self._cond = threading.Condition(self._lock)
+        self._version = 0
+
+    def _bump(self):
+        """Bump the push version. Caller must hold _lock."""
+        self._version += 1
+        self._cond.notify_all()
 
     def start_run(self, action, repo="remote-server", td_argv=None):
         """Create a run for an allowlisted action. Exact port of
@@ -521,6 +533,7 @@ class RunRegistry:
             self._seq += 1
             self.runs[run_id] = run
             self.active_id = run_id
+            self._bump()
         return run_id, None
 
     def append(self, run_id, text):
@@ -528,6 +541,7 @@ class RunRegistry:
             run = self.runs.get(run_id)
             if run is not None:
                 append_output(run, text)
+                self._bump()
 
     def finish_run(self, run_id, exit_code):
         with self._lock:
@@ -539,6 +553,7 @@ class RunRegistry:
             run["exit_code"] = exit_code
             run["done"] = True
             run["finished_at"] = time.time()
+            self._bump()
 
     def clear_run(self, run_id=None):
         """Clear stored output only. Exact port of the /api/clear
@@ -554,6 +569,7 @@ class RunRegistry:
                 return None, "no run to clear"
             run["output"] = ""
             run["last_output_at"] = time.time()
+            self._bump()
             return run["id"], None
 
     def clear_jobs(self, all_jobs=False):
@@ -571,6 +587,8 @@ class RunRegistry:
             ]
             for rid in to_del:
                 del self.runs[rid]
+            if to_del:
+                self._bump()
         return len(to_del)
 
     def list_jobs(self):

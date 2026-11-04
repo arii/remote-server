@@ -333,6 +333,142 @@ class RouterTest(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
 
 
+def _parse_frames(text):
+    """Split SSE text into (event, data) frames; comments dropped."""
+    frames = []
+    for chunk in text.split("\n\n"):
+        chunk = chunk.strip()
+        if not chunk or chunk.startswith(":"):
+            continue
+        event, data = None, None
+        for line in chunk.splitlines():
+            if line.startswith("event:"):
+                event = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data = line.split(":", 1)[1].strip()
+        if event is not None:
+            import json
+
+            frames.append((event, json.loads(data)))
+    return frames
+
+
+class PushStreamTest(unittest.TestCase):
+    def setUp(self):
+        import backend.api.routers.jobs as jobs_router
+
+        from backend.server import app
+
+        self.jobs_router = jobs_router
+        jobs_router.registry = RunRegistry()
+        self.client = TestClient(app)
+
+    def test_version_bumps_on_mutation_only(self):
+        reg = self.jobs_router.registry
+        self.assertEqual(reg._version, 0)
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        self.assertEqual(reg._version, 1)
+        reg.append(rid, "hi")
+        self.assertEqual(reg._version, 2)
+        reg.finish_run(rid, 0)
+        self.assertEqual(reg._version, 3)
+        # No-ops bump nothing: missing append, busy start, empty clear.
+        reg.append("deadbeef0000", "x")
+        self.assertEqual(reg._version, 3)
+        reg2 = RunRegistry()
+        reg2.start_run("logs")
+        self.assertIsNone(reg2.start_run("logs")[0])
+        self.assertEqual(reg2._version, 1)
+        rid_b, _ = reg.start_run("logs")
+        self.assertTrue(rid_b)
+        self.assertEqual(reg._version, 4)
+        reg.clear_jobs(all_jobs=False)
+        self.assertEqual(reg._version, 5)
+        reg.clear_jobs(all_jobs=False)
+        self.assertEqual(reg._version, 5)
+
+    def test_jobs_stream_pushes_status_not_chatter(self):
+        reg = self.jobs_router.registry
+        rid, _ = reg.start_run("logs")
+        gen = self.jobs_router._jobs_events(heartbeat=60)
+        frames = _parse_frames(next(gen))
+        self.assertEqual(frames[0][0], "jobs")
+        self.assertFalse(frames[0][1]["jobs"][0]["done"])
+        # Output appends leave list rows identical: no jobs frame.
+        # Drive with a short heartbeat to observe the quiet beat.
+        gen.close()
+        gen = self.jobs_router._jobs_events(heartbeat=0.02)
+        next(gen)
+        reg.append(rid, "chatter")
+        self.assertTrue(next(gen).startswith(":heartbeat"))
+        reg.finish_run(rid, 0)
+        frames = _parse_frames(next(gen))
+        self.assertEqual(frames[0][0], "jobs")
+        self.assertTrue(frames[0][1]["jobs"][0]["done"])
+        gen.close()
+
+    def test_jobs_stream_matches_poll_shape(self):
+        reg = self.jobs_router.registry
+        reg.start_run("logs")
+        gen = self.jobs_router._jobs_events(heartbeat=60)
+        frames = _parse_frames(next(gen))
+        gen.close()
+        polled = self.client.get("/api/jobs").json()["jobs"]
+        self.assertEqual(frames[0][1]["jobs"], polled)
+
+    def test_run_stream_frames_and_ends_on_done(self):
+        reg = self.jobs_router.registry
+        rid, _ = reg.start_run("logs")
+        gen = self.jobs_router._run_events(rid, heartbeat=60)
+        frames = _parse_frames(next(gen))
+        self.assertEqual(frames[0][0], "progress")
+        self.assertFalse(frames[0][1]["done"])
+        reg.append(rid, "out")
+        frames = _parse_frames(next(gen))
+        self.assertIn("out", frames[0][1]["output"])
+        reg.finish_run(rid, 0)
+        frames = _parse_frames(next(gen))
+        self.assertTrue(frames[0][1]["done"])
+        with self.assertRaises(StopIteration):
+            next(gen)
+
+    def test_run_stream_cleared_run_errors(self):
+        reg = self.jobs_router.registry
+        rid, _ = reg.start_run("logs")
+        gen = self.jobs_router._run_events(rid, heartbeat=60)
+        next(gen)
+        reg.clear_jobs(all_jobs=True)
+        frames = _parse_frames(next(gen))
+        self.assertEqual(frames[0][0], "gone")
+        with self.assertRaises(StopIteration):
+            next(gen)
+
+    def test_stream_endpoints_wire_and_validate(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        rid, _ = jobs_router.registry.start_run("logs")
+        with self.client.stream("GET", "/api/jobs/stream") as resp:
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("text/event-stream", resp.headers["content-type"])
+            first = ""
+            for chunk in resp.iter_text():
+                first += chunk
+                if "\n\n" in first:
+                    break
+        frames = _parse_frames(first)
+        self.assertEqual(frames[0][0], "jobs")
+        self.assertEqual(frames[0][1]["jobs"][0]["id"], rid)
+        self.assertEqual(
+            self.client.get("/api/jobs/runs/not-a-rid/stream").status_code,
+            404)
+        self.assertEqual(
+            self.client.get(
+                "/api/jobs/runs/deadbeef0000/stream").status_code,
+            404)
+
+
 class _LedgerTmpDir:
     """Point the audit ledger at a tmp dir: execute_run now ledgers
     every finished run, and tests must not touch the real path."""
