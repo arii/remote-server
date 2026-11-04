@@ -29,6 +29,7 @@ cli.bootstrap()
 
 import s5tools  # noqa: E402
 import model_router  # noqa: E402
+import deep_chat  # noqa: E402
 import ledger  # noqa: E402
 import tracing  # noqa: E402
 from langgraph.errors import GraphRecursionError  # noqa: E402
@@ -143,6 +144,36 @@ def _salvage_messages(prompt, history, trace, limit=SALVAGE_TOOL_TAIL):
         "results above. Do not make any more tool calls.")]
 
 
+def _invoke_with_failover(model, spec, messages):
+    """model.invoke with one local retry on retryable cloud errors.
+
+    Returns (answer, failover): failover is None when the primary
+    leg served, else {"from", "to", "error"} recording which legs
+    ran. Local-primary calls never enter the helper (single hop, no
+    ping-pong); local-unreachable surfaces the ORIGINAL cloud error.
+    The local leg reuses deep_chat.build_model (same ChatOllama
+    construction as this slice's own ollama branch).
+    """
+    failover = {}
+
+    def _note(exc):
+        failover["error"] = _short_err(exc)
+        print(f"model: {spec['provider']} {_short_err(exc)}"
+              " — retrying locally", file=sys.stderr)
+
+    def _make_local():
+        local_model, local_spec = deep_chat.build_model(prefer="ollama")
+        failover["from"] = f"{spec['provider']}:{spec['model']}"
+        failover["to"] = (f"{local_spec['provider']}:"
+                          f"{local_spec['model']}")
+        return lambda: local_model.invoke(messages)
+
+    answer = model_router.with_local_fallback(
+        lambda: model.invoke(messages), _make_local, _note,
+        primary_is_local=(spec.get("provider") == "ollama"))
+    return answer, (failover or None)
+
+
 def main() -> int:
     if len(sys.argv) < 4 or not s5tools.valid_repo(sys.argv[1]):
         return cli.usage_error(
@@ -233,8 +264,10 @@ def main() -> int:
             # Tool-loop cutoff with findings in hand: one final no-tools
             # pass answers from the gathered evidence instead of dying.
             salvaged = ""
+            failover = None
             try:
-                answer = model.invoke(
+                answer, failover = _invoke_with_failover(
+                    model, spec,
                     _salvage_messages(prompt, history, trace_messages))
                 salvaged = (answer.content or "").strip()
                 meta = getattr(answer, "usage_metadata", None) or {}
@@ -253,7 +286,9 @@ def main() -> int:
                     + [AIMessage(content=reply)],
                     started,
                     extra={"repo": repo, "salvaged": True,
-                           "prompt": prompt},
+                           "prompt": prompt,
+                           **({"failover": failover}
+                              if failover else {})},
                     usage=usage,
                 )
                 return 0
