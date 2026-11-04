@@ -597,7 +597,8 @@ export function PrefsControls() {
 }
 
 // Next actions derived from state, most urgent first, capped at three.
-// Each seeds agent chat, which auto-sends.
+// Each stages its seed in agent chat's composer for review —
+// tapping a seed never auto-sends (#507).
 export function briefingActions(data: BriefingResponse): BriefingAction[] {
   const actions: BriefingAction[] = [];
   if (data.workflow_lines.length > 0) {

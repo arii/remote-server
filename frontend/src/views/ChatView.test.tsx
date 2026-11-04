@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, RunsPane, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, RunsPane, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1137,5 +1137,71 @@ describe('conversation thread continuity (issue #467)', () => {
     clearChatSessionId();
     expect(store.has(CHAT_SESSION_KEY)).toBe(false);
     expect(loadChatSessionId()).toBe(null);
+  });
+});
+
+describe('seed staging fills, never sends (issue #507)', () => {
+  const noop = () => {};
+
+  function stubSessionStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function composerText(html: string): string | null {
+    const m = html.match(
+      /<textarea[^>]*data-testid="chat-prompt"[^>]*>([\s\S]*?)<\/textarea>/,
+    );
+    return m ? (m[1] as string) : null;
+  }
+
+  function sendTag(html: string): string {
+    return html.match(/<button[^>]*data-testid="chat-send"[^>]*>/)?.[0] ?? '';
+  }
+
+  it('stages a fresh seed for review, ignoring missing or restaged seeds', () => {
+    expect(stageSeed('What should I work on next?', false)).toBe(
+      'What should I work on next?',
+    );
+    expect(stageSeed(null, false)).toBeNull();
+    expect(stageSeed('', false)).toBeNull();
+    expect(stageSeed('Plan my day', true)).toBeNull();
+  });
+
+  it('lands the seed in the composer without starting a turn', () => {
+    stubSessionStorage();
+    const html = renderToStaticMarkup(
+      <ChatView repo="r" seed="What should I work on next?" onSeedUsed={noop} />,
+    );
+    expect(composerText(html)).toBe('What should I work on next?');
+    expect(html).toContain('data-testid="chat-empty"');
+    expect(html).not.toContain('data-testid="chat-progress"');
+    expect(html).not.toContain('chat-msg-user-');
+  });
+
+  it('leaves explicit Send enabled so the turn starts deliberately', () => {
+    stubSessionStorage();
+    const seeded = renderToStaticMarkup(
+      <ChatView repo="r" seed="What should I work on next?" onSeedUsed={noop} />,
+    );
+    expect(sendTag(seeded)).not.toContain('disabled');
+    const empty = renderToStaticMarkup(
+      <ChatView repo="r" seed={null} onSeedUsed={noop} />,
+    );
+    expect(composerText(empty)).toBe('');
+    expect(sendTag(empty)).toContain('disabled');
   });
 });
