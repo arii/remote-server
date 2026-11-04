@@ -184,12 +184,17 @@ def notifications_trigger_digest() -> dict:
         "Manual Briefing Digest", digest_msg, priority="low",
         tags=["clipboard", "digest"], event_type="digest",
         bypass_quiet=True)
-    if "suppressed" not in res:
+    # Stamp only on actual delivery (#532): a failed manual digest
+    # must not eat the next scheduled one. ok mirrors delivery so
+    # the operator sees the failure alongside the per-target errors
+    # in results.
+    ok = N.delivered(res)
+    if ok:
         with N.notifier_lock:
             state = N.load_notifier_state()
             state["last_digest"] = time.time()
             N.save_notifier_state(state)
-    return {"ok": True, "results": res, "digest": digest_msg}
+    return {"ok": ok, "results": res, "digest": digest_msg}
 
 
 def _preferences_payload() -> dict:
