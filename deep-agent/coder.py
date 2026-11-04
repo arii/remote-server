@@ -7,18 +7,26 @@ cwd=worktree. The agent gets real file tools rooted at the worktree
 tests/lint; no shell otherwise. It never commits, pushes, or opens
 PRs — the pipeline (submit-pr) does that after the scope gate.
 
+Plan-then-implement (#654): briefs naming 2+ files (or
+CODER_PLAN=always) pause after a planning step with the standard
+``INTERRUPT:`` blob and exit 3; ``coder --resume approve|reject
+--thread T`` continues or aborts the same thread. Single-file
+briefs skip planning (CODER_PLAN=never forces the skip).
+
 Safety layers: worktree root enforced by virtual_mode; run_check runs
-an allowlisted command set with cwd pinned and output capped; no
-interrupts (the dispatch approval is the human gate; scope is
-enforced at submit, not mid-run).
+an allowlisted command set with cwd pinned and output capped; the
+planning agent denies all file writes, so zero writes land before
+plan approval; scope is enforced at submit, not mid-run.
 
 Stdout contract: progress goes to stderr; stdout carries the final
-summary only. Exit 0 on success, 1 with a Sorry line on failure.
+summary only (or the INTERRUPT blob on a plan pause). Exit 0 on
+success, 1 with a Sorry line on failure, 3 on plan pause.
 Every run is traced + ledgered (recorder totals, like deep_chat).
 
-Env: CODER_TIMEOUT (wall seconds, default 1800), CODER_MODEL
-(override), CODER_THINK=1 (Ollama thinking traces),
-CODER_VERIFY_ROUNDS (verify re-prompts, default 2, 0 disables),
+Env: CODER_TIMEOUT (wall seconds, default 1800; also the plan
+freshness cap on resume), CODER_MODEL (override), CODER_THINK=1
+(Ollama thinking traces), CODER_VERIFY_ROUNDS (verify re-prompts,
+default 2, 0 disables), CODER_PLAN (always|never|unset auto),
 plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
@@ -26,6 +34,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -69,18 +78,90 @@ CODER_RULES = """You are implementing the task below in the checkout at {worktre
 - Do NOT commit, push, or open PRs; leave changes in the working tree.
 - End with a short summary: files changed + verification run."""
 
+# Plan-then-implement (#654): deterministic multi-file bar, no LLM
+# judge. CODER_PLAN=always forces planning, =never skips it.
+PLAN_ENV = "CODER_PLAN"
+PLAN_LIMIT = 8000
+
+# File-like tokens: a path with a slash, or a name with a
+# letter-led extension (so v1.2 never counts). URLs are stripped
+# first; e.g./i.e. are stoplisted. A heuristic: prose with two
+# dotted abbreviations still plans (harmless — one approval step),
+# and CODER_PLAN=never escapes it.
+FILE_TOKEN_RE = re.compile(
+    r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+"
+    r"|[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,4})\b")
+URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+PROSE_ABBREVS = frozenset({"e.g", "i.e"})
+
+PLAN_PROMPT = """Before writing any code, produce an implementation plan for the task below. Call the propose_plan tool exactly once with your plan, then stop. Do not call any other tool. Do not write or edit any file.
+
+Plan shape — numbered steps; each step names its files and its checks:
+PLAN:
+1. <step> [files: <paths>] [checks: <commands>]
+2. ...
+
+Task:
+{brief}"""
+
+PLAN_NUDGE = ("Call the propose_plan tool now with your numbered plan "
+              "(steps + files + checks each). Do not write code.")
+
+
+def files_named(*texts):
+    """Distinct file-like tokens across texts (URLs stripped). Pure."""
+    found = set()
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        scrubbed = URL_RE.sub(" ", text)
+        for match in FILE_TOKEN_RE.findall(scrubbed):
+            if match.lower() not in PROSE_ABBREVS:
+                found.add(match)
+    return sorted(found)
+
+
+def needs_plan(brief, context=""):
+    """True when the brief clears the planning bar. Pure.
+
+    CODER_PLAN=always forces planning, =never skips it; otherwise
+    2+ distinct file-like tokens in brief+context trigger a plan.
+    """
+    mode = os.environ.get(PLAN_ENV, "").strip().lower()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    return len(files_named(brief, context)) >= 2
+
+
+def validate_plan(plan):
+    """Validate a propose_plan payload. Returns (ok, text). Pure."""
+    if not isinstance(plan, str) or not plan.strip():
+        return False, "REJECTED: plan must be non-empty text"
+    if len(plan) > PLAN_LIMIT:
+        return False, ("REJECTED: plan is too long "
+                       f"(max {PLAN_LIMIT} chars)")
+    return True, "PLAN recorded:\n" + plan.strip()
+
 
 def parse_args(argv):
-    """Spawner-shaped argv: -p --system-prompt CTX [--model M] BRIEF."""
+    """Spawner-shaped argv: -p --system-prompt CTX [--model M] BRIEF.
+
+    --resume approve|reject continues a paused plan thread (brief
+    then becomes an optional override for the ledgered brief).
+    """
     parser = argparse.ArgumentParser(prog="coder")
     parser.add_argument("-p", action="store_true")
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--model", default=None)
     parser.add_argument("--worktree", default=None)
     parser.add_argument("--thread", default=None)
+    parser.add_argument("--resume", default=None,
+                        choices=["approve", "reject"])
     parser.add_argument("brief", nargs="?")
     args = parser.parse_args(argv)
-    if not args.brief:
+    if not args.brief and not args.resume:
         parser.error("BRIEF is required")
     return args
 
@@ -151,8 +232,15 @@ def build_check_tool(worktree):
 
 
 def build_agent(worktree, system, model=None, recorder=None,
-                checkpointer=None):
-    """create_deep_agent coder: disk backend rooted at worktree. Venv-only."""
+                checkpointer=None, tools=None, interrupt_on=None,
+                permissions=None):
+    """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
+
+    tools defaults to [run_check]; interrupt_on/permissions pass
+    through to create_deep_agent (the plan agent denies writes and
+    pauses on propose_plan; the implement agent leaves all three
+    defaulted, exactly as before).
+    """
     from deepagents import create_deep_agent  # noqa: E402
     from deepagents.backends import FilesystemBackend  # noqa: E402
 
@@ -165,12 +253,67 @@ def build_agent(worktree, system, model=None, recorder=None,
         kwargs["middleware"] = observe.trace_middleware(recorder)
     return create_deep_agent(
         model=model,
-        tools=[build_check_tool(worktree)],
+        tools=(list(tools) if tools is not None
+               else [build_check_tool(worktree)]),
         system_prompt=system,
         backend=FilesystemBackend(root_dir=worktree, virtual_mode=True),
+        interrupt_on=interrupt_on,
+        permissions=permissions,
         checkpointer=checkpointer,
         **kwargs,
     )
+
+
+# deep_chat HITL rails, coder-side: propose_plan pauses for
+# approve/reject exactly like propose_action; the pause blob,
+# resume payload, and verdict mapping reuse deep_chat's helpers
+# (imported, not forked — deep_chat itself is untouched).
+CODER_INTERRUPT_ON = {
+    "propose_plan": {
+        "allowed_decisions": ["approve", "reject"],
+        "description": "Review the implementation plan before it runs.",
+    }
+}
+
+
+def build_plan_tool():
+    """propose_plan tool: formats one implementation plan. Venv-only."""
+    from langchain_core.tools import tool  # noqa: E402
+
+    @tool
+    def propose_plan(plan: str) -> str:
+        """Propose the implementation plan for this task (human-approved).
+
+        Call exactly once with the numbered plan (steps + files +
+        checks each), then STOP and wait for the human's
+        approve/reject decision. Never writes anything.
+
+        Args:
+            plan: The full plan text, from PLAN: onward.
+        """
+        _ok, text = validate_plan(plan)
+        return text
+
+    return propose_plan
+
+
+def build_plan_agent(worktree, system, model=None, recorder=None,
+                     checkpointer=None):
+    """Planning agent: propose_plan only, writes denied, pauses on it.
+
+    Same model/backend/threading as the implement agent; the write
+    deny (FilesystemPermission, like deep_chat's harness gate) is
+    what guarantees zero file writes before approval. Venv-only.
+    """
+    from deepagents.middleware.filesystem import (  # noqa: E402
+        FilesystemPermission)
+
+    return build_agent(
+        worktree, system, model=model, recorder=recorder,
+        checkpointer=checkpointer, tools=[build_plan_tool()],
+        interrupt_on=dict(CODER_INTERRUPT_ON),
+        permissions=[FilesystemPermission(operations=["write"],
+                                          paths=["/**"], mode="deny")])
 
 
 def _timeout():
@@ -326,10 +469,357 @@ def run_coder(worktree, brief, system, thread, timeout):
     return reply, usage, calls, started, label, recorder.path, verified, rounds
 
 
-def main(argv=None) -> int:
-    args = parse_args(argv if argv is not None else sys.argv[1:])
+def latest_plan(thread):
+    """Newest plan_pending ledger row for thread, or None. Never raises."""
     import ledger  # noqa: E402
 
+    try:
+        with open(ledger.LEDGER, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    best = None
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("script") != "coder.py":
+            continue
+        if entry.get("thread_id") != thread:
+            continue
+        if (entry.get("extra") or {}).get("coder_phase") != "plan_pending":
+            continue
+        best = entry
+    if best is None:
+        return None
+    extra = best.get("extra") or {}
+    return {"ts": best.get("ts"), "model": best.get("model") or "unknown",
+            "brief": extra.get("brief") or "",
+            "worktree": extra.get("worktree") or "",
+            "system": extra.get("system") or "",
+            "plan": extra.get("plan") or "",
+            "trace": extra.get("trace") or ""}
+
+
+def plan_is_stale(ts, now, cap):
+    """True when a plan timestamp is older than cap seconds. Pure.
+
+    Unparseable timestamps read as stale (fail closed: never
+    implement from an undated plan).
+    """
+    try:
+        age = float(now) - float(ts)
+    except (TypeError, ValueError):
+        return True
+    return age > cap
+
+
+def _plan_requests(pending):
+    """action_requests of the first pending interrupt (defensive)."""
+    try:
+        value = pending[0].get("value") or {}
+    except (AttributeError, IndexError, TypeError):
+        return []
+    if not isinstance(value, dict):
+        return []
+    requests = value.get("action_requests", []) or []
+    return requests if isinstance(requests, list) else []
+
+
+def plan_and_pause(worktree, brief, system, thread, timeout):
+    """Planning phase: gated PLAN, then the standard INTERRUPT pause.
+
+    Invokes the plan agent (writes denied); when propose_plan
+    pauses, the plan is traced + ledgered as plan_pending and this
+    returns deep_chat's exit-3 with the INTERRUPT blob on stdout.
+    A model that never calls propose_plan (initial + one nudge)
+    fails closed: plan_failed ledgered, Sorry, exit 1. Venv-only.
+    """
+    import observe  # noqa: E402
+    from langchain_core.messages import (  # noqa: E402
+        AIMessage, HumanMessage)
+
+    import deep_chat  # noqa: E402
+    import ledger  # noqa: E402
+
+    started = time.time()
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("coder_plan", thread))
+    model, spec = build_model(os.environ.get("CODER_MODEL") or None)
+    label = f"{spec['provider']}:{spec['model']}"
+    print(f"coder plan via {label}", file=sys.stderr, flush=True)
+    recorder.run_start("coder.py", thread, label)
+    saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
+    agent = build_plan_agent(worktree, system, model=model,
+                             recorder=recorder, checkpointer=saver)
+    config = {"configurable": {"thread_id": thread}}
+
+    def _invoke(msgs):
+        return agent.invoke(
+            {"messages": msgs},
+            config={**config, "recursion_limit": RECURSION_LIMIT})
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(
+                _invoke,
+                [HumanMessage(
+                    content=PLAN_PROMPT.format(brief=brief))],
+            ).result(timeout=timeout)
+            pending = deep_chat._pending_interrupts(agent, config)
+            if not pending:
+                pool.submit(
+                    _invoke, [HumanMessage(content=PLAN_NUDGE)],
+                ).result(timeout=timeout)
+                pending = deep_chat._pending_interrupts(agent, config)
+    except concurrent.futures.TimeoutError:
+        recorder.run_end(False)
+        recorder.close()
+        ledger.record(
+            "coder.py", label, thread,
+            [HumanMessage(content=brief)], started,
+            extra={"worktree": worktree, "coder_phase": "plan_failed",
+                   "trace": recorder.path,
+                   "error": f"plan timed out after {timeout}s"},
+        )
+        return cli.sorry(
+            f"Sorry, the coder plan step timed out after {timeout}s.")
+    except Exception as exc:  # noqa: BLE001 - sorry contract
+        recorder.run_end(False)
+        recorder.close()
+        ledger.record(
+            "coder.py", label, thread,
+            [HumanMessage(content=brief)], started,
+            extra={"worktree": worktree, "coder_phase": "plan_failed",
+                   "trace": recorder.path, "error": str(exc)[:200]},
+        )
+        return cli.sorry(f"Sorry, the coder plan step failed: {exc}")
+    _ = holder
+    if not pending:
+        recorder.run_end(False)
+        recorder.close()
+        ledger.record(
+            "coder.py", label, thread,
+            [HumanMessage(content=brief)], started,
+            extra={"worktree": worktree, "coder_phase": "plan_failed",
+                   "trace": recorder.path,
+                   "error": "plan step did not call propose_plan"},
+        )
+        return cli.sorry("Sorry, the coder plan step produced no plan "
+                         "for approval.")
+    plan_text = ""
+    requests = _plan_requests(pending)
+    if requests and isinstance(requests[0], dict):
+        plan_text = (requests[0].get("args") or {}).get("plan") or ""
+    recorder.event("plan", plan_preview=str(plan_text)[:2000],
+                   interrupt_id=pending[0].get("id"))
+    recorder.run_end(True)
+    recorder.close()
+    usage, calls = recorder.totals()
+    print(f"trace: {recorder.path}", file=sys.stderr)
+    ledger.record(
+        "coder.py", label, thread,
+        [HumanMessage(content=brief),
+         AIMessage(content=plan_text or "(empty plan)")],
+        started,
+        extra={"worktree": worktree, "brief": brief, "system": system,
+               "plan": str(plan_text)[:PLAN_LIMIT],
+               "coder_phase": "plan_pending", "trace": recorder.path},
+        usage=usage, calls=calls,
+    )
+    return deep_chat._emit_interrupt(thread, pending)
+
+
+def _implement_and_finish(worktree, brief, system, thread, timeout,
+                          extra=None):
+    """run_coder plus the ledger row + stdout summary. Returns exit code."""
+    import ledger  # noqa: E402
+    from langchain_core.messages import (  # noqa: E402
+        AIMessage, HumanMessage)
+
+    label = "unknown"
+    try:
+        (summary, usage, calls, started, label, trace, verified,
+         rounds) = run_coder(
+            worktree, brief, system, thread, timeout)
+    except Exception as exc:  # noqa: BLE001 - sorry contract
+        ledger.record(
+            "coder.py", label,
+            thread, [{"role": "user", "content": brief}],
+            time.time(),
+            extra={"worktree": worktree, "error": str(exc)[:200],
+                   **(extra or {})},
+        )
+        return cli.sorry(f"Sorry, the coder failed: {exc}")
+    ledger.record(
+        "coder.py", label, thread,
+        [HumanMessage(content=brief),
+         AIMessage(content=summary)],
+        started,
+        extra={"worktree": worktree, "trace": trace,
+               "verified": verified, "verify_rounds": rounds,
+               **(extra or {})},
+        usage=usage, calls=calls,
+    )
+    print(summary or "(empty summary)")
+    return 0
+
+
+def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
+                system_prompt_override=None):
+    """Resume a paused coder plan. Returns an exit code.
+
+    reject: ledger plan_rejected, no agent touched, no edits,
+    exit 0 (a human decision, like deep_chat's resume-reject).
+    approve: stale plans (older than CODER_TIMEOUT) abort as
+    plan_stale with Sorry exit 1; fresh plans resume the SAME
+    thread into the normal implement + verify path.
+    """
+    import observe  # noqa: E402
+    from langchain_core.messages import (  # noqa: E402
+        AIMessage, HumanMessage)
+
+    import deep_chat  # noqa: E402
+    import ledger  # noqa: E402
+
+    if verdict not in ("approve", "reject"):
+        return cli.usage_error(
+            f"bad verdict {verdict!r}: want 'approve'/'reject'")
+    started = time.time()
+    plan = latest_plan(thread)
+    if plan is None:
+        return cli.sorry(f"Sorry, no pending plan for thread {thread!r}.")
+    worktree = os.path.abspath(
+        worktree_arg or plan["worktree"] or os.getcwd())
+    if not os.path.isdir(worktree):
+        return cli.sorry(f"Sorry, no worktree at {worktree}.")
+    if verdict == "reject":
+        recorder = observe.TraceRecorder(
+            observe.default_trace_path("coder_resume", thread))
+        recorder.run_start("coder.py", thread, plan["model"])
+        recorder.event("plan_decision", verdict="reject")
+        recorder.run_end(True)
+        recorder.close()
+        ledger.record(
+            "coder.py", plan["model"], thread,
+            [HumanMessage(content=plan["brief"] or "(brief unavailable)"),
+             AIMessage(content="plan rejected")],
+            started,
+            extra={"worktree": worktree, "coder_phase": "plan_rejected",
+                   "trace": recorder.path},
+        )
+        print("plan rejected, no changes made")
+        return 0
+    timeout = _timeout()
+    if plan_is_stale(plan["ts"], time.time(), timeout):
+        ledger.record(
+            "coder.py", plan["model"], thread,
+            [HumanMessage(content=plan["brief"] or "(brief unavailable)")],
+            started,
+            extra={"worktree": worktree, "coder_phase": "plan_stale",
+                   "error": f"plan older than {timeout}s"},
+        )
+        return cli.sorry(
+            f"Sorry, the plan for thread {thread!r} expired "
+            f"(older than {timeout}s); re-dispatch the task.")
+    brief = brief_override or plan["brief"]
+    if not brief:
+        return cli.sorry(
+            f"Sorry, the plan for thread {thread!r} has no brief; "
+            "re-dispatch the task.")
+    if system_prompt_override and system_prompt_override.strip():
+        system = build_system(worktree, system_prompt_override)
+    elif plan["system"]:
+        system = plan["system"]
+    else:
+        system = build_system(worktree, "")
+    # Complete the paused planning turn on its own agent first, so
+    # the thread carries plan→approve before implementation starts.
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("coder_resume", thread))
+    model, spec = build_model(os.environ.get("CODER_MODEL") or None)
+    label = f"{spec['provider']}:{spec['model']}"
+    print(f"coder resume via {label}", file=sys.stderr, flush=True)
+    recorder.run_start("coder.py", thread, label)
+    saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
+    agent = build_plan_agent(worktree, system, model=model,
+                             recorder=recorder, checkpointer=saver)
+    config = {"configurable": {"thread_id": thread}}
+    pending = deep_chat._pending_interrupts(agent, config)
+    if not pending:
+        recorder.run_end(False)
+        recorder.close()
+        return cli.sorry(
+            f"Sorry, no pending approval for thread {thread!r}.")
+    from langgraph.types import Command  # noqa: E402
+
+    count = len(_plan_requests(pending)) or 1
+
+    def _invoke(payload):
+        return agent.invoke(
+            payload,
+            config={**config, "recursion_limit": RECURSION_LIMIT})
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(
+                _invoke,
+                Command(resume=deep_chat.resume_payload(
+                    [deep_chat.decision_for_verdict("approve")] * count)),
+            ).result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        recorder.run_end(False)
+        recorder.close()
+        ledger.record(
+            "coder.py", label, thread,
+            [HumanMessage(content=brief)], started,
+            extra={"worktree": worktree, "coder_phase": "resume_failed",
+                   "trace": recorder.path,
+                   "error": f"resume timed out after {timeout}s"},
+        )
+        return cli.sorry(
+            f"Sorry, the coder resume timed out after {timeout}s.")
+    except Exception as exc:  # noqa: BLE001 - sorry contract
+        recorder.run_end(False)
+        recorder.close()
+        ledger.record(
+            "coder.py", label, thread,
+            [HumanMessage(content=brief)], started,
+            extra={"worktree": worktree, "coder_phase": "resume_failed",
+                   "trace": recorder.path, "error": str(exc)[:200]},
+        )
+        return cli.sorry(f"Sorry, the coder resume failed: {exc}")
+    _ = holder
+    recorder.event("plan_decision", verdict="approve")
+    recorder.run_end(True)
+    recorder.close()
+    resume_usage, resume_calls = recorder.totals()
+    ledger.record(
+        "coder.py", label, thread,
+        [HumanMessage(content=brief),
+         AIMessage(content=plan["plan"] or "(plan approved)")],
+        started,
+        extra={"worktree": worktree, "coder_phase": "plan_approved",
+               "trace": recorder.path},
+        usage=resume_usage, calls=resume_calls,
+    )
+    return _implement_and_finish(
+        worktree, brief, system, thread, timeout,
+        extra={"coder_phase": "implement", "plan_approved": True})
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    if args.resume:
+        if not args.thread:
+            return cli.usage_error("--thread is required with --resume")
+        return _cmd_resume(
+            args.worktree, args.thread, args.resume,
+            brief_override=args.brief,
+            system_prompt_override=args.system_prompt or None)
     worktree = os.path.abspath(args.worktree or os.getcwd())
     if not os.path.isdir(worktree):
         return cli.sorry(f"Sorry, no worktree at {worktree}.")
@@ -338,33 +828,13 @@ def main(argv=None) -> int:
     timeout = _timeout()
     print(f"thread: {thread} worktree: {worktree} timeout: {timeout}s",
           file=sys.stderr, flush=True)
-    label = "unknown"
-    try:
-        (summary, usage, calls, started, label, trace, verified,
-         rounds) = run_coder(
-            worktree, args.brief, system, thread, timeout)
-    except Exception as exc:  # noqa: BLE001 - sorry contract
-        ledger.record(
-            "coder.py", label,
-            thread, [{"role": "user", "content": args.brief}],
-            time.time(),
-            extra={"worktree": worktree, "error": str(exc)[:200]},
-        )
-        return cli.sorry(f"Sorry, the coder failed: {exc}")
-    from langchain_core.messages import (  # noqa: E402
-        AIMessage, HumanMessage)
-
-    ledger.record(
-        "coder.py", label, thread,
-        [HumanMessage(content=args.brief),
-         AIMessage(content=summary)],
-        started,
-        extra={"worktree": worktree, "trace": trace,
-               "verified": verified, "verify_rounds": rounds},
-        usage=usage, calls=calls,
-    )
-    print(summary or "(empty summary)")
-    return 0
+    if needs_plan(args.brief, args.system_prompt):
+        print("brief clears the plan bar: planning first",
+              file=sys.stderr, flush=True)
+        return plan_and_pause(worktree, args.brief, system, thread,
+                              timeout)
+    return _implement_and_finish(worktree, args.brief, system, thread,
+                                 timeout)
 
 
 if __name__ == "__main__":
