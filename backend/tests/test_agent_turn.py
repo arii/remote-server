@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -340,6 +341,84 @@ class RunTurnTest(unittest.TestCase):
         self.assertFalse(asyncio.run(go()))
         self.assertNotIn("s-abandon", self.mgr._running)
         self.assertFalse(asyncio.run(self.mgr.abort("s-abandon")))
+
+    def test_abandoned_turn_leaves_no_result(self):
+        # Drop-on-abandon (issue #535): a stream closed
+        # mid-turn must not leave a _results entry behind.
+        async def go():
+            gen = self.mgr.run_turn(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-abandon-nores", prompt="hi",
+                continued=False,
+                argv=["/bin/sh", "-c",
+                     "head -c 70000 /dev/zero | tr '\\0' 'y'; "
+                     "sleep 30"])
+            await gen.__anext__()
+            await gen.aclose()
+
+        asyncio.run(go())
+        self.assertNotIn("s-abandon-nores", self.mgr._results)
+        self.assertIsNone(
+            self.mgr.pop_result("s-abandon-nores"))
+
+    def test_abandoned_turn_drops_unpopped_result(self):
+        # A completed turn's unpopped entry for a session is
+        # dropped when a later turn on the same session is
+        # abandoned (issue #535).
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-reuse", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "hello"])
+        self.assertIn("s-reuse", self.mgr._results)
+
+        async def go():
+            gen = self.mgr.run_turn(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-reuse", prompt="again",
+                continued=True,
+                argv=["/bin/sh", "-c",
+                     "head -c 70000 /dev/zero | tr '\\0' 'y'; "
+                     "sleep 30"])
+            await gen.__anext__()
+            await gen.aclose()
+
+        asyncio.run(go())
+        self.assertNotIn("s-reuse", self.mgr._results)
+        self.assertNotIn("s-reuse", self.mgr._result_at)
+        self.assertIsNone(self.mgr.pop_result("s-reuse"))
+
+    def test_result_sweep_evicts_only_stale_entries(self):
+        # TTL backstop (issue #535): entries older than
+        # RESULT_TTL are evicted; fresh ones survive, and pop
+        # clears the timestamp so the side table cannot leak.
+        self.mgr._results["s-old"] = {"exit": 0}
+        self.mgr._result_at["s-old"] = (
+            time.time() - agent_turn.RESULT_TTL - 1)
+        self.mgr._results["s-fresh"] = {"exit": 0}
+        self.mgr._result_at["s-fresh"] = time.time()
+        self.mgr._sweep_results()
+        self.assertNotIn("s-old", self.mgr._results)
+        self.assertNotIn("s-old", self.mgr._result_at)
+        self.assertIn("s-fresh", self.mgr._results)
+        self.assertEqual(self.mgr.pop_result("s-fresh"),
+                         {"exit": 0})
+        self.assertNotIn("s-fresh", self.mgr._result_at)
+
+    def test_completed_turn_sweeps_stale_entries(self):
+        # The store sweeps opportunistically (chat.py pi_runs
+        # precedent): completing a turn evicts entries that
+        # aged past RESULT_TTL (issue #535).
+        self.mgr._results["s-stale"] = {"exit": 0}
+        self.mgr._result_at["s-stale"] = (
+            time.time() - agent_turn.RESULT_TTL - 1)
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-new", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "hello"])
+        self.assertNotIn("s-stale", self.mgr._results)
+        self.assertNotIn("s-stale", self.mgr._result_at)
+        self.assertIn("s-new", self.mgr._results)
+        self.assertIn("s-new", self.mgr._result_at)
 
     def test_hung_turn_times_out_and_reaps(self):
         with mock.patch.object(agent_turn, "TURN_TIMEOUT", 1), \
