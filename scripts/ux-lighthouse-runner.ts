@@ -1,14 +1,19 @@
 // Console Lighthouse runner for `td ux lighthouse` (#880).
 //
-// Vendored from tech-dancer scripts/ux-lighthouse-runner.ts, with the
-// same UX_BASE_URL env override as ux-audit-runner.ts. Reads the
-// discovered routes and audits the first static ones.
+// Vendored from tech-dancer scripts/ux-lighthouse-runner.ts. Config
+// loads through ./ux-config (UX_BASE_URL override included). Reads
+// the discovered routes and audits the first static ones.
 // Invoked by td with cwd=checkout:
 //   pnpm exec tsx scripts/ux-lighthouse-runner.ts
+// fallow-ignore-file unused-file
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { loadUxConfig } from './ux-config';
 
+// Vendored runner shape: kept line-faithful to upstream so future
+// reference syncs stay clean (see file header).
+// fallow-ignore-next-line complexity
 async function runLighthouse() {
   const routesPath = path.join(process.cwd(), 'artifacts', 'ux-audit', 'routes.json');
   if (!fs.existsSync(routesPath)) {
@@ -17,9 +22,7 @@ async function runLighthouse() {
   }
 
   const { routes } = JSON.parse(fs.readFileSync(routesPath, 'utf-8'));
-  const config = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'scripts', 'config', 'ux-audit.config.json'), 'utf-8'));
-  // Deviation from upstream: env override for scheduled vs dev targets.
-  const baseUrl = process.env.UX_BASE_URL || config.baseUrl;
+  const { baseUrl } = loadUxConfig();
 
   const lighthouseDir = path.join(process.cwd(), 'artifacts', 'ux-audit', 'lighthouse');
   if (!fs.existsSync(lighthouseDir)) {

@@ -19,6 +19,7 @@ REQUIRED_SCRIPTS = (
     "scripts/ux-discover-routes.ts",
     "scripts/ux-audit-runner.ts",
     "scripts/ux-lighthouse-runner.ts",
+    "scripts/ux-config.ts",
     "scripts/config/ux-audit.config.json",
 )
 

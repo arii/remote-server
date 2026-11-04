@@ -5,6 +5,7 @@
 // which `td ux audit --all-routes` and the lighthouse runner read.
 // Invoked by td with cwd=checkout:
 //   pnpm exec tsx scripts/ux-discover-routes.ts
+// fallow-ignore-file unused-file
 import fs from 'fs';
 import path from 'path';
 

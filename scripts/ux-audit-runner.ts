@@ -1,15 +1,17 @@
 // Console UX audit runner for `td ux` (#880).
 //
 // Vendored from tech-dancer scripts/ux-audit-runner.ts (same td
-// invocation contract, same output layout), with one deviation:
-// UX_BASE_URL env overrides config baseUrl so scheduled fires can
-// target the deployed console without editing the file.
+// invocation contract, same output layout). Config loads through
+// ./ux-config, which adds the UX_BASE_URL env override so scheduled
+// fires can target the deployed console without editing the file.
 // Invoked by td with cwd=checkout:
 //   pnpm exec tsx scripts/ux-audit-runner.ts <route> [viewport]
+// fallow-ignore-file unused-file
 import { chromium } from 'playwright';
 import { AxeBuilder } from '@axe-core/playwright';
 import fs from 'fs';
 import path from 'path';
+import { loadUxConfig } from './ux-config';
 
 interface AuditResult {
   route: string;
@@ -23,6 +25,9 @@ interface AuditResult {
   screenshot: string;
 }
 
+// Vendored audit sequence: kept line-faithful to upstream so future
+// reference syncs stay clean (see file header).
+// fallow-ignore-next-line complexity
 async function runAudit(url: string, route: string, viewport: { name: string, width: number, height: number }, options: { imagesOnly?: boolean, overflowOnly?: boolean, contrastOnly?: boolean } = {}) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
@@ -159,6 +164,7 @@ async function runAudit(url: string, route: string, viewport: { name: string, wi
   }
 }
 
+// fallow-ignore-next-line complexity
 async function main() {
   const args = process.argv.slice(2);
   const targetRoute = args[0] || '/';
@@ -168,10 +174,8 @@ async function main() {
   const overflowOnly = args.includes('--overflow-only');
   const contrastOnly = args.includes('--contrast-only');
 
-  const config = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'scripts', 'config', 'ux-audit.config.json'), 'utf-8'));
-  // Deviation from upstream: env override for scheduled vs dev targets.
-  const baseUrl = process.env.UX_BASE_URL || config.baseUrl;
-  const allViewports = [...config.viewports.desktop, ...config.viewports.mobile];
+  const { baseUrl, viewports } = loadUxConfig();
+  const allViewports = [...viewports.desktop, ...viewports.mobile];
 
   const vps = targetViewportName
     ? allViewports.filter(v => v.name === targetViewportName)
