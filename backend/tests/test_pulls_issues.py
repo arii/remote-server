@@ -7,6 +7,8 @@ POST /issue-draft: shapes, validation errors, and pr-action gates.
 """
 
 import json
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -2046,6 +2048,283 @@ class MergeGatedScriptTest(unittest.TestCase):
             {"default_branch": _boom})
         self.assertEqual(code, 1)
         self.assertIn("merged nothing", err)
+
+
+class PrsCacheTest(unittest.TestCase):
+    """SWR cache for the PR list (#888): TTL hits, stale revalidate,
+    mutation invalidation, per-repo isolation."""
+
+    def setUp(self):
+        pulls_mod._PRS_CACHE.clear()
+
+    def tearDown(self):
+        pulls_mod._PRS_CACHE.clear()
+
+    def _payload(self, number=7, title="Fix thing"):
+        return [{
+            "number": number, "title": title, "isDraft": False,
+            "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
+            "headRefName": "fix-thing",
+            "statusCheckRollup": [
+                {"name": "ci", "conclusion": "SUCCESS",
+                 "status": "COMPLETED"}
+            ],
+            "url": f"https://github.com/arii/x/pull/{number}",
+            "author": {"login": "octo"},
+        }]
+
+    def _read(self, repo="remote-server"):
+        return pulls_mod.prs(repo=repo)
+
+    def _age_entry(self, key, age):
+        _, data = pulls_mod._PRS_CACHE._entries[key]
+        aged = time.time() - age
+        pulls_mod._PRS_CACHE._entries[key] = (aged, data)
+        return aged
+
+    def test_second_read_serves_cached_without_gh(self):
+        with patch.object(pulls_mod, "run_gh_json",
+                          return_value=self._payload()) as m, \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            first = self._read()
+            self.assertFalse(first["cached"])
+            self.assertFalse(first["stale"])
+            self.assertGreater(first["generated_at"], 0)
+            self.assertNotIn(
+                "cached", pulls_mod._PRS_CACHE.peek("remote-server"))
+            start = time.monotonic()
+            second = self._read()
+            elapsed = time.monotonic() - start
+            self.assertTrue(second["cached"])
+            self.assertFalse(second["stale"])
+            self.assertEqual(second["generated_at"],
+                             first["generated_at"])
+            self.assertEqual(m.call_count, 1)
+            self.assertLess(elapsed, 0.2)
+            self.assertEqual(second["prs"], first["prs"])
+            # Markers are additive: the model accepts the payload.
+            pulls_mod.PrList(**second)
+
+    def test_stale_revalidates_and_refreshes_entry(self):
+        with patch.object(pulls_mod, "run_gh_json",
+                          return_value=self._payload()) as m, \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            first = self._read()
+            aged = self._age_entry("remote-server",
+                                   pulls_mod.PRS_CACHE_TTL + 1)
+            m.return_value = self._payload(title="Fix thing v2")
+            with patch("backend.api.cache._spawn_daemon",
+                       side_effect=lambda t, a: t(*a)):
+                body = self._read()
+            self.assertTrue(body["cached"])
+            self.assertTrue(body["stale"])
+            self.assertEqual(body["generated_at"], aged)
+            self.assertEqual(body["prs"], first["prs"])
+            # The inline refresh stored the fresh rows and cleared
+            # the in-flight flag.
+            ts, stored = pulls_mod._PRS_CACHE._entries[
+                "remote-server"]
+            self.assertGreater(ts, aged)
+            self.assertEqual(stored["prs"][0]["title"],
+                             "Fix thing v2")
+            self.assertEqual(
+                pulls_mod._PRS_CACHE._refreshing, set())
+            self.assertEqual(m.call_count, 2)
+
+    def test_past_max_stale_recomputes_synchronously(self):
+        with patch.object(pulls_mod, "run_gh_json",
+                          return_value=self._payload()) as m, \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            self._read()
+            self._age_entry("remote-server",
+                            pulls_mod.PRS_CACHE_MAX_STALE + 1)
+            m.return_value = self._payload(title="Fresh rows")
+            body = self._read()
+            self.assertFalse(body["cached"])
+            self.assertFalse(body["stale"])
+            self.assertEqual(body["prs"][0]["title"], "Fresh rows")
+
+    def test_refresh_failure_keeps_stale(self):
+        with patch.object(pulls_mod, "run_gh_json",
+                          return_value=self._payload()) as m, \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            first = self._read()
+            aged = self._age_entry("remote-server",
+                                   pulls_mod.PRS_CACHE_TTL + 1)
+            m.side_effect = RuntimeError("gh down")
+            with patch("backend.api.cache._spawn_daemon",
+                       side_effect=lambda t, a: t(*a)):
+                body = self._read()
+            self.assertTrue(body["cached"])
+            self.assertTrue(body["stale"])
+            self.assertEqual(body["prs"], first["prs"])
+            ts, _ = pulls_mod._PRS_CACHE._entries["remote-server"]
+            self.assertEqual(ts, aged)
+            self.assertEqual(
+                pulls_mod._PRS_CACHE._refreshing, set())
+
+    def test_gh_failure_on_cold_read_is_500_and_uncached(self):
+        from fastapi import HTTPException
+
+        with patch.object(pulls_mod, "run_gh_json",
+                          side_effect=RuntimeError("gh down")), \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            with self.assertRaises(HTTPException) as ctx:
+                self._read()
+            self.assertEqual(ctx.exception.status_code, 500)
+            self.assertIsNone(
+                pulls_mod._PRS_CACHE.peek("remote-server"))
+
+    def test_per_repo_isolation(self):
+        def payload_for(gh, *args, **kwargs):
+            if gh == "arii/boomtick":
+                return self._payload(number=9, title="Boomtick PR")
+            return self._payload(number=7, title="Server PR")
+
+        with patch.object(pulls_mod, "run_gh_json",
+                          side_effect=payload_for), \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            a = self._read("remote-server")
+            b = self._read("boomtick")
+            self.assertEqual(a["prs"][0]["title"], "Server PR")
+            self.assertEqual(b["prs"][0]["title"], "Boomtick PR")
+            # A repeat remote-server read serves its own entry —
+            # never boomtick rows.
+            a2 = self._read("remote-server")
+            self.assertTrue(a2["cached"])
+            self.assertEqual(a2["prs"][0]["title"], "Server PR")
+
+    def test_runner_seam_bypasses_cache(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "list"], FakeProc(stdout=gh_list_prs())).on(
+            ["gh", "api", "user"], FakeProc(stdout="octo"))
+        first = pulls_mod.prs(repo="remote-server", runner=runner)
+        second = pulls_mod.prs(repo="remote-server", runner=runner)
+        self.assertFalse(first["cached"])
+        self.assertFalse(second["cached"])
+        self.assertGreater(second["generated_at"], 0)
+        # Every runner call fans out (two list calls, no hits), and
+        # nothing is stored.
+        lists = [c for c in runner.calls if c[:3] == ["gh", "pr",
+                                                      "list"]]
+        self.assertEqual(len(lists), 2)
+        self.assertIsNone(pulls_mod._PRS_CACHE.peek("remote-server"))
+
+    def test_invalidate_helpers(self):
+        with patch.object(pulls_mod, "run_gh_json",
+                          return_value=self._payload()), \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            self._read("remote-server")
+            self._read("boomtick")
+            pulls_mod.invalidate_prs_cache("arii/remote-server")
+            self.assertIsNone(
+                pulls_mod._PRS_CACHE.peek("remote-server"))
+            self.assertIsNotNone(
+                pulls_mod._PRS_CACHE.peek("boomtick"))
+            pulls_mod.invalidate_prs_cache(None)
+            self.assertIsNone(pulls_mod._PRS_CACHE.peek("boomtick"))
+            # Unknown keys and blanks are a silent no-op.
+            pulls_mod.invalidate_prs_cache("nope")
+            pulls_mod.invalidate_prs_cache("  ")
+
+    def test_pr_action_invalidates_prs(self):
+        with patch.object(pulls_mod, "run_gh_json",
+                          return_value=self._payload()) as m, \
+                patch.object(pulls_mod, "_gh_viewer",
+                             return_value="octo"):
+            self._read()
+            self.assertIsNotNone(
+                pulls_mod._PRS_CACHE.peek("remote-server"))
+            with patch.object(
+                    pulls_mod, "_pr_action",
+                    return_value={"ok": True,
+                                  "output": "merged"}):
+                pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                    repo="remote-server", pr_number=7,
+                    action="merge", intent="pr-merge",
+                    confirmed=True))
+            self.assertIsNone(
+                pulls_mod._PRS_CACHE.peek("remote-server"))
+            body = self._read()
+            self.assertFalse(body["cached"])
+            self.assertEqual(m.call_count, 2)
+
+    def test_defer_bulk_and_restore_invalidate_prs(self):
+        from backend.api.routers import deferred as deferred_mod
+        from backend.api.routers.deferred import (
+            DeferredBulkRequest,
+            DeferredBulkRow,
+            DeferredRequest,
+        )
+
+        tmp = tempfile.mkdtemp()
+        old = os.environ.get("BUTTONS_DEFERRED_PATH")
+        os.environ["BUTTONS_DEFERRED_PATH"] = os.path.join(
+            tmp, "deferred.json")
+        try:
+            with patch.object(pulls_mod, "run_gh_json",
+                              return_value=self._payload()), \
+                    patch.object(pulls_mod, "_gh_viewer",
+                                 return_value="octo"):
+                self._read()
+                deferred_mod.defer_row(DeferredRequest(
+                    repo="remote-server", kind="pr", number=7))
+                self.assertIsNone(
+                    pulls_mod._PRS_CACHE.peek("remote-server"))
+                self._read()
+                deferred_mod.bulk_defer_restore(
+                    DeferredBulkRequest(
+                        repo="remote-server", op="defer",
+                        rows=[DeferredBulkRow(kind="pr",
+                                              number=9)]))
+                self.assertIsNone(
+                    pulls_mod._PRS_CACHE.peek("remote-server"))
+                self._read()
+                deferred_mod.restore_row(DeferredRequest(
+                    repo="remote-server", kind="pr", number=7))
+                self.assertIsNone(
+                    pulls_mod._PRS_CACHE.peek("remote-server"))
+        finally:
+            if old is None:
+                os.environ.pop("BUTTONS_DEFERRED_PATH", None)
+            else:
+                os.environ["BUTTONS_DEFERRED_PATH"] = old
+
+    def test_webhook_pull_invalidates_on_success_only(self):
+        from backend import notify as N
+
+        repo = "arii/remote-server"
+        orig_pull, orig_append = N.webhook_pull, N.ledger.append
+        N.ledger.append = lambda row: None
+        try:
+            with patch.object(pulls_mod, "run_gh_json",
+                              return_value=self._payload()), \
+                    patch.object(pulls_mod, "_gh_viewer",
+                                 return_value="octo"):
+                self._read()
+                N.webhook_pull = lambda path: (
+                    True, "up to date", False, None)
+                N.webhook_worker(repo, "/tmp")
+                self.assertIsNone(
+                    pulls_mod._PRS_CACHE.peek("remote-server"))
+                self._read()
+                N.webhook_pull = lambda path: (
+                    False, "boom", False, None)
+                N.webhook_worker(repo, "/tmp")
+                self.assertIsNotNone(
+                    pulls_mod._PRS_CACHE.peek("remote-server"))
+        finally:
+            N.webhook_pull = orig_pull
+            N.ledger.append = orig_append
+            N.webhook_state.pop(repo, None)
+            N.webhook_pending.discard(repo)
 
 
 if __name__ == "__main__":
