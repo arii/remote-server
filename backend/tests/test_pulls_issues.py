@@ -234,6 +234,33 @@ class PrDiffTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
 
+class RunGhGuardTest(unittest.TestCase):
+    def test_run_gh_rejects_unscoped_argv(self):
+        from backend.gh import run_gh
+
+        runner = FakeRunner().on(["gh"], FakeProc(stdout="ok"))
+        with self.assertRaises(ValueError):
+            run_gh("arii/remote-server", ["pr", "merge", "7"],
+                   runner=runner)
+        self.assertEqual(runner.calls, [])
+
+    def test_run_gh_accepts_scoped_argv(self):
+        from backend.gh import run_gh
+
+        runner = FakeRunner().on(["gh"], FakeProc(stdout="ok"))
+        out = run_gh("arii/remote-server",
+                     ["pr", "merge", "7", "--repo",
+                      "arii/remote-server"],
+                     runner=runner)
+        self.assertEqual(out, "ok")
+        # Self-scoped api URL needs no --repo (update-branch path).
+        out = run_gh("arii/remote-server",
+                     ["api", "repos/arii/remote-server/pulls/7",
+                      "--method", "GET"],
+                     runner=runner)
+        self.assertEqual(out, "ok")
+
+
 class PrActionTest(unittest.TestCase):
     def test_merge_gate_refuses_dirty_ci(self):
         runner = FakeRunner().on(
@@ -248,6 +275,22 @@ class PrActionTest(unittest.TestCase):
         out = _pr_action("arii/remote-server", 7, "merge",
                          runner=runner)
         self.assertTrue(out["ok"])
+
+    def test_merge_argv_scoped_to_repo(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "view"], FakeProc(stdout=gh_pr_view())).on(
+            ["gh", "pr", "merge"], FakeProc(stdout="merged"))
+        out = _pr_action("arii/remote-server", 7, "merge",
+                         runner=runner)
+        self.assertTrue(out["ok"])
+        # --repo is explicit: regression guard for #544 (an unscoped
+        # merge resolves against the backend cwd, not the gated repo).
+        merge_call = [c for c in runner.calls
+                      if c[:3] == ["gh", "pr", "merge"]][0]
+        self.assertEqual(
+            merge_call,
+            ["gh", "pr", "merge", "7", "--repo",
+             "arii/remote-server", "--squash", "--delete-branch"])
 
     def test_update_only_behind(self):
         runner = FakeRunner().on(

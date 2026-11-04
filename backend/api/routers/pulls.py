@@ -176,8 +176,8 @@ def _pr_action(gh: str, pr_number: int, action: str,
     run = _gh(runner)
     if action == "approve":
         # No CI/merge gate: a review is valid whatever the checks say.
-        # --repo is explicit (unlike the merge branch): #544 showed an
-        # unscoped review/merge verb resolves against the backend cwd.
+        # --repo is explicit: #544 showed an unscoped verb resolves
+        # against the backend cwd, not the gated repo.
         out = run_gh(gh, ["pr", "review", str(pr_number),
                           "--repo", gh, "--approve"],
                      runner=run)
@@ -199,6 +199,7 @@ def _pr_action(gh: str, pr_number: int, action: str,
         if ci != "passing" or merge != "clean":
             raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
         out = run_gh(gh, ["pr", "merge", str(pr_number),
+                          "--repo", gh,
                           "--squash", "--delete-branch"],
                      runner=run)
         return {"ok": True, "output": out[-2000:]}
