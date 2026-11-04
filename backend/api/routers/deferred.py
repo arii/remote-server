@@ -107,6 +107,16 @@ def _clean_rows(rows) -> list:
     return clean
 
 
+def _invalidate_lists(name: str) -> None:
+    """Drop cached inbox/prs lists so the next read reflects the
+    defer/restore (lazy router imports: resolved at call time, after
+    every router module has loaded)."""
+    from backend.api.routers import inbox as inbox_mod
+    from backend.api.routers import pulls as pulls_mod
+    pulls_mod.invalidate_prs_cache(name)
+    inbox_mod.invalidate_inbox_cache(name)
+
+
 def _validated(body: DeferredRequest) -> tuple[str, str, int]:
     """(repo, kind, number) or raise HTTPException(400)."""
     try:
@@ -148,6 +158,7 @@ def defer_row(body: DeferredRequest) -> dict:
             _write_store(store)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)[:200])
+    _invalidate_lists(name)
     return {"deferred": rows}
 
 
@@ -197,6 +208,7 @@ def bulk_defer_restore(body: DeferredBulkRequest) -> dict:
             _write_store(store)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)[:200])
+    _invalidate_lists(name)
     return {"deferred": rows}
 
 
@@ -212,4 +224,5 @@ def restore_row(body: DeferredRequest) -> dict:
             _write_store(store)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)[:200])
+    _invalidate_lists(name)
     return {"deferred": rows}

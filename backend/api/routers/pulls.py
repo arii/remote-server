@@ -22,10 +22,12 @@ as a string.
 from __future__ import annotations
 
 import subprocess
+import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.api.cache import SWRCache
 from backend.gh import repo_gh, run_gh, run_gh_json
 from backend.pr_gates import (FAILING_CONCLUSIONS, ci_label,
                               evaluate_merge_gates, merge_argv)
@@ -81,6 +83,12 @@ class PrList(BaseModel):
     # inline reason. Blank when unknown: Approve stays enabled and
     # the endpoint's readable 400 is the fallback.
     viewer: str = ""
+    # Freshness markers (#888, same shape as briefing): True on
+    # cache hits so the view can show a refresh indicator. Additive
+    # only — older clients ignore the new keys.
+    cached: bool = False
+    stale: bool = False
+    generated_at: float = 0.0
 
 
 class PrDetails(BaseModel):
@@ -161,12 +169,32 @@ def _gh_viewer(runner=None) -> str:
     return out
 
 
-@router.get("/prs", response_model=PrList)
-def prs(repo: str = "remote-server", runner=None) -> dict:
-    try:
-        gh = repo_gh(repo)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+# Short-TTL SWR cache (#888): the gh fan-out behind the list
+# (~1.2s) runs on every Review tab switch without it. Keys are
+# validated short repo names. Mutations that change the lists
+# (pr_action below, deferred rows, webhook pulls) invalidate.
+# Tests reset _PRS_CACHE directly. The runner seam bypasses the
+# cache: it is test-only, and production never passes one.
+PRS_CACHE_TTL = 45.0
+PRS_CACHE_MAX_STALE = 300.0
+_PRS_CACHE = SWRCache(ttl=PRS_CACHE_TTL, max_stale=PRS_CACHE_MAX_STALE)
+
+
+def invalidate_prs_cache(repo: str | None = None) -> None:
+    """Drop cached PR lists: one repo (short or full name), or all
+    when repo is None. Never raises — a miss just recomputes."""
+    if repo is None:
+        _PRS_CACHE.clear()
+        return
+    short = str(repo).split("/")[-1].strip()
+    if short:
+        _PRS_CACHE.invalidate(short)
+
+
+def _fetch_prs(gh: str, name: str, runner=None) -> dict:
+    """Uncached list build: gh fan-out + row shaping. Raises
+    HTTPException(500) on gh failure (background refreshes swallow
+    it and keep the stale entry)."""
     try:
         raw = run_gh_json(gh, ["pr", "list", "--repo", gh,
                                "--state", "open", "--limit", "50",
@@ -200,7 +228,22 @@ def prs(repo: str = "remote-server", runner=None) -> dict:
             "url": pr.get("url", ""),
             "updatedAt": pr.get("updatedAt") or "",
         })
-    return {"repo": repo, "prs": rows, "viewer": _gh_viewer(runner)}
+    return {"repo": name, "prs": rows, "viewer": _gh_viewer(runner)}
+
+
+@router.get("/prs", response_model=PrList)
+def prs(repo: str = "remote-server", runner=None) -> dict:
+    try:
+        gh = repo_gh(repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    name = gh.split("/", 1)[1]
+    if runner is not None:
+        # Test seam: uncached, exactly as before (plus markers).
+        data = _fetch_prs(gh, name, runner)
+        return {**data, "cached": False, "stale": False,
+                "generated_at": time.time()}
+    return _PRS_CACHE.read(name, lambda: _fetch_prs(gh, name, None))
 
 
 PR_VIEW_GATE_FIELDS = ("statusCheckRollup,mergeStateStatus,"
@@ -436,9 +479,18 @@ def pr_action(body: PrActionRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        return _pr_action(gh, body.pr_number, body.action,
-                          body=body.body)
+        out = _pr_action(gh, body.pr_number, body.action,
+                         body=body.body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
+    # The mutation landed: the operator's next read must show it,
+    # never a stale cached list. Inbox derives merge-ready from
+    # these rows, so both caches drop (lazy inbox import: inbox
+    # imports pulls, so a top-level import would cycle).
+    name = gh.split("/", 1)[1]
+    invalidate_prs_cache(name)
+    from backend.api.routers import inbox as inbox_mod
+    inbox_mod.invalidate_inbox_cache(name)
+    return out
