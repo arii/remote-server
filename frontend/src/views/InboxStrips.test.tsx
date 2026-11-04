@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import InboxStrips, { StripsBulkBar } from './InboxStrips';
+import InboxStrips, { SWIPE_ACT_PX, StripsBulkBar, swipeDirection } from './InboxStrips';
 import type { InboxFeed } from '../apiClient';
 import type { DeferredRow } from '../reviewTypes';
 
@@ -92,6 +92,10 @@ describe('inbox strips bulk selection (issue #591)', () => {
     expect(html).toContain('>Restore 3<');
   });
 
+  it('shows no undo control before any swipe op', () => {
+    expect(renderStrips()).not.toContain('data-testid="strips-undo"');
+  });
+
   it('disables both actions while one request is in flight', () => {
     const html = renderToStaticMarkup(
       <StripsBulkBar count={2} busyOp="defer" onDefer={() => {}} onRestore={() => {}} />,
@@ -100,5 +104,40 @@ describe('inbox strips bulk selection (issue #591)', () => {
     expect(html).not.toContain('>Restoring…<');
     // Both buttons disabled: two disabled attributes.
     expect(html.split('disabled').length - 1).toBe(2);
+  });
+});
+
+describe('inbox strips swipe classifier (issue #403)', () => {
+  it('classifies a left drag past the threshold as dismiss', () => {
+    expect(swipeDirection(-(SWIPE_ACT_PX + 10), 0)).toBe('left');
+  });
+
+  it('classifies a right drag past the threshold as act', () => {
+    expect(swipeDirection(SWIPE_ACT_PX + 10, 0)).toBe('right');
+  });
+
+  it('fires exactly at the threshold', () => {
+    expect(swipeDirection(-SWIPE_ACT_PX, 0)).toBe('left');
+    expect(swipeDirection(SWIPE_ACT_PX, 0)).toBe('right');
+  });
+
+  it('ignores short drags so taps keep working', () => {
+    expect(swipeDirection(-(SWIPE_ACT_PX - 1), 0)).toBeNull();
+    expect(swipeDirection(SWIPE_ACT_PX - 1, 0)).toBeNull();
+    expect(swipeDirection(0, 0)).toBeNull();
+  });
+
+  it('ignores mostly-vertical drags so scrolling keeps working', () => {
+    expect(swipeDirection(-100, 80)).toBeNull();
+    expect(swipeDirection(100, -80)).toBeNull();
+    expect(swipeDirection(0, 200)).toBeNull();
+  });
+
+  it('keeps rows as plain list items with unchanged tap controls', () => {
+    const html = renderStrips();
+    expect(html).toContain('data-testid="strips-rows"');
+    expect(html).toContain('data-testid="strips-row-pr-12"');
+    expect(html).toContain('data-testid="strips-row-check-pr-12"');
+    expect(html).toContain('aria-label="Select PR #12"');
   });
 });
