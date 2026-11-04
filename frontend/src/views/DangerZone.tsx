@@ -90,7 +90,7 @@ export default function DangerZone({
               <TapToFire
                 label={d.label}
                 confirm={d.confirm}
-                disabled={d.action === 'merge-approved' && mergeReady === 0}
+                disabled={d.action === 'merge-approved' && (mergeReady === null || mergeReady === 0)}
                 onFire={() => onDangerAction(d.action, d.label)}
               />
             </li>

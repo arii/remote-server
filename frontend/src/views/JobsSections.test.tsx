@@ -239,4 +239,25 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).toContain('Nothing finished to clear.');
     expect(html).toContain('No runs to clear.');
   });
+
+  it('danger zone disables merge-all while the PR list is unknown (issue #513)', () => {
+    const renderZone = (mergeReady: number | null) =>
+      renderToStaticMarkup(
+        <DangerZone
+          mergeReady={mergeReady}
+          finishedCount={1}
+          runCount={3}
+          onDangerAction={() => {}}
+          onClear={() => {}}
+          onTakeover={() => {}}
+        />,
+      );
+    const unknown = renderZone(null);
+    expect(unknown).toContain('data-testid="danger-merge-approved"');
+    expect(unknown).toContain('Merges every approved, green PR.');
+    expect(unknown).toContain('merge set unknown');
+    expect(unknown).toContain('disabled');
+    expect(renderZone(0)).toContain('disabled');
+    expect(renderZone(2)).not.toContain('disabled');
+  });
 });

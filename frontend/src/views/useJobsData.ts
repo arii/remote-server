@@ -5,7 +5,7 @@ import { useMock } from './mockViews';
 import type { PrRefState } from './jobsUtils';
 
 // Approved-and-green PR count for the merge row. null = unknown
-// (fail open: the merge button stays enabled).
+// (fail closed: the merge button stays disabled until the list loads).
 export function useMergeReady(repo: string): number | null {
   const [mergeReady, setMergeReady] = useState<number | null>(null);
   useEffect(() => {
