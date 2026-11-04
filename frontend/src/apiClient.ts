@@ -65,6 +65,255 @@ function notifyApiFailure(): void {
   for (const listener of [...apiFailureListeners]) listener();
 }
 
+// Offline mutation outbox (issue #404): operator commands issued
+// with dropped connectivity queue locally (persisted) and replay
+// on reconnect with a visible sync status. Mutations only — reads
+// fail as today. Every mutating POST/DELETE carries an
+// Idempotency-Key generated once per attempt and stored with the
+// entry, so replays reuse the key instead of minting dupes. Note:
+// the server does not enforce keys yet; they make retries safe
+// once it does, and document replay identity until then.
+export type OutboxMethod = 'POST' | 'DELETE';
+
+export interface OutboxEntry {
+  key: string;
+  method: OutboxMethod;
+  path: string;
+  body: unknown;
+  queuedAt: number;
+}
+
+export interface OutboxStatus {
+  online: boolean;
+  pending: number;
+  syncing: boolean;
+  lastError: string | null;
+}
+
+export interface FlushResult {
+  synced: number;
+  failed: number;
+  pending: number;
+}
+
+// Thrown when a mutation queues instead of sending. Callers
+// already surface thrown messages inline, so the queue is
+// visible both there and in the SyncBanner.
+export class QueuedOfflineError extends Error {
+  readonly queued = true;
+  readonly entry: OutboxEntry;
+
+  constructor(entry: OutboxEntry, pending: number) {
+    super(
+      `${entry.method} ${entry.path} queued offline (${pending} pending) — syncs on reconnect`,
+    );
+    this.name = 'QueuedOfflineError';
+    this.entry = entry;
+  }
+}
+
+const OUTBOX_STORAGE_KEY = 'buttons.outbox.v1';
+
+// In-memory fallback when localStorage is unavailable (SSR,
+// tests, private mode). Storage is read through on every
+// access so a reload sees the persisted queue.
+const outboxMemory: OutboxEntry[] = [];
+
+function isOutboxEntry(value: unknown): value is OutboxEntry {
+  if (!value || typeof value !== 'object') return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.key === 'string'
+    && (e.method === 'POST' || e.method === 'DELETE')
+    && typeof e.path === 'string'
+    && typeof e.queuedAt === 'number'
+  );
+}
+
+function loadOutbox(): OutboxEntry[] {
+  try {
+    if (typeof localStorage === 'undefined') return [...outboxMemory];
+    const raw = localStorage.getItem(OUTBOX_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isOutboxEntry);
+  } catch {
+    return [...outboxMemory];
+  }
+}
+
+function saveOutbox(entries: OutboxEntry[]): void {
+  try {
+    if (typeof localStorage === 'undefined') {
+      outboxMemory.splice(0, outboxMemory.length, ...entries);
+      return;
+    }
+    localStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    outboxMemory.splice(0, outboxMemory.length, ...entries);
+  }
+}
+
+export function isOnline(): boolean {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+
+type OutboxListener = () => void;
+
+const outboxListeners = new Set<OutboxListener>();
+
+export function subscribeOutbox(listener: OutboxListener): () => void {
+  ensureOnlineListener();
+  outboxListeners.add(listener);
+  return () => {
+    outboxListeners.delete(listener);
+  };
+}
+
+function notifyOutbox(): void {
+  for (const listener of [...outboxListeners]) listener();
+}
+
+let outboxSyncing = false;
+let outboxLastError: string | null = null;
+
+export function getOutbox(): OutboxEntry[] {
+  return loadOutbox();
+}
+
+export function getOutboxStatus(): OutboxStatus {
+  return {
+    online: isOnline(),
+    pending: loadOutbox().length,
+    syncing: outboxSyncing,
+    lastError: outboxLastError,
+  };
+}
+
+// Drop the whole queue (SyncBanner discard). Replays never
+// re-enqueue, so this only clears operator-visible pendings.
+export function clearOutbox(): void {
+  outboxLastError = null;
+  saveOutbox([]);
+  notifyOutbox();
+}
+
+/** Test-only reset for the outbox (drains queue + sync state). */
+export function __clearOutbox(): void {
+  outboxSyncing = false;
+  clearOutbox();
+}
+
+function newIdempotencyKey(): string {
+  try {
+    const cryptoApi = globalThis.crypto as { randomUUID?: () => string } | undefined;
+    if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  } catch {
+    // Fall through to the Math.random key below.
+  }
+  return (
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    + `-${Math.random().toString(36).slice(2, 10)}`
+  );
+}
+
+function queueEntry(method: OutboxMethod, path: string, body: unknown, key: string): never {
+  ensureOnlineListener();
+  const entries = loadOutbox();
+  const entry: OutboxEntry = { key, method, path, body, queuedAt: Date.now() };
+  entries.push(entry);
+  saveOutbox(entries);
+  notifyOutbox();
+  throw new QueuedOfflineError(entry, entries.length);
+}
+
+function removeOutboxKey(key: string): void {
+  saveOutbox(loadOutbox().filter((e) => e.key !== key));
+}
+
+// Single choke point for JSON mutations: offline (or a dropped
+// connection mid-request) queues + throws QueuedOfflineError;
+// HTTP errors surface to the caller and never queue — the
+// server answered, so re-sending could double-apply.
+async function mutateWith<T>(
+  method: OutboxMethod,
+  path: string,
+  body: unknown,
+  read: (resp: Response) => Promise<T>,
+): Promise<T> {
+  ensureOnlineListener();
+  const key = newIdempotencyKey();
+  if (!isOnline()) queueEntry(method, path, body, key);
+  let resp: Response;
+  try {
+    resp = await fetchApi(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    queueEntry(method, path, body, key);
+  }
+  return read(resp);
+}
+
+// Replay the queue FIFO with each entry's stored key. One run
+// at a time; a network failure stops the run and keeps the
+// rest, a server rejection keeps that entry and continues with
+// the next so one bad payload never blocks the queue.
+export async function flushOutbox(): Promise<FlushResult> {
+  ensureOnlineListener();
+  if (outboxSyncing) return { synced: 0, failed: 0, pending: loadOutbox().length };
+  outboxSyncing = true;
+  outboxLastError = null;
+  notifyOutbox();
+  let synced = 0;
+  let failed = 0;
+  try {
+    const snapshot = loadOutbox();
+    for (const entry of snapshot) {
+      if (!isOnline()) break;
+      let resp: Response;
+      try {
+        resp = await fetchApi(entry.path, {
+          method: entry.method,
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': entry.key },
+          body: JSON.stringify(entry.body),
+        });
+      } catch {
+        break;
+      }
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        failed += 1;
+        outboxLastError = `${entry.method} ${entry.path} failed: ${resp.status} ${text}`.trim();
+        notifyApiFailure();
+        continue;
+      }
+      removeOutboxKey(entry.key);
+      synced += 1;
+    }
+  } finally {
+    outboxSyncing = false;
+    notifyOutbox();
+  }
+  return { synced, failed, pending: loadOutbox().length };
+}
+
+let onlineListenerRegistered = false;
+
+function ensureOnlineListener(): void {
+  if (onlineListenerRegistered || typeof window === 'undefined') return;
+  onlineListenerRegistered = true;
+  window.addEventListener('online', () => {
+    void flushOutbox();
+  });
+  window.addEventListener('offline', () => {
+    notifyOutbox();
+  });
+}
+
 async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   try {
     // No init arg on plain GETs: tests assert exact fetch call shapes.
@@ -193,16 +442,13 @@ export function fetchInbox(repo: string): Promise<InboxFeed> {
 }
 
 export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
-  const resp = await fetchApi('api/create-issue', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repo, title, body }),
+  return mutateWith('POST', 'api/create-issue', { repo, title, body }, async (resp) => {
+    if (!resp.ok) {
+      notifyApiFailure();
+      throw new Error(`POST /api/create-issue failed: ${resp.status}`);
+    }
+    return (await resp.json()) as { ok: boolean; url: string };
   });
-  if (!resp.ok) {
-    notifyApiFailure();
-    throw new Error(`POST /api/create-issue failed: ${resp.status}`);
-  }
-  return (await resp.json()) as { ok: boolean; url: string };
 }
 
 export function fetchLedger(
@@ -250,12 +496,14 @@ export interface PiProgressResponse {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetchApi(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return readJson<T>(resp, 'POST', path);
+  return mutateWith<T>('POST', path, body, (resp) => readJson<T>(resp, 'POST', path));
+}
+
+// Server-sent attention action hrefs ('api/…'-relative): the same
+// outbox + idempotency treatment as other mutations, so NowView
+// taps queue offline instead of bypassing the outbox.
+export function postActionHref(href: string, body: unknown): Promise<unknown> {
+  return postJson<unknown>(href, body);
 }
 
 export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
@@ -632,12 +880,7 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
 }
 
 async function deleteJson<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetchApi(path, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return readJson<T>(resp, 'DELETE', path);
+  return mutateWith<T>('DELETE', path, body, (resp) => readJson<T>(resp, 'DELETE', path));
 }
 
 export function fetchDeferred(repo: string): Promise<import('./reviewTypes').DeferredListResponse> {
@@ -919,7 +1162,9 @@ export function postAgentTurn(
 ): Promise<Response> {
   // Raw Response: the caller pumps the SSE stream. A new conversation
   // (no session id) carries the hold-to-confirm intent; follow-ups
-  // reuse the session the done event returned.
+  // reuse the session the done event returned. Streaming turns
+  // bypass the offline outbox: a replayed stream has no consumer,
+  // so they fail as today when offline.
   return fetch(apiUrl('api/agent/turn'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -6,6 +6,7 @@ import {
   createIssue,
   fetchDeferred,
   fetchInbox,
+  postActionHref,
   snoozeAttention,
   unsnoozeAttention,
   warmViewCaches,
@@ -25,12 +26,9 @@ function isGetAction(item: AttentionItem): boolean {
 }
 
 async function firePostAction(item: AttentionItem): Promise<void> {
-  const resp = await fetch(apiUrl(item.action.href), {
-    method: item.action.method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intent: item.action.intent, confirmed: true }),
-  });
-  if (!resp.ok) throw new Error(`Action failed: ${resp.status}`);
+  // Central outbox: offline taps queue + throw visibly instead of
+  // failing with no recourse (issue #404).
+  await postActionHref(item.action.href, { intent: item.action.intent, confirmed: true });
 }
 
 // GET actions fetch in-page and report back inline. They must never render

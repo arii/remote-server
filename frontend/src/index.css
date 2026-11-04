@@ -83,6 +83,22 @@ h1, h2, h3 { text-wrap: balance; }
 }
 .toolbar select { max-width: 20rem; }
 
+/* Offline outbox sync strip (issue #404): warning-tinted status
+   row under the header; hidden while online with an empty queue. */
+.sync-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.12);
+  font-size: 0.9rem;
+}
+.sync-banner button { flex: none; }
+
 .page-head {
   display: flex;
   justify-content: space-between;

@@ -4,6 +4,7 @@ import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
+import SyncBanner from './components/SyncBanner';
 import {
   fetchContainerStats,
   fetchRepoDiff,
@@ -261,6 +262,7 @@ export default function App() {
           Code
         </a>
       </header>
+      <SyncBanner />
       {diffRepo && (
         <RepoDiffModal
           repo={diffRepo}
