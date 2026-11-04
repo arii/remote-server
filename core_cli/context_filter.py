@@ -264,15 +264,38 @@ SETUP_BOILERPLATE_PATTERNS = [
 ]
 
 
+def _is_setup_boilerplate(line: str) -> bool:
+    """Return True if line is CI setup/teardown boilerplate without error signal."""
+    if not line:
+        return False
+    if not any(p.search(line) for p in SETUP_BOILERPLATE_PATTERNS):
+        return False
+    if any(p.search(line) for p in ERROR_START_PATTERNS):
+        return False
+    if any(p.search(line) for p in ERROR_SIGNAL_PATTERNS):
+        return False
+    return True
+
+
 def extract_ci_error_traces(raw_log: str, max_lines: int = 150) -> str:
-    """Extract failed steps, stack traces, panics, assertion errors, and exit summaries."""
+    """Extract failed steps, stack traces, panics, assertion errors, and exit summaries.
+
+    Filters out CI setup/teardown boilerplate matching SETUP_BOILERPLATE_PATTERNS
+    before block extraction so checkout/setup noise never consumes the line budget.
+    """
     if not raw_log:
         return ""
 
     lines = raw_log.splitlines()
     total_lines = len(lines)
-    if total_lines <= max_lines:
-        return raw_log
+    lines = [ln for ln in lines if not _is_setup_boilerplate(ln)]
+    if not lines:
+        return ""
+    if len(lines) <= max_lines:
+        filtered = "\n".join(lines)
+        if raw_log.endswith("\n") and not filtered.endswith("\n"):
+            filtered += "\n"
+        return filtered
 
     extracted_blocks = []
     i = 0
