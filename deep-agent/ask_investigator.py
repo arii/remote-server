@@ -48,18 +48,13 @@ def _model_config():
 
 MODEL_ID, OLLAMA_URL = _model_config()
 
-# Mirror of ALLOWED_TD_COMMANDS in backend/exec/engine.py (source of
-# truth). Jules shapes are dead with Jules.
-ALLOWED_TD = [
-    "td --json agent fix-ci --pr N --execute",
-    "td gh read-pr-reviews --pr N",
-    "td gh read-pr-comments --pr N",
-    "td gh resolve-conflicts --pr N",
-    "td context-warm",
-    "td --json preflight",
-    "td --json agent list-sessions",
-    "td --json agent run-feedback-check",
-]
+# Single-sourced from backend/exec/engine.py ALLOWED_TD_COMMANDS
+# (the truth): the hand mirror drifted behind the #395 shapes, so
+# ALLOWED_TD is the engine's list itself, never a copy (#521).
+# engine.py is stdlib-only, safe before the langchain imports below.
+if cli.repo_root() not in sys.path:
+    sys.path.insert(0, cli.repo_root())
+from backend.exec.engine import ALLOWED_TD_COMMANDS as ALLOWED_TD  # noqa: E402
 
 _repo = ""
 _checkout = ""

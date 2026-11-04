@@ -292,10 +292,10 @@ class TestEvalLib(unittest.TestCase):
 
 
 class TestAllowlistSync(unittest.TestCase):
-    # ask_investigator.ALLOWED_TD is a hand mirror of
-    # backend/exec/engine.py ALLOWED_TD_COMMANDS; the propose-td eval
-    # case asserts the mirrored text, so drift must fail loudly.
-    # Parsed via ast (no imports: both files pull langchain deps).
+    # ask_investigator.ALLOWED_TD is single-sourced from
+    # backend/exec/engine.py ALLOWED_TD_COMMANDS via import (#521):
+    # a reintroduced hand mirror must fail loudly. Parsed via ast
+    # (no imports: ask_investigator pulls langchain deps).
     def load_list(self, path, var):
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
@@ -306,15 +306,41 @@ class TestAllowlistSync(unittest.TestCase):
                         return ast.literal_eval(node.value)
         self.fail(f"{var} not found in {path}")
 
-    def test_mirror_matches_source_of_truth(self):
+    def test_allowlist_single_sourced_from_truth(self):
         root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "deep-agent",
+                               "ask_investigator.py"),
+                  encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        # No hand mirror: ALLOWED_TD must not be a local Assign.
+        assigns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "ALLOWED_TD"
+                    for t in node.targets)
+        ]
+        self.assertEqual(
+            assigns, [],
+            "ask_investigator.py hand-mirrors ALLOWED_TD again")
+        # The name must bind the engine truth via import.
+        imports = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "backend.exec.engine"
+            for a in node.names
+            if a.name == "ALLOWED_TD_COMMANDS"
+            and a.asname == "ALLOWED_TD"
+        ]
+        self.assertEqual(
+            len(imports), 1,
+            "ALLOWED_TD not imported from backend.exec.engine")
+        # The truth itself still carries the propose-td shape the
+        # eval case anchors on, so a truth edit that drops it fails
+        # here instead of silently stranding the eval.
         truth = self.load_list(
             os.path.join(root, "backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
-        mirror = self.load_list(
-            os.path.join(root, "deep-agent", "ask_investigator.py"),
-            "ALLOWED_TD")
-        self.assertEqual(mirror, truth)
+        self.assertIn("td --json agent fix-ci --pr N --execute", truth)
 
     def test_propose_td_case_uses_allowlisted_shape(self):
         root = os.path.join(os.path.dirname(__file__), "..")
