@@ -5,7 +5,10 @@ Regression cover: grep_repo must work with POSIX grep only (the eval
 failed live when the tool shelled to `rg`, which is not installed).
 """
 
+import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -206,6 +209,122 @@ class TestAskTools(unittest.TestCase):
             f.write("z" * 4000)
         out = ai.read_repo_file.invoke({"path": "big.txt"})
         self.assertEqual(len(out), 3000)
+
+
+class TestAskModelConfig(unittest.TestCase):
+    def test_blank_env_falls_back_to_defaults(self):
+        with mock.patch.dict(os.environ, {"ASK_MODEL": "",
+                                         "OLLAMA_URL": ""}):
+            model, url = ai._model_config()
+        self.assertEqual(model, "qwen3:8b")
+        self.assertEqual(url, "http://ollama:11434")
+
+    def test_whitespace_env_falls_back_to_defaults(self):
+        with mock.patch.dict(os.environ, {"ASK_MODEL": "   ",
+                                         "OLLAMA_URL": "\t"}):
+            model, url = ai._model_config()
+        self.assertEqual(model, "qwen3:8b")
+        self.assertEqual(url, "http://ollama:11434")
+
+    def test_explicit_env_wins(self):
+        with mock.patch.dict(os.environ,
+                             {"ASK_MODEL": "qwen3:14b",
+                              "OLLAMA_URL": "http://x:11434"}):
+            model, url = ai._model_config()
+        self.assertEqual(model, "qwen3:14b")
+        self.assertEqual(url, "http://x:11434")
+
+    def test_unset_env_uses_defaults(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("ASK_MODEL", None)
+            os.environ.pop("OLLAMA_URL", None)
+            model, url = ai._model_config()
+        self.assertEqual(model, "qwen3:8b")
+        self.assertEqual(url, "http://ollama:11434")
+
+
+class TestProgressRecorder(unittest.TestCase):
+    def test_step_lines_and_trace_events(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "trace.jsonl")
+        rec = ai._ProgressRecorder(path)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rec.run_start("ask_investigator.py", "t", "ollama:m")
+            rec.model_response({})
+            rec.tool_call("grep_repo", "x", 2.5, True, result="hit")
+            rec.model_response({})
+            rec.run_end(True)
+        rec.close()
+        lines = buf.getvalue().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertRegex(lines[0], r"^ask: step 1 model \S+ \d+\.\d+s$")
+        self.assertRegex(lines[1],
+                         r"^ask: step 2 tool grep_repo 2\.5s$")
+        self.assertRegex(lines[2], r"^ask: step 3 model \S+ \d+\.\d+s$")
+        self.assertEqual(rec.steps, 3)
+        with open(path) as f:
+            types = [json.loads(line)["type"] for line in f]
+        self.assertEqual(types, ["run_start", "model_response", "tool_call",
+                                "model_response", "run_end"])
+
+
+class TestAskProgressRun(unittest.TestCase):
+    def test_two_tool_run_narrates_steps(self):
+        from langchain_core.language_models.fake_chat_models import (
+            GenericFakeChatModel,
+        )
+        from langchain_core.messages import AIMessage
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with open(os.path.join(tmp.name, "a.txt"), "w") as f:
+            f.write("hello needle world\n")
+
+        class _BindableFake(GenericFakeChatModel):
+            def bind_tools(self, *args, **kwargs):
+                return self  # canned messages already carry tool_calls
+
+        fake = _BindableFake(messages=iter([
+            AIMessage(content="", tool_calls=[
+                {"name": "grep_repo", "args": {"pattern": "needle"},
+                 "id": "call_1", "type": "tool_call"}]),
+            AIMessage(content="", tool_calls=[
+                {"name": "read_repo_file", "args": {"path": "a.txt"},
+                 "id": "call_2", "type": "tool_call"}]),
+            AIMessage(content="the router lives in model_router.py"),
+        ]))
+        b64 = base64.b64encode(b"Which file defines routing?").decode()
+        argv = ["ask_investigator.py", "arii/remote-server", b64]
+        trace = os.path.join(tmp.name, "trace.jsonl")
+        buf = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(ai.s5tools, "checkout_for",
+                                  return_value=tmp.name), \
+                mock.patch.object(ai.observe, "default_trace_path",
+                                  return_value=trace), \
+                mock.patch.object(ai.ledger, "record"), \
+                mock.patch.object(ai, "ChatOllama",
+                                  return_value=fake), \
+                contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(ai.main(), 0)
+        out = buf.getvalue()
+        report_at = out.index("REPORT (authoritative, from tool results):")
+        head = out[:report_at]
+        steps = [line for line in head.splitlines()
+                 if line.startswith("ask: step ")]
+        self.assertGreaterEqual(len(steps), 3)  # 2 tools + models
+        tools = [line for line in steps if " tool " in line]
+        self.assertGreaterEqual(len(tools), 2)
+        for line in steps:
+            self.assertRegex(
+                line, r"^ask: step \d+ (model|tool) \S+ \d+\.\d+s$")
+        self.assertRegex(head, r"done in \d+\.\d+s, \d+ steps?")
+        self.assertIn("tool_calls_made: 2", head)
+        self.assertIn("FINAL: the router lives in model_router.py", out)
 
 
 if __name__ == "__main__":
