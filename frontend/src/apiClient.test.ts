@@ -12,7 +12,6 @@ import {
   apiUrl,
   cancelJobRun,
   approvePr,
-  chatStreamUrl,
   clearOutbox,
   createIssue,
   dispatchRepair,
@@ -41,6 +40,7 @@ import {
   invalidateViewCaches,
   mergePr,
   postAgentTurn,
+  postChatStream,
   requestPrChanges,
   rerunJob,
   restoreRow,
@@ -554,11 +554,35 @@ describe('view cache (briefing/jobs/attention)', () => {
   });
 });
 
-describe('chat stream url', () => {
-  it('carries the backend prefer flag, defaulting to auto', () => {
-    expect(chatStreamUrl('hi', 'r', 's')).toContain('prefer=auto');
-    expect(chatStreamUrl('hi', 'r', 's', 'local')).toContain('prefer=local');
-    expect(chatStreamUrl('hi', 'r', 's', 'cloud')).toContain('prefer=cloud');
+describe('chat stream post (issue #459)', () => {
+  it('streams via POST with the prompt in the body, never the URL', async () => {
+    const resp = { ok: true, status: 200 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(resp));
+    expect(await postChatStream('hi', 'r', 's')).toBe(resp);
+    expect(fetch).toHaveBeenCalledWith('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'hi', repo: 'r', session_id: 's', prefer: 'auto' }),
+      signal: undefined,
+    });
+  });
+
+  it('carries the backend prefer flag and caller abort signal', async () => {
+    const resp = { ok: true, status: 200 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(resp));
+    const ctrl = new AbortController();
+    await postChatStream('secret @plan.md contents', 'r', 's', 'cloud', ctrl.signal);
+    const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe('/api/chat/stream');
+    expect(String(url)).not.toContain('prompt');
+    expect(String(url)).not.toContain('secret');
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      prompt: 'secret @plan.md contents',
+      repo: 'r',
+      session_id: 's',
+      prefer: 'cloud',
+    });
+    expect((init as RequestInit).signal).toBe(ctrl.signal);
   });
 });
 

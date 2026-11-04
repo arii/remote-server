@@ -1059,14 +1059,23 @@ export function fetchRouteHint(prefer: ChatBackend): Promise<RouteHintResponse> 
   return getJson<RouteHintResponse>(`api/chat/route-hint?prefer=${encodeURIComponent(prefer)}`);
 }
 
-export function chatStreamUrl(
+export function postChatStream(
   prompt: string,
   repo: string,
   sessionId: string,
   prefer: ChatBackend = 'auto',
-): string {
-  const q = new URLSearchParams({ prompt, repo, session_id: sessionId, prefer });
-  return apiUrl(`api/chat/stream?${q.toString()}`);
+  signal?: AbortSignal,
+): Promise<Response> {
+  // Raw Response: the caller pumps the SSE stream. Prompts ride
+  // the POST body, never the URL (#459): query params land in
+  // browser history and proxy access logs. No request timeout:
+  // streams keep user-abort behavior only, like postAgentTurn.
+  return fetch(apiUrl('api/chat/stream'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, repo, session_id: sessionId, prefer }),
+    signal,
+  });
 }
 
 export function abortChat(sessionId: string): Promise<{ ok: boolean; session_id: string }> {
