@@ -13,6 +13,7 @@ from . import context_filter
 from . import parse_task_spec
 from . import preflight_digest
 from . import repair_worker
+from . import review
 from . import validate_config
 
 COMMANDS = {
@@ -22,6 +23,7 @@ COMMANDS = {
     "parse-task": ("Parse a task-spec file or stdin.", parse_task_spec.main),
     "preflight": ("Digest td preflight JSON on stdin.", preflight_digest.main),
     "repair": ("Autonomous repair worker.", repair_worker.main),
+    "review": ("Local-model PR review (plan + Ollama/Nebius).", review.main),
     "validate-config": ("Validate repo configs.", validate_config.main),
 }
 
