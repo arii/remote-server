@@ -33,8 +33,10 @@ class TestDurability(unittest.TestCase):
                 self.assertIn("healthcheck", services[name])
         for name in ("oauth2-proxy", "tailscale", "browser-relay"):
             with self.subTest(service=name):
-                # Deliberately none: TLS edge (no plain probe), host-net VPN
-                # (nothing gates on it), relay (agent-managed daemon).
+                # Deliberately none: TLS edge (no shell/curl in the image;
+                # liveness is covered host-side by scripts/edge-liveness-watch.sh,
+                # see #537), host-net VPN (nothing gates on it), relay
+                # (agent-managed daemon).
                 self.assertNotIn("healthcheck", services[name])
 
     def test_depends_on_conditions(self):

@@ -29,9 +29,17 @@
 - **vim**: `terminal/vimrc.local` sets `viminfofile` under `local-data`.
 - **Logs**: every service caps json-file logs at 3×10MB (`x-logging` anchor).
 - **Health**: terminal (existing), code-server, buttons, caddy (admin API),
-  ollama (`ollama list`). Deliberately none for oauth2-proxy (no plain probe
-  on the TLS edge), tailscale (nothing gates on it), browser-relay (its
-  upstream daemon is agent-managed, not compose-managed).
+  ollama (`ollama list`). Deliberately no *in-container* healthcheck for
+  oauth2-proxy — its image ships no shell/curl, so `CMD-SHELL` is
+  genuinely awkward — but the edge IS probed: `GET /ping` answers `200 OK`
+  unauthenticated, and a host cron job (`scripts/edge-liveness-watch.sh`,
+  installed by `scripts/install-edge-liveness-cron.sh`, every minute)
+  restarts the proxy after 3 consecutive probe failures and ledgers the
+  event to cron output + syslog (`journalctl -t edge-liveness`). That
+  covers the live-but-dark wedge (bad renewal, upstream hang) that
+  `restart:` never fires on. Deliberately none for tailscale (nothing
+  gates on it) and browser-relay (its upstream daemon is agent-managed,
+  not compose-managed).
 - **Startup order**: `depends_on` with `service_healthy` gates the chain
   (edge waits for backends). Generous `start_period`s cover slow boots
   (Ollama model load, first-run extension installs).
