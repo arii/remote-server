@@ -195,6 +195,14 @@ button.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offse
 .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; flex: none; }
 .dot-ok { background: var(--ok); }
 .dot-bad { background: var(--bad); }
+.dot-warn { background: var(--warn); }
+.dot-idle { background: var(--muted); }
+
+/* Now status hero (issue #811): the health-row look as one
+   glanceable strip; wraps on narrow screens. Dots stay flat. */
+.now-hero { flex-wrap: wrap; row-gap: 0.35rem; }
+.now-hero .spacer { flex: 1 1 auto; }
+.now-hero strong { font-size: 0.9rem; }
 
 .detail {
   background: var(--surface);
