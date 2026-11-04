@@ -5,6 +5,8 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 /api/* like its sibling routers):
 
 - GET/POST /api/chat/stream  SSE stream of a chat session
+  (POST resolves @-mention file pins server-side, #653; GET
+  leaves mentions literal so attached content never rides a URL)
 - GET      /api/chat/route-hint  pre-send backend + cost hint (ladder probe only)
 - POST     /api/chat/abort   abort an active chat session
 - POST     /api/chat/resume  decide a pending approval, return the turn result
@@ -48,7 +50,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.core import validate_repo_name
+from backend.core import get_checkout_path, validate_repo_name
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -522,8 +524,120 @@ def _resume_decision(session_id: str, decision: str,
 CHAT_PREFER = {"auto": None, "local": "ollama", "cloud": "nebius"}
 
 
+# @-mention file attach (#653): the composer inserts plain "@path"
+# text; POST turns resolve it server-side into fenced content
+# blocks ahead of the user text. GET turns leave mentions literal
+# (per #459, attached content must never ride a query string).
+MENTION_MAX_FILES = 3
+MENTION_MAX_FILE_BYTES = 8192
+MENTION_TAIL_MARKER = (
+    f"\n… [truncated to fit {CHAT_MAX_PROMPT} chars: attachments first]")
+MENTION_RE = re.compile(r"(?:^|(?<=[\s(\[{>\"']))@([A-Za-z0-9_.\-/]+)")
+MENTION_STRIP_TRAILING = ".,;:!?)]}\"'"
+MENTION_SKIPPED_LINE = ("[+{extra} more @-mention(s) skipped: "
+                        "max {max_files} files per send]")
+
+
+def parse_mentions(text: str) -> list[str]:
+    """Ordered unique repo-relative @-mention paths in text (#653).
+
+    A mention is "@" at the start or after whitespace/an opener,
+    followed by path chars; trailing sentence punctuation is not
+    part of the path, and a leading "/" reads repo-relative.
+    Mid-word "@" (user@example.com) never matches.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in MENTION_RE.finditer(text or ""):
+        rel = match.group(1).rstrip(MENTION_STRIP_TRAILING).lstrip("/")
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        out.append(rel)
+    return out
+
+
+def read_mention_file(root, rel: str) -> tuple[str | None, str | None]:
+    """Read one pinned file under a checkout root (#653).
+
+    Returns (text, None) on success or (None, reason) with reason
+    in {"invalid path", "not found", "not a file", "unreadable"}.
+    Symlink escapes resolve outside the root and read invalid;
+    content caps at MENTION_MAX_FILE_BYTES with a marker.
+    """
+    cleaned = rel.strip().lstrip("/")
+    parts = cleaned.split("/")
+    if (not cleaned or any(p in ("", ".", "..") for p in parts)
+            or os.path.isabs(rel.strip())):
+        return None, "invalid path"
+    base = os.path.realpath(str(root))
+    full = os.path.realpath(os.path.join(base, cleaned))
+    if full != base and not full.startswith(base + os.sep):
+        return None, "invalid path"
+    if not os.path.lexists(full):
+        return None, "not found"
+    if not os.path.isfile(full):
+        return None, "not a file"
+    try:
+        with open(full, "rb") as handle:
+            data = handle.read(MENTION_MAX_FILE_BYTES + 1)
+    except OSError:
+        return None, "unreadable"
+    if b"\x00" in data:
+        return None, "unreadable"
+    if len(data) > MENTION_MAX_FILE_BYTES:
+        try:
+            size = os.path.getsize(full)
+        except OSError:
+            size = MENTION_MAX_FILE_BYTES + 1
+        text = data[:MENTION_MAX_FILE_BYTES].decode("utf-8",
+                                                   errors="replace")
+        return (f"{text}\n… [truncated: showing first "
+                f"{MENTION_MAX_FILE_BYTES} of {size} bytes]"), None
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "unreadable"
+
+
+def inject_mentions(prompt: str, repo: str) -> str:
+    """Prepend resolved @-mention blocks ahead of the prompt (#653).
+
+    Budget rule: attachments eat the CHAT_MAX_PROMPT budget first;
+    combined head + user text past the cap cuts from the tail (the
+    user text in every realistic case) with MENTION_TAIL_MARKER.
+    Missing/unreadable/escaping pins become visible "[@path:
+    reason]" lines and the turn still sends. No mentions, or a repo
+    without a readable checkout, returns the plain capped prompt.
+    """
+    mentions = parse_mentions(prompt)
+    if not mentions:
+        return prompt[:CHAT_MAX_PROMPT]
+    try:
+        root = get_checkout_path(repo)
+    except (ValueError, FileNotFoundError):
+        return prompt[:CHAT_MAX_PROMPT]
+    blocks: list[str] = []
+    for rel in mentions[:MENTION_MAX_FILES]:
+        text, reason = read_mention_file(root, rel)
+        if reason is None:
+            blocks.append(f"--- @{rel} ---\n{text}")
+        else:
+            blocks.append(f"[@{rel}: {reason}]")
+    extra = len(mentions) - MENTION_MAX_FILES
+    if extra > 0:
+        blocks.append(MENTION_SKIPPED_LINE.format(
+            extra=extra, max_files=MENTION_MAX_FILES))
+    combined = "\n\n".join(blocks) + "\n\n" + prompt
+    if len(combined) <= CHAT_MAX_PROMPT:
+        return combined
+    return (combined[:CHAT_MAX_PROMPT - len(MENTION_TAIL_MARKER)]
+            + MENTION_TAIL_MARKER)
+
+
 def _chat_events(prompt: str, repo: str, session_id: str,
-                 prefer: str = "auto"):
+                 prefer: str = "auto",
+                 resolve_mentions: bool = False):
     try:
         info = get_repo_info(repo)
     except ValueError:
@@ -536,7 +650,12 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     if want not in CHAT_PREFER:
         yield sse_frame("error", {"error": "bad prefer"})
         return
-    prompt = prompt.strip()[:CHAT_MAX_PROMPT]
+    # POST turns pin @-mention files ahead of the user text (#653);
+    # GET turns keep mentions literal (never resolved off a URL).
+    # The ledger keeps the user's own words, not injected content.
+    user_text = prompt.strip()[:CHAT_MAX_PROMPT]
+    prompt = (inject_mentions(user_text, repo) if resolve_mentions
+              else user_text)
     venv = deep_agent_python()
     script = deep_agent_script("deep_chat.py")
     if not (os.path.isfile(venv) and os.path.isfile(script)):
@@ -549,7 +668,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
             "started_at": time.time(), "aborted": False, "proc": None,
         }
     ledger_append({"kind": "chat", "session_id": session_id, "repo": repo,
-                   "prompt": prompt[:150], "event": "chat started"})
+                   "prompt": user_text[:150], "event": "chat started"})
     start_time = time.time()
     yield sse_frame("phase", {"phase": "prefill",
                               "message": "Analyzing context and preparing request..."})
@@ -732,7 +851,8 @@ def chat_stream_get(prompt: str = "", repo: str = "remote-server",
 def chat_stream_post(body: ChatStreamRequest) -> StreamingResponse:
     sid = body.session_id or uuid.uuid4().hex[:12]
     return StreamingResponse(_chat_events(body.prompt, body.repo, sid,
-                                          body.prefer),
+                                          body.prefer,
+                                          resolve_mentions=True),
                              media_type="text/event-stream",
                              headers=SSE_HEADERS)
 

@@ -364,6 +364,70 @@ def _checkout_path(name: str) -> Path:
     return path
 
 
+def get_checkout_path(repo: str) -> Path:
+    """Validated checkout dir for repo-relative reads (#653).
+
+    Same name validation and stack fallback as the status/diff
+    paths; routers use it for @-mention resolution and file
+    listing. Raises ValueError on a bad name, FileNotFoundError
+    when the checkout (or its .git) is absent.
+    """
+    return _checkout_path(validate_repo_name(repo))
+
+
+# @-mention file listing (#653): cap keeps the composer dropdown
+# light; skip-dirs keep caches and machine state out of it.
+REPO_FILES_CAP = 200
+REPO_FILES_SKIP_DIRS = frozenset(
+    {"node_modules", "__pycache__", "ledger", "traces"})
+
+
+def list_repo_files(repo: str, prefix: str = "",
+                    limit: int = REPO_FILES_CAP) -> dict[str, Any]:
+    """Repo-relative file paths for @-mention completion (#653).
+
+    Sorted os.walk over the validated checkout, skipping dotfiles/
+    dot-dirs plus REPO_FILES_SKIP_DIRS, files only. ``prefix`` (a
+    leading "/" is stripped) filters by startswith; a prefix
+    containing ".." matches nothing (boundary rejection). Collects
+    one past ``limit`` so ``truncated`` is exact. Returns {"repo",
+    "prefix", "files", "truncated"}. Same error contract as
+    get_repo_status.
+    """
+    name = validate_repo_name(repo)
+    root = _checkout_path(name)
+    want = (prefix or "").lstrip("/").strip()
+    if ".." in want.split("/"):
+        return {"repo": name, "prefix": want, "files": [],
+                "truncated": False}
+    files: list[str] = []
+    truncated = False
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if not d.startswith(".") and d not in REPO_FILES_SKIP_DIRS)
+        for filename in sorted(filenames):
+            if filename.startswith("."):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, filename), root)
+            if want and not rel.startswith(want):
+                continue
+            if not os.path.isfile(os.path.join(dirpath, filename)):
+                continue
+            if len(files) > limit:
+                truncated = True
+                break
+            files.append(rel)
+        if truncated:
+            break
+    if len(files) > limit:
+        truncated = True
+        files = files[:limit]
+    files.sort()
+    return {"repo": name, "prefix": want, "files": files,
+            "truncated": truncated}
+
+
 def _git_failed(proc, verb: str) -> RuntimeError:
     err = (proc.stderr or "").strip()
     detail = err.splitlines()[-1] if err else f"git {verb} failed"

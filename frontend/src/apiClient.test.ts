@@ -20,6 +20,7 @@ import {
   fetchPrDetails,
   fetchPrDiff,
   fetchRepoDiff,
+  fetchRepoFiles,
   fetchRouteHint,
   fetchSystemHealth,
   fetchVerifyCommand,
@@ -510,6 +511,40 @@ describe('route hint', () => {
     const hint = await fetchRouteHint('cloud');
     expect(hint).toEqual(body);
     expect(String(fetchMock.mock.calls[0][0])).toContain('prefer=cloud');
+  });
+
+  it('never carries mentions or prompt text (issue #653, cf. #459)', async () => {
+    const body = { ok: true, provider: 'p', model: 'm', metered: false };
+    const fetchMock = mockFetchJson(body);
+    vi.stubGlobal('fetch', fetchMock);
+    await fetchRouteHint('auto');
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toBe('/api/chat/route-hint?prefer=auto');
+    expect(url).not.toContain('@');
+    expect(url).not.toContain('prompt');
+  });
+});
+
+describe('repo files for @-mention completion (issue #653)', () => {
+  it('fetches paths with repo and prefix', async () => {
+    const body = {
+      repo: 'demo',
+      prefix: 'sub/',
+      files: ['sub/a.py'],
+      truncated: false,
+    };
+    vi.stubGlobal('fetch', mockFetchJson(body));
+    expect(await fetchRepoFiles('demo', 'sub/')).toEqual(body);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/repo/files?repo=demo&prefix=sub%2F',
+    );
+  });
+
+  it('defaults to an empty prefix', async () => {
+    const body = { repo: 'demo', prefix: '', files: [], truncated: false };
+    vi.stubGlobal('fetch', mockFetchJson(body));
+    expect(await fetchRepoFiles('demo')).toEqual(body);
+    expect(fetch).toHaveBeenCalledWith('/api/repo/files?repo=demo&prefix=');
   });
 });
 
