@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { NotificationsStatus } from '../apiClient';
+import type { BriefingResponse, LedgerEntry } from '../apiTypes';
 import {
+  ACTIVITY_WINDOWS,
+  activityWindowSeconds,
+  BriefingBody,
+  dayTrend,
   DigestControlsView,
   digestChannels,
   digestDisabledReason,
   digestResultLine,
   digestStatusLine,
+  inActivityWindow,
 } from './BriefingView';
 
 function status(over: Partial<NotificationsStatus> = {}): NotificationsStatus {
@@ -175,5 +181,81 @@ describe('digest controls view (issue #615)', () => {
     );
     expect(html).toContain('disabled');
     expect(html).toContain('Digest status unavailable — boom');
+  });
+});
+
+describe('activity window (issue #609)', () => {
+  const now = 1793745800;
+  const entries = [
+    { kind: 'chat', event: 'a', ts: now - 100, ok: true },
+    { kind: 'webhook', event: 'b', ts: now - 4000, ok: false },
+    { kind: 'webhook', event: 'c', ts: now - 100000, ok: false },
+    { kind: 'webhook', event: 'd', ts: now - 500000, ok: true },
+  ] as LedgerEntry[];
+
+  it('offers 1h/24h/7d presets defaulting to 24h', () => {
+    expect(ACTIVITY_WINDOWS.map((o) => o.value)).toEqual(['1h', '24h', '7d']);
+    expect(activityWindowSeconds('1h')).toBe(3600);
+    expect(activityWindowSeconds('24h')).toBe(86400);
+    expect(activityWindowSeconds('7d')).toBe(604800);
+  });
+
+  it('narrows entries to the selected window', () => {
+    expect(inActivityWindow(entries, '1h', now).map((e) => e.event)).toEqual(['a']);
+    expect(inActivityWindow(entries, '24h', now).map((e) => e.event)).toEqual(['a', 'b']);
+    expect(inActivityWindow(entries, '7d', now).map((e) => e.event)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ]);
+  });
+
+  it('labels trend counts by window', () => {
+    expect(dayTrend(entries, now, '1h')).toBe('Last 1h: 1 event, 0 failures.');
+    expect(dayTrend(entries, now)).toBe('Last 24h: 2 events, 1 failure.');
+    expect(dayTrend(entries, now, '7d')).toBe('Last 7d: 4 events, 2 failures.');
+  });
+
+  it('renders the window selector with the active window pressed', () => {
+    const empty = {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+    } as BriefingResponse;
+    const noop = () => {};
+    // Component filters against the real clock: anchor fixtures to now.
+    const liveNow = Math.floor(Date.now() / 1000);
+    const liveEntries = [
+      { kind: 'chat', event: 'a', ts: liveNow - 100, ok: true },
+      { kind: 'webhook', event: 'b', ts: liveNow - 4000, ok: false },
+    ] as LedgerEntry[];
+    const html = renderToStaticMarkup(
+      <BriefingBody
+        data={empty}
+        ledger={liveEntries}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+        window="1h"
+        onWindowChange={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="briefing-activity-window"');
+    expect(html).toContain('data-testid="briefing-window-1h"');
+    expect(html).toContain('data-testid="briefing-window-24h"');
+    expect(html).toContain('data-testid="briefing-window-7d"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('data-testid="briefing-trend"');
+    expect(html).toContain('Last 1h: 1 event, 0 failures.');
   });
 });

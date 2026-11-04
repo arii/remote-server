@@ -68,9 +68,13 @@ def append(entry: dict) -> None:
         print(f"ledger append failed: {exc}", flush=True)
 
 
-def read(kind: str = "all", limit: int = 50) -> list:
+def read(kind: str = "all", limit: int = 50,
+         since: float = 0) -> list:
     """Newest-first entries, kind-filtered. [] on any failure.
-    Unparseable lines are skipped, the rest are kept."""
+    Unparseable lines are skipped, the rest are kept. since > 0
+    drops entries with numeric ts older than since (before the
+    limit slice); entries without a numeric ts are kept — their
+    age can't be judged."""
     try:
         with open(ledger_path()) as f:
             lines = f.readlines()
@@ -82,8 +86,15 @@ def read(kind: str = "all", limit: int = 50) -> list:
             e = json.loads(line)
         except Exception:
             continue  # skip unparseable lines, keep the rest
-        if isinstance(e, dict) and (kind == "all" or e.get("kind") == kind):
-            entries.append(e)
+        if not isinstance(e, dict):
+            continue
+        if kind != "all" and e.get("kind") != kind:
+            continue
+        ts = e.get("ts")
+        if since > 0 and isinstance(ts, (int, float)) \
+                and not isinstance(ts, bool) and ts < since:
+            continue
+        entries.append(e)
     return entries[-limit:][::-1]
 
 
