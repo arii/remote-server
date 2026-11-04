@@ -25,6 +25,7 @@ import ChatView, {
   awaitingFirstToken,
   cleanAgentText,
   hintLine,
+  isKeyboardSend,
   runButtonLabel,
   traceLine,
   traceSummary,
@@ -681,6 +682,23 @@ describe('chat composer order', () => {
     expect(html.indexOf('data-testid="chat-send"')).toBeLessThan(
       html.indexOf('data-testid="agent-drawer"'),
     );
+  });
+});
+
+describe('chat keyboard send', () => {
+  const noop = () => {};
+
+  it('sends on Ctrl+Enter and Cmd+Enter, never on plain Enter', () => {
+    expect(isKeyboardSend({ key: 'Enter', ctrlKey: true, metaKey: false })).toBe(true);
+    expect(isKeyboardSend({ key: 'Enter', ctrlKey: false, metaKey: true })).toBe(true);
+    expect(isKeyboardSend({ key: 'Enter', ctrlKey: false, metaKey: false })).toBe(false);
+    expect(isKeyboardSend({ key: 'a', ctrlKey: true, metaKey: false })).toBe(false);
+  });
+
+  it('advertises the shortcut on Send and anchors the live tail', () => {
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('title="Send (Ctrl+Enter or Cmd+Enter)"');
+    expect(html).toContain('data-testid="chat-bottom"');
   });
 });
 
