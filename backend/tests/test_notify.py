@@ -5,8 +5,10 @@ import hmac
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 try:
     from fastapi import FastAPI
@@ -358,6 +360,136 @@ class DigestLogicTest(unittest.TestCase):
             os.environ.pop("NOTIFY_EVENTS", None)
             os.environ.pop("DIGEST_INTERVAL_HOURS", None)
             N.NOTIFIER_STATE_PATH = old_path
+
+
+class DigestScheduleTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "digest_schedule.json")
+        os.environ["BUTTONS_DIGEST_SCHEDULE_PATH"] = self.path
+
+    def tearDown(self):
+        os.environ.pop("BUTTONS_DIGEST_SCHEDULE_PATH", None)
+
+    def test_set_daily_weekly_off(self):
+        import time
+
+        before = time.time()
+        daily = N.set_digest_cadence("daily", now=before)
+        self.assertEqual(daily["cadence"], "daily")
+        self.assertGreaterEqual(daily["next_run"], before + 86300)
+        self.assertLessEqual(daily["next_run"], before + 86500)
+        weekly = N.set_digest_cadence("weekly", now=before)
+        self.assertGreaterEqual(
+            weekly["next_run"], before + 7 * 86400 - 100)
+        off = N.set_digest_cadence("off", now=before)
+        self.assertEqual(
+            (off["cadence"], off["next_run"]), ("off", None))
+
+    def test_rejects_bad_cadence(self):
+        with self.assertRaises(ValueError):
+            N.set_digest_cadence("hourly")
+
+    def test_due_fires_and_stamps_success(self):
+        N.set_digest_cadence("daily", now=1000.0)
+        with mock.patch.object(
+                N, "send_notification",
+                return_value={"ntfy": {"ok": True, "status": 200}}
+        ) as sender:
+            fired = N.fire_due_digest(now=1000.0 + 86401)
+        self.assertTrue(fired)
+        sender.assert_called_once()
+        title = sender.call_args[0][0]
+        self.assertIn("Scheduled", title)
+        state = N.digest_schedule_status()
+        self.assertGreater(state["next_run"], 1000.0 + 86401)
+        self.assertEqual(state["last_sent"], 1000.0 + 86401)
+        self.assertTrue(state["last_result"]["ok"])
+
+    def test_not_due_and_off_skip_send(self):
+        N.set_digest_cadence("daily", now=1000.0)
+        with mock.patch.object(
+                N, "send_notification",
+                return_value={"ntfy": {"ok": True}}) as sender:
+            self.assertFalse(N.fire_due_digest(now=1000.0 + 100))
+            self.assertEqual(sender.call_count, 0)
+        N.set_digest_cadence("off", now=1000.0)
+        with mock.patch.object(
+                N, "send_notification",
+                return_value={"ntfy": {"ok": True}}) as sender:
+            self.assertFalse(N.fire_due_digest(now=1000.0 + 10**7))
+            self.assertEqual(sender.call_count, 0)
+
+    def test_failed_send_stamps_failure_not_sent(self):
+        N.set_digest_cadence("daily", now=1000.0)
+        with mock.patch.object(
+                N, "send_notification",
+                return_value={"ntfy": {"ok": False,
+                                      "error": "boom"}}):
+            fired = N.fire_due_digest(now=1000.0 + 86401)
+        self.assertTrue(fired)
+        state = N.digest_schedule_status()
+        self.assertIsNone(state["last_sent"])
+        self.assertFalse(state["last_result"]["ok"])
+        self.assertIn("boom", state["last_result"]["error"])
+        # Claimed run still advances: no retry spam.
+        self.assertGreater(state["next_run"], 1000.0 + 86401)
+
+    def test_unconfigured_channels_stamp_failure(self):
+        N.set_digest_cadence("daily", now=1000.0)
+        with mock.patch.object(N, "send_notification",
+                               return_value={}):
+            self.assertTrue(N.fire_due_digest(now=1000.0 + 86401))
+        state = N.digest_schedule_status()
+        self.assertIsNone(state["last_sent"])
+        self.assertFalse(state["last_result"]["ok"])
+
+    def test_fire_never_raises(self):
+        N.set_digest_cadence("daily", now=1000.0)
+        with mock.patch.object(
+                N, "send_notification",
+                side_effect=RuntimeError("down")):
+            self.assertTrue(N.fire_due_digest(now=1000.0 + 86401))
+        state = N.digest_schedule_status()
+        self.assertIsNone(state["last_sent"])
+        self.assertFalse(state["last_result"]["ok"])
+
+
+@unittest.skipUnless(HAS_CLIENT, "notify router not importable")
+class DigestScheduleEndpointTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "digest_schedule.json")
+        os.environ["BUTTONS_DIGEST_SCHEDULE_PATH"] = self.path
+        self.client = _make_client()
+
+    def tearDown(self):
+        os.environ.pop("BUTTONS_DIGEST_SCHEDULE_PATH", None)
+
+    def test_get_default_off_shape(self):
+        r = self.client.get("/api/notifications/digest-schedule")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(
+            (body["cadence"], body["next_run"], body["last_sent"]),
+            ("off", None, None))
+        self.assertEqual(body["last_result"], {})
+
+    def test_post_sets_and_get_reflects(self):
+        r = self.client.post(
+            "/api/notifications/digest-schedule",
+            json={"cadence": "weekly"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["cadence"], "weekly")
+        self.assertIsNotNone(r.json()["next_run"])
+        r2 = self.client.get("/api/notifications/digest-schedule")
+        self.assertEqual(r2.json()["cadence"], "weekly")
+
+    def test_post_rejects_bad_cadence(self):
+        r = self.client.post(
+            "/api/notifications/digest-schedule",
+            json={"cadence": "hourly"})
+        self.assertEqual(r.status_code, 400)
 
 
 if __name__ == "__main__":

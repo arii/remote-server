@@ -353,6 +353,14 @@ def _schedule_tick_loop() -> None:
             fire_due_schedules()
         except Exception:
             pass
+        # Shared tick (see #636): scheduled digests ride this loop
+        # rather than running a second ticker. Repair-owned loop;
+        # digest firing lives in backend.notify.
+        try:
+            from backend.notify import fire_due_digest
+            fire_due_digest()
+        except Exception:
+            pass
 
 
 def _ensure_schedule_ticker() -> None:

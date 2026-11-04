@@ -13,7 +13,7 @@ import json
 import threading
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -40,6 +40,17 @@ class DigestResult(BaseModel):
     ok: bool = True
     results: dict = Field(default_factory=dict)
     digest: str = ""
+
+
+class DigestScheduleStatus(BaseModel):
+    cadence: str = "off"
+    next_run: float | None = None
+    last_sent: float | None = None
+    last_result: dict = Field(default_factory=dict)
+
+
+class DigestScheduleRequest(BaseModel):
+    cadence: str = ""
 
 
 def _resolve_repo_path(repo_full_name: str):
@@ -149,3 +160,21 @@ def notifications_trigger_digest() -> dict:
         state["last_digest"] = time.time()
         N.save_notifier_state(state)
     return {"ok": True, "results": res, "digest": digest_msg}
+
+
+@router.get("/api/notifications/digest-schedule",
+            response_model=DigestScheduleStatus)
+def notifications_digest_schedule() -> dict:
+    return N.digest_schedule_status()
+
+
+@router.post("/api/notifications/digest-schedule",
+             response_model=DigestScheduleStatus)
+def notifications_set_digest_schedule(
+        body: DigestScheduleRequest) -> dict:
+    try:
+        return N.set_digest_cadence(body.cadence)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="cadence must be daily, weekly, or off")

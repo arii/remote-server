@@ -154,6 +154,146 @@ def enabled_events():
             .split(",") if e.strip()]
 
 
+# Scheduled briefing digests (#636). Cadence + next-run live in a
+# JSON store beside the deferred file so the schedule survives
+# restarts; firing rides the shared repair/digest tick in
+# backend/api/routers/issues.py (single ticker — never add a second
+# one here). Cadences are plain intervals from set time (Daily is
+# ~24h, Weekly ~7d); there is no calendar alignment and no
+# timezone math beyond the server wall clock.
+DIGEST_SCHEDULE_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600}
+
+DEFAULT_DIGEST_SCHEDULE_PATH = "/var/lib/buttons/digest_schedule.json"
+
+digest_schedule_lock = threading.Lock()
+
+
+def digest_schedule_path() -> str:
+    """Current digest-schedule file path (env override read
+    dynamically so tests can point it at tmp)."""
+    return os.environ.get("BUTTONS_DIGEST_SCHEDULE_PATH",
+                          DEFAULT_DIGEST_SCHEDULE_PATH)
+
+
+def _default_digest_schedule() -> dict:
+    return {"cadence": "off", "next_run": None, "last_sent": None,
+            "last_result": {}}
+
+
+def load_digest_schedule() -> dict:
+    path = digest_schedule_path()
+    try:
+        if os.path.exists(path):
+            with open(path) as f:
+                state = json.load(f)
+            if isinstance(state, dict):
+                merged = _default_digest_schedule()
+                merged.update(state)
+                return merged
+    except Exception:
+        pass
+    return _default_digest_schedule()
+
+
+def save_digest_schedule(state: dict) -> None:
+    path = digest_schedule_path()
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, path)
+
+
+def set_digest_cadence(cadence: str, now: float | None = None) -> dict:
+    """Set the digest cadence; daily/weekly schedule from now, off
+    clears the next run (send history is kept)."""
+    if cadence not in DIGEST_SCHEDULE_INTERVALS and cadence != "off":
+        raise ValueError("cadence must be daily, weekly, or off")
+    at = time.time() if now is None else now
+    with digest_schedule_lock:
+        state = load_digest_schedule()
+        state["cadence"] = cadence
+        state["next_run"] = (None if cadence == "off"
+                             else at + DIGEST_SCHEDULE_INTERVALS[cadence])
+        save_digest_schedule(state)
+        return dict(state)
+
+
+def digest_schedule_status() -> dict:
+    with digest_schedule_lock:
+        return dict(load_digest_schedule())
+
+
+def _digest_send_ok(results: object) -> bool:
+    if not isinstance(results, dict) or not results:
+        return False
+    return all(isinstance(r, dict) and r.get("ok")
+               for r in results.values())
+
+
+def _digest_failure_text(results: object, fatal: str) -> str:
+    if fatal:
+        return fatal
+    if not isinstance(results, dict) or not results:
+        return "no notification channels configured"
+    parts = []
+    for name, res in results.items():
+        if isinstance(res, dict) and res.get("ok"):
+            continue
+        detail = (res or {}).get("error") if isinstance(
+            res, dict) else None
+        parts.append(f"{name} failed ({detail or 'unknown error'})")
+    return "; ".join(parts) or "unknown error"
+
+
+def fire_due_digest(now: float | None = None) -> bool:
+    """Send one due scheduled digest. Returns True when a send was
+    attempted. Never raises: the shared tick must not die on a
+    digest failure."""
+    try:
+        return _fire_due_digest(time.time() if now is None else now)
+    except Exception:
+        return False
+
+
+def _fire_due_digest(now: float) -> bool:
+    with digest_schedule_lock:
+        state = load_digest_schedule()
+        interval = DIGEST_SCHEDULE_INTERVALS.get(
+            state.get("cadence", "off"))
+        if interval is None:
+            return False
+        if (state.get("next_run") or 0) > now:
+            return False
+        # Claim before sending so a slow send can't double-fire.
+        state["next_run"] = now + interval
+        save_digest_schedule(state)
+    try:
+        results = send_notification(
+            "Scheduled Briefing Digest", build_digest_text(),
+            priority="low", tags=["clipboard", "digest"],
+            event_type="digest")
+        fatal = ""
+    except Exception as exc:
+        results, fatal = {}, str(exc)
+    ok = _digest_send_ok(results)
+    # Stamp the RESULT, never blindly (#532): last_sent moves only
+    # on a confirmed send; last_result records every attempt.
+    with digest_schedule_lock:
+        state = load_digest_schedule()
+        if ok:
+            state["last_sent"] = now
+        state["last_result"] = {
+            "ok": ok, "at": now,
+            "error": "" if ok else _digest_failure_text(
+                results, fatal),
+        }
+        save_digest_schedule(state)
+    return True
+
+
 def check_notifications_and_digest(fetcher=None, sender=None,
                                    now=None):
     """Port of _check_notifications_and_digest minus the Jules block.

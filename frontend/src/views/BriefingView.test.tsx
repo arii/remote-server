@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { NotificationsStatus } from '../apiClient';
+import type { DigestSchedule, NotificationsStatus } from '../apiClient';
 import type { BriefingResponse, LedgerEntry } from '../apiTypes';
 import {
   ACTIVITY_WINDOWS,
@@ -11,6 +11,7 @@ import {
   digestChannels,
   digestDisabledReason,
   digestResultLine,
+  digestScheduleLine,
   digestStatusLine,
   inActivityWindow,
 } from './BriefingView';
@@ -257,5 +258,70 @@ describe('activity window (issue #609)', () => {
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('data-testid="briefing-trend"');
     expect(html).toContain('Last 1h: 1 event, 0 failures.');
+  });
+});
+
+describe('digest schedule line (issue #636)', () => {
+  function sched(over: Partial<DigestSchedule> = {}): DigestSchedule {
+    return { cadence: 'off', next_run: null, last_sent: null, last_result: {}, ...over };
+  }
+
+  it('reports off plainly', () => {
+    expect(digestScheduleLine(sched())).toBe('Scheduled digests off.');
+  });
+
+  it('shows next run with last-sent and failure detail', () => {
+    const next = digestScheduleLine(sched({ cadence: 'daily', next_run: 1793760000 }));
+    expect(next).toContain('Next digest');
+    expect(next).not.toContain('off');
+    const sent = digestScheduleLine(
+      sched({ cadence: 'weekly', next_run: 1793760000, last_result: { ok: true, at: 1793673600 } }),
+    );
+    expect(sent).toContain('last sent');
+    const failed = digestScheduleLine(
+      sched({
+        cadence: 'daily',
+        next_run: 1793760000,
+        last_result: { ok: false, at: 1793673600, error: 'boom' },
+      }),
+    );
+    expect(failed).toContain('last scheduled send failed (boom)');
+  });
+});
+
+describe('digest schedule control (issue #636)', () => {
+  const noop = () => {};
+
+  function view(sched: DigestSchedule | null) {
+    return renderToStaticMarkup(
+      <DigestControlsView
+        status={status({ ntfy_configured: true })}
+        statusErr={null}
+        running={false}
+        result={null}
+        onRun={noop}
+        sched={sched}
+        schedErr={null}
+        schedBusy={false}
+        onSetCadence={noop}
+      />,
+    );
+  }
+
+  it('renders Daily/Weekly/Off with the current cadence pressed', () => {
+    const html = view({ cadence: 'weekly', next_run: 1793760000, last_sent: null, last_result: {} });
+    expect(html).toContain('data-testid="briefing-digest-schedule"');
+    expect(html).toContain('data-testid="briefing-schedule-daily"');
+    expect(html).toContain('data-testid="briefing-schedule-weekly"');
+    expect(html).toContain('data-testid="briefing-schedule-off"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('data-testid="briefing-digest-schedule-status"');
+    expect(html).toContain('Next digest');
+  });
+
+  it('keeps the manual run button behavior unchanged', () => {
+    const html = view(null);
+    expect(html).toContain('data-testid="briefing-run-now"');
+    expect(html).toContain('Run briefing now');
   });
 });
