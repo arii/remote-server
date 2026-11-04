@@ -165,7 +165,65 @@ function outcomeClause(e: LedgerEntry): string {
   return who || clean;
 }
 
+// Display badge for the kind slot: CLI turns read as their source,
+// every other kind verbatim.
+export function kindBadge(kind: string): string {
+  return kind === 'cli-turn' ? 'cli' : kind;
+}
+
+// Dollars trimmed for phone lines: $5 not $5.0000, $0.0008 kept.
+// (Same trim as ChatView's run line; the history row only needs the
+// number, not the full per-row cost slot.)
+function usd(n: number): string {
+  return `$${n.toFixed(4).replace(/\.?0+$/, '')}`;
+}
+
+function cliCost(e: LedgerEntry): string | null {
+  if (e.metered === false) return 'free';
+  if (typeof e.cost_usd !== 'number') return null;
+  return usd(e.cost_usd);
+}
+
+// Collapsed summary for a CLI turn, mirroring ChatView's run-line
+// shape (script · model · duration · tokens · cost). Segments drop
+// out individually when the row lacks them.
+function cliTurnSummary(e: LedgerEntry): string {
+  const parts = [e.script, e.model].filter((v): v is string => !!v);
+  if (typeof e.duration_s === 'number') parts.push(`${e.duration_s}s`);
+  const total = e.usage?.total_tokens;
+  if (typeof total === 'number') parts.push(`${total} tok`);
+  const cost = cliCost(e);
+  if (cost) parts.push(cost);
+  return parts.join(' · ') || 'cli turn';
+}
+
+function cliTurnLines(e: LedgerEntry): string[] {
+  const lines = [`event: cli-turn ${e.script ?? 'turn'}`];
+  if (e.thread_id) lines.push(`thread: ${e.thread_id}`);
+  if (e.model) lines.push(`model: ${e.model}`);
+  if (typeof e.duration_s === 'number') lines.push(`duration: ${e.duration_s}s`);
+  const u = e.usage;
+  if (u && typeof u.total_tokens === 'number') {
+    lines.push(`tokens: ${u.total_tokens} (in ${u.input_tokens ?? 0}, out ${u.output_tokens ?? 0})`);
+  }
+  const cost = cliCost(e);
+  if (cost) lines.push(`cost: ${cost}`);
+  if (e.tools && e.tools.length > 0) lines.push(`tools: ${e.tools.join(', ')}`);
+  return lines;
+}
+
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
+  if (e.kind === 'cli-turn') {
+    return {
+      kind: e.kind,
+      summary: cliTurnSummary(e),
+      at: rowTime(e.ts ?? e.at),
+      rawAt: epochOf(e.ts ?? e.at),
+      failed: entryFailed(e, 'cli-turn', cliTurnSummary(e)),
+      routine: false,
+      detail: cliTurnLines(e).join('\n').slice(0, 2000),
+    };
+  }
   const raw = e.event ?? e.action ?? e.kind;
   // Backend-supplied reasons are already human sentences; use verbatim.
   const errText = e.error?.trim() ?? '';

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchJobRun, fetchJobs, fetchLedger } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
-import { historyRowMatches, jobPassesKindFilter, tailText, toHistoryRows } from './historyUtils';
+import { historyRowMatches, jobPassesKindFilter, kindBadge, tailText, toHistoryRows } from './historyUtils';
 import type { HistoryMember, HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
 
@@ -150,7 +150,7 @@ export function RowsList({ rows, filtering }: { rows: HistoryRow[]; filtering: b
                   <StatusIcon tone={r.tone} /> {r.summary}
                 </span>
                 <span className="row-meta">
-                  {r.kind} · {r.at}
+                  {kindBadge(r.kind)} · {r.at}
                   {advice && <> · Recovery: {advice}</>}
                 </span>
               </summary>
@@ -203,7 +203,7 @@ export default function HistoryView({
               >
                 {kindOptions(all).map((k) => (
                   <option key={k} value={k}>
-                    {k}
+                    {kindBadge(k)}
                   </option>
                 ))}
               </select>

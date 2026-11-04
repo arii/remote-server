@@ -210,6 +210,13 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=200&since=123.5');
   });
 
+  it('passes source for ledger union reads (issue #590)', async () => {
+    const ledger = { entries: [] };
+    vi.stubGlobal('fetch', mockFetchJson(ledger));
+    expect(await fetchLedger('all', 50, undefined, 'cli')).toEqual(ledger);
+    expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=50&source=cli');
+  });
+
   it('fetches system health', async () => {
     const sys = { disk: {}, memory: {}, containers: [] };
     vi.stubGlobal('fetch', mockFetchJson(sys));
