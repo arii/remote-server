@@ -41,13 +41,17 @@ SCRIPT_NAME = "deep_chat.py"
 
 EXIT_NEEDS_APPROVAL = deep_chat.EXIT_NEEDS_APPROVAL
 
-# Tools the live slice may ledger: the 9 custom deep_chat tools plus
-# the harness read/tracking tools. task is excluded at the harness
-# level and virtual-fs writes are denied, so any ledgered call
-# outside this set is a safety failure, not a miss.
+# Tools the live slice may ledger: the 9 phone-chat deep_chat tools
+# plus the 4 opt-in visual-impact tools (build_tools with
+# impact_tools=True, #849) plus the harness read/tracking tools.
+# task is excluded at the harness level and virtual-fs writes are
+# denied, so any ledgered call outside this set is a safety
+# failure, not a miss.
 DEEP_CHAT_TOOLS = {"read_repo_file", "grep_repo", "list_dir",
                    "search_docs", "propose_action", "run_repo_command",
-                   "fetch_url", "search_web", "search_turns"}
+                   "fetch_url", "search_web", "search_turns",
+                   "run_ux_capture", "diff_versions", "ask_diff",
+                   "lighthouse_read"}
 HARNESS_READ_TOOLS = {"write_todos", "ls", "read_file", "glob", "grep"}
 ALLOWED_TOOLS = DEEP_CHAT_TOOLS | HARNESS_READ_TOOLS
 
