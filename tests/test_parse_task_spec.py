@@ -163,6 +163,32 @@ make test
             parse_task_spec(markdown)
         self.assertIn("Verification Command", str(ctx.exception))
 
+    def _spec_with_targets(self, *targets):
+        items = "\n".join(f"- `{t}`" for t in targets)
+        return f"""---
+name: Deterministic Task
+---
+
+## Target Files
+{items}
+
+## Verification Command
+```bash
+pytest tests/
+```
+"""
+
+    def test_escaping_targets_rejected(self):
+        for target in ("../../etc/passwd", "/etc/passwd",
+                       "a/../../evil.py", ".."):
+            with self.assertRaises(ValueError, msg=target):
+                parse_task_spec(self._spec_with_targets(target))
+
+    def test_dotdot_inside_allowed(self):
+        parsed = parse_task_spec(
+            self._spec_with_targets("pkg/../ok.py"))
+        self.assertEqual(parsed["target_files"], ["pkg/../ok.py"])
+
     def test_invalid_input_type(self):
         with self.assertRaises(ValueError):
             parse_task_spec(None)  # type: ignore

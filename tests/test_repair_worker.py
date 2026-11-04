@@ -188,6 +188,95 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_setup_worktree_node_rejects_escape(self):
+        import subprocess
+        from unittest.mock import MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        outside = tempfile.mkdtemp()
+        worktree = tempfile.mkdtemp()
+        try:
+            marker = os.path.join(outside, "secret.txt")
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write("TOP-SECRET")
+            rel = os.path.relpath(marker, worktree)
+            self.assertTrue(rel.startswith(".."))
+            state: rw.AgentState = {
+                "issue_number": 13,
+                "issue_body": "",
+                "target_files": [rel],
+                "verification_cmd": "",
+                "file_contents": {},
+                "current_errors": "",
+                "retry_count": 0,
+                "ast_valid": False,
+                "tests_passed": False,
+                "worktree_dir": worktree,
+                "branch_name": "repair/issue-13-test",
+            }
+            with patch.object(subprocess, "run",
+                              return_value=mock_proc):
+                with self.assertRaises(RuntimeError):
+                    rw.setup_worktree_node(state)
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+            shutil.rmtree(worktree, ignore_errors=True)
+
+    def test_ast_check_node_write_escapes_rejected(self):
+        worktree = tempfile.mkdtemp()
+        outside = tempfile.mkdtemp()
+        try:
+            evil = os.path.join(outside, "pwned.py")
+            rel = os.path.relpath(evil, worktree)
+            self.assertTrue(rel.startswith(".."))
+            state: rw.AgentState = {
+                "issue_number": 1,
+                "issue_body": "",
+                "target_files": [rel],
+                "verification_cmd": "",
+                "file_contents": {rel: "x = 1\n"},
+                "current_errors": "",
+                "retry_count": 0,
+                "ast_valid": False,
+                "tests_passed": False,
+                "worktree_dir": worktree,
+                "branch_name": "repair/issue-1",
+            }
+            with self.assertRaises(RuntimeError):
+                rw.ast_check_node(state)
+            self.assertFalse(os.path.exists(evil))
+        finally:
+            shutil.rmtree(worktree, ignore_errors=True)
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_ast_check_node_write_symlink_escape_rejected(self):
+        worktree = tempfile.mkdtemp()
+        outside = tempfile.mkdtemp()
+        try:
+            os.symlink(outside,
+                       os.path.join(worktree, "linked"))
+            state: rw.AgentState = {
+                "issue_number": 1,
+                "issue_body": "",
+                "target_files": ["linked/pwned.py"],
+                "verification_cmd": "",
+                "file_contents": {"linked/pwned.py": "x = 1\n"},
+                "current_errors": "",
+                "retry_count": 0,
+                "ast_valid": False,
+                "tests_passed": False,
+                "worktree_dir": worktree,
+                "branch_name": "repair/issue-1",
+            }
+            with self.assertRaises(RuntimeError):
+                rw.ast_check_node(state)
+            self.assertFalse(os.path.exists(
+                os.path.join(outside, "pwned.py")))
+        finally:
+            shutil.rmtree(worktree, ignore_errors=True)
+            shutil.rmtree(outside, ignore_errors=True)
+
     def test_ast_check_node_invalid(self):
         state: rw.AgentState = {
             "issue_number": 1,
