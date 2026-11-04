@@ -7,6 +7,7 @@ import {
   heroCountsText,
   heroStatus,
   lastDeployAt,
+  NowEmptyState,
   NowHero,
   reconcileSnoozed,
   RepoTag,
@@ -389,5 +390,16 @@ describe('Now status hero (issue #811)', () => {
     );
     expect(loading).toContain('dot-idle');
     expect(loading).toContain('Loading status…');
+  });
+});
+
+describe('guided empty state (issue #809)', () => {
+  it('explains what lands here with a run-a-check action', () => {
+    const html = renderToStaticMarkup(<NowEmptyState onRunCheck={() => {}} />);
+    expect(html).toContain('data-testid="now-empty"');
+    expect(html).toContain('Nothing needs you right now');
+    expect(html).toContain('Failing checks, approvals, and incidents will land here.');
+    expect(html).toContain('data-testid="now-empty-jobs"');
+    expect(html).toContain('>Run a check<');
   });
 });
