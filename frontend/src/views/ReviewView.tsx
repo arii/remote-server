@@ -94,6 +94,18 @@ export function reviewColumnsClass(hasDetail: boolean): string {
   return hasDetail ? 'columns' : 'columns columns-single';
 }
 
+export function rowMatchesFilter(
+  row: { number: number; title: string; labels?: unknown },
+  query: string,
+): boolean {
+  const q = query.trim().replace(/^#/, '').toLowerCase();
+  if (!q) return true;
+  if (String(row.number).includes(q)) return true;
+  if (row.title.toLowerCase().includes(q)) return true;
+  const labels = Array.isArray(row.labels) ? row.labels : [];
+  return labels.some((l) => labelOf(l).toLowerCase().includes(q));
+}
+
 function labelOf(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
@@ -297,15 +309,19 @@ export default function ReviewView({
   const [newBody, setNewBody] = useState('');
   const [merging, setMerging] = useState<ReadonlySet<number>>(new Set());
   const [creatingIssue, setCreatingIssue] = useState(false);
+  const [filter, setFilter] = useState('');
 
   // Deferred rows hide from the main lists (and from the triage
-  // cursor) and surface in the Deferred disclosure instead.
-  const visiblePrs = (prs ?? []).filter(
-    (p) => !isRowDeferred(deferred, 'pr', p.number),
-  );
-  const visibleIssues = (issues ?? []).filter(
-    (i) => !isRowDeferred(deferred, 'issue', i.number),
-  );
+  // cursor) and surface in the Deferred disclosure instead. The
+  // text filter then narrows what's left; the cursor derives from
+  // the same narrowed lists, so j/k/d follow the filter.
+  const visiblePrs = (prs ?? [])
+    .filter((p) => !isRowDeferred(deferred, 'pr', p.number))
+    .filter((p) => rowMatchesFilter(p, filter));
+  const visibleIssues = (issues ?? [])
+    .filter((i) => !isRowDeferred(deferred, 'issue', i.number))
+    .filter((i) => rowMatchesFilter(i, filter));
+  const filtering = filter.trim().length > 0;
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
   // a PR row in the details pane, an issue row in a new tab.
@@ -509,13 +525,27 @@ export default function ReviewView({
         <p className="row-meta" data-testid="review-notice" role="status">{notice}</p>
       )}
       <TriageHint extra=" · d defers" />
+      <div className="actions">
+        <label className="row-meta" htmlFor="review-filter">
+          Filter{' '}
+          <input
+            id="review-filter"
+            data-testid="review-filter"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="number, title, or label"
+          />
+        </label>
+      </div>
       <div className={reviewColumnsClass(sel !== null || promptVisible)}>
         <div>
           <h3>Pull requests</h3>
           {!prs ? (
             <p className="row-meta" data-testid="review-prs-loading" role="status">Loading…</p>
           ) : visiblePrs.length === 0 ? (
-            <p className="row-meta" data-testid="review-prs-empty">No open PRs.</p>
+            <p className="row-meta" data-testid="review-prs-empty">
+              {filtering ? 'No matching PRs.' : 'No open PRs.'}
+            </p>
           ) : (
             <ul className="session-list" data-testid="review-pr-list">
               {visiblePrs.map((p, pi) => (
@@ -542,7 +572,9 @@ export default function ReviewView({
           {!issues ? (
             <p className="row-meta" data-testid="review-issues-loading" role="status">Loading…</p>
           ) : visibleIssues.length === 0 ? (
-            <p className="row-meta" data-testid="review-issues-empty">No open issues.</p>
+            <p className="row-meta" data-testid="review-issues-empty">
+              {filtering ? 'No matching issues.' : 'No open issues.'}
+            </p>
           ) : (
             <ul className="session-list" data-testid="review-issue-list">
               {visibleIssues.map((iss, ii) => (

@@ -9,6 +9,7 @@ import ReviewView, {
   openIssueUrl,
   revertOptimisticMerge,
   reviewColumnsClass,
+  rowMatchesFilter,
 } from './ReviewView';
 
 describe('optimistic merge row state', () => {
@@ -106,6 +107,39 @@ describe('issue row open action', () => {
     openIssueUrl(undefined);
     openIssueUrl('');
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe('review list filter', () => {
+  const pr = { number: 576, title: 'Collapsed rows carry outcome clauses' };
+  const issue = {
+    number: 571,
+    title: 'Repair picker is unfiltered',
+    labels: [{ name: 'audit' }, 'ux'],
+  };
+
+  it('matches numbers with or without a hash', () => {
+    expect(rowMatchesFilter(pr, '576')).toBe(true);
+    expect(rowMatchesFilter(pr, '#57')).toBe(true);
+    expect(rowMatchesFilter(pr, '999')).toBe(false);
+  });
+
+  it('matches titles case-insensitively', () => {
+    expect(rowMatchesFilter(pr, 'outcome')).toBe(true);
+    expect(rowMatchesFilter(pr, 'COLLAPSED')).toBe(true);
+    expect(rowMatchesFilter(issue, 'outcome')).toBe(false);
+  });
+
+  it('matches issue labels in either shape', () => {
+    expect(rowMatchesFilter(issue, 'audit')).toBe(true);
+    expect(rowMatchesFilter(issue, 'UX')).toBe(true);
+    expect(rowMatchesFilter(pr, 'audit')).toBe(false);
+  });
+
+  it('shows everything on a blank query', () => {
+    expect(rowMatchesFilter(pr, '')).toBe(true);
+    expect(rowMatchesFilter(pr, '   ')).toBe(true);
+    expect(rowMatchesFilter(issue, '')).toBe(true);
   });
 });
 
