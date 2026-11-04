@@ -381,10 +381,12 @@ describe('briefing all-clear', () => {
     prs: [],
     prs_err: '',
     reviews_lines: [],
+    reviews_err: {},
     board: [],
     board_lines: [],
     board_err: '',
     conflicts_lines: [],
+    conf_err: '',
     overlaps_lines: [],
     failing_runs: [],
     workflow_lines: [],
@@ -400,6 +402,11 @@ describe('briefing all-clear', () => {
     expect(briefingAllClear({ ...empty, board: [{ branch: 'b' }] })).toBe(false);
     expect(briefingAllClear({ ...empty, runs_err: 'boom' })).toBe(false);
   });
+  it('blocks all-clear on conflict or review fetch errors (issue #463)', () => {
+    expect(briefingAllClear({ ...empty, conf_err: 'scan failed' })).toBe(false);
+    expect(briefingAllClear({ ...empty, reviews_err: { '3': 'denied' } })).toBe(false);
+    expect(briefingAllClear({ ...empty, reviews_err: {} })).toBe(true);
+  });
 });
 
 describe('briefing substance', () => {
@@ -409,10 +416,12 @@ describe('briefing substance', () => {
     prs: [],
     prs_err: '',
     reviews_lines: [],
+    reviews_err: {},
     board: [],
     board_lines: [],
     board_err: '',
     conflicts_lines: [],
+    conf_err: '',
     overlaps_lines: [],
     failing_runs: [],
     workflow_lines: [],
@@ -1219,10 +1228,12 @@ describe('repo label', () => {
       prs: [],
       prs_err: '',
       reviews_lines: [],
+      reviews_err: {},
       board: [{ branch: long, issue: '', status: 'Open' }],
       board_lines: [],
       board_err: '',
       conflicts_lines: [],
+      conf_err: '',
       overlaps_lines: [],
       failing_runs: [],
       workflow_lines: [],

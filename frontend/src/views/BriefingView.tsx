@@ -673,10 +673,23 @@ export function dayTrend(
   return `Last ${window}: ${recent.length} event${recent.length === 1 ? '' : 's'}, ${failures} failure${failures === 1 ? '' : 's'}.`;
 }
 
+// Reviews errors arrive as a per-PR dict ({PR number: error});
+// condense to one alert line for the Reviews section (issue #463).
+export function reviewsErrText(err: Record<string, string> | null | undefined): string {
+  if (!err) return '';
+  const entries = Object.entries(err);
+  if (entries.length === 0) return '';
+  return entries
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([num, msg]) => `#${num}: ${msg}`)
+    .join('; ');
+}
+
 // Condense-empties: when every section is empty and nothing errored,
 // the view shows one all-clear instead of five bare headings.
 export function briefingAllClear(data: BriefingResponse): boolean {
-  if (data.prs_err || data.board_err || data.runs_err) return false;
+  if (data.prs_err || data.board_err || data.runs_err || data.conf_err) return false;
+  if (data.reviews_err && Object.keys(data.reviews_err).length > 0) return false;
   return (
     data.prs.length === 0 &&
     data.attention.length === 0 &&
@@ -869,9 +882,9 @@ export function BriefingBody({
               </ul>
             </section>
           )}
-          <Section title="Reviews" lines={data.reviews_lines} />
+          <Section title="Reviews" lines={data.reviews_lines} err={reviewsErrText(data.reviews_err)} />
           <BoardSection board={data.board ?? []} lines={data.board_lines} err={data.board_err} />
-          <Section title="Conflicts" lines={data.conflicts_lines} />
+          <Section title="Conflicts" lines={data.conflicts_lines} err={data.conf_err} />
           <Section title="Overlaps" lines={data.overlaps_lines} />
           <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
         </>
