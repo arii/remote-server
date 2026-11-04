@@ -94,6 +94,27 @@ class TestValidator(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("SECRET_KEY", errors[0])
 
+    def test_forbid_substring_rejects_float(self):
+        root = self.make_root({
+            "a.json": '{"name": "x", "n": 0}',
+            "docker-compose.yml": "",
+            ".env.example": "",
+        })
+        section = {"type": "object", "forbidSubstring": "@latest"}
+        schema = json.load(
+            open(os.path.join(root, "config/schema.json")))
+        write(root, "pinned.json", '{"args": ["@scope/pkg@latest"]}')
+        errors = validate_config.validate_file(
+            root, "pinned.json", section, schema)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("@latest", errors[0])
+        write(root, "pinned.json", '{"args": ["@scope/pkg@2.4.0"]}')
+        self.assertEqual(
+            validate_config.validate_file(
+                root, "pinned.json", section, schema),
+            [],
+        )
+
     def test_missing_file_and_bad_json(self):
         root = self.make_root({
             "docker-compose.yml": "",
