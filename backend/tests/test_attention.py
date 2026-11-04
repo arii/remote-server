@@ -43,6 +43,7 @@ class AttentionShapeTest(unittest.TestCase):
             get_workflow_health=lambda repo: {"workflows": []},
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [],
             list_pending_approvals=lambda: [],
             ollama_up=lambda: True,
         )
@@ -63,6 +64,9 @@ class AttentionShapeTest(unittest.TestCase):
             list_failed_webhooks=lambda: [{
                 "id": "w1", "ts": 2.0, "event": "delivery failed",
                 "error": "timeout"}],
+            list_skipped_webhooks=lambda: [{
+                "id": "s1", "ts": 2.5, "ok": True, "advanced": False,
+                "repo": "r", "detail": "skipped: tree dirty"}],
             list_pending_approvals=lambda: [{
                 "id": "a1", "ts": 3.0, "title": "Approve?",
                 "event": "approval requested"}],
@@ -75,7 +79,7 @@ class AttentionShapeTest(unittest.TestCase):
         kinds = {i["kind"] for i in body["items"]}
         self.assertEqual(
             kinds, {"failing-run", "failed-job", "failed-webhook",
-                    "pending-approval"})
+                    "skipped-webhook", "pending-approval"})
         for item in body["items"]:
             for f in ("id", "kind", "title", "detail", "repo",
                       "severity", "action", "created_at"):
@@ -96,6 +100,7 @@ class AttentionShapeTest(unittest.TestCase):
             get_workflow_health=lambda repo: {"workflows": wfs},
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [],
             list_pending_approvals=lambda: [],
             ollama_up=lambda: True,
         )
@@ -111,7 +116,7 @@ class AttentionShapeTest(unittest.TestCase):
         import backend.ledger as ledger_mod
         orig_read = ledger_mod.read
         ledger_mod.read = lambda kind="all", limit=50: [
-            {"id": "w-ok", "ts": 3.0, "ok": True,
+            {"id": "w-ok", "ts": 3.0, "ok": True, "advanced": True,
              "repo": "arii/remote-server", "event": "pull ok"},
             {"id": "w-old", "ts": 1.0, "ok": False,
              "repo": "arii/remote-server", "error": "timeout"},
@@ -139,6 +144,7 @@ class AttentionShapeTest(unittest.TestCase):
             get_workflow_health=lambda repo: {"workflows": []},
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: hooks,
+            list_skipped_webhooks=lambda: [],
             list_pending_approvals=lambda: [],
             ollama_up=lambda: True,
         )
@@ -163,6 +169,7 @@ class AttentionShapeTest(unittest.TestCase):
             get_workflow_health=lambda repo: {"workflows": []},
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: hooks,
+            list_skipped_webhooks=lambda: [],
             list_pending_approvals=lambda: [],
             ollama_up=lambda: True,
         )
@@ -175,6 +182,103 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["detail"],
                          "fatal: not possible to fast-forward")
+
+    def test_skip_does_not_resolve_failure(self):
+        # Regression: a skip (ok=True, advanced=False) after a
+        # genuine failure must leave the failure incident open —
+        # the checkout did not advance.
+        import backend.ledger as ledger_mod
+        orig_read = ledger_mod.read
+        ledger_mod.read = lambda kind="all", limit=50: [
+            {"id": "w-skip", "ts": 5.0, "ok": True,
+             "advanced": False, "repo": "arii/remote-server",
+             "detail": "skipped: tree dirty"},
+            {"id": "w-fail", "ts": 1.0, "ok": False,
+             "advanced": False, "repo": "arii/remote-server",
+             "error": "fetch failed"},
+        ]
+        try:
+            out = attention.list_failed_webhooks()
+        finally:
+            ledger_mod.read = orig_read
+        self.assertEqual([e["id"] for e in out], ["w-fail"])
+
+    def test_current_noop_does_not_resolve_failure(self):
+        # An already-current pull records ok=True with
+        # advanced=False; like a skip it proves nothing about the
+        # earlier failure, so the incident stays open.
+        import backend.ledger as ledger_mod
+        orig_read = ledger_mod.read
+        ledger_mod.read = lambda kind="all", limit=50: [
+            {"id": "w-noop", "ts": 5.0, "ok": True,
+             "advanced": False, "repo": "arii/remote-server",
+             "detail": "up to date"},
+            {"id": "w-fail", "ts": 1.0, "ok": False,
+             "advanced": False, "repo": "arii/remote-server",
+             "error": "fetch failed"},
+        ]
+        try:
+            out = attention.list_failed_webhooks()
+        finally:
+            ledger_mod.read = orig_read
+        self.assertEqual([e["id"] for e in out], ["w-fail"])
+
+    def test_skipped_webhooks_newest_per_repo(self):
+        import backend.ledger as ledger_mod
+        orig_read = ledger_mod.read
+        ledger_mod.read = lambda kind="all", limit=200: [
+            {"id": "s-old", "ts": 1.0, "ok": True,
+             "advanced": False, "repo": "r1",
+             "detail": "skipped: tree dirty"},
+            {"id": "s-new", "ts": 2.0, "ok": True,
+             "advanced": False, "repo": "r1",
+             "detail": "skipped: tree not ff-able"},
+            {"id": "s-other", "ts": 3.0, "ok": True,
+             "advanced": False, "repo": "r2",
+             "detail": "skipped: tree dirty"},
+            # Already-current no-op: ok without advance, but not a
+            # skip — never surfaces as a skip item.
+            {"id": "n-noop", "ts": 4.0, "ok": True,
+             "advanced": False, "repo": "r3", "detail": "up to date"},
+            # Advancing pull: clears r2's older skip.
+            {"id": "w-ok", "ts": 5.0, "ok": True,
+             "advanced": True, "repo": "r2", "detail": "merged"},
+        ]
+        try:
+            out = attention.list_skipped_webhooks()
+        finally:
+            ledger_mod.read = orig_read
+        by_repo = {e["repo"]: e for e in out}
+        self.assertEqual(by_repo["r1"]["id"], "s-new")
+        self.assertNotIn("r2", by_repo)
+        self.assertNotIn("r3", by_repo)
+
+    def test_skip_surfaces_as_info_item(self):
+        skips = [
+            {"id": "s1", "ts": 2.0, "ok": True, "advanced": False,
+             "repo": "boomtick", "detail": "skipped: tree dirty"},
+        ]
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: skips,
+            list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        items = [i for i in body["items"]
+                 if i["kind"] == "skipped-webhook"]
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["severity"], "info")
+        self.assertEqual(item["repo"], "boomtick")
+        self.assertIn("skipped: tree dirty", item["detail"])
+        self.assertTrue(item["action"]["label"])
+        self.assertTrue(item["action"]["href"])
 
 
 class SnoozeAttentionTest(unittest.TestCase):
@@ -190,6 +294,7 @@ class SnoozeAttentionTest(unittest.TestCase):
                 {"id": "j1", "name": "n", "state": "failed",
                  "created_at": 1.0}],
             "list_failed_webhooks": lambda: [],
+            "list_skipped_webhooks": lambda: [],
             "list_pending_approvals": lambda: [],
             "ollama_up": lambda: True,
         }.items():
@@ -309,6 +414,7 @@ class OllamaOutageTest(unittest.TestCase):
             "get_workflow_health": lambda repo: {"workflows": []},
             "list_failed_jobs": lambda: [],
             "list_failed_webhooks": lambda: [],
+            "list_skipped_webhooks": lambda: [],
             "list_pending_approvals": lambda: [],
         }.items():
             self._orig[k] = getattr(attention, k)
