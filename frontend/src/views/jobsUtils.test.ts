@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  auditDoneFromOutput,
   completionOutcome,
+  uxAuditPagesFromInput,
+  uxAuditSiteRepo,
   conflictBlockReason,
   defaultComparePair,
   diffLineTone,
@@ -143,6 +146,64 @@ describe('completionOutcome', () => {
       repo: 'r',
     });
     expect(other.planCard).toBeNull();
+  });
+
+  it('names the filed issue for finished ux-audit runs', () => {
+    expect(
+      completionOutcome({
+        runId: 'abc123',
+        action: 'ux-audit',
+        output: 'ux_audit: 5 findings\nAUDIT_DONE arii/boomtick#12 https://u',
+        exitCode: 0,
+        label: 'ux audit boomtick.blog',
+        repo: 'remote-server',
+      }),
+    ).toEqual({
+      notice: 'Finished ux audit boomtick.blog: filed arii/boomtick#12 — https://u',
+      planCard: null,
+    });
+  });
+
+  it('falls back to the result line when the audit did not file', () => {
+    expect(
+      completionOutcome({
+        runId: 'abc123',
+        action: 'ux-audit',
+        output: 'ux_audit: nothing crawled',
+        exitCode: 0,
+        label: 'ux audit boomtick.blog',
+        repo: 'remote-server',
+      }),
+    ).toEqual({
+      notice: 'Finished ux audit boomtick.blog: ux_audit: nothing crawled',
+      planCard: null,
+    });
+  });
+});
+
+describe('ux audit helpers (issue #850)', () => {
+  it('parses AUDIT_DONE lines', () => {
+    expect(auditDoneFromOutput('noise\nAUDIT_DONE arii/boomtick#12 https://u\n')).toEqual({
+      repo: 'arii/boomtick',
+      number: 12,
+      url: 'https://u',
+    });
+    expect(auditDoneFromOutput('no filing here')).toBeNull();
+    expect(auditDoneFromOutput('AUDIT_DONE nope')).toBeNull();
+  });
+
+  it('maps sites to repos, null when unknown', () => {
+    expect(uxAuditSiteRepo('arii.github.io')).toBe('arii.github.io');
+    expect(uxAuditSiteRepo('boomtick.blog')).toBe('boomtick');
+    expect(uxAuditSiteRepo('evil.example')).toBeNull();
+  });
+
+  it('clamps the page cap, defaulting on garbage', () => {
+    expect(uxAuditPagesFromInput('10')).toBe(10);
+    expect(uxAuditPagesFromInput('')).toBe(25);
+    expect(uxAuditPagesFromInput('abc')).toBe(25);
+    expect(uxAuditPagesFromInput('0')).toBe(1);
+    expect(uxAuditPagesFromInput('999')).toBe(200);
   });
 });
 

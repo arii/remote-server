@@ -9,6 +9,8 @@ import {
   SideBySideDiffView,
   TriageFanoutSection,
   UnifiedDiffView,
+  UxAuditGroups,
+  UxAuditSection,
 } from './JobsView';
 import type { JobRecord } from '../apiTypes';
 
@@ -222,6 +224,56 @@ describe('triage fanout launcher (issue #670)', () => {
       <JobListItem
         job={mkJob({ kind: 'triage-fanout', name: 'triage-fanout', done: false })}
         repo="boomtick"
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="job-cancel"');
+  });
+});
+
+describe('ux audit launcher (issue #850)', () => {
+  const noop = () => {};
+
+  it('offers a site picker, page cap, and one-tap dispatch', () => {
+    const html = renderToStaticMarkup(<UxAuditSection onDispatch={noop} />);
+    expect(html).toContain('data-testid="ux-audit-site"');
+    expect(html).toContain('data-testid="ux-audit-pages"');
+    expect(html).toContain('data-testid="dispatch-ux-audit"');
+    expect(html).toContain('>Run UX audit<');
+    expect(html).toContain('arii.github.io');
+    expect(html).toContain('boomtick.blog');
+  });
+
+  it('groups list shows the site and a refresh affordance', () => {
+    const html = renderToStaticMarkup(<UxAuditGroups site="boomtick.blog" />);
+    expect(html).toContain('Latest findings for boomtick.blog');
+    expect(html).toContain('data-testid="ux-audit-refresh"');
+  });
+
+  it('finished audit rows inherit re-run and scheduling', () => {
+    const html = renderToStaticMarkup(
+      <JobListItem
+        job={mkJob({ kind: 'ux-audit', name: 'ux-audit' })}
+        repo="remote-server"
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="job-rerun"');
+    expect(html).toContain('data-testid="job-schedule"');
+    expect(html).not.toContain('asks for confirmation');
+  });
+
+  it('active audit rows offer cancel', () => {
+    const html = renderToStaticMarkup(
+      <JobListItem
+        job={mkJob({ kind: 'ux-audit', name: 'ux-audit', done: false })}
+        repo="remote-server"
         onSelect={noop}
         onRerun={noop}
         onCancel={noop}

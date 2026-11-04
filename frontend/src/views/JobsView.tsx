@@ -5,20 +5,24 @@ import TriageHint from '../components/TriageHint';
 import {
   cancelJobRun,
   clearJobs,
+  dispatchRepair,
   fetchJobRun,
   fetchJobs,
   fetchPlan,
   fetchRunCompare,
+  fetchUxAuditGroups,
   requestTakeover,
   rerunJob,
   startJobRun,
   startTdRun,
+  startUxAuditRun,
 } from '../apiClient';
-import type { RunCompareResult } from '../apiClient';
+import type { RunCompareResult, UxAuditGroup } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadJobs, useMock } from './mockViews';
 import {
+  UX_AUDIT_SITES,
   attachIdFromConflict,
   conflictBlockReason,
   defaultComparePair,
@@ -34,6 +38,8 @@ import {
   prFieldSeed,
   resultLine,
   shouldResetPaneOnClear,
+  uxAuditPagesFromInput,
+  uxAuditSiteRepo,
 } from './jobsUtils';
 import type { DiffLineTone } from './jobsUtils';
 import DangerZone, { dangerEntryFor } from './DangerZone';
@@ -420,6 +426,177 @@ function PlanCardPanel({
       </div>
       {open && <pre className="row-meta">{content ?? 'Loading…'}</pre>}
     </div>
+  );
+}
+
+// Finding groups from the latest audit report (#850): one agent
+// session per group via the normal repair dispatch (issue + site
+// repo + group task spec as focus). Fixes then flow through the
+// existing Review/merge pane.
+export function UxAuditGroups({ site }: { site: string }) {
+  const [groups, setGroups] = useState<UxAuditGroup[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [issue, setIssue] = useState('');
+  const [assigning, setAssigning] = useState<number | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (useMock()) {
+      setGroups([]);
+      return;
+    }
+    setError(null);
+    try {
+      const r = await fetchUxAuditGroups(site);
+      setGroups(r.groups);
+    } catch (err) {
+      setGroups(null);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [site]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function onAssign(group: UxAuditGroup) {
+    const target = issue.trim().replace(/^#+/, '');
+    if (!/^\d+$/.test(target)) {
+      setMessage('Enter the findings issue number first.');
+      return;
+    }
+    const repo = uxAuditSiteRepo(site);
+    if (!repo) {
+      setMessage(`Unknown site repo for ${site}.`);
+      return;
+    }
+    setAssigning(group.index);
+    setMessage(null);
+    try {
+      const r = await dispatchRepair(target, undefined, repo, group.body);
+      setMessage(`Assigned group ${group.index} (${group.category}): ${r.repo}#${r.issue} ${r.status}.`);
+    } catch (err) {
+      setMessage(`Assign failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAssigning(null);
+    }
+  }
+
+  return (
+    <div>
+      <p className="row-meta">
+        Latest findings for {site}
+        {groups !== null ? ` (${groups.length} group${groups.length === 1 ? '' : 's'})` : ''} ·{' '}
+        <button type="button" data-testid="ux-audit-refresh" onClick={() => void load()}>
+          Refresh
+        </button>
+      </p>
+      {error && (
+        <p role="alert" data-testid="ux-audit-groups-error">
+          Couldn&apos;t load findings: {error}
+        </p>
+      )}
+      {message && (
+        <p className="row-meta" data-testid="ux-audit-assign-message">
+          {message}
+        </p>
+      )}
+      {groups !== null && groups.length > 0 && (
+        <>
+          <label className="row-meta" htmlFor="ux-audit-issue">
+            Findings issue{' '}
+            <input
+              id="ux-audit-issue"
+              data-testid="ux-audit-issue"
+              value={issue}
+              onChange={(e) => setIssue(e.target.value)}
+              placeholder="# from the AUDIT_DONE line…"
+              inputMode="numeric"
+              size={8}
+            />
+          </label>
+          <ul>
+            {groups.map((g) => (
+              <li key={g.index} className="detail" data-testid={`ux-audit-group-${g.index}`}>
+                <span className="row-title">
+                  Group {g.index}: {g.category}
+                </span>
+                <p className="row-meta">
+                  {g.count} finding{g.count === 1 ? '' : 's'} · worst: {g.worst}
+                </p>
+                <div className="actions">
+                  <button
+                    type="button"
+                    data-testid={`ux-audit-assign-${g.index}`}
+                    disabled={assigning === g.index}
+                    onClick={() => void onAssign(g)}
+                  >
+                    {assigning === g.index ? 'Assigning…' : 'Assign group'}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Dispatched UX audit launcher (#850): site picker + page cap +
+// Launch through the same launch path as td commands, so live
+// output streams via the run subscription and the finished row
+// inherits re-run, cancel, and scheduling.
+export function UxAuditSection({
+  onDispatch,
+}: {
+  onDispatch: (site: string, maxPages: number) => void;
+}) {
+  const [site, setSite] = useState<string>(UX_AUDIT_SITES[0]);
+  const [pages, setPages] = useState('25');
+  return (
+    <section aria-label="UX audit">
+      <h3>UX audit</h3>
+      <p className="row-meta">
+        Multi-page impeccable audit; files one findings issue to the site&apos;s repo.
+      </p>
+      <div className="actions">
+        <label className="row-meta" htmlFor="ux-audit-site">
+          Site{' '}
+          <select
+            id="ux-audit-site"
+            data-testid="ux-audit-site"
+            value={site}
+            onChange={(e) => setSite(e.target.value)}
+          >
+            {UX_AUDIT_SITES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>{' '}
+        <label className="row-meta" htmlFor="ux-audit-pages">
+          Pages{' '}
+          <input
+            id="ux-audit-pages"
+            data-testid="ux-audit-pages"
+            value={pages}
+            onChange={(e) => setPages(e.target.value)}
+            inputMode="numeric"
+            size={4}
+          />
+        </label>{' '}
+        <button
+          type="button"
+          data-testid="dispatch-ux-audit"
+          onClick={() => onDispatch(site, uxAuditPagesFromInput(pages))}
+        >
+          Run UX audit
+        </button>
+      </div>
+      <UxAuditGroups site={site} />
+    </section>
   );
 }
 
@@ -820,6 +997,12 @@ export default function JobsView({
         repo={repo}
         onDispatch={() =>
           void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)))
+        }
+      />
+
+      <UxAuditSection
+        onDispatch={(site, maxPages) =>
+          void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)))
         }
       />
 

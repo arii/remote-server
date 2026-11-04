@@ -179,6 +179,11 @@ class RepairDispatchRequest(BaseModel):
     # Explicit branch for the dispatch (#708): validated against
     # the scoped repo checkout when present; blank behaves as today.
     branch: str = ""
+    # Group focus (#850): a task-spec markdown override for one
+    # finding group (from the UX audit groups endpoint). Passed
+    # to the worker as --body so the session fixes this group
+    # only; blank dispatches the whole issue as today.
+    focus: str = ""
     # Confirm tap, same shape as pr-action: intent must be
     # "repair-dispatch" with confirmed True.
     intent: str = ""
@@ -219,8 +224,14 @@ class RepairScheduleResult(BaseModel):
     schedule: RepairSchedule | None = None
 
 
+# Group-focus cap (#850): group specs run 2-4KB; 8KB bounds
+# the worker argv while leaving headroom.
+REPAIR_FOCUS_MAX = 8000
+
+
 def _repair_worker_thread(issue_number: int,
-                          repo: str = "remote-server") -> None:
+                          repo: str = "remote-server",
+                          focus: str = "") -> None:
     """Run the repo-scoped repair worker and record state and logs.
 
     Single-flight: dispatch claims the slot before spawning, and the
@@ -237,13 +248,16 @@ def _repair_worker_thread(issue_number: int,
         repair_state["repo"] = repo
         repair_state["log_buffer"] = (
             f"Dispatched repair worker for issue #{issue_number} "
-            f"({repo})\n")
+            f"({repo})"
+            + (" [group focus]\n" if focus else "\n"))
         repair_state["exit_code"] = None
         _repair_proc = None
         _repair_abort = False
     run = _repair_runner or subprocess
     cmd = ["python3", "-m", "core_cli", "repair",
            "--issue", str(issue_number), "--repo", repo]
+    if focus:
+        cmd += ["--body", focus]
     try:
         # cwd = live checkout: the worker path is repo-relative and the
         # image workdir (/app) has no scripts/ dir.
@@ -387,9 +401,10 @@ def _repair_verify_preview(issue_number: int,
             "allowlisted": True, "error": ""}
 
 
-def trigger_repair(issue_number: int, repo: str = "remote-server"):
+def trigger_repair(issue_number: int, repo: str = "remote-server",
+                   focus: str = ""):
     t = threading.Thread(target=_repair_worker_thread,
-                         args=(issue_number, repo), daemon=True)
+                         args=(issue_number, repo, focus), daemon=True)
     t.start()
     return t
 
@@ -689,6 +704,9 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
     if issue_number is None:
         raise HTTPException(
             status_code=400, detail="invalid issue number or url")
+    focus = body.focus if isinstance(body.focus, str) else ""
+    if len(focus) > REPAIR_FOCUS_MAX:
+        raise HTTPException(status_code=400, detail="focus too large")
     try:
         gh = repo_gh(body.repo)
     except ValueError as exc:
@@ -720,11 +738,17 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
         repair_state["repo"] = repo_name
         repair_state["log_buffer"] = (
             f"Dispatched repair worker for issue #{issue_number} "
-            f"({repo_name})\n")
+            f"({repo_name})"
+            + (" [group focus]\n" if focus else "\n"))
         repair_state["exit_code"] = None
         _repair_proc = None
         _repair_abort = False
-    trigger_repair(issue_number, repo_name)
+    # Focus rides positionally only when set: the bare two-arg call
+    # is the long-standing whole-issue shape.
+    if focus:
+        trigger_repair(issue_number, repo_name, focus)
+    else:
+        trigger_repair(issue_number, repo_name)
     return {"ok": True, "issue": issue_number, "status": "running",
             "repo": repo_name}
 
