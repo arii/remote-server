@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, RunsPane, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1203,5 +1203,97 @@ describe('seed staging fills, never sends (issue #507)', () => {
     );
     expect(composerText(empty)).toBe('');
     expect(sendTag(empty)).toContain('disabled');
+  });
+});
+
+describe('chat draft autosave (issue #402)', () => {
+  const noop = () => {};
+
+  function stubSessionStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function composerText(html: string): string | null {
+    const m = html.match(
+      /<textarea[^>]*data-testid="chat-prompt"[^>]*>([\s\S]*?)<\/textarea>/,
+    );
+    return m ? (m[1] as string) : null;
+  }
+
+  it('round-trips the draft through sessionStorage under the draft key', () => {
+    const store = stubSessionStorage();
+    saveChatDraft('half-typed prompt');
+    expect(store.get(CHAT_DRAFT_KEY)).toBe('half-typed prompt');
+    expect(loadChatDraft()).toBe('half-typed prompt');
+  });
+
+  it('restores the draft in the composer on mount', () => {
+    stubSessionStorage({ [CHAT_DRAFT_KEY]: 'half-typed prompt' });
+    const html = renderToStaticMarkup(
+      <ChatView repo="r" seed={null} onSeedUsed={noop} />,
+    );
+    expect(composerText(html)).toBe('half-typed prompt');
+  });
+
+  it('starts with an empty composer when no draft is stored', () => {
+    stubSessionStorage();
+    expect(loadChatDraft()).toBe('');
+    const html = renderToStaticMarkup(
+      <ChatView repo="r" seed={null} onSeedUsed={noop} />,
+    );
+    expect(composerText(html)).toBe('');
+  });
+
+  it('prefers an explicit seed over a stored draft', () => {
+    stubSessionStorage({ [CHAT_DRAFT_KEY]: 'stale draft' });
+    const html = renderToStaticMarkup(
+      <ChatView repo="r" seed="What should I work on next?" onSeedUsed={noop} />,
+    );
+    expect(composerText(html)).toBe('What should I work on next?');
+  });
+
+  it('clears the snapshot on send so the draft is gone after', () => {
+    const store = stubSessionStorage({ [CHAT_DRAFT_KEY]: 'sent prompt' });
+    clearChatDraft();
+    expect(store.has(CHAT_DRAFT_KEY)).toBe(false);
+    expect(loadChatDraft()).toBe('');
+  });
+
+  it('treats missing sessionStorage as empty without throwing', () => {
+    vi.stubGlobal('sessionStorage', undefined);
+    expect(loadChatDraft()).toBe('');
+    expect(() => saveChatDraft('x')).not.toThrow();
+    expect(() => clearChatDraft()).not.toThrow();
+  });
+
+  it('survives storage failures without throwing', () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => {
+        throw new Error('denied');
+      },
+      setItem: () => {
+        throw new Error('denied');
+      },
+      removeItem: () => {
+        throw new Error('denied');
+      },
+    });
+    expect(loadChatDraft()).toBe('');
+    expect(() => saveChatDraft('x')).not.toThrow();
+    expect(() => clearChatDraft()).not.toThrow();
   });
 });
