@@ -15,6 +15,7 @@ import ReviewView, {
   bulkDeferNotice,
   bulkRestoreNotice,
   bulkRowKey,
+  dropMergedPr,
   isRowDeferred,
   issueLabelNames,
   nextPrAfterMerge,
@@ -68,6 +69,46 @@ describe('next PR after merge', () => {
 
   it('returns null when the merged PR is not in the list', () => {
     expect(nextPrAfterMerge([3, 7, 9], 12)).toBeNull();
+  });
+});
+
+describe('merged row leaves the list (issue #472)', () => {
+  function row(n: number) {
+    return {
+      number: n,
+      title: `PR #${n}`,
+      author: 'a',
+      branch: 'b',
+      isDraft: false,
+      ciStatus: 'passing',
+      ciLabel: 'passing',
+      reviewDecision: 'APPROVED',
+      mergeable: 'MERGEABLE',
+      url: `https://example.invalid/${n}`,
+    };
+  }
+
+  it('drops the merged row, keeping the rest in order', () => {
+    expect(dropMergedPr([row(3), row(7), row(9)], 7)?.map((r) => r.number)).toEqual([3, 9]);
+  });
+
+  it('empties the list when the last open PR merges', () => {
+    expect(dropMergedPr([row(7)], 7)).toEqual([]);
+  });
+
+  it('leaves the list alone when the number is absent', () => {
+    const prs = [row(3), row(9)];
+    expect(dropMergedPr(prs, 12)?.map((r) => r.number)).toEqual([3, 9]);
+  });
+
+  it('stays null when the list never loaded', () => {
+    expect(dropMergedPr(null, 7)).toBeNull();
+  });
+
+  it('does not mutate the input list', () => {
+    const prs = [row(3), row(7)];
+    dropMergedPr(prs, 7);
+    expect(prs.map((r) => r.number)).toEqual([3, 7]);
   });
 });
 
