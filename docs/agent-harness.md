@@ -67,6 +67,28 @@ The gate covers read-only chat; write-mode cases (proposal
 validation, dispatch round-trip, repair convergence) are next
 and promote to gating once green on both Ollama and cloud.
 
+## RAG index
+
+`search_docs` (tool + `deep-agent/search_docs.py`) reads the `s5-docs`
+Chroma collection at `deep-agent/chroma_db/`, built by
+`deep-agent/build_index.py` with local `nomic-embed-text` embeddings.
+The index covers repo docs plus Python/TS/TSX sources
+(`backend/`, `deep-agent/` top level, `frontend/src/`, `core_cli/`;
+tests, fixtures, venvs, `node_modules/`, and `dist/` are skipped),
+tagged with `kind` (`doc`|`code`) and `language` metadata.
+
+Rebuild after docs or code change, or whenever `chroma_db/` is wiped:
+
+```
+deep-agent/.venv/bin/python deep-agent/build_index.py
+```
+
+Each run clears the collection first, so re-runs never stack stale
+duplicates. `S5_CHROMA_DIR` / `S5_COLLECTION` / `S5_EMBED_MODEL` /
+`OLLAMA_URL` override the target and embeddings (query side resolves
+the same overrides — index and query can never fork). The index is a
+local runtime artifact: gitignored, never baked into images.
+
 ## Doc map
 
 - `docs/agent-integration-guide.md` — SPA ↔ agent wiring.
