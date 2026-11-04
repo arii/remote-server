@@ -787,3 +787,35 @@ export function resumeChat(
     message,
   });
 }
+
+// Manual digest trigger + status (issue #615). Status stays
+// uncached: the controls re-read it after every run so the
+// last-digest line never shows a stale stamp.
+export interface NotificationsStatus {
+  ntfy_configured: boolean;
+  topic: string;
+  webhook_configured: boolean;
+  digest_interval_hours: number;
+  last_digest: number;
+  enabled_events: string[];
+}
+
+export interface DigestChannelResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+export interface DigestResult {
+  ok: boolean;
+  results: Record<string, DigestChannelResult>;
+  digest: string;
+}
+
+export function fetchNotificationStatus(): Promise<NotificationsStatus> {
+  return getJson<NotificationsStatus>('api/notifications/status');
+}
+
+export function triggerDigest(): Promise<DigestResult> {
+  return postJson<DigestResult>('api/notifications/trigger-digest', {});
+}

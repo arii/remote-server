@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fetchBriefing, fetchLedger } from '../apiClient';
+import { fetchBriefing, fetchLedger, fetchNotificationStatus, triggerDigest } from '../apiClient';
+import type { DigestChannelResult, NotificationsStatus } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
@@ -138,6 +139,159 @@ export function briefingFreshness(data: BriefingResponse, nowMs: number = Date.n
 export interface BriefingAction {
   label: string;
   seed: string;
+}
+
+// Manual digest controls (issue #615). The trigger endpoint answers
+// ok:true even with nowhere to notify, so every user-facing line
+// derives from the configured channels and per-channel results —
+// never from the ok flag (regression guard vs #430) and never from
+// the last_digest stamp alone (vs #532).
+export function digestChannels(status: NotificationsStatus): string[] {
+  const channels: string[] = [];
+  if (status.ntfy_configured) channels.push('ntfy');
+  if (status.webhook_configured) channels.push('webhook');
+  return channels;
+}
+
+export function formatDigestStamp(epochSeconds: number): string {
+  if (!epochSeconds) return 'never sent';
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+export function digestUnconfiguredReason(): string {
+  return (
+    'Notifications not configured — set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL ' +
+    '(see docs/buttons.md).'
+  );
+}
+
+export function digestDisabledReason(
+  status: NotificationsStatus | null,
+  statusErr: string | null,
+  running: boolean,
+): string | null {
+  if (running) return 'Sending digest…';
+  if (statusErr) return 'Notification status unavailable — cannot confirm a channel is configured.';
+  if (!status) return 'Loading notification status…';
+  if (digestChannels(status).length === 0) return digestUnconfiguredReason();
+  return null;
+}
+
+export function digestStatusLine(status: NotificationsStatus): string {
+  const channels = digestChannels(status);
+  if (channels.length === 0) return digestUnconfiguredReason();
+  if (!status.last_digest) return `No digest sent yet · channels: ${channels.join(', ')}`;
+  return `Last digest ${formatDigestStamp(status.last_digest)} · via ${channels.join(', ')}`;
+}
+
+export function digestResultLine(
+  results: Record<string, DigestChannelResult>,
+  sentAt: string,
+): string {
+  const entries = Object.entries(results ?? {});
+  if (entries.length === 0) {
+    return 'Digest built but delivered nowhere — no channel reported a send.';
+  }
+  const okNames = entries.filter(([, r]) => r.ok).map(([name]) => name);
+  const bad = entries
+    .filter(([, r]) => !r.ok)
+    .map(([name, r]) => `${name} failed (${r.error || 'unknown error'})`);
+  if (bad.length === 0) return `Digest sent ${sentAt} via ${okNames.join(', ')}.`;
+  if (okNames.length === 0) return `Digest failed — ${bad.join('; ')}.`;
+  return `Digest partially sent ${sentAt} — ${okNames.join(', ')} ok; ${bad.join('; ')}.`;
+}
+
+export function DigestControlsView({
+  status,
+  statusErr,
+  running,
+  result,
+  onRun,
+}: {
+  status: NotificationsStatus | null;
+  statusErr: string | null;
+  running: boolean;
+  result: string | null;
+  onRun: () => void;
+}) {
+  const reason = digestDisabledReason(status, statusErr, running);
+  const line = statusErr ? `Digest status unavailable — ${statusErr}` : !status ? 'Digest: checking status…' : digestStatusLine(status);
+  return (
+    <section aria-label="Briefing digest">
+      <div className="actions">
+        <button
+          type="button"
+          data-testid="briefing-run-now"
+          disabled={reason !== null}
+          title={reason ?? undefined}
+          onClick={onRun}
+        >
+          {running ? 'Sending…' : 'Run briefing now'}
+        </button>
+      </div>
+      <p className="row-meta" data-testid="briefing-digest-status">
+        {line}
+      </p>
+      {result && (
+        <p className="row-meta" data-testid="briefing-digest-result">
+          {result}
+        </p>
+      )}
+    </section>
+  );
+}
+
+export function DigestControls() {
+  const [status, setStatus] = useState<NotificationsStatus | null>(null);
+  const [statusErr, setStatusErr] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const live = await fetchNotificationStatus();
+        if (!cancelled) setStatus(live);
+      } catch (err) {
+        if (!cancelled) setStatusErr(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function runNow() {
+    if (running) return;
+    setRunning(true);
+    setResult(null);
+    try {
+      const res = await triggerDigest();
+      setResult(digestResultLine(res.results, new Date().toLocaleString()));
+    } catch (err) {
+      setResult(`Digest failed — ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        setStatus(await fetchNotificationStatus());
+        setStatusErr(null);
+      } catch {
+        // Keep the last known status; the result line already reports
+        // this run's outcome.
+      }
+      setRunning(false);
+    }
+  }
+
+  return (
+    <DigestControlsView
+      status={status}
+      statusErr={statusErr}
+      running={running}
+      result={result}
+      onRun={() => void runNow()}
+    />
+  );
 }
 
 // Next actions derived from state, most urgent first, capped at three.
@@ -291,6 +445,7 @@ export default function BriefingView({
           </div>
         )}
       </header>
+      <DigestControls />
       {error && (
         <div data-testid="briefing-error" role="alert">
           Briefing unavailable — {error}
