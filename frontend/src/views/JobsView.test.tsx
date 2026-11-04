@@ -145,3 +145,43 @@ describe('run compare (issue #657)', () => {
     expect(renderToStaticMarkup(<RunComparePanel jobs={[]} />)).toBe('');
   });
 });
+
+describe('job schedule button (issue #655)', () => {
+  const noop = () => {};
+  it('shows Schedule on finished non-destructive runs only', () => {
+    const done = renderToStaticMarkup(
+      <JobListItem job={mkJob()} repo="remote-server" onSelect={noop} onRerun={noop} onCancel={noop} onSchedule={noop} />,
+    );
+    expect(done).toContain('data-testid="job-schedule"');
+    expect(done).toContain('>Schedule…<');
+    const active = renderToStaticMarkup(
+      <JobListItem job={mkJob({ done: false })} repo="remote-server" onSelect={noop} onRerun={noop} onCancel={noop} onSchedule={noop} />,
+    );
+    expect(active).not.toContain('data-testid="job-schedule"');
+  });
+
+  it('hides Schedule on destructive runs and run-td rows keep it', () => {
+    const danger = renderToStaticMarkup(
+      <JobListItem
+        job={mkJob({ kind: 'recreate', name: 'recreate' })}
+        repo="remote-server"
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(danger).not.toContain('data-testid="job-schedule"');
+    const td = renderToStaticMarkup(
+      <JobListItem
+        job={mkJob({ kind: 'run-td', name: 'run-td', td_argv: ['td', 'context-warm'] })}
+        repo="remote-server"
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(td).toContain('data-testid="job-schedule"');
+  });
+});

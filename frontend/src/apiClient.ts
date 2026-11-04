@@ -1041,6 +1041,51 @@ export function setDigestSchedule(cadence: string): Promise<DigestSchedule> {
   return postJson<DigestSchedule>('api/notifications/digest-schedule', { cadence });
 }
 
+// Scheduled jobs actions (issue #655): any non-destructive action
+// (plus run-td argv) can carry a daily/weekly cadence; due runs
+// fire through the standard launch path on the shared tick.
+export interface ActionSchedule {
+  id: string;
+  action: string;
+  td_argv: string[];
+  repo: string;
+  cadence: string;
+  next_run: number;
+  last_run: number | null;
+  last_result: { ok?: boolean; at?: number; run_id?: string; error?: string };
+}
+
+export interface ActionScheduleList {
+  schedules: ActionSchedule[];
+}
+
+export function fetchActionSchedules(): Promise<ActionScheduleList> {
+  return getJson<ActionScheduleList>('api/jobs/schedule');
+}
+
+export function createActionSchedule(body: {
+  action: string;
+  td_argv: string[];
+  repo: string;
+  cadence: string;
+}): Promise<{ ok: boolean; schedule: ActionSchedule }> {
+  return postJson<{ ok: boolean; schedule: ActionSchedule }>('api/jobs/schedule', body).then(
+    (r) => {
+      invalidateViewCaches();
+      return r;
+    },
+  );
+}
+
+export function deleteActionSchedule(id: string): Promise<{ ok: boolean }> {
+  return deleteJson<{ ok: boolean }>(`api/jobs/schedule/${encodeURIComponent(id)}`, {}).then(
+    (r) => {
+      invalidateViewCaches();
+      return r;
+    },
+  );
+}
+
 // Attention snooze (issue #614): hide a queue item id until expiry.
 export interface SnoozeResult {
   ok: boolean;
