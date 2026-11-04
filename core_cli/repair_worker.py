@@ -56,8 +56,15 @@ except ImportError:
             validate_verify_command,
         )
 
-DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+# Parity with deep-agent/model_router.py DEFAULT_OLLAMA_URL: the stack's Ollama
+# host. Replicated instead of imported — model_router pulls deep-agent-only
+# modules (pricing, runs, cli, ledger) that are not on core_cli's sys.path,
+# while core_cli stays stdlib-only and self-contained. Never bake the
+# /api/generate path into the default; endpoints are built by the helpers below.
+DEFAULT_OLLAMA_HOST = "http://ollama:11434"
+OLLAMA_GENERATE_PATH = "/api/generate"
+OLLAMA_TAGS_PATH = "/api/tags"
+DEFAULT_MODEL = "qwen2.5-coder:7b"
 MAX_RETRIES = 3
 
 
@@ -75,10 +82,55 @@ class AgentState(TypedDict):
     branch_name: str
 
 
-def _query_ollama(prompt: str, model: str = DEFAULT_MODEL, url: str = DEFAULT_OLLAMA_URL) -> str:
-    """Send prompt to Ollama generate endpoint and return response text."""
+def _env(name: str, default: str = "") -> str:
+    """Blank-tolerant env lookup (mirrors deep-agent/model_router._env)."""
+    val = os.environ.get(name, default)
+    if not isinstance(val, str) or not val.strip():
+        return default
+    return val
+
+
+def ollama_base_url(raw: Optional[str] = None) -> str:
+    """Stack Ollama host: OLLAMA_URL env (or raw override), path-tolerant.
+
+    Accepts a bare host (with or without trailing slash) or a full
+    /api/generate URL; always returns the bare host. Blank input falls
+    back to the default.
+    """
+    base = raw if raw is not None else _env("OLLAMA_URL", DEFAULT_OLLAMA_HOST)
+    if not isinstance(base, str) or not base.strip():
+        base = DEFAULT_OLLAMA_HOST
+    base = base.strip().rstrip("/")
+    if base.endswith(OLLAMA_GENERATE_PATH):
+        base = base[: -len(OLLAMA_GENERATE_PATH)]
+    return base
+
+
+def ollama_generate_url(raw: Optional[str] = None) -> str:
+    """Full Ollama generate endpoint for the resolved host."""
+    return ollama_base_url(raw) + OLLAMA_GENERATE_PATH
+
+
+def ollama_tags_url(raw: Optional[str] = None) -> str:
+    """Full Ollama tags endpoint for the resolved host."""
+    return ollama_base_url(raw) + OLLAMA_TAGS_PATH
+
+
+def ollama_model(raw: Optional[str] = None) -> str:
+    """Coder model: OLLAMA_MODEL env (or raw override), blank-tolerant."""
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    return _env("OLLAMA_MODEL", DEFAULT_MODEL)
+
+
+def _query_ollama(prompt: str, model: Optional[str] = None, url: Optional[str] = None) -> str:
+    """Send prompt to Ollama generate endpoint and return response text.
+
+    Model and endpoint resolve at call time from OLLAMA_MODEL / OLLAMA_URL
+    (blank-tolerant), so container env always wins over import order.
+    """
     payload = {
-        "model": model,
+        "model": ollama_model(model),
         "prompt": prompt,
         "stream": False,
         "options": {
@@ -86,7 +138,7 @@ def _query_ollama(prompt: str, model: str = DEFAULT_MODEL, url: str = DEFAULT_OL
         },
     }
     req = urllib.request.Request(
-        url,
+        ollama_generate_url(url),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -94,6 +146,51 @@ def _query_ollama(prompt: str, model: str = DEFAULT_MODEL, url: str = DEFAULT_OL
     with urllib.request.urlopen(req, timeout=300) as resp:
         res_data = json.loads(resp.read().decode("utf-8"))
         return res_data.get("response", "")
+
+
+def _model_present(names: List[str], model: str) -> bool:
+    """True when the /api/tags catalog serves the coder model.
+
+    Exact match, or (for an untagged model) any tag of the same base —
+    Ollama resolves untagged pulls to :latest.
+    """
+    for name in names:
+        if name == model:
+            return True
+        if ":" not in model and isinstance(name, str) and name.split(":")[0] == model:
+            return True
+    return False
+
+
+def preflight_ollama(timeout: int = 5) -> Optional[str]:
+    """Check local Ollama is reachable and serves the coder model.
+
+    One GET to /api/tags covers both checks. Returns None when healthy,
+    else a one-line failure naming the endpoint (unreachable) or the
+    model (missing from the catalog). Never raises, never touches the network
+    beyond the single tags probe.
+    """
+    base = ollama_base_url()
+    model = ollama_model()
+    tags_url = base + OLLAMA_TAGS_PATH
+    try:
+        req = urllib.request.Request(tags_url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except Exception as exc:
+        return f"repair: local Ollama unreachable at {tags_url} ({exc})"
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = {}
+    models = data.get("models", []) if isinstance(data, dict) else []
+    names = [m.get("name", "") for m in models if isinstance(m, dict)]
+    if not _model_present(names, model):
+        return (
+            f"repair: local Ollama at {base} is missing model {model!r} "
+            f"(hint: ollama pull {model})"
+        )
+    return None
 
 
 def _extract_code_from_llm_response(response: str) -> str:
@@ -229,7 +326,19 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
             "3. Enclose your full-file code rewrite in markdown code fences (```).\n"
         )
 
-        raw_response = _query_ollama(prompt)
+        try:
+            raw_response = _query_ollama(prompt)
+        except (urllib.error.URLError, OSError) as exc:
+            endpoint = ollama_generate_url()
+            return {
+                "file_contents": file_contents,
+                "current_errors": (
+                    f"Ollama query failed for {file_path} at {endpoint}: {exc} "
+                    f"(hint: is Ollama up at {ollama_base_url()} with model "
+                    f"{ollama_model()!r} pulled?)"
+                ),
+                "retry_count": state.get("retry_count", 0) + 1,
+            }
         rewritten_code = _extract_code_from_llm_response(raw_response)
         file_contents[file_path] = rewritten_code
 
@@ -446,6 +555,18 @@ def build_repair_graph():
 
 def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
     """Run the autonomous repair pipeline for a given issue."""
+    graph = build_repair_graph()
+    if graph is None:
+        print(
+            "Repair worker stub: langgraph is not installed on this system.\n"
+            "Full LangGraph factory line repair worker requires langgraph and ollama.",
+            file=sys.stderr,
+        )
+        return False
+    preflight_error = preflight_ollama()
+    if preflight_error is not None:
+        print(preflight_error, file=sys.stderr)
+        return False
     initial_state: AgentState = {
         "issue_number": issue_number,
         "issue_body": issue_body or "",
@@ -460,14 +581,6 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
         "branch_name": "",
     }
 
-    graph = build_repair_graph()
-    if graph is None:
-        print(
-            "Repair worker stub: langgraph is not installed on this system.\n"
-            "Full LangGraph factory line repair worker requires langgraph and ollama.",
-            file=sys.stderr,
-        )
-        return False
     try:
         final_state = graph.invoke(initial_state)
         return final_state.get("tests_passed", False)
