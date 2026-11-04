@@ -5,6 +5,7 @@ is owned by another program slice, so registration there is out of
 scope) and a tmp ledger dir via BUTTONS_LEDGER_PATH.
 """
 
+import ast
 import json
 import os
 import subprocess
@@ -360,6 +361,19 @@ class BriefingLedgerTest(unittest.TestCase):
         resp = self.client.get("/api/ledger", params={"kind": "jules"})
         self.assertEqual(resp.status_code, 400)
 
+    def test_ledger_agent_turn_kind_queryable(self):
+        # Issue #457: agent turns write kind "agent-turn"; the
+        # allowlist must serve it instead of 400ing.
+        ledger.append({"kind": "agent-turn", "session_id": "s1"})
+        ledger.append({"kind": "run", "action": "x"})
+        resp = self.client.get(
+            "/api/ledger", params={"kind": "agent-turn"})
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "agent-turn")
+        self.assertEqual(entries[0]["session_id"], "s1")
+
     def test_ledger_since_filter(self):
         now = time.time()
         rows = [
@@ -704,6 +718,115 @@ class CliLedgerUnionTest(unittest.TestCase):
             spec.loader.exec_module(mod)
             self.assertEqual(ledger.cli_ledger_path(), cli_resolve(),
                              f"path drift for {case}")
+
+
+def _kind_of_dict(node):
+    """The "kind" string of a Dict literal, or None when absent or
+    not a plain string."""
+    if not isinstance(node, ast.Dict):
+        return None
+    for key, value in zip(node.keys, node.values):
+        if isinstance(key, ast.Constant) and key.value == "kind" \
+                and isinstance(value, ast.Constant) \
+                and isinstance(value.value, str):
+            return value.value
+    return None
+
+
+def _written_ledger_kinds(backend_dir):
+    """Every kind string passed to ledger.append across backend/
+    (tests excluded), resolved statically: calls through names
+    imported from backend.ledger (ledger_append, ledger.append)
+    plus the defining module's own bare append (clear()'s
+    tombstone). Record vars (record = {...}; ledger_append(record))
+    resolve via same-scope Dict assignments. Returns
+    (kinds, unresolved) with unresolved as file:line strings for
+    calls whose kind is not a string literal."""
+    kinds = set()
+    unresolved = []
+    for root, _dirs, files in os.walk(backend_dir):
+        if os.path.basename(root) == "tests":
+            continue
+        for name in sorted(files):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), filename=path)
+            append_names = set()
+            has_ledger_module = False
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                if node.module == "backend.ledger":
+                    for alias in node.names:
+                        if alias.name == "append":
+                            append_names.add(alias.asname or alias.name)
+                elif node.module == "backend":
+                    for alias in node.names:
+                        if alias.name == "ledger":
+                            has_ledger_module = True
+            if os.path.basename(path) == "__init__.py" and \
+                    os.path.basename(os.path.dirname(path)) == "ledger":
+                append_names.add("append")
+
+            def visit(node, assigns):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.Module)):
+                    assigns = dict(assigns)
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                        and isinstance(node.targets[0], ast.Name) \
+                        and isinstance(node.value, ast.Dict):
+                    assigns.setdefault(node.targets[0].id, []).append(
+                        node.value)
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    is_ledger = (
+                        isinstance(func, ast.Name)
+                        and func.id in append_names
+                    ) or (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "append"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "ledger"
+                        and has_ledger_module
+                    )
+                    if is_ledger and node.args:
+                        found = []
+                        arg = node.args[0]
+                        if isinstance(arg, ast.Dict):
+                            found = [arg]
+                        elif isinstance(arg, ast.Name):
+                            found = assigns.get(arg.id, [])
+                        kind = None
+                        for cand in found:
+                            kind = _kind_of_dict(cand) or kind
+                        if kind is not None:
+                            kinds.add(kind)
+                        else:
+                            unresolved.append(f"{path}:{node.lineno}")
+                for child in ast.iter_child_nodes(node):
+                    visit(child, assigns)
+
+            visit(tree, {})
+    return kinds, unresolved
+
+
+class LedgerKindCoverageTest(unittest.TestCase):
+    def test_every_written_kind_is_allowlisted(self):
+        # Issue #457: the allowlist drifted from the writers
+        # ("agent-turn" written, "agent" listed). Every kind string
+        # passed to ledger.append must be queryable via LEDGER_KINDS.
+        backend_dir = os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))
+        kinds, unresolved = _written_ledger_kinds(backend_dir)
+        self.assertEqual(unresolved, [],
+                         f"unresolvable ledger.append kinds: {unresolved}")
+        self.assertIn("agent-turn", kinds,
+                      "coverage scan missed the agent-turn writer")
+        for kind in sorted(kinds):
+            self.assertIn(kind, ledger.LEDGER_KINDS,
+                          f"written kind {kind!r} not in LEDGER_KINDS")
 
 
 if __name__ == "__main__":
