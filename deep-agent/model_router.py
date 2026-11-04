@@ -36,6 +36,7 @@ Routing ladder (policy, 2026-11-02):
 """
 
 import os
+import re
 import urllib.request
 
 import pricing
@@ -129,6 +130,113 @@ def resolve_llm(prefer=None):
             "Ollama unreachable and OLLAMA_STRICT=1 refuses the Nebius fallback"
         )
     return _nebius_spec()
+
+
+# Mid-turn failover (#649): explicit non-5xx codes worth one local
+# retry. 409 is deliberately absent — a conflict is a request/state
+# problem, not spare capacity, so failing over would burn local
+# inference on a doomed request.
+RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# Message shapes for errors that carry no status code (connection and
+# timeout errors rarely do). Positive signals only: auth, validation,
+# not-found, and content-policy errors match nothing here and never
+# fail over.
+_RETRYABLE_MSG = re.compile(
+    r"rate[\s_-]*limit|too many requests|overloaded|over capacity"
+    r"|timed?\s?out|timeout|temporar\w+ unavailable|service unavailable"
+    r"|server error|internal error|bad gateway|gateway timeout"
+    r"|connection (reset|refused|aborted|error|failed|timed?\s?out)"
+    r"|connectionerror|connecterror|try again",
+    re.IGNORECASE,
+)
+
+# OpenAI-compat / httpx / stdlib exception names that mean transient.
+# Searched over the whole MRO so subclasses with unrelated names
+# still match (e.g. a custom error extending ConnectionError).
+_RETRYABLE_TYPE = re.compile(
+    r"RateLimit|TooManyRequests|Timeout|TimedOut|Connect|Connection"
+    r"|Overloaded|Unavailable|ServiceUnavailable|InternalServer"
+    r"|ServerError|BadGateway|GatewayTimeout",
+)
+
+
+def _as_code(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _status_code(exc):
+    """Best-effort HTTP status from OpenAI-compat error shapes.
+
+    Checks status_code/status on the exception itself, then on a
+    nested .response (openai.APIStatusError, httpx.HTTPStatusError).
+    Returns None when no code is present (connection/timeout errors).
+    """
+    seen = (exc, getattr(exc, "response", None))
+    for obj in seen:
+        if obj is None:
+            continue
+        for attr in ("status_code", "status"):
+            code = _as_code(getattr(obj, attr, None))
+            if code is not None:
+                return code
+    return None
+
+
+def is_retryable_error(exc):
+    """True when a failed cloud call is worth one local retry.
+
+    An explicit status code decides: retryable codes (429/408/425
+    plus any 5xx) return True, everything else (400/401/403/404/422,
+    content-policy rejections) returns False. Without a code, match
+    transient type names and message shapes (overloaded, rate limit,
+    timeout, connection). Pure, stdlib-only, heavily unit-tested.
+    """
+    code = _status_code(exc)
+    if code is not None:
+        return code in RETRYABLE_STATUS_CODES or 500 <= code <= 599
+    names = " ".join(cls.__name__ for cls in type(exc).__mro__)
+    if _RETRYABLE_TYPE.search(names):
+        return True
+    return bool(_RETRYABLE_MSG.search(str(exc)))
+
+
+def with_local_fallback(primary_fn, make_local_fn, note_fn,
+                        *, primary_is_local=False):
+    """Run primary_fn(); on a retryable cloud error run one local leg.
+
+    Framework-free: primary_fn is a zero-arg thunk for the cloud
+    call, make_local_fn builds the local leg and returns a zero-arg
+    thunk that runs it, note_fn(exc) announces the failover. Single
+    hop only — local-primary calls and the local leg itself never
+    re-enter (no ping-pong).
+
+    Order on a retryable error: build local, emit the note, run the
+    fallback. Anything else — non-retryable error, local-primary
+    call, local build failure, local leg failure — raises the
+    ORIGINAL error; a failed local leg chains as __cause__ so the
+    primary traceback stays primary and the local error is context.
+    """
+    try:
+        return primary_fn()
+    except Exception as exc:
+        if primary_is_local or not is_retryable_error(exc):
+            raise
+        try:
+            fallback_fn = make_local_fn()
+        except Exception as build_error:
+            raise exc from build_error
+        note_fn(exc)
+        try:
+            return fallback_fn()
+        except Exception as fallback_error:
+            raise exc from fallback_error
 
 
 def chat_kwargs(spec):

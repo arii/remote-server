@@ -475,6 +475,34 @@ def build_model(prefer=None):
     return ChatOpenAI(api_key=os.environ["NEBIUS_API_KEY"], **kwargs), spec
 
 
+def _invoke_with_failover(model, spec, messages):
+    """model.invoke with one local retry on retryable cloud errors.
+
+    Returns (answer, failover): failover is None when the primary
+    leg served, else {"from", "to", "error"} recording which legs
+    ran. Local-primary calls never enter the helper (single hop, no
+    ping-pong); local-unreachable surfaces the ORIGINAL cloud error.
+    """
+    failover = {}
+
+    def _note(exc):
+        failover["error"] = _short_err(exc)
+        print(f"model: {spec['provider']} {_short_err(exc)}"
+              " — retrying locally", file=sys.stderr)
+
+    def _make_local():
+        local_model, local_spec = build_model(prefer="ollama")
+        failover["from"] = f"{spec['provider']}:{spec['model']}"
+        failover["to"] = (f"{local_spec['provider']}:"
+                          f"{local_spec['model']}")
+        return lambda: local_model.invoke(messages)
+
+    answer = model_router.with_local_fallback(
+        lambda: model.invoke(messages), _make_local, _note,
+        primary_is_local=(spec.get("provider") == "ollama"))
+    return answer, (failover or None)
+
+
 def open_checkpointer(path=THREAD_DB):
     """Persistent checkpointer; falls back to per-process memory.
 
@@ -649,13 +677,16 @@ def _salvage_input(agent, config, first_input, tool_messages):
         "results above. Do not make any more tool calls.")]
 
 
-def _stream(agent, first_input, config, model=None):
+def _stream(agent, first_input, config, model=None, spec=None,
+            failover=None):
     """Stream one agent invocation.
 
     Returns (reply, tool_msgs, msgs, salvaged). On a tool-loop
     recursion cutoff with a model available, one final no-tools
     pass answers from gathered evidence instead of dying (same
     salvage as chat_agent); without a model the error propagates.
+    With a spec, the salvage pass gets one local retry on retryable
+    cloud errors, recorded into the failover dict when given.
     """
     from langchain_core.messages import AIMessage, AIMessageChunk  # noqa: E402
     from langgraph.errors import GraphRecursionError  # noqa: E402
@@ -698,8 +729,15 @@ def _stream(agent, first_input, config, model=None):
         if model is None:
             raise
         try:
-            answer = model.invoke(_salvage_input(
-                agent, config, first_input, tool_messages))
+            salvage_msgs = _salvage_input(
+                agent, config, first_input, tool_messages)
+            if spec is None:
+                answer = model.invoke(salvage_msgs)
+            else:
+                answer, info = _invoke_with_failover(
+                    model, spec, salvage_msgs)
+                if info is not None and failover is not None:
+                    failover.update(info)
             salvaged = (answer.content or "").strip()
         except Exception:
             salvaged = ""
@@ -752,7 +790,7 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
                 HumanMessage(content=prompt)]
     try:
         recorder.model_request(len(messages))
-        answer = model.invoke(messages)
+        answer, failover = _invoke_with_failover(model, spec, messages)
         reply = (answer.content or "").strip()
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
@@ -775,15 +813,20 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
                  for k in ("input_tokens", "output_tokens", "total_tokens")}
     recorder.model_response(raw_usage if isinstance(raw_usage, dict)
                             else {})
+    if failover:
+        recorder.event("model_failover", **failover)
     recorder.run_end(True)
     recorder.close()
-    ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
+    served = failover["to"] if failover else \
+        f"{spec['provider']}:{spec['model']}"
+    ledger.record("deep_chat.py", served,
                   thread_id, messages + [AIMessage(content=reply)], started,
                   extra={"repo": repo, "mode": "turn", "intent": "trivial",
                          "prompt": prompt, "trace": recorder.path,
                          "decisions": decisions.build_decisions(
                              [], [], reply,
-                             reason="trivial greeting, fast path")},
+                             reason="trivial greeting, fast path"),
+                         **({"failover": failover} if failover else {})},
                   usage=usage, calls=[])
     return 0
 
@@ -827,9 +870,11 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
         print(f"trimmed {trimmed} aged-out history message(s)",
               file=sys.stderr)
     messages = [HumanMessage(content=prompt)]
+    failover = {}
     try:
         reply, tool_msgs, _, salvaged = _stream(
-            agent, {"messages": messages}, config, model=model)
+            agent, {"messages": messages}, config, model=model,
+            spec=spec, failover=failover)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         recorder.run_end(False)
@@ -863,7 +908,9 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
                         "decisions": decisions.build_decisions(
                             _calls, tool_results, reply,
                             reason=f"{turn_intent} turn, full path"),
-                        **({"salvaged": True} if salvaged else {})},
+                        **({"salvaged": True} if salvaged else {}),
+                        **({"failover": dict(failover)}
+                           if failover else {})},
         usage=_usage, calls=_calls,
     )
     pending = _pending_interrupts(agent, config)
@@ -920,10 +967,11 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     # Batched mode: one decision per action_request, by position.
     first = pending[0].get("value") or {}
     count = len(first.get("action_requests", []) or []) or 1
+    failover = {}
     try:
         reply, tool_msgs, _, salvaged = _stream(
             agent, Command(resume=resume_payload([decision] * count)),
-            config, model=model)
+            config, model=model, spec=spec, failover=failover)
     except Exception as exc:
         reply = f"Sorry, the assistant failed: {_short_err(exc)}"
         recorder.run_end(False)
@@ -959,7 +1007,8 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
                    proposals=approved_proposal_blocks(
                        first.get("action_requests", [])),
                    reason=f"resumed after {verdict}, full path"),
-               **({"salvaged": True} if salvaged else {})},
+               **({"salvaged": True} if salvaged else {}),
+               **({"failover": dict(failover)} if failover else {})},
         usage=_usage, calls=_calls,
     )
     if verdict == "approve":
