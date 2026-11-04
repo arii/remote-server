@@ -123,6 +123,41 @@ class HmacTableTest(unittest.TestCase):
         finally:
             notify_router._resolve_repo_path = orig
 
+    def test_non_main_default_queued(self):
+        # #491: a push to a non-main default branch (hrm on leader)
+        # queues a pull instead of skipping as "not main".
+        orig_resolve = notify_router._resolve_repo_path
+        orig_queue = notify_router._queue_pull
+        notify_router._resolve_repo_path = lambda *_: "/tmp"
+        notify_router._queue_pull = lambda *_: True
+        try:
+            body = json.dumps(
+                {"repository": {"full_name": "arii/hrm",
+                                "default_branch": "leader"},
+                 "ref": "refs/heads/leader"}).encode()
+            r = self._post(body, _sig("s3cret", body))
+            self.assertEqual(r.status_code, 202)
+            self.assertEqual(r.json(),
+                             {"queued": True, "repo": "arii/hrm"})
+        finally:
+            notify_router._resolve_repo_path = orig_resolve
+            notify_router._queue_pull = orig_queue
+
+    def test_non_default_branch_skipped_names_default(self):
+        # #491: off-default pushes still skip, and the reason names
+        # the repo's real default branch.
+        orig = notify_router._resolve_repo_path
+        notify_router._resolve_repo_path = lambda *_: "/tmp"
+        try:
+            body = json.dumps(
+                {"repository": {"full_name": "arii/hrm",
+                                "default_branch": "leader"},
+                 "ref": "refs/heads/feature"}).encode()
+            r = self._post(body, _sig("s3cret", body))
+            self.assertEqual(r.json(), {"skipped": "not leader"})
+        finally:
+            notify_router._resolve_repo_path = orig
+
 
 @unittest.skipUnless(HAS_CLIENT, "notify router not importable")
 class ResolveRepoPathTest(unittest.TestCase):

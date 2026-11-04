@@ -126,7 +126,8 @@ async def github_webhook(request: Request):
             payload = {}
         else:
             return JSONResponse({"error": "bad JSON"}, status_code=400)
-    repo = (payload.get("repository") or {}).get("full_name")
+    repo_info = payload.get("repository") or {}
+    repo = repo_info.get("full_name")
 
     if event == "ping":
         path = _resolve_repo_path(repo or "")
@@ -138,8 +139,13 @@ async def github_webhook(request: Request):
     path = _resolve_repo_path(repo or "")
     if not path:
         return {"ignored": repo}
-    if payload.get("ref") != "refs/heads/main":
-        return {"skipped": "not main"}
+    # Repo-generic default-branch gate (#491): hrm's default is
+    # leader, not main, so a hardcoded refs/heads/main would skip
+    # every hrm push. GitHub sends repository.default_branch on
+    # push deliveries; fall back to main when it is absent.
+    default_branch = repo_info.get("default_branch") or "main"
+    if payload.get("ref") != f"refs/heads/{default_branch}":
+        return {"skipped": f"not {default_branch}"}
     if not _queue_pull(repo, path):
         return {"queued": True, "coalesced": True}
     return JSONResponse({"queued": True, "repo": repo}, status_code=202)
