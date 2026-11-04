@@ -671,6 +671,15 @@ RUN_STORE_SAVE_INTERVAL = 2.0
 RESTART_NOTE = ("note: console restarted while this run was active; "
                 "output ends at the last persist.\n")
 
+# Completed-run TTL (#451): done runs older than this are evicted
+# opportunistically at store sites (start/finish), by the public
+# evict_completed sweep, and at boot rehydrate — mirroring the
+# agent_turn RESULT_TTL sweep, with no background thread.
+# Unfinished runs are never evicted, however old. Each completed
+# run pins up to MAX_OUTPUT of output, so without eviction the
+# registry grows for the life of the process.
+COMPLETED_RUN_TTL = 3600
+
 
 def runs_store_path() -> str:
     """Current run-store file path (env override read dynamically
@@ -678,15 +687,47 @@ def runs_store_path() -> str:
     return os.environ.get("BUTTONS_JOBS_RUNS_PATH", DEFAULT_RUNS_PATH)
 
 
+# Error-line cap for job rows: attention shows one line, never a log.
+JOB_ERROR_MAX = 300
+
+
+def _run_to_job(run):
+    """Job-shaped view of one run record (#451). Pure: the caller
+    snapshots under the registry lock; the row is a fresh dict."""
+    job = {
+        "id": run.get("id", ""),
+        "name": run.get("action", ""),
+        "kind": run.get("action", ""),
+        "repo": run.get("repo", ""),
+        "done": bool(run.get("done")),
+        "exit_code": run.get("exit_code"),
+        "created_at": run.get("started_at", 0),
+        "finished_at": run.get("finished_at"),
+        "td_argv": list(run.get("td_argv", [])),
+        "error": "",
+    }
+    if run.get("awaiting_approval") is True:
+        job["awaiting_approval"] = True
+    if job["done"] and job["exit_code"] not in (None, 0):
+        out = run.get("output")
+        tail = out.strip().splitlines() if isinstance(out, str) else []
+        if tail:
+            job["error"] = tail[-1][-JOB_ERROR_MAX:]
+        else:
+            job["error"] = f"exit {job['exit_code']}"
+    return job
+
+
 class RunRegistry:
-    """Single-flight run records + job list. Ports the runs/jobs
-    dicts, locks, and clear semantics of buttons/server.py."""
+    """Single-flight run records + job list. Ports the runs dict,
+    locks, and clear semantics of buttons/server.py. Runs are the
+    one collection (#451): the job list, clear, and the attention
+    seams all read runs — no second jobs dict."""
 
     def __init__(self, store_path=None):
         self._lock = threading.Lock()
         self.runs = {}
         self.active_id = None
-        self.jobs = {}
         self._seq = 0
         # Push channel state: every real mutation bumps _version and
         # notifies _cond (which shares _lock, so waiters never miss
@@ -782,6 +823,10 @@ class RunRegistry:
             self.runs[rid] = run
         self._seq = seq
         self.active_id = None
+        # A restart must not resurrect long-dead runs: drop stale
+        # completeds now, and persist so the next boot agrees (#451).
+        if self._evict_completed_locked(now):
+            self._persist_locked()
 
     def start_run(self, action, repo="remote-server", td_argv=None):
         """Create a run for an allowlisted action. Exact port of
@@ -792,6 +837,9 @@ class RunRegistry:
             if self.active_id is not None:
                 return (None, "a run is already in progress: "
                               f"{self.active_id}")
+            # Store-site sweep (#451): stale completeds go before
+            # the new record lands. The bump below covers both.
+            self._evict_completed_locked()
             run_id = uuid.uuid4().hex[:12]
             now = time.time()
             run = {
@@ -835,6 +883,10 @@ class RunRegistry:
             run["exit_code"] = exit_code
             run["done"] = True
             run["finished_at"] = time.time()
+            # Store-site sweep (#451): the just-finished run is
+            # fresh, so only older completeds can go. The bump
+            # below covers both.
+            self._evict_completed_locked()
             self._bump()
             self._persist_locked()
 
@@ -900,12 +952,11 @@ class RunRegistry:
         """Clear finished runs (or all). Returns (count, None).
 
         Operates on the runs store (the same store GET /api/jobs
-        lists), not the legacy jobs dict. The all-path refuses
-        with (None, err) while a run is active (#512): deleting
-        the active record would orphan its procs and haunt
-        single-flight with 409s naming an invisible run. Cancel
-        the active run first, then clear-all. Refusals bump
-        nothing, like any other no-op.
+        lists). The all-path refuses with (None, err) while a run
+        is active (#512): deleting the active record would orphan
+        its procs and haunt single-flight with 409s naming an
+        invisible run. Cancel the active run first, then
+        clear-all. Refusals bump nothing, like any other no-op.
         """
         with self._lock:
             if all_jobs:
@@ -931,8 +982,57 @@ class RunRegistry:
                 self._persist_locked()
         return len(to_del), None
 
-    def list_jobs(self):
+    def _evict_completed_locked(self, now=None):
+        """Drop done runs finished over COMPLETED_RUN_TTL ago.
+
+        Returns the evicted count. Caller must hold _lock; the
+        caller bumps + persists (start/finish already do;
+        evict_completed does when the count is nonzero).
+        Unfinished runs never go, however old; done runs with no
+        usable timestamp stay — without an age, eviction would be
+        a guess.
+        """
+        at = time.time() if now is None else now
+        stale = []
+        for rid, run in self.runs.items():
+            if not run.get("done"):
+                continue
+            stamp = run.get("finished_at")
+            if stamp is None:
+                stamp = run.get("started_at")
+            if isinstance(stamp, bool) or \
+                    not isinstance(stamp, (int, float)):
+                continue
+            if at - stamp > COMPLETED_RUN_TTL:
+                stale.append(rid)
+        for rid in stale:
+            del self.runs[rid]
+        return len(stale)
+
+    def evict_completed(self, now=None):
+        """Sweep stale completeds; returns the evicted count (#451).
+
+        The store sites sweep on their own; this is the explicit
+        seam for tests and future scheduled callers. No-ops bump
+        nothing, like any other no-op.
+        """
         with self._lock:
-            out = list(self.jobs.values())
-        out.sort(key=lambda j: j.get("created_at", 0), reverse=True)
-        return out
+            count = self._evict_completed_locked(now)
+            if count:
+                self._bump()
+                self._persist_locked()
+        return count
+
+    def list_jobs(self):
+        """Job-shaped rows over runs, newest first (#451).
+
+        Runs are the one collection: each run maps to the job
+        shape the attention seams read (id/name/repo/done/
+        exit_code/created_at/error). Failed runs carry their last
+        output line as error so the attention item says what
+        broke, not just which run.
+        """
+        with self._lock:
+            ordered = sorted(self.runs.values(),
+                             key=lambda r: r.get("seq", 0), reverse=True)
+            return [_run_to_job(r) for r in ordered]
