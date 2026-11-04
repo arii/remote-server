@@ -196,6 +196,23 @@ function runMeta(run: AgentRun): string {
   return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok · ${runCost(run)}${tools} · ${when}`;
 }
 
+// Compact token count for spoken labels: 11089 -> 11k, 96 -> 96.
+function compactTokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
+}
+
+// Concise accessible name for a Past runs card button. The card's
+// full preview + metadata line used to be the name (~250 chars per
+// Tab stop); the label names id, status, duration, tokens, and day
+// instead. Card text stays visible (and browse-readable): the label
+// only replaces the Tab-stop name, so nothing is aria-hidden.
+export function runButtonLabel(run: AgentRun): string {
+  const when = run.started_ts
+    ? new Date(run.started_ts * 1000).toISOString().slice(0, 10)
+    : 'unknown time';
+  return `Run ${run.id}, ${run.ok ? 'ok' : 'failed'}, ${run.duration_s}s, ${compactTokens(run.tokens)} tokens, ${when}`;
+}
+
 // Dollars trimmed for phone lines: $5 not $5.0000, $0.0008 kept.
 function usd(n: number): string {
   return `$${n.toFixed(4).replace(/\.?0+$/, '')}`;
@@ -340,6 +357,7 @@ export function RunsPane({
             <button
               type="button"
               data-testid={`chat-run-${r.id}`}
+              aria-label={runButtonLabel(r)}
               aria-pressed={selected === r.id}
               onClick={() => onSelect(r.id)}
             >
