@@ -247,6 +247,9 @@ def ast_check_node(state: AgentState) -> Dict[str, Any]:
     ast_errors: List[str] = []
     for file_path, code in file_contents.items():
         res = validate_source_syntax(file_path, code)
+        if res.get("degraded"):
+            logging.warning("syntax gate degraded for %s: %s",
+                            file_path, res["degraded"])
         if not res.get("valid", True):
             err_line = res.get("line")
             err_msg = res.get("error", "Syntax error")

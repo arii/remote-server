@@ -2,10 +2,15 @@
 """AST and syntax pre-validation filter for code edits.
 
 Validates syntax before running expensive integration test suites.
-Catches basic syntax errors (unclosed brackets, invalid indentation, etc.) in <5ms.
+Python parses via ast; JS-family files use node --check (.js) or the
+TypeScript transpiler (.ts/.tsx/.jsx, syntax only). When the
+toolchain is absent the bracket heuristic applies and the result
+carries a "degraded" label so a valid never silently means
+compiler-verified.
 """
 
 import ast
+import json
 import os
 import re
 import shutil
@@ -145,65 +150,146 @@ def _validate_python(code: str) -> Dict[str, Any]:
         return {"valid": False, "error": error_str, "line": line_num}
 
 
+_TS_DRIVER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "ts_check.js")
+
+
+def _ts_lib_dir() -> Optional[str]:
+    """Directory containing typescript.js, or None.
+
+    TS_LIB_DIR first (worker image), else the repo's own frontend
+    toolchain (dev checkouts with node_modules installed).
+    """
+    env = os.environ.get("TS_LIB_DIR", "").strip()
+    if env and os.path.isfile(os.path.join(env, "typescript.js")):
+        return env
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dev = os.path.join(repo, "frontend", "node_modules", "typescript",
+                       "lib")
+    if os.path.isfile(os.path.join(dev, "typescript.js")):
+        return dev
+    return None
+
+
+def _transpile_check(node_bin: str, file_path: str,
+                     code: str) -> Optional[Dict[str, Any]]:
+    """Syntax-check via the TypeScript transpiler. None when the
+    toolchain is unusable (caller falls back to brackets)."""
+    lib = _ts_lib_dir()
+    if lib is None or not os.path.isfile(_TS_DRIVER):
+        return None
+    ext = os.path.splitext(file_path)[1].lower()
+    with tempfile.NamedTemporaryFile("w", suffix=ext or ".ts",
+                                     delete=False,
+                                     encoding="utf-8") as f:
+        f.write(code)
+        tmp_name = f.name
+    try:
+        env = dict(os.environ)
+        env["TS_LIB_DIR"] = lib
+        proc = subprocess.run(
+            [node_bin, _TS_DRIVER, tmp_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except ValueError:
+        return None
+    if payload.get("fatal") or not isinstance(
+            payload.get("errors"), list):
+        return None
+    errors = payload["errors"]
+    if not errors:
+        return {"valid": True, "error": None, "line": None,
+                "degraded": None}
+    first = errors[0] if isinstance(errors[0], dict) else {}
+    line = first.get("line")
+    msg = str(first.get("message", "Syntax error"))
+    return {"valid": False,
+            "error": f"{msg} (line {line})" if line else msg,
+            "line": line if isinstance(line, int) else None,
+            "degraded": None}
+
+
+def _bracket_result(code: str, reason: str) -> Dict[str, Any]:
+    """Bracket-heuristic verdict, always labeled degraded: a valid
+    here means balanced, never compiler-verified."""
+    is_balanced, err, line_num = _check_bracket_balance(code)
+    if not is_balanced:
+        return {"valid": False, "error": err, "line": line_num,
+                "degraded": reason}
+    return {"valid": True, "error": None, "line": None,
+            "degraded": reason}
+
+
 def _validate_javascript_typescript(file_path: str, code: str) -> Dict[str, Any]:
-    """Validate JavaScript/TypeScript code using node --check or bracket balance heuristics."""
+    """Validate JS/TS via node --check (.js), the TypeScript
+    transpiler (.ts/.tsx/.jsx), or labeled bracket fallback."""
     ext = os.path.splitext(file_path)[1].lower()
     node_bin = shutil.which("node")
 
-    # If node is available, attempt syntax validation with node
+    # .ts/.tsx/.jsx go through the TypeScript transpiler (syntax
+    # only, no module resolution): node --check cannot parse types
+    # or JSX, and brackets false-pass real errors (issue #488).
+    if ext in (".ts", ".tsx", ".jsx"):
+        if node_bin:
+            res = _transpile_check(node_bin, file_path, code)
+            if res is not None:
+                return res
+        return _bracket_result(
+            code, "bracket heuristic (node/typescript unavailable)")
+
+    # Plain JS: node --check when available, labeled fallback otherwise.
     if node_bin:
         try:
-            # We first try subprocess with node --check -e or stdin / temp file.
-            # Plain node --check works cleanly on .js / .mjs files via temp file or stdin.
-            # For .jsx, .ts, .tsx, node check may fail with ERR_UNKNOWN_FILE_EXTENSION
-            # or JSX syntax errors unless transpiled.
-            # Test if node can check it:
-            if ext in (".js", ".mjs", ".cjs"):
-                with tempfile.NamedTemporaryFile("w", suffix=ext, delete=False, encoding="utf-8") as f:
-                    f.write(code)
-                    tmp_name = f.name
+            with tempfile.NamedTemporaryFile("w", suffix=ext, delete=False, encoding="utf-8") as f:
+                f.write(code)
+                tmp_name = f.name
+            try:
+                proc = subprocess.run(
+                    [node_bin, "--check", tmp_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            finally:
                 try:
-                    proc = subprocess.run(
-                        [node_bin, "--check", tmp_name],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                finally:
-                    try:
-                        os.remove(tmp_name)
-                    except OSError:
-                        pass
+                    os.remove(tmp_name)
+                except OSError:
+                    pass
 
-                if proc.returncode != 0:
-                    err_output = proc.stderr or proc.stdout
-                    # Extract line number if present
-                    line_match = re.search(r":(\d+)", err_output)
-                    line_num = int(line_match.group(1)) if line_match else None
-                    first_err_line = err_output.strip().splitlines()[-1] if err_output.strip() else "Syntax error"
-                    for l in err_output.splitlines():
-                        if "SyntaxError" in l or "Error" in l:
-                            first_err_line = l.strip()
-                            break
-                    error_msg = f"{first_err_line} (line {line_num})" if line_num else first_err_line
-                    return {"valid": False, "error": error_msg, "line": line_num}
-                else:
-                    return {"valid": True, "error": None, "line": None}
+            if proc.returncode != 0:
+                err_output = proc.stderr or proc.stdout
+                # Extract line number if present
+                line_match = re.search(r":(\d+)", err_output)
+                line_num = int(line_match.group(1)) if line_match else None
+                first_err_line = err_output.strip().splitlines()[-1] if err_output.strip() else "Syntax error"
+                for l in err_output.splitlines():
+                    if "SyntaxError" in l or "Error" in l:
+                        first_err_line = l.strip()
+                        break
+                error_msg = f"{first_err_line} (line {line_num})" if line_num else first_err_line
+                return {"valid": False, "error": error_msg, "line": line_num,
+                        "degraded": None}
             else:
-                # For .jsx, .ts, .tsx, or if node check is not suitable, use bracket balance heuristics
-                is_balanced, err, line_num = _check_bracket_balance(code)
-                if not is_balanced:
-                    return {"valid": False, "error": err, "line": line_num}
-                return {"valid": True, "error": None, "line": None}
+                return {"valid": True, "error": None, "line": None,
+                        "degraded": None}
         except Exception:
             # Fall back to bracket balance heuristics if subprocess execution fails
             pass
 
-    # Fallback to bracket/brace balance heuristics if node is not available or failed
-    is_balanced, err, line_num = _check_bracket_balance(code)
-    if not is_balanced:
-        return {"valid": False, "error": err, "line": line_num}
-    return {"valid": True, "error": None, "line": None}
+    return _bracket_result(
+        code, "bracket heuristic (node/typescript unavailable)")
 
 
 def validate_source_syntax(file_path: str, code: str) -> Dict[str, Any]:
@@ -213,7 +299,9 @@ def validate_source_syntax(file_path: str, code: str) -> Dict[str, Any]:
         {
             "valid": bool,
             "error": str or None,
-            "line": int or None
+            "line": int or None,
+            "degraded": str or None (JS/TS only: set when the
+                bracket heuristic stood in for the toolchain)
         }
     """
     _, ext = os.path.splitext(file_path)
@@ -244,6 +332,8 @@ def main(argv=None) -> None:
         code = f.read()
 
     result = validate_source_syntax(file_path, code)
+    if result.get("degraded"):
+        print(f"DEGRADED: {result['degraded']}")
     if result["valid"]:
         print(f"VALID: {file_path}")
         sys.exit(0)

@@ -8,6 +8,11 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core_cli.ast_validator import validate_source_syntax, _check_bracket_balance
+from core_cli.ast_validator import _ts_lib_dir
+
+
+def _ts_toolchain_available():
+    return bool(shutil.which("node")) and _ts_lib_dir() is not None
 
 
 class TestAstValidator(unittest.TestCase):
@@ -93,17 +98,68 @@ class TestAstValidator(unittest.TestCase):
         self.assertIsNone(line)
 
     def test_jsx_tsx_handling(self):
-        valid_tsx = "const Comp = () => {\n  return <div><span>Hello</span></div>;\n};\n"
-        res = validate_source_syntax("component.tsx", valid_tsx)
-        self.assertTrue(res["valid"])
-        self.assertIsNone(res["error"])
-        self.assertIsNone(res["line"])
+        # Bracket-fallback contract (toolchain absent): real-toolchain
+        # cases live in the transpile tests below.
+        with patch("core_cli.ast_validator.shutil.which", return_value=None):
+            valid_tsx = "const Comp = () => {\n  return <div><span>Hello</span></div>;\n};\n"
+            res = validate_source_syntax("component.tsx", valid_tsx)
+            self.assertTrue(res["valid"])
+            self.assertIsNone(res["error"])
+            self.assertIsNone(res["line"])
 
-        invalid_tsx = "const Comp = () => {\n  return <div><span>Hello</span></div>;\n"
-        res_invalid = validate_source_syntax("component.tsx", invalid_tsx)
-        self.assertFalse(res_invalid["valid"])
-        self.assertIsNotNone(res_invalid["error"])
-        self.assertEqual(res_invalid["line"], 1)
+            invalid_tsx = "const Comp = () => {\n  return <div><span>Hello</span></div>;\n"
+            res_invalid = validate_source_syntax("component.tsx", invalid_tsx)
+            self.assertFalse(res_invalid["valid"])
+            self.assertIsNotNone(res_invalid["error"])
+            self.assertEqual(res_invalid["line"], 1)
+
+    @unittest.skipUnless(_ts_toolchain_available(),
+                         "node + typescript lib unavailable")
+    def test_ts_rejects_bad_annotation(self):
+        # Issue #488 probe: bracket-balanced but syntactically invalid.
+        res = validate_source_syntax("a.ts", "const x: = 3;\n")
+        self.assertFalse(res["valid"])
+        self.assertIsNotNone(res["error"])
+        self.assertIsNone(res.get("degraded"))
+
+    @unittest.skipUnless(_ts_toolchain_available(),
+                         "node + typescript lib unavailable")
+    def test_ts_rejects_unbalanced_paren_in_template(self):
+        # Issue #488 probe: template bodies are skipped wholesale by
+        # the bracket heuristic, so this false-passes without tsc.
+        res = validate_source_syntax(
+            "a.ts", "const s = `value: ${(1 + 2};\n")
+        self.assertFalse(res["valid"])
+        self.assertIsNotNone(res["error"])
+
+    @unittest.skipUnless(_ts_toolchain_available(),
+                         "node + typescript lib unavailable")
+    def test_tsx_valid_through_transpile(self):
+        code = ("const Comp = (): unknown => {\n"
+                "  return <div><span>Hello</span></div>;\n"
+                "};\n")
+        res = validate_source_syntax("component.tsx", code)
+        self.assertTrue(res["valid"])
+        self.assertIsNone(res.get("degraded"))
+
+    @unittest.skipUnless(_ts_toolchain_available(),
+                         "node + typescript lib unavailable")
+    def test_ts_ignores_unresolved_imports(self):
+        # Transpile is syntax-only: missing modules must not fail the
+        # gate (files validate standalone, outside node_modules).
+        res = validate_source_syntax(
+            "a.ts", "import { x } from './nonexistent';\n"
+                    "export const y: number = x;\n")
+        self.assertTrue(res["valid"])
+
+    def test_fallback_labels_degraded(self):
+        with patch("core_cli.ast_validator.shutil.which", return_value=None):
+            res = validate_source_syntax("a.ts", "const x = 1;\n")
+            self.assertTrue(res["valid"])
+            self.assertIsNotNone(res.get("degraded"))
+            res_js = validate_source_syntax("a.js", "const x = 1;\n")
+            self.assertTrue(res_js["valid"])
+            self.assertIsNotNone(res_js.get("degraded"))
 
     def test_unsupported_file_types(self):
         # Unsupported file types (md, html, sh, json, etc.) should return valid: True
