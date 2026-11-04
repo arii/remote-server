@@ -779,9 +779,9 @@ def _notify_seed_path() -> str:
     return action_schedule_path() + ".seeded"
 
 
-def _load_notify_seeded() -> list:
+def _load_seed_names(path: str) -> list:
     try:
-        with open(_notify_seed_path(), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             names = json.load(f)
         if isinstance(names, list):
             return [n for n in names if isinstance(n, str)]
@@ -790,8 +790,7 @@ def _load_notify_seeded() -> list:
     return []
 
 
-def _save_notify_seeded(names) -> None:
-    path = _notify_seed_path()
+def _save_seed_names(path: str, names) -> None:
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
@@ -799,6 +798,14 @@ def _save_notify_seeded(names) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(sorted(set(names)), f)
     os.replace(tmp, path)
+
+
+def _load_notify_seeded() -> list:
+    return _load_seed_names(_notify_seed_path())
+
+
+def _save_notify_seeded(names) -> None:
+    _save_seed_names(_notify_seed_path(), names)
 
 
 def _ensure_default_notify_schedules(now: float | None = None) -> int:
@@ -845,12 +852,77 @@ def _ensure_default_notify_schedules(now: float | None = None) -> int:
         return 0
 
 
+# Default autofile seeds (#825): one daily autofile-scan schedule
+# per checkout, same shape as the notify seeds above. The sentinel
+# is a separate file so deleting a notify schedule never re-arms
+# (or disarms) the autofile seed for that repo, and vice versa.
+# The grid sits half a stagger off the notify grid: daily is an
+# exact multiple of quarter-hourly (86400 = 96 * 900), so a shared
+# phase would contend single-flight on the same tick every day and
+# the loser would slip a full interval; the 60s offset keeps the
+# two first-firings (and their steady states) on different ticks.
+AUTOFILE_SEED_ACTION = "autofile-scan"
+AUTOFILE_SEED_CADENCE = "daily"
+AUTOFILE_SEED_OFFSET = 60
+
+
+def _autofile_seed_path() -> str:
+    return action_schedule_path() + ".autofile-seeded"
+
+
+def _ensure_default_autofile_schedules(
+        now: float | None = None) -> int:
+    """Seed one autofile schedule per checkout. Same contract as
+    the notify seed: operator deletes stick, new checkouts seed on
+    a later tick, the first seed is due immediately, rows stagger
+    by NOTIFY_SEED_STAGGER each, offset off the notify grid by
+    AUTOFILE_SEED_OFFSET. Never raises."""
+    try:
+        repos = _notify_seed_repos()
+        if not repos:
+            return 0
+        missing = [r for r in repos
+                   if r not in _load_seed_names(_autofile_seed_path())]
+        if not missing:
+            return 0
+        at = time.time() if now is None else now
+        with action_schedule_lock:
+            done = set(_load_seed_names(_autofile_seed_path()))
+            missing = [r for r in repos if r not in done]
+            if not missing:
+                return 0
+            state = load_action_schedules()
+            live = {s.get("repo") for s in state.values()
+                    if isinstance(s, dict)
+                    and s.get("action") == AUTOFILE_SEED_ACTION}
+            fresh = [r for r in missing if r not in live]
+            base = len(live) * NOTIFY_SEED_STAGGER
+            for idx, name in enumerate(fresh):
+                sid = uuid.uuid4().hex[:12]
+                state[sid] = {"action": AUTOFILE_SEED_ACTION,
+                              "td_argv": [], "repo": name,
+                              "cadence": AUTOFILE_SEED_CADENCE,
+                              "next_run": at + base
+                              + idx * NOTIFY_SEED_STAGGER
+                              + AUTOFILE_SEED_OFFSET,
+                              "last_run": None,
+                              "last_result": {}}
+            if fresh:
+                save_action_schedules(state)
+            _save_seed_names(_autofile_seed_path(),
+                             done | set(missing))
+        return len(fresh)
+    except Exception:
+        return 0
+
+
 def fire_due_action_schedules(now: float | None = None) -> int:
     """Fire every due action schedule. Returns the fired count.
     Never raises: the shared tick must not die on a job failure."""
     try:
         at = time.time() if now is None else now
         _ensure_default_notify_schedules(at)
+        _ensure_default_autofile_schedules(at)
         fired = 0
         for sid, sched in _claim_due_action_schedules(at):
             try:
