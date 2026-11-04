@@ -102,6 +102,41 @@ def extract_prefer(argv):
     return "auto"
 
 
+def build_agent(worktree, model, spec, recorder=None):
+    """create_deep_agent resolver: git tools + real-disk backend.
+
+    The resolver works the merge itself: the default
+    general-purpose subagent is disabled for spec, so there is no
+    unrequested task hop on the (possibly metered) model. (#539)
+    """
+    model_router.disable_general_purpose(spec)
+    kwargs = {}
+    if recorder is not None:
+        kwargs["middleware"] = observe.trace_middleware(recorder)
+    return create_deep_agent(
+        model=model,
+        tools=[git_status, git_merge_base, git_show_stage, git_diff_check],
+        system_prompt=(
+            "You resolve a git merge conflict in the current directory "
+            "(a repair worktree; you see it as '.'). Modify ONLY files "
+            "that contain conflict markers from the merge. Never touch .git."
+            "\nSteps: 1) git_status. 2) git_merge_base. 3) For each "
+            "conflicted file: read it, resolve every marker block by "
+            "combining both sides' intent (for add/add conflicts use "
+            "git_show_stage to see ours=2 and theirs=3, then union them "
+            "sensibly with no duplication), apply with edit_file using "
+            "exact matches. 4) git_diff_check until CLEAN. 5) Final "
+            "message: per-file summary of what you kept from each side."
+            "\nRules: no unrelated edits; when a hunk is ambiguous, keep "
+            "both sides' content in a sensible order instead of deleting; "
+            "never leave markers behind."
+        ),
+        backend=FilesystemBackend(root_dir=worktree, virtual_mode=True),
+        checkpointer=MemorySaver(),
+        **kwargs,
+    )
+
+
 def main() -> int:
     global WORKTREE, BASE
     started = time.time()
@@ -169,28 +204,7 @@ def main() -> int:
     recorder = observe.TraceRecorder(
         observe.default_trace_path("resolve_conflicts", thread))
     recorder.run_start("resolve_conflicts.py", thread, label)
-    agent = create_deep_agent(
-        model=model,
-        tools=[git_status, git_merge_base, git_show_stage, git_diff_check],
-        system_prompt=(
-            "You resolve a git merge conflict in the current directory "
-            "(a repair worktree; you see it as '.'). Modify ONLY files "
-            "that contain conflict markers from the merge. Never touch .git."
-            "\nSteps: 1) git_status. 2) git_merge_base. 3) For each "
-            "conflicted file: read it, resolve every marker block by "
-            "combining both sides' intent (for add/add conflicts use "
-            "git_show_stage to see ours=2 and theirs=3, then union them "
-            "sensibly with no duplication), apply with edit_file using "
-            "exact matches. 4) git_diff_check until CLEAN. 5) Final "
-            "message: per-file summary of what you kept from each side."
-            "\nRules: no unrelated edits; when a hunk is ambiguous, keep "
-            "both sides' content in a sensible order instead of deleting; "
-            "never leave markers behind."
-        ),
-        backend=FilesystemBackend(root_dir=WORKTREE, virtual_mode=True),
-        checkpointer=MemorySaver(),
-        middleware=observe.trace_middleware(recorder),
-    )
+    agent = build_agent(WORKTREE, model, spec, recorder=recorder)
     outcome = {}
 
     def _invoke():
