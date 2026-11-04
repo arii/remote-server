@@ -187,6 +187,17 @@ def failure_signature(entry: dict):
     kind = entry.get("kind")
     if kind not in AUTOFILE_KINDS:
         return None
+    # Heal/skip rows stay out of autofile (#855): a skipped pull is
+    # an operator nudge with its own recovery tap (the Now queue),
+    # never a fileable failure — even when its heal note carries a
+    # failure word. Genuine failures (ok False: fetch/merge/crash)
+    # are unaffected and still file.
+    if kind == "webhook" and entry.get("ok") is not False:
+        detail = entry.get("detail")
+        if entry.get("skip_reason") or entry.get("heal") or (
+                isinstance(detail, str)
+                and detail.strip().lower().startswith("skipped")):
+            return None
     repo = entry.get("repo")
     if not repo or not isinstance(repo, str):
         return None

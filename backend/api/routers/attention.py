@@ -34,6 +34,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend import ledger
+from backend import webhook_heal
 from backend.api.routers import ops
 from backend.api.routers.jobs import registry
 from backend.core import validate_repo_name
@@ -466,6 +467,13 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             continue
         detail = str(e.get("detail") or e.get("error") or e.get("event")
                      or "webhook pull skipped")
+        # Inline cause (#855): the machine reason + ladder outcome
+        # compose the precise recovery sentence after the raw skip
+        # line, so the operator never has to decode git output.
+        cause = webhook_heal.cause_for(e) if isinstance(e, dict) \
+            else ""
+        if cause:
+            detail = f"{detail} — {cause}"[:300]
         eid = e.get("id", e.get("ts", "?"))
         items.append({
             "id": f"webhook-skip-{eid}",
@@ -474,9 +482,9 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             "detail": detail,
             "repo": repo,
             "severity": "info",
-            "action": {"label": "View jobs", "method": "GET",
-                       "href": "api/jobs", "destructive": False,
-                       "intent": ""},
+            "action": {"label": "Retry pull", "method": "POST",
+                       "href": f"api/webhook/retry?repo={repo}",
+                       "destructive": False, "intent": ""},
             "created_at": float(e.get("ts", now) or now),
         })
     for e in list_pending_approvals():

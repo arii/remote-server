@@ -405,3 +405,108 @@ describe('exit-aware failures (issue #473)', () => {
     expect(rows[0].recovery).not.toBe('');
   });
 });
+
+describe('webhook skip recovery (issue #855)', () => {
+  const skip = (detail: string, over = {}) => ({
+    kind: 'webhook',
+    repo: 'remote-server',
+    ok: true,
+    detail,
+    ts: 1700000000,
+    ...over,
+  });
+
+  it('hints stash-or-commit on a dirty skip, staying tone-ok', () => {
+    const rows = toHistoryRows(
+      [],
+      [skip('skipped: tree dirty — behind by 3 (local changes)')],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].recovery).toBe(
+      'stash or commit local changes, then retry the pull',
+    );
+  });
+
+  it('hints rebase on a diverged skip', () => {
+    const rows = toHistoryRows(
+      [],
+      [skip('skipped: tree not ff-able — behind by 1 (local changes)')],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].recovery).toBe(
+      'rebase local commits onto the remote default, then retry',
+    );
+  });
+
+  it('hints the held stash on a stash-held skip', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        skip(
+          'skipped: tree dirty — behind by 1 (local changes) — heal stash-held: '
+            + 'pull applied but the stash (stash@{0}) needs a hand',
+          {
+            skip_reason: 'dirty-tree',
+            heal: 'stash-held',
+            stash_ref: 'stash@{0}',
+            heal_note: 'pull applied but the stash (stash@{0}) needs a hand',
+          },
+        ),
+      ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].recovery).toBe(
+      'resolve the held stash, then retry the pull',
+    );
+    expect(rows[0].detail).toContain('skip: dirty-tree');
+    expect(rows[0].detail).toContain('heal: stash-held (stash@{0})');
+    expect(rows[0].detail).toContain('note: pull applied but the stash');
+  });
+
+  it('hints the remote default on a no-default skip', () => {
+    const rows = toHistoryRows(
+      [],
+      [skip('skipped: no remote default branch')],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].recovery).toBe(
+      'set the remote default branch, then retry',
+    );
+  });
+
+  it('keeps repeated skips folding into one ×N row with recovery', () => {
+    const rows = toHistoryRows(
+      [],
+      [0, 1, 2].map((i) =>
+        skip('skipped: tree dirty — behind by 3 (local changes)', {
+          ts: 1700000000 - i,
+        }),
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toMatch(/×3/);
+    expect(rows[0].summary).not.toContain('same failure repeated');
+    expect(rows[0].recovery).not.toBe('');
+  });
+
+  it('leaves healed and current pulls without recovery', () => {
+    const rows = toHistoryRows(
+      [],
+      [
+        skip('healed: Updating aaa..ooo (stash round-trip)', {
+          skip_reason: 'dirty-tree',
+          heal: 'stash-pull-pop',
+          ts: 1700000002,
+        }),
+        { kind: 'webhook', detail: 'up to date', ts: 1700000001 },
+      ],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0].tone).toBe('ok');
+    expect(rows[0].recovery).toBe('');
+    expect(rows[1].recovery).toBe('');
+  });
+});
