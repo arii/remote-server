@@ -255,16 +255,17 @@ services:
       NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
+    # init reaps the entrypoint's background index build (#699).
+    init: true
     healthcheck:
       # Plain python stdlib (image has no curl/wget): 200 on /health.
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
-      # First boot builds the RAG index in the entrypoint (~4 min on
-      # the S5 for ~1800 chunks, #562); plain restarts skip it via
-      # the present-index fast path.
-      start_period: 330s
+      # Boot is fast: the RAG index builds in the background (#699)
+      # while uvicorn already serves; /health reports its state.
+      start_period: 60s
     logging: *default-logging
     restart: unless-stopped
     # In-flight SSE chat streams run minutes on CPU-Ollama; uvicorn drains

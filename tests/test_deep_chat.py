@@ -499,6 +499,20 @@ class TestToolSurface(unittest.TestCase):
             self.assertIn("unavailable", by_name["search_docs"].invoke(
                 {"query": "how to"}))
 
+    def test_search_docs_warming_message(self):
+        from unittest import mock
+
+        import retrieval
+
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        with mock.patch.object(
+                retrieval, "get_retriever",
+                side_effect=retrieval.IndexNotReadyError(
+                    retrieval.WARMING_MESSAGE)):
+            self.assertEqual(
+                by_name["search_docs"].invoke({"query": "how to"}),
+                "RAG index is warming, retry shortly")
+
     def test_propose_action_tool(self):
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
         out = by_name["propose_action"].invoke(

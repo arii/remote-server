@@ -28,6 +28,7 @@ from langchain_ollama import ChatOllama  # noqa: E402
 import ledger  # noqa: E402
 import model_router  # noqa: E402
 import observe  # noqa: E402
+import retrieval  # noqa: E402
 import runs  # noqa: E402
 import s5tools  # noqa: E402
 
@@ -67,6 +68,7 @@ _retriever = None
 
 def _retriever_for():
     global _retriever
+    retrieval.require_ready()
     if _retriever is None:
         from langchain_chroma import Chroma
         from langchain_ollama import OllamaEmbeddings
@@ -93,6 +95,8 @@ def search_docs(query: str) -> str:
         return "REJECTED: bad query"
     try:
         hits = _retriever_for().invoke(query)
+    except retrieval.IndexNotReadyError as exc:
+        return str(exc)
     except Exception as exc:
         return f"doc search unavailable: {exc}"
     parts = [

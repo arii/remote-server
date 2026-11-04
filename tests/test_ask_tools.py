@@ -183,6 +183,18 @@ class TestAskTools(unittest.TestCase):
                 ai.search_docs.invoke({"query": "run server"}),
             )
 
+    def test_search_docs_warming_message(self):
+        import retrieval
+
+        with mock.patch.object(
+                ai, "_retriever_for",
+                side_effect=retrieval.IndexNotReadyError(
+                    retrieval.WARMING_MESSAGE)):
+            self.assertEqual(
+                ai.search_docs.invoke({"query": "run server"}),
+                "RAG index is warming, retry shortly",
+            )
+
     def test_grep_skips_index_and_log_noise(self):
         # Regression: code-locate failed 4/5 live because .boomtick /
         # chroma_db / ledger noise flooded grep's -m 20 window and

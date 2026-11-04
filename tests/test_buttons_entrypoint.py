@@ -1,17 +1,20 @@
-"""Tests for scripts/buttons-entrypoint.sh (#562).
+"""Tests for scripts/buttons-entrypoint.sh (#562, #699).
 
 Wiring tests assert the Dockerfile entrypoint/call chain; behavior
 tests run the script against fake app roots (fake venv python +
-fake build_index.py) so no container is ever needed. The happy-path
-and build-failure tests need a reachable Ollama (one instant
-readiness probe); they skip otherwise. All other cases point
-OLLAMA_URL at a closed port.
+fake build_index.py) so no container is ever needed. The server
+execs immediately while the index builds in the background: tests
+assert the fast boot synchronously, then poll the readiness markers
+(.index_building -> gone, .index_failed) for the background outcome.
+Cases needing a passing Ollama probe skip without one; all other
+cases point OLLAMA_URL at a closed port.
 """
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.request
 
@@ -19,7 +22,7 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 ENTRYPOINT = os.path.join(ROOT, "scripts", "buttons-entrypoint.sh")
 
 SCRUB = ("SKIP_INDEX_BUILD", "S5_CHROMA_DIR", "APP_ROOT",
-         "DEEP_AGENT_VENV", "OLLAMA_WAIT_SECS")
+         "DEEP_AGENT_VENV", "OLLAMA_WAIT_SECS", "OLLAMA_TRIES")
 CLOSED_PORT_URL = "http://127.0.0.1:9/"
 
 
@@ -48,6 +51,26 @@ def _write_exe(path, content):
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     os.chmod(path, 0o755)
+
+
+def _wait_for(path, timeout=20):
+    """Poll for a background step to create path. Returns bool."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(path):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _wait_gone(path, timeout=20):
+    """Poll for a background step to remove path. Returns bool."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not os.path.exists(path):
+            return True
+        time.sleep(0.1)
+    return False
 
 
 class TestEntrypointWiring(unittest.TestCase):
@@ -116,22 +139,42 @@ class TestEntrypointBehavior(unittest.TestCase):
                 {"S5_CHROMA_DIR": index_dir,
                  "OLLAMA_URL": CLOSED_PORT_URL,
                  "DEEP_AGENT_VENV": "/nonexistent/python"})
+            self.assertFalse(os.path.exists(os.path.join(
+                index_dir, ".index_building")))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("skipping rebuild", proc.stdout)
         self.assertIn("present-marker", proc.stdout)
 
-    def test_ollama_down_refuses_empty_index(self):
-        with tempfile.TemporaryDirectory() as index_dir:
-            proc = _run(
-                ["echo", "must-not-print"],
-                {"S5_CHROMA_DIR": index_dir,
-                 "OLLAMA_URL": CLOSED_PORT_URL,
-                 "OLLAMA_WAIT_SECS": "0",
-                 "DEEP_AGENT_VENV": "/nonexistent/python"})
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn(
-            "refusing to serve an empty index", proc.stderr)
-        self.assertNotIn("must-not-print", proc.stdout)
+    def test_missing_index_boots_without_waiting(self):
+        # Ollama down: the server still execs at once; the build
+        # fails in the background and records .index_failed.
+        with tempfile.TemporaryDirectory() as app_root:
+            _, _, marker = self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as index_dir:
+                proc = _run(
+                    ["echo", "boot-marker"],
+                    {"APP_ROOT": app_root,
+                     "S5_CHROMA_DIR": index_dir,
+                     "OLLAMA_URL": CLOSED_PORT_URL,
+                     "OLLAMA_WAIT_SECS": "0",
+                     "OLLAMA_TRIES": "2",
+                     "DEEP_AGENT_VENV": "/nonexistent/python"})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("server starting now", proc.stdout)
+                self.assertIn("boot-marker", proc.stdout)
+                self.assertTrue(os.path.isfile(os.path.join(
+                    index_dir, ".index_building")))
+                self.assertTrue(
+                    _wait_for(os.path.join(
+                        index_dir, ".index_failed")),
+                    "background build never recorded its failure")
+                self.assertTrue(_wait_gone(os.path.join(
+                    index_dir, ".index_building")))
+                self.assertFalse(os.path.exists(marker))
+                with open(os.path.join(
+                        index_dir, "index_build.log"),
+                        encoding="utf-8") as f:
+                    self.assertIn("ollama unreachable", f.read())
 
     def _fake_app(self, root, build_exit=0):
         """Fake APP_ROOT: venv shim logs argv then execs the build
@@ -154,7 +197,7 @@ class TestEntrypointBehavior(unittest.TestCase):
         return venv, log, marker
 
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
-    def test_missing_index_builds_then_execs(self):
+    def test_missing_index_builds_in_background(self):
         with tempfile.TemporaryDirectory() as app_root:
             venv, log, marker = self._fake_app(app_root)
             with tempfile.TemporaryDirectory() as index_dir:
@@ -164,16 +207,27 @@ class TestEntrypointBehavior(unittest.TestCase):
                      "S5_CHROMA_DIR": index_dir,
                      "DEEP_AGENT_VENV": venv})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertIn("building RAG index", proc.stdout)
+                self.assertIn("server starting now", proc.stdout)
                 self.assertIn("happy-marker", proc.stdout)
+                self.assertTrue(
+                    _wait_for(marker),
+                    "background build never ran")
+                self.assertTrue(_wait_gone(os.path.join(
+                    index_dir, ".index_building")))
+                self.assertFalse(os.path.exists(os.path.join(
+                    index_dir, ".index_failed")))
                 with open(marker, encoding="utf-8") as f:
                     self.assertEqual(f.read().strip(), "built")
                 with open(log, encoding="utf-8") as f:
                     self.assertIn(
                         "deep-agent/build_index.py", f.read())
+                with open(os.path.join(
+                        index_dir, "index_build.log"),
+                        encoding="utf-8") as f:
+                    self.assertIn("build done", f.read())
 
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
-    def test_empty_sqlite_rebuilds(self):
+    def test_empty_sqlite_rebuilds_in_background(self):
         with tempfile.TemporaryDirectory() as app_root:
             venv, _, marker = self._fake_app(app_root)
             with tempfile.TemporaryDirectory() as index_dir:
@@ -185,24 +239,58 @@ class TestEntrypointBehavior(unittest.TestCase):
                      "S5_CHROMA_DIR": index_dir,
                      "DEEP_AGENT_VENV": venv})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertIn("building RAG index", proc.stdout)
-                with open(marker, encoding="utf-8") as f:
-                    self.assertEqual(f.read().strip(), "built")
+                self.assertIn("server starting now", proc.stdout)
+                self.assertIn("empty-marker", proc.stdout)
+                self.assertTrue(
+                    _wait_for(marker),
+                    "background rebuild never ran")
+                self.assertTrue(_wait_gone(os.path.join(
+                    index_dir, ".index_building")))
 
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
-    def test_build_failure_refuses_empty_index(self):
+    def test_stale_building_marker_rebuilds_in_background(self):
+        # Killed mid-build then `restart`: usable-looking sqlite but
+        # a leftover .index_building forces a background rebuild.
+        with tempfile.TemporaryDirectory() as app_root:
+            venv, _, marker = self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as index_dir:
+                with open(os.path.join(
+                        index_dir, "chroma.sqlite3"), "wb") as f:
+                    f.write(b"partial-index-bytes")
+                open(os.path.join(
+                    index_dir, ".index_building"), "w").close()
+                proc = _run(
+                    ["echo", "stale-marker"],
+                    {"APP_ROOT": app_root,
+                     "S5_CHROMA_DIR": index_dir,
+                     "DEEP_AGENT_VENV": venv})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("server starting now", proc.stdout)
+                self.assertTrue(
+                    _wait_for(marker),
+                    "background rebuild never ran")
+
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_build_failure_boots_then_marks_failed(self):
         with tempfile.TemporaryDirectory() as app_root:
             venv, _, _ = self._fake_app(app_root, build_exit=3)
             with tempfile.TemporaryDirectory() as index_dir:
                 proc = _run(
-                    ["echo", "must-not-print"],
+                    ["echo", "fail-marker"],
                     {"APP_ROOT": app_root,
                      "S5_CHROMA_DIR": index_dir,
                      "DEEP_AGENT_VENV": venv})
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn(
-            "refusing to serve an empty index", proc.stderr)
-        self.assertNotIn("must-not-print", proc.stdout)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("server starting now", proc.stdout)
+                self.assertIn("fail-marker", proc.stdout)
+                failed = os.path.join(index_dir, ".index_failed")
+                self.assertTrue(
+                    _wait_for(failed),
+                    "background build never recorded its failure")
+                self.assertTrue(_wait_gone(os.path.join(
+                    index_dir, ".index_building")))
+                with open(failed, encoding="utf-8") as f:
+                    self.assertIn("build failed", f.read())
 
 
 if __name__ == "__main__":

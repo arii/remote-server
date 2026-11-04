@@ -40,7 +40,6 @@ class RouterSmokeTest(unittest.TestCase):
             self.skipTest("fastapi.testclient not importable")
         client = TestClient(app)
         for path in (
-            "/health",
             "/api/agents/health",
             "/api/repo/health",
             "/api/jobs/health",
@@ -48,6 +47,14 @@ class RouterSmokeTest(unittest.TestCase):
             resp = client.get(path)
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.json(), {"ok": True})
+        # /health carries the RAG index readiness detail (#699).
+        resp = client.get("/health")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertIn(
+            body["index"],
+            {"ready", "warming", "failed", "missing", "unknown"})
         # /api/system/health serves the real SystemHealth model.
         resp = client.get("/api/system/health")
         self.assertEqual(resp.status_code, 200)
