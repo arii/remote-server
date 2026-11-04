@@ -456,6 +456,136 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(calls[0][2], "reject")
         self.assertNotIn("sess00000002", chat.pending_resumes)
 
+    def test_chat_stream_strips_machine_lines_from_tokens_and_done(self):
+        blob = json.dumps({"thread_id": "strip0000001",
+                           "interrupts": [{"id": "x",
+                                           "value": {"kind": "td"}}]})
+        full = ("0123456789abcdef\n"
+                f"INTERRUPT: {blob}\n"
+                "trace: /tmp/pi-trace-123.log\n"
+                "Hello world, this is fine.\n"
+                "Done.")
+        chat.spawn_chat_process = lambda argv: FakeProc(full, code=0)
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "strip0000001"})
+        events = self._sse_events(resp)
+        tokens = [p["token"] for e, p in events if e == "token"]
+        self.assertTrue(tokens)
+        for tok in tokens:
+            self.assertNotIn("INTERRUPT:", tok)
+            self.assertNotIn("trace:", tok)
+        want = ("0123456789abcdef\n"
+                "Hello world, this is fine.\n"
+                "Done.")
+        self.assertEqual("".join(tokens), want)
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertFalse(done["aborted"])
+        self.assertEqual(done["text"], want)
+        self.assertEqual(done["text"], chat.strip_agent_markers(full))
+
+    def test_chat_stream_keeps_midline_machine_text(self):
+        full = "say INTERRUPT: loudly\ntrace amounts ok"
+        chat.spawn_chat_process = lambda argv: FakeProc(full, code=0)
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "strip0000002"})
+        events = self._sse_events(resp)
+        tokens = "".join(p["token"] for e, p in events if e == "token")
+        self.assertEqual(tokens, full)
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertEqual(done["text"], full)
+
+    def test_chat_stream_approval_tokens_stripped_interrupt_parses(self):
+        value = {"action_requests": [
+            {"args": {"kind": "td", "command": "td hi"}}]}
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            self._interrupt_text(value), code=3)
+        chat.validate_action_request = lambda args: (
+            True, "PROPOSE td\nCOMMAND: td hi\nEND PROPOSE")
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "do the thing",
+                                     "repo": "remote-server",
+                                     "session_id": "strip0000003"})
+        events = self._sse_events(resp)
+        approvals = [p for e, p in events if e == "approval"]
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(approvals[0]["proposals"],
+                         ["PROPOSE td\nCOMMAND: td hi\nEND PROPOSE"])
+        for e, p in events:
+            if e == "token":
+                self.assertNotIn("INTERRUPT:", p["token"])
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertTrue(done["approval_pending"])
+        self.assertNotIn("INTERRUPT:", done["text"])
+
+    def test_chat_stream_exit1_strips_machine_lines(self):
+        sorry = "Sorry, no model is available right now: boom"
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            f"{sorry}\nINTERRUPT: {{\"x\": 1}}\n", code=1)
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "exit1strip001"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertEqual(events[-1][1]["error"], sorry)
+        for e, p in events:
+            if e == "token":
+                self.assertNotIn("INTERRUPT:", p["token"])
+
+    def test_chat_aborted_done_strips_machine_lines(self):
+        sid = "abortstrip01"
+        full = "ok\nINTERRUPT: {\"x\": 1}\nmore"
+
+        def _spawn(argv):
+            proc = FakeProc(full, code=0)
+            orig_read = proc.stdout.read
+            state = {"n": 0}
+
+            def _read(n=-1):
+                state["n"] += 1
+                if state["n"] == 2:
+                    with chat.chat_sessions_lock:
+                        sess = chat.chat_sessions.get(sid)
+                        if sess is not None:
+                            sess["aborted"] = True
+                return orig_read(n)
+
+            proc.stdout.read = _read
+            return proc
+
+        chat.spawn_chat_process = _spawn
+        text = "".join(chat._chat_events("hi", "remote-server", sid))
+        events = self._sse_events(type("R", (), {"text": text})())
+        done = [p for e, p in events if e == "done"][-1]
+        self.assertTrue(done["aborted"])
+        self.assertEqual(done["text"], "ok")
+
+    def test_token_scrubber_mirrors_strip_agent_markers(self):
+        cases = [
+            ("ab\nINTERRUPT: {\"x\": 1}\ncd", "ab\ncd"),
+            ("trace: /tmp/a.log\nhello", "hello"),
+            ("say INTERRUPT: now\ntrace ok here",
+             "say INTERRUPT: now\ntrace ok here"),
+            ("a\nINTERRUPT: one\nINTERRUPT: two\nb\n", "a\nb\n"),
+            ("INTERRUPT: lonely", ""),
+            ("", ""),
+            ("x" * 50 + "\nend", "x" * 50 + "\nend"),
+        ]
+        for text, want in cases:
+            for width in (1, 3, 16):
+                sc = chat._TokenScrubber()
+                parts = [sc.feed(text[i:i + width])
+                         for i in range(0, len(text), width)]
+                parts.append(sc.flush())
+                self.assertEqual("".join(parts), want,
+                                 f"text={text!r} width={width}")
+
+    def test_token_scrubber_streams_kept_lines_live(self):
+        sc = chat._TokenScrubber()
+        self.assertEqual(sc.feed("x" * 16), "x" * 16)
+        self.assertEqual(sc.flush(), "")
+
     def test_chat_resume_flow(self):
         chat.pending_resumes["rsm000000001"] = {
             "gh": "arii/remote-server", "repo": "remote-server",

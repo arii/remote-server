@@ -247,6 +247,71 @@ def strip_agent_markers(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+_MACHINE_LINE_PREFIXES = ("INTERRUPT:", "trace:")
+_MACHINE_PREFIX_LEN = max(len(p) for p in _MACHINE_LINE_PREFIXES)
+
+
+class _TokenScrubber:
+    """Incremental strip_agent_markers for streamed tokens (#449).
+
+    Drops machine lines (INTERRUPT blobs, trace paths) as 16-char
+    stdout chunks arrive, so streamed tokens never flash protocol
+    internals. Only the first _MACHINE_PREFIX_LEN chars of each
+    line are held for the keep/drop decision; the rest of a kept
+    line passes through untouched, so normal text still streams
+    live. feed() returns the emittable text ("" when nothing is
+    ready); flush() releases the trailing partial line under the
+    same rule. Raw chunks must still be kept separately:
+    _interrupt_payload parses interrupts from unstripped text
+    (strip after parse).
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._at_line_start = True
+        self._dropping = False
+
+    @staticmethod
+    def _is_machine(line: str) -> bool:
+        return line.startswith(_MACHINE_LINE_PREFIXES)
+
+    def feed(self, chunk: str) -> str:
+        out: list[str] = []
+        for ch in chunk:
+            if self._dropping:
+                if ch == "\n":
+                    self._dropping = False
+                    self._at_line_start = True
+                continue
+            if not self._at_line_start:
+                out.append(ch)
+                if ch == "\n":
+                    self._at_line_start = True
+                continue
+            self._buf += ch
+            if ch == "\n":
+                if not self._is_machine(self._buf):
+                    out.append(self._buf)
+                self._buf = ""
+                continue
+            if len(self._buf) >= _MACHINE_PREFIX_LEN:
+                if self._is_machine(self._buf):
+                    self._dropping = True
+                else:
+                    out.append(self._buf)
+                    self._at_line_start = False
+                self._buf = ""
+        return "".join(out)
+
+    def flush(self) -> str:
+        tail, self._buf = self._buf, ""
+        self._dropping = False
+        self._at_line_start = True
+        if tail and not self._is_machine(tail):
+            return tail
+        return ""
+
+
 def _pi_progress_path(rid: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
 
@@ -600,6 +665,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         return
     drained = StderrTail(proc)
     full_response: list[str] = []
+    scrubber = _TokenScrubber()
     is_aborted = False
     code = 0
     err_tail = ""
@@ -618,7 +684,12 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                             pass
                         break
                 full_response.append(chunk)
-                yield sse_frame("token", {"token": chunk})
+                clean = scrubber.feed(chunk)
+                if clean:
+                    yield sse_frame("token", {"token": clean})
+            tail = scrubber.flush()
+            if tail:
+                yield sse_frame("token", {"token": tail})
         proc.wait()
         code = proc.returncode
         err_tail = drained.tail()
@@ -649,7 +720,8 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         yield sse_frame("phase", {"phase": "aborted",
                                   "message": "Generation aborted by user.",
                                   "elapsed": elapsed})
-        yield sse_frame("done", {"text": "".join(full_response),
+        yield sse_frame("done", {"text": strip_agent_markers(
+            "".join(full_response)),
                                  "aborted": True, "elapsed": elapsed})
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat aborted",
@@ -674,7 +746,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         # (cli.sorry). Surface that human-readable text as the error,
         # never a Complete checkmark (#447). Empty stdout (e.g. an
         # unserializable interrupt blob) still fails, with a fallback.
-        text = "".join(full_response).strip()
+        text = strip_agent_markers("".join(full_response))
         msg = text if text else "chat failed (exit 1)"
         yield sse_frame("phase", {"phase": "error",
                                   "error": msg,
@@ -696,7 +768,8 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         yield sse_frame("phase", {"phase": "done",
                                   "message": "Complete ✓",
                                   "elapsed": elapsed})
-        yield sse_frame("done", {"text": "".join(full_response),
+        yield sse_frame("done", {"text": strip_agent_markers(
+            "".join(full_response)),
                                  "aborted": False, "elapsed": elapsed})
         record = {"kind": "chat", "session_id": session_id,
                   "repo": repo, "event": "chat finished",
