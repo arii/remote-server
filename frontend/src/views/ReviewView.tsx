@@ -43,6 +43,16 @@ export function openIssueUrl(url: string | undefined): void {
 
 // Issue row title: a link when the row carries a URL, plain text
 // otherwise (older payloads, fixtures without urls).
+// Compact merge-state badge for a PR row: the block reason when
+// the row's Merge is disabled, merge-clean otherwise. Same helper
+// drives both, so the badge and the disabled state can never
+// disagree — a responsible merge no longer needs the details pane
+// to learn the block state (#596).
+export function mergeBadge(p: PrRow): string {
+  const blocked = mergeBlockReason(p);
+  return blocked ? `Blocked: ${blocked}` : 'merge-clean';
+}
+
 export function IssueRowTitle({ issue }: { issue: IssueRow }) {
   const text = `#${issue.number} ${issue.title}`;
   if (!issue.url) return <>{text}</>;
@@ -560,6 +570,8 @@ export default function ReviewView({
                     {p.author} · {p.branch} · CI {p.ciLabel}
                     {p.isDraft ? ' · draft' : ''}
                     {merging.has(p.number) ? ' · Merging…' : ''}
+                    {' · '}
+                    {mergeBadge(p)}
                   </p>
                   <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />{' '}
                   <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />{' '}
