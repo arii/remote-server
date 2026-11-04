@@ -669,6 +669,25 @@ def _chat_events(prompt: str, repo: str, session_id: str,
             record["stderr"] = err_tail
         ledger_append(record)
         return
+    if code == 1:
+        # Exit-1 contract: deep_chat.py printed a Sorry line on stdout
+        # (cli.sorry). Surface that human-readable text as the error,
+        # never a Complete checkmark (#447). Empty stdout (e.g. an
+        # unserializable interrupt blob) still fails, with a fallback.
+        text = "".join(full_response).strip()
+        msg = text if text else "chat failed (exit 1)"
+        yield sse_frame("phase", {"phase": "error",
+                                  "error": msg,
+                                  "elapsed": elapsed})
+        yield sse_frame("error", {"error": msg})
+        record = {"kind": "chat", "session_id": session_id,
+                  "repo": repo, "event": "chat failed",
+                  "error": msg,
+                  "exit": 1, "elapsed": elapsed}
+        if err_tail:
+            record["stderr"] = err_tail
+        ledger_append(record)
+        return
     if code == 3:
         yield from _approval_events(session_id, repo, info,
                                     full_response, elapsed)

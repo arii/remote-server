@@ -382,6 +382,43 @@ class ChatOpsTest(unittest.TestCase):
         events = self._sse_events(resp)
         self.assertEqual(events[0][1], {"error": "agent runtime not installed"})
 
+    def test_chat_stream_exit1_sorry_is_error(self):
+        sorry = "Sorry, no model is available right now: boom"
+        chat.spawn_chat_process = lambda argv: FakeProc(sorry, code=1)
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "exit10000001"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertEqual(events[-1][1]["error"], sorry)
+        phases = [p["phase"] for e, p in events if e == "phase"]
+        self.assertEqual(phases[-1], "error")
+        self.assertNotIn("Complete", resp.text)
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            logged = [json.loads(line) for line in fh if line.strip()]
+        failed = [e for e in logged if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["error"], sorry)
+        self.assertEqual(failed[0]["exit"], 1)
+        finished = [e for e in logged
+                    if e.get("event") == "chat finished"]
+        self.assertEqual(finished, [])
+
+    def test_chat_stream_exit1_empty_is_error(self):
+        chat.spawn_chat_process = lambda argv: FakeProc("", code=1)
+        resp = self.client.post("/api/chat/stream",
+                               json={"prompt": "hi", "repo": "remote-server",
+                                     "session_id": "exit10000002"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertEqual(events[-1][1]["error"], "chat failed (exit 1)")
+        self.assertNotIn("Complete", resp.text)
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            logged = [json.loads(line) for line in fh if line.strip()]
+        failed = [e for e in logged if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["exit"], 1)
+
     def test_chat_stream_approval_and_autoreject(self):
         value = {"action_requests": [
             {"args": {"kind": "td", "command": "td hi"}}]}
@@ -853,13 +890,17 @@ class ChatStderrTailTest(unittest.TestCase):
         tokens = "".join(p["token"] for e, p in events if e == "token")
         self.assertEqual(tokens, "partial")
         self.assertNotIn("Traceback", resp.text)
-        finished = [e for e in self._ledger()
-                    if e.get("event") == "chat finished"]
-        self.assertEqual(len(finished), 1)
-        self.assertEqual(finished[0]["exit"], 1)
+        # Exit 1 is a failure (#447): error event, no Complete checkmark.
+        self.assertEqual(events[-1][0], "error")
+        self.assertEqual(events[-1][1]["error"], "partial")
+        self.assertNotIn("Complete", resp.text)
+        failed = [e for e in self._ledger()
+                  if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["exit"], 1)
         self.assertIn("Traceback (most recent call last)",
-                      finished[0]["stderr"])
-        self.assertIn("RuntimeError: deep boom", finished[0]["stderr"])
+                      failed[0]["stderr"])
+        self.assertIn("RuntimeError: deep boom", failed[0]["stderr"])
 
     def test_chat_exit2_records_stderr_client_text_unchanged(self):
         chat.spawn_chat_process = lambda argv: FakeProc(
