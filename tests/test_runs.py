@@ -173,5 +173,179 @@ class TestRuns(unittest.TestCase):
             self.assertEqual(runs.list_runs(ledger_path=path), [])
 
 
+class TestSearchTurns(unittest.TestCase):
+    def _ledger(self, directory, rows):
+        path = os.path.join(directory, "ledger.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(row if isinstance(row, str)
+                        else json.dumps(row) + "\n")
+        return path
+
+    def test_newest_first_and_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(thread_id="old", ts=1.0,
+                     final_preview="triage verdict: retry the gate"),
+                _row(thread_id="new", ts=2.0,
+                     final_preview="triage verdict: skip the gate"),
+            ])
+            out = runs.search_turns("triage verdict", ledger_path=path)
+            self.assertIn("newest first", out.splitlines()[0])
+            self.assertLess(out.index("skip the gate"),
+                            out.index("retry the gate"))
+            self.assertIn("run-1", out)
+            self.assertIn("ask_investigator.py", out)
+            self.assertIn("ollama:qwen3:8b", out)
+
+    def test_matches_script_model_thread_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(thread_id="ask-buttons-9",
+                     extra={"prompt": "why is the deploy stuck"}),
+                _row(script="deep_chat.py"),
+            ])
+            self.assertIn(
+                "ask-buttons-9",
+                runs.search_turns("deploy stuck", ledger_path=path))
+            self.assertIn(
+                "deep_chat.py",
+                runs.search_turns("deep_chat", ledger_path=path))
+            self.assertIn(
+                "qwen3",
+                runs.search_turns("QWEN3", ledger_path=path))
+
+    def test_words_and_across_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(thread_id="triage-7",
+                     final_preview="all green"),
+            ])
+            self.assertIn(
+                "triage-7",
+                runs.search_turns("triage green", ledger_path=path))
+            self.assertIn(
+                "no past turns match",
+                runs.search_turns("triage red", ledger_path=path))
+
+    def test_kind_filter(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(script="a.py", final_preview="boom fixed",
+                     kind="deep-agent-run"),
+                _row(script="b.py", final_preview="boom fixed",
+                     kind="other-kind"),
+            ])
+            out = runs.search_turns("boom", kind="other-kind",
+                                    ledger_path=path)
+            self.assertIn("b.py", out)
+            self.assertNotIn("a.py", out)
+            out = runs.search_turns("boom", kind="DEEP-agent-RUN",
+                                    ledger_path=path)
+            self.assertIn("a.py", out)
+            self.assertIn(
+                "kind=zzz",
+                runs.search_turns("boom", kind="zzz",
+                                  ledger_path=path))
+
+    def test_missing_empty_and_corrupt(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = os.path.join(d, "nope.jsonl")
+            self.assertEqual(runs.search_turns("x", ledger_path=missing),
+                             "no past turns recorded yet")
+            empty = self._ledger(d, [])
+            self.assertEqual(runs.search_turns("x", ledger_path=empty),
+                             "no past turns recorded yet")
+            path = self._ledger(d, ["{nope\n", "[1,2]\n", _row(
+                final_preview="survives the noise")])
+            self.assertIn("survives the noise",
+                          runs.search_turns("survives",
+                                            ledger_path=path))
+
+    def test_skips_tombstoned_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(final_preview="gone from recall"),
+            ])
+            self.assertTrue(
+                runs.delete_run("run-0", ledger_path=path))
+            self.assertIn("no past turns",
+                          runs.search_turns("recall", ledger_path=path))
+
+    def test_empty_query_returns_usage(self):
+        for bad in ("", "   ", None):
+            out = runs.search_turns(bad, ledger_path="/nonexistent")
+            self.assertIn("usage:", out)
+            self.assertIn("search_turns", out)
+
+    def test_caps_rows_and_line_length(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(thread_id="t%d" % i, ts=float(i),
+                     final_preview="hit %d " % i + "x" * 2000)
+                for i in range(8)
+            ])
+            out = runs.search_turns("hit", ledger_path=path)
+            lines = out.splitlines()
+            self.assertEqual(len(lines), 6)  # header + 5 hits
+            for line in lines:
+                self.assertLessEqual(len(line), 400)
+            self.assertIn("t7", out)
+            self.assertNotIn("t0", out)
+            out = runs.search_turns("hit", limit=2, ledger_path=path)
+            self.assertEqual(len(out.splitlines()), 3)
+            out = runs.search_turns("hit", limit=99, ledger_path=path)
+            self.assertEqual(len(out.splitlines()), 6)
+            out = runs.search_turns("hit", limit="bogus",
+                                    ledger_path=path)
+            self.assertEqual(len(out.splitlines()), 6)
+
+    def test_env_ledger_resolution(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [_row(final_preview="env knob")])
+            prev = os.environ.get("EVAL_LEDGER")
+            os.environ["EVAL_LEDGER"] = path
+            try:
+                self.assertIn("env knob",
+                              runs.search_turns("knob"))
+            finally:
+                if prev is None:
+                    del os.environ["EVAL_LEDGER"]
+                else:
+                    os.environ["EVAL_LEDGER"] = prev
+
+    def test_never_raises_on_odd_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                json.dumps({"kind": "deep-agent-run", "ts": "bogus",
+                            "final_preview": "odd ts",
+                            "extra": "not-a-dict"}),
+                json.dumps({"kind": "deep-agent-run", "ts": 3.0,
+                            "tool_calls": "not-a-list",
+                            "final_preview": ""}),
+                json.dumps(None),
+                _row(final_preview="odd ts normal"),
+            ])
+            out = runs.search_turns("odd ts", ledger_path=path)
+            self.assertIn("odd ts", out)
+            out = runs.search_turns("odd ts", limit={"bad": 1},
+                                    ledger_path=path)
+            self.assertIn("odd ts", out)
+
+    def test_tail_only_past_size_guard(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = [_row(thread_id="old-%d" % i, ts=float(i),
+                         final_preview="ancient history " + "y" * 2000)
+                    for i in range(600)]
+            rows.append(_row(thread_id="fresh", ts=9999.0,
+                             final_preview="fresh needle"))
+            path = self._ledger(d, rows)
+            self.assertGreater(os.path.getsize(path),
+                               runs.SEARCH_MAX_BYTES)
+            out = runs.search_turns("fresh needle", ledger_path=path)
+            self.assertIn("tail only", out.splitlines()[0])
+            self.assertIn("fresh", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,18 @@ LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(
 TRACES = os.path.join(ledger.state_dir(), "traces")
 RUN_RE = re.compile(r"^run-(\d+)$")
 
+# search_turns caps: at most this many hit lines, each this long, and
+# past this file size only the tail is scanned (live ledger is ~85KB,
+# so the guard only bites on pathological growth).
+SEARCH_MAX_ROWS = 5
+SEARCH_LINE_CHARS = 400
+SEARCH_MAX_BYTES = 1024 * 1024
+SEARCH_USAGE = (
+    "usage: search_turns(query, kind=\"\", limit=5) — keyword recall "
+    "over past agent turns, newest first; "
+    "e.g. search_turns(\"triage verdict\")"
+)
+
 
 def _read_lines(path):
     try:
@@ -95,6 +107,119 @@ def list_runs(limit=50, ledger_path=None):
             rows.append(_entry_summary(index, row))
     rows.reverse()
     return rows[:limit]
+
+
+def _read_recent_lines(path, max_bytes):
+    """Ledger lines, newest-file tail only past max_bytes.
+
+    Returns (lines, tail_only). Missing/unreadable file -> ([], False).
+    The first tail chunk line is dropped (a partial row fragment).
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return [], False
+    if size <= max_bytes:
+        return _read_lines(path), False
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - max_bytes))
+            chunk = f.read()
+    except OSError:
+        return [], False
+    text = chunk.decode("utf-8", errors="replace")
+    return text.splitlines(keepends=True)[1:], True
+
+
+def _match_words(query):
+    return str(query or "").lower().split()
+
+
+def _row_haystack(row):
+    """Lowercased searchable text: script/model/thread/final/prompt."""
+    extra = row.get("extra") or {}
+    if not isinstance(extra, dict):
+        extra = {}
+    parts = [
+        row.get("script"), row.get("model"), row.get("thread_id"),
+        row.get("final_preview"),
+        extra.get("prompt") if isinstance(extra.get("prompt"), str)
+        else "",
+    ]
+    return " ".join(str(p or "") for p in parts).lower()
+
+
+def _hit_line(index, row):
+    """One compact hit line, capped at SEARCH_LINE_CHARS."""
+    try:
+        stamp = time.strftime("%Y-%m-%dT%H:%MZ",
+                              time.gmtime(float(row.get("ts", 0))))
+    except (TypeError, ValueError, OverflowError):
+        stamp = "?"
+    cost = row.get("cost_usd")
+    cost_txt = ("$%.6g" % cost) if isinstance(cost, (int, float)) \
+        else "?"
+    preview = str(row.get("final_preview", "") or "")
+    if not preview.strip():
+        tools = [c.get("name", "?")
+                 for c in row.get("tool_calls", []) or []
+                 if isinstance(c, dict)]
+        preview = "tools=%s" % ",".join(tools) if tools else "(no output)"
+    line = ("%s run-%d %s %s thread=%s dur=%ss cost=%s :: %s" % (
+        stamp, index, row.get("script", "?"), row.get("model", "?"),
+        row.get("thread_id", "?"), row.get("duration_s", "?"),
+        cost_txt, preview))
+    if len(line) > SEARCH_LINE_CHARS:
+        line = line[:SEARCH_LINE_CHARS - 1] + "…"
+    return " ".join(line.split())
+
+
+def search_turns(query, kind="", limit=5, ledger_path=None):
+    """Keyword grep over past ledger rows. Never raises; returns text.
+
+    Case-insensitive AND-of-words match over each row's script,
+    model, thread, final preview, and stored prompt; kind-filtered
+    when given; newest first; capped lines. Empty query returns
+    usage text, missing/empty ledger and no-match return graceful
+    one-liners. Reads the EVAL_LEDGER-aware resolved path.
+    """
+    try:
+        words = _match_words(query)
+        if not words:
+            return SEARCH_USAGE
+        try:
+            want = max(1, min(int(limit), SEARCH_MAX_ROWS))
+        except (TypeError, ValueError):
+            want = SEARCH_MAX_ROWS
+        kind = str(kind or "").strip().lower()
+        path = ledger_path or os.environ.get("EVAL_LEDGER") or LEDGER
+        lines, tail_only = _read_recent_lines(path, SEARCH_MAX_BYTES)
+        hits = []
+        for index in range(len(lines) - 1, -1, -1):
+            if len(hits) >= want:
+                break
+            try:
+                row = json.loads(lines[index])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(row, dict) or _is_deleted(row):
+                continue
+            if kind and str(row.get("kind", "")).lower() != kind:
+                continue
+            if all(w in _row_haystack(row) for w in words):
+                hits.append(_hit_line(index, row))
+        if not hits:
+            if not lines:
+                return "no past turns recorded yet"
+            return "no past turns match %r%s" % (
+                str(query)[:100],
+                " (kind=%s)" % kind if kind else "")
+        head = "past turns, newest first" \
+            + (" (recent tail only: ledger exceeds 1MB)"
+               if tail_only else "")
+        return head + ":\n" + "\n".join(hits)
+    except Exception as exc:  # noqa: BLE001 - recall must never break a turn
+        return "past-turn search unavailable: %s" % exc
 
 
 def get_run(run_id, ledger_path=None):

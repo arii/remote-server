@@ -28,6 +28,7 @@ from langchain_ollama import ChatOllama  # noqa: E402
 import ledger  # noqa: E402
 import model_router  # noqa: E402
 import observe  # noqa: E402
+import runs  # noqa: E402
 import s5tools  # noqa: E402
 
 
@@ -227,6 +228,24 @@ def fetch_url(url: str) -> str:
     return s5tools.fetch_url(url)
 
 
+@tool
+def search_turns(query: str, kind: str = "",
+                 limit: int = 5) -> str:
+    """Search past agent turns for prior outcomes (read-only recall).
+
+    Use when the user asks about earlier work: how something was
+    fixed before, what triage concluded, whether this failure was
+    seen already. Keyword match over each turn's script, model,
+    thread, prompt, and final answer, newest first, capped lines.
+
+    Args:
+        query: Keywords from the earlier outcome, e.g. "triage verdict".
+        kind: Optional row-kind filter, e.g. "deep-agent-run".
+        limit: Max hits, 1-5 (default 5).
+    """
+    return runs.search_turns(query, kind=kind, limit=limit)
+
+
 SYSTEM = (
     "You are helping Ari from his phone. Be terse, no filler. "
     "Investigate read-only with your tools; never propose running "
@@ -330,7 +349,7 @@ def main() -> int:
     agent = create_agent(
         model=model,
         tools=[search_docs, read_repo_file, grep_repo, pr_state,
-               run_repo_command, fetch_url],
+               run_repo_command, fetch_url, search_turns],
         system_prompt=f"Repo: {_repo}. " + SYSTEM,
         middleware=observe.trace_middleware(recorder),
     )
