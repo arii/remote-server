@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, insertMention, isStalled, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, turnPrompt } from './ChatView';
+import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, insertMention, isStalled, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, turnPrompt } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 import type { ChatMessage } from './mockViews';
@@ -34,6 +34,54 @@ describe('chat retry visibility (issue #433)', () => {
     expect(shouldShowChatRetry('network error', true, 'hi')).toBe(false);
     expect(shouldShowChatRetry('network error', false, '')).toBe(false);
     expect(shouldShowChatRetry('network error', false, '   ')).toBe(false);
+  });
+});
+
+describe('chat retry reuses the pending exchange (issue #587)', () => {
+  it('drops the trailing failed empty pair', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'Summarize the open pull requests' },
+      { role: 'assistant', text: '' },
+    ];
+    expect(stripFailedRetryExchange(messages, 'Summarize the open pull requests')).toEqual([]);
+  });
+
+  it('drops the trailing failed partial pair, keeping earlier turns', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'first prompt' },
+      { role: 'assistant', text: 'first reply' },
+      { role: 'user', text: 'second prompt' },
+      { role: 'assistant', text: 'partial…' },
+    ];
+    expect(stripFailedRetryExchange(messages, 'second prompt')).toEqual([
+      { role: 'user', text: 'first prompt' },
+      { role: 'assistant', text: 'first reply' },
+    ]);
+  });
+
+  it('repeated retries converge on one pair, not one per attempt', () => {
+    const sent = 'Summarize the open pull requests';
+    let messages: ChatMessage[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      messages = stripFailedRetryExchange(messages, sent);
+      messages = [...messages, { role: 'user', text: sent }, { role: 'assistant', text: '' }];
+    }
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(1);
+  });
+
+  it('leaves completed history untouched', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'first prompt' },
+      { role: 'assistant', text: 'first reply' },
+    ];
+    expect(stripFailedRetryExchange(messages, 'other prompt')).toBe(messages);
+    // A matching trailing pair is always the failed exchange when
+    // retry is clickable (error non-null), even with partial text.
+    expect(stripFailedRetryExchange(messages, 'first prompt')).toEqual([]);
+    expect(stripFailedRetryExchange([], 'hi')).toEqual([]);
+    expect(stripFailedRetryExchange([{ role: 'user', text: 'hi' }], 'hi')).toEqual([
+      { role: 'user', text: 'hi' },
+    ]);
   });
 });
 
