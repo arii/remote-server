@@ -8,6 +8,7 @@ Ports of the buttons/server.py handlers:
 - POST /api/jobs/run-td  (start a run for one validated td command)
 - GET  /api/jobs/runs/{rid} (run progress snapshot)
 - GET  /api/jobs/runs/{rid}/stream (SSE per-run push; ends on done)
+- POST /api/jobs/runs/{rid}/cancel (cancel a running run: 202/404/409)
 - POST /api/jobs/run-plan (run one allowlisted td planning guide)
 
 No Jules dispatch surface exists here (cut). Execution goes through
@@ -298,6 +299,30 @@ def run_progress(rid: str) -> dict:
     if payload is None:
         raise HTTPException(status_code=404, detail="unknown run")
     return payload
+
+
+class CancelRunResult(BaseModel):
+    ok: bool = True
+    id: str = ""
+
+
+@router.post("/runs/{rid}/cancel", status_code=202,
+             response_model=CancelRunResult)
+def cancel_run(rid: str) -> dict:
+    """Cancel a running run (#589): flag + SIGTERM the step tree.
+
+    202 once the run is flagged (the worker finishes it with the
+    note + exit 130), 404 for a missing record, 409 when the run
+    already finished. No confirm: cancel stops spend.
+    """
+    if not RID_RE.match(rid):
+        raise HTTPException(status_code=404, detail="unknown run")
+    rid_out, err = registry.cancel_run(rid)
+    if err == "unknown run":
+        raise HTTPException(status_code=404, detail="unknown run")
+    if err is not None:
+        raise HTTPException(status_code=409, detail=err)
+    return {"ok": True, "id": rid_out}
 
 
 def _run_events(rid: str, heartbeat: float = JOBS_STREAM_HEARTBEAT):

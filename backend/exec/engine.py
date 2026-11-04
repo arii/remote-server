@@ -13,6 +13,7 @@ import asyncio
 import os
 import re
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -371,7 +372,8 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     return None, "unknown action"
 
 
-def run_step_pipe(step, append, runner=None, timeout=None):
+def run_step_pipe(step, append, runner=None, timeout=None,
+                  on_proc=None):
     """Run one step, streaming output through append(chunk).
 
     Pipes (not a PTY: no ANSI in the UI). ``runner`` injects tests:
@@ -381,6 +383,12 @@ def run_step_pipe(step, append, runner=None, timeout=None):
     watchdog: a step running past ``timeout`` (default STEP_TIMEOUT)
     is killed and returns 124 with a note, so a hung step fails its
     run instead of wedging the single-flight engine (#288).
+
+    ``on_proc`` reports the live child for cancellation (#589):
+    called with the Popen right after spawn and with None once the
+    step ends. Each step runs in its own session
+    (start_new_session) so cancel can kill the whole tree as one
+    process group, including pipeline grandchildren.
     """
     if runner is not None:
         code, out = runner(step)
@@ -391,9 +399,14 @@ def run_step_pipe(step, append, runner=None, timeout=None):
     proc = subprocess.Popen(
         step, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=stack_dir(),
+        text=True, cwd=stack_dir(), start_new_session=True,
         env={**os.environ, "TERM": "xterm-256color"})
     assert proc.stdout is not None
+    if on_proc is not None:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
     drained = threading.Event()
     errors: list = []
 
@@ -421,9 +434,43 @@ def run_step_pipe(step, append, runner=None, timeout=None):
             proc.stdout.close()
         except Exception:
             pass
+        if on_proc is not None:
+            try:
+                on_proc(None)
+            except Exception:
+                pass
     if errors:
         raise errors[0]
     return code
+
+
+def _terminate_tree(proc, grace=3.0):
+    """SIGTERM a step's process group, SIGKILL after ``grace`` seconds.
+
+    Signals only: the step owner (run_step_pipe's wait) keeps the
+    reap, so concurrent wait() calls can never double-reap. Already
+    exited procs and vanished groups return quietly.
+    """
+    try:
+        if proc.poll() is not None:
+            return
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except Exception:
+            return
+        wait = grace if sig == signal.SIGTERM else 2.0
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            try:
+                if proc.poll() is not None:
+                    return
+            except Exception:
+                return
+            time.sleep(0.05)
 
 
 def execute_run(registry, run_id, action, repo, gh, td_cwd,
@@ -442,6 +489,17 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
             entry["command"] = " ".join(td_argv)
         ledger_append(entry)
 
+    def _cancelled():
+        """Cancel path: note + exit 130 when cancel was requested."""
+        if not registry.cancel_requested(run_id):
+            return False
+        registry.append(run_id, "note: cancelled by operator\n")
+        _done(130)
+        return True
+
+    def _track(proc):
+        registry.set_proc(run_id, proc)
+
     try:
         steps, err = action_steps(action, repo, gh, td_cwd, td_argv)
         if err:
@@ -449,6 +507,8 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
             _done(1)
             return
         for step in steps:
+            if _cancelled():
+                return
             registry.append(run_id, "$ " + " ".join(step) + "\n")
             chunks: list = []
 
@@ -457,11 +517,16 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
                 registry.append(run_id, text)
 
             try:
-                code = run_step_pipe(step, _cb, runner=runner)
+                code = run_step_pipe(step, _cb, runner=runner,
+                                     on_proc=_track)
             except Exception as exc:
                 registry.append(run_id, f"error: {exc}\n")
                 chunks.append("error")
                 code = 1
+            # After-step check first: a cancel that killed this step
+            # mid-flight surfaces here (not as a step failure).
+            if _cancelled():
+                return
             if code != 0:
                 if not "".join(chunks).strip():
                     registry.append(
@@ -554,6 +619,45 @@ class RunRegistry:
             run["done"] = True
             run["finished_at"] = time.time()
             self._bump()
+
+    def set_proc(self, run_id, proc):
+        """Track the live step child for cancellation (#589). The
+        worker reports the Popen after spawn and None once the step
+        ends; a cleared run simply drops the report."""
+        with self._lock:
+            run = self.runs.get(run_id)
+            if run is None:
+                return
+            run["_proc"] = proc
+
+    def cancel_requested(self, run_id):
+        """True once cancel_run flags the run. Missing runs read as
+        not cancelled, so clear keeps its existing semantics."""
+        with self._lock:
+            run = self.runs.get(run_id)
+            return bool(run and run.get("cancel_requested"))
+
+    def cancel_run(self, run_id, grace=3.0):
+        """Flag a run cancelled and SIGTERM its step tree (#589).
+
+        Returns (run_id, None) on success, (None, "unknown run")
+        for a missing record, (None, "run is not active") for a
+        finished run. The tree kill runs outside the lock; the
+        worker picks up the flag before/after each step and
+        finishes with the note + exit 130.
+        """
+        with self._lock:
+            run = self.runs.get(run_id)
+            if run is None:
+                return None, "unknown run"
+            if run.get("done"):
+                return None, "run is not active"
+            run["cancel_requested"] = True
+            proc = run.get("_proc")
+            self._bump()
+        if proc is not None:
+            _terminate_tree(proc, grace)
+        return run_id, None
 
     def clear_run(self, run_id=None):
         """Clear stored output only. Exact port of the /api/clear

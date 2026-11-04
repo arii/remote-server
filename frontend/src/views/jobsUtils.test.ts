@@ -4,6 +4,7 @@ import {
   conflictBlockReason,
   filterRepairCandidates,
   fixCiBlockReason,
+  isConflictError,
   isNotFoundError,
   mergeNoteFor,
   prFieldSeed,
@@ -216,5 +217,14 @@ describe('run gone detection (issue #630)', () => {
     expect(isNotFoundError('POST api/jobs/run failed: 409')).toBe(false);
     expect(isNotFoundError('POST api/jobs/run failed: 400')).toBe(false);
     expect(isNotFoundError('network down')).toBe(false);
+  });
+});
+
+describe('run finished detection (issue #589)', () => {
+  it('spots 409s and nothing else', () => {
+    expect(isConflictError('POST api/jobs/runs/abc/cancel failed: 409')).toBe(true);
+    expect(isConflictError('GET api/jobs/runs/abc failed: 404')).toBe(false);
+    expect(isConflictError('POST api/jobs/run failed: 400')).toBe(false);
+    expect(isConflictError('network down')).toBe(false);
   });
 });

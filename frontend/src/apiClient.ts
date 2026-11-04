@@ -371,6 +371,18 @@ export function rerunJob(
   return startJobRun(action, repo, confirmed);
 }
 
+// Cancel a running run (issue #589): flags the run and SIGTERMs
+// its step tree. No confirm — cancel stops spend.
+export function cancelJobRun(rid: string): Promise<{ ok: boolean; id: string }> {
+  return postJson<{ ok: boolean; id: string }>(
+    `api/jobs/runs/${encodeURIComponent(rid)}/cancel`,
+    {},
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
 export interface JobRunProgress {
   done: boolean;
   output: string;

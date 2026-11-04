@@ -745,5 +745,188 @@ class AsyncPlanTest(unittest.TestCase):
         self.assertLess(time.time() - start, 1.0)
 
 
+class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
+    """Cancel a running run: tree kill, exit 130, endpoint codes (#589)."""
+
+    def setUp(self):
+        self._ledger_setup()
+        import backend.api.routers.jobs as jobs_router
+
+        self._jobs_router = jobs_router
+        self._old_registry = jobs_router.registry
+        jobs_router.registry = RunRegistry()
+        from backend.server import app
+
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._jobs_router.registry = self._old_registry
+        self._ledger_teardown()
+
+    @staticmethod
+    def _wait_for_proc(reg, rid, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with reg._lock:
+                proc = reg.runs[rid].get("_proc")
+            if proc is not None:
+                return proc
+            time.sleep(0.05)
+        raise AssertionError("step proc was never registered")
+
+    @staticmethod
+    def _wait_for_pidfile(pidfile, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(pidfile) as fh:
+                    return int(fh.read().strip())
+            except (OSError, ValueError):
+                time.sleep(0.05)
+        raise AssertionError("child pid was never written")
+
+    def _assert_grandchild_dead(self, child, timeout=5):
+        # kill(pid, 0) lies about zombies, so read /proc state: the
+        # group SIGTERM kills the grandchild, which reparents out of
+        # our reach — fully gone or a zombie awaiting init's reap
+        # both prove the kill landed.
+        import os
+
+        if not os.path.isdir("/proc"):
+            self.skipTest("grandchild liveness needs /proc")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with open(f"/proc/{child}/stat") as fh:
+                    state = fh.read().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                return
+            if state == "Z":
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"grandchild {child} still alive")
+
+    def test_cancel_unknown_run(self):
+        reg = RunRegistry()
+        rid, err = reg.cancel_run("deadbeef1234")
+        self.assertIsNone(rid)
+        self.assertEqual(err, "unknown run")
+
+    def test_cancel_finished_run_is_not_active(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(rid, 0)
+        rid2, err2 = reg.cancel_run(rid)
+        self.assertIsNone(rid2)
+        self.assertEqual(err2, "run is not active")
+
+    def test_cancel_endpoint_404_unknown(self):
+        resp = self.client.post("/api/jobs/runs/deadbeef1234/cancel")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_cancel_endpoint_404_bad_rid(self):
+        resp = self.client.post("/api/jobs/runs/nope/cancel")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_cancel_endpoint_409_finished(self):
+        reg = self._jobs_router.registry
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(rid, 0)
+        resp = self.client.post(f"/api/jobs/runs/{rid}/cancel")
+        self.assertEqual(resp.status_code, 409)
+
+    def test_cancel_endpoint_202_sets_flag(self):
+        reg = self._jobs_router.registry
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        try:
+            resp = self.client.post(f"/api/jobs/runs/{rid}/cancel")
+            self.assertEqual(resp.status_code, 202)
+            body = resp.json()
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["id"], rid)
+            self.assertTrue(reg.cancel_requested(rid))
+        finally:
+            reg.finish_run(rid, 0)
+
+    def test_cancel_kills_process_tree(self):
+        import os
+        import threading
+
+        reg = RunRegistry()
+        pidfile = os.path.join(self._ledger_tmp.name, "child.pid")
+        parent = [sys.executable, "-c",
+                  "import subprocess,sys,time;"
+                  "p=subprocess.Popen([sys.executable,'-c',"
+                  "'import time;time.sleep(20)']);"
+                  f"open({pidfile!r},'w').write(str(p.pid));"
+                  "time.sleep(20)"]
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        thread = threading.Thread(
+            target=engine.execute_run,
+            args=(reg, rid, "logs", "remote-server", "", ""),
+            daemon=True)
+        with mock.patch.object(engine, "action_steps",
+                               return_value=([parent], None)):
+            thread.start()
+            proc = self._wait_for_proc(reg, rid)
+            child = self._wait_for_pidfile(pidfile)
+            start = time.time()
+            rid2, err2 = reg.cancel_run(rid)
+            self.assertIsNone(err2)
+            thread.join(timeout=15)
+        elapsed = time.time() - start
+        self.assertFalse(thread.is_alive())
+        self.assertLess(elapsed, 15)
+        run = reg.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertEqual(run["exit_code"], 130)
+        self.assertIn("cancelled by operator", run["output"])
+        self.assertIsNone(reg.active_id)
+        self.assertIsNotNone(proc.poll())
+        self._assert_grandchild_dead(child)
+
+    def test_cancel_between_steps_skips_remaining(self):
+        import threading
+
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        release = threading.Event()
+        calls = []
+
+        def _runner(argv):
+            calls.append(argv)
+            release.wait(timeout=10)
+            return 0, "step ok\n"
+
+        thread = threading.Thread(
+            target=engine.execute_run,
+            args=(reg, rid, "logs", "remote-server", "", ""),
+            kwargs={"runner": _runner}, daemon=True)
+        steps = [["echo", "one"], ["echo", "two"]]
+        with mock.patch.object(engine, "action_steps",
+                               return_value=(steps, None)):
+            thread.start()
+            deadline = time.time() + 10
+            while not calls and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(calls, "first step never started")
+            rid2, err2 = reg.cancel_run(rid)
+            self.assertIsNone(err2)
+            release.set()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(calls), 1)
+        run = reg.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertEqual(run["exit_code"], 130)
+        self.assertIn("cancelled by operator", run["output"])
+        self.assertIsNone(reg.active_id)
+
+
 if __name__ == "__main__":
     unittest.main()
