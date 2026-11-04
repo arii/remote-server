@@ -1,8 +1,8 @@
 """Per-turn decision summaries: what the turn did + why (issue #414).
 
 One line per decision, summaries over transcripts. deep_chat builds
-these at record time from in-hand data (tool calls + results, reply,
-HITL verdict/message); runs flow them to run detail via
+these at record time from in-hand data (tool calls + results, turn
+intent/mode, HITL verdict/message); runs flow them to run detail via
 extra.decisions. Stdlib-only, never raises: observability must not
 break runs.
 """
@@ -52,22 +52,25 @@ def _verdict_word(verdict):
 
 
 def build_decisions(calls, results, reply, verdict=None, message=None,
-                    error=None, proposals=None):
+                    error=None, proposals=None, reason=None):
     """Decision lines [{what, why}] for one turn record.
 
     calls: [{name, args}] in run order; results: [result text]
-    aligned by position; reply: final text; verdict/message:
-    HITL resume context; error: failure text; proposals:
-    [proposal text] for HITL context. Never raises.
+    aligned by position; reply: final text (answer-line fallback
+    only); verdict/message: HITL resume context; error: failure
+    text; proposals: [proposal text] for HITL context; reason:
+    human phrase for the answer line's why (turn intent/mode).
+    Never raises.
     """
     try:
         return _build(calls, results, reply, verdict, message,
-                      error, proposals)
+                      error, proposals, reason)
     except Exception:
         return []
 
 
-def _build(calls, results, reply, verdict, message, error, proposals):
+def _build(calls, results, reply, verdict, message, error, proposals,
+           reason):
     lines = []
     calls = [c for c in (calls or [])
              if isinstance(c, dict) and c.get("name")]
@@ -95,7 +98,8 @@ def _build(calls, results, reply, verdict, message, error, proposals):
                       "why": _first_line(error, WHY_LIMIT)
                       or "(no error recorded)"})
         return lines
-    answer = _first_line(reply, WHY_LIMIT)
+    answer = (_first_line(reason, WHY_LIMIT) if reason
+              else _first_line(reply, WHY_LIMIT))
     n = len(calls)
     what = (f"answered from {n} tool result"
             f"{'s' if n != 1 else ''}" if n

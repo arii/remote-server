@@ -406,6 +406,9 @@ class TestTrivialTrace(unittest.TestCase):
         self.assertEqual(events[1]["n_messages"], 2)
         self.assertEqual(events[2]["usage"]["total_tokens"], 17)
         self.assertTrue(events[3]["ok"])
+        self.assertEqual(
+            [d["why"] for d in seen["extra"]["decisions"]],
+            ["trivial greeting, fast path"])
 
     def test_unreported_usage_records_zeros(self):
         import tempfile
@@ -762,17 +765,29 @@ class TestAgentMechanics(unittest.TestCase):
                                  "command": "td --json preflight"}),
         ])
         spec = {"provider": "stub", "model": "m"}
+        seen_extras = []
+
+        def fake_record(script, model_name, thread_id, messages,
+                        started, extra=None, usage=None, calls=None):
+            seen_extras.append(extra)
+            return {}
+
         with mock.patch.object(deep_chat, "build_model",
                                return_value=(model, spec)), \
                 mock.patch.object(deep_chat, "open_checkpointer",
                                   return_value=(saver, False, None)), \
                 mock.patch.object(deep_chat.ledger, "record",
-                                  return_value={}):
+                                  side_effect=fake_record):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = deep_chat._cmd_turn(
                     "arii/remote-server", "t-e2e", b64("check it"))
             self.assertEqual(code, 3)
+            # "check it" classifies explain: the answer line's why
+            # names intent + full path, not the reply text (#450).
+            self.assertEqual(
+                seen_extras[-1]["decisions"][-1]["why"],
+                "explain turn, full path")
             line = [ln for ln in buf.getvalue().splitlines()
                     if ln.startswith("INTERRUPT: ")]
             self.assertEqual(len(line), 1)
@@ -788,6 +803,9 @@ class TestAgentMechanics(unittest.TestCase):
                     "arii/remote-server", "t-e2e", "approve", None)
             self.assertEqual(code2, 0)
             self.assertNotIn("INTERRUPT", buf2.getvalue())
+            self.assertEqual(
+                seen_extras[-1]["decisions"][-1]["why"],
+                "resumed after approve, full path")
 
     def test_cmd_resume_without_pause_fails(self):
         from unittest import mock

@@ -13,18 +13,32 @@ class TestBuildDecisions(unittest.TestCase):
         out = decisions.build_decisions(
             [{"name": "grep_repo", "args": '{"q": "x"}'}],
             ["found it here"],
-            "The answer is 42.")
+            "The answer is 42.",
+            reason="explain turn, full path")
         self.assertEqual(len(out), 2)
         self.assertIn("grep_repo", out[0]["what"])
         self.assertIn("found it here", out[0]["why"])
         self.assertIn("1 tool result", out[1]["what"])
-        self.assertIn("42", out[1]["why"])
+        self.assertEqual(out[1]["why"], "explain turn, full path")
+        self.assertNotIn("42", out[1]["why"])
 
     def test_no_tools_answers_directly(self):
-        out = decisions.build_decisions([], [], "Hi there.")
+        out = decisions.build_decisions(
+            [], [], "Hi there.", reason="trivial greeting, fast path")
         self.assertEqual(len(out), 1)
         self.assertIn("no tools", out[0]["what"])
-        self.assertIn("Hi there", out[0]["why"])
+        self.assertEqual(out[0]["why"], "trivial greeting, fast path")
+        self.assertNotIn("Hi there", out[0]["why"])
+
+    def test_answer_why_falls_back_to_reply(self):
+        out = decisions.build_decisions([], [], "Hi there.")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["why"], "Hi there.")
+
+    def test_answer_why_empty_reply(self):
+        out = decisions.build_decisions([], [], "")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["why"], "(empty reply)")
 
     def test_error_path_reports_failure(self):
         out = decisions.build_decisions(
