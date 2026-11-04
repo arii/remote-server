@@ -19,11 +19,13 @@ import BriefingView, {
 import ChatView, {
   ApprovalCard,
   CHAT_BACKEND_OPTIONS,
+  RunsPane,
   TraceTimeline,
   TypingIndicator,
   awaitingFirstToken,
   cleanAgentText,
   hintLine,
+  runButtonLabel,
   traceLine,
   traceSummary,
 } from './views/ChatView';
@@ -679,6 +681,55 @@ describe('chat composer order', () => {
     expect(html.indexOf('data-testid="chat-send"')).toBeLessThan(
       html.indexOf('data-testid="agent-drawer"'),
     );
+  });
+});
+
+describe('past-run button names', () => {
+  const noop = () => {};
+  const run: AgentRun = {
+    id: 'run-7',
+    script: 'deep_chat.py',
+    model: 'ollama:qwen3:8b',
+    thread: 't7',
+    started_ts: 1793745700,
+    duration_s: 156,
+    ok: true,
+    tools: [],
+    tokens: 11089,
+    preview: `No TODOs found in the repo. ${'detail '.repeat(40)}`,
+    has_prompt: true,
+    cost_usd: 0,
+    metered: false,
+  };
+
+  it('names id, status, duration, tokens, and day', () => {
+    expect(runButtonLabel(run)).toBe('Run run-7, ok, 156s, 11k tokens, 2026-11-03');
+    expect(
+      runButtonLabel({ ...run, ok: false, tokens: 96, started_ts: 0 }),
+    ).toBe('Run run-7, failed, 156s, 96 tokens, unknown time');
+  });
+
+  it('keeps the Tab-stop name short while the card text stays visible', () => {
+    const html = renderToStaticMarkup(
+      <RunsPane
+        runs={[run]}
+        selected={null}
+        detail={null}
+        onSelect={noop}
+        onContinue={noop}
+        onDelete={noop}
+        onClearFinished={noop}
+        notice={null}
+        budget={null}
+      />,
+    );
+    const label =
+      html.match(/data-testid="chat-run-run-7"[^>]*aria-label="([^"]*)"/)?.[1] ?? '';
+    expect(label.length).toBeGreaterThan(0);
+    expect(label.length).toBeLessThan(120);
+    expect(label).toContain('run-7');
+    expect(html).toContain('No TODOs found in the repo.');
+    expect(html).toContain('aria-pressed="false"');
   });
 });
 
