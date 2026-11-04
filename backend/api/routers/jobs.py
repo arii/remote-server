@@ -42,6 +42,7 @@ from backend.exec.engine import (
     RunRegistry,
     build_plan_argv,
     execute_run,
+    runs_store_path,
     td_run_async,
     validate_td_command,
 )
@@ -51,7 +52,9 @@ RUN_TAIL = 6000
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
-registry = RunRegistry()
+# Durable run history (#461): the snapshot path rehydrates on boot,
+# so the Jobs view survives console restarts.
+registry = RunRegistry(store_path=runs_store_path())
 
 
 class JobRecord(BaseModel):
