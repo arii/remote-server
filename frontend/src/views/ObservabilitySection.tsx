@@ -70,7 +70,7 @@ function HealthLine({
   );
 }
 
-function RunRow({ run }: { run: WorkflowRun }) {
+export function RunRow({ run }: { run: WorkflowRun }) {
   const name = run.name ?? 'Workflow';
   const branch = run.branch ?? '?';
   const event = run.event ?? '';
@@ -83,7 +83,11 @@ function RunRow({ run }: { run: WorkflowRun }) {
       <span className="row-meta">
         {event} · {cause}
       </span>{' '}
-      {run.url ? <a href={run.url}>Open run trace</a> : null}
+      {run.url ? (
+        <a href={run.url} target="_blank" rel="noreferrer">
+          Open run trace
+        </a>
+      ) : null}
     </li>
   );
 }
