@@ -451,13 +451,14 @@ class TestTrivialTrace(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
-    def test_seven_tools(self):
+    def test_eight_tools(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 8)
         self.assertEqual(
             {t.name for t in tools},
             {"read_repo_file", "grep_repo", "list_dir", "search_docs",
-             "propose_action", "run_repo_command", "fetch_url"},
+             "propose_action", "run_repo_command", "fetch_url",
+             "search_turns"},
         )
 
     def test_read_grep_list_delegate(self):
@@ -533,6 +534,37 @@ class TestToolSurface(unittest.TestCase):
         self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
         out = tool.invoke({"url": "file:///etc/passwd"})
         self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+
+    def test_search_turns_tool(self):
+        import tempfile
+
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        tool = by_name["search_turns"]
+        self.assertIn("past agent turns", tool.description)
+        self.assertIn("triage", tool.description)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "kind": "deep-agent-run", "ts": 1700000000.0,
+                    "script": "ask_investigator.py",
+                    "model": "ollama:qwen3:8b", "thread_id": "ask-a-b",
+                    "duration_s": 12.5,
+                    "final_preview": "fixed by pinning the model",
+                    "extra": {}}) + "\n")
+            prev = os.environ.get("EVAL_LEDGER")
+            os.environ["EVAL_LEDGER"] = path
+            try:
+                out = tool.invoke({"query": "pinning the model"})
+            finally:
+                if prev is None:
+                    del os.environ["EVAL_LEDGER"]
+                else:
+                    os.environ["EVAL_LEDGER"] = prev
+        self.assertIn("pinning the model", out)
+        self.assertIn("run-0", out)
+        self.assertIn("usage:",
+                      tool.invoke({"query": "  "}))
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
@@ -638,6 +670,48 @@ class TestAgentMechanics(unittest.TestCase):
         self.assertIn("FROBNICATE", joined)
         self.assertEqual(done["messages"][-1].content,
                          "the docs say FROBNICATE")
+
+    def test_search_turns_runs_in_turn(self):
+        import tempfile
+
+        from langchain_core.messages import AIMessage
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ledger.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "kind": "deep-agent-run", "ts": 1700000000.0,
+                    "script": "ask_investigator.py",
+                    "model": "ollama:qwen3:8b",
+                    "thread_id": "ask-old", "duration_s": 9.9,
+                    "final_preview": "triage verdict: QUOTA-FAULT",
+                    "extra": {}}) + "\n")
+            call = AIMessage(content="", tool_calls=[{
+                "name": "search_turns",
+                "args": {"query": "triage verdict"},
+                "id": "call-recall", "type": "tool_call"}])
+            agent, config = self._stub_agent(
+                [call, AIMessage(
+                    content="last triage concluded QUOTA-FAULT")],
+                thread="t-recall")
+            prev = os.environ.get("EVAL_LEDGER")
+            os.environ["EVAL_LEDGER"] = path
+            try:
+                done = agent.invoke(
+                    {"messages": [{"role": "user",
+                                   "content": "what did triage conclude?"}]},
+                    config)
+            finally:
+                if prev is None:
+                    del os.environ["EVAL_LEDGER"]
+                else:
+                    os.environ["EVAL_LEDGER"] = prev
+        joined = "\n".join(
+            str(m.content) for m in done["messages"]
+            if m.__class__.__name__ == "ToolMessage")
+        self.assertIn("QUOTA-FAULT", joined)
+        self.assertEqual(done["messages"][-1].content,
+                         "last triage concluded QUOTA-FAULT")
 
     def test_pause_then_approve_executes(self):
         from langchain_core.messages import AIMessage

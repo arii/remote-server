@@ -236,6 +236,48 @@ class TestAskTools(unittest.TestCase):
         out = ai.fetch_url.invoke({"url": "gopher://x/y"})
         self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
 
+    def test_search_turns_recalls_fixture_ledger(self):
+        self.assertIn("past agent turns", ai.search_turns.description)
+        path = os.path.join(self.tmp.name, "recall.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "kind": "deep-agent-run", "ts": 1700000000.0,
+                "script": "deep_chat.py", "model": "ollama:qwen3:8b",
+                "thread_id": "ask-old", "duration_s": 9.9,
+                "final_preview": "fixed by RETRY-MARKER",
+                "extra": {}}) + "\n")
+        with mock.patch.dict(os.environ, {"EVAL_LEDGER": path}):
+            out = ai.search_turns.invoke({"query": "fixed by"})
+        self.assertIn("RETRY-MARKER", out)
+        self.assertIn("deep_chat.py", out)
+
+    def test_search_turns_empty_query_is_usage(self):
+        self.assertIn("usage:",
+                      ai.search_turns.invoke({"query": ""}))
+
+    def test_search_turns_in_main_tool_list(self):
+        # main()'s create_agent tools=[...] is inline; parse it via
+        # ast like TestAllowlistSync does (no agent run needed).
+        import ast
+
+        src = os.path.join(os.path.dirname(__file__), "..",
+                           "deep-agent", "ask_investigator.py")
+        with open(src, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        names = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = getattr(node, "func", None)
+            if getattr(func, "id", "") != "create_agent":
+                continue
+            for kw in node.keywords:
+                if kw.arg == "tools" and isinstance(kw.value, ast.List):
+                    names.update(
+                        e.id for e in kw.value.elts
+                        if isinstance(e, ast.Name))
+        self.assertIn("search_turns", names)
+
 
 class TestAskModelConfig(unittest.TestCase):
     def test_blank_env_falls_back_to_defaults(self):
