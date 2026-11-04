@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   completionOutcome,
   conflictBlockReason,
+  defaultComparePair,
+  diffLineTone,
+  filterOutputLines,
   filterRepairCandidates,
+  parseUnifiedDiffRows,
   fixCiBlockReason,
   isConflictError,
   isNotFoundError,
@@ -226,5 +230,84 @@ describe('run finished detection (issue #589)', () => {
     expect(isConflictError('GET api/jobs/runs/abc failed: 404')).toBe(false);
     expect(isConflictError('POST api/jobs/run failed: 400')).toBe(false);
     expect(isConflictError('network down')).toBe(false);
+  });
+});
+
+describe('output filter (issue #657)', () => {
+  const out = 'ok line\nFAIL: assertion boom\nanother FAIL here\nok tail';
+
+  it('narrows lines case-insensitively with counts', () => {
+    const r = filterOutputLines(out, 'fail');
+    expect(r.visible).toEqual(['FAIL: assertion boom', 'another FAIL here']);
+    expect(r.matched).toBe(2);
+    expect(r.total).toBe(4);
+  });
+
+  it('keeps all lines on empty query, none on no match', () => {
+    expect(filterOutputLines(out, '')).toEqual({ visible: out.split('\n'), matched: 4, total: 4 });
+    expect(filterOutputLines(out, '   ').matched).toBe(4);
+    expect(filterOutputLines(out, 'zzz-absent').visible).toEqual([]);
+    expect(filterOutputLines('', 'x')).toEqual({ visible: [], matched: 0, total: 0 });
+  });
+});
+
+describe('compare picker defaults (issue #657)', () => {
+  it('picks the two latest, older first so diffs read old to new', () => {
+    expect(defaultComparePair(['newest', 'older', 'oldest'])).toEqual(['older', 'newest']);
+    expect(defaultComparePair(['b', 'a'])).toEqual(['a', 'b']);
+  });
+
+  it('returns null with fewer than two finished runs', () => {
+    expect(defaultComparePair(['only'])).toBeNull();
+    expect(defaultComparePair([])).toBeNull();
+  });
+});
+
+describe('diff line tones (issue #657)', () => {
+  it('colors added/removed lines, mutes headers, leaves context plain', () => {
+    expect(diffLineTone('+new value')).toBe('add');
+    expect(diffLineTone('-old value')).toBe('del');
+    expect(diffLineTone(' context')).toBeNull();
+    expect(diffLineTone('--- a/abc')).toBe('hunk');
+    expect(diffLineTone('+++ b/def')).toBe('hunk');
+    expect(diffLineTone('@@ -1,3 +1,3 @@')).toBe('hunk');
+  });
+
+  it('keeps removed content starting with dashes as del', () => {
+    expect(diffLineTone('---- foo')).toBe('del');
+  });
+});
+
+describe('side-by-side rows (issue #657)', () => {
+  const diff = [
+    '--- a/aaa',
+    '+++ b/bbb',
+    '@@ -1,4 +1,4 @@',
+    ' same',
+    '-old',
+    '+new',
+    '-gone',
+    '+added',
+    ' tail',
+  ].join('\n');
+
+  it('pairs changes, gaps pure add/remove, spans headers', () => {
+    const rows = parseUnifiedDiffRows(diff);
+    expect(rows).toEqual([
+      { left: '@@ -1,4 +1,4 @@', right: '@@ -1,4 +1,4 @@', leftTone: 'hunk', rightTone: 'hunk', header: true },
+      { left: 'same', right: 'same', leftTone: null, rightTone: null, header: false },
+      { left: 'old', right: 'new', leftTone: 'del', rightTone: 'add', header: false },
+      { left: 'gone', right: 'added', leftTone: 'del', rightTone: 'add', header: false },
+      { left: 'tail', right: 'tail', leftTone: null, rightTone: null, header: false },
+    ]);
+  });
+
+  it('leaves a gap when removals outnumber additions', () => {
+    const rows = parseUnifiedDiffRows('@@ -1,2 +1 @@\n-cut\n-keep\n+keep!');
+    expect(rows.map((r) => [r.left, r.right])).toEqual([
+      ['@@ -1,2 +1 @@', '@@ -1,2 +1 @@'],
+      ['cut', 'keep!'],
+      ['keep', null],
+    ]);
   });
 });

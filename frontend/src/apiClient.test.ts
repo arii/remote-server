@@ -22,6 +22,7 @@ import {
   fetchRepoDiff,
   fetchRepoFiles,
   fetchRouteHint,
+  fetchRunCompare,
   fetchSystemHealth,
   fetchVerifyCommand,
   fetchWorkflowHealth,
@@ -755,6 +756,29 @@ describe('job re-run (issue #630)', () => {
     vi.stubGlobal('fetch', mockFetchJson({ detail: 'x' }, false, 409));
     await expect(rerunJob('logs', 'remote-server', [], false)).rejects.toThrow(
       'POST api/jobs/run failed: 409',
+    );
+  });
+});
+
+describe('run compare (issue #657)', () => {
+  it('fetches the unified diff for two run ids', async () => {
+    const body = {
+      a_id: 'aaaaaaaaaaaa',
+      b_id: 'bbbbbbbbbbbb',
+      unified_diff: '--- a/aaaaaaaaaaaa\n+++ b/bbbbbbbbbbbb\n@@ -1 +1 @@\n-x\n+y\n',
+      truncated: false,
+    };
+    vi.stubGlobal('fetch', mockFetchJson(body));
+    expect(await fetchRunCompare('aaaaaaaaaaaa', 'bbbbbbbbbbbb')).toEqual(body);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/jobs/runs/compare?a=aaaaaaaaaaaa&b=bbbbbbbbbbbb',
+    );
+  });
+
+  it('surfaces unknown-run 404s to the caller', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'unknown run' }, false, 404));
+    await expect(fetchRunCompare('aaaaaaaaaaaa', 'bbbbbbbbbbbb')).rejects.toThrow(
+      'failed: 404',
     );
   });
 });

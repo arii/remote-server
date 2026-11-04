@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
@@ -7,26 +7,33 @@ import {
   fetchJobRun,
   fetchJobs,
   fetchPlan,
+  fetchRunCompare,
   requestTakeover,
   rerunJob,
   startJobRun,
   startTdRun,
 } from '../apiClient';
+import type { RunCompareResult } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadJobs, useMock } from './mockViews';
 import {
   attachIdFromConflict,
   conflictBlockReason,
+  defaultComparePair,
+  diffLineTone,
+  filterOutputLines,
   fixCiBlockReason,
   isConflictError,
   isNotFoundError,
   jobsListActive,
+  parseUnifiedDiffRows,
   planExecuteSeed,
   prFieldSeed,
   resultLine,
   shouldResetPaneOnClear,
 } from './jobsUtils';
+import type { DiffLineTone } from './jobsUtils';
 import DangerZone, { dangerEntryFor } from './DangerZone';
 import RepairSection from './RepairSection';
 import TdCommands from './TdCommands';
@@ -119,7 +126,28 @@ function JobsHeader({
   );
 }
 
-function RunProgressPanel({
+// One output line with <mark> around case-insensitive query
+// matches (#657). Empty query renders the line as-is.
+export function HighlightedLine({ line, query }: { line: string; query: string }) {
+  const q = query.trim();
+  if (!q) return <>{line}</>;
+  const lower = line.toLowerCase();
+  const needle = q.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let i = 0;
+  let k = 0;
+  for (;;) {
+    const at = lower.indexOf(needle, i);
+    if (at < 0) break;
+    if (at > i) parts.push(<Fragment key={k++}>{line.slice(i, at)}</Fragment>);
+    parts.push(<mark key={k++}>{line.slice(at, at + needle.length)}</mark>);
+    i = at + needle.length;
+  }
+  parts.push(<Fragment key={k}>{line.slice(i)}</Fragment>);
+  return <>{parts}</>;
+}
+
+export function RunProgressPanel({
   tail,
   runId,
   running,
@@ -130,7 +158,12 @@ function RunProgressPanel({
   running: string | null;
   panelRef: React.RefObject<HTMLDivElement | null>;
 }) {
+  // Client-only filter over the already-fetched tail (#657). The
+  // parent keys this panel by run id, so the query resets per run.
+  const [query, setQuery] = useState('');
   if (!tail && !runId) return null;
+  const { visible, matched, total } = filterOutputLines(tail, query);
+  const filtering = query.trim() !== '';
   return (
     <div className="detail" data-testid="jobs-progress" ref={panelRef}>
       <span className="row-title">
@@ -141,7 +174,207 @@ function RunProgressPanel({
           {resultLine(tail)}
         </p>
       )}
-      <pre className="row-meta">{tail || 'Waiting for output…'}</pre>
+      <div className="actions">
+        <input
+          type="search"
+          placeholder="Filter output…"
+          aria-label="Filter output"
+          data-testid="jobs-output-filter"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+      <p className="row-meta" data-testid="jobs-output-count">
+        {filtering ? `${matched} of ${total} lines match` : `${total} lines`}
+      </p>
+      <pre className="row-meta">
+        {tail === ''
+          ? 'Waiting for output…'
+          : visible.length === 0
+            ? 'No matching lines.'
+            : visible.map((l, i) => (
+                <span key={i}>
+                  <HighlightedLine line={l} query={query} />
+                  {i < visible.length - 1 ? '\n' : ''}
+                </span>
+              ))}
+      </pre>
+    </div>
+  );
+}
+
+const DIFF_TONE_CLASS: Record<DiffLineTone, string> = {
+  add: 'tone-ok',
+  del: 'tone-bad',
+  hunk: 'tone-muted',
+};
+
+export function UnifiedDiffView({ diff }: { diff: string }) {
+  if (diff === '') return <p className="row-meta">No differences.</p>;
+  const lines = diff.split('\n');
+  return (
+    <pre className="row-meta" data-testid="run-compare-diff">
+      {lines.map((line, i) => {
+        const tone = diffLineTone(line);
+        return (
+          <span key={i} className={tone ? DIFF_TONE_CLASS[tone] : undefined}>
+            {line}
+            {i < lines.length - 1 ? '\n' : ''}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}
+
+export function SideBySideDiffView({
+  diff,
+  aId,
+  bId,
+}: {
+  diff: string;
+  aId: string;
+  bId: string;
+}) {
+  const rows = parseUnifiedDiffRows(diff);
+  if (rows.length === 0) return <p className="row-meta">No differences.</p>;
+  return (
+    <table className="row-meta" data-testid="run-compare-side">
+      <thead>
+        <tr>
+          <th>{aId}</th>
+          <th>{bId}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) =>
+          r.header ? (
+            <tr key={i}>
+              <td colSpan={2} className={DIFF_TONE_CLASS.hunk}>
+                {r.left}
+              </td>
+            </tr>
+          ) : (
+            <tr key={i}>
+              <td className={r.leftTone ? DIFF_TONE_CLASS[r.leftTone] : undefined}>
+                {r.left ?? ''}
+              </td>
+              <td className={r.rightTone ? DIFF_TONE_CLASS[r.rightTone] : undefined}>
+                {r.right ?? ''}
+              </td>
+            </tr>
+          ),
+        )}
+      </tbody>
+    </table>
+  );
+}
+
+// Ephemeral pairwise output comparison (#657). Pickers default to
+// the two latest finished runs (older first); the diff refetches
+// whenever either pick changes. Hidden with fewer than two
+// finished runs.
+export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
+  const finished = jobs.filter((j) => j.done);
+  const ids = finished.map((j) => j.id);
+  const defaults = defaultComparePair(ids);
+  const [aPick, setAPick] = useState<string | null>(null);
+  const [bPick, setBPick] = useState<string | null>(null);
+  const [mode, setMode] = useState<'unified' | 'side'>('unified');
+  const [result, setResult] = useState<RunCompareResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Picks fall back to the defaults when the picked run is gone
+  // (cleared) or was never picked.
+  const a = aPick && ids.includes(aPick) ? aPick : (defaults?.[0] ?? null);
+  const b = bPick && ids.includes(bPick) ? bPick : (defaults?.[1] ?? null);
+  useEffect(() => {
+    if (!a || !b) {
+      setResult(null);
+      return;
+    }
+    let live = true;
+    setLoading(true);
+    setError(null);
+    fetchRunCompare(a, b).then(
+      (r) => {
+        if (!live) return;
+        setResult(r);
+        setLoading(false);
+      },
+      (err) => {
+        if (!live) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [a, b]);
+  if (!defaults) return null;
+  const optionLabel = (id: string) => {
+    const j = finished.find((f) => f.id === id);
+    return j ? `${id} · ${labelOf(j)}` : id;
+  };
+  return (
+    <div className="detail" data-testid="run-compare">
+      <span className="row-title">Compare runs</span>
+      <div className="actions">
+        <label className="row-meta">
+          A{' '}
+          <select
+            data-testid="run-compare-a"
+            value={a ?? ''}
+            onChange={(e) => setAPick(e.target.value || null)}
+          >
+            {ids.map((id) => (
+              <option key={id} value={id}>
+                {optionLabel(id)}
+              </option>
+            ))}
+          </select>
+        </label>{' '}
+        <label className="row-meta">
+          B{' '}
+          <select
+            data-testid="run-compare-b"
+            value={b ?? ''}
+            onChange={(e) => setBPick(e.target.value || null)}
+          >
+            {ids.map((id) => (
+              <option key={id} value={id}>
+                {optionLabel(id)}
+              </option>
+            ))}
+          </select>
+        </label>{' '}
+        <button
+          type="button"
+          data-testid="run-compare-mode"
+          onClick={() => setMode((m) => (m === 'unified' ? 'side' : 'unified'))}
+        >
+          {mode === 'unified' ? 'Side-by-side' : 'Unified'}
+        </button>
+      </div>
+      {loading && <p className="row-meta" role="status">Loading diff…</p>}
+      {error && (
+        <p role="alert" data-testid="run-compare-error">
+          Couldn&apos;t load the diff: {error}
+        </p>
+      )}
+      {!loading && !error && result && (
+        <>
+          {result.truncated && (
+            <p className="row-meta">Outputs truncated to 500K chars per side.</p>
+          )}
+          {mode === 'unified' ? (
+            <UnifiedDiffView diff={result.unified_diff} />
+          ) : (
+            <SideBySideDiffView diff={result.unified_diff} aId={result.a_id} bId={result.b_id} />
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -491,7 +724,14 @@ export default function JobsView({
           {notice}
         </p>
       )}
-      <RunProgressPanel tail={tail} runId={runId} running={running} panelRef={progressRef} />
+      <RunProgressPanel
+        key={runId ?? 'none'}
+        tail={tail}
+        runId={runId}
+        running={running}
+        panelRef={progressRef}
+      />
+      <RunComparePanel jobs={list} />
       <PlanCardPanel
         card={planCard}
         open={planOpen}

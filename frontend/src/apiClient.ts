@@ -479,6 +479,20 @@ export function fetchJobRun(rid: string): Promise<JobRunProgress> {
   return getJson<JobRunProgress>(`api/jobs/runs/${encodeURIComponent(rid)}`);
 }
 
+export interface RunCompareResult {
+  a_id: string;
+  b_id: string;
+  unified_diff: string;
+  truncated: boolean;
+}
+
+// Unified diff of two runs' full outputs (issue #657).
+export function fetchRunCompare(a: string, b: string): Promise<RunCompareResult> {
+  return getJson<RunCompareResult>(
+    `api/jobs/runs/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+  );
+}
+
 export function jobsStreamUrl(): string {
   return apiUrl('api/jobs/stream');
 }

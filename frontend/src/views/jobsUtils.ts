@@ -187,3 +187,93 @@ export function completionOutcome(input: CompletionInput): CompletionOutcome {
     planCard,
   };
 }
+
+// Within-run output filter (#657): case-insensitive substring over
+// lines. Empty query keeps all lines.
+export interface OutputFilterResult {
+  visible: string[];
+  matched: number;
+  total: number;
+}
+
+export function filterOutputLines(output: string, query: string): OutputFilterResult {
+  const lines = output === '' ? [] : output.split('\n');
+  const q = query.trim().toLowerCase();
+  if (!q) return { visible: lines, matched: lines.length, total: lines.length };
+  const visible = lines.filter((l) => l.toLowerCase().includes(q));
+  return { visible, matched: visible.length, total: lines.length };
+}
+
+// Compare picker defaults (#657): the two latest finished ids from a
+// newest-first id list, or null when fewer than two finished runs.
+// a is the older run so the diff reads old → new.
+export function defaultComparePair(finishedIds: string[]): [string, string] | null {
+  if (finishedIds.length < 2) return null;
+  return [finishedIds[1], finishedIds[0]];
+}
+
+// Unified-diff line tone for added/removed coloring (#657). File
+// headers (---/+++) and hunk headers (@@) read as hunk, not add/del.
+export type DiffLineTone = 'add' | 'del' | 'hunk';
+
+export function diffLineTone(line: string): DiffLineTone | null {
+  // Spaced header forms only: a removed content line starting with
+  // '--' (e.g. '---- foo') must still read as del, not hunk.
+  if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  return null;
+}
+
+// One side-by-side row parsed from a unified diff (#657). Changed
+// lines pair old+new on one row; pure additions/removals leave the
+// other side null (gutter gap). Hunk headers span both columns.
+export interface SideBySideRow {
+  left: string | null;
+  right: string | null;
+  leftTone: DiffLineTone | null;
+  rightTone: DiffLineTone | null;
+  header: boolean;
+}
+
+export function parseUnifiedDiffRows(diff: string): SideBySideRow[] {
+  const rows: SideBySideRow[] = [];
+  let pendingDel: string[] = [];
+  const flush = () => {
+    for (const old of pendingDel) {
+      rows.push({ left: old, right: null, leftTone: 'del', rightTone: null, header: false });
+    }
+    pendingDel = [];
+  };
+  for (const line of diff.split('\n')) {
+    if (line === '' || line.startsWith('--- ') || line.startsWith('+++ ')) continue;
+    if (line.startsWith('@@')) {
+      flush();
+      rows.push({ left: line, right: line, leftTone: 'hunk', rightTone: 'hunk', header: true });
+      continue;
+    }
+    if (line.startsWith('-')) {
+      pendingDel.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith('+')) {
+      const old = pendingDel.shift();
+      if (old === undefined) {
+        rows.push({ left: null, right: line.slice(1), leftTone: null, rightTone: 'add', header: false });
+      } else {
+        rows.push({ left: old, right: line.slice(1), leftTone: 'del', rightTone: 'add', header: false });
+      }
+      continue;
+    }
+    flush();
+    rows.push({
+      left: line.slice(1),
+      right: line.slice(1),
+      leftTone: null,
+      rightTone: null,
+      header: false,
+    });
+  }
+  flush();
+  return rows;
+}
