@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, isStalled, meteredTotal, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import { budgetLine, ChatHistory, isStalled, meteredTotal, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, turnPrompt } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
+import type { ChatMessage } from './mockViews';
 
 describe('stream progress (issue #376)', () => {
   it('formats elapsed alone before anything arrives', () => {
@@ -33,6 +34,92 @@ describe('chat retry visibility (issue #433)', () => {
     expect(shouldShowChatRetry('network error', true, 'hi')).toBe(false);
     expect(shouldShowChatRetry('network error', false, '')).toBe(false);
     expect(shouldShowChatRetry('network error', false, '   ')).toBe(false);
+  });
+});
+
+function historyHtml(messages: ChatMessage[], streaming = false): string {
+  return renderToStaticMarkup(
+    <ChatHistory
+      messages={messages}
+      streaming={streaming}
+      onEdit={() => {}}
+      onRegenerate={() => {}}
+    />,
+  );
+}
+
+const twoTurns: ChatMessage[] = [
+  { role: 'user', text: 'first prompt' },
+  { role: 'assistant', text: 'first reply' },
+  { role: 'user', text: 'second prompt' },
+  { role: 'assistant', text: 'second reply' },
+];
+
+describe('chat edit affordance (issue #629)', () => {
+  it('shows edit on settled streams only', () => {
+    expect(shouldShowChatEdit(false)).toBe(true);
+    expect(shouldShowChatEdit(true)).toBe(false);
+  });
+
+  it('renders an edit button on every sent user bubble', () => {
+    const html = historyHtml(twoTurns);
+    expect(html).toContain('data-testid="chat-edit-0"');
+    expect(html).toContain('data-testid="chat-edit-2"');
+    expect(html).toContain('>Edit</button>');
+    expect(html).not.toContain('chat-edit-1');
+    expect(html).not.toContain('chat-edit-3');
+  });
+
+  it('hides every edit button while streaming', () => {
+    expect(historyHtml(twoTurns, true)).not.toContain('chat-edit-');
+  });
+});
+
+describe('chat regenerate affordance (issue #629)', () => {
+  it('recovers the prompt of each turn, not the global last sent', () => {
+    expect(turnPrompt(twoTurns, 1)).toBe('first prompt');
+    expect(turnPrompt(twoTurns, 3)).toBe('second prompt');
+  });
+
+  it('returns empty when no user turn precedes the bubble', () => {
+    expect(turnPrompt([{ role: 'assistant', text: 'orphan' }], 0)).toBe('');
+    expect(turnPrompt([], 0)).toBe('');
+  });
+
+  it('gates regenerate on settled stream, reply text, and recoverable prompt', () => {
+    expect(shouldShowChatRegenerate(false, 'a reply', 'a prompt')).toBe(true);
+    expect(shouldShowChatRegenerate(true, 'a reply', 'a prompt')).toBe(false);
+    expect(shouldShowChatRegenerate(false, '', 'a prompt')).toBe(false);
+    expect(shouldShowChatRegenerate(false, '   ', 'a prompt')).toBe(false);
+    expect(shouldShowChatRegenerate(false, 'a reply', '')).toBe(false);
+    expect(shouldShowChatRegenerate(false, 'a reply', '   ')).toBe(false);
+  });
+
+  it('renders regenerate on completed replies with a recoverable prompt', () => {
+    const html = historyHtml(twoTurns);
+    expect(html).toContain('data-testid="chat-regenerate-1"');
+    expect(html).toContain('data-testid="chat-regenerate-3"');
+    expect(html).toContain('>Regenerate</button>');
+    expect(html).not.toContain('chat-regenerate-0');
+    expect(html).not.toContain('chat-regenerate-2');
+  });
+
+  it('hides every regenerate button while streaming', () => {
+    expect(historyHtml(twoTurns, true)).not.toContain('chat-regenerate-');
+  });
+
+  it('hides regenerate when no prompt is recoverable', () => {
+    const html = historyHtml([{ role: 'assistant', text: 'orphan reply' }]);
+    expect(html).toContain('chat-msg-assistant-0');
+    expect(html).not.toContain('chat-regenerate-');
+  });
+
+  it('hides regenerate on an empty reply', () => {
+    const html = historyHtml([
+      { role: 'user', text: 'a prompt' },
+      { role: 'assistant', text: '' },
+    ]);
+    expect(html).not.toContain('chat-regenerate-');
   });
 });
 

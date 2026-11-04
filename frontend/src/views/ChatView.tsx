@@ -545,6 +545,37 @@ export function shouldShowChatRetry(
   );
 }
 
+// Edit recalls a sent prompt into the composer for fix-and-resend.
+// Available on every user bubble once the stream settles.
+export function shouldShowChatEdit(streaming: boolean): boolean {
+  return !streaming;
+}
+
+// Regenerate offers a second chance on a completed reply (a weak
+// local-model answer), reusing the retry/send path. Sibling to
+// shouldShowChatRetry: never while streaming, never on an empty
+// reply, never without a recoverable prompt — and still never
+// auto-runs. The failure-retry gate above is untouched.
+export function shouldShowChatRegenerate(
+  streaming: boolean,
+  replyText: string,
+  promptText: string,
+): boolean {
+  return (
+    !streaming && replyText.trim().length > 0 && promptText.trim().length > 0
+  );
+}
+
+// Nearest user prompt above an assistant bubble: regenerate re-sends
+// this turn's prompt, not the global lastSent, so older turns keep
+// their own second chance. '' when no user turn precedes the bubble.
+export function turnPrompt(messages: ChatMessage[], index: number): string {
+  for (let i = index - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') return messages[i].text;
+  }
+  return '';
+}
+
 // Streaming progress line: elapsed always, plus phase and token count
 // once known. "Working… 45s · prefill · 12 tok".
 export function streamProgress(
@@ -573,6 +604,56 @@ export function StreamProgress({
     <p className="row-meta" data-testid="chat-progress">
       {streamProgress(elapsed, phase, tokens)}
     </p>
+  );
+}
+
+// Turn list with per-bubble second chances: Edit on sent prompts,
+// Regenerate on completed replies. Both hide while streaming;
+// Regenerate also hides when the turn's prompt is not recoverable,
+// so there are never dead buttons. Indexed testids follow the
+// chat-msg-<role>-<i> neighbor convention.
+export function ChatHistory({
+  messages,
+  streaming,
+  onEdit,
+  onRegenerate,
+}: {
+  messages: ChatMessage[];
+  streaming: boolean;
+  onEdit: (text: string) => void;
+  onRegenerate: (text: string) => void;
+}) {
+  const typing = awaitingFirstToken(streaming, messages);
+  const shown = typing ? messages.slice(0, -1) : messages;
+  return (
+    <ul className="session-list" data-testid="chat-history">
+      {shown.map((m, i) => (
+        <li key={i} className="detail" data-testid={`chat-msg-${m.role}-${i}`}>
+          <span className="row-title">{m.role === 'user' ? 'You' : 'Assistant'}</span>
+          <p>{m.role === 'assistant' ? cleanAgentText(m.text) : m.text}</p>
+          {m.role === 'user' && shouldShowChatEdit(streaming) && (
+            <div className="actions">
+              <button type="button" data-testid={`chat-edit-${i}`} onClick={() => onEdit(m.text)}>
+                Edit
+              </button>
+            </div>
+          )}
+          {m.role === 'assistant' &&
+            shouldShowChatRegenerate(streaming, m.text, turnPrompt(shown, i)) && (
+              <div className="actions">
+                <button
+                  type="button"
+                  data-testid={`chat-regenerate-${i}`}
+                  onClick={() => onRegenerate(turnPrompt(shown, i))}
+                >
+                  Regenerate
+                </button>
+              </div>
+            )}
+        </li>
+      ))}
+      {typing && <TypingIndicator />}
+    </ul>
   );
 }
 
@@ -926,6 +1007,22 @@ export default function ChatView({
     void sendText(lastSent);
   }
 
+  // Edit recalls a sent prompt into the composer for fix-and-resend;
+  // the resend is a normal new turn (history stays append-only).
+  // preventScroll keeps the recalled turn in view on phones.
+  function onEditPrompt(text: string) {
+    if (streaming) return;
+    setPrompt(text);
+    promptRef.current?.focus({ preventScroll: true });
+  }
+
+  // Regenerate re-sends a completed turn's prompt through the same
+  // path as failure-retry — manual only, never mid-stream.
+  function onRegenerate(text: string) {
+    if (!text.trim() || streaming) return;
+    void sendText(text);
+  }
+
   function stopStream() {
     abortRef.current?.abort();
     abortRef.current = null;
@@ -989,9 +1086,6 @@ export default function ChatView({
     }
   }
 
-  const typing = awaitingFirstToken(streaming, messages);
-  const shown = typing ? messages.slice(0, -1) : messages;
-
   // Pin the live reply in view while streaming: the reply renders
   // at the list end and used to demand a manual scroll back up past
   // the runs after every send (#594). Nearest-scroll only moves when
@@ -1028,15 +1122,12 @@ export default function ChatView({
       <span className="sr-only" role="status" data-testid="chat-phase">
         {streaming ? phase : null}
       </span>
-      <ul className="session-list" data-testid="chat-history">
-        {shown.map((m, i) => (
-          <li key={i} className="detail" data-testid={`chat-msg-${m.role}-${i}`}>
-            <span className="row-title">{m.role === 'user' ? 'You' : 'Assistant'}</span>
-            <p>{m.role === 'assistant' ? cleanAgentText(m.text) : m.text}</p>
-          </li>
-        ))}
-        {typing && <TypingIndicator />}
-      </ul>
+      <ChatHistory
+        messages={messages}
+        streaming={streaming}
+        onEdit={(text) => onEditPrompt(text)}
+        onRegenerate={(text) => onRegenerate(text)}
+      />
       <div ref={bottomRef} data-testid="chat-bottom" aria-hidden="true" />
       {messages.length === 0 && (
         <p className="row-meta" data-testid="chat-empty">
