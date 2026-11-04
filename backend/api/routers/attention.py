@@ -6,6 +6,7 @@ Sources (existing helpers only, no new infra):
 - failing runs: ops.fetch_workflow_health (workflow-health logic)
 - failed jobs: jobs registry (non-ok/failed/terminal-error records)
 - failed webhooks: ledger kind-filtered reads
+- skipped webhooks: newest unresolved pull skip per repo (info)
 - pending approvals: ledger + jobs-registry pending records
 - ollama outage: model_router.ollama_reachable probe (derived item —
   present while local models are down, clears itself on recovery)
@@ -201,14 +202,22 @@ def list_failed_jobs() -> list:
 
 
 def latest_webhook_success_ts() -> dict:
-    """Injectable seam: newest successful webhook ts per repo."""
+    """Injectable seam: newest advancing webhook pull ts per repo.
+
+    Only a pull that moved the checkout (ok + advanced) counts as a
+    success for resolution. Skips ("skipped: tree dirty",
+    "skipped: tree not ff-able") and already-current no-ops record
+    ok=True with advanced=False — the checkout did not move, so they
+    must not resolve prior failures.
+    """
     try:
         entries = ledger.read(kind="webhook", limit=200)
     except Exception:
         return {}
     best: dict = {}
     for e in entries:
-        if isinstance(e, dict) and e.get("ok") is True:
+        if isinstance(e, dict) and e.get("ok") is True \
+                and e.get("advanced") is True:
             try:
                 ts = float(e.get("ts", 0) or 0)
             except (TypeError, ValueError):
@@ -221,9 +230,10 @@ def latest_webhook_success_ts() -> dict:
 def list_failed_webhooks() -> list:
     """Injectable seam: failed webhooks from ledger kinds.
 
-    Failures older than the latest success for the same repo are
-    resolved history, not queue items — a later good pull means the
-    checkout moved on. Cross-repo successes never resolve each other.
+    Failures older than the latest advancing pull for the same repo
+    are resolved history, not queue items — a later advancing pull
+    means the checkout moved on. Cross-repo successes never resolve
+    each other.
     """
     resolved_before = latest_webhook_success_ts()
     entries = ledger.read(kind="webhook", limit=50)
@@ -243,6 +253,44 @@ def list_failed_webhooks() -> list:
                 or e.get("status") in ("failed", "error"):
             out.append(e)
     return out
+
+
+def list_skipped_webhooks() -> list:
+    """Injectable seam: newest unresolved pull skip per repo.
+
+    Skips (ok=True, advanced=False, detail "skipped: ...") are safe
+    no-ops — the pull logic is unchanged — but a checkout that keeps
+    skipping lags origin/main silently, so the newest skip per repo
+    surfaces as its own info item until an advancing pull clears it.
+    """
+    resolved_before = latest_webhook_success_ts()
+    entries = ledger.read(kind="webhook", limit=200)
+    best: dict = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        if e.get("ok") is not True or e.get("advanced") is True:
+            continue
+        detail = str(e.get("detail", "") or "")
+        if not detail.strip().lower().startswith("skipped"):
+            continue
+        try:
+            ts = float(e.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        repo = str(e.get("repo", ""))
+        if ts <= resolved_before.get(repo, 0.0):
+            continue
+        prev = best.get(repo)
+        if prev is not None:
+            try:
+                prev_ts = float(prev.get("ts", 0) or 0)
+            except (TypeError, ValueError):
+                prev_ts = 0.0
+            if ts < prev_ts:
+                continue
+        best[repo] = e
+    return list(best.values())
 
 
 def list_pending_approvals() -> list:
@@ -346,6 +394,27 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             item["title"] += f" (×{item['count']})"
         del item["count"]
         items.append(item)
+    # One info row per lagging checkout (the seam already keeps only
+    # the newest unresolved skip per repo, so this is collapsed by
+    # construction). Skips never resolve failures — see
+    # latest_webhook_success_ts.
+    for e in list_skipped_webhooks():
+        repo = str(e.get("repo", name))
+        detail = str(e.get("detail") or e.get("error") or e.get("event")
+                     or "webhook pull skipped")
+        eid = e.get("id", e.get("ts", "?"))
+        items.append({
+            "id": f"webhook-skip-{eid}",
+            "kind": "skipped-webhook",
+            "title": "Webhook pull skipped — checkout lagging",
+            "detail": detail,
+            "repo": repo,
+            "severity": "info",
+            "action": {"label": "View jobs", "method": "GET",
+                       "href": "api/jobs", "destructive": False,
+                       "intent": ""},
+            "created_at": float(e.get("ts", now) or now),
+        })
     for e in list_pending_approvals():
         eid = e.get("id", e.get("ts", "?"))
         items.append({
