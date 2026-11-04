@@ -199,7 +199,7 @@ describe('apiClient (fetch with inline shapes)', () => {
   });
 
   it('fetches notification preferences (issue #656)', async () => {
-    const prefs = { muted_events: [], quiet_hours: null, events: ['ci_fail'], held_until: null };
+    const prefs = { muted_events: [], events: ['ci_fail'] };
     vi.stubGlobal('fetch', mockFetchJson(prefs));
     expect(await fetchNotificationPreferences()).toEqual(prefs);
     expect(fetch).toHaveBeenCalledWith(
@@ -209,7 +209,7 @@ describe('apiClient (fetch with inline shapes)', () => {
   });
 
   it('saves notification preferences partially (issue #656)', async () => {
-    const prefs = { muted_events: ['ci_fail'], quiet_hours: null, events: ['ci_fail'], held_until: null };
+    const prefs = { muted_events: ['ci_fail'], events: ['ci_fail'] };
     vi.stubGlobal('fetch', mockFetchJson(prefs));
     expect(await saveNotificationPreferences({ muted_events: ['ci_fail'] })).toEqual(prefs);
     expect(fetch).toHaveBeenCalledWith(
