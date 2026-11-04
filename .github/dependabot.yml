@@ -12,3 +12,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # Python pins (issue #536): backend + deep-agent requirements are ==
+  # pinned; these entries make bumps arrive as reviewed PRs.
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/deep-agent"
+    schedule:
+      interval: "weekly"

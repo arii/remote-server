@@ -4,12 +4,14 @@
 # Pinned: gate_chat_harness + model_router.disable_general_purpose
 # use the beta HarnessProfile API; bump deliberately and re-run the
 # delegation-guard gate tests (tests/test_delegation_guard.py).
+# All entries below are == pins: rebuilds resolve identically; bumps
+# arrive as reviewed diffs via Dependabot (pip ecosystem).
 deepagents==0.7.32
-langchain
-langchain-openai
-langchain-ollama
-langchain-chroma
-langchain-text-splitters
-langgraph-checkpoint-sqlite
-langsmith
-python-dotenv
+langchain==1.4.8
+langchain-openai==1.7.3
+langchain-ollama==1.1.0
+langchain-chroma==1.1.0
+langchain-text-splitters==1.1.3
+langgraph-checkpoint-sqlite==3.1.3
+langsmith==0.14.17
+python-dotenv==1.2.4
