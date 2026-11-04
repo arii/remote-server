@@ -1,6 +1,6 @@
 """agent router: headless provider-CLI turns (issue #320).
 
-- POST /api/agent/turn   one headless turn, SSE (token/done/error)
+- POST /api/agent/turn   one headless turn, SSE (token/warning/done/error)
 - POST /api/agent/abort  kill the in-flight turn for a session
 - GET  /api/agent/providers  allowlisted providers
 
@@ -124,6 +124,13 @@ async def _turn_events(provider: str, repo: str, cwd: str,
     try:
         async for chunk in agent_turn.manager.run_turn(
                 provider, repo, cwd, session_id, prompt, continued):
+            # Pre-timeout warning (issue #838): a zero-text marker
+            # the drawer renders as a countdown notice, never a
+            # transcript token.
+            if isinstance(chunk, agent_turn.TurnWarning):
+                yield sse_frame("warning", {
+                    "seconds_left": chunk.seconds_left})
+                continue
             text.append(chunk)
             yield sse_frame("token", {"token": chunk})
     except ValueError:
@@ -142,9 +149,24 @@ async def _turn_events(provider: str, repo: str, cwd: str,
         return
     result = agent_turn.manager.pop_result(session_id) or {}
     if result.get("timed_out"):
-        yield sse_frame("error", {
-            "error": "turn timed out after "
-                     f"{agent_turn.TURN_TIMEOUT // 60}m"})
+        # Timeout failure (issue #838): the drawer needs the same
+        # session id to offer one-tap Resume, plus the salvage
+        # summary (branch/commit/pushed) from the bounded rescue.
+        minutes = (result.get("timeout")
+                   or agent_turn.TURN_TIMEOUT) // 60
+        payload: dict = {
+            "error": f"turn timed out after {minutes}m",
+            "code": "turn-timeout",
+            "session_id": session_id,
+        }
+        rescue = result.get("rescue")
+        if isinstance(rescue, dict):
+            payload["salvage"] = {
+                key: rescue.get(key)
+                for key in ("branch", "commit", "committed",
+                            "pushed")
+            }
+        yield sse_frame("error", payload)
         return
     if result.get("truncated"):
         yield sse_frame("done", {"text": "".join(text),

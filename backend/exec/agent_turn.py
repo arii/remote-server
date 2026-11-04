@@ -68,9 +68,53 @@ STDERR_READ_MAX = 65536
 
 # A hung CLI must not hold a turn forever either: past this many
 # seconds the turn is killed and the stream ends with an error event.
-# Observed turns finish in under a minute; ten minutes is headroom.
-TURN_TIMEOUT = 600
+# Real implementation tasks routinely exceed ten minutes (issue
+# #838), so the budget is thirty minutes, overridable per deploy
+# via AGENT_TURN_TIMEOUT (seconds) — buttons redeploy, no code,
+# same env-only flip as AGENT_DEFAULT_PROVIDER.
+TURN_TIMEOUT = 1800
+TURN_TIMEOUT_ENV = "AGENT_TURN_TIMEOUT"
 KILL_GRACE = 5
+
+
+def turn_timeout() -> int:
+    """Effective per-turn budget in seconds.
+
+    The env override wins when it parses to a positive int;
+    unset, blank, garbage, and non-positive values fall back to
+    TURN_TIMEOUT. Tests patch TURN_TIMEOUT directly (env unset),
+    so the fallback keeps that seam working.
+    """
+    raw = os.environ.get(TURN_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return TURN_TIMEOUT
+    try:
+        value = int(raw)
+    except ValueError:
+        return TURN_TIMEOUT
+    return value if value > 0 else TURN_TIMEOUT
+
+
+# Seconds before the deadline the turn warns the drawer (issue
+# #838): the stream yields a TurnWarning the router renders as a
+# `warning` SSE event, so the user sees the end coming instead of
+# a bare stall. No warning fires when the budget is shorter than
+# the lead (patched-down test timeouts).
+TURN_WARNING_LEAD = 120
+
+
+class TurnWarning(str):
+    """Zero-text stream marker for the pre-timeout warning.
+
+    A str subclass so any consumer that joins chunks is
+    unaffected (it contributes ""); the router checks isinstance
+    and renders `warning` {seconds_left} instead of a token frame.
+    """
+
+    def __new__(cls, seconds_left: int):
+        self = super().__new__(cls, "")
+        self.seconds_left = seconds_left
+        return self
 
 # A stored turn result must not live forever: entries that no route
 # ever pops (abandoned streams, issue #535) are swept past this age,
@@ -170,6 +214,25 @@ def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
                         *cli)
 
 
+# File-hygiene guardrail (issue #838): every provider prompt
+# carries this, so a turn never leaves unrelated files (favicon
+# rewrites, drive-by edits) modified or committed. run_turn
+# applies it to the CLI argv only — the ledger keeps the raw user
+# prompt, and the argv test seam bypasses it by construction.
+FILE_HYGIENE_GUARDRAIL = (
+    "Before finishing: run `git status --short` and revert every "
+    "file this task did not require you to change — unrelated "
+    "edits must never be left modified or committed."
+)
+
+
+def guard_prompt(prompt: str) -> str:
+    """Append the file-hygiene guardrail to a provider prompt."""
+    if not prompt:
+        return FILE_HYGIENE_GUARDRAIL
+    return "%s\n\n%s" % (prompt, FILE_HYGIENE_GUARDRAIL)
+
+
 def _first_line(text: str, limit: int) -> str:
     for line in (text or "").splitlines():
         stripped = line.strip()
@@ -181,13 +244,16 @@ def _first_line(text: str, limit: int) -> str:
 def turn_decisions(provider: str, prompt: str, continued: bool,
                    code: int | None, started: float, tail: str,
                    err_tail: str, truncated: bool,
-                   timed_out: bool) -> tuple[str, str | None]:
+                   timed_out: bool,
+                   timeout: int | None = None) -> tuple[str, str | None]:
     """Decision block + failure reason for one agent-turn record.
 
     Returns (detail, error): detail is the what+why lines History
     expands; error is a human sentence, set only on failure so
-    History summaries stay clean on success.
+    History summaries stay clean on success. `timeout` is the
+    effective budget (env override); None reads TURN_TIMEOUT.
     """
+    limit = TURN_TIMEOUT if timeout is None else timeout
     asked = _first_line(prompt, 150)
     session = "continued session" if continued else "fresh session"
     lines = [f"asked: {asked}" if asked else "asked: (empty prompt)",
@@ -195,9 +261,9 @@ def turn_decisions(provider: str, prompt: str, continued: bool,
     elapsed = round(time.time() - started, 1)
     error = None
     if timed_out:
-        lines.append(f"verdict: timed out after {TURN_TIMEOUT}s")
-        lines.append(f"why: no turn may hold longer than {TURN_TIMEOUT}s")
-        error = f"{provider} turn timed out after {TURN_TIMEOUT}s"
+        lines.append(f"verdict: timed out after {limit}s")
+        lines.append(f"why: no turn may hold longer than {limit}s")
+        error = f"{provider} turn timed out after {limit}s"
     elif code != 0:
         reason = _first_line(err_tail, 200) or "no stderr recorded"
         lines.append(f"verdict: exit {code} in {elapsed}s")
@@ -211,6 +277,96 @@ def turn_decisions(provider: str, prompt: str, continued: bool,
             lines.append("note: output capped at "
                          f"{TURN_OUTPUT_MAX} chars")
     return "\n".join(lines), error
+
+
+# Bounded rescue (issue #838): when a turn times out, its partial
+# work is committed + pushed in the SAME workdir before death —
+# never left as uncommitted timeout debris. Best-effort and
+# capped: the rescue never extends a dead turn past this.
+RESCUE_TIMEOUT = 60
+RESCUE_COMMIT_MESSAGE = "wip: partial agent turn (timed out)"
+
+
+def _rescue_exec(cwd: str, args: list, timeout: float):
+    """Run one git argv in the terminal-container workdir."""
+    argv = compose_argv("exec", "-T", "--workdir", cwd, "terminal",
+                       "git", *args)
+    return subprocess.run(argv, capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def rescue_partial_work(cwd: str, timeout: float = RESCUE_TIMEOUT,
+                        _exec=None) -> dict:
+    """Commit + push timeout debris. Never raises.
+
+    Runs in the turn's own workdir: records the branch, commits a
+    wip snapshot when the tree is dirty, pushes to that branch when
+    it is a real (non-detached) branch. Returns {"branch",
+    "commit", "committed", "pushed"} with Nones/False on every
+    failure path. `timeout` caps the whole rescue; `_exec(args,
+    timeout)` overrides the terminal-exec runner (tests).
+    """
+    record: dict = {"branch": None, "commit": None,
+                    "committed": False, "pushed": False}
+    run = _exec if _exec is not None else \
+        (lambda args, budget: _rescue_exec(cwd, args, budget))
+    deadline = time.monotonic() + timeout
+
+    def budget() -> float | None:
+        remaining = deadline - time.monotonic()
+        return remaining if remaining > 0 else None
+
+    try:
+        remaining = budget()
+        if remaining is None:
+            return record
+        branch = run(["rev-parse", "--abbrev-ref", "HEAD"],
+                     remaining)
+        if branch.returncode == 0:
+            record["branch"] = branch.stdout.strip() or None
+        remaining = budget()
+        if remaining is None:
+            return record
+        status = run(["status", "--porcelain"], remaining)
+        if status.returncode != 0:
+            return record
+        if not status.stdout.strip():
+            remaining = budget()
+            if remaining is None:
+                return record
+            head = run(["rev-parse", "HEAD"], remaining)
+            if head.returncode == 0:
+                record["commit"] = head.stdout.strip() or None
+            return record
+        remaining = budget()
+        if remaining is None:
+            return record
+        if run(["add", "-A"], remaining).returncode != 0:
+            return record
+        remaining = budget()
+        if remaining is None:
+            return record
+        if run(["commit", "-m", RESCUE_COMMIT_MESSAGE],
+               remaining).returncode != 0:
+            return record
+        record["committed"] = True
+        remaining = budget()
+        if remaining is None:
+            return record
+        head = run(["rev-parse", "HEAD"], remaining)
+        if head.returncode == 0:
+            record["commit"] = head.stdout.strip() or None
+        branch_name = record["branch"]
+        if not branch_name or branch_name == "HEAD":
+            return record
+        remaining = budget()
+        if remaining is None:
+            return record
+        push = run(["push", "origin", branch_name], remaining)
+        record["pushed"] = push.returncode == 0
+        return record
+    except Exception:
+        return record
 
 
 def new_session_id() -> str:
@@ -448,7 +604,9 @@ class AgentTurnManager:
                        argv: list | None = None):
         """Yield stdout text chunks for one turn. Afterwards
         pop_result(session_id) holds {exit, stderr, truncated,
-        timed_out}. `argv` overrides the allowlist lookup (tests).
+        timed_out, timeout, rescue}. `argv` overrides the allowlist
+        lookup (tests). The stream may also yield a TurnWarning
+        marker once, TURN_WARNING_LEAD seconds before the deadline.
 
         Single-flight per session (issue #441): claiming the
         session aborts the registered prior turn, and the retired
@@ -456,10 +614,12 @@ class AgentTurnManager:
         pop_result never returns another turn's record."""
         conversation_id = (self.agy_conversation(session_id)
                            if provider == "agy" else None)
+        send = guard_prompt(prompt)
         cmd = list(argv) if argv is not None else turn_argv(
-            provider, cwd, session_id, prompt, continued,
+            provider, cwd, session_id, send, continued,
             conversation_id=conversation_id)
         started = time.time()
+        timeout = turn_timeout()
         # Stderr lands in a temp file, never a pipe (issue #439): a
         # pipe drained only after the turn deadlocks once the child
         # writes past the ~64KB buffer, burning the full
@@ -512,7 +672,13 @@ class AgentTurnManager:
         timed_out = False
         superseded = False
         err_tail = ""
-        deadline = started + TURN_TIMEOUT
+        rescue: dict | None = None
+        deadline = started + timeout
+        # Warning instant, or None when the budget is shorter than
+        # the lead (patched-down test timeouts never warn).
+        warn_at = (started + timeout - TURN_WARNING_LEAD
+                   if timeout > TURN_WARNING_LEAD else None)
+        warned = False
         # Agy turns stream NDJSON (issue #440); muse chunks pass
         # through untouched.
         parser = AgyStreamParser() if provider == "agy" else None
@@ -522,18 +688,34 @@ class AgentTurnManager:
                 if not self._is_current(session_id, generation):
                     superseded = True
                     break
-                budget = deadline - time.time()
+                now = time.time()
+                budget = deadline - now
                 if budget <= 0:
                     timed_out = True
                     break
+                if warn_at is not None and not warned \
+                        and now >= warn_at:
+                    warned = True
+                    yield TurnWarning(
+                        max(0, int(deadline - now)))
+                    continue
+                # Cap the read wait at the warning instant so a
+                # silent turn still wakes in time to warn; the loop
+                # top re-checks the deadline afterwards.
+                wait = budget
+                if warn_at is not None and not warned:
+                    wait = min(budget,
+                               max(0.001, warn_at - now))
                 try:
                     chunk = await asyncio.wait_for(
                         asyncio.to_thread(proc.stdout.read,
                                           READ_CHUNK),
-                        budget)
+                        wait)
                 except asyncio.TimeoutError:
-                    timed_out = True
-                    break
+                    if time.time() >= deadline:
+                        timed_out = True
+                        break
+                    continue
                 if parser is not None:
                     pieces = (parser.feed(chunk) if chunk
                               else parser.flush())
@@ -561,6 +743,16 @@ class AgentTurnManager:
                                    parser.conversation_id)
             await _stop_proc(proc)
             err_tail = _read_stderr_tail(err_file)
+            if timed_out:
+                # Bounded rescue (issue #838): the CLI is dead so
+                # its files are stable — snapshot them now. Runs
+                # only on timeout (never on abort, success, or
+                # supersede) and never raises.
+                try:
+                    rescue = await asyncio.to_thread(
+                        rescue_partial_work, cwd)
+                except Exception:
+                    rescue = None
         except GeneratorExit:
             # Drop-on-abandon (issue #535): a closed SSE stream
             # must not leave a result behind for this session.
@@ -604,13 +796,18 @@ class AgentTurnManager:
         tail = "".join(out_text)[-STDERR_TAIL:]
         detail, error = turn_decisions(
             provider, prompt, continued, code, started, tail,
-            err_tail, truncated, timed_out)
+            err_tail, truncated, timed_out, timeout=timeout)
+        if timed_out and rescue is not None:
+            detail += "\nsalvaged: branch=%s commit=%s pushed=%s" % (
+                rescue.get("branch"), rescue.get("commit"),
+                rescue.get("pushed"))
         record = {"kind": "agent-turn", "session_id": session_id,
                   "provider": provider, "repo": repo,
                   "prompt": prompt[:150], "exit": code,
                   "duration_s": round(time.time() - started, 2),
                   "tail": tail, "stderr": err_tail,
                   "truncated": truncated, "timed_out": timed_out,
+                  "timeout": timeout, "rescue": rescue,
                   "detail": detail}
         if error is not None:
             record["error"] = error
@@ -625,7 +822,9 @@ class AgentTurnManager:
                 self._results[session_id] = {"exit": code,
                                              "stderr": err_tail,
                                              "truncated": truncated,
-                                             "timed_out": timed_out}
+                                             "timed_out": timed_out,
+                                             "timeout": timeout,
+                                             "rescue": rescue}
                 self._result_at[session_id] = time.time()
         if not current:
             # A successor claimed during the ledger write: the turn
