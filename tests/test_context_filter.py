@@ -105,6 +105,69 @@ exit code 101
         self.assertNotIn("Build line 10:", extracted)
 
 
+class TestCIBoilerplateFiltering(unittest.TestCase):
+    BOILERPLATE_LINES = [
+        "##[group]Run actions/checkout@v4",
+        "##[group]Run actions/setup-python@v5",
+        "Setting up auth for checkout",
+        "Getting Git version 2.43.0",
+        "Fetching the repository",
+        "Determining the checkout info",
+    ]
+
+    def test_each_pattern_matches_realistic_sample(self):
+        self.assertEqual(len(context_filter.SETUP_BOILERPLATE_PATTERNS), 6)
+        for line in self.BOILERPLATE_LINES:
+            with self.subTest(line=line):
+                self.assertTrue(
+                    any(p.search(line) for p in context_filter.SETUP_BOILERPLATE_PATTERNS),
+                    line,
+                )
+                self.assertTrue(context_filter._is_setup_boilerplate(line), line)
+
+    def test_long_log_filters_boilerplate(self):
+        log_lines = list(self.BOILERPLATE_LINES)
+        log_lines += [f"build step {i}: compiling..." for i in range(200)]
+        log_lines += [
+            "##[group]Run actions/checkout@v4",
+            "Fetching the repository",
+            "Traceback (most recent call last):",
+            '  File "test_runner.py", line 42, in test_fn',
+            "AssertionError: assert 0 == 42",
+            "Process completed with exit code 1.",
+        ]
+        extracted = context_filter.extract_ci_error_traces("\n".join(log_lines), max_lines=50)
+        for noise in self.BOILERPLATE_LINES:
+            self.assertNotIn(noise, extracted, noise)
+        self.assertIn("Traceback (most recent call last):", extracted)
+        self.assertIn("AssertionError: assert 0 == 42", extracted)
+
+    def test_short_log_filters_boilerplate(self):
+        log = "\n".join(self.BOILERPLATE_LINES + ["Run pytest -q", "1 passed in 2.1s"])
+        extracted = context_filter.extract_ci_error_traces(log, max_lines=150)
+        for noise in self.BOILERPLATE_LINES:
+            self.assertNotIn(noise, extracted, noise)
+        self.assertIn("Run pytest -q", extracted)
+        self.assertIn("1 passed", extracted)
+
+    def test_fallback_tail_filters_boilerplate(self):
+        log_lines = [f"build {i}: ok" for i in range(200)] + list(self.BOILERPLATE_LINES)
+        extracted = context_filter.extract_ci_error_traces("\n".join(log_lines), max_lines=50)
+        for noise in self.BOILERPLATE_LINES:
+            self.assertNotIn(noise, extracted, noise)
+
+    def test_boilerplate_does_not_hide_errors(self):
+        signal_line = "Fetching the repository failed with exit code 1"
+        self.assertFalse(context_filter._is_setup_boilerplate(signal_line))
+        log = "\n".join([f"filler {i}" for i in range(200)] + [signal_line])
+        extracted = context_filter.extract_ci_error_traces(log, max_lines=50)
+        self.assertIn(signal_line, extracted)
+
+    def test_docstring_documents_boilerplate(self):
+        self.assertIn("boilerplate", context_filter.extract_ci_error_traces.__doc__.lower())
+        self.assertIn("SETUP_BOILERPLATE_PATTERNS", context_filter.extract_ci_error_traces.__doc__)
+
+
 class TestContextBudgetEnforcement(unittest.TestCase):
     def test_enforce_budget_under_limit(self):
         short = "This is a brief context message."
