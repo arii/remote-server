@@ -66,14 +66,17 @@ def reset_queue() -> None:
 
 
 def enqueue(repo: str, issue, parse_number=None,
-            validate_repo=None) -> tuple[dict | None, str | None]:
+            validate_repo=None,
+            title: str = "") -> tuple[dict | None, str | None]:
     """Queue (repo, issue) for lane dispatch. Idempotent: an already
     queued/running item is returned unchanged; a terminal item
     re-queues (retry). Returns (item, None) or (None, error).
 
     ``parse_number`` / ``validate_repo`` are injectable seams (the
     issues router + backend.core defaults keep one canonical parser
-    and one canonical validator).
+    and one canonical validator). ``title`` is the issue title
+    enriched at enqueue from the issues read (#882, shared with
+    #883); "" when the enqueuer has none (manual numbers).
     """
     if validate_repo is None:
         from backend.core import validate_repo_name as validate_repo
@@ -101,6 +104,7 @@ def enqueue(repo: str, issue, parse_number=None,
             "started_at": None,
             "finished_at": None,
             "detail": "",
+            "title": title if isinstance(title, str) else "",
         }
         _items[key] = item
         return _copy(item), None
