@@ -677,6 +677,7 @@ class ActionSchedule(BaseModel):
     next_run: float = 0.0
     last_run: float | None = None
     last_result: dict = Field(default_factory=dict)
+    enabled: bool = True
 
 
 class ActionScheduleRequest(BaseModel):
@@ -684,6 +685,7 @@ class ActionScheduleRequest(BaseModel):
     td_argv: list[str] = Field(default_factory=list)
     repo: str = "remote-server"
     cadence: str = ""
+    enabled: bool = True
 
 
 class ActionScheduleResult(BaseModel):
@@ -753,7 +755,8 @@ def create_action_schedule(body: ActionScheduleRequest) -> dict:
     sched = {"action": action, "td_argv": td_argv, "repo": repo,
              "cadence": cadence,
              "next_run": now + ACTION_SCHEDULE_INTERVALS[cadence],
-             "last_run": None, "last_result": {}}
+             "last_run": None, "last_result": {},
+             "enabled": bool(body.enabled)}
     with action_schedule_lock:
         state = load_action_schedules()
         state[sid] = sched
@@ -783,6 +786,33 @@ def delete_action_schedule(sid: str) -> dict:
     return {"ok": True}
 
 
+def _set_schedule_enabled(sid: str, enabled: bool) -> dict:
+    """Flip one schedule's enabled flag, preserving its definition
+    and history. next_run is left untouched: a paused schedule
+    resumes where it left off (one catch-up fire at most, then the
+    original cadence — never a burst)."""
+    with action_schedule_lock:
+        state = load_action_schedules()
+        if sid not in state or not isinstance(state[sid], dict):
+            raise HTTPException(
+                status_code=404, detail="unknown schedule")
+        state[sid]["enabled"] = enabled
+        save_action_schedules(state)
+        return {"ok": True, "schedule": {"id": sid, **state[sid]}}
+
+
+@router.post("/schedule/{sid}/pause",
+             response_model=ActionScheduleResult)
+def pause_action_schedule(sid: str) -> dict:
+    return _set_schedule_enabled(sid, False)
+
+
+@router.post("/schedule/{sid}/resume",
+             response_model=ActionScheduleResult)
+def resume_action_schedule(sid: str) -> dict:
+    return _set_schedule_enabled(sid, True)
+
+
 def _claim_due_action_schedules(now: float) -> list:
     """Claim every due schedule, advancing each next_run before
     returning so a firing is never double-claimed. Returns
@@ -796,6 +826,12 @@ def _claim_due_action_schedules(now: float) -> list:
             interval = ACTION_SCHEDULE_INTERVALS.get(
                 sched.get("cadence", ""))
             if interval is None:
+                continue
+            # Paused schedules skip without advancing: next_run,
+            # last_run, and last_result stay untouched (#870). Absent
+            # flag reads enabled, so pre-pause seeds need no
+            # migration.
+            if not sched.get("enabled", True):
                 continue
             if (sched.get("next_run") or 0) > now:
                 continue
@@ -952,7 +988,8 @@ def _ensure_default_notify_schedules(now: float | None = None) -> int:
                               "next_run": at + base
                               + idx * NOTIFY_SEED_STAGGER,
                               "last_run": None,
-                              "last_result": {}}
+                              "last_result": {},
+                              "enabled": True}
             if fresh:
                 save_action_schedules(state)
             _save_notify_seeded(done | set(missing))
@@ -1015,7 +1052,8 @@ def _ensure_default_autofile_schedules(
                               + idx * NOTIFY_SEED_STAGGER
                               + AUTOFILE_SEED_OFFSET,
                               "last_run": None,
-                              "last_result": {}}
+                              "last_result": {},
+                              "enabled": True}
             if fresh:
                 save_action_schedules(state)
             _save_seed_names(_autofile_seed_path(),

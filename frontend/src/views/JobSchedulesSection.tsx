@@ -3,6 +3,8 @@ import {
   createActionSchedule,
   deleteActionSchedule,
   fetchActionSchedules,
+  pauseActionSchedule,
+  resumeActionSchedule,
 } from '../apiClient';
 import type { ActionSchedule } from '../apiClient';
 import { useMock } from './mockViews';
@@ -88,6 +90,28 @@ export default function JobSchedulesSection({
     }
   }
 
+  async function onPause(id: string) {
+    setError(null);
+    try {
+      if (useMock()) return;
+      await pauseActionSchedule(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onResume(id: string) {
+    setError(null);
+    try {
+      if (useMock()) return;
+      await resumeActionSchedule(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   const list = schedules ?? [];
   return (
     <section data-testid="jobs-schedule-section" aria-label="Scheduled runs">
@@ -141,7 +165,12 @@ export default function JobSchedulesSection({
             <li key={s.id} className="detail">
               <span className="row-title">
                 {s.td_argv.length > 0 ? s.td_argv.join(' ') : s.action}
-              </span>
+              </span>{' '}
+              {s.enabled === false && (
+                <span className="row-meta" data-testid="jobs-schedule-paused">
+                  Paused
+                </span>
+              )}
               <p className="row-meta" data-testid="jobs-schedule-next">
                 {s.cadence} · {s.repo} · next{' '}
                 {new Date(s.next_run * 1000).toLocaleString()}
@@ -151,6 +180,23 @@ export default function JobSchedulesSection({
                   : ''}
               </p>
               <div className="actions">
+                {s.enabled === false ? (
+                  <button
+                    type="button"
+                    data-testid="jobs-schedule-resume"
+                    onClick={() => void onResume(s.id)}
+                  >
+                    Resume schedule
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="jobs-schedule-pause"
+                    onClick={() => void onPause(s.id)}
+                  >
+                    Pause schedule
+                  </button>
+                )}{' '}
                 <button
                   type="button"
                   data-testid="jobs-schedule-disable"
