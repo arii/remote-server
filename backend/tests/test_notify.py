@@ -884,5 +884,97 @@ class BudgetWatchTest(unittest.TestCase):
                          {"band": "warning", "at": 1000.0})
 
 
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class DigestStampGateTest(unittest.TestCase):
+    """Failed digest sends must not advance last_digest (#532)."""
+
+    def setUp(self):
+        for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
+                  "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS"):
+            os.environ.pop(k, None)
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self.client = _make_client()
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+
+    def _send(self, results):
+        return mock.patch.object(
+            N, "send_notification", return_value=results)
+
+    def test_failed_manual_digest_skips_stamp_and_reports_failure(self):
+        failed = {"ntfy": {"ok": False, "error": "boom"},
+                  "webhook": {"ok": False, "error": "down"}}
+        with self._send(failed):
+            r = self.client.post("/api/notifications/trigger-digest")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["results"], failed)
+        self.assertIn("boom", json.dumps(body["results"]))
+        self.assertIn("down", json.dumps(body["results"]))
+        self.assertEqual(
+            N.load_notifier_state().get("last_digest", 0), 0)
+
+    def test_failed_manual_digest_leaves_scheduled_digest_armed(self):
+        with self._send({"ntfy": {"ok": False, "error": "boom"}}):
+            self.client.post("/api/notifications/trigger-digest")
+        self.assertEqual(
+            N.load_notifier_state().get("last_digest", 0), 0)
+        sent = []
+
+        def sender(**kw):
+            sent.append(kw)
+            return {"ntfy": {"ok": True, "status": 200}}
+
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {}, sender=sender, now=10_000_000.0)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(state.get("last_digest"), 10_000_000.0)
+
+    def test_partial_manual_digest_stamps(self):
+        mixed = {"ntfy": {"ok": True, "status": 200},
+                 "webhook": {"ok": False, "error": "down"}}
+        with self._send(mixed):
+            r = self.client.post("/api/notifications/trigger-digest")
+        self.assertTrue(r.json()["ok"])
+        self.assertGreater(
+            N.load_notifier_state().get("last_digest", 0), 0)
+
+    def test_failed_scheduled_digest_retries_next_cycle(self):
+        calls = []
+
+        def failing(**kw):
+            calls.append(kw)
+            return {"ntfy": {"ok": False, "error": "boom"}}
+
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {}, sender=failing, now=10_000_000.0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(state.get("last_digest", 0), 0)
+
+        def succeeding(**kw):
+            calls.append(kw)
+            return {"ntfy": {"ok": True, "status": 200}}
+
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {}, sender=succeeding, now=10_000_060.0)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(state.get("last_digest"), 10_000_060.0)
+
+    def test_delivered_table(self):
+        self.assertFalse(N.delivered({"suppressed": "muted"}))
+        self.assertTrue(N.delivered({}))
+        self.assertFalse(N.delivered(None))
+        self.assertFalse(
+            N.delivered({"ntfy": {"ok": False, "error": "x"}}))
+        self.assertTrue(
+            N.delivered({"ntfy": {"ok": True, "status": 200},
+                         "webhook": {"ok": False, "error": "x"}}))
+        self.assertTrue(N.delivered({"ntfy": {"ok": True}}))
+
+
 if __name__ == "__main__":
     unittest.main()

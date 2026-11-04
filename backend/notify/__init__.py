@@ -576,6 +576,28 @@ def _fire_budget_watch(now: float, sender) -> bool:
     return True
 
 
+def delivered(results) -> bool:
+    """True when a digest send earned its `last_digest` stamp (#532).
+
+    The stamp advances only on actual delivery: at least one target
+    must confirm (`ok`). Suppressed sends (muted class) never stamp,
+    and neither do sends where every target failed — the next tick
+    retries instead of the failure eating the next digest. Empty
+    results (no channels configured) still stamp: there is nothing
+    to retry, so holding the stamp would re-fire every tick.
+    Shared by the manual trigger endpoint and the scheduled path so
+    the rule stays consistent (#430 reuses it for ok-derivation).
+    """
+    if not isinstance(results, dict):
+        return False
+    if "suppressed" in results:
+        return False
+    targets = [r for r in results.values() if isinstance(r, dict)]
+    if not targets:
+        return True
+    return any(r.get("ok") for r in targets)
+
+
 def check_notifications_and_digest(fetcher=None, sender=None,
                                    now=None):
     """Port of _check_notifications_and_digest minus the Jules block.
@@ -645,7 +667,7 @@ def check_notifications_and_digest(fetcher=None, sender=None,
             if (now - last_digest) >= (interval * 3600):
                 # Quiet holds the legacy digest too: leave the stamp
                 # so the first tick past the window fires (coalesced).
-                # Suppressed sends never stamp (#532).
+                # Suppressed/failed sends never stamp (#532).
                 if in_quiet_hours(now):
                     pass
                 else:
@@ -661,8 +683,7 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                         tags=["clipboard", "digest"],
                         event_type="digest",
                     )
-                    if not (isinstance(res, dict)
-                            and "suppressed" in res):
+                    if delivered(res):
                         state["last_digest"] = now
 
         save_notifier_state(state)
