@@ -3,7 +3,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   ActionControl,
   askAgentSeed,
+  DEPLOY_ACTION,
+  heroCountsText,
+  heroStatus,
+  lastDeployAt,
   NowEmptyState,
+  NowHero,
   reconcileSnoozed,
   RepoTag,
   resolveAttentionTarget,
@@ -13,8 +18,11 @@ import {
   SnoozeButtons,
   snoozedRows,
   snoozePresetLabel,
+  topUrgent,
 } from './NowView';
 import { ALL_REPOS, isRollupRepo } from '../components/RepoPicker';
+import type { InboxFeed, SystemHealthResponse } from '../apiClient';
+import type { JobRecord } from '../apiTypes';
 import type { AttentionItem } from '../attentionTypes';
 
 describe('snooze presets (issue #614)', () => {
@@ -195,6 +203,193 @@ describe('attention action navigation (issue #464)', () => {
     expect(resolveAttentionTarget('api/unknown')).toBeNull();
     expect(resolveAttentionTarget('')).toBeNull();
     expect(resolveAttentionTarget('https://example.com/x')).toBeNull();
+  });
+});
+
+describe('Now status hero (issue #811)', () => {
+  function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
+    return {
+      id: 'a1',
+      kind: 'failed-job',
+      title: 'Failed job',
+      detail: 'd',
+      repo: 'remote-server',
+      severity: 'info',
+      action: { label: 'View jobs', method: 'GET', href: 'api/jobs', destructive: false, intent: '' },
+      created_at: 1,
+      ...overrides,
+    };
+  }
+
+  function health(overrides: Partial<SystemHealthResponse> = {}): SystemHealthResponse {
+    return {
+      disk: {},
+      memory: {},
+      containers: [{ name: 'c', service: 'c', state: 'running', status: 'up', health: 'healthy' }],
+      containers_error: null,
+      ...overrides,
+    };
+  }
+
+  function feed(overrides: Partial<InboxFeed> = {}): InboxFeed {
+    return {
+      repo: 'remote-server',
+      updated_at: 1,
+      attention: [],
+      merge_ready: { count: 0, top: [] },
+      runs: { active: null, recent: [] },
+      ...overrides,
+    };
+  }
+
+  function job(overrides: Partial<JobRecord> = {}): JobRecord {
+    return { id: 'j1', ...overrides };
+  }
+
+  it('heroStatus loads, clears, and escalates worst-first', () => {
+    expect(heroStatus(null, [])).toBe('loading');
+    expect(heroStatus(health(), [])).toBe('ok');
+    expect(heroStatus(health(), [item({ severity: 'info' })])).toBe('ok');
+    expect(heroStatus(health(), [item({ severity: 'warn' })])).toBe('warn');
+    expect(heroStatus(health(), [item({ severity: 'crit' })])).toBe('crit');
+    expect(heroStatus(health(), [item({ severity: 'warn' }), item({ id: 'a2', severity: 'crit' })])).toBe('crit');
+  });
+
+  it('heroStatus treats long severity spellings the same', () => {
+    expect(heroStatus(health(), [item({ severity: 'critical' as AttentionItem['severity'] })])).toBe('crit');
+    expect(heroStatus(health(), [item({ severity: 'warning' as AttentionItem['severity'] })])).toBe('warn');
+  });
+
+  it('heroStatus reads the stack: sick is crit, silent is warn', () => {
+    expect(heroStatus(health({ containers_error: 'boom' }), [])).toBe('crit');
+    expect(heroStatus(health({ containers: [{ state: 'exited' }] }), [])).toBe('crit');
+    expect(heroStatus(health({ containers: [{ state: 'running', health: 'unhealthy' }] }), [])).toBe('crit');
+    expect(heroStatus(health({ containers: [] }), [])).toBe('warn');
+    // Stack trouble outranks a clear queue.
+    expect(heroStatus(health({ containers_error: 'boom' }), [item()])).toBe('crit');
+  });
+
+  it('topUrgent returns null on an empty queue', () => {
+    expect(topUrgent([])).toBeNull();
+  });
+
+  it('topUrgent picks worst severity, first on ties', () => {
+    const info = item({ id: 'info', severity: 'info' });
+    const warnA = item({ id: 'warn-a', severity: 'warn' });
+    const warnB = item({ id: 'warn-b', severity: 'warn' });
+    const crit = item({ id: 'crit', severity: 'crit' });
+    expect(topUrgent([info, warnA, crit])).toBe(crit);
+    expect(topUrgent([warnA, crit, info])).toBe(crit);
+    expect(topUrgent([warnA, warnB])).toBe(warnA);
+    expect(topUrgent([info])).toBe(info);
+  });
+
+  it('lastDeployAt reads the newest deploy-buttons run start', () => {
+    expect(DEPLOY_ACTION).toBe('deploy-buttons');
+    expect(lastDeployAt([])).toBeNull();
+    expect(lastDeployAt([job({ kind: 'briefing', at: 100 })])).toBeNull();
+    const runs = [
+      job({ id: 'old', kind: DEPLOY_ACTION, at: 100, done: true }),
+      job({ id: 'new', name: DEPLOY_ACTION, created_at: 200, done: true }),
+      job({ id: 'other', kind: 'briefing', at: 999, done: true }),
+    ];
+    expect(lastDeployAt(runs)).toBe(200);
+  });
+
+  it('lastDeployAt skips deploy runs without a timestamp', () => {
+    expect(lastDeployAt([job({ kind: DEPLOY_ACTION, done: true })])).toBeNull();
+    expect(lastDeployAt([
+      job({ id: 'a', kind: DEPLOY_ACTION }),
+      job({ id: 'b', kind: DEPLOY_ACTION, at: 50 }),
+    ])).toBe(50);
+  });
+
+  it('heroCountsText joins live counts with singulars and deploy age', () => {
+    const twoHoursAgo = Math.floor(Date.now() / 1000) - 2 * 3600;
+    expect(heroCountsText({ attentionOpen: 2, runsActive: true, prCount: 3, deployAt: twoHoursAgo }))
+      .toBe('2 needing attention · 1 active run · 3 PRs open · deploy 2h ago');
+    expect(heroCountsText({ attentionOpen: 0, runsActive: false, prCount: 1, deployAt: null }))
+      .toBe('0 needing attention · no active runs · 1 PR open · no recent deploys');
+  });
+
+  it('heroCountsText omits the PR segment when the count is unknown', () => {
+    expect(heroCountsText({ attentionOpen: 1, runsActive: false, prCount: null, deployAt: null }))
+      .toBe('1 needing attention · no active runs · no recent deploys');
+  });
+
+  it('NowHero renders one strip with status, counts, and the top action', () => {
+    const top = item({ id: 'urgent', severity: 'warn', title: 'Failing workflow' });
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={health()}
+        feed={feed({ attention: [top], runs: { active: { id: 'r1', action: 'briefing', started: 1 }, recent: [] } })}
+        prCount={2}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="now-hero"');
+    expect(html).toContain('Status summary');
+    expect(html).toContain('data-testid="now-hero-dot"');
+    expect(html).toContain('dot-warn');
+    expect(html).toContain('Needs attention');
+    expect(html).toContain('1 needing attention · 1 active run · 2 PRs open · no recent deploys');
+    expect(html).toContain('data-testid="now-hero-urgent"');
+    expect(html).toContain('Top: Failing workflow');
+    expect(html).toContain('View jobs');
+  });
+
+  it('NowHero reads all clear with an empty queue and healthy stack', () => {
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={health()}
+        feed={feed()}
+        prCount={0}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+      />,
+    );
+    expect(html).toContain('dot-ok');
+    expect(html).toContain('All clear');
+    expect(html).toContain('Nothing urgent.');
+  });
+
+  it('NowHero escalates a sick stack and a missing snapshot', () => {
+    const sick = renderToStaticMarkup(
+      <NowHero
+        health={health({ containers_error: 'boom' })}
+        feed={feed()}
+        prCount={null}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+      />,
+    );
+    expect(sick).toContain('dot-bad');
+    expect(sick).toContain('Action needed');
+    expect(sick).not.toContain('PRs open');
+    const loading = renderToStaticMarkup(
+      <NowHero
+        health={null}
+        feed={feed()}
+        prCount={null}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+      />,
+    );
+    expect(loading).toContain('dot-idle');
+    expect(loading).toContain('Loading status…');
   });
 });
 
