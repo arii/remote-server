@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -102,6 +103,20 @@ async def _stop_proc(proc: subprocess.Popen) -> None:
                 asyncio.to_thread(proc.wait), KILL_GRACE)
         except (asyncio.TimeoutError, Exception):
             pass
+
+
+def _read_stderr_tail(err_file) -> str:
+    """Last STDERR_TAIL chars of captured stderr. Reads from the
+    end of the capture so a verbose CLI still shows its final
+    error detail; small captures behave exactly as before."""
+    try:
+        err_file.seek(0, os.SEEK_END)
+        size = err_file.tell()
+        err_file.seek(max(0, size - (STDERR_READ_MAX + 1)))
+        raw = err_file.read(STDERR_READ_MAX + 1)
+    except Exception:
+        return ""
+    return raw.decode("utf-8", "replace")[-STDERR_TAIL:]
 
 
 TERMINAL_REPOS = "/srv/repos"
@@ -306,10 +321,24 @@ class AgentTurnManager:
         cmd = list(argv) if argv is not None else turn_argv(
             provider, cwd, session_id, prompt, continued)
         started = time.time()
-        proc = await asyncio.to_thread(
-            subprocess.Popen, cmd, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True)
+        # Stderr lands in a temp file, never a pipe (issue #439): a
+        # pipe drained only after the turn deadlocks once the child
+        # writes past the ~64KB buffer, burning the full
+        # TURN_TIMEOUT. The file removes the pipe entirely, so
+        # stderr can never stall the turn.
+        err_file = tempfile.TemporaryFile(
+            prefix="agent-turn-stderr-")
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.Popen, cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=err_file,
+                text=True)
+        except Exception:
+            try:
+                err_file.close()
+            except Exception:
+                pass
+            raise
         self._register(session_id, proc)
         self._remember(session_id)
         out_text: list[str] = []
@@ -346,12 +375,7 @@ class AgentTurnManager:
                 out_text.append(chunk)
                 yield chunk
             await _stop_proc(proc)
-            if proc.stderr is not None:
-                try:
-                    err = proc.stderr.read(STDERR_READ_MAX + 1)
-                    err_tail = (err or "")[-STDERR_TAIL:]
-                except Exception:
-                    err_tail = ""
+            err_tail = _read_stderr_tail(err_file)
         except GeneratorExit:
             # Drop-on-abandon (issue #535): a closed SSE stream
             # must not leave a result behind for this session.
@@ -377,6 +401,10 @@ class AgentTurnManager:
                         pipe.close()
                 except Exception:
                     pass
+            try:
+                err_file.close()
+            except Exception:
+                pass
         code = proc.poll()
         tail = "".join(out_text)[-STDERR_TAIL:]
         detail, error = turn_decisions(
