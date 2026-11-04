@@ -14,14 +14,44 @@ repo per context (proven `deep-agent/triage_fanout.py`).
 
 - `.agents/skills/` — 22 LangChain skills provisioned from
   `langchain-ai/langchain-skills` (integrity hashes in
-  `skills-lock.json`). Covers Deep Agents, LangChain, LangGraph,
+  `skills-lock.json`, enforced by `scripts/verify-skills.sh`).
+  Covers Deep Agents, LangChain, LangGraph,
   middleware/memory/persistence, RAG, eval engineering, and quickstarts.
 - Both are **untracked by design** (see `.gitignore`): they live on the
   host checkout, so container recreates are safe, but a fresh clone
   needs them reinstalled from the source repo. Never commit them.
+  After (re)installing, run `bash scripts/verify-skills.sh` as the
+  post-install step — it fails on hash mismatch, missing, or unknown
+  skills.
 - Start with the `ecosystem-primer` skill (framework selection), then a
   language quickstart (`langchain-python-quickstart`,
   `deepagents-python-quickstart`, or the TypeScript equivalents).
+
+## Skills integrity
+
+`skills-lock.json` pins the sha256 of every third-party skill's installed
+`SKILL.md`. `muse skills` does NOT enforce it: as of 1.4.14 the installer
+offers no verify/lock subcommand (`list, inspect, enable, user-only,
+disable, validate, install, import, update, uninstall` only) and the
+payload binary contains no reference to `skills-lock` or `computedHash`.
+`scripts/verify-skills.sh` is therefore the enforcement path:
+
+- Post-install / on demand: `bash scripts/verify-skills.sh`. Fails on
+  hash mismatch (drift/tamper), missing skills, and unknown untracked
+  skill dirs. Git-tracked project skills (`lane-*`, `audit-*`) are
+  reviewed via PRs instead and pass with a `TRACKED` note.
+- CI: the `skills-lock` job runs `--check-upstream`, which clones each
+  locked source repo shallowly and proves the lock matches upstream.
+- Limitation: the lock pins `SKILL.md` only. Sibling files shipped
+  inside a skill dir (`references/`, `scripts/`) are not hash-checked.
+
+Bump procedure (intentionally update a skill + re-pin):
+
+1. Reinstall or upgrade the skill into `.agents/skills/<name>/`.
+2. Review what changed (`diff` against the upstream `skillPath`).
+3. Run `bash scripts/verify-skills.sh --repin` to rewrite the lock.
+4. Commit `skills-lock.json` (force-add: the path is git-ignored but
+   tracked). CI proves the new pins match upstream.
 
 ## Model route: Nebius first (sparingly), then local Ollama
 
