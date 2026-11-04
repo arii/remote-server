@@ -11,6 +11,7 @@ root devDeps, or Dockerfile/.dockerignore dropping the deploy half.
 """
 import json
 import os
+import re
 import unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -125,6 +126,62 @@ class UxDeployWiringTest(unittest.TestCase):
             lines = f.read().splitlines()
         self.assertIn("!scripts/", lines)
         self.assertIn("!scripts/**", lines)
+
+
+class UxImageToolchainTest(unittest.TestCase):
+    """The serving image carries the capture toolchain (#881).
+
+    Stub-free recipe assertions over the real Dockerfile: node 22+
+    (@axe-core/playwright needs >= 22.12), one shared pnpm pin, the
+    root-only pnpm install, baked chromium, and the --check smoke
+    that fails the build (not a scheduled fire) on regression.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open(_root("Dockerfile"), encoding="utf-8") as f:
+            cls.dockerfile = f.read()
+        with open(_root("package.json"), encoding="utf-8") as f:
+            cls.root_name = json.load(f)["name"]
+
+    def test_node_major_meets_axe_floor(self):
+        versions = re.findall(r"^ARG NODE_VERSION=(\d+)\.",
+                              self.dockerfile, re.M)
+        self.assertTrue(versions, "Dockerfile must pin NODE_VERSION")
+        for major in versions:
+            self.assertGreaterEqual(int(major), 22)
+
+    def test_no_apt_nodejs(self):
+        # The node tarball replaces Debian's node 18; both installed
+        # would leave PATH order deciding the version.
+        for line in self.dockerfile.splitlines():
+            if "apt-get install" in line:
+                self.assertNotIn("nodejs", line.split())
+
+    def test_single_shared_pnpm_pin(self):
+        pins = re.findall(r"^ARG PNPM_VERSION=(\S+)",
+                          self.dockerfile, re.M)
+        self.assertEqual(len(pins), 1,
+                         "one global PNPM_VERSION pin")
+        self.assertIn("pnpm@${PNPM_VERSION}", self.dockerfile)
+        self.assertNotIn("pnpm@10.", self.dockerfile.replace(
+            f"PNPM_VERSION={pins[0]}", ""))
+
+    def test_root_only_frozen_install(self):
+        self.assertIn(
+            f"pnpm install --frozen-lockfile --filter {self.root_name}",
+            self.dockerfile)
+
+    def test_chromium_baked(self):
+        self.assertIn("playwright install", self.dockerfile)
+        self.assertIn("chromium", self.dockerfile)
+
+    def test_check_smoke_runs_in_build(self):
+        runs = [ln for ln in self.dockerfile.splitlines()
+                if ln.startswith("RUN ")]
+        self.assertTrue(
+            any("impact_pass.py --check" in ln for ln in runs),
+            "a build RUN must execute the toolchain preflight")
 
 
 if __name__ == "__main__":

@@ -114,11 +114,22 @@ curl -s -X POST localhost:8000/api/jobs/schedule \
   it per fire (dev: the vite server). The checkout's `scripts/ux-*`
   + root tsx/playwright deps are the `td ux` contract (#880); CI
   guards it (`tests/test_ux_scripts_contract.py`).
+- Where it runs (#881): the step executes INSIDE the buttons image
+  (local `-m`, same snapshot + ledger state the API serves), and
+  the image bakes the toolchain (node 22, pnpm, root ux deps,
+  chromium). `python -m core_cli.impact_pass --check` reports the
+  probe without capturing; the pass itself preflights it and fails
+  with a named missing dep instead of a cryptic td error. The
+  image build runs `--check` as a smoke, so a regressed dep fails
+  the build, not a scheduled fire.
 
 ## Troubleshooting
 
 - `CAPTURE_ERROR: ... ux-discover-routes ...` — target checkout
   lacks the ux scripts; impact passes only run where `td ux` runs.
+- `capture wrote no results` — the console was not serving at the
+  baseUrl (`UX_BASE_URL` wrong or target down). The run fails
+  instead of seeding an empty baseline.
 - `ASK_ERROR: no model available` — Ollama down and no Nebius key;
   check `OLLAMA_URL`, or set `NEBIUS_API_KEY`.
 - Empty diff on a changed UI — capture twice without deploying in

@@ -2427,9 +2427,12 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         self._old_state = os.environ.get("IMPACT_PASS_STATE_DIR")
         self._old_checkout = os.environ.get("IMPACT_PASS_CHECKOUT")
         self._old_routes = os.environ.get("IMPACT_PASS_ROUTES")
+        self._old_path = os.environ.get("PATH", "")
+        self._old_browsers = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
         os.environ["IMPACT_PASS_STATE_DIR"] = self.state_root
         os.environ["IMPACT_PASS_CHECKOUT"] = self.checkout
         os.environ["IMPACT_PASS_ROUTES"] = "/:desktop"
+        self._fixture_toolchain()
         deep_agent = os.path.join(engine.ENGINE_ROOT, "deep-agent")
         if deep_agent not in sys.path:
             sys.path.insert(0, deep_agent)
@@ -2458,13 +2461,57 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         self._run_patch.stop()
         for key, old in (("IMPACT_PASS_STATE_DIR", self._old_state),
                          ("IMPACT_PASS_CHECKOUT", self._old_checkout),
-                         ("IMPACT_PASS_ROUTES", self._old_routes)):
+                         ("IMPACT_PASS_ROUTES", self._old_routes),
+                         ("PLAYWRIGHT_BROWSERS_PATH", self._old_browsers)):
             if old is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old
+        os.environ["PATH"] = self._old_path
         self._tmp.cleanup()
         self._ledger_teardown()
+
+    def _fixture_toolchain(self):
+        """Stub the #881 preflight inputs (bins + scripts + browser).
+
+        The check logic itself is real and unmocked; only its inputs
+        are fixtures, so these tests prove the gate trips exactly the
+        shipped probe (not a mock of it).
+        """
+        from core_cli import impact_pass
+
+        bindir = os.path.join(self._tmp.name, "bin")
+        os.makedirs(bindir, exist_ok=True)
+        for tool in impact_pass.TOOL_BINS:
+            stub = os.path.join(bindir, tool)
+            with open(stub, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(stub, 0o755)
+        # Fixture bindir ONLY (not prepended): missing-tool cases
+        # must fail deterministically even where the ambient PATH
+        # carries a real td/node/pnpm. Nothing in these tests execs
+        # (subprocess is mocked), so no system tool is needed.
+        os.environ["PATH"] = bindir
+        for rel in impact_pass.UX_SCRIPTS:
+            full = os.path.join(self.checkout, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write("// fixture\n")
+        uxbin = os.path.join(self.checkout, "node_modules", ".bin")
+        os.makedirs(uxbin, exist_ok=True)
+        for tool in impact_pass.UX_BINS:
+            stub = os.path.join(uxbin, tool)
+            with open(stub, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(stub, 0o755)
+        browsers = os.path.join(self._tmp.name, "ms-playwright")
+        chrome = os.path.join(browsers, "chromium-9999",
+                              "chrome-linux64", "chrome")
+        os.makedirs(os.path.dirname(chrome), exist_ok=True)
+        with open(chrome, "w", encoding="utf-8") as f:
+            f.write("fixture\n")
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = browsers
+        self._bindir = bindir
 
     def _fake_td(self, argv, **kwargs):
         # Stubbed td ux subprocess (gh-stub style): materialize one
@@ -2554,6 +2601,97 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         code, out = self._run_main()
         self.assertEqual(code, 1)
         self.assertIn("config error", out)
+
+    def _run_check(self):
+        buf = self._io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            code = self.runner.main(["--check"])
+        return code, buf.getvalue()
+
+    def test_check_reports_ok_on_full_toolchain(self):
+        code, out = self._run_check()
+        self.assertEqual(code, 0)
+        self.assertIn("toolchain ok", out)
+        self.assertNotIn("MISSING", out)
+
+    def test_missing_tool_fails_with_actionable_message(self):
+        # The #881 production failure (pnpm absent) must surface as a
+        # named missing dep, not a cryptic td error.
+        os.remove(os.path.join(self._bindir, "pnpm"))
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("toolchain missing", out)
+        self.assertIn("pnpm", out)
+        self.assertIn("runbook", out)
+        self.assertEqual(self._ux_rows(), [])
+
+    def test_check_flag_names_each_gap(self):
+        os.remove(os.path.join(self._bindir, "pnpm"))
+        code, out = self._run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("MISSING pnpm", out)
+
+    def test_missing_scripts_fail_the_run(self):
+        os.remove(os.path.join(
+            self.checkout, "scripts", "ux-audit-runner.ts"))
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("ux-audit-runner.ts", out)
+
+    def test_missing_ux_bins_fail_the_run(self):
+        os.remove(os.path.join(
+            self.checkout, "node_modules", ".bin", "tsx"))
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("tsx", out)
+
+    def test_missing_browser_fails_the_run(self):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(
+            self._tmp.name, "no-browsers-here")
+        code, out = self._run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("chromium", out)
+
+    def test_resultless_capture_fails_instead_of_seeding_empty(self):
+        # td reports success even when the runners wrote nothing
+        # (console down): the pass must fail loud, never seed a
+        # vacuous baseline that would stay silent forever.
+        real_fake = self._fake_td
+
+        def bare(argv, **kwargs):
+            if not self.capture_ok:
+                return real_fake(argv, **kwargs)
+            base = os.path.join(kwargs.get("cwd", ""), "artifacts",
+                                "ux-audit")
+            os.makedirs(base, exist_ok=True)
+            with open(os.path.join(base, "routes.json"), "w",
+                      encoding="utf-8") as f:
+                self._json.dump({"routes": ["/"]}, f)
+            return FakeProc(
+                0, self._json.dumps({"status": "success",
+                                     "results": []}), "")
+        # Seed first: the bare capture must fail even with a
+        # previous fire's artifacts sitting in the checkout (td
+        # never cleans them; the pass must not trust stale files).
+        code, _ = self._run_main()
+        self.assertEqual(code, 0)
+        self._run_patch.stop()
+        self._run_patch = mock.patch("subprocess.run",
+                                     side_effect=bare)
+        self._run_patch.start()
+        try:
+            code, out = self._run_main()
+        finally:
+            self._run_patch.stop()
+            self._run_patch = mock.patch(
+                "subprocess.run", side_effect=self._fake_td)
+            self._run_patch.start()
+        self.assertEqual(code, 1)
+        self.assertIn("no results", out)
+        # The failed fire leaves the seeded baseline untouched.
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.state_root, "root-desktop", "baseline",
+            "results", "root-desktop.json")))
 
 
 if __name__ == "__main__":
