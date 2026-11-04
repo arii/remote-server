@@ -1326,12 +1326,16 @@ export function postAgentTurn(
   prompt: string,
   sessionId: string | null,
   signal?: AbortSignal,
+  reclaim?: boolean,
 ): Promise<Response> {
   // Raw Response: the caller pumps the SSE stream. A new conversation
   // (no session id) carries the hold-to-confirm intent; follow-ups
-  // reuse the session the done event returned. Streaming turns
-  // bypass the offline outbox: a replayed stream has no consumer,
-  // so they fail as today when offline.
+  // reuse the session the done event returned. A reclaimed orphan
+  // (issue #856) keeps its id but confirms like a new spawn, since
+  // the server no longer knows it. Streaming turns bypass the
+  // offline outbox: a replayed stream has no consumer, so they fail
+  // as today when offline.
+  const fresh = !sessionId || reclaim === true;
   return fetch(apiUrl('api/agent/turn'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1340,11 +1344,48 @@ export function postAgentTurn(
       repo,
       prompt,
       session_id: sessionId ?? '',
-      intent: sessionId ? '' : 'agent-spawn',
-      confirmed: !sessionId,
+      intent: fresh ? 'agent-spawn' : '',
+      confirmed: fresh,
     }),
     signal,
   });
+}
+
+// Reattach state for one agent session (issue #856): a reloaded
+// console polls this to resume a live turn's text or learn the
+// verdict without firing a duplicate turn.
+export interface AgentSessionFinished {
+  exit: number | null;
+  stderr: string;
+  truncated: boolean;
+  timed_out: boolean;
+  timeout: number;
+  rescue: {
+    branch: string | null;
+    commit: string | null;
+    committed: boolean;
+    pushed: boolean;
+  } | null;
+  guidance_code?: string | null;
+  guidance_message?: string;
+  guidance_detail?: string;
+}
+
+export interface AgentSessionState {
+  session_id: string;
+  known: boolean;
+  running: boolean;
+  transcript: string;
+  transcript_truncated: boolean;
+  finished: AgentSessionFinished | null;
+}
+
+export function fetchAgentSession(
+  sessionId: string,
+): Promise<AgentSessionState> {
+  return getJson<AgentSessionState>(
+    `api/agent/session?session_id=${encodeURIComponent(sessionId)}`,
+  );
 }
 
 export function abortAgentSession(
