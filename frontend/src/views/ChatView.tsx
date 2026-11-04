@@ -251,6 +251,83 @@ export function SlashMenu({
   );
 }
 
+// Saved-template panel (#807): one-tap insert per template plus
+// save-current-draft and per-template delete. Mouse-down is
+// prevented like the mention/slash menus so the composer keeps
+// focus (and its caret) across taps.
+export function TemplatePanel({
+  templates,
+  canSave,
+  disabled,
+  onSave,
+  onInsert,
+  onDelete,
+}: {
+  templates: PromptTemplate[];
+  canSave: boolean;
+  disabled: boolean;
+  onSave: () => void;
+  onInsert: (text: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div
+      className="actions"
+      role="group"
+      aria-label="Prompt templates"
+      data-testid="chat-templates-panel"
+    >
+      <button
+        type="button"
+        data-testid="chat-template-save"
+        title="Save the current draft as a template"
+        disabled={!canSave || disabled}
+        onMouseDown={(e) => {
+          e.preventDefault();
+        }}
+        onClick={() => onSave()}
+      >
+        Save draft as template
+      </button>
+      {templates.length === 0 && (
+        <span className="row-meta" data-testid="chat-templates-empty">
+          No templates yet — save the draft above.
+        </span>
+      )}
+      {templates.map((t) => (
+        <div key={t.id} className="actions">
+          <button
+            type="button"
+            data-testid={`chat-template-insert-${t.id}`}
+            aria-label={`Insert template: ${t.label}`}
+            title={t.text}
+            disabled={disabled}
+            onMouseDown={(e) => {
+              e.preventDefault();
+            }}
+            onClick={() => onInsert(t.text)}
+          >
+            {t.label}
+          </button>
+          <button
+            type="button"
+            data-testid={`chat-template-delete-${t.id}`}
+            aria-label={`Delete template: ${t.label}`}
+            title={`Delete template: ${t.label}`}
+            disabled={disabled}
+            onMouseDown={(e) => {
+              e.preventDefault();
+            }}
+            onClick={() => onDelete(t.id)}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Voice dictation (#659): tap-to-dictate into the composer via the
 // Web Speech API. Purely client-side: no backend, no deps, no keys.
 // Chrome/Android ship SpeechRecognition; Firefox and iOS Safari do
@@ -1097,6 +1174,109 @@ export function clearChatDraft(): void {
   }
 }
 
+// Saved prompt templates (#807): user-saved composer snippets in
+// localStorage (survive reload + relaunch), seeded with starters on
+// first run. One-tap insert at the caret; a {text} slot in the
+// template lands the caret at the slot instead of past the insert.
+// Seeds are ordinary entries once stored — deleting them all leaves
+// an empty store (no reseed). Same typeof/try-catch guards as the
+// sessionStorage snapshots above; mock mode neither reads nor writes.
+export interface PromptTemplate {
+  id: string;
+  label: string;
+  text: string;
+}
+
+export const CHAT_TEMPLATES_KEY = 'buttons.chat.templates.v1';
+export const TEMPLATE_TEXT_SLOT = '{text}';
+
+export const SEED_TEMPLATES: ReadonlyArray<PromptTemplate> = [
+  {
+    id: 'standup',
+    label: 'Standup',
+    text: 'Write a standup summary: finished, next, blockers. {text}',
+  },
+  {
+    id: 'review',
+    label: 'Review request',
+    text: 'Review my uncommitted changes for bugs, edge cases, and missing tests. {text}',
+  },
+  {
+    id: 'explain',
+    label: 'Explain',
+    text: 'Explain how {text} works in this repo, with file references.',
+  },
+];
+
+export function isPromptTemplate(value: unknown): value is PromptTemplate {
+  if (!value || typeof value !== 'object') return false;
+  const t = value as Record<string, unknown>;
+  return (
+    typeof t.id === 'string' &&
+    typeof t.label === 'string' &&
+    typeof t.text === 'string'
+  );
+}
+
+export function loadPromptTemplates(): PromptTemplate[] {
+  try {
+    if (typeof localStorage === 'undefined') return [...SEED_TEMPLATES];
+    const raw = localStorage.getItem(CHAT_TEMPLATES_KEY);
+    if (!raw) return [...SEED_TEMPLATES];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [...SEED_TEMPLATES];
+    return parsed.filter(isPromptTemplate);
+  } catch {
+    return [...SEED_TEMPLATES];
+  }
+}
+
+export function savePromptTemplates(templates: PromptTemplate[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CHAT_TEMPLATES_KEY, JSON.stringify(templates));
+  } catch {
+    // Persistence is best-effort; the live panel still works.
+  }
+}
+
+let templateSeq = 0;
+
+export function templateId(): string {
+  templateSeq += 1;
+  const rand = Math.floor(Math.random() * 1296).toString(36);
+  return `t${Date.now().toString(36)}${templateSeq.toString(36)}${rand}`;
+}
+
+export function templateLabelForDraft(draft: string, max = 40): string | null {
+  const first = draft.split('\n', 1)[0].trim();
+  if (!first) return null;
+  return first.length > max ? `${first.slice(0, max - 1)}…` : first;
+}
+
+export function makeTemplateFromDraft(draft: string): PromptTemplate | null {
+  const text = draft.trim();
+  const label = templateLabelForDraft(draft);
+  if (!text || !label) return null;
+  return { id: templateId(), label, text };
+}
+
+// Insert a template at the caret: the snippet splices in and the
+// caret lands past the insert — or at the first {text} slot, whose
+// markers are consumed so typing flows naturally. Markers stay
+// intact in the stored template; only the insert consumes them.
+export function insertTemplateAt(
+  text: string,
+  caret: number,
+  snippet: string,
+): { text: string; caret: number } {
+  const at = Math.max(0, Math.min(caret, text.length));
+  const slot = snippet.indexOf(TEMPLATE_TEXT_SLOT);
+  const consumed = snippet.split(TEMPLATE_TEXT_SLOT).join('');
+  const next = text.slice(0, at) + consumed + text.slice(at);
+  return { text: next, caret: slot === -1 ? at + consumed.length : at + slot };
+}
+
 // Persisted snapshots hold the settled conversation only: a trailing
 // empty assistant entry is the live typing placeholder (meaningless
 // once streaming stops), so it never reaches sessionStorage. The live
@@ -1411,6 +1591,12 @@ export default function ChatView({
     !streaming &&
     slashMatches.length > 0 &&
     slashDismissed !== slashQuery;
+  // Saved prompt templates (#807): seeds on first run, user store
+  // after. Mock mode keeps seeds without touching localStorage.
+  const [templates, setTemplates] = useState<PromptTemplate[]>(() =>
+    useMock() ? [...SEED_TEMPLATES] : loadPromptTemplates(),
+  );
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   // Voice dictation (#659): tap-to-dictate session state. The live
   // recognition object sits in a ref (mute, event-driven — never
   // state); inserted tracks this session's preview suffix for
@@ -1799,6 +1985,34 @@ export default function ChatView({
     });
   }
 
+  // Template save/insert/delete (#807): store mutations persist
+  // (outside mock mode); inserts reuse the pending-caret effect so
+  // the caret lands at the slot or past the insert.
+  function onSaveTemplate() {
+    if (streaming) return;
+    const made = makeTemplateFromDraft(prompt);
+    if (!made) return;
+    const next = [...templates, made];
+    setTemplates(next);
+    if (!useMock()) savePromptTemplates(next);
+    promptRef.current?.focus();
+  }
+
+  function onInsertTemplate(text: string) {
+    if (streaming) return;
+    const next = insertTemplateAt(prompt, caret ?? prompt.length, text);
+    pendingCaretRef.current = next.caret;
+    setPrompt(next.text);
+    promptRef.current?.focus();
+  }
+
+  function onDeleteTemplate(id: string) {
+    if (streaming) return;
+    const next = templates.filter((t) => t.id !== id);
+    setTemplates(next);
+    if (!useMock()) savePromptTemplates(next);
+  }
+
   // @-mention accept: swap the "@query" token for "@path" chip
   // text; the caret lands past the trailing space via the
   // pending-caret effect, which also closes the dropdown.
@@ -2096,6 +2310,16 @@ export default function ChatView({
             onHover={(i) => setSlashActive(i)}
           />
         )}
+        {templatesOpen && (
+          <TemplatePanel
+            templates={templates}
+            canSave={prompt.trim().length > 0}
+            disabled={streaming}
+            onSave={() => onSaveTemplate()}
+            onInsert={(text) => onInsertTemplate(text)}
+            onDelete={(id) => onDeleteTemplate(id)}
+          />
+        )}
         <p className="row-meta" data-testid="chat-route-hint" role="status">
           {hint ? hintLine(hint) : 'Next reply via …'}
         </p>
@@ -2152,6 +2376,15 @@ export default function ChatView({
             onClick={() => onExportTranscript()}
           >
             Export
+          </button>
+          <button
+            type="button"
+            data-testid="chat-templates"
+            title="Saved prompt templates"
+            aria-expanded={templatesOpen}
+            onClick={() => setTemplatesOpen((o) => !o)}
+          >
+            Templates
           </button>
         </div>
       </form>

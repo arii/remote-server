@@ -212,6 +212,22 @@ export function StackSection({ health }: { health: SystemHealthResponse | null }
 // view — foreign rows should not occur after the backend scoping
 // fix, so single-repo mode stays pixel-identical and the tag is
 // the backstop that keeps a leak distinguishable.
+// Guided empty state (issue #809): what lands here plus the
+// one-tap first action (opens the Jobs section to run a check).
+export function NowEmptyState({ onRunCheck }: { onRunCheck: () => void }) {
+  return (
+    <div data-testid="now-empty">
+      <h3>Nothing needs you right now</h3>
+      <p className="row-meta">Failing checks, approvals, and incidents will land here.</p>
+      <div className="actions">
+        <button type="button" data-testid="now-empty-jobs" onClick={onRunCheck}>
+          Run a check
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function RepoTag({ repo }: { repo: string }) {
   return (
     <span className="repo-chip" data-testid={`now-repo-${repo}`}>
@@ -696,10 +712,7 @@ export default function NowView({
             </ul>
           )}
       {data.attention.length === 0 ? (
-        <div data-testid="now-empty">
-          <h3>Nothing needs you right now</h3>
-          <p className="row-meta">All clear.</p>
-        </div>
+        <NowEmptyState onRunCheck={() => setSection('jobs')} />
       ) : (
         <ul className="session-list" data-testid="now-list">
           {data.attention.map((item) =>

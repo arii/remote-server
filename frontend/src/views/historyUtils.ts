@@ -87,7 +87,7 @@ function recoveryFor(kind: string, summary: string): string {
   return 'check status and retry';
 }
 
-function rowTime(at: number | string | undefined): string {
+export function rowTime(at: number | string | undefined): string {
   if (at === undefined || at === null || at === '') return 'unknown time';
   const n = typeof at === 'string' ? Date.parse(at) : at;
   if (Number.isNaN(n)) return String(at);
@@ -95,7 +95,7 @@ function rowTime(at: number | string | undefined): string {
   return new Date(ms).toLocaleString();
 }
 
-function epochOf(at: number | string | undefined): number {
+export function epochOf(at: number | string | undefined): number {
   if (typeof at === 'number') return at < 1e12 ? at * 1000 : at;
   if (typeof at === 'string' && at !== '') {
     const parsed = Date.parse(at);

@@ -14,6 +14,17 @@ describe('history search input (issue #608)', () => {
     expect(filtered).toContain('data-testid="history-empty"');
     expect(filtered).toContain('No matching rows.');
     const plain = renderToStaticMarkup(<RowsList rows={[]} filtering={false} />);
-    expect(plain).toContain('No history yet.');
+    expect(plain).toContain('No history yet');
+  });
+
+  it('guides first-run with an explainer and refresh action (issue #809)', () => {
+    const plain = renderToStaticMarkup(<RowsList rows={[]} filtering={false} onRefresh={() => {}} />);
+    expect(plain).toContain('data-testid="history-empty"');
+    expect(plain).toContain('Finished jobs and ledger events land here');
+    expect(plain).toContain('data-testid="history-empty-refresh"');
+    expect(plain).toContain('>Refresh<');
+    const filtered = renderToStaticMarkup(<RowsList rows={[]} filtering />);
+    expect(filtered).toContain('No matching rows.');
+    expect(filtered).not.toContain('history-empty-refresh');
   });
 });
