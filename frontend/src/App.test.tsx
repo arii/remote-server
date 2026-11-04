@@ -307,6 +307,35 @@ describe('briefing sanitation', () => {
     expect(cleanBriefingLine('  - indented dash')).toBe('indented dash');
     expect(cleanBriefingLine('no marker here')).toBe('no marker here');
   });
+
+  it('strips reviewer markdown to a plain-text verdict line', () => {
+    const blob = [
+      '## Review verdict',
+      '> **Reviewing:** [PR #563](https://example.com/owner/repo/pull/563) ✅',
+      '### Findings',
+      '- `auth.ts` looks good, **ship it**',
+      '1. *minor nit*: rename `tmp_dir` for clarity',
+    ].join('\n');
+    const clean = cleanBriefingLine(blob);
+    expect(clean).not.toContain('##');
+    expect(clean).not.toContain('**');
+    expect(clean).not.toContain('](');
+    expect(clean).not.toContain('https://');
+    expect(clean).toContain('Reviewing: PR #563');
+    expect(clean).toContain('ship it');
+    expect(clean).toContain('tmp_dir');
+    expect(clean).toContain('minor nit');
+  });
+
+  it('truncates at a word boundary, never mid-URL', () => {
+    const line = `${'ok '.repeat(90)}https://example.com/${'y'.repeat(200)}`;
+    const clean = cleanBriefingLine(line);
+    expect(clean.endsWith('…')).toBe(true);
+    expect(clean.length).toBeLessThanOrEqual(280);
+    expect(clean.slice(0, -1)).not.toMatch(/\s$/);
+    expect(clean).not.toContain('https://');
+    expect(line.startsWith(clean.slice(0, -1))).toBe(true);
+  });
 });
 
 describe('briefing all-clear', () => {
