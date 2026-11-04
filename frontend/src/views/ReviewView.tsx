@@ -788,6 +788,110 @@ export function bulkDeferNotice(count: number): string {
   return `Deferred ${count} row${count === 1 ? '' : 's'}.`;
 }
 
+// Bulk approve plan (#890): which selected PRs one Approve tap will
+// approve, and which selected rows it skips with their reasons.
+// Eligibility reuses approveBlockReason (draft / already-approved /
+// self-authored), so the bar and the per-row chip can never
+// disagree. Issue rows are PR-inapplicable; selected PR numbers
+// missing from the loaded list skip rather than firing blind.
+export interface BulkApprovePlan {
+  eligible: number[];
+  skipped: Array<{ number: number; reason: string }>;
+  issueCount: number;
+}
+
+export function planBulkApprove(
+  prs: readonly PrRow[],
+  selected: ReadonlySet<string>,
+  viewer?: string,
+): BulkApprovePlan {
+  const byNumber = new Map(prs.map((p) => [p.number, p]));
+  const eligible: number[] = [];
+  const skipped: Array<{ number: number; reason: string }> = [];
+  let issueCount = 0;
+  for (const row of parseBulkSelection(selected)) {
+    if (row.kind === 'issue') {
+      issueCount += 1;
+      continue;
+    }
+    const pr = byNumber.get(row.number);
+    if (!pr) {
+      skipped.push({ number: row.number, reason: 'not in the current list' });
+      continue;
+    }
+    const blocked = approveBlockReason(pr, viewer);
+    if (blocked !== null) skipped.push({ number: row.number, reason: blocked });
+    else eligible.push(row.number);
+  }
+  return { eligible, skipped, issueCount };
+}
+
+// Inline skip counts for the bulk bar: "2 skipped: already approved
+// (1); is a draft (1)". Null when nothing skips, so the bar stays
+// quiet on a clean selection.
+export function bulkApproveSkippedNote(plan: BulkApprovePlan): string | null {
+  const total = plan.skipped.length + plan.issueCount;
+  if (total === 0) return null;
+  const groups = new Map<string, number>();
+  for (const s of plan.skipped) groups.set(s.reason, (groups.get(s.reason) ?? 0) + 1);
+  const parts = [...groups].map(([reason, n]) => `${reason} (${n})`);
+  if (plan.issueCount > 0) {
+    parts.push(`issue rows are not approvable (${plan.issueCount})`);
+  }
+  return `${total} skipped: ${parts.join('; ')}`;
+}
+
+// Batch result notice: mirrors the single-row "Approved PR #n."
+// when the batch is one PR, counts otherwise. Empty when nothing
+// approved — the caller shows the per-PR errors instead.
+export function bulkApproveNotice(approved: readonly number[], total: number): string {
+  if (approved.length === 1 && total === 1) return `Approved PR #${approved[0]}.`;
+  if (approved.length === 0) return '';
+  if (approved.length === total) return `Approved ${total} PRs.`;
+  return `Approved ${approved.length} of ${total} PRs.`;
+}
+
+// Per-PR errors for a partial (or total) bulk-approve failure:
+// "PR #7: <msg>; PR #9: <msg>".
+export function bulkApproveFailureText(
+  failed: ReadonlyArray<{ number: number; error: string }>,
+): string {
+  return failed.map((f) => `PR #${f.number}: ${f.error}`).join('; ');
+}
+
+// Fanout core (#890): approve each number through the single-row
+// approve call, collecting per-PR outcomes. Sequential — N is small
+// in phone triage, and ordering stays deterministic. Failures never
+// abort the batch: successes stay approved.
+export async function approveEach(
+  approve: (n: number) => Promise<unknown>,
+  numbers: readonly number[],
+): Promise<{ approved: number[]; failed: Array<{ number: number; error: string }> }> {
+  const approved: number[] = [];
+  const failed: Array<{ number: number; error: string }> = [];
+  for (const n of numbers) {
+    try {
+      await approve(n);
+      approved.push(n);
+    } catch (err) {
+      failed.push({ number: n, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { approved, failed };
+}
+
+// Optimistic review-decision patch for N rows (bulk approve when the
+// post-batch list re-read fails). Null-safe like dropMergedPr.
+export function applyReviewDecision(
+  prs: readonly PrRow[] | null,
+  numbers: readonly number[],
+  decision: string,
+): PrRow[] | null {
+  if (!prs) return prs;
+  const set = new Set(numbers);
+  return prs.map((r) => (set.has(r.number) ? { ...r, reviewDecision: decision } : r));
+}
+
 // PR↔issue linkage (issue #839): a PR links the issues it likely
 // closes — explicit #N references in its title/branch plus
 // same-title rows (the issue #4848 + PR #4849 filing pattern).
@@ -832,17 +936,29 @@ export function bulkRestoreNotice(count: number): string {
   return `Restored ${count} row${count === 1 ? '' : 's'}.`;
 }
 
-// Bulk bar: rendered only while rows are selected. One Defer-n action;
-// single-row Defer/Restore buttons keep their own shapes.
+// Bulk bar: rendered only while rows are selected. One Defer-n action
+// over the whole selection plus (#890) one Approve-n action over the
+// selected approvable PRs; single-row buttons keep their own shapes.
 export function BulkDeferBar({
   count,
   busy,
   onDefer,
+  approveCount,
+  approveBusy = false,
+  onApprove,
+  skippedNote = null,
 }: {
   count: number;
   busy: boolean;
   onDefer: () => void;
+  // #890: absent (legacy callers) means no approve action at all.
+  approveCount?: number;
+  approveBusy?: boolean;
+  onApprove?: () => void;
+  skippedNote?: string | null;
 }) {
+  const approvable = approveCount ?? 0;
+  const eitherBusy = busy || approveBusy;
   return (
     <div className="actions" data-testid="defer-bulk-bar" role="status">
       {count} selected{' '}
@@ -850,11 +966,28 @@ export function BulkDeferBar({
         type="button"
         data-testid="defer-bulk-defer"
         aria-label={`Defer ${count} selected row${count === 1 ? '' : 's'}`}
-        disabled={busy}
+        disabled={eitherBusy}
         onClick={onDefer}
       >
         {busy ? 'Deferring…' : `Defer ${count}`}
       </button>
+      {onApprove && (
+        <button
+          type="button"
+          data-testid="defer-bulk-approve"
+          aria-label={`Approve ${approvable} selected PR${approvable === 1 ? '' : 's'}`}
+          title={approvable === 0 ? 'No selected PR is approvable' : undefined}
+          disabled={eitherBusy || approvable === 0}
+          onClick={onApprove}
+        >
+          {approveBusy ? 'Approving…' : `Approve ${approvable}`}
+        </button>
+      )}
+      {skippedNote && (
+        <span className="row-meta" data-testid="defer-bulk-approve-skipped">
+          {skippedNote}
+        </span>
+      )}
     </div>
   );
 }
@@ -932,6 +1065,9 @@ export default function ReviewView({
   const [sort, setSort] = useState<ReviewSort>('api');
   const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // #890: bulk-approve in-flight flag, separate from bulkBusy (defer)
+  // so each bar button keeps its own busy label.
+  const [bulkApproveBusy, setBulkApproveBusy] = useState(false);
   const [bulkRestore, setBulkRestore] = useState<ReadonlySet<string>>(new Set());
   const [bulkRestoreBusy, setBulkRestoreBusy] = useState(false);
   // Inline issue labels (#612): repo labels load lazily on first
@@ -972,6 +1108,10 @@ export default function ReviewView({
   // select-all toggles exactly this set per list.
   const visiblePrKeys = visiblePrs.map((p) => bulkRowKey('pr', p.number));
   const visibleIssueKeys = visibleIssues.map((i) => bulkRowKey('issue', i.number));
+  // #890: the bulk bar's Approve-n count + inline skip note derive
+  // from the same selection the Defer-n action uses.
+  const approvePlan = planBulkApprove(prs ?? [], bulkSelected, viewer);
+  const approveSkippedNote = bulkApproveSkippedNote(approvePlan);
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
   // a PR row in the details pane, an issue row in a new tab.
@@ -1242,9 +1382,50 @@ export default function ReviewView({
       setPrs(p.prs);
       setViewer(p.viewer || undefined);
     } catch {
-      setPrs((prev) =>
-        prev ? prev.map((r) => (r.number === n ? { ...r, reviewDecision: decision } : r)) : prev,
+      setPrs((prev) => applyReviewDecision(prev, [n], decision));
+    }
+  }
+
+  // One tap approves every eligible selected PR (#890): the batch
+  // fans out through the single-row approve endpoint per PR, so #852
+  // gating and the backend 400 fallback apply unchanged. One list
+  // re-read covers the batch; successes stay approved on partial
+  // failure, and per-PR errors surface in the banner. Approved rows
+  // stay listed (unlike deferred rows), so the selection is kept.
+  async function approveBulk() {
+    const plan = planBulkApprove(prs ?? [], bulkSelected, viewer);
+    if (plan.eligible.length === 0) return;
+    setError(null);
+    setBulkApproveBusy(true);
+    setReviewing((prev) => {
+      const next = new Set(prev);
+      for (const n of plan.eligible) next.add(n);
+      return next;
+    });
+    try {
+      const { approved, failed } = await approveEach(
+        (n) => approvePr(repo, n, branch),
+        plan.eligible,
       );
+      if (approved.length > 0) {
+        try {
+          const p = await fetchPrs(repo);
+          setPrs(p.prs);
+          setViewer(p.viewer || undefined);
+        } catch {
+          setPrs((prev) => applyReviewDecision(prev, approved, 'APPROVED'));
+        }
+      }
+      const notice = bulkApproveNotice(approved, plan.eligible.length);
+      if (notice) setNotice(notice);
+      if (failed.length > 0) setError(bulkApproveFailureText(failed));
+    } finally {
+      setReviewing((prev) => {
+        const next = new Set(prev);
+        for (const n of plan.eligible) next.delete(n);
+        return next;
+      });
+      setBulkApproveBusy(false);
     }
   }
 
@@ -1418,7 +1599,15 @@ export default function ReviewView({
         </label>
       </div>
       {bulkSelected.size > 0 && (
-        <BulkDeferBar count={bulkSelected.size} busy={bulkBusy} onDefer={() => void deferBulk()} />
+        <BulkDeferBar
+          count={bulkSelected.size}
+          busy={bulkBusy}
+          onDefer={() => void deferBulk()}
+          approveCount={approvePlan.eligible.length}
+          approveBusy={bulkApproveBusy}
+          onApprove={() => void approveBulk()}
+          skippedNote={approveSkippedNote}
+        />
       )}
       {!sel && promptVisible && (
         <p className="row-meta" data-testid="review-details-empty">

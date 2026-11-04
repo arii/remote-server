@@ -93,3 +93,12 @@ failing check and the hidden dependency it names; do not fix it in
 the drill PR. On green: no action — the cutoff flip stays
 `AGENT_DEFAULT_PROVIDER=agy` on the buttons service (issue #399),
 and agy continuity evidence lives in `docs/agy-continuity.md`.
+
+Keyless proof (issue #889): `cutoff-proof.yml` runs
+`scripts/cutoff-drill.sh --proof` in CI — same four surfaces with
+cloud credentials scrubbed and asserted absent, `OLLAMA_STRICT=1`,
+and skips treated as failures — against a local Ollama service
+with the default model. It runs on PRs touching provider/model/turn
+code plus nightly. Run `./scripts/cutoff-drill.sh --proof` locally
+with Ollama up for the same proof (the live agy turn stays a local
+`--live` gate: it needs stack OAuth, which CI never holds).
