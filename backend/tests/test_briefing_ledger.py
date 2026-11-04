@@ -44,6 +44,10 @@ class BriefingLedgerTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
             self.tmp, "ledger.jsonl")
+        # Narrator off: these tests pin data-path behavior; prose has
+        # its own suite (test_briefing_narrative.py).
+        self._old_narrator = os.environ.get("BRIEFING_NARRATOR")
+        os.environ["BRIEFING_NARRATOR"] = "off"
         app = FastAPI()
         app.include_router(briefing_router.router)
         self.client = TestClient(app)
@@ -53,6 +57,10 @@ class BriefingLedgerTest(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("BUTTONS_LEDGER_PATH", None)
         os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+        if self._old_narrator is None:
+            os.environ.pop("BRIEFING_NARRATOR", None)
+        else:
+            os.environ["BRIEFING_NARRATOR"] = self._old_narrator
         briefing_router._BRIEFING_CACHE.clear()
         briefing_router._BRIEFING_REFRESHING.clear()
 

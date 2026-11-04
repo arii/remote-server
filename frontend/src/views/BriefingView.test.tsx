@@ -409,3 +409,54 @@ describe('notification preferences (issue #656)', () => {
     expect(digestScheduleLine(sched())).not.toContain('held until');
   });
 });
+
+describe('briefing narrative lede (issue #671)', () => {
+  function briefing(over: Partial<BriefingResponse> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function renderBody(data: BriefingResponse): string {
+    const noop = () => {};
+    return renderToStaticMarkup(
+      <BriefingBody
+        data={data}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+      />,
+    );
+  }
+
+  it('renders the lede above the rows when prose is present', () => {
+    const html = renderBody(
+      briefing({ narrative: 'Auth CI is red on main. Fix it first.' }),
+    );
+    expect(html).toContain('data-testid="briefing-narrative"');
+    expect(html).toContain('Auth CI is red on main. Fix it first.');
+    expect(html.indexOf('briefing-narrative')).toBeLessThan(
+      html.indexOf('Next actions'),
+    );
+  });
+
+  it('omits the block when prose is missing, empty, or blank', () => {
+    for (const narrative of [undefined, null, '', '   ']) {
+      const html = renderBody(briefing({ narrative }));
+      expect(html).not.toContain('briefing-narrative');
+    }
+  });
+});

@@ -13,10 +13,12 @@ Briefing reads are NOT ledgered: reads are not actions.
 """
 
 import json
+import logging
 import os
 import subprocess
 import threading
 import time
+import urllib.request
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,6 +29,39 @@ from backend.ledger import LEDGER_KINDS, clear as ledger_clear
 from backend.ledger import read as ledger_read
 
 router = APIRouter(prefix="/api", tags=["briefing"])
+
+logger = logging.getLogger(__name__)
+
+
+# Narrative lede (issue #671): a short AI-written prose paragraph
+# (top risk + top action) generated during background refresh and
+# cached with the SWR entry. Reads never block on it — stale prose
+# serves instantly while fresh prose regenerates — and any narrator
+# failure degrades to data-without-prose (today's briefing).
+#
+# Cutoff story: local-first. BRIEFING_NARRATOR takes
+# "ollama:<model>" (default when unset: ASK_MODEL or qwen3:8b) or
+# "nebius:<model>" as an explicit metered opt-in; "off" disables.
+# Unknown values disable. Raw urllib only — no langchain in backend/.
+# Env names/defaults mirror deep-agent/model_router without importing it.
+NARRATOR_ENV = "BRIEFING_NARRATOR"
+NARRATOR_TIMEOUT = 90.0
+NARRATOR_MAX_INPUT_CHARS = 6000
+NARRATOR_MAX_OUTPUT_CHARS = 2000
+NARRATOR_MAX_TOKENS = 200
+NARRATOR_SYSTEM = (
+    "Write a 2-4 sentence briefing lede: name the top risk, then the "
+    "single most important action. Plain sentences only — no headers, "
+    "no bullets, no fluff."
+)
+NARRATOR_OFF_VALUES = frozenset(
+    {"off", "none", "disabled", "0", "false", "no"})
+NARRATOR_SKIP_KEYS = frozenset(
+    {"narrative", "narrative_at", "cached", "stale", "generated_at"})
+DEFAULT_NARRATOR_OLLAMA_URL = "http://ollama:11434"
+DEFAULT_NARRATOR_OLLAMA_MODEL = "qwen3:8b"
+DEFAULT_NARRATOR_NEBIUS_URL = "https://api.tokenfactory.nebius.com/v1"
+DEFAULT_NARRATOR_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 
 
 class JulesSection(BaseModel):
@@ -65,6 +100,8 @@ class Briefing(BaseModel):
     runs_err: str = ""
     jules: JulesSection = Field(default_factory=JulesSection)
     jules_lines: list = Field(default_factory=list)
+    narrative: str | None = None
+    narrative_at: float | None = None
 
 
 class BackendStatus(BaseModel):
@@ -110,6 +147,212 @@ def _store_briefing(repo: str, data: dict) -> float:
     return ts
 
 
+def _narrator_env(name: str, default: str = "") -> str:
+    val = os.environ.get(name, default)
+    if not isinstance(val, str) or not val.strip():
+        return default
+    return val
+
+
+def narrator_spec() -> dict | None:
+    """Parse BRIEFING_NARRATOR into {provider, model, base_url}.
+
+    None means narration disabled: an explicit off value, or
+    anything unrecognized (fail safe — never metered, never raises).
+    """
+    raw = _narrator_env(NARRATOR_ENV)
+    if not raw:
+        return {
+            "provider": "ollama",
+            "model": _narrator_env(
+                "ASK_MODEL", DEFAULT_NARRATOR_OLLAMA_MODEL),
+            "base_url": _narrator_env(
+                "OLLAMA_URL", DEFAULT_NARRATOR_OLLAMA_URL),
+        }
+    text = raw.strip()
+    low = text.lower()
+    if low in NARRATOR_OFF_VALUES:
+        return None
+    if low == "ollama" or low.startswith("ollama:"):
+        model = text.split(":", 1)[1].strip() if ":" in text else ""
+        return {
+            "provider": "ollama",
+            "model": model or _narrator_env(
+                "ASK_MODEL", DEFAULT_NARRATOR_OLLAMA_MODEL),
+            "base_url": _narrator_env(
+                "OLLAMA_URL", DEFAULT_NARRATOR_OLLAMA_URL),
+        }
+    if low == "nebius" or low.startswith("nebius:"):
+        model = text.split(":", 1)[1].strip() if ":" in text else ""
+        return {
+            "provider": "nebius",
+            "model": model or _narrator_env(
+                "NEBIUS_MODEL", DEFAULT_NARRATOR_NEBIUS_MODEL),
+            "base_url": _narrator_env(
+                "NEBIUS_BASE_URL", DEFAULT_NARRATOR_NEBIUS_URL),
+        }
+    logger.warning("briefing: ignoring unknown %s value %r",
+                   NARRATOR_ENV, raw)
+    return None
+
+
+def narrator_prompt(data: dict) -> str:
+    """User prompt: condensed briefing JSON.
+
+    Freshness markers and previous prose are excluded (no feedback
+    loop); oversize briefings truncate to the input budget.
+    """
+    slim = {k: v for k, v in data.items() if k not in NARRATOR_SKIP_KEYS}
+    blob = json.dumps(slim, sort_keys=True, default=str)
+    if len(blob) > NARRATOR_MAX_INPUT_CHARS:
+        blob = blob[:NARRATOR_MAX_INPUT_CHARS] + "…[truncated]"
+    return f"Briefing JSON:\n{blob}\n\nLede:"
+
+
+def _post_narrator(url: str, payload: dict, headers: dict,
+                   timeout: float) -> dict:
+    """Injectable seam: one raw-HTTP LLM call, like repair's client."""
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _ollama_base(base_url: str) -> str:
+    base = ((base_url or "").strip().rstrip("/")
+            or DEFAULT_NARRATOR_OLLAMA_URL)
+    if base.lower().endswith("/api/generate"):
+        base = base[: -len("/api/generate")]
+    return base
+
+
+def _strip_thinking(text: str) -> str:
+    """Drop <think> traces reasoning models (qwen3) prepend.
+
+    The payload already asks for think=false, but older servers
+    ignore that flag — never let chain-of-thought leak into the lede.
+    """
+    while True:
+        start = text.find("<think>")
+        if start < 0:
+            break
+        end = text.find("</think>", start)
+        if end < 0:
+            text = text[:start]
+            break
+        text = text[:start] + text[end + len("</think>"):]
+    return text
+
+
+def _narrate_ollama(spec: dict, prompt: str, timeout: float) -> str:
+    body = _post_narrator(
+        _ollama_base(spec["base_url"]) + "/api/generate",
+        # think=false: reasoning traces burn the token budget and
+        # minutes of CPU on a 2-sentence lede (measured 31s/10tok
+        # with thinking vs 1.2s without on qwen3:8b). Servers that
+        # predate the flag ignore it; _strip_thinking covers those.
+        {"model": spec["model"], "system": NARRATOR_SYSTEM,
+         "prompt": prompt, "stream": False, "think": False,
+         "options": {"temperature": 0.2,
+                     "num_predict": NARRATOR_MAX_TOKENS}},
+        {"Content-Type": "application/json"}, timeout)
+    return body.get("response", "")
+
+
+def _narrate_nebius(spec: dict, prompt: str, timeout: float) -> str:
+    key = _narrator_env("NEBIUS_API_KEY")
+    if not key:
+        logger.warning(
+            "briefing: nebius narrator opted in without NEBIUS_API_KEY")
+        return ""
+    body = _post_narrator(
+        (spec["base_url"] or "").strip().rstrip("/")
+        + "/chat/completions",
+        {"model": spec["model"],
+         "messages": [
+             {"role": "system", "content": NARRATOR_SYSTEM},
+             {"role": "user", "content": prompt}],
+         "temperature": 0.2, "max_tokens": NARRATOR_MAX_TOKENS},
+        {"Content-Type": "application/json",
+         "Authorization": f"Bearer {key}"},
+        timeout)
+    choices = body.get("choices") or []
+    if not choices:
+        return ""
+    return (choices[0].get("message") or {}).get("content", "")
+
+
+def narrate_briefing(data: dict,
+                     timeout: float = NARRATOR_TIMEOUT) -> str | None:
+    """Generate the lede, or None on any failure.
+
+    Never raises and never makes a metered call unless the nebius:
+    opt-in is set — the default path only talks to local Ollama.
+    """
+    spec = narrator_spec()
+    if spec is None:
+        return None
+    prompt = narrator_prompt(data)
+    try:
+        if spec["provider"] == "ollama":
+            text = _narrate_ollama(spec, prompt, timeout)
+        elif spec["provider"] == "nebius":
+            text = _narrate_nebius(spec, prompt, timeout)
+        else:  # pragma: no cover - narrator_spec only yields these two
+            return None
+    except Exception as exc:
+        logger.warning("briefing: narrator failed (%s)", exc)
+        return None
+    text = _strip_thinking(text or "").strip()
+    if not text:
+        return None
+    if len(text) > NARRATOR_MAX_OUTPUT_CHARS:
+        text = text[:NARRATOR_MAX_OUTPUT_CHARS].rstrip() + "…"
+    return text
+
+
+def _attach_narrative(data: dict, previous: dict | None) -> dict:
+    """Fresh prose onto data; narrator failure carries previous prose
+    or omits the block — data is never blocked and never errors."""
+    prose = narrate_briefing(data)
+    if prose:
+        data["narrative"] = prose
+        data["narrative_at"] = time.time()
+    elif previous and previous.get("narrative"):
+        data["narrative"] = previous["narrative"]
+        data["narrative_at"] = previous.get("narrative_at")
+    else:
+        data.pop("narrative", None)
+        data.pop("narrative_at", None)
+    return data
+
+
+def _patch_narrative(repo: str, ts: float, snapshot: dict) -> None:
+    """Fill prose into a cold-cache entry behind the instant read.
+
+    Only patches when the entry is still this generation — a newer
+    refresh must never be clobbered with older prose.
+    """
+    prose = narrate_briefing(snapshot)
+    if not prose:
+        return
+    with _BRIEFING_LOCK:
+        hit = _BRIEFING_CACHE.get(repo)
+        if hit is None or hit[0] != ts:
+            return
+        hit[1]["narrative"] = prose
+        hit[1]["narrative_at"] = time.time()
+
+
+def _spawn_narrative_patch(repo: str, ts: float, snapshot: dict) -> None:
+    if narrator_spec() is None:
+        return
+    thread = threading.Thread(
+        target=_patch_narrative, args=(repo, ts, snapshot), daemon=True)
+    thread.start()
+
+
 def _refresh_briefing(repo: str, gh: str) -> None:
     """Background SWR refresh: failures keep the stale entry."""
     try:
@@ -118,7 +361,10 @@ def _refresh_briefing(repo: str, gh: str) -> None:
         with _BRIEFING_LOCK:
             _BRIEFING_REFRESHING.discard(repo)
         return
-    _store_briefing(repo, data)
+    with _BRIEFING_LOCK:
+        prev = _BRIEFING_CACHE.get(repo)
+    _store_briefing(
+        repo, _attach_narrative(data, prev[1] if prev else None))
 
 
 def _revalidate_briefing(repo: str, gh: str) -> None:
@@ -151,8 +397,14 @@ def get_briefing(name: str, gh: str) -> dict:
             _revalidate_briefing(name, gh)
             return {**hit[1], "cached": True, "stale": True,
                     "generated_at": hit[0]}
+    previous = hit[1] if hit is not None else None
     data = _run_briefing(name, gh)
+    if previous and previous.get("narrative") \
+            and "narrative" not in data:
+        data["narrative"] = previous["narrative"]
+        data["narrative_at"] = previous.get("narrative_at")
     ts = _store_briefing(name, data)
+    _spawn_narrative_patch(name, ts, dict(data))
     return {**data, "cached": False, "stale": False,
             "generated_at": ts}
 

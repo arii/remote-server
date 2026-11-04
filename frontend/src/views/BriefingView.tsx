@@ -825,6 +825,11 @@ export function BriefingBody({
           {freshness}
         </p>
       )}
+      {typeof data.narrative === 'string' && data.narrative.trim() !== '' && (
+        <p className="briefing-narrative" data-testid="briefing-narrative">
+          {data.narrative}
+        </p>
+      )}
       {data.prs_err && (
         <p className="row-meta" role="alert">
           {data.prs_err}
