@@ -261,7 +261,10 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      # First boot builds the RAG index in the entrypoint (~4 min on
+      # the S5 for ~1800 chunks, #562); plain restarts skip it via
+      # the present-index fast path.
+      start_period: 330s
     logging: *default-logging
     restart: unless-stopped
     # In-flight SSE chat streams run minutes on CPU-Ollama; uvicorn drains

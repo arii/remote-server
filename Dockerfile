@@ -56,6 +56,8 @@ RUN /opt/venvs/td/bin/pip install --no-cache-dir -r backend-requirements.txt -r 
 COPY backend/ ./backend/
 COPY deep-agent/ ./deep-agent/
 COPY core_cli/ ./core_cli/
+COPY scripts/buttons-entrypoint.sh /usr/local/bin/buttons-entrypoint.sh
+RUN chmod +x /usr/local/bin/buttons-entrypoint.sh
 COPY --from=spa /build/frontend/dist ./frontend/dist/
 COPY --from=spa /tscheck/lib /opt/tscheck/lib
 ENV TS_LIB_DIR=/opt/tscheck/lib
@@ -81,4 +83,8 @@ ENV DEEP_AGENT_VENV=/opt/venvs/td/bin/python \
     BUTTONS_STACK=/home/ari/remote-server \
     DEEP_AGENT_STATE_DIR=/var/lib/buttons/deep-agent
 EXPOSE 8000
+# Fresh RAG index at startup (#562): the image carries no chroma_db
+# (dockerignored); the entrypoint builds it when missing/empty and
+# refuses to serve an empty index. CMD becomes the entrypoint's args.
+ENTRYPOINT ["/usr/local/bin/buttons-entrypoint.sh"]
 CMD ["/opt/venvs/td/bin/python", "-m", "uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
