@@ -119,6 +119,25 @@ def set_notification_prefs(muted_events=_UNSET) -> dict:
     return get_notification_prefs()
 
 
+def console_base_url() -> str:
+    """Public console base URL for deep links, "" when unconfigured.
+
+    Empty (unset BUTTONS_PUBLIC_URL) means gh-links-only: legs that
+    have no gh canonical object send today's plain text.
+    """
+    return os.environ.get("BUTTONS_PUBLIC_URL", "").strip().rstrip("/")
+
+
+def console_url(path: str) -> str | None:
+    """Absolute console URL for path, or None when unconfigured."""
+    base = console_base_url()
+    if not base:
+        return None
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
 def send_notification(title, message, priority="default", tags=None,
                       click_url=None, event_type="info"):
     """Dispatch a notification via ntfy and/or generic webhook if configured.
@@ -126,11 +145,16 @@ def send_notification(title, message, priority="default", tags=None,
     Gate first (#656): a muted event class suppresses the send with
     {"suppressed": reason} (never an error, never a blind stamp).
     Otherwise sends fire on schedule regardless of time of day (#846).
+    click_url (#891) rides ntfy's Click header + the webhook url
+    field, and appends a Link: line to the body so consumers that
+    ignore both still get something tappable. Absent URL = today's
+    text, byte-identical.
     """
     prefs = get_notification_prefs()
     if event_type in prefs["muted_events"]:
         return {"suppressed": f"event '{event_type}' muted"}
     results = {}
+    body = message + (f"\nLink: {click_url}" if click_url else "")
     ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
     ntfy_url = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
     ntfy_token = os.environ.get("NTFY_TOKEN", "").strip()
@@ -140,7 +164,7 @@ def send_notification(title, message, priority="default", tags=None,
         try:
             target = f"{ntfy_url}/{ntfy_topic}"
             req = urllib.request.Request(
-                target, data=message.encode("utf-8"), method="POST")
+                target, data=body.encode("utf-8"), method="POST")
             req.add_header("Title", title)
             if priority:
                 req.add_header("Priority", priority)
@@ -163,7 +187,7 @@ def send_notification(title, message, priority="default", tags=None,
             payload = json.dumps({
                 "event": event_type,
                 "title": title,
-                "message": message,
+                "message": body,
                 "url": click_url,
                 "timestamp": time.time(),
             }).encode("utf-8")
@@ -336,7 +360,8 @@ def _fire_due_digest(now: float) -> bool:
         results = send_notification(
             "Scheduled Briefing Digest", build_digest_text(),
             priority="low", tags=["clipboard", "digest"],
-            event_type="digest")
+            event_type="digest",
+            click_url=console_url("/api/briefing"))
         fatal = ""
     except Exception as exc:
         results, fatal = {}, str(exc)
@@ -508,8 +533,8 @@ def _fire_budget_watch(now: float, sender) -> bool:
 # rides `pr list` directly (verified live), so conflicts need no
 # per-PR view calls; DIRTY is the only conflict verdict, mirroring
 # core_cli/briefing_summary.py (overlap scans never count).
-NOTIFY_RUN_FIELDS = "name,headBranch,conclusion,event"
-NOTIFY_PR_FIELDS = "number,title,mergeStateStatus"
+NOTIFY_RUN_FIELDS = "name,headBranch,conclusion,event,url"
+NOTIFY_PR_FIELDS = "number,title,mergeStateStatus,url"
 NOTIFY_GH_TIMEOUT = 60
 
 
@@ -556,6 +581,7 @@ def collect_notify_brief(repo_name, gh, runner=None):
             "branch": run.get("headBranch") or "?",
             "failed": run.get("conclusion") or run.get("event")
             or "failure",
+            "url": run.get("url") or "",
         })
     prs = []
     for pr in rows:
@@ -566,6 +592,7 @@ def collect_notify_brief(repo_name, gh, runner=None):
             "title": pr.get("title", ""),
             "conflicted": str(pr.get("mergeStateStatus") or "")
             .lower() == "dirty",
+            "url": pr.get("url") or "",
         })
     return {"failing_runs": failing_runs, "prs": prs}
 
@@ -652,6 +679,11 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                     f"{r.get('name')}:{r.get('branch')}": r.get("failed")
                     for r in frs if isinstance(r, dict)
                 }
+                run_urls = {
+                    f"{r.get('name')}:{r.get('branch')}":
+                    r.get("url") or None
+                    for r in frs if isinstance(r, dict)
+                }
                 prev = state.get("ci", {}).get(repo_name, {})
                 for run_key, failed_details in current.items():
                     if run_key not in prev:
@@ -662,6 +694,7 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                             priority="high",
                             tags=["warning", "ci"],
                             event_type="ci_fail",
+                            click_url=run_urls.get(run_key),
                         )
                 state.setdefault("ci", {})[repo_name] = current
 
@@ -669,6 +702,11 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                 prs = brief.get("prs") or []
                 current = {
                     str(p.get("number")): p.get("title")
+                    for p in prs
+                    if isinstance(p, dict) and p.get("conflicted")
+                }
+                pr_urls = {
+                    str(p.get("number")): p.get("url") or None
                     for p in prs
                     if isinstance(p, dict) and p.get("conflicted")
                 }
@@ -683,6 +721,7 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                             priority="default",
                             tags=["warning", "git"],
                             event_type="conflict",
+                            click_url=pr_urls.get(pr_num),
                         )
                 state.setdefault("conflicts", {})[repo_name] = current
 
@@ -716,6 +755,7 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                     tail = out.strip().splitlines() \
                         if isinstance(out, str) else []
                     last = tail[-1][-300:] if tail else "no output"
+                    rid = run.get("id")
                     sender(
                         title=(f"Job failed: {action} on {repo_name} "
                                f"(exit {code})"),
@@ -724,6 +764,8 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                         priority="high",
                         tags=["warning", "job"],
                         event_type="job_fail",
+                        click_url=(console_url(
+                            f"/api/jobs/runs/{rid}") if rid else None),
                     )
 
         interval = digest_interval_hours()
@@ -744,6 +786,7 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                     priority="low",
                     tags=["clipboard", "digest"],
                     event_type="digest",
+                    click_url=console_url("/api/briefing"),
                 )
                 if delivered(res):
                     state["last_digest"] = now
