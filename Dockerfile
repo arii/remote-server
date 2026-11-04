@@ -58,6 +58,9 @@ COPY deep-agent/ ./deep-agent/
 COPY core_cli/ ./core_cli/
 COPY scripts/buttons-entrypoint.sh /usr/local/bin/buttons-entrypoint.sh
 RUN chmod +x /usr/local/bin/buttons-entrypoint.sh
+# impact-pass capture contract (#880): ux scripts + config td ux shells to.
+COPY scripts/ux-discover-routes.ts scripts/ux-audit-runner.ts scripts/ux-lighthouse-runner.ts scripts/ux-config.ts ./scripts/
+COPY scripts/config/ux-audit.config.json ./scripts/config/ux-audit.config.json
 COPY --from=spa /build/frontend/dist ./frontend/dist/
 COPY --from=spa /tscheck/lib /opt/tscheck/lib
 ENV TS_LIB_DIR=/opt/tscheck/lib
