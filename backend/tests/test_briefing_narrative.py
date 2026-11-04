@@ -451,6 +451,278 @@ class NarrativeCacheTest(NarratorEnvCase):
         thread_mock.assert_not_called()
 
 
+class NarratorCompactPromptTest(NarratorEnvCase):
+    def _data(self):
+        return {
+            "repo": "remote-server",
+            "attention": [f"#{i} - CI failing" for i in range(10)],
+            "attention_with_markers": [" bulky " * 500],
+            "prs": [{"number": i, "title": f"PR {i}",
+                     "body": "x" * 500} for i in range(10)],
+            "failing_runs": ["run-a red", "run-b red"],
+            "conflicts_lines": ["a <-> b"],
+            "reviews_lines": ["r1", "r2"],
+            "workflow_lines": ["w1"],
+            "board": [{"big": "y" * 2000}],
+            "board_lines": ["b1"],
+            "overlaps": [{"big": "z" * 2000}],
+            "prs_err": "boom",
+            "narrative": "OLD PROSE",
+            "narrative_at": 1700000000.0,
+            "narrative_mode": "full",
+            "cached": True,
+        }
+
+    def test_compact_carries_key_facts_only(self):
+        prompt = briefing_router.narrator_prompt(self._data(), compact=True)
+        for keep in ("remote-server", "#0 - CI failing", "run-a red",
+                     "a <-> b", "prs_open", "boom"):
+            self.assertIn(keep, prompt)
+        for drop in ("attention_with_markers", "board_lines", "overlaps",
+                     "board", "OLD PROSE", "narrative_mode"):
+            self.assertNotIn(drop, prompt)
+        self.assertTrue(prompt.rstrip().endswith("Lede:"))
+
+    def test_compact_is_strictly_smaller_than_full(self):
+        data = self._data()
+        compact = briefing_router.narrator_prompt(data, compact=True)
+        full = briefing_router.narrator_prompt(data)
+        self.assertLess(len(compact), len(full))
+        self.assertLessEqual(
+            len(compact),
+            briefing_router.NARRATOR_COMPACT_MAX_INPUT_CHARS + 100)
+
+    def test_compact_truncates_at_compact_budget(self):
+        data = {"repo": "r",
+                "attention": ["item " + "x" * 500 for _ in range(50)]}
+        prompt = briefing_router.narrator_prompt(data, compact=True)
+        self.assertLessEqual(
+            len(prompt),
+            briefing_router.NARRATOR_COMPACT_MAX_INPUT_CHARS + 100)
+        self.assertIn("[truncated]", prompt)
+
+    def test_compact_caps_attention_and_pr_peek(self):
+        facts = briefing_router.narrator_compact_facts(self._data())
+        self.assertEqual(len(facts["attention"]), 5)
+        self.assertEqual(facts["prs_open"], 10)
+        self.assertEqual(len(facts["prs"]), 3)
+        self.assertEqual(
+            set(facts["prs"][0]), {"number", "title"})
+
+    def test_compact_facts_defensive_shapes(self):
+        facts = briefing_router.narrator_compact_facts({
+            "repo": "r", "attention": "a scalar, not a list",
+            "prs": ["nondict"], "failing_runs": None})
+        self.assertEqual(facts["repo"], "r")
+        self.assertEqual(facts["attention"], "a scalar, not a list")
+        self.assertEqual(facts["prs"], ["nondict"])
+        self.assertNotIn("failing_runs", facts)
+        # Empty briefing still prompts without raising.
+        prompt = briefing_router.narrator_prompt({}, compact=True)
+        self.assertTrue(prompt.rstrip().endswith("Lede:"))
+
+
+class NarrateCompactCallTest(NarratorEnvCase):
+    def _urlopen_mock(self, payload):
+        return mock.patch("urllib.request.urlopen",
+                          return_value=_FakeResp(payload))
+
+    def test_compact_ollama_call_shape(self):
+        data = {"repo": "r", "attention": ["#1 - CI failing"],
+                "board": [{"big": "y" * 2000}],
+                "board_lines": ["b1"], "overlaps": [{"z": 1}]}
+        with self._urlopen_mock(
+                {"response": "Risk: X; Fix: Y.",
+                 "done_reason": "stop"}) as urlopen:
+            prose = briefing_router.narrate_briefing(data, compact=True)
+        self.assertEqual(prose, "Risk: X; Fix: Y.")
+        body = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(
+            body["system"], briefing_router.NARRATOR_COMPACT_SYSTEM)
+        self.assertIn("Risk: <risk>; Fix: <fix>", body["system"])
+        self.assertEqual(body["options"]["num_predict"], 32)
+        self.assertLess(
+            len(body["prompt"]),
+            len(briefing_router.narrator_prompt(data)))
+
+    def test_default_call_shape_unchanged(self):
+        with self._urlopen_mock({"response": "lede"}) as urlopen:
+            briefing_router.narrate_briefing({"repo": "r"})
+        body = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertIn("2-4 sentence", body["system"])
+        self.assertEqual(body["options"]["num_predict"], 200)
+
+    def test_compact_nebius_opt_in_shape(self):
+        os.environ["BRIEFING_NARRATOR"] = "nebius:some-model"
+        os.environ["NEBIUS_API_KEY"] = "sekrit"
+        payload = {"choices": [{"message": {"content": "Risk: X; Fix: Y."},
+                                "finish_reason": "stop"}]}
+        with self._urlopen_mock(payload) as urlopen:
+            prose = briefing_router.narrate_briefing(
+                {"repo": "r"}, compact=True)
+        self.assertEqual(prose, "Risk: X; Fix: Y.")
+        body = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertIn("Risk: <risk>; Fix: <fix>",
+                      body["messages"][0]["content"])
+        self.assertEqual(body["max_tokens"], 32)
+
+    def test_compact_truncated_tail_clause_cuts(self):
+        # Token-cap cut mid-word: keep the complete Risk clause,
+        # never the dangling tail.
+        with self._urlopen_mock(
+                {"response": "Risk: PR overlap; Fix: Coordinate mer",
+                 "done_reason": "length"}):
+            self.assertEqual(
+                briefing_router.narrate_briefing(
+                    {"repo": "r"}, compact=True),
+                "Risk: PR overlap")
+
+    def test_compact_truncated_without_clause_is_none(self):
+        # Cut before any clause completes (half a PR number):
+        # degrade to no prose, never corrupt prose.
+        with self._urlopen_mock(
+                {"response": "Risk: PRs 710 and 7",
+                 "done_reason": "length"}):
+            self.assertIsNone(briefing_router.narrate_briefing(
+                {"repo": "r"}, compact=True))
+
+    def test_compact_complete_despite_length_flag(self):
+        # Length flag but text ends clean: keep it whole.
+        with self._urlopen_mock(
+                {"response": "Risk: X; Fix: Y.",
+                 "done_reason": "length"}):
+            self.assertEqual(
+                briefing_router.narrate_briefing(
+                    {"repo": "r"}, compact=True),
+                "Risk: X; Fix: Y.")
+
+    def test_compact_nebius_length_truncation_clause_cuts(self):
+        os.environ["BRIEFING_NARRATOR"] = "nebius:some-model"
+        os.environ["NEBIUS_API_KEY"] = "sekrit"
+        payload = {"choices": [
+            {"message": {"content": "Risk: X. Fix: Y and Z mo"},
+             "finish_reason": "length"}]}
+        with self._urlopen_mock(payload):
+            self.assertEqual(
+                briefing_router.narrate_briefing(
+                    {"repo": "r"}, compact=True),
+                "Risk: X.")
+
+    def test_full_mode_ignores_length_flag(self):
+        # Full prose keeps existing behavior: no clause-cutting.
+        with self._urlopen_mock(
+                {"response": "A long lede cut mid-wo",
+                 "done_reason": "length"}):
+            self.assertEqual(
+                briefing_router.narrate_briefing({"repo": "r"}),
+                "A long lede cut mid-wo")
+
+    def test_finish_compact_cases(self):
+        finish = briefing_router._finish_compact
+        self.assertEqual(finish("Risk: X; Fix: Y."), "Risk: X; Fix: Y.")
+        self.assertEqual(finish("Risk: X; Fix: coor"), "Risk: X")
+        self.assertEqual(finish("Risk: X. Fix: Y and"), "Risk: X.")
+        self.assertEqual(finish("Risk: X! tail"), "Risk: X!")
+        self.assertEqual(finish("no boundary here"), "")
+        self.assertEqual(finish("   "), "")
+
+
+class NarrativeModeCacheTest(NarratorEnvCase):
+    def test_attach_sets_full_mode(self):
+        with mock.patch.object(
+                briefing_router, "narrate_briefing",
+                return_value="Fresh lede."):
+            out = briefing_router._attach_narrative({"repo": "r"}, None)
+        self.assertEqual(out["narrative_mode"], "full")
+
+    def test_attach_failure_carries_previous_mode(self):
+        for mode in ("compact", "full"):
+            prev = {"narrative": "Old lede.",
+                    "narrative_at": 1700000000.0,
+                    "narrative_mode": mode}
+            with mock.patch.object(
+                    briefing_router, "narrate_briefing",
+                    return_value=None):
+                out = briefing_router._attach_narrative({"repo": "r"}, prev)
+            self.assertEqual(out["narrative_mode"], mode, mode)
+
+    def test_attach_failure_legacy_prose_omits_mode(self):
+        prev = {"narrative": "Old lede.",
+                "narrative_at": 1700000000.0}
+        with mock.patch.object(
+                briefing_router, "narrate_briefing",
+                return_value=None):
+            out = briefing_router._attach_narrative({"repo": "r"}, prev)
+        self.assertNotIn("narrative_mode", out)
+
+    def test_attach_failure_without_previous_omits_mode(self):
+        with mock.patch.object(
+                briefing_router, "narrate_briefing",
+                return_value=None):
+            out = briefing_router._attach_narrative({"repo": "r"}, None)
+        self.assertNotIn("narrative_mode", out)
+
+    def test_patch_uses_compact_and_sets_mode(self):
+        ts = briefing_router._store_briefing(
+            "remote-server", {"repo": "remote-server"})
+        with mock.patch.object(
+                briefing_router, "narrate_briefing",
+                return_value="Fast lede.") as narrate_mock:
+            briefing_router._patch_narrative(
+                "remote-server", ts, {"repo": "remote-server"})
+        self.assertTrue(narrate_mock.call_args.kwargs.get("compact"))
+        entry = briefing_router._BRIEFING_CACHE["remote-server"][1]
+        self.assertEqual(entry["narrative"], "Fast lede.")
+        self.assertEqual(entry["narrative_mode"], "compact")
+
+    def test_refresh_upgrades_compact_to_full(self):
+        briefing_router._BRIEFING_CACHE["remote-server"] = (
+            time.time() - 120,
+            {"repo": "remote-server", "narrative": "Fast lede.",
+             "narrative_at": 1700000000.0, "narrative_mode": "compact"})
+        briefing_router._BRIEFING_REFRESHING.add("remote-server")
+        with mock.patch.object(
+                briefing_router, "_run_briefing",
+                return_value={"repo": "remote-server"}), \
+                mock.patch.object(
+                    briefing_router, "narrate_briefing",
+                    return_value="Full lede.") as narrate_mock:
+            briefing_router._refresh_briefing(
+                "remote-server", "arii/remote-server")
+        self.assertFalse(narrate_mock.call_args.kwargs.get("compact", False))
+        # Full-mode call: no compact kwarg at all (attach mutates the
+        # data dict after the call, so only the repo key is stable).
+        self.assertNotIn("compact", narrate_mock.call_args.kwargs)
+        self.assertEqual(
+            narrate_mock.call_args.args[0]["repo"], "remote-server")
+        entry = briefing_router._BRIEFING_CACHE["remote-server"][1]
+        self.assertEqual(entry["narrative"], "Full lede.")
+        self.assertEqual(entry["narrative_mode"], "full")
+
+    def test_sync_path_carries_ancient_mode(self):
+        os.environ["BRIEFING_NARRATOR"] = "off"
+        briefing_router._BRIEFING_CACHE["remote-server"] = (
+            time.time()
+            - briefing_router.BRIEFING_CACHE_MAX_STALE - 1,
+            {"repo": "remote-server", "narrative": "Old lede.",
+             "narrative_at": 1700000000.0, "narrative_mode": "compact"})
+        with mock.patch.object(
+                briefing_router, "_run_briefing",
+                return_value={"repo": "remote-server", "prs": []}):
+            body = briefing_router.get_briefing(
+                "remote-server", "arii/remote-server")
+        self.assertEqual(body["narrative_mode"], "compact")
+
+    def test_briefing_model_carries_mode(self):
+        body = briefing_router.Briefing(
+            repo="r", narrative="Lede.", narrative_at=1.0,
+            narrative_mode="compact").model_dump()
+        self.assertEqual(body["narrative_mode"], "compact")
+        self.assertEqual(
+            briefing_router.Briefing(repo="r").model_dump()
+            ["narrative_mode"], "")
+
+
 try:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

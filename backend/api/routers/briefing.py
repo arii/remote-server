@@ -63,10 +63,37 @@ NARRATOR_SYSTEM = (
     "single most important action. Plain sentences only — no headers, "
     "no bullets, no fluff."
 )
+# Issue #802: compact/fast variant for the cold-fetch path. Stock
+# Ollama is decode-bound (~6 tok/s on qwen3:8b), so the win is
+# output tokens, not input chars: key facts only (1500-char budget)
+# plus a rigid one-line "Risk: …; Fix: …" shape the model completes
+# in ~13 tokens (p50 2.0s vs 6.1s full on stock qwen3:8b, measured).
+# The 32-token cap is
+# headroom; length-truncated tails are clause-cut or dropped, never
+# shipped corrupt. Background refresh always regenerates full prose,
+# upgrading compact entries.
+NARRATOR_COMPACT_MAX_INPUT_CHARS = 1500
+NARRATOR_COMPACT_MAX_TOKENS = 32
+NARRATOR_COMPACT_SYSTEM = (
+    "Reply with ONE line, max 8 words, exact shape "
+    "'Risk: <risk>; Fix: <fix>'. Fragments ok, no preamble."
+)
+NARRATOR_MODE_FULL = "full"
+NARRATOR_MODE_COMPACT = "compact"
+# Compact fact pick: (key, max items). Attention first — it already
+# ranks what matters — then the failure/conflict lines, then errors.
+NARRATOR_COMPACT_FACTS = (
+    ("attention", 5),
+    ("failing_runs", 3),
+    ("conflicts_lines", 3),
+    ("reviews_lines", 3),
+    ("workflow_lines", 3),
+)
 NARRATOR_OFF_VALUES = frozenset(
     {"off", "none", "disabled", "0", "false", "no"})
 NARRATOR_SKIP_KEYS = frozenset(
-    {"narrative", "narrative_at", "cached", "stale", "generated_at"})
+    {"narrative", "narrative_at", "narrative_mode", "cached", "stale",
+     "generated_at"})
 DEFAULT_NARRATOR_OLLAMA_URL = "http://ollama:11434"
 DEFAULT_NARRATOR_OLLAMA_MODEL = "qwen3:8b"
 DEFAULT_NARRATOR_NEBIUS_URL = "https://api.tokenfactory.nebius.com/v1"
@@ -104,6 +131,10 @@ class Briefing(BaseModel):
     runs_err: str = ""
     narrative: str | None = None
     narrative_at: float | None = None
+    # Issue #802: which prompt variant produced the prose — "compact"
+    # (fast cold-fetch lede) or "full" (background refresh upgrade).
+    # Empty when no prose is attached.
+    narrative_mode: str = ""
     # Fixture marker (#453): True + source path when canned data
     # serves instead of the live subprocess, so operators can tell
     # fixture from live. Live responses carry the False default.
@@ -208,16 +239,58 @@ def narrator_spec() -> dict | None:
     return None
 
 
-def narrator_prompt(data: dict) -> str:
+def narrator_compact_facts(data: dict) -> dict:
+    """Key facts only: repo + top attention/failure lines + PR peek.
+
+    Defensive about shapes — briefing sections are lists of strings
+    or dicts today, but a scalar or missing key must never break the
+    fast path; it just contributes less.
+    """
+    facts: dict = {}
+    if data.get("repo"):
+        facts["repo"] = data["repo"]
+    for key, limit in NARRATOR_COMPACT_FACTS:
+        vals = data.get(key)
+        if isinstance(vals, (list, tuple)):
+            vals = list(vals)[:limit]
+            if vals:
+                facts[key] = vals
+        elif vals:
+            facts[key] = vals
+    prs = data.get("prs")
+    if isinstance(prs, (list, tuple)) and prs:
+        facts["prs_open"] = len(prs)
+        peek = []
+        for pr in list(prs)[:3]:
+            if isinstance(pr, dict):
+                peek.append({k: pr[k] for k in ("number", "title")
+                             if k in pr})
+            else:
+                peek.append(str(pr))
+        facts["prs"] = peek
+    for key in ("prs_err", "runs_err", "conf_err", "board_err"):
+        if data.get(key):
+            facts[key] = data[key]
+    return facts
+
+
+def narrator_prompt(data: dict, compact: bool = False) -> str:
     """User prompt: condensed briefing JSON.
 
     Freshness markers and previous prose are excluded (no feedback
-    loop); oversize briefings truncate to the input budget.
+    loop); oversize briefings truncate to the input budget. Compact
+    mode carries key facts only under the smaller fast-path budget.
     """
-    slim = {k: v for k, v in data.items() if k not in NARRATOR_SKIP_KEYS}
+    if compact:
+        slim = narrator_compact_facts(data)
+        budget = NARRATOR_COMPACT_MAX_INPUT_CHARS
+    else:
+        slim = {k: v for k, v in data.items()
+                if k not in NARRATOR_SKIP_KEYS}
+        budget = NARRATOR_MAX_INPUT_CHARS
     blob = json.dumps(slim, sort_keys=True, default=str)
-    if len(blob) > NARRATOR_MAX_INPUT_CHARS:
-        blob = blob[:NARRATOR_MAX_INPUT_CHARS] + "…[truncated]"
+    if len(blob) > budget:
+        blob = blob[:budget] + "…[truncated]"
     return f"Briefing JSON:\n{blob}\n\nLede:"
 
 
@@ -257,61 +330,100 @@ def _strip_thinking(text: str) -> str:
     return text
 
 
-def _narrate_ollama(spec: dict, prompt: str, timeout: float) -> str:
+def _finish_compact(text: str) -> str:
+    """Salvage a length-truncated compact lede: keep through the last
+    complete clause so a cut-off tail never ships corrupt prose (a
+    half-written PR number, a dangling word). No complete clause —
+    no prose; the caller degrades to data-without-prose as usual."""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    if stripped[-1] in ".!?":
+        return stripped
+    cut = max(stripped.rfind("."), stripped.rfind("!"),
+              stripped.rfind("?"), stripped.rfind(";"))
+    if cut < 0:
+        return ""
+    head = stripped[:cut + 1]
+    if head[-1] == ";":
+        head = head[:-1].rstrip()
+    return head
+
+
+def _narrate_ollama(spec: dict, prompt: str, timeout: float,
+                    system: str,
+                    max_tokens: int) -> tuple[str, bool]:
+    """Ollama call; second return flags token-cap truncation."""
     body = _post_narrator(
         _ollama_base(spec["base_url"]) + "/api/generate",
         # think=false: reasoning traces burn the token budget and
         # minutes of CPU on a 2-sentence lede (measured 31s/10tok
         # with thinking vs 1.2s without on qwen3:8b). Servers that
         # predate the flag ignore it; _strip_thinking covers those.
-        {"model": spec["model"], "system": NARRATOR_SYSTEM,
+        {"model": spec["model"], "system": system,
          "prompt": prompt, "stream": False, "think": False,
          "options": {"temperature": 0.2,
-                     "num_predict": NARRATOR_MAX_TOKENS}},
+                     "num_predict": max_tokens}},
         {"Content-Type": "application/json"}, timeout)
-    return body.get("response", "")
+    return body.get("response", ""), body.get("done_reason") == "length"
 
 
-def _narrate_nebius(spec: dict, prompt: str, timeout: float) -> str:
+def _narrate_nebius(spec: dict, prompt: str, timeout: float,
+                    system: str,
+                    max_tokens: int) -> tuple[str, bool]:
+    """Nebius call; second return flags token-cap truncation."""
     key = _narrator_env("NEBIUS_API_KEY")
     if not key:
         logger.warning(
             "briefing: nebius narrator opted in without NEBIUS_API_KEY")
-        return ""
+        return "", False
     body = _post_narrator(
         (spec["base_url"] or "").strip().rstrip("/")
         + "/chat/completions",
         {"model": spec["model"],
          "messages": [
-             {"role": "system", "content": NARRATOR_SYSTEM},
+             {"role": "system", "content": system},
              {"role": "user", "content": prompt}],
-         "temperature": 0.2, "max_tokens": NARRATOR_MAX_TOKENS},
+         "temperature": 0.2, "max_tokens": max_tokens},
         {"Content-Type": "application/json",
          "Authorization": f"Bearer {key}"},
         timeout)
     choices = body.get("choices") or []
     if not choices:
-        return ""
-    return (choices[0].get("message") or {}).get("content", "")
+        return "", False
+    first = choices[0] or {}
+    return ((first.get("message") or {}).get("content", ""),
+            first.get("finish_reason") == "length")
 
 
 def narrate_briefing(data: dict,
-                     timeout: float = NARRATOR_TIMEOUT) -> str | None:
+                     timeout: float = NARRATOR_TIMEOUT,
+                     compact: bool = False) -> str | None:
     """Generate the lede, or None on any failure.
 
     Never raises and never makes a metered call unless the nebius:
     opt-in is set — the default path only talks to local Ollama.
+    Compact mode uses the key-facts prompt, the one-line Risk/Fix
+    system shape, and the smaller output cap (cold-fetch fast path);
+    a length-truncated compact tail is clause-cut or dropped.
     """
     spec = narrator_spec()
     if spec is None:
         return None
-    prompt = narrator_prompt(data)
+    prompt = narrator_prompt(data, compact=compact)
+    if compact:
+        system, max_tokens = (
+            NARRATOR_COMPACT_SYSTEM, NARRATOR_COMPACT_MAX_TOKENS)
+    else:
+        system, max_tokens = NARRATOR_SYSTEM, NARRATOR_MAX_TOKENS
     start = time.monotonic()
     try:
         if spec["provider"] == "ollama":
-            text = _narrate_ollama(spec, prompt, timeout)
+            text, truncated = _narrate_ollama(
+                spec, prompt, timeout, system, max_tokens)
         elif spec["provider"] == "nebius":
-            text = _narrate_nebius(spec, prompt, timeout)
+            text, truncated = _narrate_nebius(
+                spec, prompt, timeout, system, max_tokens)
         else:  # pragma: no cover - narrator_spec only yields these two
             return None
     except Exception as exc:
@@ -320,6 +432,8 @@ def narrate_briefing(data: dict,
             "briefing: narrator failed after %.1fs (%s)", elapsed, exc)
         return None
     text = _strip_thinking(text or "").strip()
+    if compact and truncated:
+        text = _finish_compact(text)
     if not text:
         return None
     if len(text) > NARRATOR_MAX_OUTPUT_CHARS:
@@ -328,28 +442,39 @@ def narrate_briefing(data: dict,
 
 
 def _attach_narrative(data: dict, previous: dict | None) -> dict:
-    """Fresh prose onto data; narrator failure carries previous prose
-    or omits the block — data is never blocked and never errors."""
+    """Fresh FULL prose onto data; narrator failure carries previous
+    prose or omits the block — data is never blocked and never errors.
+
+    Background refresh always regenerates full prose, which is the
+    upgrade path for compact cold-fetch ledes (#802).
+    """
     prose = narrate_briefing(data)
     if prose:
         data["narrative"] = prose
         data["narrative_at"] = time.time()
+        data["narrative_mode"] = NARRATOR_MODE_FULL
     elif previous and previous.get("narrative"):
         data["narrative"] = previous["narrative"]
         data["narrative_at"] = previous.get("narrative_at")
+        if previous.get("narrative_mode"):
+            data["narrative_mode"] = previous["narrative_mode"]
+        else:
+            data.pop("narrative_mode", None)
     else:
         data.pop("narrative", None)
         data.pop("narrative_at", None)
+        data.pop("narrative_mode", None)
     return data
 
 
 def _patch_narrative(repo: str, ts: float, snapshot: dict) -> None:
-    """Fill prose into a cold-cache entry behind the instant read.
+    """Fill COMPACT prose into a cold-cache entry behind the instant read.
 
     Only patches when the entry is still this generation — a newer
-    refresh must never be clobbered with older prose.
+    refresh must never be clobbered with older prose. The compact
+    lede upgrades to full on the next background refresh (#802).
     """
-    prose = narrate_briefing(snapshot)
+    prose = narrate_briefing(snapshot, compact=True)
     if not prose:
         return
     with _BRIEFING_LOCK:
@@ -358,6 +483,7 @@ def _patch_narrative(repo: str, ts: float, snapshot: dict) -> None:
             return
         hit[1]["narrative"] = prose
         hit[1]["narrative_at"] = time.time()
+        hit[1]["narrative_mode"] = NARRATOR_MODE_COMPACT
 
 
 def _spawn_narrative_patch(repo: str, ts: float, snapshot: dict) -> None:
@@ -418,6 +544,8 @@ def get_briefing(name: str, gh: str) -> dict:
             and "narrative" not in data:
         data["narrative"] = previous["narrative"]
         data["narrative_at"] = previous.get("narrative_at")
+        if previous.get("narrative_mode"):
+            data["narrative_mode"] = previous["narrative_mode"]
     ts = _store_briefing(name, data)
     _spawn_narrative_patch(name, ts, dict(data))
     return {**data, "cached": False, "stale": False,
