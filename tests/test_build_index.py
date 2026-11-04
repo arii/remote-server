@@ -1,12 +1,12 @@
-"""build_index pattern/skip/metadata/gh-pass tests + retrieval smoke.
+"""build_index pattern/skip/metadata/gh-pass/multi-repo tests + smoke.
 
-Collector + metadata + gh-pass tests are stdlib-only (build_index
-keeps its langchain imports inside build(); gh tests stub the
-subprocess runner or inject a stub fetcher — no network). The smoke
-test needs the deep-agent venv AND a reachable Ollama (real nomic
-embeddings into a temp Chroma dir — never the prod chroma_db); it
-skips otherwise. Run: python3 tests/test_build_index.py (smoke
-needs the venv python)
+Collector + metadata + gh-pass + discovery tests are stdlib-only
+(build_index keeps its langchain imports inside build(); gh tests
+stub the subprocess runner or inject a stub fetcher, discovery
+tests stub the git runner — no network). The smoke test needs the
+deep-agent venv AND a reachable Ollama (real nomic embeddings into
+a temp Chroma dir — never the prod chroma_db); it skips otherwise.
+Run: python3 tests/test_build_index.py (smoke needs the venv python)
 """
 import os
 import sys
@@ -129,13 +129,15 @@ class TestCollectSourceFiles(unittest.TestCase):
 class TestDocMetadata(unittest.TestCase):
     def test_tags(self):
         self.assertEqual(
-            build_index.doc_metadata("backend/a.py", "code", "python"),
-            {"source": "backend/a.py", "repo": "remote-server",
+            build_index.doc_metadata(
+                "backend/a.py", "code", "python", "arii/remote-server"),
+            {"source": "backend/a.py", "repo": "arii/remote-server",
              "kind": "code", "language": "python"},
         )
         self.assertEqual(
-            build_index.doc_metadata("docs/g.md", "doc", "markdown"),
-            {"source": "docs/g.md", "repo": "remote-server",
+            build_index.doc_metadata(
+                "docs/g.md", "doc", "markdown", "arii/tech-dancer"),
+            {"source": "docs/g.md", "repo": "arii/tech-dancer",
              "kind": "doc", "language": "markdown"},
         )
 
@@ -238,8 +240,12 @@ class TestClearFailure(unittest.TestCase):
         return tmp.name
 
     def _build(self):
+        # Explicit single-repo list: hermetic (repos=None would
+        # auto-discover the real repos dir).
+        root = self._root()
         return build_index.build(
-            self._root(), "/nonexistent-db", "s5-docs", object())
+            root, "/nonexistent-db", "s5-docs", object(),
+            repos=[("remote-server", "arii/remote-server", root)])
 
     def test_lock_error_fails_loud_without_indexing(self):
         import sqlite3
@@ -431,10 +437,10 @@ class TestGhMetadata(unittest.TestCase):
         item = _gh_item(
             826, state="OPEN", labels=("ready", "insight"))
         self.assertEqual(
-            build_index.gh_metadata(item, "issue"),
+            build_index.gh_metadata(item, "issue", "arii/remote-server"),
             {
                 "source": "issue#826",
-                "repo": "remote-server",
+                "repo": "arii/remote-server",
                 "kind": "issue",
                 "language": "markdown",
                 "number": 826,
@@ -444,9 +450,14 @@ class TestGhMetadata(unittest.TestCase):
             },
         )
 
+    def test_repo_carries_full_owner_name(self):
+        item = _gh_item(377, kind="issue")
+        meta = build_index.gh_metadata(item, "issue", "arii/portfolio")
+        self.assertEqual(meta["repo"], "arii/portfolio")
+
     def test_pr_metadata_kind_and_source(self):
         item = _gh_item(830, kind="pr", state="MERGED")
-        meta = build_index.gh_metadata(item, "pr")
+        meta = build_index.gh_metadata(item, "pr", "arii/remote-server")
         self.assertEqual(meta["kind"], "pr")
         self.assertEqual(meta["source"], "pr#830")
         self.assertEqual(meta["number"], 830)
@@ -513,9 +524,12 @@ class TestGhBuildPass(unittest.TestCase):
         return tmp.name
 
     def _build(self, root, fetcher, cap=build_index.GH_CAP):
+        # Explicit single-repo list: hermetic (repos=None would
+        # auto-discover the real repos dir).
         return build_index.build(
             root, "/nonexistent-db", "s5-docs", object(),
-            gh_fetcher=fetcher, gh_cap=cap)
+            gh_fetcher=fetcher, gh_cap=cap,
+            repos=[("remote-server", "arii/remote-server", root)])
 
     def test_appends_gh_chunks_with_metadata(self):
         def stub(kind, repo, cap):
@@ -541,7 +555,7 @@ class TestGhBuildPass(unittest.TestCase):
         self.assertEqual(by_source["issue#825"]["state"], "CLOSED")
         self.assertEqual(by_source["pr#830"]["kind"], "pr")
         for meta in gh_metas:
-            self.assertEqual(meta["repo"], "remote-server")
+            self.assertEqual(meta["repo"], "arii/remote-server")
 
     def test_cap_passed_through_per_kind(self):
         seen = []
@@ -570,8 +584,10 @@ class TestGhBuildPass(unittest.TestCase):
 
         build_index.fetch_gh_items = boom
         try:
+            root = self._root()
             n_docs, counts = build_index.build(
-                self._root(), "/nonexistent-db", "s5-docs", object())
+                root, "/nonexistent-db", "s5-docs", object(),
+                repos=[("remote-server", "arii/remote-server", root)])
         finally:
             build_index.fetch_gh_items = real
         self.assertEqual(n_docs, 1)
@@ -632,11 +648,387 @@ class TestGhBuildPass(unittest.TestCase):
 
         import retrieval
 
-        meta = build_index.gh_metadata(_gh_item(826), "issue")
+        meta = build_index.gh_metadata(
+            _gh_item(826), "issue", "arii/remote-server")
         out = retrieval.format_hits(
             [SimpleNamespace(metadata=meta, page_content="decided X")])
-        self.assertIn("[remote-server/issue#826]", out)
+        self.assertIn("[arii/remote-server/issue#826]", out)
         self.assertIn("decided X", out)
+
+
+class TestParseGhRemote(unittest.TestCase):
+    def test_url_shapes(self):
+        cases = {
+            "https://github.com/arii/portfolio": "arii/portfolio",
+            "https://github.com/arii/portfolio.git": "arii/portfolio",
+            "git@github.com:arii/boomtick.git": "arii/boomtick",
+            "ssh://git@github.com/arii/hrm": "arii/hrm",
+            "  https://github.com/arii/tech-dancer.git\n":
+                "arii/tech-dancer",
+        }
+        for url, want in cases.items():
+            self.assertEqual(
+                build_index.parse_gh_remote(url), want, url)
+
+    def test_rejects(self):
+        for url in ("", None, "not-a-url",
+                    "https://gitlab.com/arii/portfolio",
+                    "https://github.com/arii",
+                    "https://github.com/arii/portfolio/extra",
+                    "https://github.com/arii/portfolio/"):
+            self.assertIsNone(build_index.parse_gh_remote(url), url)
+
+
+class _GitProc:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _git_run_stub(origins):
+    """subprocess.run stub: canned origin per exact checkout path."""
+
+    def run(argv, **kwargs):
+        assert argv[-3:] == ["config", "--get", "remote.origin.url"]
+        path = argv[argv.index("-C") + 1]
+        if path in origins:
+            return _GitProc(0, origins[path])
+        return _GitProc(1, "")
+
+    return run
+
+
+class TestDiscoverRepos(unittest.TestCase):
+    def _repos_dir(self, tmp):
+        repos = os.path.join(tmp, "repos")
+        os.makedirs(repos)
+        return repos
+
+    def _checkout(self, repos, name, git="dir"):
+        path = os.path.join(repos, name)
+        os.makedirs(path, exist_ok=True)
+        if git == "dir":
+            os.makedirs(os.path.join(path, ".git"), exist_ok=True)
+        elif git == "file":
+            with open(os.path.join(path, ".git"), "w") as f:
+                f.write("gitdir: elsewhere\n")
+        return path
+
+    def test_stack_always_first_without_git(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = os.path.join(tmp, "stack")
+            os.makedirs(stack)
+            repos = self._repos_dir(tmp)
+            got = build_index.discover_repos(
+                stack, repos_dir=repos,
+                run=_git_run_stub({}))
+        self.assertEqual(
+            got, [("remote-server", "arii/remote-server", stack)])
+
+    def test_discovers_git_checkouts_sorted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = os.path.join(tmp, "stack")
+            os.makedirs(stack)
+            repos = self._repos_dir(tmp)
+            tech = self._checkout(repos, "tech-dancer", git="file")
+            port = self._checkout(repos, "portfolio")
+            self._checkout(repos, "remote-server")
+            self._checkout(repos, "plain-dir", git=None)
+            os.makedirs(os.path.join(repos, "bad name"))
+            run = _git_run_stub({
+                tech: "https://github.com/arii/tech-dancer.git\n",
+                port: "git@github.com:arii/portfolio.git\n",
+            })
+            got = build_index.discover_repos(
+                stack, repos_dir=repos, run=run)
+        self.assertEqual(
+            got,
+            [("remote-server", "arii/remote-server", stack),
+             ("portfolio", "arii/portfolio", port),
+             ("tech-dancer", "arii/tech-dancer", tech)])
+
+    def test_origin_fallback_and_unparseable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = os.path.join(tmp, "stack")
+            os.makedirs(stack)
+            repos = self._repos_dir(tmp)
+            failing = self._checkout(repos, "aaa")
+            foreign = self._checkout(repos, "zzz")
+            run = _git_run_stub({
+                foreign: "https://gitlab.com/arii/zzz.git\n",
+            })
+            got = build_index.discover_repos(
+                stack, repos_dir=repos, run=run)
+        self.assertEqual(
+            got,
+            [("remote-server", "arii/remote-server", stack),
+             ("aaa", "arii/aaa", failing),
+             ("zzz", "arii/zzz", foreign)])
+
+    def test_missing_repos_dir_yields_stack_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = os.path.join(tmp, "stack")
+            os.makedirs(stack)
+            got = build_index.discover_repos(
+                stack,
+                repos_dir=os.path.join(tmp, "no-such-dir"),
+                run=_git_run_stub({}))
+        self.assertEqual(
+            got, [("remote-server", "arii/remote-server", stack)])
+
+    def test_new_checkout_joins_with_zero_config(self):
+        # Auto-include: a checkout cloned into the repos dir after
+        # the last rebuild is discovered on the next call.
+        with tempfile.TemporaryDirectory() as tmp:
+            stack = os.path.join(tmp, "stack")
+            os.makedirs(stack)
+            repos = self._repos_dir(tmp)
+            run = _git_run_stub({})
+            before = build_index.discover_repos(
+                stack, repos_dir=repos, run=run)
+            self.assertEqual(len(before), 1)
+            fresh = self._checkout(repos, "fresh-repo")
+            after = build_index.discover_repos(
+                stack, repos_dir=repos, run=run)
+        self.assertEqual(
+            after,
+            [("remote-server", "arii/remote-server", stack),
+             ("fresh-repo", "arii/fresh-repo", fresh)])
+
+    def test_get_repos_dir_env_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get("BUTTONS_REPOS_DIR")
+            os.environ["BUTTONS_REPOS_DIR"] = tmp
+            try:
+                self.assertEqual(build_index.get_repos_dir(), tmp)
+            finally:
+                if old is None:
+                    del os.environ["BUTTONS_REPOS_DIR"]
+                else:
+                    os.environ["BUTTONS_REPOS_DIR"] = old
+
+    def test_get_repos_dir_missing_falls_through(self):
+        from unittest import mock
+
+        env = dict(os.environ)
+        env.pop("BUTTONS_REPOS_DIR", None)
+        with mock.patch.object(
+                os.path, "isdir", return_value=False), \
+                mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                build_index.get_repos_dir(), "/home/ari/repos")
+
+
+class TestCollectGenericFiles(unittest.TestCase):
+    def _fixture_root(self, root):
+        _write(root, "README.md", "# readme\n")
+        _write(root, "AGENTS.md", "# agents\n")
+        _write(root, "docs/guide.md", "# guide\n")
+        _write(root, "docs/nested/deep.md", "# deep\n")
+        _write(root, "docs/tests/x.md", "skipped\n")
+        _write(root, "src/app.tsx", "export const a = 1;\n")
+        _write(root, "src/views/b.tsx", "export const b = 1;\n")
+        _write(root, "src/c.test.ts", "test\n")
+        _write(root, "lib/util.js", "export const u = 1;\n")
+        _write(root, "main.py", "MAIN = 1\n")
+        _write(root, "src/node_modules/pkg/f.ts", "f = 1\n")
+        _write(root, "dist/g.js", "g = 1\n")
+        _write(root, ".hidden.md", "h = 1\n")
+
+    def test_docs_then_code_with_languages(self):
+        with tempfile.TemporaryDirectory() as root:
+            self._fixture_root(root)
+            found = build_index.collect_generic_files(root)
+        self.assertEqual(
+            found,
+            [
+                ("AGENTS.md", "doc", "markdown"),
+                ("README.md", "doc", "markdown"),
+                ("docs/guide.md", "doc", "markdown"),
+                ("docs/nested/deep.md", "doc", "markdown"),
+                ("lib/util.js", "code", "javascript"),
+                ("main.py", "code", "python"),
+                ("src/app.tsx", "code", "typescript"),
+                ("src/views/b.tsx", "code", "typescript"),
+            ],
+        )
+
+    def test_excluded_dirs_never_descended(self):
+        with tempfile.TemporaryDirectory() as root:
+            self._fixture_root(root)
+            found = build_index.collect_generic_files(root)
+        rels = [rel for rel, _, _ in found]
+        self.assertTrue(rels)
+        for rel in rels:
+            parts = rel.split(os.sep)
+            for skipped in build_index.SKIP_DIRS:
+                self.assertNotIn(skipped, parts, rel)
+            self.assertNotIn(".test.", os.path.basename(rel), rel)
+
+    def test_missing_docs_tolerated(self):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, "only.py", "ONLY = 1\n")
+            found = build_index.collect_generic_files(root)
+        self.assertEqual(
+            found, [("only.py", "code", "python")])
+
+    def test_empty_tree_yields_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(
+                build_index.collect_generic_files(root), [])
+
+
+class TestMultiRepoBuild(unittest.TestCase):
+    """Explicit repos list: namespaced metadata, per-repo cap,
+    per-repo warn-and-continue. Stdlib-only (fake langchain)."""
+
+    def setUp(self):
+        _install_fake_langchain(self)
+        _FakeChroma.delete_error = None
+        _FakeChroma.added = None
+
+    def _stack(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        _write(tmp.name, "docs/guide.md", "# guide\n")
+        return tmp.name
+
+    def _portfolio(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        _write(tmp.name, "README.md", "# portfolio\n")
+        _write(tmp.name, "src/app.tsx", "export const a = 1;\n")
+        return tmp.name
+
+    def _repos(self, stack, portfolio):
+        return [("remote-server", "arii/remote-server", stack),
+                ("portfolio", "arii/portfolio", portfolio)]
+
+    def _build(self, repos, fetcher, cap=build_index.GH_CAP):
+        return build_index.build(
+            repos[0][2], "/nonexistent-db", "s5-docs", object(),
+            gh_fetcher=fetcher, gh_cap=cap, repos=repos)
+
+    def test_files_namespaced_by_repo(self):
+        stack = self._stack()
+        portfolio = self._portfolio()
+        n_docs, counts = self._build(
+            self._repos(stack, portfolio), lambda *a: [])
+        self.assertEqual(n_docs, 3)
+        self.assertEqual(
+            counts, {"doc": 2, "code": 1, "issue": 0, "pr": 0})
+        by_source = {
+            doc.metadata["source"]: doc.metadata["repo"]
+            for doc in _FakeChroma.added
+        }
+        self.assertEqual(
+            by_source,
+            {"docs/guide.md": "arii/remote-server",
+             "README.md": "arii/portfolio",
+             "src/app.tsx": "arii/portfolio"})
+
+    def test_gh_namespaced_and_capped_per_repo(self):
+        seen = []
+
+        def stub(kind, repo, cap):
+            seen.append((kind, repo, cap))
+            if repo == "arii/remote-server":
+                return [_gh_item(826)] if kind == "issue" else []
+            if kind == "issue":
+                return [_gh_item(377)]
+            return [_gh_item(400, kind="pr")]
+
+        stack = self._stack()
+        portfolio = self._portfolio()
+        n_docs, counts = self._build(
+            self._repos(stack, portfolio), stub, cap=11)
+        self.assertEqual(
+            seen,
+            [("issue", "arii/remote-server", 11),
+             ("pr", "arii/remote-server", 11),
+             ("issue", "arii/portfolio", 11),
+             ("pr", "arii/portfolio", 11)])
+        self.assertEqual(n_docs, 6)
+        self.assertEqual(counts["issue"], 2)
+        self.assertEqual(counts["pr"], 1)
+        by_source = {
+            doc.metadata["source"]: doc.metadata["repo"]
+            for doc in _FakeChroma.added
+            if doc.metadata["kind"] in ("issue", "pr")
+        }
+        self.assertEqual(
+            by_source,
+            {"issue#826": "arii/remote-server",
+             "issue#377": "arii/portfolio",
+             "pr#400": "arii/portfolio"})
+
+    def test_one_repo_gh_failure_degrades_file_only(self):
+        import io
+        from contextlib import redirect_stderr
+
+        def stub(kind, repo, cap):
+            if repo == "arii/portfolio":
+                raise RuntimeError("gh: auth failed")
+            return [_gh_item(826)] if kind == "issue" else []
+
+        stack = self._stack()
+        portfolio = self._portfolio()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            n_docs, counts = self._build(
+                self._repos(stack, portfolio), stub)
+        self.assertEqual(n_docs, 4)
+        self.assertEqual(counts["issue"], 1)
+        self.assertIn(
+            "arii/portfolio: GitHub pass skipped", err.getvalue())
+        by_source = {
+            (doc.metadata["source"], doc.metadata["kind"])
+            for doc in _FakeChroma.added
+        }
+        # Portfolio files survive; only its gh items are missing.
+        self.assertIn(("README.md", "doc"), by_source)
+        self.assertIn(("src/app.tsx", "code"), by_source)
+        self.assertIn(("issue#826", "issue"), by_source)
+
+    def test_file_pass_failure_warns_and_continues(self):
+        import io
+        from contextlib import redirect_stderr
+        from unittest import mock
+
+        stack = self._stack()
+        portfolio = self._portfolio()
+        err = io.StringIO()
+        with mock.patch.object(
+                build_index, "collect_generic_files",
+                side_effect=RuntimeError("boom")), \
+                redirect_stderr(err):
+            n_docs, counts = self._build(
+                self._repos(stack, portfolio), lambda *a: [])
+        self.assertEqual(n_docs, 1)
+        self.assertEqual(counts["doc"], 1)
+        self.assertIn("arii/portfolio: file pass skipped",
+                      err.getvalue())
+
+    def test_repos_none_auto_discovers(self):
+        from unittest import mock
+
+        stack = self._stack()
+        with mock.patch.object(
+                build_index, "discover_repos",
+                return_value=[("remote-server", "arii/remote-server",
+                               stack)]) as discover:
+            n_docs, _ = build_index.build(
+                stack, "/nonexistent-db", "s5-docs", object())
+        discover.assert_called_once_with(stack)
+        self.assertEqual(n_docs, 1)
+
+    def test_empty_repos_still_raises(self):
+        with self.assertRaisesRegex(
+                RuntimeError, "no source documents matched"):
+            build_index.build(
+                "/nonexistent-root", "/nonexistent-db", "s5-docs",
+                object(), repos=[])
+        self.assertIsNone(_FakeChroma.added)
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
@@ -668,7 +1060,9 @@ class TestBuildSmoke(unittest.TestCase):
             with tempfile.TemporaryDirectory() as db_dir:
                 embeddings = retrieval.get_embeddings()
                 n_docs, counts = build_index.build(
-                    root, db_dir, self.COLLECTION, embeddings)
+                    root, db_dir, self.COLLECTION, embeddings,
+                    repos=[("remote-server",
+                            "arii/remote-server", root)])
                 self.assertEqual(n_docs, 3)
                 self.assertEqual(counts["code"], 2)
                 self.assertEqual(counts["doc"], 1)
@@ -701,8 +1095,10 @@ class TestBuildSmoke(unittest.TestCase):
             self._fixture_root(root)
             with tempfile.TemporaryDirectory() as db_dir:
                 embeddings = retrieval.get_embeddings()
+                only = [("remote-server", "arii/remote-server", root)]
                 build_index.build(
-                    root, db_dir, self.COLLECTION, embeddings)
+                    root, db_dir, self.COLLECTION, embeddings,
+                    repos=only)
                 store = Chroma(
                     persist_directory=db_dir,
                     embedding_function=embeddings,
@@ -711,7 +1107,8 @@ class TestBuildSmoke(unittest.TestCase):
                 first = len(store.get()["ids"])
                 self.assertGreater(first, 0)
                 build_index.build(
-                    root, db_dir, self.COLLECTION, embeddings)
+                    root, db_dir, self.COLLECTION, embeddings,
+                    repos=only)
                 store = Chroma(
                     persist_directory=db_dir,
                     embedding_function=embeddings,

@@ -125,7 +125,8 @@ class TestSearchDocsArgv(unittest.TestCase):
     def test_no_args_usage(self):
         p = run_script("search_docs.py")
         self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, 'usage: search_docs.py "<question>" [k]\n')
+        self.assertEqual(
+            p.stderr, 'usage: search_docs.py "<question>" [k] [repo]\n')
         self.assertEqual(p.stdout, "")
 
     def test_bad_k(self):
@@ -137,6 +138,11 @@ class TestSearchDocsArgv(unittest.TestCase):
         p = run_script("search_docs.py", "some question", "0")
         self.assertEqual(p.returncode, 2)
         self.assertEqual(p.stderr, "k must be a positive integer\n")
+
+    def test_bad_repo(self):
+        p = run_script("search_docs.py", "some question", "3", "??")
+        self.assertEqual(p.returncode, 2)
+        self.assertEqual(p.stderr, "repo must look like owner/name\n")
 
 
 class TestLedgerArgv(unittest.TestCase):

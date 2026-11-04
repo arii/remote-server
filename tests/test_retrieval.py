@@ -56,6 +56,99 @@ class TestRetrieval(unittest.TestCase):
         self.assertEqual(retrieval.format_hits(None), "no doc hits")
 
 
+class TestNormalizeRepo(unittest.TestCase):
+    """Stdlib-only: blank means all repos, bare names gain arii/."""
+
+    def test_unfiltered(self):
+        self.assertIsNone(retrieval.normalize_repo(None))
+        self.assertIsNone(retrieval.normalize_repo(""))
+        self.assertIsNone(retrieval.normalize_repo("   "))
+
+    def test_bare_name_gains_owner(self):
+        self.assertEqual(
+            retrieval.normalize_repo("portfolio"), "arii/portfolio")
+        self.assertEqual(
+            retrieval.normalize_repo("  tech-dancer "),
+            "arii/tech-dancer")
+
+    def test_full_name_passthrough(self):
+        self.assertEqual(
+            retrieval.normalize_repo("arii/hrm"), "arii/hrm")
+
+    def test_bad_filters_raise(self):
+        for bad in ("arii/", "/x", "a/b/c", "has space/x",
+                    "arii/portfolio/", 123, True, ["x"]):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                retrieval.normalize_repo(bad)
+
+
+class TestRepoFilter(unittest.TestCase):
+    """get_retriever(repo=...) passes a Chroma metadata filter and
+    caches per (k, repo). Stdlib-only (fake Chroma module)."""
+
+    def _ready_dir(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with open(os.path.join(tmp.name, "chroma.sqlite3"), "wb") as f:
+            f.write(b"fake-index-bytes")
+        os.environ["S5_CHROMA_DIR"] = tmp.name
+        self.addCleanup(os.environ.pop, "S5_CHROMA_DIR", None)
+
+    def test_filter_kwargs_and_cache(self):
+        import types
+        from unittest import mock
+
+        seen = []
+
+        class FakeChroma:
+            def __init__(self, **kwargs):
+                pass
+
+            def as_retriever(self, search_kwargs=None):
+                marker = object()
+                seen.append((marker, dict(search_kwargs or {})))
+                return marker
+
+        mod = types.ModuleType("langchain_chroma")
+        mod.Chroma = FakeChroma
+        self._ready_dir()
+        retrieval._retrievers.clear()
+        self.addCleanup(retrieval._retrievers.clear)
+        real_embeddings = retrieval.get_embeddings
+        retrieval.get_embeddings = lambda: object()
+        self.addCleanup(
+            setattr, retrieval, "get_embeddings", real_embeddings)
+        with mock.patch.dict(sys.modules, {"langchain_chroma": mod}):
+            unfiltered = retrieval.get_retriever(3)
+            self.assertIs(unfiltered, retrieval.get_retriever(3))
+            self.assertIs(
+                unfiltered, retrieval.get_retriever(3, repo=""))
+            scoped = retrieval.get_retriever(3, repo="portfolio")
+            self.assertIs(
+                scoped,
+                retrieval.get_retriever(3, repo="arii/portfolio"))
+            self.assertIsNot(scoped, unfiltered)
+            other_k = retrieval.get_retriever(2, repo="portfolio")
+            self.assertIsNot(other_k, scoped)
+        by_marker = dict(seen)
+        self.assertEqual(by_marker[unfiltered], {"k": 3})
+        self.assertEqual(
+            by_marker[scoped],
+            {"k": 3, "filter": {"repo": "arii/portfolio"}})
+        self.assertEqual(
+            by_marker[other_k],
+            {"k": 2, "filter": {"repo": "arii/portfolio"}})
+
+    def test_bad_repo_raises_before_ready_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["S5_CHROMA_DIR"] = d
+            try:
+                with self.assertRaises(ValueError):
+                    retrieval.get_retriever(3, repo="??")
+            finally:
+                del os.environ["S5_CHROMA_DIR"]
+
+
 class TestIndexReadiness(unittest.TestCase):
     """index_status/require_ready/get_retriever guard. Stdlib-only."""
 

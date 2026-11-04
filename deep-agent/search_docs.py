@@ -1,9 +1,11 @@
 """CLI: retrieve S5 runbook excerpts for a query (for Pi/harness use).
 
-Usage: search_docs.py "<question>" [k]
+Usage: search_docs.py "<question>" [k] [repo]
 Prints top-k excerpts with source tags. Local only, no model calls.
 Retriever comes from the shared retrieval factory so index/query
 embeddings stay consistent (S5_* / OLLAMA_URL overrides honored).
+repo is an optional owner/name (or bare checkout name) filter;
+omitted searches all repos, ranked mixed.
 """
 
 import sys
@@ -17,13 +19,19 @@ import retrieval  # noqa: E402
 
 def main() -> int:
     if len(sys.argv) < 2 or not sys.argv[1].strip():
-        return cli.usage_error('usage: search_docs.py "<question>" [k]')
+        return cli.usage_error(
+            'usage: search_docs.py "<question>" [k] [repo]')
     try:
         k = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     except ValueError:
         return cli.usage_error("k must be an integer")
+    repo = sys.argv[3] if len(sys.argv) > 3 else None
     try:
-        retriever = retrieval.get_retriever(k)
+        filt = retrieval.normalize_repo(repo)
+    except ValueError:
+        return cli.usage_error("repo must look like owner/name")
+    try:
+        retriever = retrieval.get_retriever(k, repo=filt)
     except ValueError:
         return cli.usage_error("k must be a positive integer")
     except retrieval.IndexNotReadyError as exc:
