@@ -1020,5 +1020,196 @@ class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
         self.assertIsNone(reg.active_id)
 
 
+class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
+    """triage-fanout as a first-class jobs action (#670)."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        import backend.api.routers.jobs as jobs_router
+
+        self._ledger_setup()
+        self._jobs_router = jobs_router
+        self._old_registry = jobs_router.registry
+        jobs_router.registry = RunRegistry()
+        from backend.server import app
+
+        self.client = TestClient(app)
+        # Fake deep-agent tree: venv python + script exist, so the
+        # branch builds argv instead of failing resolution.
+        self._agent_tmp = tempfile.TemporaryDirectory()
+        venv_bin = os.path.join(self._agent_tmp.name, ".venv", "bin")
+        os.makedirs(venv_bin)
+        self.fake_python = os.path.join(venv_bin, "python")
+        with open(self.fake_python, "w") as f:
+            f.write("#!/bin/sh\n")
+        self.fake_script = os.path.join(
+            self._agent_tmp.name, "triage_fanout.py")
+        with open(self.fake_script, "w") as f:
+            f.write("# fanout\n")
+        self._old_agent_dir = os.environ.get("DEEP_AGENT_DIR")
+        self._old_agent_venv = os.environ.get("DEEP_AGENT_VENV")
+        os.environ["DEEP_AGENT_DIR"] = self._agent_tmp.name
+        os.environ.pop("DEEP_AGENT_VENV", None)
+
+    def tearDown(self):
+        import os
+
+        self._jobs_router.registry = self._old_registry
+        if self._old_agent_dir is None:
+            os.environ.pop("DEEP_AGENT_DIR", None)
+        else:
+            os.environ["DEEP_AGENT_DIR"] = self._old_agent_dir
+        if self._old_agent_venv is None:
+            os.environ.pop("DEEP_AGENT_VENV", None)
+        else:
+            os.environ["DEEP_AGENT_VENV"] = self._old_agent_venv
+        self._agent_tmp.cleanup()
+        self._ledger_teardown()
+
+    def test_registered_repo_scoped_and_schedulable(self):
+        self.assertIn("triage-fanout", engine.ALLOWED_ACTIONS)
+        self.assertIn("triage-fanout", engine.REPO_SCOPED_ACTIONS)
+        # Non-destructive: the #655 schedule endpoint accepts any
+        # non-destructive allowlisted action, so fanout is
+        # schedulable the day it registers.
+        self.assertNotIn("triage-fanout", engine.DESTRUCTIVE_ACTIONS)
+
+    def test_argv_shape_repo_substitution_no_prefer(self):
+        steps, err = engine.action_steps(
+            "triage-fanout", "boomtick", "arii/boomtick",
+            "/srv/repos/boomtick")
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[self.fake_python, self.fake_script, "arii/boomtick"]])
+        # --prefer omitted: the script's auto ladder applies.
+        self.assertFalse(
+            any(a.startswith("--prefer") for s in steps for a in s))
+
+    def test_missing_venv_fails_with_clear_message(self):
+        import os
+
+        os.remove(self.fake_python)
+        steps, err = engine.action_steps(
+            "triage-fanout", "boomtick", "arii/boomtick",
+            "/srv/repos/boomtick")
+        self.assertIsNone(steps)
+        self.assertIn("DEEP_AGENT_VENV", err)
+        self.assertNotIn("/home/", err)
+
+    def test_missing_script_fails_with_clear_message(self):
+        import os
+
+        os.remove(self.fake_script)
+        steps, err = engine.action_steps(
+            "triage-fanout", "boomtick", "arii/boomtick",
+            "/srv/repos/boomtick")
+        self.assertIsNone(steps)
+        self.assertIn("triage_fanout.py", err)
+
+    def test_timeout_floor_and_inheritance(self):
+        # Local runs take 10+ min: the floor is 15 min (900s).
+        self.assertGreaterEqual(
+            engine.step_timeout("triage-fanout"), 900)
+        self.assertEqual(engine.step_timeout("triage-fanout"), 1200)
+        self.assertEqual(engine.step_timeout("logs"), engine.STEP_TIMEOUT)
+        self.assertEqual(engine.step_timeout("run-td"), engine.STEP_TIMEOUT)
+
+    def test_execute_run_threads_action_budget(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("triage-fanout", "boomtick")
+        self.assertIsNone(err)
+        seen = {}
+        real_pipe = engine.run_step_pipe
+
+        def _spy(step, append, runner=None, timeout=None, on_proc=None):
+            seen["timeout"] = timeout
+            return real_pipe(step, append, runner=runner,
+                             timeout=timeout, on_proc=on_proc)
+
+        with mock.patch.object(engine, "run_step_pipe",
+                               side_effect=_spy):
+            engine.execute_run(
+                reg, rid, "triage-fanout", "boomtick", "arii/boomtick",
+                "/srv/repos/boomtick",
+                runner=lambda argv: (0, "fanout: done\n"))
+        self.assertEqual(seen["timeout"], 1200)
+        self.assertTrue(reg.runs[rid]["done"])
+        self.assertEqual(reg.runs[rid]["exit_code"], 0)
+
+    def test_launch_single_flight_rerun_cancel(self):
+        import backend.api.routers.jobs as jobs_router
+
+        with mock.patch.object(jobs_router, "_launch"), mock.patch(
+            "backend.core.get_repo_status",
+            return_value={"repo": "boomtick"},
+        ):
+            resp = self.client.post(
+                "/api/jobs/run",
+                json={"action": "triage-fanout", "repo": "boomtick"})
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            # Single-flight: a second launch conflicts while active.
+            resp2 = self.client.post(
+                "/api/jobs/run",
+                json={"action": "triage-fanout", "repo": "boomtick"})
+            self.assertEqual(resp2.status_code, 409)
+            # History row carries the action + repo.
+            rows = [j for j in self.client.get("/api/jobs").json()["jobs"]
+                    if j["id"] == rid]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["kind"], "triage-fanout")
+            self.assertEqual(rows[0]["repo"], "boomtick")
+            # Cancel works on the active fanout run.
+            resp3 = self.client.post(f"/api/jobs/runs/{rid}/cancel")
+            self.assertEqual(resp3.status_code, 202)
+            jobs_router.registry.finish_run(rid, 130)
+            # Re-run replays action+repo like any plain action.
+            resp4 = self.client.post(
+                "/api/jobs/run",
+                json={"action": "triage-fanout", "repo": "boomtick"})
+            self.assertEqual(resp4.status_code, 200)
+            jobs_router.registry.finish_run(resp4.json()["id"], 0)
+
+    def test_unknown_repo_rejected(self):
+        resp = self.client.post(
+            "/api/jobs/run",
+            json={"action": "triage-fanout", "repo": "no-such-repo"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_schedulable_through_action_schedules(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sched.json")
+            old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = path
+            try:
+                with mock.patch(
+                    "backend.api.routers.issues._ensure_schedule_ticker"
+                ), mock.patch(
+                    "backend.core.get_repo_status",
+                    return_value={"repo": "boomtick"},
+                ):
+                    resp = self.client.post(
+                        "/api/jobs/schedule",
+                        json={"action": "triage-fanout",
+                              "repo": "boomtick", "cadence": "daily"})
+                    self.assertEqual(resp.status_code, 200)
+                    sched = resp.json()["schedule"]
+                    self.assertEqual(sched["action"], "triage-fanout")
+                    self.assertEqual(sched["repo"], "boomtick")
+                    listed = self.client.get(
+                        "/api/jobs/schedule").json()["schedules"]
+                    self.assertEqual(len(listed), 1)
+            finally:
+                if old is None:
+                    os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+                else:
+                    os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

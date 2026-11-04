@@ -421,6 +421,32 @@ function PlanCardPanel({
   );
 }
 
+// Triage fanout launcher (#670): a one-repo sweep for the current
+// repo. Dispatches through the same launch path as td commands, so
+// live output streams via the run subscription and the finished row
+// inherits re-run, cancel, and scheduling.
+export function TriageFanoutSection({
+  repo,
+  onDispatch,
+}: {
+  repo: string;
+  onDispatch: () => void;
+}) {
+  return (
+    <section aria-label="Triage fanout">
+      <h3>Triage fanout</h3>
+      <p className="row-meta">
+        Per-repo triage sweep for {repo}; local runs can take 10+ minutes.
+      </p>
+      <div className="actions">
+        <button type="button" data-testid="dispatch-triage-fanout" onClick={onDispatch}>
+          Run triage fanout
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function JobsListPanel({
   list,
   repo,
@@ -764,6 +790,13 @@ export default function JobsView({
         onExecute={() => void onExecutePlan()}
       />
       <RepairSection repo={repo} />
+
+      <TriageFanoutSection
+        repo={repo}
+        onDispatch={() =>
+          void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo)))
+        }
+      />
 
       <JobSchedulesSection
         repo={repo}
