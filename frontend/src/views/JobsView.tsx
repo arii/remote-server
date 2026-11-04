@@ -27,7 +27,9 @@ import {
   fixCiBlockReason,
   isConflictError,
   isNotFoundError,
+  isTabVisible,
   jobsListActive,
+  onTabVisible,
   parseUnifiedDiffRows,
   planExecuteSeed,
   prFieldSeed,
@@ -610,15 +612,19 @@ export default function JobsView({
 
   // Fallback list poll: re-fetch while a run is active and the push
   // channel is down, so completion lands without a manual Refresh.
-  // Paused in a hidden tab.
+  // Paused in a hidden tab; a returning tab refreshes immediately.
   useEffect(() => {
     if (useMock()) return;
     if (pushLive) return;
     if (!jobs || (!jobsListActive(jobs) && !running)) return;
     const timer = window.setInterval(() => {
-      if (!document.hidden) void guarded(load);
+      if (isTabVisible()) void guarded(load);
     }, 5000);
-    return () => window.clearInterval(timer);
+    const stopResume = onTabVisible(() => void guarded(load));
+    return () => {
+      window.clearInterval(timer);
+      stopResume();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs, running, load, pushLive]);
 

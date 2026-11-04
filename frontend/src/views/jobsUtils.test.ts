@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   completionOutcome,
   conflictBlockReason,
@@ -10,7 +10,9 @@ import {
   fixCiBlockReason,
   isConflictError,
   isNotFoundError,
+  isTabVisible,
   mergeNoteFor,
+  onTabVisible,
   prFieldSeed,
   repairFailureMessage,
   repairVerifyBlocksDispatch,
@@ -313,5 +315,48 @@ describe('side-by-side rows (issue #657)', () => {
       ['cut', 'keep!'],
       ['keep', null],
     ]);
+  });
+});
+
+describe('tab visibility gate (issue #401)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('fails open without a DOM', () => {
+    expect(isTabVisible()).toBe(true);
+  });
+
+  it('pauses only in the hidden state', () => {
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    expect(isTabVisible()).toBe(false);
+    vi.stubGlobal('document', { visibilityState: 'visible' });
+    expect(isTabVisible()).toBe(true);
+    vi.stubGlobal('document', { visibilityState: 'prerender' });
+    expect(isTabVisible()).toBe(true);
+  });
+
+  it('resumes on visibilitychange only once the tab is visible', () => {
+    const doc = {
+      visibilityState: 'hidden',
+      listeners: new Map<string, () => void>(),
+      addEventListener(type: string, fn: () => void) {
+        this.listeners.set(type, fn);
+      },
+      removeEventListener(type: string, fn: () => void) {
+        if (this.listeners.get(type) === fn) this.listeners.delete(type);
+      },
+    };
+    vi.stubGlobal('document', doc);
+    const fn = vi.fn();
+    const stop = onTabVisible(fn);
+    const fire = () => doc.listeners.get('visibilitychange')?.();
+    fire();
+    expect(fn).not.toHaveBeenCalled();
+    doc.visibilityState = 'visible';
+    fire();
+    expect(fn).toHaveBeenCalledTimes(1);
+    stop();
+    expect(doc.listeners.has('visibilitychange')).toBe(false);
   });
 });

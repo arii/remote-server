@@ -4,7 +4,7 @@ import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerif
 import type { RepairStatusResponse, RepairVerifyPreview } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
 import { useMock } from './mockViews';
-import { filterRepairCandidates, repairCandidates, repairFailureMessage, repairVerifyBlocksDispatch, repairVerifyLine } from './jobsUtils';
+import { filterRepairCandidates, isTabVisible, onTabVisible, repairCandidates, repairFailureMessage, repairVerifyBlocksDispatch, repairVerifyLine } from './jobsUtils';
 
 const IDLE_REPAIR: RepairStatusResponse = {
   status: 'idle',
@@ -97,11 +97,16 @@ export default function RepairSection({
     initialPreview ?? null,
   );
   const timerRef = useRef<number | null>(null);
+  const visUnsubRef = useRef<(() => void) | null>(null);
 
   function stopWatch() {
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
+    }
+    if (visUnsubRef.current !== null) {
+      visUnsubRef.current();
+      visUnsubRef.current = null;
     }
   }
 
@@ -217,7 +222,12 @@ export default function RepairSection({
       const started = await dispatchRepair(target, branch, repo);
       setStatus({ ...IDLE_REPAIR, status: started.status, issue: started.issue, repo: started.repo });
       stopWatch();
-      timerRef.current = window.setInterval(() => void refresh(), 3000);
+      // Paused in a hidden tab (#401); a returning tab refreshes
+      // immediately instead of waiting out the interval.
+      timerRef.current = window.setInterval(() => {
+        if (isTabVisible()) void refresh();
+      }, 3000);
+      visUnsubRef.current = onTabVisible(() => void refresh());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

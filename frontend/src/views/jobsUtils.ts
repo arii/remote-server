@@ -85,6 +85,25 @@ export function jobsListActive(jobs: JobRecord[]): boolean {
   return jobs.some((j) => !j.done);
 }
 
+// Tab-visibility gate for Jobs polling (#401): every Jobs poll
+// skips its fetch while the tab is hidden (locked screen,
+// background tab) so a hidden console makes no traffic. Only the
+// 'hidden' state pauses; prerender and unloaded tabs still poll.
+// Fails open without a DOM (SSR, node vitest).
+export function isTabVisible(): boolean {
+  return typeof document === 'undefined' || document.visibilityState !== 'hidden';
+}
+
+// Immediate resume: invokes fn each time the tab turns visible
+// again. Returns an unsubscribe for effect/imperative cleanup.
+export function onTabVisible(fn: () => void): () => void {
+  const onChange = () => {
+    if (isTabVisible()) fn();
+  };
+  document.addEventListener('visibilitychange', onChange);
+  return () => document.removeEventListener('visibilitychange', onChange);
+}
+
 // PR reference state behind the td dispatch relevance gates. null =
 // unknown (fail open: buttons stay enabled).
 export interface PrRefState {
