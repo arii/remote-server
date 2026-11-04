@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import TapToFire from '../components/TapToFire';
 import { isRollupRepo } from '../components/RepoPicker';
 import {
@@ -565,6 +565,8 @@ export default function NowView({
   reportContext,
   onAskAgent,
   onOpenTab,
+  sectionRequest = null,
+  reportRequest = 0,
 }: {
   repo: string;
   // Checkout branch of the viewed repo, seeding the Review/Jobs
@@ -574,6 +576,11 @@ export default function NowView({
   reportContext: string;
   onAskAgent: (seed: string) => void;
   onOpenTab: (tab: AttentionNavTab) => void;
+  // Command-palette requests (issue #810): nonce bumps from App that
+  // open a section or the report dialog, including on a fresh mount
+  // after the palette navigates here from another tab.
+  sectionRequest?: { section: 'review' | 'jobs'; nonce: number } | null;
+  reportRequest?: number;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The
@@ -609,6 +616,27 @@ export default function NowView({
     // of the rollup) closes whichever is open.
     setSection(null);
   }, [repo]);
+
+  // Palette requests: each nonce handled once; stale nonces from a
+  // previous mount still fire, since the palette navigated here.
+  const handledSectionNonce = useRef(0);
+  useEffect(() => {
+    if (sectionRequest && sectionRequest.nonce !== handledSectionNonce.current) {
+      handledSectionNonce.current = sectionRequest.nonce;
+      setSection(sectionRequest.section);
+    }
+  }, [sectionRequest]);
+  const handledReportNonce = useRef(0);
+  useEffect(() => {
+    if (reportRequest !== handledReportNonce.current) {
+      handledReportNonce.current = reportRequest;
+      if (reportRequest > 0) {
+        setDialogOpen(true);
+        void ensureReportLabels();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportRequest]);
 
   // Hero extras ride the inbox refresh so the strip never goes
   // stale. Best effort: a failed extra keeps its last value.
