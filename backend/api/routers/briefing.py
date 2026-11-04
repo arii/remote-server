@@ -45,7 +45,10 @@ logger = logging.getLogger(__name__)
 # Unknown values disable. Raw urllib only — no langchain in backend/.
 # Env names/defaults mirror deep-agent/model_router without importing it.
 NARRATOR_ENV = "BRIEFING_NARRATOR"
-NARRATOR_TIMEOUT = 90.0
+# Issue #721: 90s never fit stock CPU/Ollama latency — a tiny probe
+# took 81.7s and the real 6000-char prompt always exceeded 90s, so
+# narrative stayed null forever. 300s covers observed latency.
+NARRATOR_TIMEOUT = 300.0
 NARRATOR_MAX_INPUT_CHARS = 6000
 NARRATOR_MAX_OUTPUT_CHARS = 2000
 NARRATOR_MAX_TOKENS = 200
@@ -294,6 +297,7 @@ def narrate_briefing(data: dict,
     if spec is None:
         return None
     prompt = narrator_prompt(data)
+    start = time.monotonic()
     try:
         if spec["provider"] == "ollama":
             text = _narrate_ollama(spec, prompt, timeout)
@@ -302,7 +306,9 @@ def narrate_briefing(data: dict,
         else:  # pragma: no cover - narrator_spec only yields these two
             return None
     except Exception as exc:
-        logger.warning("briefing: narrator failed (%s)", exc)
+        elapsed = time.monotonic() - start
+        logger.warning(
+            "briefing: narrator failed after %.1fs (%s)", elapsed, exc)
         return None
     text = _strip_thinking(text or "").strip()
     if not text:
