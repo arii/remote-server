@@ -3,13 +3,16 @@
 ``propose_action`` (deep-agent/deep_chat.py) only formats a proposal;
 the chat approve path validated it via ``--validate-proposal`` and
 dead-ended, so every approved proposal needed a human to retype the
-action by hand. This module runs the five kinds exactly once after
+action by hand. This module runs the six kinds exactly once after
 approval, on the existing resume path (no new endpoints):
 
 - issue:    ``gh issue create`` in the chat repo, returns the URL
 - td:       one allowlisted td command via ``s5tools.run``, returns output
 - dispatch: ``td worktree create`` + ``td agent run --detach``
   (the BoomTick local worktree session), returns the session id
+- coder:    ``td worktree create`` + detached ``coder`` executor
+  spawned on the worktree with the filled executor prompt,
+  returns the pid (replaces Jules dispatch)
 - comment:  ``gh pr comment`` on an arii PR, returns the URL
 - review:   ``gh pr review --comment|--request-changes`` (never
   ``--approve``: unrepresentable by construction), returns the URL
@@ -39,6 +42,29 @@ sys.path.insert(0, os.path.join(
     "deep-agent"))
 
 import s5tools  # noqa: E402
+
+# Executor prompt template + coder CLI, resolved beside this module
+# (never cwd): backend/ -> repo root -> deep-agent/.
+_DEEP_AGENT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "deep-agent")
+EXECUTOR_PROMPT_PATH = os.path.join(
+    _DEEP_AGENT_DIR, "EXECUTOR_PROMPT.md")
+CODER_SCRIPT = os.path.join(_DEEP_AGENT_DIR, "coder.py")
+
+# Placeholders fill_executor_prompt substitutes. {{PLACEHOLDER}} is
+# the template's own literal doc example (line 3), never a target.
+EXECUTOR_PLACEHOLDERS = (
+    "REPO",
+    "WORKTREE_PATH",
+    "BRANCH",
+    "BASE_BRANCH",
+    "AGENT_CONTRACT",
+    "PROPOSAL",
+    "TASK_BRIEF",
+    "DISPATCHER",
+)
+_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 # Mirrors deep_chat.validate_proposal limits (the approval-time gate).
 ISSUE_TITLE_LIMIT = 120
@@ -300,6 +326,88 @@ def run_dispatch(gh: str, branch: str, task: str) -> dict:
             "worktree": wt["path"], "branch": wt["branch"]}
 
 
+def fill_executor_prompt(repo: str, worktree_path: str, branch: str,
+                         base_branch: str, contract: str, proposal: str,
+                         brief: str, dispatcher: str) -> str:
+    """Fill EXECUTOR_PROMPT.md's placeholders. Injectable for tests.
+
+    Values substitute verbatim (no escaping: values may carry any
+    text). Raises ValueError when the template names a placeholder
+    outside the known set — a drifted template must fail loudly
+    rather than dispatch a half-scoped executor.
+    """
+    with open(EXECUTOR_PROMPT_PATH) as fh:
+        template = fh.read()
+    known = set(EXECUTOR_PLACEHOLDERS) | {"PLACEHOLDER"}
+    unknown = sorted(set(_PLACEHOLDER_RE.findall(template)) - known)
+    if unknown:
+        raise ValueError("executor template names unknown "
+                         f"placeholder(s): {', '.join(unknown)}")
+    values = {
+        "REPO": repo,
+        "WORKTREE_PATH": worktree_path,
+        "BRANCH": branch,
+        "BASE_BRANCH": base_branch,
+        "AGENT_CONTRACT": contract,
+        "PROPOSAL": proposal,
+        "TASK_BRIEF": brief,
+        "DISPATCHER": dispatcher,
+    }
+    for name, value in values.items():
+        template = template.replace("{{%s}}" % name, value)
+    return template
+
+
+def start_coder_session(worktree_path: str, system_prompt: str,
+                        brief: str) -> dict:
+    """Spawn the coder executor detached. Returns {pid, log}.
+
+    Popen with cwd=worktree, its own session, stdout+stderr merged
+    to .coder-dispatch.log; returns without waiting. No secrets in
+    argv: only the interpreter, the script, flags, and prompt text.
+    Injectable for tests (stub the whole function, not Popen).
+    """
+    log_path = os.path.join(worktree_path, ".coder-dispatch.log")
+    log_fh = open(log_path, "w")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, CODER_SCRIPT, "-p", "--system-prompt",
+             system_prompt, brief],
+            cwd=worktree_path, start_new_session=True,
+            stdout=log_fh, stderr=subprocess.STDOUT)
+    finally:
+        # The child keeps its duplicated fd; the parent must not
+        # hold the log open (nor leak it when spawn raises).
+        log_fh.close()
+    return {"pid": proc.pid, "log": log_path}
+
+
+def _read_worktree_contract(worktree_path: str) -> str:
+    try:
+        with open(os.path.join(worktree_path,
+                               "AGENT_CONTRACT.md")) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def run_coder_dispatch(gh: str, branch: str, task: str,
+                       proposal: str = "",
+                       dispatcher: str = "") -> dict:
+    """Create a worktree, fill the executor prompt, spawn a detached
+    coder on it. ``branch`` is the base (mirrors run_dispatch);
+    returns {worktree, branch, log, pid}. Injectable for tests."""
+    checkout = get_checkout_path(gh.partition("/")[2])
+    wt = create_managed_worktree(str(checkout), branch)
+    prompt = fill_executor_prompt(
+        gh, wt["path"], wt["branch"], branch,
+        _read_worktree_contract(wt["path"]), proposal, task,
+        dispatcher)
+    started = start_coder_session(wt["path"], prompt, task)
+    return {"worktree": wt["path"], "branch": wt["branch"],
+            "log": started["log"], "pid": started["pid"]}
+
+
 def execute_proposal(args: dict, session_gh: str, session_repo: str,
                      proposal_id: str) -> dict:
     """Run one approved request. Never raises.
@@ -367,6 +475,30 @@ def execute_proposal(args: dict, session_gh: str, session_repo: str,
                            f"on {started['branch']} "
                            f"({started['worktree']})"),
                 "skipped": False}
+    if kind == "coder":
+        try:
+            gh, branch, task = validate_dispatch(args)
+        except ValueError as exc:
+            return {"proposal_id": proposal_id, "kind": "coder",
+                    "target": "", "ok": False, "detail": f"skipped: {exc}",
+                    "skipped": True}
+        target = f"{gh}@{branch}"
+        try:
+            started = run_coder_dispatch(
+                gh, branch, task, proposal=json.dumps(args),
+                dispatcher=proposal_id)
+        except Exception as exc:
+            return {"proposal_id": proposal_id, "kind": "coder",
+                    "target": target, "ok": False,
+                    "detail": _capped(f"coder dispatch failed: {exc}"),
+                    "skipped": False}
+        return {"proposal_id": proposal_id, "kind": "coder",
+                "target": target, "ok": True,
+                "detail": (f"coder pid {started['pid']} "
+                           f"on {started['branch']} "
+                           f"({started['worktree']}); "
+                           f"log {started['log']}"),
+                "skipped": False}
     if kind == "comment":
         try:
             gh, pr, body = validate_comment(args)
@@ -406,7 +538,7 @@ def execute_proposal(args: dict, session_gh: str, session_repo: str,
     return {"proposal_id": proposal_id, "kind": str(kind),
             "target": "", "ok": False,
             "detail": "skipped: kind must be 'issue', 'td', 'dispatch', "
-                      "'comment', or 'review'",
+                      "'coder', 'comment', or 'review'",
             "skipped": True}
 
 
