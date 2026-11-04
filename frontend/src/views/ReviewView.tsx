@@ -86,6 +86,14 @@ export function detailsPromptVisible(prsLoaded: boolean, visiblePrCount: number)
   return !prsLoaded || visiblePrCount > 0;
 }
 
+// Two columns only when the right side holds detail content
+// (PrDetails or the details prompt). With zero PRs the right side
+// keeps just two collapsed disclosures, so the lists take the full
+// width instead of the 320px rail.
+export function reviewColumnsClass(hasDetail: boolean): string {
+  return hasDetail ? 'columns' : 'columns columns-single';
+}
+
 function labelOf(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
@@ -501,7 +509,7 @@ export default function ReviewView({
         <p className="row-meta" data-testid="review-notice" role="status">{notice}</p>
       )}
       <TriageHint extra=" · d defers" />
-      <div className="columns">
+      <div className={reviewColumnsClass(sel !== null || promptVisible)}>
         <div>
           <h3>Pull requests</h3>
           {!prs ? (
