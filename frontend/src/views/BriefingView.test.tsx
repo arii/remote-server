@@ -572,3 +572,59 @@ describe('briefing conflict/review errors (issue #463)', () => {
     expect(html).toContain('#3: denied');
   });
 });
+
+describe('briefing enrichment cap note (issue #487)', () => {
+  function briefing(over: Partial<BriefingResponse> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      reviews_err: {},
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      conf_err: '',
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function renderBody(data: BriefingResponse): string {
+    const noop = () => {};
+    return renderToStaticMarkup(
+      <BriefingBody
+        data={data}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+      />,
+    );
+  }
+
+  it('renders the truncation note under open PRs when capped', () => {
+    const html = renderBody(
+      briefing({
+        prs: [{ number: 1, title: 'a' }],
+        enrichment_note: 'showing enrichment for 10 of 23 open PRs (most-recently-updated first, cap 10)',
+        enrichment_truncated: true,
+      }),
+    );
+    expect(html).toContain('data-testid="briefing-enrichment-note"');
+    expect(html).toContain('showing enrichment for 10 of 23 open PRs');
+  });
+
+  it('omits the note when enrichment covers all PRs', () => {
+    for (const enrichment_note of [undefined, '', '   ']) {
+      const html = renderBody(
+        briefing({ prs: [{ number: 1, title: 'a' }], enrichment_note }),
+      );
+      expect(html).not.toContain('briefing-enrichment-note');
+    }
+  });
+});

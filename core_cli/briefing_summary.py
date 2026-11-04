@@ -72,6 +72,16 @@ Attention ranking (first match wins per PR, in this order):
 REVIEW_REQUIRED is deliberately NOT attention: in a solo repo most
 open PRs sit at REVIEW_REQUIRED, so flagging them would make every
 briefing shout. Drafts are listed, never attention items.
+
+Single-run worst case (#487): the serial chain is pr-list-open 60s
+  + pr-list-merged 30s + status-board 60s + detect-conflicts 120s
+  + workflow-runs 60s + list-sessions 60s, plus per-PR enrichment
+  capped at ENRICHMENT_CAP PRs × (gh pr view 30s + read-pr-reviews
+  30s), plus one 30s jobs call per failing run. Enrichment covers
+  the most-recently-updated open PRs first; when open PRs exceed
+  the cap the briefing carries an explicit enrichment_note
+  ("showing enrichment for N of M open PRs") instead of silently
+  stopping.
 """
 
 import json
@@ -88,6 +98,16 @@ except ImportError:
 
 STALE_DAYS = 30
 RAW_CAP = 20_000  # raw appendix cap, chars
+
+# Per-PR enrichment bound (#487): both the gh pr view loop and the
+# read-pr-reviews loop enrich at most this many PRs, most-recently-
+# updated first. Single-run worst case for enrichment is therefore
+# 2 * ENRICHMENT_CAP subprocesses * 30s timeout each (10 min at the
+# default cap of 10), regardless of how many PRs are open. PRs past
+# the cap keep their list row but get no CI/review enrichment, and
+# fetch() records an explicit enrichment_note so the view never
+# implies full coverage.
+ENRICHMENT_CAP = 10
 
 # The repo briefed: --repo is the short name the page uses,
 # --gh is the GitHub owner/repo path for the gh api paths. There
@@ -362,6 +382,22 @@ PR_LIST_FIELDS = ("number,title,author,headRefName,baseRefName,"
                   "isDraft,mergeStateStatus,updatedAt,url")
 
 
+def _updated_key(pr):
+    """Sort key for enrichment order: most-recently-updated first.
+
+    ISO-8601 updatedAt strings sort lexicographically; missing or
+    unparseable stamps sort last so PRs with no timestamp never
+    crowd out dated ones."""
+    updated = getf(pr, "updatedAt", "updated_at", default="") or ""
+    return str(updated)
+
+
+def _enrichment_targets(pr_list):
+    """PRs to enrich: most-recently-updated first, capped (#487)."""
+    ranked = sorted(pr_list, key=_updated_key, reverse=True)
+    return ranked[:ENRICHMENT_CAP]
+
+
 def fetch():
     """Gather everything; each source degrades independently."""
     data = {}
@@ -401,9 +437,26 @@ def fetch():
         ["td", "--json", "repo", "workflow-runs", "--repo", REPO_GH], 60)
     prs = data["prs"] if isinstance(data["prs"], list) else []
     data["pr_list"] = [p for p in prs if isinstance(p, dict)]
-    # gh enrichment, one call per open PR (counts here are small).
+    # Per-PR enrichment, capped (#487): both loops share one bound
+    # and one most-recently-updated-first order, so subprocess count
+    # stays flat regardless of open PRs. PRs past the cap keep
+    # their list row; the enrichment_note below says so honestly.
+    targets = _enrichment_targets(data["pr_list"])
+    data["enrichment_total"] = len(data["pr_list"])
+    data["enrichment_cap"] = ENRICHMENT_CAP
+    data["enrichment_shown"] = len(targets)
+    data["enrichment_truncated"] = (
+        len(data["pr_list"]) > ENRICHMENT_CAP)
+    if data["enrichment_truncated"]:
+        data["enrichment_note"] = (
+            f"showing enrichment for {len(targets)} of "
+            f"{len(data['pr_list'])} open PRs "
+            f"(most-recently-updated first, cap {ENRICHMENT_CAP})")
+    else:
+        data["enrichment_note"] = ""
+    # gh enrichment, one call per enriched PR.
     data["gh"] = {}
-    for pr in data["pr_list"]:
+    for pr in targets:
         num = getf(pr, "number")
         if not isinstance(num, int):
             continue
@@ -414,12 +467,12 @@ def fetch():
         ], 30)
         if view:
             data["gh"][num] = view
-    # Review substance, one td call per open PR (capped: review
-    # calls are the slowest part and PR counts here are small).
+    # Review substance, one td call per enriched PR (same cap and
+    # order as gh enrichment above).
     data["reviews"] = {}
     data["reviews_err"] = {}
     data["reviews_raw_parts"] = []
-    for pr in data["pr_list"][:10]:
+    for pr in targets:
         num = getf(pr, "number")
         if not isinstance(num, int):
             continue
@@ -836,12 +889,30 @@ def analyze(data):
                                "claimed.)")
         jules_items = matched
 
+    enrichment_note = data.get("enrichment_note", "")
+    enrichment_total = data.get("enrichment_total", len(prs))
+    enrichment_shown = data.get("enrichment_shown", len(prs))
+    enrichment_truncated = data.get(
+        "enrichment_truncated",
+        enrichment_total > data.get("enrichment_cap", ENRICHMENT_CAP))
+    if enrichment_truncated and not enrichment_note:
+        enrichment_note = (
+            f"showing enrichment for {enrichment_shown} of "
+            f"{enrichment_total} open PRs "
+            f"(most-recently-updated first, "
+            f"cap {data.get('enrichment_cap', ENRICHMENT_CAP)})")
+
     return {
         "repo": REPO_KEY,
         "attention": attention,
         "attention_with_markers": attention_with_markers,
         "prs": pr_infos,
-        "prs_err": data["prs_err"], "reviews_lines": reviews_lines,
+        "prs_err": data["prs_err"],
+        "enrichment_note": enrichment_note,
+        "enrichment_total": enrichment_total,
+        "enrichment_shown": enrichment_shown,
+        "enrichment_truncated": enrichment_truncated,
+        "reviews_lines": reviews_lines,
         "reviews_err": {str(k): v for k, v in reviews_err.items()},
         "board": board_items, "board_lines": board_lines,
         "board_err": data["board_err"],
@@ -872,6 +943,8 @@ def build(data, analysis=None):
         lines.append(f"Open PR list unavailable: {a['prs_err']}")
     elif a["prs"]:
         lines.extend(p["line"] for p in a["prs"])
+        if a.get("enrichment_note"):
+            lines.append(f"Note: {a['enrichment_note']}.")
     else:
         lines.append("No open PRs.")
     # analyze() leaves empty sections empty for the API (the app
