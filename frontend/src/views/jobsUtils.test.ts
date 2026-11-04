@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   completionOutcome,
   conflictBlockReason,
+  filterRepairCandidates,
   fixCiBlockReason,
   mergeNoteFor,
   prFieldSeed,
@@ -181,5 +182,29 @@ describe('repair verify preview (issue #483)', () => {
       repairVerifyBlocksDispatch({ command: '', allowlisted: false }),
     ).toBe(false);
     expect(repairVerifyBlocksDispatch(null)).toBe(false);
+  });
+});
+
+describe('repair picker filter (issue #571)', () => {
+  const cands = [
+    { number: 12, title: 'Fix flaky CI' },
+    { number: 34, title: 'Phone layout polish' },
+    { number: 125, title: 'Repair picker filter' },
+  ];
+
+  it('matches number substrings', () => {
+    expect(filterRepairCandidates(cands, '12').map((i) => i.number)).toEqual([12, 125]);
+    expect(filterRepairCandidates(cands, '#34').map((i) => i.number)).toEqual([34]);
+  });
+
+  it('matches title substrings case-insensitively', () => {
+    expect(filterRepairCandidates(cands, 'flaky').map((i) => i.number)).toEqual([12]);
+    expect(filterRepairCandidates(cands, 'PHONE').map((i) => i.number)).toEqual([34]);
+  });
+
+  it('keeps everything on empty query, nothing on no match', () => {
+    expect(filterRepairCandidates(cands, '')).toHaveLength(3);
+    expect(filterRepairCandidates(cands, '   ')).toHaveLength(3);
+    expect(filterRepairCandidates(cands, 'zzz-absent')).toHaveLength(0);
   });
 });

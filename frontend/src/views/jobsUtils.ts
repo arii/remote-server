@@ -57,6 +57,16 @@ export function repairCandidates(issues: IssueRow[]): IssueRow[] {
   );
 }
 
+// Substring filter for the repair picker: number or title,
+// case-insensitive, leading '#' ignored. Empty query keeps all.
+export function filterRepairCandidates(cands: IssueRow[], query: string): IssueRow[] {
+  const q = query.trim().replace(/^#+/, '').toLowerCase();
+  if (!q) return cands;
+  return cands.filter(
+    (i) => String(i.number).includes(q) || (i.title ?? '').toLowerCase().includes(q),
+  );
+}
+
 // Auto-refresh gate: the list re-fetches on an interval only while a
 // batch run is still active, so an idle Jobs view makes no traffic.
 export function jobsListActive(jobs: JobRecord[]): boolean {
