@@ -699,20 +699,57 @@ def _git_base(path):
             "-c", "core.hooksPath=/dev/null"]
 
 
-def webhook_observe(path):
-    """Observe-only remote state: fetch origin, record origin/main +
-    HEAD positions and lag. Never writes to the tree: no merge, no
-    checkout, no stash, no reset — safe on dirty/diverged checkouts.
+def _webhook_target(git, env):
+    """Resolve the pull target: the repo's actual remote default
+    branch (origin/HEAD), falling back to origin/main. Returns e.g.
+    "origin/leader", or None when no remote default resolves — never
+    raises. Candidates are verified so a stale origin/HEAD pointing
+    at a deleted branch does not become the target."""
+    try:
+        head = subprocess.run(
+            git + ["symbolic-ref", "refs/remotes/origin/HEAD"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, text=True, env=env)
+    except Exception:
+        head = None
+    candidates = []
+    if head is not None and head.returncode == 0:
+        ref = (head.stdout or "").strip()
+        if ref.startswith("refs/remotes/"):
+            candidates.append(ref[len("refs/remotes/"):])
+    candidates.append("origin/main")
+    for candidate in candidates:
+        try:
+            verify = subprocess.run(
+                git + ["rev-parse", "--verify", candidate],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, text=True, env=env)
+        except Exception:
+            continue
+        if verify.returncode == 0:
+            return candidate
+    return None
 
-    Returns {"ok", "detail", "origin", "head", "lag", "ahead"}: lag
-    is commits behind origin/main (HEAD..origin/main), ahead is
-    local-only commits (origin/main..HEAD). ok=False means the fetch
-    itself failed and no remote state was observed.
+
+def webhook_observe(path):
+    """Observe-only remote state: fetch origin, record the remote
+    default branch + HEAD positions and lag. Never writes to the
+    tree: no merge, no checkout, no stash, no reset — safe on
+    dirty/diverged checkouts.
+
+    Returns {"ok", "detail", "origin", "head", "lag", "ahead",
+    "target"}: target is the resolved pull target (e.g.
+    "origin/leader"), lag is commits behind it (HEAD..target),
+    ahead is local-only commits (target..HEAD). ok=False means the
+    fetch itself failed and no remote state was observed. When the
+    fetch succeeds but no remote default resolves, ok is True with
+    target None — the pull quiet-skips, never FAILED.
     """
     git = _git_base(path)
     env = dict(os.environ)
     observed = {"ok": False, "detail": "", "origin": None,
-                "head": None, "lag": None, "ahead": None}
+                "head": None, "lag": None, "ahead": None,
+                "target": None}
     try:
         observed["head"] = subprocess.run(
             git + ["rev-parse", "HEAD"], stdout=subprocess.PIPE,
@@ -728,15 +765,21 @@ def webhook_observe(path):
             (fetch.stderr or "").strip().splitlines()[-1]
             if (fetch.stderr or "").strip() else "fetch failed")
         return observed
+    target = _webhook_target(git, env)
+    observed["target"] = target
+    if not target:
+        observed["ok"] = True
+        observed["detail"] = "no remote default branch"
+        return observed
     try:
         observed["origin"] = subprocess.run(
-            git + ["rev-parse", "origin/main"],
+            git + ["rev-parse", target],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=30, text=True, env=env).stdout.strip() or None
     except Exception:
         observed["origin"] = None
-    for key, rev_range in (("lag", "HEAD..origin/main"),
-                           ("ahead", "origin/main..HEAD")):
+    for key, rev_range in (("lag", f"HEAD..{target}"),
+                           ("ahead", f"{target}..HEAD")):
         try:
             out = subprocess.run(
                 git + ["rev-list", "--count", rev_range],
@@ -763,11 +806,12 @@ def _skip_detail(reason, observed):
 def webhook_pull(path):
     """Pull-only auto-pull: observe remote state, then fast-forward.
 
-    Observe (fetch + record origin/main and HEAD positions + lag)
-    always runs, even on dirty/diverged trees; advance (merge
-    --ff-only) runs only when status --porcelain is empty AND HEAD is
-    an ancestor of origin/main. Never touches local modifications: no
-    stash, no reset, no checkout, no branch changes.
+    Observe (fetch + record the remote default branch and HEAD
+    positions + lag) always runs, even on dirty/diverged trees;
+    advance (merge --ff-only) runs only when status --porcelain is
+    empty AND HEAD is an ancestor of the remote default branch.
+    Never touches local modifications: no stash, no reset, no
+    checkout, no branch changes.
 
     Never rebuilds, never installs deps, never runs hooks
     (core.hooksPath=/dev/null). Returns (ok, detail, advanced,
@@ -777,22 +821,30 @@ def webhook_pull(path):
     git = _git_base(path)
     env = dict(os.environ)
     observed = {"ok": False, "detail": "", "origin": None,
-                "head": None, "lag": None, "ahead": None}
+                "head": None, "lag": None, "ahead": None,
+                "target": None}
     with webhook_pull_lock:
         try:
             observed = webhook_observe(path)
             if not observed.get("ok"):
                 raise RuntimeError(
                     observed.get("detail") or "fetch failed")
+            target = observed.get("target")
+            if not target:
+                # No remote default branch (e.g. non-main repo with
+                # no resolvable target): quiet skip, never FAILED.
+                return True, "skipped: no remote default branch", \
+                    False, observed
             old_head = observed.get("head")
             ancestor = subprocess.run(
                 git + ["merge-base", "--is-ancestor",
-                       "HEAD", "origin/main"],
+                       "HEAD", target],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=30, text=True, env=env)
-            if ancestor.returncode == 1:
-                # Mid-work checkout: quiet skip, not a failure alert.
-                # Remote state was still observed (fetch + lag above).
+            if ancestor.returncode in (1, 128):
+                # Mid-work checkout (1) or unresolvable ref (128):
+                # quiet skip, not a failure alert. Remote state was
+                # still observed (fetch + lag above).
                 return True, _skip_detail(
                     "tree not ff-able", observed)[:200], False, observed
             tree = subprocess.run(
@@ -803,7 +855,7 @@ def webhook_pull(path):
                 return True, _skip_detail(
                     "tree dirty", observed)[:200], False, observed
             merge = subprocess.run(
-                git + ["merge", "--ff-only", "origin/main"],
+                git + ["merge", "--ff-only", target],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=120, text=True, env=env)
             if merge.returncode != 0:

@@ -240,6 +240,8 @@ class WebhookPullSkipTest(unittest.TestCase):
     OBSERVE = [
         (0, "aaa\n", ""),   # rev-parse HEAD
         (0, "", ""),        # fetch
+        (0, "refs/remotes/origin/main\n", ""),  # symbolic-ref HEAD
+        (0, "ooo\n", ""),   # rev-parse --verify origin/main
         (0, "ooo\n", ""),   # rev-parse origin/main
         (0, "3\n", ""),     # rev-list lag
         (0, "0\n", ""),     # rev-list ahead
@@ -247,6 +249,8 @@ class WebhookPullSkipTest(unittest.TestCase):
     OBSERVE_CALLS = [
         ["rev-parse", "HEAD"],
         ["fetch", "origin"],
+        ["symbolic-ref", "refs/remotes/origin/HEAD"],
+        ["rev-parse", "--verify", "origin/main"],
         ["rev-parse", "origin/main"],
         ["rev-list", "--count", "HEAD..origin/main"],
         ["rev-list", "--count", "origin/main..HEAD"],
@@ -300,6 +304,8 @@ class WebhookPullSkipTest(unittest.TestCase):
         (ok, detail, advanced, observed), _ = self._pull([
             (0, "aaa\n", ""),
             (0, "", ""),
+            (0, "refs/remotes/origin/main\n", ""),
+            (0, "ooo\n", ""),
             (0, "ooo\n", ""),
             (1, "", "fatal: bad revision"),  # lag unresolvable
             (1, "", "fatal: bad revision"),  # ahead unresolvable
@@ -356,6 +362,8 @@ class WebhookPullSkipTest(unittest.TestCase):
         (ok, detail, advanced, observed), _ = self._pull([
             (0, "aaa\n", ""),
             (0, "", ""),
+            (0, "refs/remotes/origin/main\n", ""),
+            (0, "aaa\n", ""),
             (0, "aaa\n", ""),
             (0, "0\n", ""),
             (0, "0\n", ""),
@@ -369,6 +377,103 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertFalse(advanced)
         self.assertTrue(observed["ok"])
         self.assertEqual(observed["lag"], 0)
+
+    def test_non_main_default_pulls_that_branch(self):
+        # #458: origin/HEAD -> leader, no origin/main anywhere: the
+        # pull must target origin/leader, not a hardcoded main.
+        (ok, detail, advanced, observed), calls = self._pull([
+            (0, "aaa\n", ""),
+            (0, "", ""),
+            (0, "refs/remotes/origin/leader\n", ""),
+            (0, "lll\n", ""),
+            (0, "lll\n", ""),
+            (0, "1\n", ""),
+            (0, "0\n", ""),
+            (0, "", ""),        # merge-base: ff-able
+            (0, "", ""),        # status: clean
+            (0, "Updating aaa..lll\n", ""),
+            (0, "lll\n", ""),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(detail, "Updating aaa..lll")
+        self.assertTrue(advanced)
+        self.assertEqual(observed["target"], "origin/leader")
+        self.assertEqual(observed["origin"], "lll")
+        self.assertEqual(observed["lag"], 1)
+        for argv in calls:
+            self.assertNotIn("origin/main", argv)
+        self.assertIn(
+            self.GIT + ["merge-base", "--is-ancestor",
+                        "HEAD", "origin/leader"],
+            calls)
+        self.assertIn(
+            self.GIT + ["merge", "--ff-only", "origin/leader"],
+            calls)
+
+    def test_stale_head_falls_back_to_main(self):
+        # origin/HEAD points at a deleted branch: the candidate
+        # fails --verify, so the pull falls back to origin/main.
+        (ok, detail, advanced, observed), calls = self._pull([
+            (0, "aaa\n", ""),
+            (0, "", ""),
+            (0, "refs/remotes/origin/gone\n", ""),
+            (128, "", "fatal: Needed a single revision"),
+            (0, "ooo\n", ""),
+            (0, "ooo\n", ""),
+            (0, "0\n", ""),
+            (0, "0\n", ""),
+            (0, "", ""),
+            (0, "", ""),
+            (0, "Already up to date.\n", ""),
+            (0, "aaa\n", ""),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(observed["target"], "origin/main")
+        self.assertIn(
+            self.GIT + ["merge", "--ff-only", "origin/main"],
+            calls)
+
+    def test_unresolvable_target_skips_quietly(self):
+        # #458: no origin/HEAD and no origin/main (the hrm layout):
+        # quiet skip, never FAILED; merge never attempted.
+        (ok, detail, advanced, observed), calls = self._pull([
+            (0, "aaa\n", ""),   # rev-parse HEAD
+            (0, "", ""),        # fetch
+            (1, "", "error: No such ref"),  # symbolic-ref: no HEAD
+            (128, "", "fatal: Needed a single revision"),
+        ])
+        self.assertTrue(ok)
+        self.assertEqual(detail, "skipped: no remote default branch")
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertIsNone(observed["target"])
+        self.assertEqual(observed["head"], "aaa")
+        self.assertEqual(
+            calls,
+            [self.GIT + ["rev-parse", "HEAD"],
+             self.GIT + ["fetch", "origin"],
+             self.GIT + ["symbolic-ref",
+                         "refs/remotes/origin/HEAD"],
+             self.GIT + ["rev-parse", "--verify",
+                         "origin/main"]])
+
+    def test_merge_base_128_skips_quietly(self):
+        # #458: target vanished between observe and merge-base (bad
+        # revision, exit 128): skip like returncode 1, not a failure.
+        (ok, detail, advanced, observed), calls = self._pull(
+            self.OBSERVE + [
+                (128, "", "fatal: bad revision"),  # merge-base
+            ])
+        self.assertTrue(ok)
+        self.assertEqual(
+            detail,
+            "skipped: tree not ff-able \u2014 behind by 3 "
+            "(local changes)")
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertNotIn(
+            self.GIT + ["merge", "--ff-only", "origin/main"],
+            calls)
 
 
 @unittest.skipUnless(shutil.which("git"), "git binary not available")
@@ -471,6 +576,106 @@ class WebhookPullRealGitTest(unittest.TestCase):
         self.assertEqual(observed["origin"], self.v2)
         self.assertEqual(observed["lag"], 1)
         self.assertEqual(self._head(), self.v2)
+
+
+@unittest.skipUnless(shutil.which("git"), "git binary not available")
+class WebhookPullNonMainDefaultTest(unittest.TestCase):
+    """#458: repos whose default branch is not main pull their real
+    default (origin/HEAD) instead of a hardcoded origin/main, and
+    repos with no resolvable target skip quietly instead of FAILED."""
+
+    def _git(self, args, cwd):
+        env = dict(os.environ)
+        env.update({"GIT_AUTHOR_NAME": "lane",
+                    "GIT_AUTHOR_EMAIL": "lane@test",
+                    "GIT_COMMITTER_NAME": "lane",
+                    "GIT_COMMITTER_EMAIL": "lane@test",
+                    "GIT_CONFIG_NOSYSTEM": "1"})
+        proc = subprocess.run(
+            ["git", "-c", "init.defaultBranch=main",
+             "-c", "commit.gpgsign=false",
+             "-c", f"safe.directory={cwd}", "-C", cwd] + args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True, env=env)
+        self.assertEqual(proc.returncode, 0,
+                         f"git {args}: {proc.stderr[-300:]}")
+        return proc.stdout.strip()
+
+    def _git_raw(self, args, cwd):
+        env = dict(os.environ)
+        env.update({"GIT_CONFIG_NOSYSTEM": "1"})
+        return subprocess.run(
+            ["git", "-c", f"safe.directory={cwd}", "-C", cwd] + args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True, env=env)
+
+    def _seed_repo(self, branch):
+        self.tmp = tempfile.mkdtemp(prefix="pull458-")
+        origin = os.path.join(self.tmp, "origin.git")
+        self._git(["init", "--bare", origin], cwd=self.tmp)
+        self._git(["symbolic-ref", "HEAD",
+                   f"refs/heads/{branch}"], cwd=origin)
+        seed = os.path.join(self.tmp, "seed")
+        self._git(["clone", origin, seed], cwd=self.tmp)
+        self._git(["checkout", "-b", branch], cwd=seed)
+        with open(os.path.join(seed, "file.txt"), "w") as f:
+            f.write("v1\n")
+        self._git(["add", "file.txt"], cwd=seed)
+        self._git(["commit", "-m", "v1"], cwd=seed)
+        self._git(["push", "-u", "origin", branch], cwd=seed)
+        v1 = self._git(["rev-parse", "HEAD"], cwd=seed)
+        work = os.path.join(self.tmp, "work")
+        self._git(["clone", "-b", branch, origin, work], cwd=self.tmp)
+        with open(os.path.join(seed, "file.txt"), "a") as f:
+            f.write("v2\n")
+        self._git(["commit", "-am", "v2"], cwd=seed)
+        self._git(["push", "origin", branch], cwd=seed)
+        v2 = self._git(["rev-parse", "HEAD"], cwd=seed)
+        self.assertNotEqual(v1, v2)
+        return work, v1, v2, origin
+
+    def tearDown(self):
+        shutil.rmtree(getattr(self, "tmp", None) or "",
+                      ignore_errors=True)
+
+    def test_leader_default_fast_forwards_leader(self):
+        work, v1, v2, _origin = self._seed_repo("leader")
+        # Fixture has no origin/main ref at all (the hrm layout).
+        missing = self._git_raw(["rev-parse", "--verify",
+                                 "origin/main"], cwd=work)
+        self.assertNotEqual(missing.returncode, 0)
+        ok, detail, advanced, observed = N.webhook_pull(work)
+        self.assertTrue(ok, detail)
+        self.assertTrue(advanced, detail)
+        self.assertEqual(observed["target"], "origin/leader")
+        self.assertEqual(observed["origin"], v2)
+        self.assertEqual(observed["head"], v1)
+        self.assertEqual(observed["lag"], 1)
+        self.assertEqual(self._git(["rev-parse", "HEAD"], cwd=work),
+                         v2)
+
+    def test_missing_target_skips_quietly(self):
+        work, v1, _v2, origin = self._seed_repo("leader")
+        # Empty the remote entirely (HEAD -> nonexistent main) and
+        # drop local remote-tracking refs: fetch restores nothing,
+        # so no target resolves — the pull must skip, never FAILED.
+        # (Deleting local refs alone is not enough: fetch recreates
+        # origin/HEAD on newer git.)
+        self._git(["update-ref", "-d", "refs/heads/leader"],
+                  cwd=origin)
+        self._git(["symbolic-ref", "HEAD", "refs/heads/main"],
+                  cwd=origin)
+        self._git(["remote", "set-head", "origin", "-d"], cwd=work)
+        self._git(["update-ref", "-d",
+                   "refs/remotes/origin/leader"], cwd=work)
+        ok, detail, advanced, observed = N.webhook_pull(work)
+        self.assertTrue(ok, detail)
+        self.assertEqual(detail, "skipped: no remote default branch")
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertIsNone(observed["target"])
+        self.assertEqual(self._git(["rev-parse", "HEAD"], cwd=work),
+                         v1)
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
