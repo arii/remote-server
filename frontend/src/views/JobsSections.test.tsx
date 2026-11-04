@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import DangerZone from './DangerZone';
-import RepairSection from './RepairSection';
+import RepairSection, { RepairPicker } from './RepairSection';
 import TdCommands from './TdCommands';
 
 describe('extracted jobs sections (issue #363)', () => {
@@ -29,6 +29,34 @@ describe('extracted jobs sections (issue #363)', () => {
       />,
     );
     expect(running).toContain('data-testid="repair-abort"');
+  });
+
+  it('repair picker narrows options by filter text (issue #571)', () => {
+    const cands = [
+      { number: 12, title: 'Fix flaky CI' },
+      { number: 34, title: 'Phone layout polish' },
+    ];
+    const html = renderToStaticMarkup(
+      <RepairPicker candidates={cands} picked="" filter="flaky" onPick={() => {}} onFilter={() => {}} />,
+    );
+    expect(html).toContain('data-testid="repair-filter"');
+    expect(html).toContain('#12 Fix flaky CI');
+    expect(html).not.toContain('#34 Phone layout polish');
+    expect(html).toContain('Select…');
+  });
+
+  it('repair picker explains an empty filter result', () => {
+    const html = renderToStaticMarkup(
+      <RepairPicker
+        candidates={[{ number: 12, title: 'Fix flaky CI' }]}
+        picked=""
+        filter="zzz-absent"
+        onPick={() => {}}
+        onFilter={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="repair-filter-empty"');
+    expect(html).toContain('Select…');
   });
 
   it('verify preview shows command or blocked line (issue #483)', () => {

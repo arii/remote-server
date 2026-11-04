@@ -3,7 +3,7 @@ import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerif
 import type { RepairStatusResponse, RepairVerifyPreview } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
 import { useMock } from './mockViews';
-import { repairCandidates, repairFailureMessage, repairVerifyBlocksDispatch, repairVerifyLine } from './jobsUtils';
+import { filterRepairCandidates, repairCandidates, repairFailureMessage, repairVerifyBlocksDispatch, repairVerifyLine } from './jobsUtils';
 
 const IDLE_REPAIR: RepairStatusResponse = {
   status: 'idle',
@@ -12,6 +12,59 @@ const IDLE_REPAIR: RepairStatusResponse = {
   issue: null,
   exit_code: null,
 };
+
+// Filterable repair-target picker. The native select stays (a11y);
+// the text filter narrows its options by number/title substring.
+export function RepairPicker({
+  candidates,
+  picked,
+  filter,
+  onPick,
+  onFilter,
+}: {
+  candidates: IssueRow[];
+  picked: string;
+  filter: string;
+  onPick: (v: string) => void;
+  onFilter: (q: string) => void;
+}) {
+  const filtered = filterRepairCandidates(candidates, filter);
+  return (
+    <>
+      <label className="row-meta" htmlFor="repair-filter">
+        Filter{' '}
+        <input
+          id="repair-filter"
+          data-testid="repair-filter"
+          value={filter}
+          onChange={(e) => onFilter(e.target.value)}
+          placeholder="number or title…"
+        />
+      </label>
+      <label className="row-meta" htmlFor="repair-pick">
+        Issue{' '}
+        <select
+          id="repair-pick"
+          data-testid="repair-picker"
+          value={picked}
+          onChange={(e) => onPick(e.target.value)}
+        >
+          <option value="">Select…</option>
+          {filtered.map((i) => (
+            <option key={i.number} value={String(i.number)}>
+              #{i.number} {i.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      {filter.trim() && filtered.length === 0 && candidates.length > 0 && (
+        <p className="row-meta" data-testid="repair-filter-empty">
+          No candidates match this filter.
+        </p>
+      )}
+    </>
+  );
+}
 
 export default function RepairSection({
   repo,
@@ -25,6 +78,8 @@ export default function RepairSection({
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [picked, setPicked] = useState('');
   const [manual, setManual] = useState('');
+  const [filter, setFilter] = useState('');
+  const candidates = repairCandidates(issues ?? []);
   const [status, setStatus] = useState<RepairStatusResponse>(
     initialStatus ?? IDLE_REPAIR,
   );
@@ -133,25 +188,28 @@ export default function RepairSection({
       <h3>Repair worker</h3>
       <p className="row-meta">Pick an open issue to trigger a repair run.</p>
       <div className="actions">
-        <label className="row-meta" htmlFor="repair-pick">
-          Issue{' '}
-          <select
-            id="repair-pick"
-            data-testid="repair-picker"
-            value={picked}
-            onChange={(e) => {
-              setPicked(e.target.value);
-              setManual('');
-            }}
-          >
-            <option value="">Select…</option>
-            {repairCandidates(issues ?? []).map((i) => (
-              <option key={i.number} value={String(i.number)}>
-                #{i.number} {i.title}
-              </option>
-            ))}
-          </select>
-        </label>
+        <RepairPicker
+          candidates={candidates}
+          picked={picked}
+          filter={filter}
+          onPick={(v) => {
+            setPicked(v);
+            setManual('');
+          }}
+          onFilter={(q) => {
+            setFilter(q);
+            // Never dispatch a pick the filter hides: drop a
+            // selection that no longer matches, keep one that does.
+            setPicked((prev) =>
+              prev &&
+              !filterRepairCandidates(candidates, q).some(
+                (c) => String(c.number) === prev,
+              )
+                ? ''
+                : prev,
+            );
+          }}
+        />
         <button
           type="button"
           data-testid="repair-dispatch"
