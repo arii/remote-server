@@ -94,6 +94,7 @@ ALLOWED_ACTIONS = (
     "merge-approved",
     "triage-fanout",
     "check-notifications",
+    "autofile-scan",
 )
 
 # Actions whose original has confirm: True. The router requires
@@ -117,6 +118,7 @@ REPO_SCOPED_ACTIONS = (
     "run-td",
     "triage-fanout",
     "check-notifications",
+    "autofile-scan",
 )
 
 ENGINE_ROOT = os.path.dirname(
@@ -478,6 +480,15 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         if not gh:
             return None, "check-notifications needs a repo"
         return [[sys.executable, "-m", "core_cli.notify_check",
+                 "--repo", repo, "--gh", gh]], None
+    if action == "autofile-scan":
+        # One-repo repeated-failure scan (#825): local exec (like
+        # check-notifications) so the scan reads the same ledger
+        # file the API serves. Files at most one tracking issue per
+        # crossed signature (marker-deduped, filing only).
+        if not gh:
+            return None, "autofile-scan needs a repo"
+        return [[sys.executable, "-m", "core_cli.autofile_scan",
                  "--repo", repo, "--gh", gh]], None
     return None, "unknown action"
 
