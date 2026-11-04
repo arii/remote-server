@@ -5,14 +5,16 @@ import { toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
 
 // Briefing lines come from the legacy briefing_summary passthrough and may
-// carry reviewer HTML-comment markers or run long. Present the human part.
+// carry reviewer HTML-comment markers, markdown list markers, or run long.
+// Present the human part.
 export function cleanBriefingLine(line: string): string {
   const stripped = line
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/ai-review-state:\s*\S+/g, ' ')
     .replace(/<!--[\s\S]*$/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .replace(/^[-*]\s+/, '');
   return stripped.length > 280 ? `${stripped.slice(0, 277)}…` : stripped;
 }
 
