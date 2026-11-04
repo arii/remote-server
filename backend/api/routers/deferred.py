@@ -7,6 +7,7 @@ reversible (no confirm tap, no destructive semantics).
 - GET    /api/deferred?repo=            deferred rows for a repo
 - POST   /api/deferred                  defer one row
 - DELETE /api/deferred                  restore one row
+- POST   /api/deferred/bulk             defer/restore many rows atomically
 
 Persists as a JSON file on the buttons-data volume, same pattern as
 the audit ledger (backend/ledger/__init__.py): fixed default path,
@@ -45,6 +46,17 @@ class DeferredRequest(BaseModel):
     repo: str = "remote-server"
     kind: str = ""
     number: object = 0
+
+
+class DeferredBulkRow(BaseModel):
+    kind: str = ""
+    number: object = 0
+
+
+class DeferredBulkRequest(BaseModel):
+    repo: str = "remote-server"
+    op: str = ""
+    rows: list[DeferredBulkRow] = Field(default_factory=list)
 
 
 class DeferredRow(BaseModel):
@@ -131,6 +143,55 @@ def defer_row(body: DeferredRequest) -> dict:
                    for r in rows):
             rows.append({"kind": kind, "number": number,
                          "deferred_at": time.time()})
+        store[name] = rows
+        try:
+            _write_store(store)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)[:200])
+    return {"deferred": rows}
+
+
+@router.post("/deferred/bulk", response_model=DeferredList)
+def bulk_defer_restore(body: DeferredBulkRequest) -> dict:
+    """Defer or restore many rows in one request, atomically.
+
+    Every row validates first (same rules as the single-row routes);
+    one bad row fails the whole request with its index and nothing is
+    written. Re-deferring an already-deferred row is a no-op, same as
+    the single-row route."""
+    if body.op not in ("defer", "restore"):
+        raise HTTPException(status_code=400, detail="bad op")
+    if not body.rows:
+        raise HTTPException(status_code=400, detail="empty rows")
+    try:
+        name = validate_repo_name(body.repo)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="bad repo")
+    checked: list[tuple[str, int]] = []
+    for idx, row in enumerate(body.rows):
+        try:
+            _, kind, number = _validated(DeferredRequest(
+                repo=body.repo, kind=row.kind, number=row.number))
+        except HTTPException as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"bad row {idx}: {exc.detail}")
+        checked.append((kind, number))
+    with _deferred_lock:
+        store = _read_store()
+        rows = _clean_rows(store.get(name, []))
+        if body.op == "defer":
+            now = time.time()
+            have = {(r["kind"], r["number"]) for r in rows}
+            for kind, number in checked:
+                if (kind, number) not in have:
+                    rows.append({"kind": kind, "number": number,
+                                 "deferred_at": now})
+                    have.add((kind, number))
+        else:
+            drop = set(checked)
+            rows = [r for r in rows
+                    if (r["kind"], r["number"]) not in drop]
         store[name] = rows
         try:
             _write_store(store)

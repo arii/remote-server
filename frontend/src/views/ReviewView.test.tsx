@@ -1,19 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReviewView, {
+  BulkDeferBar,
   IssueRowTitle,
   PrRowApprove,
   PrRowRequestChanges,
   RequestChangesForm,
   RowActionButton,
   applyOptimisticMerge,
+  bulkDeferNotice,
+  bulkRowKey,
   isRowDeferred,
   nextPrAfterMerge,
   mergeBadge,
   openIssueUrl,
+  parseBulkRowKey,
   revertOptimisticMerge,
   reviewColumnsClass,
   rowMatchesFilter,
+  toggleBulkSelectAll,
+  toggleBulkSelected,
   validateRequestChangesBody,
 } from './ReviewView';
 import { approveBlockReason } from '../reviewTypes';
@@ -322,5 +328,66 @@ describe('one-tap review chips (issue #616)', () => {
     expect(validateRequestChangesBody('x'.repeat(2001))).toBe(
       'Keep feedback under 2000 characters.',
     );
+  });
+});
+
+describe('bulk defer selection (issue #607)', () => {
+  it('keys rows by kind and number without collisions', () => {
+    expect(bulkRowKey('pr', 7)).toBe('pr:7');
+    expect(bulkRowKey('issue', 7)).toBe('issue:7');
+    expect(parseBulkRowKey('pr:7')).toEqual({ kind: 'pr', number: 7 });
+    expect(parseBulkRowKey('issue:3')).toEqual({ kind: 'issue', number: 3 });
+  });
+
+  it('rejects malformed selection keys', () => {
+    expect(parseBulkRowKey('banana:7')).toBeNull();
+    expect(parseBulkRowKey('pr:0')).toBeNull();
+    expect(parseBulkRowKey('pr:7:extra')).toBeNull();
+    expect(parseBulkRowKey('nope')).toBeNull();
+  });
+
+  it('toggles one row without mutating the prior set', () => {
+    const prev = new Set(['pr:7']);
+    const added = toggleBulkSelected(prev, 'issue:3');
+    expect([...added].sort()).toEqual(['issue:3', 'pr:7']);
+    expect(prev.has('issue:3')).toBe(false);
+    expect([...toggleBulkSelected(added, 'pr:7')]).toEqual(['issue:3']);
+  });
+
+  it('select-all selects the whole list, then deselects it', () => {
+    const keys = ['pr:7', 'pr:9'];
+    const all = toggleBulkSelectAll(new Set(['issue:3']), keys);
+    expect([...all].sort()).toEqual(['issue:3', 'pr:7', 'pr:9']);
+    const none = toggleBulkSelectAll(all, keys);
+    expect([...none]).toEqual(['issue:3']);
+  });
+
+  it('select-all completes a partial selection', () => {
+    const all = toggleBulkSelectAll(new Set(['pr:7']), ['pr:7', 'pr:9']);
+    expect([...all].sort()).toEqual(['pr:7', 'pr:9']);
+  });
+
+  it('names the deferred count in the notice', () => {
+    expect(bulkDeferNotice(1)).toBe('Deferred 1 row.');
+    expect(bulkDeferNotice(11)).toBe('Deferred 11 rows.');
+  });
+
+  it('renders the bulk bar with the count and one Defer-n action', () => {
+    const html = renderToStaticMarkup(
+      <BulkDeferBar count={3} busy={false} onDefer={() => {}} />,
+    );
+    expect(html).toContain('data-testid="defer-bulk-bar"');
+    expect(html).toContain('3 selected');
+    expect(html).toContain('data-testid="defer-bulk-defer"');
+    expect(html).toContain('>Defer 3<');
+    expect(html).toContain('aria-label="Defer 3 selected rows"');
+  });
+
+  it('disables the bulk action while the request is in flight', () => {
+    const html = renderToStaticMarkup(
+      <BulkDeferBar count={3} busy onDefer={() => {}} />,
+    );
+    expect(html).toContain('disabled');
+    expect(html).toContain('>Deferring…<');
   });
 });
