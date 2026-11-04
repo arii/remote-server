@@ -82,6 +82,24 @@ export function fetchSystemHealth(): Promise<SystemHealthResponse> {
   return getJson<SystemHealthResponse>('api/system/health');
 }
 
+// Per-container live CPU/RAM for the header drawer (issue #663).
+export interface ContainerStatsRow {
+  name: string;
+  service: string;
+  state: string;
+  cpu_pct: number | null;
+  mem_used: string | null;
+  mem_limit: string | null;
+}
+
+export interface ContainerStatsResponse {
+  containers: ContainerStatsRow[];
+}
+
+export function fetchContainerStats(): Promise<ContainerStatsResponse> {
+  return getJson<ContainerStatsResponse>('api/system/stats');
+}
+
 // Short-lived in-memory cache + in-flight dedup for slow view reads
 // (briefing generation, jobs, attention). Views unmount on tab switch;
 // the module-level cache survives so revisits land instantly. Keyed by
@@ -239,6 +257,21 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
   return getJson<import('./reviewTypes').ReposResponse>('api/repos');
+}
+
+// Status + diff for one checkout, backing the dirty-repo modal (#663).
+export interface RepoDiffResponse {
+  repo: string;
+  branch: string;
+  clean: boolean;
+  status_short: string;
+  diff_stat: string;
+  diff: string;
+  truncated: boolean;
+}
+
+export function fetchRepoDiff(repo: string): Promise<RepoDiffResponse> {
+  return getJson<RepoDiffResponse>(`api/repo/diff?repo=${encodeURIComponent(repo)}`);
 }
 
 export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListResponse> {

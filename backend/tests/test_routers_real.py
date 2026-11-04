@@ -52,6 +52,16 @@ class RealRoutersTest(unittest.TestCase):
             self.assertIn("short", body)
             self.assertIn("clean", body)
 
+    def test_system_stats_shape(self):
+        resp = self.client.get("/api/system/stats")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsInstance(body["containers"], list)
+        for row in body["containers"]:
+            for key in ("name", "service", "state", "cpu_pct",
+                        "mem_used", "mem_limit"):
+                self.assertIn(key, row)
+
     def test_jobs_honest_empty(self):
         import backend.api.routers.jobs as jobs_router
         from backend.exec.engine import RunRegistry

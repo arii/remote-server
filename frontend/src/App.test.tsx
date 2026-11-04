@@ -44,7 +44,7 @@ import {
 } from './views/jobsUtils';
 import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
 import ReviewView, { PrDetails, PrRowMerge, detailsPromptVisible } from './views/ReviewView';
-import { loadBriefing, loadHistory, loadPrDetails, loadWorkflowHealth } from './views/mockViews';
+import { loadBriefing, loadContainerStats, loadHistory, loadPrDetails, loadRepoDiff, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
@@ -261,6 +261,15 @@ describe('history fixtures (?mock=1)', () => {
   it('history fixture includes the incident-collapse case', () => {
     const h = loadHistory();
     expect(h.entries.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('drawer fixtures carry diff and stats shapes (issue #663)', () => {
+    const d = loadRepoDiff('demo');
+    expect(d.repo).toBe('demo');
+    expect(d.status_short).toContain('M');
+    const s = loadContainerStats();
+    expect(s.containers.length).toBeGreaterThanOrEqual(1);
+    expect(s.containers[0].cpu_pct).not.toBeNull();
   });
 
   it('workflow-health fixture carries run traces', () => {
