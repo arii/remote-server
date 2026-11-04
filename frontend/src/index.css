@@ -412,40 +412,6 @@ button:disabled { opacity: 0.45; cursor: default; }
 button[type="submit"] { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 650; }
 button[type="submit"]:hover:not(:disabled) { background: #1d4ed8; }
 
-/* Hold-to-confirm: visible fill while holding, danger dressing when armed. */
-button[data-testid="hold-disarmed"], button[data-testid="hold-armed"] {
-  position: relative;
-  overflow: hidden;
-  /* The press-and-hold must win over scroll on phones: without this
-     a finger that drifts mid-hold scrolls the page and cancels. */
-  touch-action: none;
-}
-button[data-testid="hold-disarmed"] > [data-testid="hold-progress"] {
-  position: absolute;
-  inset: 0;
-  width: calc(var(--hold-p, 0) * 100%);
-  background: var(--accent-fill);
-  pointer-events: none;
-}
-button[data-testid="hold-disarmed"]::after {
-  content: "hold to arm";
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 400;
-  margin-left: 0.5rem;
-}
-button[data-testid="hold-armed"] {
-  border-color: var(--bad);
-  background: var(--danger-fill) padding-box, var(--surface-2);
-  font-weight: 700;
-}
-button[data-testid="hold-armed"] > [data-testid="hold-progress"] {
-  position: absolute;
-  inset: 0;
-  background: var(--danger-fill);
-  pointer-events: none;
-}
-
 select, input[type="text"], input:not([type]), textarea {
   background: var(--surface-2);
   border: 1px solid var(--border);

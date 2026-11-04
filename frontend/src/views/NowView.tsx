@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
+import TapToFire from '../components/TapToFire';
 import { isRollupRepo } from '../components/RepoPicker';
 import {
   apiUrl,
@@ -298,7 +298,7 @@ export function ReportDialog({
   );
 }
 
-function ActionControl({
+export function ActionControl({
   item,
   onDone,
   onError,
@@ -347,7 +347,14 @@ function ActionControl({
     );
   }
   if (item.action.destructive) {
-    return <HoldToConfirm label={item.action.label} onFire={() => void handlePost()} />;
+    return (
+      <TapToFire
+        label={item.action.label}
+        confirm="This cannot be undone."
+        testid={`now-action-${item.id}`}
+        onFire={() => void handlePost()}
+      />
+    );
   }
   return (
     <button type="button" onClick={() => void handlePost()}>
