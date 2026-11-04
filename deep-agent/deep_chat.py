@@ -679,33 +679,48 @@ def _cmd_validate(raw):
 
 def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     """Fast path for greetings: one direct model call, no tools, no
-    history, no trace. Still ledgered (usage when reported)."""
+    history. Still ledgered (usage when reported) with a minimal
+    run_start/model_request/model_response/run_end trace so the run
+    expands in Past runs like full turns."""
     from langchain_core.messages import (  # noqa: E402
         AIMessage, HumanMessage, SystemMessage)
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("deep_chat", thread_id))
+    recorder.run_start("deep_chat.py", thread_id,
+                       f"{spec['provider']}:{spec['model']}")
     messages = [SystemMessage(content=TRIVIAL_SYSTEM),
                 HumanMessage(content=prompt)]
     try:
+        recorder.model_request(len(messages))
         answer = model.invoke(messages)
         reply = (answer.content or "").strip()
     except Exception as exc:
+        reply = f"Sorry, the assistant failed: {_short_err(exc)}"
+        recorder.run_end(False)
+        recorder.close()
         ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
                       thread_id, messages, started,
                       extra={"repo": repo, "mode": "turn",
                              "intent": "trivial", "prompt": prompt,
+                             "trace": recorder.path,
                              "decisions": decisions.build_decisions(
                                  [], [], reply, error=str(exc)),
                              "error": str(exc)[:200]})
-        return cli.sorry(f"Sorry, the assistant failed: {_short_err(exc)}")
+        return cli.sorry(reply)
     print(reply, flush=True)
     raw_usage = getattr(answer, "usage_metadata", None)
     usage = None
     if isinstance(raw_usage, dict):
         usage = {k: raw_usage.get(k, 0)
                  for k in ("input_tokens", "output_tokens", "total_tokens")}
+    recorder.model_response(raw_usage if isinstance(raw_usage, dict)
+                            else {})
+    recorder.run_end(True)
+    recorder.close()
     ledger.record("deep_chat.py", f"{spec['provider']}:{spec['model']}",
                   thread_id, messages + [AIMessage(content=reply)], started,
                   extra={"repo": repo, "mode": "turn", "intent": "trivial",
-                         "prompt": prompt,
+                         "prompt": prompt, "trace": recorder.path,
                          "decisions": decisions.build_decisions(
                              [], [], reply)},
                   usage=usage, calls=[])

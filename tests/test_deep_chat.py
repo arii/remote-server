@@ -351,6 +351,102 @@ class TestTrivialFastPath(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
+class TestTrivialTrace(unittest.TestCase):
+    """Trivial fast-path turns record a minimal trace (#420)."""
+
+    def _run_trivial(self, tmp, model, ledger_seen):
+        from unittest import mock
+
+        trace_path = os.path.join(tmp, "trivial.jsonl")
+
+        def fake_record(script, model_name, thread_id, messages,
+                        started, extra=None, usage=None, calls=None):
+            ledger_seen["extra"] = extra
+            ledger_seen["usage"] = usage
+            return {}
+
+        with mock.patch.object(deep_chat.ledger, "record",
+                               side_effect=fake_record), \
+             mock.patch.object(deep_chat.observe,
+                               "default_trace_path",
+                               return_value=trace_path):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = deep_chat._cmd_trivial_turn(
+                    "arii/remote-server", "t-trivial", "hi", 0.0,
+                    model, {"provider": "ollama", "model": "qwen3:8b"})
+        return code, buf.getvalue(), trace_path
+
+    def _events(self, trace_path):
+        with open(trace_path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_success_emits_request_response_pair(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        usage = {"input_tokens": 12, "output_tokens": 5,
+                 "total_tokens": 17}
+        model = SimpleNamespace(invoke=mock.Mock(return_value=(
+            SimpleNamespace(content="hey!", usage_metadata=usage))))
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, trace_path = self._run_trivial(tmp, model, seen)
+            self.assertEqual(code, 0)
+            self.assertEqual(out.strip(), "hey!")
+            self.assertEqual(seen["extra"]["trace"], trace_path)
+            self.assertEqual(seen["usage"], usage)
+            events = self._events(trace_path)
+        self.assertEqual([e["type"] for e in events],
+                         ["run_start", "model_request", "model_response",
+                          "run_end"])
+        self.assertEqual(events[0]["model"], "ollama:qwen3:8b")
+        self.assertEqual(events[0]["thread"], "t-trivial")
+        self.assertEqual(events[1]["n_messages"], 2)
+        self.assertEqual(events[2]["usage"]["total_tokens"], 17)
+        self.assertTrue(events[3]["ok"])
+
+    def test_unreported_usage_records_zeros(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        model = SimpleNamespace(invoke=mock.Mock(return_value=(
+            SimpleNamespace(content="hey!", usage_metadata=None))))
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, trace_path = self._run_trivial(tmp, model, seen)
+            self.assertEqual(code, 0)
+            self.assertIsNone(seen["usage"])
+            events = self._events(trace_path)
+        responses = [e for e in events if e["type"] == "model_response"]
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0]["usage"]["total_tokens"], 0)
+
+    def test_error_emits_start_end_and_sorry(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        model = SimpleNamespace(invoke=mock.Mock(
+            side_effect=RuntimeError("model down")))
+        seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, trace_path = self._run_trivial(tmp, model, seen)
+            self.assertEqual(code, 1)
+            self.assertIn("Sorry, the assistant failed", out)
+            self.assertEqual(seen["extra"]["trace"], trace_path)
+            self.assertIn("error", seen["extra"])
+            events = self._events(trace_path)
+        types = [e["type"] for e in events]
+        self.assertGreaterEqual(len(types), 2)
+        self.assertEqual(types[0], "run_start")
+        self.assertEqual(types[-1], "run_end")
+        self.assertFalse(events[-1]["ok"])
+
+
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
     def test_five_tools(self):
         tools = deep_chat.build_tools("/tmp")
