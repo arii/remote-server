@@ -36,6 +36,18 @@ separate from Muse's. Probed 2026-11-04 in the terminal container.
   image build. If a bad upstream release breaks print mode, pin or roll
   back the binary in the volume.
 
+## Cutoff flip runbook (issue #399)
+
+The agent drawer defaults to `providers[0]` from
+`ordered_providers()` (`backend/exec/agent_turn.py`), which reads
+`AGENT_DEFAULT_PROVIDER` per request — default `muse`;
+`muse`|`agy` (case/whitespace-insensitive, anything else keeps the
+muse-first order). Flip muse→agy with env only, no code change:
+
+1. Set `AGENT_DEFAULT_PROVIDER=agy` in `.env` (see `.env.example`).
+2. `docker compose up -d --build buttons`
+3. Verify `GET /api/agent/providers` lists `agy` first.
+
 ## Scope note
 
 `backend/exec/agent_turn.py` runs
