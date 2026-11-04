@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  QueuedOfflineError,
+  __clearOutbox,
   __clearPrCaches,
   abortAgentSession,
   abortRepair,
@@ -7,6 +9,8 @@ import {
   cancelJobRun,
   approvePr,
   chatStreamUrl,
+  clearOutbox,
+  createIssue,
   fetchAgentProviders,
   fetchAttention,
   fetchBriefing,
@@ -26,16 +30,21 @@ import {
   fetchSystemHealth,
   fetchVerifyCommand,
   fetchWorkflowHealth,
+  flushOutbox,
+  getOutbox,
+  getOutboxStatus,
   invalidateViewCaches,
   postAgentTurn,
   requestPrChanges,
   rerunJob,
+  restoreRow,
   setDigestSchedule,
   saveNotificationPreferences,
   snoozeAttention,
   startJobRun,
   subscribeApiFailures,
   subscribeJobsPush,
+  subscribeOutbox,
   subscribeRunPush,
   triggerDigest,
   unsnoozeAttention,
@@ -55,6 +64,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   __clearPrCaches();
+  __clearOutbox();
   invalidateViewCaches();
 });
 
@@ -351,7 +361,7 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(await abortAgentSession('abc123')).toEqual({ ok: true, killed: true });
     expect(fetch).toHaveBeenCalledWith('/api/agent/abort', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({ session_id: 'abc123' }),
     });
   });
@@ -677,7 +687,7 @@ describe('pr review actions (issue #616)', () => {
     expect(await approvePr('remote-server', 7)).toEqual({ ok: true, output: 'approved' });
     expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({
         repo: 'remote-server',
         pr_number: 7,
@@ -696,7 +706,7 @@ describe('pr review actions (issue #616)', () => {
     });
     expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({
         repo: 'remote-server',
         pr_number: 7,
@@ -722,7 +732,7 @@ describe('job re-run (issue #630)', () => {
     });
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run-td', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({ command: 'td --json preflight', repo: 'remote-server' }),
     });
   });
@@ -732,7 +742,7 @@ describe('job re-run (issue #630)', () => {
     await rerunJob('recreate', 'remote-server', [], true);
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({
         action: 'recreate',
         repo: 'remote-server',
@@ -747,7 +757,7 @@ describe('job re-run (issue #630)', () => {
     await rerunJob('logs', 'remote-server', [], false);
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({ action: 'logs', repo: 'remote-server' }),
     });
   });
@@ -780,5 +790,247 @@ describe('run compare (issue #657)', () => {
     await expect(fetchRunCompare('aaaaaaaaaaaa', 'bbbbbbbbbbbb')).rejects.toThrow(
       'failed: 404',
     );
+  });
+});
+
+describe('offline outbox (issue #404)', () => {
+  function goOffline() {
+    vi.stubGlobal('navigator', { onLine: false });
+  }
+
+  function sentKey(init: unknown): string {
+    const headers = (init as { headers: Record<string, string> }).headers;
+    return headers['Idempotency-Key'];
+  }
+
+  function stubLocalStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  it('sends an idempotency key with every mutating POST', async () => {
+    const fetchMock = mockFetchJson({ ok: true, killed: true });
+    vi.stubGlobal('fetch', fetchMock);
+    await abortAgentSession('abc123');
+    const key = sentKey(fetchMock.mock.calls[0][1]);
+    expect(typeof key).toBe('string');
+    expect(key.length).toBeGreaterThan(0);
+  });
+
+  it('mints a fresh key per call', async () => {
+    const fetchMock = mockFetchJson({ ok: true, killed: true });
+    vi.stubGlobal('fetch', fetchMock);
+    await abortAgentSession('a');
+    await abortAgentSession('b');
+    const keys = fetchMock.mock.calls.map((call) => sentKey(call[1]));
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('queues offline taps instead of fetching', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    goOffline();
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow(
+      'POST api/jobs/run queued offline (1 pending)',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    const queue = getOutbox();
+    expect(queue).toHaveLength(1);
+    expect(queue[0].method).toBe('POST');
+    expect(queue[0].path).toBe('api/jobs/run');
+    expect(queue[0].body).toEqual({ action: 'logs', repo: 'remote-server' });
+    expect(queue[0].key.length).toBeGreaterThan(0);
+  });
+
+  it('marks queued failures so callers can tell them apart', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    let err: unknown;
+    try {
+      await startJobRun('logs', 'remote-server', false);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(QueuedOfflineError);
+    expect((err as QueuedOfflineError).queued).toBe(true);
+    expect((err as QueuedOfflineError).entry.path).toBe('api/jobs/run');
+  });
+
+  it('queues when the connection drops mid-request', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    await expect(snoozeAttention('item-1', 30)).rejects.toThrow('queued offline');
+    expect(getOutbox()).toHaveLength(1);
+    expect(getOutbox()[0].path).toBe('api/attention/snooze');
+  });
+
+  it('never queues HTTP errors — the server answered', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'nope' }, false, 500));
+    await expect(triggerDigest()).rejects.toThrow(
+      'POST api/notifications/trigger-digest failed: 500',
+    );
+    expect(getOutbox()).toHaveLength(0);
+  });
+
+  it('never queues reads — they fail as today', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+    await expect(fetchAttention('remote-server')).rejects.toThrow('network down');
+    expect(getOutbox()).toHaveLength(0);
+  });
+
+  it('replays the queue with the stored keys and drains without dupes', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow('queued offline');
+    await expect(snoozeAttention('item-1', 30)).rejects.toThrow('queued offline');
+    const [first, second] = getOutbox();
+    expect(getOutbox()).toHaveLength(2);
+    vi.unstubAllGlobals();
+    const fetchMock = mockFetchJson({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await flushOutbox();
+    expect(result).toEqual({ synced: 2, failed: 0, pending: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentKey(fetchMock.mock.calls[0][1])).toBe(first.key);
+    expect(sentKey(fetchMock.mock.calls[1][1])).toBe(second.key);
+    expect(getOutbox()).toHaveLength(0);
+    await flushOutbox();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops the run and keeps the rest when connectivity drops mid-flush', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow('queued offline');
+    await expect(snoozeAttention('item-1', 30)).rejects.toThrow('queued offline');
+    vi.unstubAllGlobals();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async () => '',
+      })
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await flushOutbox();
+    expect(result.synced).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.pending).toBe(1);
+    expect(getOutbox()).toHaveLength(1);
+    expect(getOutbox()[0].path).toBe('api/attention/snooze');
+  });
+
+  it('keeps server-rejected entries and reports the failure for retry', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow('queued offline');
+    vi.unstubAllGlobals();
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'nope' }, false, 500));
+    const result = await flushOutbox();
+    expect(result).toEqual({ synced: 0, failed: 1, pending: 1 });
+    expect(getOutbox()).toHaveLength(1);
+    expect(getOutboxStatus().lastError).toContain('POST api/jobs/run failed: 500');
+    vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+    const retry = await flushOutbox();
+    expect(retry).toEqual({ synced: 1, failed: 0, pending: 0 });
+    expect(getOutboxStatus().lastError).toBeNull();
+  });
+
+  it('persists the queue to localStorage', async () => {
+    const store = stubLocalStorage();
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow('queued offline');
+    const raw = store.get('buttons.outbox.v1');
+    expect(raw).toContain('api/jobs/run');
+    expect(getOutbox()).toHaveLength(1);
+  });
+
+  it('reads a queue persisted by an earlier session', async () => {
+    stubLocalStorage({
+      'buttons.outbox.v1': JSON.stringify([
+        {
+          key: 'seeded-key',
+          method: 'POST',
+          path: 'api/jobs/run',
+          body: { action: 'logs', repo: 'remote-server' },
+          queuedAt: 1,
+        },
+      ]),
+    });
+    const fetchMock = mockFetchJson({ id: 'abc123def456' });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(getOutbox()).toHaveLength(1);
+    await flushOutbox();
+    expect(sentKey(fetchMock.mock.calls[0][1])).toBe('seeded-key');
+    expect(getOutbox()).toHaveLength(0);
+  });
+
+  it('ignores a corrupt persisted queue instead of crashing', () => {
+    stubLocalStorage({ 'buttons.outbox.v1': 'not-json{{' });
+    expect(getOutbox()).toEqual([]);
+  });
+
+  it('notifies outbox subscribers on enqueue and sync', async () => {
+    let calls = 0;
+    const unsubscribe = subscribeOutbox(() => {
+      calls += 1;
+    });
+    try {
+      vi.stubGlobal('fetch', vi.fn());
+      goOffline();
+      await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow(
+        'queued offline',
+      );
+      expect(calls).toBeGreaterThanOrEqual(1);
+      const afterEnqueue = calls;
+      vi.unstubAllGlobals();
+      vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
+      await flushOutbox();
+      expect(calls).toBeGreaterThan(afterEnqueue);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('queues DELETE mutations too', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(restoreRow('remote-server', 'pr', 7)).rejects.toThrow(
+      'DELETE api/deferred queued offline',
+    );
+    expect(getOutbox()).toHaveLength(1);
+    expect(getOutbox()[0].method).toBe('DELETE');
+  });
+
+  it('createIssue queues offline and keeps its error shape online', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(createIssue('remote-server', 't', 'b')).rejects.toThrow('queued offline');
+    expect(getOutbox()).toHaveLength(1);
+    vi.unstubAllGlobals();
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'nope' }, false, 500));
+    await expect(createIssue('remote-server', 't', 'b')).rejects.toThrow(
+      'POST /api/create-issue failed: 500',
+    );
+  });
+
+  it('clearOutbox drops the queue and the last error', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    goOffline();
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toThrow('queued offline');
+    clearOutbox();
+    expect(getOutbox()).toHaveLength(0);
+    expect(getOutboxStatus()).toEqual({ online: false, pending: 0, syncing: false, lastError: null });
   });
 });
