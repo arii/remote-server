@@ -182,6 +182,14 @@ The consequences:
   A GitHub account takeover = shell access. **Protect the GitHub account with
   a passkey/2FA** — this is the sharpest residual risk and it is unchanged
   from the earlier design.
+- **The gate fails closed when `GITHUB_USER` is missing.** An empty or unset
+  `GITHUB_USER` would leave oauth2-proxy with no user restriction, and with
+  `email_domains = ["*"]` in `config/oauth2-proxy.cfg` that admits ANY
+  GitHub-authenticated user. To make that misconfiguration impossible,
+  `docker-compose.yml` interpolates the var as
+  `${GITHUB_USER:?...}`, so `docker compose config`/`up` refuse to start
+  with an actionable error instead of silently running an open gate. Never
+  remove the `:?` guard or default the var to an empty value.
 - **What the public sees**: one TLS port serving an OAuth login page. No
   terminal bytes, no headers, no version strings leak before authentication
   (oauth2-proxy serves its own sign-in page; ttyd is unreachable except
