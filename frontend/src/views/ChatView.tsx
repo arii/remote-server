@@ -1044,6 +1044,41 @@ export function clearChatSessionId(): void {
   }
 }
 
+// Composer draft autosave (issue #402): the prompt textbox is local
+// useState, so a tab switch (unmount/remount) used to destroy the
+// draft. The draft persists to sessionStorage on every change and
+// restores on mount; sending clears it. Mirrors the #573 message
+// snapshot: same typeof/try-catch guards, mock mode neither reads
+// nor writes, storage failures only drop persistence.
+export const CHAT_DRAFT_KEY = 'buttons.chat.draft.v1';
+
+export function loadChatDraft(): string {
+  try {
+    if (typeof sessionStorage === 'undefined') return '';
+    return sessionStorage.getItem(CHAT_DRAFT_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveChatDraft(draft: string): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(CHAT_DRAFT_KEY, draft);
+  } catch {
+    // Persistence is best-effort; the live composer still works.
+  }
+}
+
+export function clearChatDraft(): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.removeItem(CHAT_DRAFT_KEY);
+  } catch {
+    // Persistence is best-effort; the live composer still works.
+  }
+}
+
 // Persisted snapshots hold the settled conversation only: a trailing
 // empty assistant entry is the live typing placeholder (meaningless
 // once streaming stops), so it never reaches sessionStorage. The live
@@ -1289,7 +1324,12 @@ export default function ChatView({
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     useMock() ? [] : loadChatMessages(),
   );
-  const [prompt, setPrompt] = useState(seed ?? '');
+  // Restored composer draft (#402): an explicit seed wins, else the
+  // sessionStorage snapshot replays so a tab switch keeps the draft.
+  // Mock mode starts empty, matching the message snapshot.
+  const [prompt, setPrompt] = useState(
+    seed ?? (useMock() ? '' : loadChatDraft()),
+  );
   const promptRef = useRef<HTMLTextAreaElement>(null);
   // A seed stages into the composer for review and edit — the turn
   // starts only when the user taps Send (#507). The ref survives
@@ -1496,6 +1536,16 @@ export default function ChatView({
     if (useMock()) return;
     saveChatMessages(settledChatMessages(messages));
   }, [messages]);
+
+  // Persist the composer draft across tab switches (#402): every
+  // change lands in sessionStorage for the initializer above. An
+  // empty composer removes the snapshot, so sending (which clears
+  // the prompt) resets the store along with the composer.
+  useEffect(() => {
+    if (useMock()) return;
+    if (prompt === '') clearChatDraft();
+    else saveChatDraft(prompt);
+  }, [prompt]);
 
   async function onSelectRun(id: string) {
     setSelected(id);
