@@ -13,7 +13,9 @@ permissions:
 jobs:
   chatops:
     name: ChatOps Dispatch
-    if: ${{ github.event.issue.pull_request }}
+    # Authorization boundary: only trusted authors dispatch. Untrusted
+    # PR comments no-op here, before any secret-bearing step runs.
+    if: ${{ github.event.issue.pull_request && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
