@@ -58,10 +58,12 @@ export interface LedgerEntry {
   exit?: number;
   elapsed?: number;
   // Full-field extras the backend writes on some kinds: chat entries
-  // carry the session prompt, run entries the td command + elapsed_s.
+  // carry the session prompt, run entries the td command + elapsed_s,
+  // agent-turn rows the model provider.
   prompt?: string;
   command?: string;
   elapsed_s?: number;
+  provider?: string;
 }
 
 export interface LedgerResponse {

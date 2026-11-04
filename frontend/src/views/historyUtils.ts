@@ -143,13 +143,43 @@ function entryFailed(e: LedgerEntry, raw: string, summary: string): boolean {
   return isFailure(e.kind, raw, summary);
 }
 
+function firstLine(text: string | undefined): string {
+  return (text ?? '').split('\n')[0].trim();
+}
+
+// Short outcome clause for collapsed non-routine rows, from the
+// informative fields expansion already shows. Agent-turn details
+// lead with an "asked:" echo of the prompt; drop the prefix so the
+// clause reads as the task, led by the provider.
+function outcomeTask(e: LedgerEntry): string {
+  const detail = firstLine(e.detail).replace(/^asked:\s+/i, '');
+  return detail || firstLine(e.prompt) || firstLine(e.command);
+}
+
+function outcomeClause(e: LedgerEntry): string {
+  const task = outcomeTask(e);
+  const clean = task ? plainLanguage(task, e.kind) : '';
+  if (e.kind !== 'agent-turn') return clean;
+  const who = (e.provider ?? '').trim();
+  if (who && clean) return `${who}: ${clean}`;
+  return who || clean;
+}
+
 function ledgerToEntry(e: LedgerEntry): FlatEntry {
   const raw = e.event ?? e.action ?? e.kind;
   // Backend-supplied reasons are already human sentences; use verbatim.
-  const summary =
-    e.error && e.error.trim()
-      ? e.error.trim().slice(0, 200)
-      : plainLanguage(raw ?? '', e.kind);
+  const errText = e.error?.trim() ?? '';
+  const base = errText ? errText.slice(0, 200) : plainLanguage(raw ?? '', e.kind);
+  const routine = ROUTINE_RE.test(base);
+  let summary = base;
+  if (!errText && !routine) {
+    const clause = outcomeClause(e);
+    const lower = clause.toLowerCase();
+    const baseLower = base.toLowerCase();
+    if (clause && lower !== baseLower && !lower.startsWith(baseLower)) {
+      summary = `${base} — ${clause}`;
+    }
+  }
   const lines = [`event: ${raw ?? e.kind}`];
   if (e.error && e.error.trim()) lines.push(`error: ${e.error.trim()}`.slice(0, 1500));
   if (e.detail) lines.push(`detail: ${e.detail}`.slice(0, 1500));
@@ -165,8 +195,8 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
     summary,
     at: rowTime(e.ts ?? e.at),
     rawAt: epochOf(e.ts ?? e.at),
-    failed: entryFailed(e, raw ?? '', summary),
-    routine: ROUTINE_RE.test(summary),
+    failed: entryFailed(e, raw ?? '', base),
+    routine,
     detail: lines.join('\n').slice(0, 2000),
   };
 }
