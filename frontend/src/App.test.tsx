@@ -900,7 +900,14 @@ describe('inbox strips', () => {
 
   it('renders merge-ready and active-run strips', () => {
     const html = renderToStaticMarkup(
-      <InboxStrips feed={feed} onOpenReview={() => {}} onOpenJobs={() => {}} />,
+      <InboxStrips
+        feed={feed}
+        repo="r"
+        deferred={[]}
+        onDeferredChange={() => {}}
+        onOpenReview={() => {}}
+        onOpenJobs={() => {}}
+      />,
     );
     expect(html).toContain('data-testid="inbox-merge-ready"');
     expect(html).toContain('Ready to merge (2)');
@@ -916,7 +923,14 @@ describe('inbox strips', () => {
       runs: { active: null, recent: [] },
     };
     const html = renderToStaticMarkup(
-      <InboxStrips feed={empty} onOpenReview={() => {}} onOpenJobs={() => {}} />,
+      <InboxStrips
+        feed={empty}
+        repo="r"
+        deferred={[]}
+        onDeferredChange={() => {}}
+        onOpenReview={() => {}}
+        onOpenJobs={() => {}}
+      />,
     );
     expect(html).toBe('');
   });

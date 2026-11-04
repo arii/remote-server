@@ -640,6 +640,13 @@ export function parseBulkRowKey(key: string): { kind: 'pr' | 'issue'; number: nu
   return null;
 }
 
+// Validated rows for a bulk selection; malformed keys drop out.
+export function parseBulkSelection(selected: ReadonlySet<string>): Array<{ kind: 'pr' | 'issue'; number: number }> {
+  return [...selected]
+    .map(parseBulkRowKey)
+    .filter((r): r is { kind: 'pr' | 'issue'; number: number } => r !== null);
+}
+
 // Toggle one row checkbox without mutating the prior set.
 export function toggleBulkSelected(
   selected: ReadonlySet<string>,
@@ -922,9 +929,7 @@ export default function ReviewView({
   // the selection clears. Pointer-path only — j/k/d still defer the
   // single cursor row via deferSelected.
   async function deferBulk() {
-    const rows = [...bulkSelected]
-      .map(parseBulkRowKey)
-      .filter((r): r is { kind: 'pr' | 'issue'; number: number } => r !== null);
+    const rows = parseBulkSelection(bulkSelected);
     if (rows.length === 0) return;
     setError(null);
     setBulkBusy(true);
@@ -985,9 +990,7 @@ export default function ReviewView({
   // refreshes the disclosure and the selection clears. Mirrors
   // deferBulk; single-row Restore keeps its own shape.
   async function restoreBulk() {
-    const rows = [...bulkRestore]
-      .map(parseBulkRowKey)
-      .filter((r): r is { kind: 'pr' | 'issue'; number: number } => r !== null);
+    const rows = parseBulkSelection(bulkRestore);
     if (rows.length === 0) return;
     setError(null);
     setBulkRestoreBusy(true);

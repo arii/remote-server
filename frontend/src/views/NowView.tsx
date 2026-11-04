@@ -4,6 +4,7 @@ import { isRollupRepo } from '../components/RepoPicker';
 import {
   apiUrl,
   createIssue,
+  fetchDeferred,
   fetchInbox,
   snoozeAttention,
   unsnoozeAttention,
@@ -11,6 +12,7 @@ import {
 } from '../apiClient';
 import type { InboxFeed, SystemHealthResponse } from '../apiClient';
 import type { AttentionItem } from '../attentionTypes';
+import type { DeferredRow } from '../reviewTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
 import { ContainerPills } from './ObservabilitySection';
 import InboxStrips from './InboxStrips';
@@ -321,6 +323,9 @@ export default function NowView({
   onAskAgent: (seed: string) => void;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
+  // Deferred flags backing the strips bulk bar (issue #591). The
+  // strips render outside the rollup only; rollup keeps [].
+  const [deferred, setDeferred] = useState<DeferredRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [fired, setFired] = useState<string | null>(null);
   const [reported, setReported] = useState<string | null>(null);
@@ -348,6 +353,14 @@ export default function NowView({
     try {
       const live = await fetchInbox(repo);
       setData(live);
+      if (!rollup) {
+        try {
+          const d = await fetchDeferred(repo);
+          setDeferred(d.deferred);
+        } catch {
+          // Strips keep their last flags; Review shows its own error.
+        }
+      }
       setSnoozed((prev) =>
         reconcileSnoozed(
           prev,
@@ -413,6 +426,7 @@ export default function NowView({
       const params = new URLSearchParams(window.location.search);
       const empty = params.get('empty') === '1';
       setData(empty ? loadInboxEmpty() : loadInbox());
+      setDeferred([]);
       return;
     }
     (async () => {
@@ -421,6 +435,15 @@ export default function NowView({
         if (!cancelled) setData(live);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+      if (!rollup) {
+        try {
+          const d = await fetchDeferred(repo);
+          if (!cancelled) setDeferred(d.deferred);
+        } catch {
+          // Deferred flags load independently: strips stay empty.
+          if (!cancelled) setDeferred([]);
+        }
       }
     })();
     return () => {
@@ -527,6 +550,9 @@ export default function NowView({
           {!rollup && (
             <InboxStrips
               feed={data}
+              repo={repo}
+              deferred={deferred}
+              onDeferredChange={setDeferred}
               onOpenReview={() => setSection('review')}
               onOpenJobs={() => setSection('jobs')}
             />

@@ -21,6 +21,7 @@ import ReviewView, {
   mergeBadge,
   openIssueUrl,
   parseBulkRowKey,
+  parseBulkSelection,
   revertOptimisticMerge,
   reviewColumnsClass,
   rowMatchesFilter,
@@ -414,6 +415,14 @@ describe('bulk defer selection (issue #607)', () => {
     expect(parseBulkRowKey('pr:0')).toBeNull();
     expect(parseBulkRowKey('pr:7:extra')).toBeNull();
     expect(parseBulkRowKey('nope')).toBeNull();
+  });
+
+  it('parses a whole selection, dropping malformed keys (issue #591)', () => {
+    expect(parseBulkSelection(new Set(['pr:7', 'nope', 'issue:3']))).toEqual([
+      { kind: 'pr', number: 7 },
+      { kind: 'issue', number: 3 },
+    ]);
+    expect(parseBulkSelection(new Set())).toEqual([]);
   });
 
   it('toggles one row without mutating the prior set', () => {
