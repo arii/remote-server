@@ -25,9 +25,10 @@
       }
     },
     "browser-mcp": {
+      "$comment": "browsermcp pinned (#524): bump deliberately — check https://github.com/BrowserMCP/mcp/releases, test locally, then update this pin AND the docs/workstation-onboarding.md shim to the same version in one commit.",
       "args": [
         "-y",
-        "@browsermcp/mcp@latest"
+        "@browsermcp/mcp@2.4.0"
       ],
       "command": "npx",
       "env": {

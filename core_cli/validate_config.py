@@ -1,9 +1,11 @@
 """Validate loose repo configs against config/schema.json (issue #202).
 
 Stdlib only. Implements the schema subset the file uses: type,
-required, properties, items, enum, minimum, minProperties, and local
-$ref. The .env.example section instead checks that every non-defaulted
-${VAR} in docker-compose.yml is documented there.
+required, properties, items, enum, minimum, minProperties, local
+$ref, and forbidSubstring (rejects a substring anywhere in the
+file's JSON, e.g. "@latest" in a pinned config). The .env.example
+section instead checks that every non-defaulted ${VAR} in
+docker-compose.yml is documented there.
 """
 
 import json
@@ -91,6 +93,18 @@ def check_env_keys(root):
                   for v in needed - documented - skip)
 
 
+def _check_forbidden(data, needle, path, errors):
+    if isinstance(data, str):
+        if needle in data:
+            errors.append(f"{path}: forbidden {needle!r}")
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            _check_forbidden(value, needle, f"{path}.{key}", errors)
+    elif isinstance(data, list):
+        for i, value in enumerate(data):
+            _check_forbidden(value, needle, f"{path}[{i}]", errors)
+
+
 def validate_file(root, rel, section, schema):
     """Error strings for one file (empty when valid)."""
     if section.get("type") == "env-keys":
@@ -104,6 +118,9 @@ def validate_file(root, rel, section, schema):
         return [f"{rel}: invalid JSON: {exc}"]
     errors = []
     _check(data, section, schema.get("$defs", {}), rel, errors)
+    needle = section.get("forbidSubstring")
+    if isinstance(needle, str) and needle:
+        _check_forbidden(data, needle, rel, errors)
     return errors
 
 

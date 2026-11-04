@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Central config contracts for the loose JSON + env files (issue #202). Validated by core_cli/validate_config.py, which implements the subset used here: type, required, properties, items, enum, minimum. Model names and server commands are intentionally NOT enum-pinned: they drift faster than this file should.",
+  "$comment": "Central config contracts for the loose JSON + env files (issue #202). Validated by core_cli/validate_config.py, which implements the subset used here: type, required, properties, items, enum, minimum, minProperties, $ref, forbidSubstring. Model names and server commands are intentionally NOT enum-pinned: they drift faster than this file should.",
   "project_config.json": {
     "type": "object",
     "required": ["github_repo", "packageName", "vite_base_path", "triage_chain", "code_review_chain"],
@@ -33,6 +33,8 @@
   "terminal/pi-config/mcp.json": {
     "type": "object",
     "required": ["mcpServers"],
+    "forbidSubstring": "@latest",
+    "$comment": "browsermcp is version-pinned (#524); the float must never be reintroduced.",
     "properties": {
       "mcpServers": {
         "type": "object",

@@ -210,8 +210,13 @@ Create `~/.gemini/antigravity-cli/bin/start_browsermcp.sh`:
 
 ```bash
 #!/bin/bash
-exec npx -y @browsermcp/mcp@latest "$@"
+exec npx -y @browsermcp/mcp@2.4.0 "$@"
 ```
+
+> Pinned (#524): keep this version identical to the `browser-mcp` entry in
+> `terminal/pi-config/mcp.json`. To bump, check
+> https://github.com/BrowserMCP/mcp/releases, test locally, then update both
+> pins in one commit.
 
 Make it executable:
 
