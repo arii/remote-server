@@ -7,17 +7,37 @@ import { loadBriefing, loadHistory, useMock } from './mockViews';
 import RepoLabel from '../components/RepoLabel';
 
 // Briefing lines come from the legacy briefing_summary passthrough and may
-// carry reviewer HTML-comment markers, markdown list markers, or run long.
-// Present the human part.
+// carry reviewer HTML-comment markers, markdown list markers, full reviewer
+// markdown (headings, quotes, bold, links), or run long. Present the human
+// part as one plain-text line, truncated at a word boundary (issue #574).
 export function cleanBriefingLine(line: string): string {
   const stripped = line
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/ai-review-state:\s*\S+/g, ' ')
     .replace(/<!--[\s\S]*$/g, ' ')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*([-*_])\1{2,}\s*$/gm, ' ')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/\*([^*\s][^*]*?)\*/g, '$1')
+    .replace(/\b_([^_\s][^_]*?)_\b/g, '$1')
+    .replace(/(^|\s)#{1,6}\s+/g, '$1')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^[-*]\s+/, '');
-  return stripped.length > 280 ? `${stripped.slice(0, 277)}…` : stripped;
+  if (stripped.length <= 280) return stripped;
+  const head = stripped.slice(0, 279);
+  const cut = head.lastIndexOf(' ');
+  const kept = (cut > 0 ? head.slice(0, cut) : head).replace(/\s+$/g, '');
+  return `${kept}…`;
 }
 
 function Lines({ lines }: { lines: string[] }) {
