@@ -15,7 +15,10 @@ create_agent):
   tools + retrieval RAG + one gated propose_action + one allowlisted
   run_repo_command for verify-after-reason + one keyless search_web
   for upstream discovery + one SSRF-guarded fetch_url for upstream
-  docs + one search_turns past-turn recall).
+  docs + one search_turns past-turn recall), plus 4 opt-in visual
+  impact tools (run_ux_capture, diff_versions, ask_diff,
+  lighthouse_read) via build_tools(..., impact_tools=True)
+  (#849).
 - interrupt_on={"propose_action": approve/reject} mirrors the buttons
   Approve/Reject taps; resume is Command(resume={"decisions": [...]}).
 
@@ -64,6 +67,7 @@ import tracing  # noqa: E402
 import intent  # noqa: E402
 import skills  # noqa: E402
 import decisions  # noqa: E402
+import impact  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
@@ -313,8 +317,14 @@ def resume_payload(decisions):
     return {"decisions": decisions}
 
 
-def build_tools(checkout):
-    """The 9 custom tools. Venv-only (imports langchain + retrieval)."""
+def build_tools(checkout, *, impact_tools=False):
+    """The custom tools. Venv-only (imports langchain + retrieval).
+
+    Default is the 9 phone-chat tools; impact_tools=True adds the 4
+    visual-impact tools (run_ux_capture, diff_versions, ask_diff,
+    lighthouse_read) for UI impact passes (#849). The default
+    surface is pinned by tests/test_deep_chat.py::test_nine_tools.
+    """
     from langchain_core.tools import tool  # noqa: E402
 
     import retrieval  # noqa: E402
@@ -466,9 +476,117 @@ def build_tools(checkout):
         """
         return runs.search_turns(query, kind=kind, limit=limit)
 
-    return [read_repo_file, grep_repo, list_dir, search_docs,
+    base = [read_repo_file, grep_repo, list_dir, search_docs,
             propose_action, run_repo_command, fetch_url, search_web,
             search_turns]
+    if not impact_tools:
+        return base
+
+    @tool
+    def run_ux_capture(route: str = "", all_routes: bool = False,
+                       desktop: bool = False, mobile: bool = False,
+                       screenshots_only: bool = False) -> str:
+        """Capture the checkout's UI via td ux (Playwright).
+
+        Runs in the repo checkout (which must carry scripts/ux-*.ts;
+        baseUrl comes from its ux-audit.config.json) and writes
+        artifacts/ux-audit. Slow (minutes over many viewports):
+        capture base, snapshot, deploy, capture head, then diff.
+
+        Args:
+            route: Single route to capture, e.g. "/hrm".
+            all_routes: Capture every discovered route.
+            desktop: Desktop viewports only.
+            mobile: Mobile viewports only.
+            screenshots_only: Screenshots without the audit checks.
+        """
+        try:
+            result = impact.run_ux_capture(
+                checkout, route=route or "",
+                all_routes=all_routes, desktop=desktop,
+                mobile=mobile, screenshots_only=screenshots_only)
+        except ValueError as exc:
+            return f"REJECTED: {exc}"
+        if not result.get("ok"):
+            return f"CAPTURE_ERROR: {result.get('error', 'unknown')}"
+        rows = result.get("results", [])
+        done = sum(1 for r in rows
+                   if isinstance(r, dict)
+                   and r.get("status") == "success")
+        return (f"captured {done}/{len(rows)} route(s) to "
+                f"{impact.UX_DIR} (snapshot before the next run)")
+
+    @tool
+    def diff_versions(before: str, after: str) -> str:
+        """Diff two ux captures into severity-ranked findings.
+
+        Pure JSON + screenshot comparison, no model: compares
+        DOM-side audit JSON (overflow, axe violations, images, tap
+        targets, above-the-fold) and screenshot pairs (changed
+        regions) plus lighthouse drops.
+
+        Args:
+            before: Base capture dir (checkout-relative or tmp).
+            after: Head capture dir (checkout-relative or tmp).
+        """
+        base_dir = impact.resolve_capture_dir(checkout, before)
+        head_dir = impact.resolve_capture_dir(checkout, after)
+        if base_dir is None or head_dir is None:
+            return ("REJECTED: capture dirs must be existing dirs "
+                    "inside the checkout or tmp")
+        try:
+            return impact.format_diff_text(
+                impact.diff_versions(base_dir, head_dir))
+        except ValueError as exc:
+            return f"REJECTED: {exc}"
+
+    @tool
+    def ask_diff(question: str, before: str, after: str) -> str:
+        """Ask a local model about a capture diff (zero Gemini).
+
+        Sends the ranked diff findings plus downscaled crops of
+        the changed screenshot regions to the chat model (Ollama
+        first, Nebius fallback); full-res screenshots never ride
+        the turn.
+
+        Args:
+            question: What to judge, e.g. "what visually changed".
+            before: Base capture dir (checkout-relative or tmp).
+            after: Head capture dir (checkout-relative or tmp).
+        """
+        base_dir = impact.resolve_capture_dir(checkout, before)
+        head_dir = impact.resolve_capture_dir(checkout, after)
+        if base_dir is None or head_dir is None:
+            return ("REJECTED: capture dirs must be existing dirs "
+                    "inside the checkout or tmp")
+        try:
+            base_snap = impact.collect_capture(base_dir)
+            head_snap = impact.collect_capture(head_dir)
+            result = impact.diff_versions(base_snap, head_snap)
+            evidence = impact.format_evidence_for_model(
+                question, result)
+            crops = impact.changed_crops(base_snap, head_snap)
+        except ValueError as exc:
+            return f"REJECTED: {exc}"
+        return impact.ask_diff(question, evidence, images=crops)
+
+    @tool
+    def lighthouse_read(capture: str = "") -> str:
+        """Summarize one capture's lighthouse scores.
+
+        Args:
+            capture: Capture dir (checkout-relative or tmp);
+                '' reads the checkout's current artifacts/ux-audit.
+        """
+        target = impact.resolve_capture_dir(
+            checkout, capture or impact.UX_DIR)
+        if target is None:
+            return ("REJECTED: capture dir must exist inside the "
+                    "checkout or tmp")
+        return impact.lighthouse_read(target)["text"]
+
+    return base + [run_ux_capture, diff_versions, ask_diff,
+                   lighthouse_read]
 
 
 def build_model(prefer=None):
@@ -608,7 +726,8 @@ def build_agent(repo, checkpointer, model=None, recorder=None,
         system += " " + intent_hint
     return create_deep_agent(
         model=model,
-        tools=build_tools(s5tools.checkout_for(repo)),
+        tools=build_tools(s5tools.checkout_for(repo),
+                          impact_tools=True),
         system_prompt=system,
         interrupt_on=dict(INTERRUPT_ON),
         permissions=permissions,

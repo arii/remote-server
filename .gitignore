@@ -71,6 +71,7 @@ deep-agent/*
 !deep-agent/agent_skills/
 !deep-agent/decisions.py
 !deep-agent/pricing.py
+!deep-agent/impact.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),
