@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import AgentDrawer, {
   GuidanceCard,
+  formatElapsed,
   otherProvider,
   pumpTurn,
 } from './AgentDrawer';
@@ -121,5 +122,109 @@ describe('instant picker (issue #499)', () => {
     expect(html).toContain('data-testid="agent-provider"');
     expect(html).toContain('value="muse"');
     expect(html).toContain('value="agy"');
+  });
+});
+
+describe('elapsed clock (issue #838)', () => {
+  it('formats mm:ss', () => {
+    expect(formatElapsed(0)).toBe('00:00');
+    expect(formatElapsed(7)).toBe('00:07');
+    expect(formatElapsed(75)).toBe('01:15');
+    expect(formatElapsed(1799.9)).toBe('29:59');
+    expect(formatElapsed(-3)).toBe('00:00');
+  });
+});
+
+describe('timeout warning (issue #838)', () => {
+  it('reports warning events without touching the transcript', async () => {
+    const seen: number[] = [];
+    const tokens: string[] = [];
+    const reader = streamOf(
+      'event: token\ndata: {"token": "hi"}\n\n' +
+        'event: warning\ndata: {"seconds_left": 120}\n\n' +
+        'event: done\ndata: {"session_id": "s1", "text": "hi"}\n\n',
+    );
+    const done = await pumpTurn(
+      reader,
+      (t) => tokens.push(t),
+      (s) => seen.push(s),
+    );
+    expect(seen).toEqual([120]);
+    expect(tokens).toEqual(['hi']);
+    expect(done.text).toBe('hi');
+  });
+
+  it('ignores warnings without a callback', async () => {
+    const reader = streamOf(
+      'event: warning\ndata: {"seconds_left": 5}\n\n' +
+        'event: done\ndata: {"session_id": "s1", "text": ""}\n\n',
+    );
+    const done = await pumpTurn(reader, () => {});
+    expect(done.sessionId).toBe('s1');
+  });
+});
+
+describe('timeout salvage + resume (issue #838)', () => {
+  const SALVAGE = {
+    branch: 'feat-z',
+    commit: 'd'.repeat(40),
+    committed: true,
+    pushed: false,
+  };
+
+  it('attaches session id and salvage to timeout errors', async () => {
+    const reader = streamOf(
+      'event: error\ndata: {"error": "turn timed out after 30m", ' +
+        '"code": "turn-timeout", "session_id": "sid-9", ' +
+        '"salvage": {"branch": "feat-z", "commit": "' +
+        'd'.repeat(40) +
+        '", "committed": true, "pushed": false}}\n\n',
+    );
+    const caught = await pumpTurn(reader, () => {}).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect((caught as Error).message).toBe('turn timed out after 30m');
+    expect((caught as { code?: string }).code).toBe('turn-timeout');
+    expect((caught as { sessionId?: string }).sessionId).toBe('sid-9');
+    expect((caught as { salvage?: unknown }).salvage).toEqual(SALVAGE);
+  });
+
+  it('leaves session and salvage undefined for plain errors', async () => {
+    const reader = streamOf('event: error\ndata: {"error": "bad"}\n\n');
+    const caught = await pumpTurn(reader, () => {}).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect((caught as { sessionId?: string }).sessionId).toBeUndefined();
+    expect((caught as { salvage?: unknown }).salvage).toBeUndefined();
+  });
+
+  it('renders the salvage summary on the guidance card', () => {
+    const html = renderToStaticMarkup(
+      <GuidanceCard
+        message="turn timed out after 30m"
+        detail=""
+        other="agy"
+        onSwitch={() => {}}
+        salvage={SALVAGE}
+      />,
+    );
+    expect(html).toContain('data-testid="agent-salvage"');
+    expect(html).toContain('feat-z');
+    expect(html).toContain('d'.repeat(12));
+    expect(html).toContain('Pushed: no');
+  });
+
+  it('omits the salvage block without salvage', () => {
+    const html = renderToStaticMarkup(
+      <GuidanceCard
+        message="muse access expired"
+        detail=""
+        other=""
+        onSwitch={() => {}}
+      />,
+    );
+    expect(html).not.toContain('agent-salvage');
   });
 });
