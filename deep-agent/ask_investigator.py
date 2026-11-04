@@ -216,16 +216,33 @@ def run_repo_command(command: str) -> str:
 def fetch_url(url: str) -> str:
     """Fetch a URL's text: upstream docs, API references, changelogs.
 
-    Use when you have a URL in hand (never guess deep links).
-    Returns decoded text capped at 256KB with a truncation marker;
-    private/loopback/metadata addresses, non-http(s) schemes, and
-    failures come back as FETCH_ERROR text. No search, no JS
-    rendering, no auth, no POST.
+    Use when you have a URL in hand (never guess deep links;
+    use search_web to discover one). Returns decoded text capped
+    at 256KB with a truncation marker; private/loopback/metadata
+    addresses, non-http(s) schemes, and failures come back as
+    FETCH_ERROR text. No search, no JS rendering, no auth, no POST.
 
     Args:
         url: Full http(s) URL to GET.
     """
     return s5tools.fetch_url(url)
+
+
+@tool
+def search_web(query: str, limit: int = 5) -> str:
+    """Search the web for URLs about a topic (keyless discovery).
+
+    Use when you need upstream docs, changelogs, or references
+    you don't already have a URL for. Returns ranked
+    title/URL/snippet hits; then call fetch_url on a hit to read
+    it. Failures come back as SEARCH_ERROR text, no matches as
+    "no results".
+
+    Args:
+        query: Search keywords, e.g. "ollama changelog".
+        limit: Max hits, 1-10 (default 5).
+    """
+    return s5tools.search_web(query, limit=limit)
 
 
 @tool
@@ -349,7 +366,7 @@ def main() -> int:
     agent = create_agent(
         model=model,
         tools=[search_docs, read_repo_file, grep_repo, pr_state,
-               run_repo_command, fetch_url, search_turns],
+               run_repo_command, fetch_url, search_web, search_turns],
         system_prompt=f"Repo: {_repo}. " + SYSTEM,
         middleware=observe.trace_middleware(recorder),
     )
