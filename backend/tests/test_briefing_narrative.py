@@ -177,7 +177,8 @@ class NarrateCallTest(NarratorEnvCase):
         self.assertIn("2-4 sentence", body["system"])
         self.assertIn("Briefing JSON:", body["prompt"])
         self.assertEqual(body["options"]["num_predict"], 200)
-        self.assertEqual(urlopen.call_args.kwargs.get("timeout"), 90.0)
+        self.assertEqual(urlopen.call_args.kwargs.get("timeout"),
+                         briefing_router.NARRATOR_TIMEOUT)
 
     def test_ollama_url_tolerates_generate_suffix(self):
         os.environ["OLLAMA_URL"] = "http://box:11434/api/generate"
@@ -215,6 +216,32 @@ class NarrateCallTest(NarratorEnvCase):
             with mock.patch("urllib.request.urlopen", side_effect=exc):
                 self.assertIsNone(
                     briefing_router.narrate_briefing({"repo": "r"}))
+
+    def test_default_timeout_covers_cpu_latency(self):
+        # Issue #721: tiny-probe Ollama latency measured 81.7s and
+        # the 6000-char prompt always exceeded the old 90s budget,
+        # so narrative stayed null forever.
+        self.assertGreaterEqual(
+            briefing_router.NARRATOR_TIMEOUT, 300.0)
+        with self._urlopen_mock({"response": "lede"}) as urlopen:
+            briefing_router.narrate_briefing({"repo": "r"})
+        self.assertEqual(urlopen.call_args.kwargs.get("timeout"),
+                         briefing_router.NARRATOR_TIMEOUT)
+
+    def test_failure_log_includes_elapsed_seconds(self):
+        # Issue #721: one log line must carry the latency diagnosis.
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=TimeoutError("timed out")), \
+                mock.patch.object(briefing_router.time, "monotonic",
+                                  side_effect=[10.0, 91.7]):
+            with self.assertLogs("backend.api.routers.briefing",
+                                 level="WARNING") as logs:
+                self.assertIsNone(
+                    briefing_router.narrate_briefing({"repo": "r"}))
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("briefing: narrator failed after 81.7s",
+                      logs.output[0])
+        self.assertIn("timed out", logs.output[0])
 
     def test_output_truncates(self):
         with self._urlopen_mock({"response": "w" * 5000}):
