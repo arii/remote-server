@@ -306,6 +306,31 @@ export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; 
   });
 }
 
+export function approvePr(repo: string, prNumber: number): Promise<{ ok: boolean; output: string }> {
+  return postJson<{ ok: boolean; output: string }>('api/pr-action', {
+    repo,
+    pr_number: prNumber,
+    action: 'approve',
+    intent: 'pr-approve',
+    confirmed: true,
+  });
+}
+
+export function requestPrChanges(
+  repo: string,
+  prNumber: number,
+  body: string,
+): Promise<{ ok: boolean; output: string }> {
+  return postJson<{ ok: boolean; output: string }>('api/pr-action', {
+    repo,
+    pr_number: prNumber,
+    action: 'request-changes',
+    body,
+    intent: 'pr-request-changes',
+    confirmed: true,
+  });
+}
+
 export function startJobRun(
   action: string,
   repo: string,

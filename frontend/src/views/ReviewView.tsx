@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
+  approvePr,
   createIssue,
   deferRow,
   draftIssue,
@@ -11,11 +12,12 @@ import {
   fetchPrDiff,
   fetchPrs,
   mergePr,
+  requestPrChanges,
   restoreRow,
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
-import { detailsMergeBlockReason, mergeBlockReason } from '../reviewTypes';
+import { approveBlockReason, detailsMergeBlockReason, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
@@ -268,6 +270,131 @@ export function PrRowMerge({
   );
 }
 
+// Request-changes body cap, mirroring REVIEW_BODY_MAX on the server.
+export const REQUEST_CHANGES_MAX = 2000;
+
+// Inline validation for the request-changes body field: null when
+// submittable, otherwise the message to show (server re-checks).
+export function validateRequestChangesBody(body: string): string | null {
+  if (!body.trim()) return 'Review feedback is required.';
+  if (body.length > REQUEST_CHANGES_MAX) {
+    return `Keep feedback under ${REQUEST_CHANGES_MAX} characters.`;
+  }
+  return null;
+}
+
+// One-tap approve chip. Reviews are reversible (a later review
+// supersedes), so unlike Merge this fires on one tap with no inline
+// confirm — the backend pr-approve confirm intent still applies.
+export function PrRowApprove({
+  pr,
+  busy,
+  onApprove,
+}: {
+  pr: PrRow;
+  busy: boolean;
+  onApprove: (n: number) => void;
+}) {
+  const blocked = approveBlockReason(pr);
+  return (
+    <button
+      type="button"
+      data-testid={`approve-pr-${pr.number}`}
+      aria-label={`Approve PR #${pr.number}`}
+      title={blocked ?? undefined}
+      disabled={blocked !== null || busy}
+      onClick={() => onApprove(pr.number)}
+    >
+      Approve
+    </button>
+  );
+}
+
+// Request-changes toggle chip: opens the inline body field below the
+// row actions. Never row-disabled — any open PR can take feedback.
+export function PrRowRequestChanges({
+  pr,
+  busy,
+  expanded,
+  onToggle,
+}: {
+  pr: PrRow;
+  busy: boolean;
+  expanded: boolean;
+  onToggle: (n: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={`request-changes-pr-${pr.number}`}
+      aria-label={`Request changes on PR #${pr.number}`}
+      aria-expanded={expanded}
+      disabled={busy}
+      onClick={() => onToggle(pr.number)}
+    >
+      Request changes
+    </button>
+  );
+}
+
+// Inline request-changes body field, rendered under the row actions
+// while the chip is expanded. Stays open on submit failure (the
+// endpoint error surfaces in the view banner) so the draft survives
+// a retry; the parent closes it on success.
+export function RequestChangesForm({
+  n,
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  n: number;
+  busy: boolean;
+  onSubmit: (body: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <form
+      data-testid={`request-changes-form-${n}`}
+      onSubmit={(e) => {
+        e.preventDefault();
+        const invalid = validateRequestChangesBody(draft);
+        if (invalid) {
+          setProblem(invalid);
+          return;
+        }
+        setProblem(null);
+        onSubmit(draft);
+      }}
+    >
+      <label className="row-meta" htmlFor={`request-changes-body-${n}`}>
+        What needs to change?{' '}
+        <textarea
+          id={`request-changes-body-${n}`}
+          data-testid={`request-changes-body-${n}`}
+          value={draft}
+          maxLength={REQUEST_CHANGES_MAX}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+      </label>
+      {problem && (
+        <p className="row-meta" role="alert" data-testid={`request-changes-error-${n}`}>
+          {problem}
+        </p>
+      )}
+      <div className="actions">
+        <button type="submit" data-testid={`request-changes-submit-${n}`} disabled={busy}>
+          {busy ? 'Sending…' : 'Send review'}
+        </button>{' '}
+        <button type="button" data-testid={`request-changes-cancel-${n}`} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // One plain row action (Open/Defer/Restore). The accessible name
 // carries kind + number so 50 repeated buttons stay distinct for
 // screen-reader users; visible text stays the bare verb.
@@ -318,6 +445,8 @@ export default function ReviewView({
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
   const [merging, setMerging] = useState<ReadonlySet<number>>(new Set());
+  const [reviewing, setReviewing] = useState<ReadonlySet<number>>(new Set());
+  const [requestChangesFor, setRequestChangesFor] = useState<number | null>(null);
   const [creatingIssue, setCreatingIssue] = useState(false);
   const [filter, setFilter] = useState('');
 
@@ -487,6 +616,50 @@ export default function ReviewView({
     }
   }
 
+  // Re-read the PR list after a posted review so the row's
+  // reviewDecision refreshes without a manual reload. When the
+  // re-read itself fails, patch the reviewed row optimistically —
+  // the review already posted, so the decision is known.
+  async function refreshPrs(n: number, decision: string) {
+    try {
+      const p = await fetchPrs(repo);
+      setPrs(p.prs);
+    } catch {
+      setPrs((prev) =>
+        prev ? prev.map((r) => (r.number === n ? { ...r, reviewDecision: decision } : r)) : prev,
+      );
+    }
+  }
+
+  async function onApprove(n: number) {
+    setError(null);
+    setReviewing((prev) => applyOptimisticMerge(prev, n));
+    try {
+      await approvePr(repo, n);
+      setNotice(`Approved PR #${n}.`);
+      await refreshPrs(n, 'APPROVED');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewing((prev) => revertOptimisticMerge(prev, n));
+    }
+  }
+
+  async function onRequestChanges(n: number, body: string) {
+    setError(null);
+    setReviewing((prev) => applyOptimisticMerge(prev, n));
+    try {
+      await requestPrChanges(repo, n, body);
+      setRequestChangesFor(null);
+      setNotice(`Requested changes on PR #${n}.`);
+      await refreshPrs(n, 'CHANGES_REQUESTED');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReviewing((prev) => revertOptimisticMerge(prev, n));
+    }
+  }
+
   async function onCreateIssue() {
     setError(null);
     if (!newTitle.trim()) {
@@ -561,7 +734,7 @@ export default function ReviewView({
               {visiblePrs.map((p, pi) => (
                 <li
                   key={p.number}
-                  className={`detail${selected === p.number ? ' selected' : ''}${cursor === pi ? ' kbd-focus' : ''}${merging.has(p.number) ? ' merging' : ''}`}
+                  className={`detail${selected === p.number ? ' selected' : ''}${cursor === pi ? ' kbd-focus' : ''}${merging.has(p.number) ? ' merging' : ''}${reviewing.has(p.number) ? ' reviewing' : ''}`}
                   data-testid={`review-pr-${p.number}`}
                   aria-current={selected === p.number ? true : undefined}
                 >
@@ -570,12 +743,28 @@ export default function ReviewView({
                     {p.author} · {p.branch} · CI {p.ciLabel}
                     {p.isDraft ? ' · draft' : ''}
                     {merging.has(p.number) ? ' · Merging…' : ''}
+                    {reviewing.has(p.number) ? ' · Reviewing…' : ''}
                     {' · '}
                     {mergeBadge(p)}
                   </p>
                   <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />{' '}
                   <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />{' '}
-                  <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />
+                  <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />{' '}
+                  <PrRowApprove pr={p} busy={reviewing.has(p.number)} onApprove={(n) => void onApprove(n)} />{' '}
+                  <PrRowRequestChanges
+                    pr={p}
+                    busy={reviewing.has(p.number)}
+                    expanded={requestChangesFor === p.number}
+                    onToggle={(n) => setRequestChangesFor((prev) => (prev === n ? null : n))}
+                  />
+                  {requestChangesFor === p.number && (
+                    <RequestChangesForm
+                      n={p.number}
+                      busy={reviewing.has(p.number)}
+                      onSubmit={(body) => void onRequestChanges(p.number, body)}
+                      onCancel={() => setRequestChangesFor(null)}
+                    />
+                  )}
                 </li>
               ))}
             </ul>

@@ -100,6 +100,18 @@ export function mergeBlockReason(p: PrRow): string | null {
   return null;
 }
 
+// Approve relevance, decided per merge-block reason (#616):
+// drafts stay disabled (approving unfinished work is premature);
+// an already-approved PR stays disabled (no duplicate-approval
+// noise). The CI and merge-state reasons do NOT apply — a review
+// is valid whatever the checks say. Request-changes is never
+// row-disabled: any open PR, draft or not, can take feedback.
+export function approveBlockReason(p: PrRow): string | null {
+  if (p.isDraft) return 'is a draft';
+  if (p.reviewDecision === 'APPROVED') return 'already approved';
+  return null;
+}
+
 export function detailsMergeBlockReason(d: PrDetailsResponse): string | null {
   if (d.ci !== 'passing' || d.merge !== 'clean') {
     return `Not mergeable: CI ${d.ci}, merge ${d.merge}.`;

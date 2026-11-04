@@ -4,6 +4,7 @@ import {
   abortAgentSession,
   abortRepair,
   apiUrl,
+  approvePr,
   chatStreamUrl,
   fetchAgentProviders,
   fetchAttention,
@@ -19,6 +20,7 @@ import {
   fetchWorkflowHealth,
   invalidateViewCaches,
   postAgentTurn,
+  requestPrChanges,
   startJobRun,
   subscribeJobsPush,
   subscribeRunPush,
@@ -455,5 +457,48 @@ describe('jobs push subscriptions', () => {
     seen[0].emit('gone', JSON.stringify({ error: 'unknown run' }));
     expect(dead).toBe(1);
     expect(seen[0].closed).toBe(true);
+  });
+});
+
+describe('pr review actions (issue #616)', () => {
+  it('approves with the pr-approve confirm intent', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, output: 'approved' }));
+    expect(await approvePr('remote-server', 7)).toEqual({ ok: true, output: 'approved' });
+    expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: 'remote-server',
+        pr_number: 7,
+        action: 'approve',
+        intent: 'pr-approve',
+        confirmed: true,
+      }),
+    });
+  });
+
+  it('requests changes with the body and pr-request-changes intent', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ ok: true, output: 'reviewed' }));
+    expect(await requestPrChanges('remote-server', 7, 'Fix the leak.')).toEqual({
+      ok: true,
+      output: 'reviewed',
+    });
+    expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repo: 'remote-server',
+        pr_number: 7,
+        action: 'request-changes',
+        body: 'Fix the leak.',
+        intent: 'pr-request-changes',
+        confirmed: true,
+      }),
+    });
+  });
+
+  it('surfaces endpoint errors to the row', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ detail: 'nope' }, false, 400));
+    await expect(approvePr('remote-server', 7)).rejects.toThrow('POST api/pr-action failed: 400');
   });
 });

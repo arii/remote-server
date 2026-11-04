@@ -291,6 +291,81 @@ class PrActionTest(unittest.TestCase):
                 pulls_mod.pr_action(pulls_mod.PrActionRequest(**bad))
             self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_approve_argv_scoped_to_repo(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "review"], FakeProc(stdout="approved"))
+        out = _pr_action("arii/remote-server", 7, "approve",
+                         runner=runner)
+        self.assertTrue(out["ok"])
+        # --repo is explicit: regression guard vs #544 (an unscoped
+        # verb resolves against the backend cwd, not the repo).
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "review", "7", "--repo",
+              "arii/remote-server", "--approve"]])
+
+    def test_request_changes_argv_and_body(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "review"], FakeProc(stdout="reviewed"))
+        out = _pr_action("arii/remote-server", 7, "request-changes",
+                         runner=runner, body="Please fix the leak.")
+        self.assertTrue(out["ok"])
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "review", "7", "--repo",
+              "arii/remote-server", "--request-changes",
+              "-b", "Please fix the leak."]])
+
+    def test_request_changes_body_required(self):
+        for bad in ("", "   "):
+            with self.assertRaises(ValueError):
+                _pr_action("arii/remote-server", 7, "request-changes",
+                           runner=FakeRunner(), body=bad)
+        with self.assertRaises(ValueError):
+            _pr_action("arii/remote-server", 7, "request-changes",
+                       runner=FakeRunner(), body="x" * 2001)
+
+    def test_review_confirm_gate(self):
+        from fastapi import HTTPException
+
+        for action, intent in (("approve", "pr-approve"),
+                               ("request-changes",
+                                "pr-request-changes")):
+            with self.assertRaises(HTTPException) as ctx:
+                pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                    repo="remote-server", pr_number=7, action=action))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("confirmation", ctx.exception.detail)
+            # A confirmed intent for another action does not pass.
+            with self.assertRaises(HTTPException) as ctx:
+                pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                    repo="remote-server", pr_number=7, action=action,
+                    intent="pr-merge", confirmed=True))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("confirmation", ctx.exception.detail)
+
+    def test_review_confirmed_posts(self):
+        with patch.object(
+                pulls_mod, "_pr_action",
+                return_value={"ok": True, "output": "posted"}) as m:
+            out = pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                repo="remote-server", pr_number=7, action="approve",
+                intent="pr-approve", confirmed=True))
+            self.assertTrue(out["ok"])
+            m.assert_called_once_with("arii/remote-server", 7,
+                                      "approve", body="")
+
+    def test_request_changes_route_rejects_empty_body(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                repo="remote-server", pr_number=7,
+                action="request-changes",
+                intent="pr-request-changes", confirmed=True))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("review body", ctx.exception.detail)
+
 
 class IssuesTest(unittest.TestCase):
     def test_list_truncates_body(self):
