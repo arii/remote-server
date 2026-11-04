@@ -1530,3 +1530,49 @@ describe('saved prompt templates (issue #807)', () => {
     expect(html).not.toContain('data-testid="chat-templates-panel"');
   });
 });
+
+describe('split console layout (issue #839)', () => {
+  const noop = () => {};
+
+  function stubSessionStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('splits the conversation canvas from the runs/agent rail', () => {
+    stubSessionStorage();
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('chat-main');
+    expect(html).toContain('chat-side');
+    expect(html).toContain('data-testid="chat-backend-picker"');
+    expect(html).toContain('data-testid="chat-send"');
+  });
+
+  it('shows prompt starters only before the first thread exists', () => {
+    stubSessionStorage();
+    const fresh = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(fresh).toContain('data-testid="chat-prompt-chips"');
+    stubSessionStorage({
+      [CHAT_MESSAGES_KEY]: JSON.stringify([
+        { role: 'user', text: 'hi' },
+        { role: 'assistant', text: 'yo' },
+      ]),
+    });
+    const threaded = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(threaded).toContain('data-testid="chat-history"');
+    expect(threaded).not.toContain('data-testid="chat-prompt-chips"');
+  });
+});

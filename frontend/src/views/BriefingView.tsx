@@ -86,6 +86,23 @@ function Section({ title, lines, err }: { title: string; lines: string[]; err?: 
   );
 }
 
+// Board rows whose branch already has an open-PR pipeline row
+// hide here: the pipeline owns branch display, the Board keeps
+// only branches with no PR row (issue #839).
+export function visibleBoardItems(board: BoardItem[], prBranches: readonly string[]): BoardItem[] {
+  if (prBranches.length === 0) return board;
+  const have = new Set(prBranches.map((b) => b.trim()).filter(Boolean));
+  return board.filter((item) => !have.has((item.branch ?? '').trim()));
+}
+
+export function boardStatusForBranch(branch: string, board: BoardItem[]): string {
+  const want = branch.trim();
+  if (!want) return '';
+  const hit = board.find((item) => (item.branch ?? '').trim() === want);
+  const status = (hit?.status ?? '').trim();
+  return status === '?' ? '' : status;
+}
+
 function BoardSection({
   board,
   lines,
@@ -703,16 +720,111 @@ export function briefingAllClear(data: BriefingResponse): boolean {
   );
 }
 
-function PrRow({ pr }: { pr: Record<string, unknown> }) {
-  const meta = [pr.author, pr.branch, pr.ciLabel ?? pr.ciStatus]
+// First review line referencing one PR number, cleaned for
+// display. Reviews arrive as free text keyed by PR in prose.
+export function prReviewNote(prNumber: string, reviewsLines: readonly string[]): string {
+  const want = `#${prNumber}`;
+  for (const line of reviewsLines) {
+    if (line.includes(want)) return cleanBriefingLine(line);
+  }
+  return '';
+}
+
+// Bot verdict badge (issue #839): review notes bury a
+// "Verdict: X" line in prose/markdown. An all-caps verdict
+// phrase lifts into a badge; anything else stays note-only
+// rather than risk a false badge.
+export function prReviewVerdict(note: string): string {
+  const m = note.match(/[Vv]erdict:\s*([A-Z]{2,}(?:[ ]+[A-Z]{2,})*)/);
+  if (!m) return '';
+  return m[1];
+}
+
+// Identical failure lines collapse into one counted row, in first-
+// seen order (issue #839). Exact-text match only — near-identical
+// lines stay separate rather than risk a false merge.
+export interface BriefingLineGroup {
+  text: string;
+  count: number;
+}
+
+export function groupBriefingLines(lines: readonly string[]): BriefingLineGroup[] {
+  const groups: BriefingLineGroup[] = [];
+  const index = new Map<string, number>();
+  for (const line of lines) {
+    const at = index.get(line);
+    if (at === undefined) {
+      index.set(line, groups.length);
+      groups.push({ text: line, count: 1 });
+    } else {
+      groups[at].count += 1;
+    }
+  }
+  return groups;
+}
+
+export function GroupedLines({ lines }: { lines: string[] }) {
+  return (
+    <ul className="session-list">
+      {groupBriefingLines(lines).map((g, i) => (
+        // eslint-disable-next-line react/no-array-index-key
+        <li key={i} className="detail">
+          <p>
+            {cleanBriefingLine(g.text)}
+            {g.count > 1 ? ` ×${g.count}` : ''}
+          </p>
+          {g.count > 1 && (
+            <p className="row-meta">Same failure repeated {g.count} times.</p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PrRow({
+  pr,
+  board,
+  reviewsLines,
+}: {
+  pr: Record<string, unknown>;
+  board: BoardItem[];
+  reviewsLines: string[];
+}) {
+  const number = String(pr.number ?? '?');
+  const branch = String(pr.branch ?? '').trim();
+  // Briefing PRs carry ci/merge/draft/stale (the Review list shape
+  // uses ciLabel/ciStatus instead); read both, briefing first.
+  const ci = String(pr.ci ?? pr.ciLabel ?? pr.ciStatus ?? '').trim();
+  const merge = String(pr.merge ?? '').trim();
+  const meta = [pr.author, branch]
     .map((v) => String(v ?? '').trim())
     .filter((v) => v.length > 0);
+  if (ci) meta.push(`CI ${ci}`);
+  if (merge) meta.push(`merge ${merge}`);
+  if (pr.draft === true) meta.push('draft');
+  if (pr.stale === true) meta.push('stale');
+  const boardStatus = boardStatusForBranch(branch, board);
+  if (boardStatus) meta.push(boardStatus);
+  const ownReview = String(pr.review ?? '').trim();
+  const note = /^\d+$/.test(number)
+    ? prReviewNote(number, reviewsLines) || (ownReview ? cleanBriefingLine(ownReview) : '')
+    : '';
+  const verdict = note ? prReviewVerdict(note) : '';
   return (
-    <li className="detail">
+    <li className="detail" data-testid="briefing-pr-row">
       <span className="row-title">
-        #{String(pr.number ?? '?')} {String(pr.title ?? 'Untitled')}
+        #{number} {String(pr.title ?? 'Untitled')}
       </span>
-      {meta.length > 0 && <p className="row-meta">{meta.join(' · ')}</p>}
+      {meta.length > 0 && <p className="row-meta pipeline-meta">{meta.join(' · ')}</p>}
+      {verdict && (
+        <p className="row-meta">
+          <span className="repo-chip" data-testid="briefing-verdict">
+            Verdict: {verdict}
+          </span>
+        </p>
+      )}
+      {note && <p className="row-meta">Review: {note}</p>}
     </li>
   );
 }
@@ -818,8 +930,13 @@ export default function BriefingView({
           </div>
         )}
       </header>
-      <DigestControls />
-      <PrefsControls />
+      {/* Set-once settings live behind chrome (#839): the
+          content owns the top of the view, not the knobs. */}
+      <details data-testid="briefing-settings">
+        <summary className="details-title">Digest &amp; notification settings</summary>
+        <DigestControls />
+        <PrefsControls />
+      </details>
       {error && (
         <div data-testid="briefing-error" role="alert">
           Briefing unavailable — {error}
@@ -859,6 +976,15 @@ export function BriefingBody({
   const inWindow = inActivityWindow(ledger ?? [], window, nowSec);
   const highlights = toHistoryRows([], inWindow).slice(0, 3);
   const freshness = briefingFreshness(data);
+  const prBranches = data.prs
+    .map((pr) => String(pr.branch ?? '').trim())
+    .filter((b) => b.length > 0);
+  const board = visibleBoardItems(data.board ?? [], prBranches);
+  const hasNarrative = typeof data.narrative === 'string' && data.narrative.trim() !== '';
+  // The lead pairs the narrative/summary with its action; a bare
+  // all-clear (no narrative, one fallback seed) keeps the classic
+  // Next-actions list with nothing hoisted.
+  const showLead = actions.length > 1 || hasNarrative;
   return (
     <>
       <p className="row-meta" data-testid="briefing-summary">
@@ -869,10 +995,24 @@ export function BriefingBody({
           {freshness}
         </p>
       )}
-      {typeof data.narrative === 'string' && data.narrative.trim() !== '' && (
+      {hasNarrative && (
         <p className="briefing-narrative" data-testid="briefing-narrative">
           {data.narrative}
         </p>
+      )}
+      {/* The lead names the top risk; its action rides inline
+          (#839) instead of waiting in Next actions below. */}
+      {showLead && (
+        <div className="actions" data-testid="briefing-lead-action">
+          <button type="button" onClick={() => onAskAgent(actions[0].seed)}>
+            {actions[0].label}
+          </button>
+          {data.workflow_lines.length > 0 && (
+            <button type="button" onClick={onOpenHistory}>
+              View failures in History
+            </button>
+          )}
+        </div>
       )}
       {data.prs_err && (
         <p className="row-meta" role="alert">
@@ -890,10 +1030,10 @@ export function BriefingBody({
           {data.prs.length > 0 && (
             <section>
               <h3>Open pull requests</h3>
-              <ul className="session-list">
+              <ul className="session-list" data-testid="briefing-pipeline">
                 {data.prs.map((pr, i) => (
                   // eslint-disable-next-line react/no-array-index-key
-                  <PrRow key={i} pr={pr} />
+                  <PrRow key={i} pr={pr} board={data.board ?? []} reviewsLines={data.reviews_lines} />
                 ))}
               </ul>
               {typeof data.enrichment_note === 'string' && data.enrichment_note.trim() !== '' && (
@@ -904,21 +1044,38 @@ export function BriefingBody({
             </section>
           )}
           <Section title="Reviews" lines={data.reviews_lines} err={reviewsErrText(data.reviews_err)} />
-          <BoardSection board={data.board ?? []} lines={data.board_lines} err={data.board_err} />
+          <BoardSection board={board} lines={data.board_lines} err={data.board_err} />
           <Section title="Conflicts" lines={data.conflicts_lines} err={data.conf_err} />
           <Section title="Overlaps" lines={data.overlaps_lines} />
-          <Section title="Failing runs" lines={data.workflow_lines} err={data.runs_err} />
+          {(data.workflow_lines.length > 0 || data.runs_err) && (
+            <section>
+              <h3>Failing runs</h3>
+              {data.runs_err && (
+                <p className="row-meta" role="alert">
+                  {data.runs_err}
+                </p>
+              )}
+              <GroupedLines lines={data.workflow_lines} />
+            </section>
+          )}
         </>
       )}
       <section aria-label="Next actions">
         <h3>Next actions</h3>
-        <div className="actions" data-testid="briefing-actions">
-          {actions.map((a) => (
-            <button key={a.label} type="button" onClick={() => onAskAgent(a.seed)}>
-              {a.label}
-            </button>
-          ))}
-        </div>
+        {/* The top action already rides inline under the lead; the
+            section keeps the remainder so no seed renders twice.
+            Without a lead the full list renders, as before. */}
+        {showLead && actions.length <= 1 ? (
+          <p className="row-meta">The top action is above, beside the summary.</p>
+        ) : (
+          <div className="actions" data-testid="briefing-actions">
+            {(showLead ? actions.slice(1) : actions).map((a) => (
+              <button key={a.label} type="button" onClick={() => onAskAgent(a.seed)}>
+                {a.label}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
       <section aria-label="Recent activity">
         <h3>Recent activity</h3>

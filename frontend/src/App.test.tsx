@@ -1362,7 +1362,9 @@ describe('now stack condense', () => {
   });
   it('collapses to one line when every container is up', () => {
     const html = renderToStaticMarkup(<StackSection health={healthy(8)} />);
-    expect(html).toContain('All 8 containers up');
+    // Stack-scoped copy (#839): the hero owns the global verdict, so
+    // this line must never read as its own "all clear".
+    expect(html).toContain('Stack: all 8 containers up.');
     expect(html).not.toContain('container-pill');
   });
   it('keeps pills when a container is down', () => {

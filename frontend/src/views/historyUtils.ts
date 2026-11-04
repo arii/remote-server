@@ -314,6 +314,68 @@ export function historyRowMatches(row: HistoryRow, query: string): boolean {
   return row.members.some((m) => m.detail.toLowerCase().includes(q));
 }
 
+// Faceted instant filters (issue #839): All plus Errors (tone
+// bad), Agent runs (turn rows), CI (runs, pulls, merges), and
+// Cron (scheduled rows). Kind-based over collapsed rows; counts
+// derive from the same filtered rows the feed shows.
+export type HistoryFacet = 'all' | 'errors' | 'agents' | 'ci' | 'cron';
+
+export interface HistoryFacetDef {
+  id: HistoryFacet;
+  label: string;
+}
+
+export const HISTORY_FACETS: HistoryFacetDef[] = [
+  { id: 'all', label: 'All' },
+  { id: 'errors', label: 'Errors' },
+  { id: 'agents', label: 'Agent runs' },
+  { id: 'ci', label: 'CI' },
+  { id: 'cron', label: 'Cron' },
+];
+
+const AGENT_FACET_KINDS = new Set(['agent-turn', 'cli-turn']);
+const CI_FACET_KINDS = new Set(['run', 'job', 'pr-action', 'webhook', 'repair']);
+
+export function rowInFacet(row: HistoryRow, facet: HistoryFacet): boolean {
+  switch (facet) {
+    case 'all':
+      return true;
+    case 'errors':
+      return row.tone === 'bad';
+    case 'agents':
+      return AGENT_FACET_KINDS.has(row.kind);
+    case 'ci':
+      return CI_FACET_KINDS.has(row.kind);
+    case 'cron':
+      return row.kind === 'cron' || row.kind === 'schedule';
+  }
+}
+
+export function facetCounts(rows: readonly HistoryRow[]): Record<HistoryFacet, number> {
+  const counts: Record<HistoryFacet, number> = {
+    all: rows.length,
+    errors: 0,
+    agents: 0,
+    ci: 0,
+    cron: 0,
+  };
+  for (const row of rows) {
+    if (row.tone === 'bad') counts.errors += 1;
+    if (AGENT_FACET_KINDS.has(row.kind)) counts.agents += 1;
+    if (CI_FACET_KINDS.has(row.kind)) counts.ci += 1;
+    if (row.kind === 'cron' || row.kind === 'schedule') counts.cron += 1;
+  }
+  return counts;
+}
+
+// Facets worth a chip: All + Errors always (the error count
+// reassures at zero); the rest only when rows exist for them.
+export function visibleFacets(counts: Record<HistoryFacet, number>): HistoryFacetDef[] {
+  return HISTORY_FACETS.filter(
+    (f) => f.id === 'all' || f.id === 'errors' || counts[f.id] > 0,
+  );
+}
+
 // Keep run-output disclosures readable: show the last maxLines lines and
 // say how many earlier lines were hidden. Empty output stays empty.
 export function tailText(output: string, maxLines = 40): string {

@@ -3,7 +3,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   ActionControl,
   askAgentSeed,
+  AttentionBulkBar,
+  AttentionGroupRow,
+  AttentionRow,
+  attentionGroupKey,
+  attentionTargetName,
   DEPLOY_ACTION,
+  groupAttentionItems,
+  groupSeenText,
   heroCountsText,
   heroStatus,
   lastDeployAt,
@@ -401,5 +408,116 @@ describe('guided empty state (issue #809)', () => {
     expect(html).toContain('Failing checks, approvals, and incidents will land here.');
     expect(html).toContain('data-testid="now-empty-jobs"');
     expect(html).toContain('>Run a check<');
+  });
+});
+
+describe('attention grouping (issue #839)', () => {
+  function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
+    return {
+      id: 'a1',
+      kind: 'failed-job',
+      title: 'check-notifications failed',
+      detail: 'd',
+      repo: 'remote-server',
+      severity: 'warn',
+      action: { label: 'Open', method: 'GET', href: 'api/jobs', destructive: false, intent: '' },
+      created_at: 1000,
+      ...overrides,
+    };
+  }
+
+  it('keys groups on kind + title', () => {
+    expect(attentionGroupKey(item())).toBe('failed-job‖check-notifications failed');
+  });
+
+  it('folds repeats into one group in feed order with worst severity', () => {
+    const groups = groupAttentionItems([
+      item({ id: 'a1', severity: 'warn', created_at: 1000 }),
+      item({ id: 'other', kind: 'stale', title: 'Other', created_at: 2000 }),
+      item({ id: 'a2', severity: 'crit', created_at: 3000 }),
+    ]);
+    expect(groups.length).toBe(2);
+    expect(groups[0].items.map((i) => i.id)).toEqual(['a1', 'a2']);
+    expect(groups[0].severity).toBe('crit');
+    expect(groups[0].firstSeen).toBe(1000);
+    expect(groups[0].lastSeen).toBe(3000);
+    expect(groups[1].items.map((i) => i.id)).toEqual(['other']);
+  });
+
+  it('reads first/last seen, collapsing single sightings', () => {
+    const [g] = groupAttentionItems([
+      item({ id: 'a1', created_at: 1000 }),
+      item({ id: 'a2', created_at: 3000 }),
+    ]);
+    expect(groupSeenText(g)).toContain('first ');
+    expect(groupSeenText(g)).toContain('last ');
+    const [solo] = groupAttentionItems([item({ id: 'a1', created_at: 1000 })]);
+    expect(groupSeenText(solo)).not.toContain('first ');
+    const [unknown] = groupAttentionItems([item({ id: 'a1', created_at: 0 })]);
+    expect(groupSeenText(unknown)).toBe('unknown time');
+  });
+
+  it('names the action destination for the source line', () => {
+    expect(attentionTargetName('api/jobs')).toBe('Jobs');
+    expect(attentionTargetName('/api/prs?repo=x')).toBe('Review');
+    expect(attentionTargetName('api/workflow-health')).toBe('History');
+    expect(attentionTargetName('api/notifications/status')).toBe('Briefing');
+    expect(attentionTargetName('api/agents/budget')).toBe('Chat');
+    expect(attentionTargetName('api/unknown')).toBe('action');
+  });
+
+  it('AttentionRow keeps the primary actions visible with snooze in overflow', () => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      <AttentionRow
+        item={item({ id: 'job-j1' })}
+        viewRepo="remote-server"
+        rollup={false}
+        selected={false}
+        busy={false}
+        onToggleSelect={noop}
+        onDone={noop}
+        onError={noop}
+        onSection={noop}
+        onTab={noop}
+        onAskAgent={noop}
+        onSnooze={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="now-item-job-j1"');
+    expect(html).toContain('data-testid="now-select-job-j1"');
+    expect(html).toContain('data-testid="now-source-job-j1"');
+    expect(html).toContain('source: remote-server · opens Jobs');
+    expect(html).toContain('data-testid="ask-agent-job-j1"');
+    expect(html).toContain('data-testid="now-more-job-j1"');
+    expect(html).toContain('data-testid="snooze-job-j1-60"');
+    expect(html).toContain('data-testid="snooze-job-j1-480"');
+  });
+
+  it('AttentionGroupRow shows the count, worst severity, and seen range', () => {
+    const [g] = groupAttentionItems([
+      item({ id: 'a1', severity: 'warn', created_at: 1000 }),
+      item({ id: 'a2', severity: 'crit', created_at: 3000 }),
+    ]);
+    const html = renderToStaticMarkup(
+      <AttentionGroupRow group={g} index={0}>
+        <li>member</li>
+      </AttentionGroupRow>,
+    );
+    expect(html).toContain('data-testid="now-group-0"');
+    expect(html).toContain('check-notifications failed ×2');
+    expect(html).toContain('sev-crit');
+    expect(html).toContain('first ');
+  });
+
+  it('AttentionBulkBar names the count with one button per preset', () => {
+    const html = renderToStaticMarkup(
+      <AttentionBulkBar count={3} busy={false} onSnooze={() => {}} onClear={() => {}} />,
+    );
+    expect(html).toContain('data-testid="now-bulk-bar"');
+    expect(html).toContain('3 selected');
+    expect(html).toContain('data-testid="now-bulk-snooze-60"');
+    expect(html).toContain('data-testid="now-bulk-snooze-480"');
+    expect(html).toContain('data-testid="now-bulk-clear"');
   });
 });

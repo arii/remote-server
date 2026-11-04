@@ -222,6 +222,66 @@ function PrDiff({ repo, pr }: { repo: string; pr: number }) {
   );
 }
 
+// Merge-block decision context (issue #839 addendum): wherever the
+// pane's Merge is disabled, the block inputs render inline — the
+// head reason, failing check names, conflicts, draft — plus the
+// likely cause when the state is ruleset-blocked with CI passing
+// and nothing failing (an untriggered required check, e.g. path
+// filters, or branch rules). The API reports triggered checks
+// only, so missing checks are named as the likely cause with a
+// link to the PR's authoritative list — never as observed fact.
+export function MergeBlockDetail({
+  details,
+  head,
+}: {
+  details: PrDetailsResponse;
+  head: string | null;
+}) {
+  const rulesetLike = details.merge === 'blocked' || details.merge === 'unstable';
+  const blockedGreen =
+    rulesetLike &&
+    details.ci === 'passing' &&
+    details.failing.length === 0 &&
+    !details.conflicted &&
+    !details.draft;
+  const behind = details.merge === 'behind';
+  if (!head && !blockedGreen && !behind) return null;
+  return (
+    <div data-testid="review-merge-block">
+      {head && <p className="row-meta">{head}</p>}
+      {details.failing.length > 0 && (
+        <p className="row-meta" data-testid="review-merge-failing">
+          Failing checks: {details.failing.join(', ')}.
+        </p>
+      )}
+      {details.conflicted && (
+        <p className="row-meta">Has merge conflicts — resolve them before merging.</p>
+      )}
+      {details.draft && <p className="row-meta">Still a draft.</p>}
+      {behind && (
+        <p className="row-meta">
+          Branch is behind {details.base || 'the base'} — update the branch, then merge.
+        </p>
+      )}
+      {blockedGreen && (
+        <p className="row-meta" data-testid="review-merge-missing">
+          Blocked with CI passing and no failing checks reported — a required check probably
+          never ran (path filters) or branch rules (ruleset or branch protection) block the
+          merge. See the required checks{' '}
+          {details.url ? (
+            <a href={details.url} target="_blank" rel="noreferrer">
+              on the PR
+            </a>
+          ) : (
+            'on the PR'
+          )}
+          .
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Headings stay in order: h3 PR title under the view h2, h4 prompts under
 // it. (The "Details" h3 only renders for the empty state.)
 export function PrDetails({
@@ -262,11 +322,7 @@ export function PrDetails({
         ))}
       </ul>
       <PrDiff repo={repo} pr={details.number} />
-      {mergeBlocked && (
-        <p className="row-meta" data-testid="review-merge-block">
-          {mergeBlocked}
-        </p>
-      )}
+      <MergeBlockDetail details={details} head={mergeBlocked} />
       <div className="actions">
         <TapToFire
           label={`Merge PR #${details.number}`}
@@ -720,6 +776,46 @@ export function bulkDeferNotice(count: number): string {
   return `Deferred ${count} row${count === 1 ? '' : 's'}.`;
 }
 
+// PR↔issue linkage (issue #839): a PR links the issues it likely
+// closes — explicit #N references in its title/branch plus
+// same-title rows (the issue #4848 + PR #4849 filing pattern).
+// Pure client-side over the loaded lists; chips only, no backend
+// shape change. Only numbers present in the loaded issue list link.
+export function prTitleRefs(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/#(\d+)/g)) {
+    const n = Number(m[1]);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+function normLinkTitle(t: string): string {
+  return t.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+export function linkedIssueNumbers(pr: PrRow, issues: readonly IssueRow[]): number[] {
+  const nums = new Set<number>();
+  for (const n of [...prTitleRefs(pr.title), ...prTitleRefs(pr.branch ?? '')]) {
+    if (issues.some((i) => i.number === n)) nums.add(n);
+  }
+  const want = normLinkTitle(pr.title);
+  if (want) {
+    for (const i of issues) {
+      if (i.title && normLinkTitle(i.title) === want) nums.add(i.number);
+    }
+  }
+  return [...nums].sort((a, b) => a - b);
+}
+
+export function linkedPrNumbers(issue: IssueRow, prs: readonly PrRow[]): number[] {
+  const out: number[] = [];
+  for (const p of prs) {
+    if (linkedIssueNumbers(p, [issue]).length > 0) out.push(p.number);
+  }
+  return out.sort((a, b) => a - b);
+}
+
 export function bulkRestoreNotice(count: number): string {
   return `Restored ${count} row${count === 1 ? '' : 's'}.`;
 }
@@ -785,6 +881,7 @@ export default function ReviewView({
   onAskAgent,
   triageSuspended = false,
   onSelectPr,
+  createRequest = 0,
 }: {
   repo: string;
   // Checkout branch of the viewed repo: seeds the branch field
@@ -796,6 +893,9 @@ export default function ReviewView({
   triageSuspended?: boolean;
   // Reports row selection up so Now can prefill the Jobs PR field.
   onSelectPr: (n: number | null) => void;
+  // Palette request (issue #839): a nonce bump opens the New-issue
+  // form so creation is one command away, not a scroll away.
+  createRequest?: number;
 }) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
   const [branch, setBranch] = useBranchField(repo, defaultBranch);
@@ -825,6 +925,15 @@ export default function ReviewView({
   const [labelPending, setLabelPending] = useState<Record<number, IssueLabelOp | null>>({});
   const [labelError, setLabelError] = useState<Record<number, string | null>>({});
   const [labelFailedOp, setLabelFailedOp] = useState<Record<number, IssueLabelOp | null>>({});
+  // New-issue disclosure, controlled so the palette can open it.
+  const [createOpen, setCreateOpen] = useState(false);
+  const handledCreateNonce = useRef(0);
+  useEffect(() => {
+    if (createRequest !== handledCreateNonce.current) {
+      handledCreateNonce.current = createRequest;
+      if (createRequest > 0) setCreateOpen(true);
+    }
+  }, [createRequest]);
 
   // Deferred rows hide from the main lists (and from the triage
   // cursor) and surface in the Deferred disclosure instead. The
@@ -1346,16 +1455,39 @@ export default function ReviewView({
                     {' · '}
                     {mergeBadge(p)}
                   </p>
-                  <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />{' '}
-                  <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />{' '}
-                  <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />{' '}
-                  <PrRowApprove pr={p} busy={reviewing.has(p.number)} onApprove={(n) => void onApprove(n)} />{' '}
-                  <PrRowRequestChanges
-                    pr={p}
-                    busy={reviewing.has(p.number)}
-                    expanded={requestChangesFor === p.number}
-                    onToggle={(n) => setRequestChangesFor((prev) => (prev === n ? null : n))}
-                  />
+                  {linkedIssueNumbers(p, issues ?? []).length > 0 && (
+                    <p className="row-meta">
+                      Linked:{' '}
+                      {linkedIssueNumbers(p, issues ?? []).map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          className="repo-chip link-chip"
+                          data-testid={`pr-link-issue-${p.number}-${n}`}
+                          aria-label={`Filter to linked issue #${n}`}
+                          title={`Linked issue #${n} — tap to filter`}
+                          onClick={() => setFilter(`#${n}`)}
+                        >
+                          #{n}
+                        </button>
+                      ))}
+                    </p>
+                  )}
+                  {/* Row verbs share one wrapped action row (#839):
+                      as direct li children the full-row button rule
+                      stacked them into five vertical text lines. */}
+                  <div className="actions">
+                    <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />
+                    <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />
+                    <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />
+                    <PrRowApprove pr={p} busy={reviewing.has(p.number)} onApprove={(n) => void onApprove(n)} />
+                    <PrRowRequestChanges
+                      pr={p}
+                      busy={reviewing.has(p.number)}
+                      expanded={requestChangesFor === p.number}
+                      onToggle={(n) => setRequestChangesFor((prev) => (prev === n ? null : n))}
+                    />
+                  </div>
                   {requestChangesFor === p.number && (
                     <RequestChangesForm
                       n={p.number}
@@ -1417,6 +1549,24 @@ export default function ReviewView({
                     onRemove={(label) => void runLabelOp(iss.number, 'remove', label)}
                     onRetry={() => retryLabelOp(iss.number)}
                   />
+                  {linkedPrNumbers(iss, prs ?? []).length > 0 && (
+                    <p className="row-meta">
+                      Linked:{' '}
+                      {linkedPrNumbers(iss, prs ?? []).map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          className="repo-chip link-chip"
+                          data-testid={`issue-link-pr-${iss.number}-${n}`}
+                          aria-label={`Open linked PR #${n}`}
+                          title={`Linked PR #${n} — tap to open`}
+                          onClick={() => void selectPr(n)}
+                        >
+                          PR #{n}
+                        </button>
+                      ))}
+                    </p>
+                  )}
                   <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)} />
                 </li>
               ))}
@@ -1476,7 +1626,13 @@ export default function ReviewView({
               onAskAgent={onAskAgent}
             />
           )}
-          <details data-testid="review-create-disclosure">
+          <details
+            data-testid="review-create-disclosure"
+            open={createOpen}
+            onToggle={(e) => {
+              if (e.target === e.currentTarget) setCreateOpen(e.currentTarget.open);
+            }}
+          >
             <summary className="details-title">New issue</summary>
           <form
             data-testid="review-create-form"

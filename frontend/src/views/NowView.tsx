@@ -201,7 +201,7 @@ export function StackSection({ health }: { health: SystemHealthResponse | null }
         <p className="row-meta" role="status">Stack status: loading…</p>
       ) : allUp ? (
         <p className="row-meta" data-testid="now-stack-clear" role="status">
-          All {health.containers.length} containers up — all clear.
+          Stack: all {health.containers.length} containers up.
         </p>
       ) : (
         <ContainerPills containers={health.containers} error={health.containers_error} />
@@ -452,6 +452,66 @@ export function topUrgent(items: AttentionItem[]): AttentionItem | null {
   return best;
 }
 
+// Repeating-failure grouping (issue #839): one accordion row per
+// kind + title instead of one card per repeat. Members keep feed
+// order; the group severity is the worst member rank.
+export interface AttentionGroup {
+  key: string;
+  kind: string;
+  title: string;
+  severity: string;
+  items: AttentionItem[];
+  firstSeen: number;
+  lastSeen: number;
+}
+
+export function attentionGroupKey(item: AttentionItem): string {
+  return `${item.kind}‖${item.title}`;
+}
+
+function groupWorstSeverity(items: AttentionItem[]): string {
+  let worst = items[0].severity;
+  let worstRank = HERO_SEV_RANK[worst.toLowerCase()] ?? 2;
+  for (const item of items) {
+    const rank = HERO_SEV_RANK[item.severity.toLowerCase()] ?? 2;
+    if (rank < worstRank) {
+      worst = item.severity;
+      worstRank = rank;
+    }
+  }
+  return worst;
+}
+
+export function groupAttentionItems(items: AttentionItem[]): AttentionGroup[] {
+  const groups = new Map<string, AttentionItem[]>();
+  for (const item of items) {
+    const key = attentionGroupKey(item);
+    const list = groups.get(key);
+    if (list) list.push(item);
+    else groups.set(key, [item]);
+  }
+  return [...groups.entries()].map(([key, members]) => {
+    const stamps = members.map((m) => m.created_at).filter((t) => t > 0);
+    return {
+      key,
+      kind: members[0].kind,
+      title: members[0].title,
+      severity: groupWorstSeverity(members),
+      items: members,
+      firstSeen: stamps.length > 0 ? Math.min(...stamps) : 0,
+      lastSeen: stamps.length > 0 ? Math.max(...stamps) : 0,
+    };
+  });
+}
+
+export function groupSeenText(group: AttentionGroup): string {
+  if (!group.firstSeen) return 'unknown time';
+  if (group.items.length < 2 || group.firstSeen === group.lastSeen) {
+    return relativeStamp(group.firstSeen);
+  }
+  return `first ${relativeStamp(group.firstSeen)} · last ${relativeStamp(group.lastSeen)}`;
+}
+
 // Console self-deploy action (engine allowlist): the hero's last
 // deploy age is the newest deploy-buttons run's start.
 export const DEPLOY_ACTION = 'deploy-buttons';
@@ -558,6 +618,169 @@ export function NowHero({
   );
 }
 
+export function attentionTargetName(href: string): string {
+  const target = resolveAttentionTarget(href);
+  if (!target) return 'action';
+  return target.charAt(0).toUpperCase() + target.slice(1);
+}
+
+export interface AttentionRowCallbacks {
+  onDone: (title: string) => void;
+  onError: (message: string) => void;
+  onSection: (section: 'review' | 'jobs') => void;
+  onTab: (tab: AttentionNavTab) => void;
+  onAskAgent: (seed: string) => void;
+  onSnooze: (item: AttentionItem, minutes: number) => void;
+}
+
+// One attention row (issue #839): the primary action + Ask agent
+// stay visible; snooze presets collapse into a More overflow so a
+// queued item costs one line of buttons, not four. The source line
+// names the row's repo and the action's in-app destination.
+export function AttentionRow({
+  item,
+  viewRepo,
+  rollup,
+  selected,
+  busy,
+  onToggleSelect,
+  onDone,
+  onError,
+  onSection,
+  onTab,
+  onAskAgent,
+  onSnooze,
+}: AttentionRowCallbacks & {
+  item: AttentionItem;
+  viewRepo: string;
+  rollup: boolean;
+  selected: boolean;
+  busy: boolean;
+  onToggleSelect: () => void;
+}) {
+  return (
+    <li className="detail" data-testid={`now-item-${item.id}`}>
+      <input
+        type="checkbox"
+        data-testid={`now-select-${item.id}`}
+        aria-label={`Select ${item.title}`}
+        checked={selected}
+        onChange={onToggleSelect}
+      />{' '}
+      {showRepoTag(rollup, item.repo, viewRepo) ? (
+        <span className="row-title">
+          <RepoTag repo={item.repo} /> {item.title}
+        </span>
+      ) : (
+        <span className="row-title">{item.title}</span>
+      )}
+      <p className="row-meta">
+        {item.kind} · <span className={sevClass(item.severity)}>{item.severity}</span>
+        {' · '}
+        <span title={formatStamp(item.created_at)}>
+          {relativeStamp(item.created_at)}
+        </span>
+      </p>
+      <p className="row-meta" data-testid={`now-source-${item.id}`}>
+        source: {item.repo} · opens {attentionTargetName(item.action.href)}
+      </p>
+      <p>{item.detail}</p>
+      <div className="actions">
+        <ActionControl
+          item={item}
+          onDone={onDone}
+          onError={onError}
+          onSection={onSection}
+          onTab={onTab}
+        />
+        <button
+          type="button"
+          data-testid={`ask-agent-${item.id}`}
+          onClick={() => onAskAgent(askAgentSeed(item))}
+        >
+          Ask agent
+        </button>
+        <details className="row-overflow" data-testid={`now-more-${item.id}`}>
+          <summary>More</summary>
+          <div className="actions">
+            <SnoozeButtons
+              itemId={item.id}
+              busy={busy}
+              onSnooze={(m) => onSnooze(item, m)}
+            />
+          </div>
+        </details>
+      </div>
+    </li>
+  );
+}
+
+// One accordion row for a repeating failure: count, worst
+// severity, and first/last seen in the summary; members expand
+// below with their own actions.
+export function AttentionGroupRow({
+  group,
+  index,
+  children,
+}: {
+  group: AttentionGroup;
+  index: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="detail attention-group" data-testid={`now-group-${index}`}>
+      <details>
+        <summary>
+          <span className="row-title">
+            {group.title} ×{group.items.length}
+          </span>
+          <span className="row-meta">
+            {group.kind} · <span className={sevClass(group.severity)}>{group.severity}</span>
+            {' · '}
+            {groupSeenText(group)}
+          </span>
+        </summary>
+        <ul className="session-list">{children}</ul>
+      </details>
+    </li>
+  );
+}
+
+// Bulk bar: rendered only while attention rows are selected. One
+// snooze action per preset across the selection, plus clear.
+export function AttentionBulkBar({
+  count,
+  busy,
+  onSnooze,
+  onClear,
+}: {
+  count: number;
+  busy: boolean;
+  onSnooze: (minutes: number) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="actions" data-testid="now-bulk-bar" role="status">
+      {count} selected{' '}
+      {SNOOZE_PRESETS.map((m) => (
+        <button
+          key={m}
+          type="button"
+          data-testid={`now-bulk-snooze-${m}`}
+          aria-label={`${snoozePresetLabel(m)} ${count} selected item${count === 1 ? '' : 's'}`}
+          disabled={busy}
+          onClick={() => onSnooze(m)}
+        >
+          {snoozePresetLabel(m)} ({count})
+        </button>
+      ))}
+      <button type="button" data-testid="now-bulk-clear" onClick={onClear}>
+        Clear
+      </button>
+    </div>
+  );
+}
+
 export default function NowView({
   repo,
   defaultBranch,
@@ -567,6 +790,7 @@ export default function NowView({
   onOpenTab,
   sectionRequest = null,
   reportRequest = 0,
+  createRequest = 0,
 }: {
   repo: string;
   // Checkout branch of the viewed repo, seeding the Review/Jobs
@@ -581,6 +805,9 @@ export default function NowView({
   // after the palette navigates here from another tab.
   sectionRequest?: { section: 'review' | 'jobs'; nonce: number } | null;
   reportRequest?: number;
+  // Palette request (issue #839): a nonce bump opens the Review
+  // section's New-issue form (threaded through to ReviewView).
+  createRequest?: number;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The
@@ -608,6 +835,9 @@ export default function NowView({
   // instantly; refresh() reconciles against the server list.
   const [snoozed, setSnoozed] = useState<Record<string, SnoozedEntry>>({});
   const [snoozeBusy, setSnoozeBusy] = useState<string | null>(null);
+  // Bulk selection across attention rows (issue #839): snooze-n via
+  // the bulk bar instead of tapping each row's overflow.
+  const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const rollup = isRollupRepo(repo);
 
   useEffect(() => {
@@ -682,6 +912,13 @@ export default function NowView({
           Date.now() / 1000,
         ),
       );
+      // A bulk-selected row that left the list drops from the
+      // selection so the count never names a resolved item.
+      setBulkSelected((prev) => {
+        const liveIds = new Set(live.attention.map((i) => i.id));
+        if ([...prev].every((id) => liveIds.has(id))) return prev;
+        return new Set([...prev].filter((id) => liveIds.has(id)));
+      });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -732,6 +969,43 @@ export default function NowView({
     } finally {
       setSnoozeBusy(null);
     }
+  }
+
+  // One preset across the whole bulk selection: snooze each live
+  // row, then refresh once. A mid-loop failure keeps the stubs that
+  // landed and reports; refresh reconciles the rest.
+  async function onBulkSnooze(minutes: number) {
+    if (snoozeBusy !== null || !data) return;
+    const targets = data.attention.filter((i) => bulkSelected.has(i.id));
+    if (targets.length === 0) return;
+    setSnoozeBusy('bulk');
+    try {
+      for (const item of targets) {
+        const res = await snoozeAttention(item.id, minutes, item.repo);
+        setSnoozed((prev) => ({
+          ...prev,
+          [item.id]: { until: res.snoozed_until, title: item.title },
+        }));
+      }
+      setFired(
+        `Snoozed ${targets.length} item${targets.length === 1 ? '' : 's'} (${snoozePresetLabel(minutes).toLowerCase()})`,
+      );
+      setBulkSelected(new Set());
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSnoozeBusy(null);
+    }
+  }
+
+  function toggleBulkSelect(id: string) {
+    setBulkSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -844,6 +1118,44 @@ export default function NowView({
 
   const stubRows = data ? snoozedRows(snoozed, data.attention.map((i) => i.id)) : [];
 
+  // One group member: its snoozed stub while snoozed, else the row.
+  // Shared by singleton groups and accordion members so a repeat
+  // snoozes exactly like a lone item.
+  function renderMember(item: AttentionItem) {
+    if (snoozed[item.id]) {
+      return (
+        <SnoozedStub
+          key={item.id}
+          itemId={item.id}
+          title={item.title}
+          until={snoozed[item.id].until}
+          busy={snoozeBusy === item.id}
+          onUnsnooze={() => void onUnsnooze(item.id)}
+        />
+      );
+    }
+    return (
+      <AttentionRow
+        key={item.id}
+        item={item}
+        viewRepo={repo}
+        rollup={rollup}
+        selected={bulkSelected.has(item.id)}
+        busy={snoozeBusy !== null}
+        onToggleSelect={() => toggleBulkSelect(item.id)}
+        onDone={(title) => {
+          setFired(title);
+          void refresh();
+        }}
+        onError={setError}
+        onSection={(s) => setSection(s)}
+        onTab={(t) => onOpenTab(t)}
+        onAskAgent={onAskAgent}
+        onSnooze={(target, m) => void onSnooze(target, m)}
+      />
+    );
+  }
+
   return (
     <section data-testid="now-view">
       <header className="page-head">
@@ -932,62 +1244,27 @@ export default function NowView({
       {data.attention.length === 0 ? (
         <NowEmptyState onRunCheck={() => setSection('jobs')} />
       ) : (
-        <ul className="session-list" data-testid="now-list">
-          {data.attention.map((item) =>
-            snoozed[item.id] ? (
-              <SnoozedStub
-                key={item.id}
-                itemId={item.id}
-                title={item.title}
-                until={snoozed[item.id].until}
-                busy={snoozeBusy === item.id}
-                onUnsnooze={() => void onUnsnooze(item.id)}
-              />
-            ) : (
-            <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
-              {showRepoTag(rollup, item.repo, repo) ? (
-                <span className="row-title">
-                  <RepoTag repo={item.repo} /> {item.title}
-                </span>
-              ) : (
-                <span className="row-title">{item.title}</span>
-              )}
-              <p className="row-meta">
-                {item.kind} · <span className={sevClass(item.severity)}>{item.severity}</span>
-                {' · '}
-                <span title={formatStamp(item.created_at)}>
-                  {relativeStamp(item.created_at)}
-                </span>
-              </p>
-              <p>{item.detail}</p>
-              <div className="actions">
-                <ActionControl
-                  item={item}
-                  onDone={(title) => {
-                    setFired(title);
-                    void refresh();
-                  }}
-                  onError={setError}
-                  onSection={(s) => setSection(s)}
-                  onTab={(t) => onOpenTab(t)}
-                />
-                <button
-                  type="button"
-                  data-testid={`ask-agent-${item.id}`}
-                  onClick={() => onAskAgent(askAgentSeed(item))}
-                >
-                  Ask agent
-                </button>
-                <SnoozeButtons
-                  itemId={item.id}
-                  busy={snoozeBusy !== null}
-                  onSnooze={(m) => void onSnooze(item, m)}
-                />
-              </div>
-            </li>
-            ),
+        <>
+          {bulkSelected.size > 0 && (
+            <AttentionBulkBar
+              count={bulkSelected.size}
+              busy={snoozeBusy !== null}
+              onSnooze={(m) => void onBulkSnooze(m)}
+              onClear={() => setBulkSelected(new Set())}
+            />
           )}
-        </ul>
+          <ul className="session-list" data-testid="now-list">
+            {groupAttentionItems(data.attention).map((group, gi) =>
+              group.items.length === 1 ? (
+                renderMember(group.items[0])
+              ) : (
+                <AttentionGroupRow key={group.key} group={group} index={gi}>
+                  {group.items.map((item) => renderMember(item))}
+                </AttentionGroupRow>
+              ),
+            )}
+          </ul>
+        </>
       )}
       {!rollup && (
         <div className="actions" data-testid="inbox-sections">
@@ -1009,7 +1286,7 @@ export default function NowView({
           </button>
         </div>
       )}
-          {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} />}
+          {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
           {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
         </>
       )}

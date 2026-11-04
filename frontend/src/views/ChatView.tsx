@@ -2197,6 +2197,11 @@ export default function ChatView({
       <span className="sr-only" role="status" data-testid="chat-phase">
         {streaming ? phase : null}
       </span>
+      {/* Split console (#839): the conversation canvas keeps the
+          main column; past runs and the agent launcher ride the
+          side rail instead of stacking below the composer. */}
+      <div className="split">
+      <div className="chat-main">
       <ChatHistory
         messages={messages}
         streaming={streaming}
@@ -2212,9 +2217,11 @@ export default function ChatView({
       {approval && (
         <ApprovalCard approval={approval} decided={decided} onDecide={(d) => void onDecide(d)} />
       )}
-      {/* Composer above Past runs: with 8+ runs the form used to
-          drop below every run card, burying Prompt + Send (#564). */}
-      <PromptChips disabled={streaming} onPick={(text, altKey) => onPickChip(text, altKey)} />
+      {/* Starters only start conversations: once a thread
+          exists the chips would be a third button row (#839). */}
+      {messages.length === 0 && (
+        <PromptChips disabled={streaming} onPick={(text, altKey) => onPickChip(text, altKey)} />
+      )}
       <form onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
           Prompt{' '}
@@ -2324,28 +2331,30 @@ export default function ChatView({
           {hint ? hintLine(hint) : 'Next reply via …'}
         </p>
         {dictationHint && <DictationHint text={dictationHint} />}
-        <div
-          className="actions"
-          role="group"
-          aria-label="Chat backend"
-          data-testid="chat-backend-picker"
-          ref={backendGroupRef}
-          tabIndex={-1}
-        >
-          {CHAT_BACKEND_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              data-testid={`chat-backend-${o.value}`}
-              aria-pressed={backend === o.value}
-              disabled={streaming}
-              onClick={() => setBackend(o.value)}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
+        {/* One composer action row (#839): backend pills ride
+            inline with Send instead of owning a second row. */}
         <div className="actions">
+          <div
+            className="inline-pills"
+            role="group"
+            aria-label="Chat backend"
+            data-testid="chat-backend-picker"
+            ref={backendGroupRef}
+            tabIndex={-1}
+          >
+            {CHAT_BACKEND_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                data-testid={`chat-backend-${o.value}`}
+                aria-pressed={backend === o.value}
+                disabled={streaming}
+                onClick={() => setBackend(o.value)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
           <button
             type="submit"
             data-testid="chat-send"
@@ -2388,6 +2397,8 @@ export default function ChatView({
           </button>
         </div>
       </form>
+      </div>
+      <aside className="chat-side" aria-label="Past runs and agent launcher">
       <RunsPane
         runs={runs}
         selected={selected}
@@ -2400,6 +2411,8 @@ export default function ChatView({
         budget={budget}
       />
       <AgentDrawer repo={repo} />
+      </aside>
+      </div>
     </section>
   );
 }
