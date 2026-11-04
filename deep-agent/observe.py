@@ -23,6 +23,7 @@ observability must not break runs.
 import json
 import os
 import re
+import secrets
 import time
 
 PREVIEW_LIMIT = 2000
@@ -38,7 +39,13 @@ def _preview(value):
 
 
 def default_trace_path(script, thread_id):
-    """<state>/traces/<script>_<thread>_<ts>.jsonl (dir created)."""
+    """<state>/traces/<script>_<thread>_<ts>_<pid>_<rand>.jsonl (dir created).
+
+    The pid+random suffix gives every run its own trace file: two runs
+    of the same script+thread starting within the same second must never
+    share (and interleave) one file. The timestamp keeps its position so
+    names stay chronologically sortable.
+    """
     import ledger
 
     safe = _THREAD_SAFE.sub("_", thread_id or "run")[:64] or "run"
@@ -48,7 +55,8 @@ def default_trace_path(script, thread_id):
     except OSError:
         pass
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-    return os.path.join(base, f"{script}_{safe}_{stamp}.jsonl")
+    uniq = f"{os.getpid()}-{secrets.token_hex(4)}"
+    return os.path.join(base, f"{script}_{safe}_{stamp}_{uniq}.jsonl")
 
 
 class TraceRecorder:
