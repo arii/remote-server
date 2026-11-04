@@ -780,11 +780,47 @@ export function startTdRun(
   });
 }
 
+// Dispatched multi-page UX audit (issue #850): crawl + file one
+// findings issue. The run tail ends in AUDIT_DONE <repo>#<n> <url>.
+export function startUxAuditRun(
+  site: string,
+  maxPages: number,
+): Promise<{ id: string }> {
+  return postJson<{ id: string }>('api/jobs/run-ux-audit', {
+    site,
+    max_pages: maxPages,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export interface UxAuditGroup {
+  index: number;
+  category: string;
+  title: string;
+  count: number;
+  worst: string;
+  body: string;
+}
+
+// Finding groups from the latest audit report: one-tap assign
+// payloads (each body is a task spec for a focused dispatch).
+export function fetchUxAuditGroups(
+  site: string,
+): Promise<{ site: string; groups: UxAuditGroup[] }> {
+  return getJson<{ site: string; groups: UxAuditGroup[] }>(
+    `api/jobs/ux-audit/groups?site=${encodeURIComponent(site)}`,
+  );
+}
+
 // One-click re-run of a finished run through the real launch
 // endpoints (same gates, same conflicts as a fresh launch).
 // Recorded argv replays to run-td; the join is lossless because
 // recorded argv passed validate_td_command, which splits on
-// whitespace. Callers pass confirmed=true for destructive actions.
+// whitespace — except ux-audit argv, which replays to the audit
+// endpoint (it is site argv, not a td command). Callers pass
+// confirmed=true for destructive actions.
 export function rerunJob(
   action: string,
   repo: string,
@@ -792,6 +828,15 @@ export function rerunJob(
   confirmed = false,
   branch?: string,
 ): Promise<{ id: string }> {
+  if (action === 'ux-audit' && tdArgv[0] === 'ux-audit' && tdArgv[1]) {
+    const at = tdArgv.indexOf('--max-pages');
+    const pages =
+      at >= 0 && tdArgv[at + 1] ? Number.parseInt(tdArgv[at + 1], 10) : 25;
+    return startUxAuditRun(
+      tdArgv[1],
+      Number.isFinite(pages) ? pages : 25,
+    );
+  }
   if (tdArgv.length > 0) return startTdRun(tdArgv.join(' '), repo, branch);
   return startJobRun(action, repo, confirmed, branch);
 }
@@ -1174,6 +1219,7 @@ export function dispatchRepair(
   issue: string,
   branch?: string,
   repo?: string,
+  focus?: string,
 ): Promise<{ ok: boolean; issue: number; status: string; repo: string }> {
   return postJson<{ ok: boolean; issue: number; status: string; repo: string }>(
     'api/repair/dispatch',
@@ -1181,6 +1227,7 @@ export function dispatchRepair(
       {
         issue,
         ...(repo?.trim() ? { repo: repo.trim() } : {}),
+        ...(focus ? { focus } : {}),
         intent: 'repair-dispatch',
         confirmed: true,
       },

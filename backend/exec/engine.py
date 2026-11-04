@@ -67,6 +67,7 @@ STEP_TIMEOUT = 300
 # Actions not listed here inherit STEP_TIMEOUT.
 ACTION_STEP_TIMEOUTS = {
     "triage-fanout": 1200,
+    "ux-audit": 1200,
 }
 
 
@@ -95,6 +96,7 @@ ALLOWED_ACTIONS = (
     "triage-fanout",
     "check-notifications",
     "autofile-scan",
+    "ux-audit",
 )
 
 # Actions whose original has confirm: True. The router requires
@@ -307,6 +309,34 @@ def validate_plan_argv(tokens):
     return False
 
 
+UX_AUDIT_SITE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$")
+
+
+def validate_ux_audit_argv(tokens):
+    """True for builder-shaped ux-audit argv: ["ux-audit", site]
+    plus an optional ["--max-pages", N] pair (1..200).
+
+    Structural only (hostname-shaped site, numeric cap): the
+    runner owns the site registry and fails closed on unknown
+    sites, so the engine never drifts from it.
+    """
+    if not isinstance(tokens, (list, tuple)):
+        return False
+    tokens = list(tokens)
+    if len(tokens) not in (2, 4):
+        return False
+    if not all(isinstance(t, str) for t in tokens):
+        return False
+    if tokens[0] != "ux-audit":
+        return False
+    if not UX_AUDIT_SITE_RE.match(tokens[1]):
+        return False
+    if len(tokens) == 2:
+        return True
+    return (tokens[2] == "--max-pages" and tokens[3].isdigit()
+            and 1 <= int(tokens[3]) <= 200)
+
+
 def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     """Run one fixed td/gh command string; return stdout.
 
@@ -490,6 +520,28 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             return None, "autofile-scan needs a repo"
         return [[sys.executable, "-m", "core_cli.autofile_scan",
                  "--repo", repo, "--gh", gh]], None
+    if action == "ux-audit":
+        # Dispatched multi-page UX audit (#850): local exec of the
+        # deep-agent runner (like triage-fanout) so the report lands
+        # in the state dir this backend serves. Site-scoped, not
+        # repo-scoped: the site rides the attached argv. Audit-only
+        # (crawl + file one findings issue); --model stays off so
+        # the job is deterministic (runbook covers model reruns).
+        if not td_argv or not validate_ux_audit_argv(td_argv):
+            return None, "ux-audit needs attached [ux-audit, site]"
+        python = deep_agent_python()
+        script = deep_agent_script("ux_audit.py")
+        if not os.path.isfile(python):
+            return (None, "deep-agent venv python not found at "
+                    f"{python} (set DEEP_AGENT_VENV)")
+        if not os.path.isfile(script):
+            return (None, "ux audit script not found at "
+                    f"{script}")
+        argv = [python, script, "audit", td_argv[1]]
+        if len(td_argv) == 4:
+            argv += ["--max-pages", td_argv[3]]
+        argv.append("--file")
+        return [argv], None
     return None, "unknown action"
 
 

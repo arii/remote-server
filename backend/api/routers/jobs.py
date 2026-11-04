@@ -11,6 +11,8 @@ Ports of the buttons/server.py handlers:
 - GET  /api/jobs/runs/{rid}/stream (SSE per-run push; ends on done)
 - POST /api/jobs/runs/{rid}/cancel (cancel a running run: 202/404/409)
 - POST /api/jobs/run-plan (start a run for one allowlisted td planning guide)
+- POST /api/jobs/run-ux-audit (start a dispatched site UX audit)
+- GET  /api/jobs/ux-audit/groups (finding groups from the latest audit)
 - POST /api/jobs/schedule (schedule a non-destructive action/run-td)
 - GET  /api/jobs/schedule (list action schedules + next runs)
 - DELETE /api/jobs/schedule/{id} (delete one action schedule)
@@ -23,6 +25,7 @@ import difflib
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -42,6 +45,7 @@ from backend.exec.engine import (
     execute_run,
     runs_store_path,
     validate_td_command,
+    validate_ux_audit_argv,
 )
 
 RID_RE = re.compile(r"^[0-9a-f]{12}$")
@@ -433,6 +437,99 @@ def run_stream(rid: str) -> StreamingResponse:
                              headers=SSE_HEADERS)
 
 
+def _ux_audit_module():
+    """Lazy deep-agent ux_audit import (stdlib-only at import, so
+    this works without the venv; same seam style as the review
+    module's s5tools import). Raises ImportError when the
+    deep-agent tree is missing."""
+    from backend.exec.engine import deep_agent_dir
+
+    deep_agent = deep_agent_dir()
+    if deep_agent not in sys.path:
+        sys.path.insert(0, deep_agent)
+    import ux_audit
+
+    return ux_audit
+
+
+class RunUxAuditRequest(BaseModel):
+    site: str = ""
+    max_pages: int = 25
+    branch: str = ""
+
+
+class UxAuditGroup(BaseModel):
+    index: int = 0
+    category: str = ""
+    title: str = ""
+    count: int = 0
+    worst: str = ""
+    body: str = ""
+
+
+class UxAuditGroups(BaseModel):
+    site: str = ""
+    groups: list = Field(default_factory=list)
+
+
+@router.post("/run-ux-audit", response_model=RunStarted)
+def start_run_ux_audit(body: RunUxAuditRequest) -> dict:
+    """Dispatch a multi-page UX audit (#850): crawl + deterministic
+    impeccable pass + file ONE findings issue to the site's repo.
+
+    First-class run (single-flighted, listed, ledgered) like
+    run-plan: clients poll /runs/{rid}, whose tail ends in
+    AUDIT_DONE <repo>#<num> <url> on success. Deterministic (no
+    --model); audit-only, never changes site content.
+    """
+    try:
+        ux_audit = _ux_audit_module()
+    except ImportError as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"ux audit unavailable: {exc}")
+    try:
+        ux_audit.site_config(body.site)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown site")
+    pages = body.max_pages
+    if isinstance(pages, bool) or not isinstance(pages, int) \
+            or not 1 <= pages <= 200:
+        raise HTTPException(status_code=400, detail="bad max_pages")
+    argv = ["ux-audit", body.site, "--max-pages", str(pages)]
+    run_id, err = registry.start_run("ux-audit", "remote-server",
+                                     td_argv=argv)
+    if err:
+        raise HTTPException(
+            status_code=409 if "already in progress" in err else 400,
+            detail=err,
+        )
+    try:
+        _launch(run_id, "ux-audit", "remote-server", td_argv=argv)
+    except Exception:
+        registry.finish_run(run_id, 1)
+        raise
+    return {"id": run_id}
+
+
+@router.get("/ux-audit/groups", response_model=UxAuditGroups)
+def ux_audit_groups(site: str = "") -> dict:
+    """Finding groups from a site's latest audit report — the
+    one-tap assign payloads (each body is a task spec for one
+    repair dispatch with focus). 404 until the first run lands."""
+    try:
+        ux_audit = _ux_audit_module()
+    except ImportError as exc:
+        raise HTTPException(status_code=500,
+                            detail=f"ux audit unavailable: {exc}")
+    try:
+        groups = ux_audit.report_groups(site)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown site")
+    if groups is None:
+        raise HTTPException(status_code=404, detail="no report yet")
+    return {"site": site, "groups": groups}
+
+
 @router.post("/run-plan", response_model=RunStarted)
 def start_run_plan(body: RunPlanRequest) -> dict:
     argv, err = build_plan_argv(body.plan, body.pr, body.prs, body.target)
@@ -622,17 +719,29 @@ def create_action_schedule(body: ActionScheduleRequest) -> dict:
                    f"launch it manually from Jobs")
     td_argv = list(body.td_argv or [])
     if td_argv:
-        if action != "run-td":
+        if action == "run-td":
+            tokens = validate_td_command(" ".join(td_argv))
+            if tokens is None or tokens != td_argv:
+                raise HTTPException(
+                    status_code=400, detail="bad td command")
+        elif action == "ux-audit":
+            # Periodic re-audits (#850): the site argv replays
+            # through the same step builder as a manual dispatch.
+            if not validate_ux_audit_argv(td_argv):
+                raise HTTPException(
+                    status_code=400, detail="bad ux-audit argv")
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="td_argv is only valid with action run-td")
-        tokens = validate_td_command(" ".join(td_argv))
-        if tokens is None or tokens != td_argv:
-            raise HTTPException(
-                status_code=400, detail="bad td command")
+                detail="td_argv is only valid with action "
+                       "run-td or ux-audit")
     elif action == "run-td":
         raise HTTPException(
             status_code=400, detail="run-td schedules need td_argv")
+    elif action == "ux-audit":
+        raise HTTPException(
+            status_code=400,
+            detail="ux-audit schedules need td_argv")
     repo = (body.repo or "remote-server").strip() or "remote-server"
     if action in REPO_SCOPED_ACTIONS:
         try:

@@ -2068,5 +2068,215 @@ class StepEnvTest(unittest.TestCase):
         self.assertIn("/tmp", "".join(out).strip().splitlines()[-1])
 
 
+class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
+    """Dispatched UX audit as a first-class jobs action (#850)."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+
+        import backend.api.routers.jobs as jobs_router
+
+        self._ledger_setup()
+        self._jobs_router = jobs_router
+        self._old_registry = jobs_router.registry
+        jobs_router.registry = RunRegistry()
+        from backend.server import app
+
+        self.client = TestClient(app)
+        # Fake deep-agent tree carrying the REAL runner modules, so
+        # the registry/groups paths exercise production code while
+        # venv resolution stays hermetic.
+        self._agent_tmp = tempfile.TemporaryDirectory()
+        real = os.path.join(engine.ENGINE_ROOT, "deep-agent")
+        for name in ("ux_audit.py", "cli.py", "impact.py",
+                     "s5tools.py"):
+            shutil.copy(os.path.join(real, name),
+                        self._agent_tmp.name)
+        venv_bin = os.path.join(self._agent_tmp.name, ".venv", "bin")
+        os.makedirs(venv_bin)
+        self.fake_python = os.path.join(venv_bin, "python")
+        with open(self.fake_python, "w") as f:
+            f.write("#!/bin/sh\n")
+        self.fake_script = os.path.join(
+            self._agent_tmp.name, "ux_audit.py")
+        self._old_agent_dir = os.environ.get("DEEP_AGENT_DIR")
+        self._old_agent_venv = os.environ.get("DEEP_AGENT_VENV")
+        os.environ["DEEP_AGENT_DIR"] = self._agent_tmp.name
+        os.environ.pop("DEEP_AGENT_VENV", None)
+        # Hermetic report state for the groups endpoint.
+        self._state_tmp = tempfile.TemporaryDirectory()
+        self._old_state = os.environ.get("BUTTONS_UX_AUDIT_DIR")
+        os.environ["BUTTONS_UX_AUDIT_DIR"] = self._state_tmp.name
+        sys.modules.pop("ux_audit", None)
+
+    def tearDown(self):
+        self._jobs_router.registry = self._old_registry
+        if self._old_agent_dir is None:
+            os.environ.pop("DEEP_AGENT_DIR", None)
+        else:
+            os.environ["DEEP_AGENT_DIR"] = self._old_agent_dir
+        if self._old_agent_venv is None:
+            os.environ.pop("DEEP_AGENT_VENV", None)
+        else:
+            os.environ["DEEP_AGENT_VENV"] = self._old_agent_venv
+        if self._old_state is None:
+            os.environ.pop("BUTTONS_UX_AUDIT_DIR", None)
+        else:
+            os.environ["BUTTONS_UX_AUDIT_DIR"] = self._old_state
+        sys.modules.pop("ux_audit", None)
+        self._agent_tmp.cleanup()
+        self._state_tmp.cleanup()
+        self._ledger_teardown()
+
+    def test_registered_not_destructive_not_repo_scoped(self):
+        self.assertIn("ux-audit", engine.ALLOWED_ACTIONS)
+        self.assertNotIn("ux-audit", engine.DESTRUCTIVE_ACTIONS)
+        # Site-scoped, not repo-scoped: the site rides argv.
+        self.assertNotIn("ux-audit", engine.REPO_SCOPED_ACTIONS)
+        self.assertEqual(engine.step_timeout("ux-audit"), 1200)
+
+    def test_argv_validation(self):
+        self.assertTrue(engine.validate_ux_audit_argv(
+            ["ux-audit", "boomtick.blog"]))
+        self.assertTrue(engine.validate_ux_audit_argv(
+            ["ux-audit", "arii.github.io", "--max-pages", "10"]))
+        self.assertFalse(engine.validate_ux_audit_argv(
+            ["ux-audit", "boomtick.blog", "--max-pages", "0"]))
+        self.assertFalse(engine.validate_ux_audit_argv(
+            ["ux-audit", "boomtick.blog", "--max-pages", "201"]))
+        self.assertFalse(engine.validate_ux_audit_argv(
+            ["ux-audit", "boomtick.blog; rm -rf /"]))
+        self.assertFalse(engine.validate_ux_audit_argv(
+            ["ux-audit"]))
+        self.assertFalse(engine.validate_ux_audit_argv(
+            ["run-td", "boomtick.blog"]))
+
+    def test_steps_build_file_run(self):
+        steps, err = engine.action_steps(
+            "ux-audit", "remote-server", "", "",
+            ["ux-audit", "boomtick.blog", "--max-pages", "10"])
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[self.fake_python, self.fake_script, "audit",
+                     "boomtick.blog", "--max-pages", "10",
+                     "--file"]])
+
+    def test_steps_reject_unvalidated_argv(self):
+        steps, err = engine.action_steps(
+            "ux-audit", "remote-server", "", "", None)
+        self.assertIsNone(steps)
+        self.assertIn("ux-audit", err)
+        steps, err = engine.action_steps(
+            "ux-audit", "remote-server", "", "",
+            ["ux-audit", "x;evil"])
+        self.assertIsNone(steps)
+
+    def test_dispatch_unknown_site_400(self):
+        resp = self.client.post(
+            "/api/jobs/run-ux-audit",
+            json={"site": "evil.example", "max_pages": 5})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_dispatch_bad_cap_400(self):
+        resp = self.client.post(
+            "/api/jobs/run-ux-audit",
+            json={"site": "boomtick.blog", "max_pages": 999})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_dispatch_starts_first_class_run(self):
+        import backend.api.routers.jobs as jobs_router
+
+        with mock.patch.object(jobs_router, "_launch"):
+            resp = self.client.post(
+                "/api/jobs/run-ux-audit",
+                json={"site": "boomtick.blog", "max_pages": 5})
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            # Single-flight: a second dispatch conflicts.
+            resp2 = self.client.post(
+                "/api/jobs/run-ux-audit",
+                json={"site": "arii.github.io", "max_pages": 5})
+            self.assertEqual(resp2.status_code, 409)
+            # The run lists with its replay argv attached.
+            listed = self.client.get("/api/jobs").json()["jobs"]
+            row = next(j for j in listed if j["id"] == rid)
+            self.assertEqual(row["kind"], "ux-audit")
+            self.assertEqual(
+                row["td_argv"],
+                ["ux-audit", "boomtick.blog", "--max-pages", "5"])
+
+    def test_groups_404_until_first_report(self):
+        resp = self.client.get(
+            "/api/jobs/ux-audit/groups?site=boomtick.blog")
+        self.assertEqual(resp.status_code, 404)
+        resp = self.client.get(
+            "/api/jobs/ux-audit/groups?site=evil.example")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_schedule_accepts_valid_audit_argv(self):
+        import backend.api.routers.jobs as jobs_router
+        import backend.api.routers.issues as issues_router
+
+        with mock.patch.object(
+                jobs_router, "load_action_schedules",
+                return_value={}), \
+                mock.patch.object(jobs_router,
+                                  "save_action_schedules"), \
+                mock.patch.object(issues_router,
+                                  "_ensure_schedule_ticker"):
+            resp = self.client.post(
+                "/api/jobs/schedule",
+                json={"action": "ux-audit", "repo": "remote-server",
+                      "cadence": "weekly",
+                      "td_argv": ["ux-audit", "boomtick.blog",
+                                  "--max-pages", "5"]})
+            self.assertEqual(resp.status_code, 200)
+            bad = self.client.post(
+                "/api/jobs/schedule",
+                json={"action": "ux-audit", "repo": "remote-server",
+                      "cadence": "weekly",
+                      "td_argv": ["ux-audit", "x;evil"]})
+            self.assertEqual(bad.status_code, 400)
+            missing = self.client.post(
+                "/api/jobs/schedule",
+                json={"action": "ux-audit", "repo": "remote-server",
+                      "cadence": "weekly"})
+            self.assertEqual(missing.status_code, 400)
+
+    def test_groups_serve_report_payloads(self):
+        import json as json_lib
+
+        report = {
+            "site": "boomtick.blog", "repo": "arii/boomtick",
+            "at": "2026-11-04T00:00:00Z",
+            "filing": {"number": 12, "url": "https://u",
+                       "repo": "arii/boomtick"},
+            "groups": [{
+                "category": "Accessibility",
+                "title": "Accessibility (1 finding(s), worst: high)",
+                "findings": [{
+                    "severity": "high",
+                    "title": "[P1] image without alt text",
+                    "route": "/", "viewport": "static",
+                    "evidence": "src=x.png",
+                    "category": "Accessibility"}]}]}
+        with open(os.path.join(self._state_tmp.name,
+                               "boomtick.blog.json"),
+                  "w", encoding="utf-8") as f:
+            json_lib.dump(report, f)
+        resp = self.client.get(
+            "/api/jobs/ux-audit/groups?site=boomtick.blog")
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["site"], "boomtick.blog")
+        self.assertEqual(len(payload["groups"]), 1)
+        group = payload["groups"][0]
+        self.assertEqual(group["index"], 1)
+        self.assertEqual(group["worst"], "high")
+        self.assertIn("arii/boomtick#12", group["body"])
+        self.assertIn("Target Files", group["body"])
+
+
 if __name__ == "__main__":
     unittest.main()
