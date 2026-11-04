@@ -721,10 +721,15 @@ export default function BriefingView({
   repo,
   onAskAgent,
   onOpenHistory,
+  reloadRequest = 0,
 }: {
   repo: string;
   onAskAgent: (seed: string) => void;
   onOpenHistory: () => void;
+  // Palette request (issue #810): a nonce bump re-fetches the
+  // briefing while mounted. Mount already loads, so the opening
+  // nonce is adopted, not acted on — only later bumps reload.
+  reloadRequest?: number;
 }) {
   const [data, setData] = useState<BriefingResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -739,6 +744,16 @@ export default function BriefingView({
       setError(err instanceof Error ? err.message : String(err));
     }
   }
+
+  // Palette reload: adopt the mount-time nonce, act on later bumps.
+  const handledReloadNonce = useRef(reloadRequest);
+  useEffect(() => {
+    if (reloadRequest !== handledReloadNonce.current) {
+      handledReloadNonce.current = reloadRequest;
+      void load();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadRequest]);
 
   useEffect(() => {
     let cancelled = false;

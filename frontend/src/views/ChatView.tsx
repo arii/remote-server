@@ -1327,6 +1327,7 @@ export default function ChatView({
   seed,
   onSeedUsed,
   initialRuns,
+  focusRequest = 0,
 }: {
   repo: string;
   seed: string | null;
@@ -1334,6 +1335,9 @@ export default function ChatView({
   // Test seam (drawer-precedented): pins the composer-above-runs
   // order without waiting on the runs fetch.
   initialRuns?: AgentRun[];
+  // Palette request (issue #810): a nonce bump focuses the prompt,
+  // including on a fresh mount after the palette navigates here.
+  focusRequest?: number;
 }) {
   // Restored live exchange (#573): the initializer replays the
   // sessionStorage snapshot, so a tab switch (unmount/remount) keeps
@@ -1362,6 +1366,14 @@ export default function ChatView({
     promptRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Palette focus request: each nonce handled once.
+  const handledFocusNonce = useRef(0);
+  useEffect(() => {
+    if (focusRequest !== handledFocusNonce.current) {
+      handledFocusNonce.current = focusRequest;
+      if (focusRequest > 0) promptRef.current?.focus();
+    }
+  }, [focusRequest]);
   const [streaming, setStreaming] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import NowView from './views/NowView';
 import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
 import SyncBanner from './components/SyncBanner';
+import CommandPalette, { isPaletteHotkey } from './components/CommandPalette';
+import { buildCommands, type PaletteCommand } from './components/commandRegistry';
 import {
   fetchContainerStats,
   fetchRepoDiff,
@@ -101,10 +103,73 @@ export default function App() {
   const [statsSeq, setStatsSeq] = useState(0);
   const [restartRequested, setRestartRequested] = useState<string | null>(null);
   const [restartError, setRestartError] = useState<string | null>(null);
+  // Command palette (issue #810): open flag plus one nonce per
+  // cross-view request, so a command lands even when its view is
+  // already mounted (or mounts fresh on the tab switch).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sectionRequest, setSectionRequest] = useState<{
+    section: 'review' | 'jobs';
+    nonce: number;
+  } | null>(null);
+  const [reportRequest, setReportRequest] = useState(0);
+  const [chatFocusRequest, setChatFocusRequest] = useState(0);
+  const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
 
   function askAgent(seed: string) {
     setChatSeed(seed);
     setTab('chat');
+  }
+
+  // Ctrl+K / Cmd+K toggles the palette from anywhere. The chord
+  // never collides with plain typing, so no editable-focus guard.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (isPaletteHotkey(e)) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const commands = useMemo(
+    () =>
+      buildCommands({
+        go: (t) => setTab(t),
+        openSection: (s) =>
+          setSectionRequest((r) => ({ section: s, nonce: (r?.nonce ?? 0) + 1 })),
+        reportBug: () => setReportRequest((n) => n + 1),
+        focusChat: () => setChatFocusRequest((n) => n + 1),
+        refreshBriefing: () => setBriefingReloadRequest((n) => n + 1),
+        switchRepo: (name) => setRepo(name),
+        openUrl: (url) => {
+          window.location.href = url;
+        },
+        terminalUrl: `${stackBase()}/`,
+        codeUrl: `${stackBase()}/code`,
+        repos,
+        repo,
+      }),
+    [repos, repo],
+  );
+
+  function runCommand(cmd: PaletteCommand) {
+    setPaletteOpen(false);
+    // Section/report/chat/briefing commands navigate first: the nonce
+    // effects in the target view fire on the tab switch.
+    if (
+      cmd.id === 'open-review' ||
+      cmd.id === 'open-jobs' ||
+      cmd.id === 'report-bug'
+    ) {
+      setTab('now');
+    } else if (cmd.id === 'focus-chat') {
+      setTab('chat');
+    } else if (cmd.id === 'refresh-briefing') {
+      setTab('briefing');
+    }
+    cmd.run();
   }
 
   useEffect(() => {
@@ -255,6 +320,14 @@ export default function App() {
           {healthSummary(health)}
         </button>
         <span className="spacer" />
+        <button
+          type="button"
+          data-testid="palette-open"
+          title="Open command palette (Ctrl+K)"
+          onClick={() => setPaletteOpen(true)}
+        >
+          Commands
+        </button>
         <a data-testid="tool-terminal" href={`${stackBase()}/`}>
           Terminal
         </a>
@@ -263,6 +336,12 @@ export default function App() {
         </a>
       </header>
       <SyncBanner />
+      <CommandPalette
+        open={paletteOpen}
+        commands={commands}
+        onClose={() => setPaletteOpen(false)}
+        onRun={runCommand}
+      />
       {diffRepo && (
         <RepoDiffModal
           repo={diffRepo}
@@ -316,6 +395,8 @@ export default function App() {
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}
           onOpenTab={(t) => setTab(t)}
+          sectionRequest={sectionRequest}
+          reportRequest={reportRequest}
         />
       )}
       {tab === 'chat' &&
@@ -326,6 +407,7 @@ export default function App() {
             repo={repo}
             seed={chatSeed}
             onSeedUsed={() => setChatSeed(null)}
+            focusRequest={chatFocusRequest}
           />
         ))}
       {tab === 'briefing' &&
@@ -336,6 +418,7 @@ export default function App() {
             repo={repo}
             onAskAgent={askAgent}
             onOpenHistory={() => setTab('history')}
+            reloadRequest={briefingReloadRequest}
           />
         ))}
       {tab === 'history' &&
