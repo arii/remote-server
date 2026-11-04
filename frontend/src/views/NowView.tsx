@@ -31,8 +31,25 @@ async function firePostAction(item: AttentionItem): Promise<void> {
   await postActionHref(item.action.href, { intent: item.action.intent, confirmed: true });
 }
 
-// GET actions fetch in-page and report back inline. They must never render
-// as plain links: that navigates the SPA away to raw JSON.
+// GET action navigation (issue #464): backend hrefs point at JSON
+// endpoints whose payloads already have in-app surfaces. Navigate
+// there instead of fetching-and-discarding. Unknown hrefs keep the
+// fetch-summary fallback. Actions must never render as plain links:
+// that navigates the SPA away to raw JSON.
+export type AttentionNavTarget = 'jobs' | 'review' | 'history' | 'briefing' | 'chat';
+
+export function resolveAttentionTarget(href: string): AttentionNavTarget | null {
+  const path = href.split('?')[0].split('#')[0].replace(/^\/+/, '');
+  if (path === 'api/jobs' || path.startsWith('api/jobs/')) return 'jobs';
+  if (path === 'api/prs' || path.startsWith('api/prs/')) return 'review';
+  if (path === 'api/workflow-health') return 'history';
+  if (path === 'api/notifications/status') return 'briefing';
+  if (path === 'api/agents/budget') return 'chat';
+  return null;
+}
+
+export type AttentionNavTab = 'history' | 'briefing' | 'chat';
+
 async function fireGetAction(item: AttentionItem): Promise<string> {
   const resp = await fetch(apiUrl(item.action.href), { method: 'GET' });
   if (!resp.ok) throw new Error(`Action failed: ${resp.status}`);
@@ -285,10 +302,14 @@ function ActionControl({
   item,
   onDone,
   onError,
+  onSection,
+  onTab,
 }: {
   item: AttentionItem;
   onDone: (title: string) => void;
   onError: (message: string) => void;
+  onSection: (section: 'review' | 'jobs') => void;
+  onTab: (tab: AttentionNavTab) => void;
 }) {
   async function handlePost() {
     try {
@@ -299,6 +320,19 @@ function ActionControl({
     }
   }
   async function handleGet() {
+    const target = resolveAttentionTarget(item.action.href);
+    if (target === 'jobs') {
+      onSection('jobs');
+      return;
+    }
+    if (target === 'review') {
+      onSection('review');
+      return;
+    }
+    if (target !== null) {
+      onTab(target);
+      return;
+    }
     try {
       onDone(await fireGetAction(item));
     } catch (err) {
@@ -329,6 +363,7 @@ export default function NowView({
   health,
   reportContext,
   onAskAgent,
+  onOpenTab,
 }: {
   repo: string;
   // Checkout branches seeding the Review/Jobs branch fields
@@ -339,6 +374,7 @@ export default function NowView({
   health: SystemHealthResponse | null;
   reportContext: string;
   onAskAgent: (seed: string) => void;
+  onOpenTab: (tab: AttentionNavTab) => void;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The
@@ -631,6 +667,8 @@ export default function NowView({
                     void refresh();
                   }}
                   onError={setError}
+                  onSection={(s) => setSection(s)}
+                  onTab={(t) => onOpenTab(t)}
                 />
                 <button
                   type="button"

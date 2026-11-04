@@ -1097,7 +1097,7 @@ describe('p2 a11y batch', () => {
   it('loading states across views use role=status', () => {
     const noop = () => {};
     expect(renderToStaticMarkup(
-      <NowView repo="r" health={null} reportContext="" onAskAgent={noop} />,
+      <NowView repo="r" health={null} reportContext="" onAskAgent={noop} onOpenTab={noop} />,
     )).toContain('data-testid="now-loading" role="status"');
     expect(renderToStaticMarkup(<BriefingView repo="r" onAskAgent={noop} onOpenHistory={noop} />)).toContain(
       'data-testid="briefing-loading" role="status"',

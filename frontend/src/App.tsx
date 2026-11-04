@@ -316,6 +316,7 @@ export default function App() {
           health={health}
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}
+          onOpenTab={(t) => setTab(t)}
         />
       )}
       {tab === 'chat' &&
