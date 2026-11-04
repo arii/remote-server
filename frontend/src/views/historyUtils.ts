@@ -118,6 +118,15 @@ function jobTime(j: JobRecord): number {
   return epochOf(j.at ?? j.created_at);
 }
 
+// Exit-aware failure (issue #473): /api/jobs rows carry no
+// status/state field, so status is always "done"/"pending" and a
+// status regex alone never matches. A finished job with a nonzero
+// exit is a failure; keep the regex for kinds without exits.
+function jobFailed(j: JobRecord, status: string): boolean {
+  if (j.done === true && typeof j.exit_code === 'number' && j.exit_code !== 0) return true;
+  return /fail|error/i.test(status);
+}
+
 function jobToEntry(j: JobRecord): FlatEntry {
   const status = jobStatus(j);
   const summary = plainLanguage(`${jobTitle(j)}: ${status}`, 'Job');
@@ -130,7 +139,7 @@ function jobToEntry(j: JobRecord): FlatEntry {
     summary,
     at: rowTime(j.at ?? j.created_at),
     rawAt: jobTime(j),
-    failed: /fail|error/i.test(status),
+    failed: jobFailed(j, status),
     routine: false,
     detail: lines.join('\n'),
     runId: j.id,

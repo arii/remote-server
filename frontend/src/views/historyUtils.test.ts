@@ -243,3 +243,71 @@ describe('cli-turn rows (issue #590)', () => {
     expect(rows[0].tone).toBe('ok');
   });
 });
+
+describe('exit-aware failures (issue #473)', () => {
+  const failedJob = (id: string, at: number) => ({
+    id,
+    kind: 'run-td',
+    name: 'td preflight',
+    done: true,
+    exit_code: 1,
+    at,
+  });
+
+  it('renders a nonzero-exit job as tone bad with recovery', () => {
+    const rows = toHistoryRows([failedJob('a1', 3000)], []);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('bad');
+    expect(rows[0].recovery).not.toBe('');
+    expect(rows[0].detail).toContain('exit: 1');
+  });
+
+  it('collapses repeated equal job failures into one incident row', () => {
+    const rows = toHistoryRows(
+      [failedJob('a3', 3000), failedJob('a2', 2000), failedJob('a1', 1000)],
+      [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('bad');
+    expect(rows[0].summary).toMatch(/×3/);
+    expect(rows[0].summary).toContain('same failure repeated');
+    expect(rows[0].recovery).not.toBe('');
+  });
+
+  it('leaves exit-0 and pending jobs green', () => {
+    const rows = toHistoryRows(
+      [
+        { id: 'ok', kind: 'run-td', name: 'td preflight', done: true, exit_code: 0, at: 3000 },
+        { id: 'run', kind: 'run-td', name: 'td lint', done: false, exit_code: null, at: 2000 },
+        { id: 'early', kind: 'run-td', name: 'td test', done: false, exit_code: 1, at: 1000 },
+      ],
+      [],
+    );
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row.tone).toBe('ok');
+      expect(row.recovery).toBe('');
+    }
+  });
+
+  it('keeps the status regex for jobs without exits', () => {
+    const rows = toHistoryRows(
+      [{ id: 's1', kind: 'job', name: 'nightly', status: 'failed', done: true, at: 1000 }],
+      [],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('bad');
+  });
+
+  it('renders a bare nonzero ledger exit as tone bad with recovery', () => {
+    const rows = toHistoryRows([], [
+      { kind: 'run', action: 'logs', exit: 1, ts: 3000 },
+      { kind: 'run', action: 'logs', exit: 1, ts: 2000 },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('bad');
+    expect(rows[0].summary).toMatch(/×2/);
+    expect(rows[0].summary).toContain('same failure repeated');
+    expect(rows[0].recovery).not.toBe('');
+  });
+});
