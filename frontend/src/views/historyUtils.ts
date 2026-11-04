@@ -139,6 +139,7 @@ function jobToEntry(j: JobRecord): FlatEntry {
 
 function entryFailed(e: LedgerEntry, raw: string, summary: string): boolean {
   if (e.ok === false) return true;
+  if (typeof e.exit === 'number' && e.exit !== 0) return true;
   if (e.status !== undefined && /fail|error/i.test(String(e.status))) return true;
   return isFailure(e.kind, raw, summary);
 }
@@ -371,4 +372,14 @@ export function toHistoryRows(
     i += count;
   }
   return rows;
+}
+
+// Shared failure predicate (issue #506): true when one ledger
+// entry renders tone bad on its own row. Delegates to
+// toHistoryRows so Briefing and History share one definition;
+// per-entry (no incident-collapse) so the trend counts entries,
+// not collapsed rows.
+export function isHistoryFailure(entry: LedgerEntry): boolean {
+  const rows = toHistoryRows([], [entry]);
+  return rows.length > 0 && rows[0].tone === 'bad';
 }
