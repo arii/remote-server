@@ -117,5 +117,50 @@ class InboxShapeTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
 
+class RollupTest(unittest.TestCase):
+    def test_all_aggregates_per_repo_items_deduped(self):
+        def items(repo):
+            shared = dict(_item("job-shared"), repo="other")
+            mine = dict(_item(f"run-{repo}"), repo=repo,
+                        title=f"wf {repo}")
+            return [mine, shared]
+
+        orig = {k: getattr(inbox, k) for k in
+                ("list_repo_names", "list_attention_items",
+                 "list_open_prs", "list_runs")}
+        inbox.list_repo_names = lambda: ["remote-server", "other"]
+        inbox.list_attention_items = items
+        inbox.list_open_prs = lambda repo: (_ for _ in ()).throw(
+            AssertionError("rollup must not read PRs"))
+        inbox.list_runs = lambda: []
+        try:
+            body = inbox.inbox("all")
+        finally:
+            for k, v in orig.items():
+                setattr(inbox, k, v)
+        self.assertEqual(body["repo"], "all")
+        got = [(i["id"], i["repo"]) for i in body["attention"]]
+        self.assertEqual(got, [("run-remote-server", "remote-server"),
+                               ("job-shared", "other"),
+                               ("run-other", "other")])
+        self.assertEqual(body["merge_ready"], {"count": 0, "top": []})
+
+    def test_all_empty(self):
+        orig = {k: getattr(inbox, k) for k in
+                ("list_repo_names", "list_attention_items",
+                 "list_runs")}
+        inbox.list_repo_names = lambda: []
+        inbox.list_attention_items = lambda repo: []
+        inbox.list_runs = lambda: []
+        try:
+            body = inbox.inbox("all")
+        finally:
+            for k, v in orig.items():
+                setattr(inbox, k, v)
+        self.assertEqual(body["attention"], [])
+        self.assertEqual(
+            body["runs"], {"active": None, "recent": []})
+
+
 if __name__ == "__main__":
     unittest.main()
