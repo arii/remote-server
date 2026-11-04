@@ -1130,6 +1130,25 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('autofocus');
   });
 
+  it('report dialog exposes repo labels as optional checkboxes (issue #436)', () => {
+    const html = renderToStaticMarkup(
+      <ReportDialog
+        initialBody="ctx"
+        availableLabels={['ready', 'bug']}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="report-labels"');
+    expect(html).toContain('data-testid="report-label-ready"');
+    expect(html).toContain('data-testid="report-label-bug"');
+    expect(html).toContain('type="checkbox"');
+    const bare = renderToStaticMarkup(
+      <ReportDialog initialBody="ctx" onSubmit={() => {}} onCancel={() => {}} />,
+    );
+    expect(bare).not.toContain('data-testid="report-labels"');
+  });
+
   it('approval Approve uses tap-to-fire with an inline confirm, not hold-to-arm (issue #508)', () => {
     const html = renderToStaticMarkup(
       <ApprovalCard approval={{ session_id: 's' }} decided={null} onDecide={() => {}} />,

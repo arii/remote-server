@@ -426,6 +426,30 @@ describe('apiClient (fetch with inline shapes)', () => {
       signal: expect.any(AbortSignal),
     });
   });
+
+  it('createIssue passes labels through to the backend', async () => {
+    const created = { ok: true, url: 'https://example.test/issues/9' };
+    vi.stubGlobal('fetch', mockFetchJson(created));
+    expect(await createIssue('remote-server', 't', 'b', ['ready', 'bug'])).toEqual(created);
+    expect(fetch).toHaveBeenCalledWith('/api/create-issue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
+      body: JSON.stringify({ repo: 'remote-server', title: 't', body: 'b', labels: ['ready', 'bug'] }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('createIssue omits labels when none are given', async () => {
+    const created = { ok: true, url: 'https://example.test/issues/9' };
+    vi.stubGlobal('fetch', mockFetchJson(created));
+    await createIssue('remote-server', 't', 'b');
+    expect(fetch).toHaveBeenCalledWith('/api/create-issue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
+      body: JSON.stringify({ repo: 'remote-server', title: 't', body: 'b' }),
+      signal: expect.any(AbortSignal),
+    });
+  });
 });
 
 describe('pr details/diff cache + in-flight dedup', () => {
