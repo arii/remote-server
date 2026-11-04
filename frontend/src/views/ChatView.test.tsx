@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, insertMention, isStalled, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
-import type { SlashActions } from './ChatView';
+import { appendDictationText, applyDictationResult, budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isStalled, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 import type { ChatMessage } from './mockViews';
@@ -717,5 +717,217 @@ describe('chat transcript export (issue #669)', () => {
   it('names the file chat-<date>.md', () => {
     expect(transcriptFilename(new Date('2026-11-04T12:00:00Z'))).toBe('chat-2026-11-04.md');
     expect(transcriptFilename()).toMatch(/^chat-\d{4}-\d{2}-\d{2}\.md$/);
+  });
+});
+
+// Node has no window; the dictation suites pin and restore the global
+// per test so capability detection is asserted, not assumed.
+const dictationGlobals = globalThis as unknown as { window?: unknown };
+const dictationSavedWindow = dictationGlobals.window;
+
+function setDictationWindow(value: unknown) {
+  dictationGlobals.window = value;
+}
+
+function fakeDictationCtor() {}
+
+function dictationEvent(
+  transcripts: Array<{ text: string; isFinal: boolean }>,
+  resultIndex = 0,
+): DictationResultEvent {
+  return {
+    resultIndex,
+    results: transcripts.map((t) => ({ isFinal: t.isFinal, 0: { transcript: t.text } })),
+  };
+}
+
+describe('voice dictation capability detection (issue #659)', () => {
+  beforeEach(() => {
+    setDictationWindow({});
+  });
+
+  afterEach(() => {
+    dictationGlobals.window = dictationSavedWindow;
+  });
+
+  it('reports unsupported with the API globals removed', () => {
+    setDictationWindow({});
+    expect(dictationSupported()).toBe(false);
+    expect(dictationCtor()).toBe(null);
+  });
+
+  it('ignores non-constructor globals', () => {
+    setDictationWindow({ SpeechRecognition: 'nope', webkitSpeechRecognition: 42 });
+    expect(dictationSupported()).toBe(false);
+    expect(dictationCtor()).toBe(null);
+  });
+
+  it('prefers the standard constructor, webkit second', () => {
+    function webkitFake() {}
+    setDictationWindow({ SpeechRecognition: fakeDictationCtor, webkitSpeechRecognition: webkitFake });
+    expect(dictationSupported()).toBe(true);
+    expect(dictationCtor()).toBe(fakeDictationCtor);
+    setDictationWindow({ webkitSpeechRecognition: webkitFake });
+    expect(dictationSupported()).toBe(true);
+    expect(dictationCtor()).toBe(webkitFake);
+  });
+
+  it('renders no button where the API is unavailable', () => {
+    setDictationWindow({});
+    expect(
+      renderToStaticMarkup(
+        <DictateButton recording={false} disabled={false} onToggle={() => {}} />,
+      ),
+    ).toBe('');
+  });
+
+  it('renders the mic button where the API exists', () => {
+    setDictationWindow({ SpeechRecognition: fakeDictationCtor });
+    const html = renderToStaticMarkup(
+      <DictateButton recording={false} disabled={false} onToggle={() => {}} />,
+    );
+    expect(html).toContain('data-testid="chat-dictate"');
+    expect(html).toContain('aria-label="Dictate with voice"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain('>Dictate</button>');
+    expect(html).not.toContain('dictate-rec');
+  });
+
+  it('disables the mic button while streaming', () => {
+    setDictationWindow({ SpeechRecognition: fakeDictationCtor });
+    const html = renderToStaticMarkup(
+      <DictateButton recording={false} disabled onToggle={() => {}} />,
+    );
+    expect(html).toContain('data-testid="chat-dictate"');
+    expect(html).toContain('disabled=""');
+  });
+});
+
+describe('voice dictation toggle state (issue #659)', () => {
+  beforeEach(() => {
+    setDictationWindow({ SpeechRecognition: fakeDictationCtor });
+  });
+
+  afterEach(() => {
+    dictationGlobals.window = dictationSavedWindow;
+  });
+
+  it('shows the recording state with a pulsing dot and pressed toggle', () => {
+    const html = renderToStaticMarkup(
+      <DictateButton recording disabled={false} onToggle={() => {}} />,
+    );
+    expect(html).toContain('data-testid="chat-dictate"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-label="Stop dictation"');
+    expect(html).toContain('dictate-rec');
+    expect(html).toContain('>Stop</button>');
+    expect(html).not.toContain('>Dictate</button>');
+  });
+});
+
+describe('voice dictation transcript append (issue #659)', () => {
+  it('appends with a single separating space', () => {
+    expect(appendDictationText('', 'hello')).toBe('hello');
+    expect(appendDictationText('hi', 'there')).toBe('hi there');
+    expect(appendDictationText('hi ', 'there')).toBe('hi there');
+    expect(appendDictationText('line\n', 'there')).toBe('line\nthere');
+  });
+
+  it('ignores empty additions', () => {
+    expect(appendDictationText('hi', '')).toBe('hi');
+    expect(appendDictationText('hi', '   ')).toBe('hi');
+    expect(appendDictationText('', '   ')).toBe('');
+  });
+
+  it('splits one event into final vs interim text', () => {
+    expect(
+      extractDictationText(
+        dictationEvent([
+          { text: 'hello ', isFinal: true },
+          { text: 'wor', isFinal: false },
+        ]),
+      ),
+    ).toEqual({ finalText: 'hello ', interimText: 'wor' });
+  });
+
+  it('reads only results new since resultIndex', () => {
+    expect(
+      extractDictationText(
+        dictationEvent(
+          [
+            { text: 'already counted', isFinal: true },
+            { text: 'new words', isFinal: true },
+          ],
+          1,
+        ),
+      ),
+    ).toEqual({ finalText: 'new words', interimText: '' });
+  });
+
+  it('streams interim live, then replaces the preview with its final', () => {
+    const prev = 'review the diff';
+    const inserted = '';
+    const preview = applyDictationResult(prev, inserted, '', 'and the tests');
+    expect(preview.next).toBe('review the diff and the tests');
+    const commit = applyDictationResult(preview.next, preview.inserted, 'and the tests', '');
+    expect(commit.next).toBe('review the diff and the tests');
+    const next = applyDictationResult(commit.next, commit.inserted, 'please', '');
+    expect(next.next).toBe('review the diff and the tests please');
+  });
+
+  it('composes typed and dictated text in both orders', () => {
+    const dictated = applyDictationResult('TODO', '', 'fix the flake', '');
+    expect(dictated.next).toBe('TODO fix the flake');
+    const typed = `${dictated.next}!`;
+    const again = applyDictationResult(typed, dictated.inserted, 'today', '');
+    expect(again.next).toBe('TODO fix the flake! today');
+  });
+
+  it('starts a fresh session without stripping composer text', () => {
+    // Final-only events track no interim suffix: nothing to rebase.
+    expect(applyDictationResult('keep me', '', 'new words', '')).toEqual({
+      next: 'keep me new words',
+      inserted: '',
+    });
+  });
+
+  it('accumulates finals across events without re-stripping them', () => {
+    const first = applyDictationResult('', '', 'first', 'second…');
+    expect(first).toEqual({ next: 'first second…', inserted: ' second…' });
+    const second = applyDictationResult(first.next, first.inserted, 'second', '');
+    expect(second).toEqual({ next: 'first second', inserted: '' });
+    const third = applyDictationResult(second.next, second.inserted, 'third', '');
+    expect(third).toEqual({ next: 'first second third', inserted: '' });
+  });
+
+  it('leaves the composer untouched on an empty event', () => {
+    expect(applyDictationResult('hi', '', '', '')).toEqual({ next: 'hi', inserted: '' });
+  });
+});
+
+describe('voice dictation error hints (issue #659)', () => {
+  it('names the browser permission path on mic denial', () => {
+    const hint = dictationErrorHint('not-allowed') ?? '';
+    expect(hint).toContain('browser site settings');
+    expect(dictationErrorHint('service-not-allowed')).toBe(hint);
+  });
+
+  it('maps no-speech, network, and audio-capture to one-liners', () => {
+    expect(dictationErrorHint('no-speech')).toContain('No speech heard');
+    expect(dictationErrorHint('network')).toContain('network connection');
+    expect(dictationErrorHint('audio-capture')).toContain('No microphone found');
+  });
+
+  it('stays silent on tap-to-stop and unknown codes', () => {
+    expect(dictationErrorHint('aborted')).toBe(null);
+    expect(dictationErrorHint('')).toBe(null);
+    expect(dictationErrorHint('bogus')).toBe(null);
+  });
+
+  it('renders the hint as a status line', () => {
+    const html = renderToStaticMarkup(<DictationHint text="No speech heard — tap Dictate and try again." />);
+    expect(html).toContain('data-testid="chat-dictate-hint"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('No speech heard');
   });
 });
