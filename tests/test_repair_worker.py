@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Unit tests for the autonomous repair worker LangGraph state machine."""
 
+import contextlib
+import io
+import json
 import os
 import shutil
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import MagicMock, call, patch
 
 import core_cli.repair_worker as rw
@@ -727,6 +731,211 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         self.assertEqual(mock_verify.call_count, 3)
         self.assertEqual(mock_edit.call_count, 3)
         mock_pr.assert_not_called()
+
+
+class _FakeTagsResponse:
+    """Minimal urlopen context manager serving a canned JSON payload."""
+
+    def __init__(self, payload):
+        self._body = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _tags_payload(*names):
+    return {"models": [{"name": n} for n in names]}
+
+
+class TestOllamaEndpoint(unittest.TestCase):
+    def test_default_generate_url_uses_stack_host(self):
+        with patch.dict(os.environ, {}, clear=True):
+            url = rw.ollama_generate_url()
+        self.assertEqual(url, "http://ollama:11434/api/generate")
+        self.assertNotIn("localhost", url)
+
+    def test_bare_host_env(self):
+        with patch.dict(os.environ, {"OLLAMA_URL": "http://ollama:11434"}):
+            self.assertEqual(rw.ollama_generate_url(),
+                             "http://ollama:11434/api/generate")
+
+    def test_trailing_slash_env(self):
+        with patch.dict(os.environ, {"OLLAMA_URL": "http://ollama:11434/"}):
+            self.assertEqual(rw.ollama_generate_url(),
+                             "http://ollama:11434/api/generate")
+
+    def test_full_generate_url_env(self):
+        with patch.dict(os.environ,
+                        {"OLLAMA_URL": "http://ollama:11434/api/generate"}):
+            self.assertEqual(rw.ollama_generate_url(),
+                             "http://ollama:11434/api/generate")
+
+    def test_full_generate_url_trailing_slash_env(self):
+        with patch.dict(os.environ,
+                        {"OLLAMA_URL": "http://ollama:11434/api/generate/"}):
+            self.assertEqual(rw.ollama_generate_url(),
+                             "http://ollama:11434/api/generate")
+
+    def test_blank_env_falls_back_to_default(self):
+        for blank in ("", "   "):
+            with patch.dict(os.environ, {"OLLAMA_URL": blank}):
+                self.assertEqual(rw.ollama_generate_url(),
+                                 "http://ollama:11434/api/generate")
+
+    def test_custom_host_env(self):
+        with patch.dict(os.environ, {"OLLAMA_URL": "http://gpu-box:11434"}):
+            self.assertEqual(rw.ollama_generate_url(),
+                             "http://gpu-box:11434/api/generate")
+
+    def test_explicit_arg_overrides_env(self):
+        with patch.dict(os.environ, {"OLLAMA_URL": "http://env-host:11434"}):
+            self.assertEqual(rw.ollama_generate_url("http://arg-host:11434/"),
+                             "http://arg-host:11434/api/generate")
+
+    def test_tags_url_strips_generate_suffix(self):
+        with patch.dict(os.environ,
+                        {"OLLAMA_URL": "http://ollama:11434/api/generate"}):
+            self.assertEqual(rw.ollama_tags_url(),
+                             "http://ollama:11434/api/tags")
+
+    def test_model_default_and_blank_tolerance(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(rw.ollama_model(), "qwen2.5-coder:7b")
+        for blank in ("", "   "):
+            with patch.dict(os.environ, {"OLLAMA_MODEL": blank}):
+                self.assertEqual(rw.ollama_model(), "qwen2.5-coder:7b")
+        with patch.dict(os.environ, {"OLLAMA_MODEL": "qwen3:8b"}):
+            self.assertEqual(rw.ollama_model(), "qwen3:8b")
+
+    def test_query_ollama_posts_to_joined_url(self):
+        env = {"OLLAMA_URL": "http://ollama:11434/",
+               "OLLAMA_MODEL": "qwen2.5-coder:7b"}
+        with patch.dict(os.environ, env):
+            with patch("urllib.request.urlopen",
+                       return_value=_FakeTagsResponse({"response": "ok"})) as mock_open:
+                out = rw._query_ollama("Say OK")
+        self.assertEqual(out, "ok")
+        req = mock_open.call_args[0][0]
+        self.assertEqual(req.full_url, "http://ollama:11434/api/generate")
+        body = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(body["model"], "qwen2.5-coder:7b")
+
+
+class TestPreflightOllama(unittest.TestCase):
+    def test_unreachable_names_endpoint(self):
+        err = urllib.error.URLError("[Errno 111] Connection refused")
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("urllib.request.urlopen", side_effect=err):
+                msg = rw.preflight_ollama()
+        self.assertIn("repair: local Ollama unreachable at", msg)
+        self.assertIn("http://ollama:11434/api/tags", msg)
+        self.assertNotIn("\n", msg)
+
+    def test_missing_model_names_model(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("urllib.request.urlopen",
+                       return_value=_FakeTagsResponse(_tags_payload("qwen3:8b"))):
+                msg = rw.preflight_ollama()
+        self.assertIn("missing model", msg)
+        self.assertIn("qwen2.5-coder:7b", msg)
+        self.assertNotIn("\n", msg)
+
+    def test_healthy_returns_none(self):
+        payload = _tags_payload("qwen2.5-coder:7b", "qwen3:8b")
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("urllib.request.urlopen",
+                       return_value=_FakeTagsResponse(payload)):
+                self.assertIsNone(rw.preflight_ollama())
+
+    def test_untagged_model_matches_any_tag(self):
+        with patch.dict(os.environ, {"OLLAMA_MODEL": "qwen2.5-coder"}):
+            with patch("urllib.request.urlopen",
+                       return_value=_FakeTagsResponse(
+                           _tags_payload("qwen2.5-coder:latest"))):
+                self.assertIsNone(rw.preflight_ollama())
+
+    def test_malformed_tags_body_reports_missing_model(self):
+        class _Garbage:
+            def read(self):
+                return b"not json"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("urllib.request.urlopen", return_value=_Garbage()):
+                msg = rw.preflight_ollama()
+        self.assertIn("missing model", msg)
+
+
+class TestRunRepairPreflight(unittest.TestCase):
+    def test_preflight_failure_blocks_before_setup(self):
+        graph = MagicMock()
+        with patch("core_cli.repair_worker.build_repair_graph",
+                   return_value=graph):
+            with patch("core_cli.repair_worker.preflight_ollama",
+                       return_value="repair: local Ollama unreachable at http://x (boom)"):
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    ok = rw.run_repair(issue_number=99)
+        self.assertFalse(ok)
+        graph.invoke.assert_not_called()
+        self.assertIn("repair: local Ollama unreachable", buf.getvalue())
+
+    def test_healthy_preflight_proceeds_to_graph(self):
+        graph = MagicMock()
+        graph.invoke.return_value = {"tests_passed": True}
+        with patch("core_cli.repair_worker.build_repair_graph",
+                   return_value=graph):
+            with patch("core_cli.repair_worker.preflight_ollama",
+                       return_value=None):
+                self.assertTrue(rw.run_repair(issue_number=99))
+        graph.invoke.assert_called_once()
+
+
+class TestEditFileNodeOllamaGuard(unittest.TestCase):
+    def _state(self):
+        return {
+            "issue_number": 1,
+            "issue_body": "Fix it",
+            "target_files": ["calc.py"],
+            "verification_cmd": "pytest",
+            "file_contents": {"calc.py": "def add(a, b): return a - b"},
+            "current_errors": "",
+            "retry_count": 0,
+            "ast_valid": False,
+            "tests_passed": False,
+            "worktree_dir": "/tmp/worktree",
+            "branch_name": "repair/issue-1",
+        }
+
+    def test_url_error_returns_failure_record(self):
+        err = urllib.error.URLError("[Errno 111] Connection refused")
+        with patch("core_cli.repair_worker._query_ollama", side_effect=err):
+            with patch.dict(os.environ, {}, clear=True):
+                updates = rw.edit_file_node(self._state())
+        self.assertEqual(updates["file_contents"],
+                         {"calc.py": "def add(a, b): return a - b"})
+        self.assertIn("Ollama query failed for calc.py", updates["current_errors"])
+        self.assertIn("http://ollama:11434/api/generate", updates["current_errors"])
+        self.assertIn("hint:", updates["current_errors"])
+        self.assertEqual(updates["retry_count"], 1)
+
+    def test_os_error_returns_failure_record(self):
+        with patch("core_cli.repair_worker._query_ollama",
+                   side_effect=OSError("dns down")):
+            updates = rw.edit_file_node(self._state())
+        self.assertIn("Ollama query failed", updates["current_errors"])
+        self.assertEqual(updates["retry_count"], 1)
 
 
 if __name__ == "__main__":
