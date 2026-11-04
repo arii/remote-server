@@ -63,7 +63,10 @@ def list_runs() -> list:
 
 def merge_block_reason(row: dict) -> str | None:
     """Port of frontend mergeBlockReason (reviewTypes.ts), applied
-    to pulls.prs row dicts. Gates only on known-bad state."""
+    to pulls.prs row dicts. Gates only on known-bad state.
+    Sync guard (#553): mergeReadiness.fixtures.json pins this port
+    to the TS original via exact-equality tests on both sides —
+    update the table with any semantic change."""
     if row.get("isDraft"):
         return "is a draft"
     review = row.get("reviewDecision") or ""

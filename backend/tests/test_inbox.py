@@ -1,6 +1,8 @@
 """Tests for the aggregated inbox feed (stdlib unittest)."""
 
+import json
 import unittest
+from pathlib import Path
 
 from backend.api.routers import inbox
 
@@ -49,6 +51,26 @@ class MergeBlockReasonTest(unittest.TestCase):
     def test_mergeable(self):
         self.assertIn("CONFLICTED", inbox.merge_block_reason(
             _pr(1, mergeable="CONFLICTED")))
+
+
+class MergeReadinessFixtureTest(unittest.TestCase):
+    """Cross-language pin (#553): the shared fixture table that
+    frontend/src/App.test.tsx asserts against with exact equality.
+    Any semantic change must update the fixture and BOTH predicates."""
+
+    @classmethod
+    def setUpClass(cls):
+        fixture = (Path(__file__).resolve().parents[2]
+                   / "frontend" / "src" / "mergeReadiness.fixtures.json")
+        with open(fixture, encoding="utf-8") as fh:
+            cls.cases = json.load(fh)["cases"]
+
+    def test_fixture_cases(self):
+        self.assertGreater(len(self.cases), 0)
+        for case in self.cases:
+            with self.subTest(case=case["name"]):
+                self.assertEqual(inbox.merge_block_reason(case["row"]),
+                                 case["expected"])
 
 
 class InboxShapeTest(unittest.TestCase):
