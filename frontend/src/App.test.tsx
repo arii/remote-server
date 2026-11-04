@@ -279,6 +279,15 @@ describe('briefing sanitation', () => {
     expect(clean).not.toContain('eyJmaW5kaW5ncyI6W10');
     expect(clean).toContain('APPROVED');
   });
+
+  it('strips leading markdown list markers', () => {
+    expect(cleanBriefingLine('- PR #416 overlaps with #418 on: docs/x.md')).toBe(
+      'PR #416 overlaps with #418 on: docs/x.md',
+    );
+    expect(cleanBriefingLine('* starred item')).toBe('starred item');
+    expect(cleanBriefingLine('  - indented dash')).toBe('indented dash');
+    expect(cleanBriefingLine('no marker here')).toBe('no marker here');
+  });
 });
 
 describe('briefing all-clear', () => {
