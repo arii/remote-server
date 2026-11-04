@@ -4,6 +4,7 @@ import {
   askAgentSeed,
   reconcileSnoozed,
   RepoTag,
+  resolveAttentionTarget,
   showRepoTag,
   SnoozedStub,
   SNOOZE_PRESETS,
@@ -129,5 +130,27 @@ describe('single-repo scoping (issue #723)', () => {
     expect(askAgentSeed(item)).toBe(
       'Webhook pull skipped — checkout lagging (remote-server): skipped: tree not ff-able',
     );
+  });
+});
+
+describe('attention action navigation (issue #464)', () => {
+  it('maps every backend GET href to an in-app target', () => {
+    expect(resolveAttentionTarget('api/jobs')).toBe('jobs');
+    expect(resolveAttentionTarget('api/notifications/status')).toBe('briefing');
+    expect(resolveAttentionTarget('api/prs?repo=remote-server')).toBe('review');
+    expect(resolveAttentionTarget('api/workflow-health?repo=remote-server')).toBe('history');
+    expect(resolveAttentionTarget('api/agents/budget')).toBe('chat');
+  });
+
+  it('tolerates leading slashes, query strings, and fragments', () => {
+    expect(resolveAttentionTarget('/api/jobs')).toBe('jobs');
+    expect(resolveAttentionTarget('/api/prs?repo=x#frag')).toBe('review');
+    expect(resolveAttentionTarget('api/workflow-health?repo=x&other=1')).toBe('history');
+  });
+
+  it('returns null for unknown hrefs so they keep the fetch fallback', () => {
+    expect(resolveAttentionTarget('api/unknown')).toBeNull();
+    expect(resolveAttentionTarget('')).toBeNull();
+    expect(resolveAttentionTarget('https://example.com/x')).toBeNull();
   });
 });
