@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import App, { RollupGate } from './App';
+import App, { HEALTH_POLL_MS, RollupGate, singleFlight } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
@@ -1235,5 +1235,43 @@ describe('plan dispatch', () => {
   it('wires the agent opener into Jobs', () => {
     const html = renderToStaticMarkup(<JobsView repo="r" onAskAgent={() => {}} />);
     expect(html).toContain('data-testid="jobs-loading"');
+  });
+});
+
+describe('header health revalidation (issue #588)', () => {
+  it('polls on a slow cadence', () => {
+    expect(HEALTH_POLL_MS).toBe(60_000);
+  });
+
+  it('collapses concurrent refreshes into one in-flight run', async () => {
+    let runs = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const refresh = singleFlight(async () => {
+      runs += 1;
+      await gate;
+    });
+    refresh();
+    refresh();
+    refresh();
+    expect(runs).toBe(1);
+    release();
+    await gate;
+    await Promise.resolve();
+    refresh();
+    expect(runs).toBe(2);
+  });
+
+  it('releases the guard when the run rejects', async () => {
+    let runs = 0;
+    const refresh = singleFlight(async () => {
+      runs += 1;
+      throw new Error('health down');
+    });
+    refresh();
+    await Promise.resolve();
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    refresh();
+    expect(runs).toBe(2);
   });
 });
