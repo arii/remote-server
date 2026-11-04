@@ -8,6 +8,9 @@ updates:
     directory: "/terminal"
     schedule:
       interval: "weekly"
+  # SHA-pinned agent workflows (issue #529): this entry makes action bumps
+  # (including boomtick SHAs) arrive as reviewed PRs — verify the boomtick
+  # diff before merging.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
