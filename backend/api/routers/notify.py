@@ -212,7 +212,8 @@ def notifications_trigger_digest() -> dict:
     # (mute wins over tap).
     res = N.send_notification(
         "Manual Briefing Digest", digest_msg, priority="low",
-        tags=["clipboard", "digest"], event_type="digest")
+        tags=["clipboard", "digest"], event_type="digest",
+        click_url=N.console_url("/api/briefing"))
     # Stamp only on actual delivery (#532): a failed manual digest
     # must not eat the next scheduled one. ok mirrors delivery so
     # the operator sees the failure alongside the per-target errors

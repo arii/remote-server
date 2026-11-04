@@ -1632,12 +1632,15 @@ class CollectNotifyBriefTest(unittest.TestCase):
             def run(self, argv, **kw):
                 calls.append(list(argv))
                 out = ("[{\"name\": \"ci\", \"headBranch\": \"main\", "
-                       "\"conclusion\": \"failure\", \"event\": \"push\"}, "
+                       "\"conclusion\": \"failure\", \"event\": \"push\", "
+                       "\"url\": \"https://github.com/arii/a/actions/"
+                       "runs/1\"}, "
                        "{\"name\": \"ci\", \"headBranch\": \"dev\", "
                        "\"conclusion\": \"success\", \"event\": \"push\"}]"
                        if "run" in argv else
                        "[{\"number\": 7, \"title\": \"fix\", "
-                       "\"mergeStateStatus\": \"DIRTY\"}, "
+                       "\"mergeStateStatus\": \"DIRTY\", "
+                       "\"url\": \"https://github.com/arii/a/pull/7\"}, "
                        "{\"number\": 8, \"title\": \"ok\", "
                        "\"mergeStateStatus\": \"CLEAN\"}]")
                 return SimpleNamespace(returncode=0, stdout=out,
@@ -1645,14 +1648,19 @@ class CollectNotifyBriefTest(unittest.TestCase):
         brief = collect_notify_brief("a", "arii/a", runner=Runner())
         self.assertEqual(
             brief["failing_runs"],
-            [{"name": "ci", "branch": "main", "failed": "failure"}])
+            [{"name": "ci", "branch": "main", "failed": "failure",
+              "url": "https://github.com/arii/a/actions/runs/1"}])
         self.assertEqual(
             brief["prs"],
-            [{"number": 7, "title": "fix", "conflicted": True},
-             {"number": 8, "title": "ok", "conflicted": False}])
+            [{"number": 7, "title": "fix", "conflicted": True,
+              "url": "https://github.com/arii/a/pull/7"},
+             {"number": 8, "title": "ok", "conflicted": False,
+              "url": ""}])
         self.assertEqual(len(calls), 2)
         for argv in calls:
             self.assertIn("--repo", argv)
+            fields = argv[argv.index("--json") + 1].split(",")
+            self.assertIn("url", fields)
 
     def test_gh_failure_returns_none(self):
         from backend.notify import collect_notify_brief
@@ -1817,6 +1825,181 @@ class JobFailLegTest(unittest.TestCase):
             fetcher=lambda: {"r": {}}, sender=sender, now=1000.0)
         self.assertEqual(sent, [])
         self.assertEqual(state.get("job_fail", {}).get("r", {}), {})
+
+
+class DeepLinkLegsTest(unittest.TestCase):
+    """Push tap targets (issue #891): legs thread object URLs."""
+
+    def setUp(self):
+        for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
+                  "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS",
+                  "BUTTONS_PUBLIC_URL"):
+            os.environ.pop(k, None)
+        os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict,job_fail"
+        os.environ["DIGEST_INTERVAL_HOURS"] = "100000"
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self.sent = []
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+        for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
+                  "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS",
+                  "BUTTONS_PUBLIC_URL"):
+            os.environ.pop(k, None)
+
+    def _sender(self):
+        def sender(**kw):
+            self.sent.append(kw)
+            return {}
+        return sender
+
+    def _brief(self, run_url="https://gh/run/1",
+               pr_url="https://gh/pull/7"):
+        return {"arii/a": {
+            "failing_runs": [{"name": "ci", "branch": "main",
+                              "failed": "boom", "url": run_url}],
+            "prs": [{"number": 7, "title": "fix", "conflicted": True,
+                     "url": pr_url}],
+        }}
+
+    def _run(self):
+        return {"id": "r1", "action": "check-notifications",
+                "repo": "arii/a", "done": True, "exit_code": 1,
+                "finished_at": 100.0, "output": "boom\n"}
+
+    def _tick(self, briefs, runs=(), now=1000.0):
+        return N.check_notifications_and_digest(
+            fetcher=lambda: briefs, sender=self._sender(),
+            now=now, runs_lister=lambda: list(runs))
+
+    def test_ci_fail_and_conflict_carry_gh_urls(self):
+        self._tick(self._brief())
+        by_kind = {s["event_type"]: s for s in self.sent}
+        self.assertEqual(by_kind["ci_fail"]["click_url"],
+                         "https://gh/run/1")
+        self.assertEqual(by_kind["conflict"]["click_url"],
+                         "https://gh/pull/7")
+
+    def test_missing_urls_send_clean_without_click(self):
+        self._tick(self._brief(run_url="", pr_url=""))
+        by_kind = {s["event_type"]: s for s in self.sent}
+        self.assertIsNone(by_kind["ci_fail"]["click_url"])
+        self.assertIsNone(by_kind["conflict"]["click_url"])
+        self.assertNotIn("Link:", by_kind["ci_fail"]["message"])
+        self.assertNotIn("Link:", by_kind["conflict"]["message"])
+
+    def test_job_fail_links_console_run_when_configured(self):
+        os.environ["BUTTONS_PUBLIC_URL"] = "https://console.example/"
+        self._tick(self._brief(), runs=[self._run()])
+        pushes = [s for s in self.sent
+                  if s["event_type"] == "job_fail"]
+        self.assertEqual(len(pushes), 1)
+        self.assertEqual(
+            pushes[0]["click_url"],
+            "https://console.example/api/jobs/runs/r1")
+
+    def test_job_fail_clean_without_base_url(self):
+        self._tick(self._brief(), runs=[self._run()])
+        pushes = [s for s in self.sent
+                  if s["event_type"] == "job_fail"]
+        self.assertEqual(len(pushes), 1)
+        self.assertIsNone(pushes[0]["click_url"])
+        self.assertNotIn("Link:", pushes[0]["message"])
+
+    def test_digest_links_briefing_when_configured(self):
+        os.environ["BUTTONS_PUBLIC_URL"] = "https://console.example"
+        os.environ["DIGEST_INTERVAL_HOURS"] = "1"
+        self._tick({}, now=10_000_000.0)
+        pushes = [s for s in self.sent
+                  if s["event_type"] == "digest"]
+        self.assertEqual(len(pushes), 1)
+        self.assertEqual(
+            pushes[0]["click_url"],
+            "https://console.example/api/briefing")
+
+    def test_digest_clean_without_base_url(self):
+        os.environ["DIGEST_INTERVAL_HOURS"] = "1"
+        self._tick({}, now=10_000_000.0)
+        pushes = [s for s in self.sent
+                  if s["event_type"] == "digest"]
+        self.assertEqual(len(pushes), 1)
+        self.assertIsNone(pushes[0]["click_url"])
+
+    def test_console_url_helpers(self):
+        self.assertIsNone(N.console_url("/api/briefing"))
+        os.environ["BUTTONS_PUBLIC_URL"] = "https://c.example/"
+        self.assertEqual(N.console_url("/api/briefing"),
+                         "https://c.example/api/briefing")
+        self.assertEqual(N.console_url("api/briefing"),
+                         "https://c.example/api/briefing")
+        os.environ["BUTTONS_PUBLIC_URL"] = "  "
+        self.assertIsNone(N.console_url("/api/briefing"))
+
+
+class SendClickTransportTest(unittest.TestCase):
+    """click_url transport (issue #891): Click header + Link line."""
+
+    def setUp(self):
+        for k in ("NTFY_TOPIC", "NTFY_URL", "NTFY_TOKEN",
+                  "NOTIFICATION_WEBHOOK_URL"):
+            os.environ.pop(k, None)
+        os.environ["NTFY_TOPIC"] = "test-topic"
+        os.environ["NOTIFICATION_WEBHOOK_URL"] = \
+            "https://hooks.example/push"
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self.requests = []
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+        for k in ("NTFY_TOPIC", "NTFY_URL", "NTFY_TOKEN",
+                  "NOTIFICATION_WEBHOOK_URL"):
+            os.environ.pop(k, None)
+
+    def _urlopen(self):
+        outer = self
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake(req, timeout=None):
+            outer.requests.append(req)
+            return Resp()
+
+        return mock.patch("urllib.request.urlopen", side_effect=fake)
+
+    def test_click_header_and_link_line(self):
+        with self._urlopen():
+            res = N.send_notification(
+                "t", "hello", event_type="ci_fail",
+                click_url="https://gh/run/1")
+        self.assertTrue(res["ntfy"]["ok"])
+        self.assertTrue(res["webhook"]["ok"])
+        ntfy = self.requests[0]
+        self.assertEqual(ntfy.get_header("Click"), "https://gh/run/1")
+        self.assertIn(b"hello\nLink: https://gh/run/1", ntfy.data)
+        hooked = json.loads(self.requests[1].data.decode("utf-8"))
+        self.assertEqual(hooked["url"], "https://gh/run/1")
+        self.assertIn("Link: https://gh/run/1", hooked["message"])
+
+    def test_absent_click_sends_clean(self):
+        with self._urlopen():
+            N.send_notification("t", "hello", event_type="info")
+        ntfy = self.requests[0]
+        self.assertIsNone(ntfy.get_header("Click"))
+        self.assertEqual(ntfy.data, b"hello")
+        hooked = json.loads(self.requests[1].data.decode("utf-8"))
+        self.assertIsNone(hooked["url"])
+        self.assertEqual(hooked["message"], "hello")
 
 
 if __name__ == "__main__":
