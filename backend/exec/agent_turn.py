@@ -72,6 +72,11 @@ KILL_GRACE = 5
 # path runs milliseconds after the store, so the TTL never bites it.
 RESULT_TTL = 3600
 
+# Server-known session registry bound (issue #442): follow-ups may
+# arrive long after the first turn, so entries never expire by age —
+# the registry evicts oldest-first past this many ids instead.
+KNOWN_SESSIONS_MAX = 10000
+
 
 async def _stop_proc(proc: subprocess.Popen) -> None:
     """Terminate, escalate to kill, wait bounded. Never raises and
@@ -265,6 +270,11 @@ class AgentTurnManager:
         self._lock = threading.Lock()
         self._running: dict[str, subprocess.Popen] = {}
         self._results: dict[str, dict] = {}
+        # Sessions the server has run a turn for (issue #442). Only
+        # these may skip the spawn confirm gate; a client-minted id
+        # the server never issued must confirm like a new spawn.
+        # Insertion-ordered dict used as a bounded FIFO set.
+        self._known: dict[str, None] = {}
         self._result_at: dict[str, float] = {}
 
     def _register(self, session_id: str,
@@ -275,6 +285,17 @@ class AgentTurnManager:
     def _unregister(self, session_id: str) -> None:
         with self._lock:
             self._running.pop(session_id, None)
+
+    def _remember(self, session_id: str) -> None:
+        with self._lock:
+            self._known[session_id] = None
+            while len(self._known) > KNOWN_SESSIONS_MAX:
+                self._known.pop(next(iter(self._known)))
+
+    def is_known(self, session_id: str) -> bool:
+        """True when the server ran a turn for this session id."""
+        with self._lock:
+            return session_id in self._known
 
     async def run_turn(self, provider: str, repo: str, cwd: str,
                        session_id: str, prompt: str, continued: bool,
@@ -290,6 +311,7 @@ class AgentTurnManager:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True)
         self._register(session_id, proc)
+        self._remember(session_id)
         out_text: list[str] = []
         out_len = 0
         truncated = False

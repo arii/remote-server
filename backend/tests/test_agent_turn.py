@@ -266,6 +266,20 @@ class RunTurnTest(unittest.TestCase):
         self.assertEqual(result["exit"], 3)
         self.assertIn("oops", result["stderr"])
 
+    def test_run_turn_marks_session_known(self):
+        # Issue #442: only sessions the server ran a turn for may
+        # skip the spawn gate. Popping the result must not un-know
+        # them — follow-ups arrive after the pop.
+        self.assertFalse(self.mgr.is_known("s-known"))
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-known", prompt="hi",
+                      continued=False,
+                      argv=["/bin/echo", "hello"])
+        self.assertTrue(self.mgr.is_known("s-known"))
+        self.mgr.pop_result("s-known")
+        self.assertTrue(self.mgr.is_known("s-known"))
+        self.assertFalse(self.mgr.is_known("s-never-ran"))
+
     def test_ledgers_completion(self):
         self._collect(provider="agy", repo="r", cwd="/tmp",
                       session_id="s4", prompt="hi", continued=True,
@@ -549,19 +563,48 @@ class AgentRouterTest(unittest.TestCase):
         self.assertIn("AGY-OK", done["text"])
         self.assertTrue(SID_RE.match(done["session_id"]))
 
+    def test_minted_session_id_requires_confirm(self):
+        # Issue #442: a client-minted id the server never issued
+        # must not skip the spawn gate.
+        body = {"provider": "muse", "repo": "testrepo",
+                "session_id": agent_turn.new_session_id(),
+                "prompt": "again"}
+        resp = self.client.post("/api/agent/turn", json=body)
+        self.assertEqual(resp.status_code, 400)
+
+    def test_unknown_session_id_with_confirm_spawns_fresh(self):
+        # Unknown id + confirm is allowed, but runs as a fresh
+        # (non-continued) spawn — and registers the id.
+        sid = agent_turn.new_session_id()
+        body = dict(TURN_BODY, session_id=sid)
+        with mock.patch.object(
+                agent_turn, "turn_argv",
+                return_value=["/bin/echo", "ok1"]) as argv_mock:
+            resp = self.client.post("/api/agent/turn", json=body)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("ok1", resp.text)
+        self.assertFalse(argv_mock.call_args[0][4])
+        self.assertTrue(agent_turn.manager.is_known(sid))
+
     def test_followup_turn_skips_confirm(self):
-        body = dict(TURN_BODY,
-                    session_id="12345678-1234-5678-1234-567812345678",
-                    prompt="again")
-        body.pop("confirmed")
-        body.pop("intent")
+        # Genuine follow-up on a server-known session stays free.
+        sid = agent_turn.new_session_id()
+        first = dict(TURN_BODY, session_id=sid)
+        second = {"provider": "muse", "repo": "testrepo",
+                  "session_id": sid, "prompt": "again"}
         with mock.patch.object(
                 agent_turn, "turn_argv",
                 return_value=["/bin/echo", "ok2"]) as argv_mock:
-            resp = self.client.post("/api/agent/turn", json=body)
+            resp1 = self.client.post("/api/agent/turn",
+                                     json=first)
+            resp = self.client.post("/api/agent/turn",
+                                    json=second)
+        self.assertEqual(resp1.status_code, 200)
         self.assertEqual(resp.status_code, 200)
         self.assertIn("ok2", resp.text)
-        self.assertTrue(argv_mock.call_args[0][4])
+        continued_flags = [call[0][4] for call in
+                           argv_mock.call_args_list]
+        self.assertEqual(continued_flags, [False, True])
 
     def test_turn_failure_sends_error_event(self):
         with mock.patch.object(

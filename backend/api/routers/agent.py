@@ -9,7 +9,8 @@ Turn framing (same shape as /api/chat/stream): ``event:
 session_id}, error {error}. Starting a conversation (no session_id)
 is a hold-to-confirm destructive action ({intent: "agent-spawn",
 confirmed: True}) because provider CLIs run tools; follow-up turns
-and abort are free.
+on server-known sessions and abort are free. An unknown session_id
+must confirm like a new spawn (issue #442).
 """
 
 import re
@@ -167,8 +168,14 @@ async def agent_turn_route(body: TurnRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="unknown provider")
     if not body.prompt.strip():
         raise HTTPException(status_code=400, detail="empty prompt")
-    continued = bool(body.session_id)
-    if not continued:
+    # Only server-known sessions skip the spawn gate (issue #442):
+    # a client-minted id the server never issued must confirm like
+    # a new spawn, and runs as a fresh (non-continued) turn.
+    if body.session_id and \
+            agent_turn.manager.is_known(body.session_id):
+        continued = True
+    else:
+        continued = False
         require_confirm(body, SPAWN_INTENT)
     try:
         name, cwd = _repo_target(body.repo)
