@@ -2694,5 +2694,240 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
             "results", "root-desktop.json")))
 
 
+class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
+    """review-pr as a first-class jobs action (#886)."""
+
+    def setUp(self):
+        import backend.api.routers.jobs as jobs_router
+
+        self._ledger_setup()
+        self._jobs_router = jobs_router
+        self._old_registry = jobs_router.registry
+        jobs_router.registry = RunRegistry()
+        from backend.server import app
+
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._jobs_router.registry = self._old_registry
+        self._ledger_teardown()
+
+    def test_registered_repo_scoped_not_destructive(self):
+        self.assertIn("review-pr", engine.ALLOWED_ACTIONS)
+        self.assertIn("review-pr", engine.REPO_SCOPED_ACTIONS)
+        self.assertNotIn("review-pr", engine.DESTRUCTIVE_ACTIONS)
+        # The --post path runs model synthesis, like triage-fanout.
+        self.assertEqual(engine.step_timeout("review-pr"), 1200)
+
+    def test_argv_validation(self):
+        self.assertTrue(engine.validate_review_pr_argv(
+            ["review-pr", "12"]))
+        self.assertTrue(engine.validate_review_pr_argv(
+            ["review-pr", "12", "--post"]))
+        self.assertFalse(engine.validate_review_pr_argv(
+            ["review-pr"]))
+        self.assertFalse(engine.validate_review_pr_argv(
+            ["review-pr", "0"]))
+        self.assertFalse(engine.validate_review_pr_argv(
+            ["review-pr", "-3"]))
+        self.assertFalse(engine.validate_review_pr_argv(
+            ["review-pr", "12", "--dry-run"]))
+        self.assertFalse(engine.validate_review_pr_argv(
+            ["review-pr", "12; rm -rf /"]))
+        self.assertFalse(engine.validate_review_pr_argv(
+            ["run-td", "12"]))
+
+    def test_steps_dry_run_by_default(self):
+        steps, err = engine.action_steps(
+            "review-pr", "remote-server", "arii/remote-server",
+            "/srv/remote-server", ["review-pr", "12"])
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[sys.executable, "-m", "core_cli.review",
+                     "--repo", "arii/remote-server", "--pr", "12",
+                     "--dry-run"]])
+        # -m steps execute FROM the deployed tree (step_cwd).
+        self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
+
+    def test_steps_post_only_when_explicit(self):
+        steps, err = engine.action_steps(
+            "review-pr", "remote-server", "arii/remote-server",
+            "/srv/remote-server", ["review-pr", "12", "--post"])
+        self.assertIsNone(err)
+        self.assertEqual(steps[0][-1], "--post")
+        self.assertNotIn("--dry-run", steps[0])
+
+    def test_steps_reject_missing_repo_and_argv(self):
+        steps, err = engine.action_steps(
+            "review-pr", "remote-server", "", "", ["review-pr", "12"])
+        self.assertIsNone(steps)
+        self.assertIn("needs a repo", err)
+        steps, err = engine.action_steps(
+            "review-pr", "remote-server", "arii/remote-server",
+            "/srv/remote-server", None)
+        self.assertIsNone(steps)
+        self.assertIn("review-pr", err)
+        steps, err = engine.action_steps(
+            "review-pr", "remote-server", "arii/remote-server",
+            "/srv/remote-server", ["review-pr", "x;evil"])
+        self.assertIsNone(steps)
+
+    def test_dispatch_dry_runs_by_default(self):
+        import backend.api.routers.jobs as jobs_router
+
+        with mock.patch.object(jobs_router, "_launch") as launched, \
+                mock.patch("backend.core.get_repo_status",
+                           return_value={"repo": "remote-server"}):
+            resp = self.client.post(
+                "/api/jobs/run-review",
+                json={"repo": "remote-server", "pr": 12})
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            launched.assert_called_once_with(
+                rid, "review-pr", "remote-server",
+                td_argv=["review-pr", "12"])
+            # Single-flight: a second dispatch conflicts.
+            resp2 = self.client.post(
+                "/api/jobs/run-review",
+                json={"repo": "remote-server", "pr": 13})
+            self.assertEqual(resp2.status_code, 409)
+            row = next(j for j in
+                       self.client.get("/api/jobs").json()["jobs"]
+                       if j["id"] == rid)
+            self.assertEqual(row["kind"], "review-pr")
+            self.assertEqual(row["td_argv"], ["review-pr", "12"])
+        jobs_router.registry.finish_run(rid, 0)
+
+    def test_dispatch_post_rides_explicit_flag(self):
+        import backend.api.routers.jobs as jobs_router
+
+        with mock.patch.object(jobs_router, "_launch") as launched, \
+                mock.patch("backend.core.get_repo_status",
+                           return_value={"repo": "remote-server"}):
+            resp = self.client.post(
+                "/api/jobs/run-review",
+                json={"repo": "remote-server", "pr": 12,
+                      "post": True})
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            launched.assert_called_once_with(
+                rid, "review-pr", "remote-server",
+                td_argv=["review-pr", "12", "--post"])
+        jobs_router.registry.finish_run(rid, 0)
+
+    def test_dispatch_rejects_bad_repo_and_pr(self):
+        import backend.api.routers.jobs as jobs_router
+
+        with mock.patch.object(jobs_router, "_launch"), \
+                mock.patch("backend.core.get_repo_status",
+                           side_effect=ValueError("nope")):
+            resp = self.client.post(
+                "/api/jobs/run-review",
+                json={"repo": "ghost", "pr": 12})
+            self.assertEqual(resp.status_code, 400)
+        with mock.patch.object(jobs_router, "_launch"), \
+                mock.patch("backend.core.get_repo_status",
+                           return_value={"repo": "remote-server"}):
+            for pr in (0, -3):
+                resp = self.client.post(
+                    "/api/jobs/run-review",
+                    json={"repo": "remote-server", "pr": pr})
+                self.assertEqual(resp.status_code, 400, msg=pr)
+            missing = self.client.post(
+                "/api/jobs/run-review",
+                json={"repo": "remote-server"})
+            self.assertEqual(missing.status_code, 400)
+
+
+class SuperviseActionTest(_LedgerTmpDir, unittest.TestCase):
+    """supervise as a first-class jobs action (#886)."""
+
+    def setUp(self):
+        import tempfile
+
+        import backend.api.routers.jobs as jobs_router
+
+        self._ledger_setup()
+        self._jobs_router = jobs_router
+        self._old_registry = jobs_router.registry
+        jobs_router.registry = RunRegistry()
+        from backend.server import app
+
+        self.client = TestClient(app)
+        # Fake deep-agent tree: action_steps only stats the venv
+        # python + script, so empty files keep this hermetic.
+        self._agent_tmp = tempfile.TemporaryDirectory()
+        venv_bin = os.path.join(self._agent_tmp.name, ".venv", "bin")
+        os.makedirs(venv_bin)
+        self.fake_python = os.path.join(venv_bin, "python")
+        with open(self.fake_python, "w") as f:
+            f.write("#!/bin/sh\n")
+        self.fake_script = os.path.join(
+            self._agent_tmp.name, "deep_chat.py")
+        with open(self.fake_script, "w") as f:
+            f.write("# fake\n")
+        self._old_agent_dir = os.environ.get("DEEP_AGENT_DIR")
+        self._old_agent_venv = os.environ.get("DEEP_AGENT_VENV")
+        os.environ["DEEP_AGENT_DIR"] = self._agent_tmp.name
+        os.environ.pop("DEEP_AGENT_VENV", None)
+
+    def tearDown(self):
+        self._jobs_router.registry = self._old_registry
+        if self._old_agent_dir is None:
+            os.environ.pop("DEEP_AGENT_DIR", None)
+        else:
+            os.environ["DEEP_AGENT_DIR"] = self._old_agent_dir
+        if self._old_agent_venv is None:
+            os.environ.pop("DEEP_AGENT_VENV", None)
+        else:
+            os.environ["DEEP_AGENT_VENV"] = self._old_agent_venv
+        self._agent_tmp.cleanup()
+        self._ledger_teardown()
+
+    def test_registered_repo_scoped_not_destructive(self):
+        self.assertIn("supervise", engine.ALLOWED_ACTIONS)
+        self.assertIn("supervise", engine.REPO_SCOPED_ACTIONS)
+        self.assertNotIn("supervise", engine.DESTRUCTIVE_ACTIONS)
+        # An agent sweep over a checkout, like triage-fanout.
+        self.assertEqual(engine.step_timeout("supervise"), 1200)
+
+    def test_steps_run_supervise_mode(self):
+        steps, err = engine.action_steps(
+            "supervise", "remote-server", "arii/remote-server",
+            "/srv/remote-server")
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[self.fake_python, self.fake_script,
+                     "arii/remote-server", "--supervise"]])
+
+    def test_steps_need_repo_venv_and_script(self):
+        steps, err = engine.action_steps(
+            "supervise", "remote-server", "", "")
+        self.assertIsNone(steps)
+        self.assertIn("needs a repo", err)
+        os.remove(self.fake_python)
+        steps, err = engine.action_steps(
+            "supervise", "remote-server", "arii/remote-server",
+            "/srv/remote-server")
+        self.assertIsNone(steps)
+        self.assertIn("venv python", err)
+
+    def test_dispatchable_from_jobs_run(self):
+        import backend.api.routers.jobs as jobs_router
+
+        with mock.patch.object(jobs_router, "_launch") as launched, \
+                mock.patch("backend.core.get_repo_status",
+                           return_value={"repo": "remote-server"}):
+            resp = self.client.post(
+                "/api/jobs/run",
+                json={"action": "supervise",
+                      "repo": "remote-server"})
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            launched.assert_called_once_with(
+                rid, "supervise", "remote-server")
+        jobs_router.registry.finish_run(rid, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
