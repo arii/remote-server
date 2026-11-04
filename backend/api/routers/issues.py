@@ -361,6 +361,13 @@ def _schedule_tick_loop() -> None:
             fire_due_digest()
         except Exception:
             pass
+        # Third job on the shared tick (#652): budget-watch alerts
+        # ride this loop like digests — never a second ticker.
+        try:
+            from backend.notify import fire_budget_watch
+            fire_budget_watch()
+        except Exception:
+            pass
 
 
 def _ensure_schedule_ticker() -> None:

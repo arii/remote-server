@@ -32,6 +32,7 @@ class NotificationsStatus(BaseModel):
     digest_interval_hours: float = 12.0
     last_digest: float = 0
     enabled_events: list[str] = Field(default_factory=list)
+    budget_alert: dict | None = None
 
 
 class NotificationResult(BaseModel):
@@ -157,6 +158,7 @@ def notifications_status() -> dict:
         "digest_interval_hours": N.digest_interval_hours(),
         "last_digest": state.get("last_digest", 0),
         "enabled_events": N.enabled_events(),
+        "budget_alert": state.get("last_budget_alert"),
     }
 
 

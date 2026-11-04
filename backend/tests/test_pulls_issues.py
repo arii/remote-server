@@ -939,5 +939,77 @@ class IssueLabelTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
 
+class ScheduleTickLoopTest(unittest.TestCase):
+    def _run_ticks(self, ticks):
+        import backend.notify as notify_mod
+
+        calls = []
+        sleeps = []
+
+        class Done(Exception):
+            pass
+
+        def fake_sleep(_secs):
+            calls.append("sleep")
+            sleeps.append(1)
+            if len(sleeps) > ticks:
+                raise Done()
+
+        with patch.object(issues_mod.time, "sleep",
+                          side_effect=fake_sleep), \
+                patch.object(issues_mod, "fire_due_schedules",
+                             side_effect=lambda: calls.append(
+                                 "schedules")), \
+                patch.object(notify_mod, "fire_due_digest",
+                             side_effect=lambda: calls.append(
+                                 "digest")), \
+                patch.object(notify_mod, "fire_budget_watch",
+                             side_effect=lambda: calls.append(
+                                 "budget")):
+            with self.assertRaises(Done):
+                issues_mod._schedule_tick_loop()
+        return calls
+
+    def test_tick_runs_all_three_jobs(self):
+        calls = self._run_ticks(2)
+        self.assertEqual(
+            calls,
+            ["sleep", "schedules", "digest", "budget",
+             "sleep", "schedules", "digest", "budget",
+             "sleep"])
+
+    def test_tick_survives_job_errors(self):
+        import backend.notify as notify_mod
+
+        ticks = []
+
+        class Done(Exception):
+            pass
+
+        def fake_sleep(_secs):
+            ticks.append(1)
+            if len(ticks) > 2:
+                raise Done()
+
+        budget_calls = []
+
+        def boom_budget():
+            budget_calls.append(1)
+            raise RuntimeError("notify down")
+
+        with patch.object(issues_mod.time, "sleep",
+                          side_effect=fake_sleep), \
+                patch.object(issues_mod, "fire_due_schedules",
+                             side_effect=RuntimeError("repair down")), \
+                patch.object(notify_mod, "fire_due_digest",
+                             return_value=False), \
+                patch.object(notify_mod, "fire_budget_watch",
+                             side_effect=boom_budget):
+            with self.assertRaises(Done):
+                issues_mod._schedule_tick_loop()
+        self.assertEqual(len(ticks), 3)
+        self.assertEqual(len(budget_calls), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
