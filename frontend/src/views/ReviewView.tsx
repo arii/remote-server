@@ -7,11 +7,13 @@ import {
   deferRow,
   deferRowsBulk,
   draftIssue,
+  editIssueLabel,
   fetchDeferred,
   fetchIssues,
   fetchPrDetails,
   fetchPrDiff,
   fetchPrs,
+  fetchRepoLabels,
   mergePr,
   requestPrChanges,
   restoreRow,
@@ -420,6 +422,144 @@ export function RowActionButton({
   );
 }
 
+// Label names for an issue row: gh shapes them as {name} objects,
+// fixtures and optimistic patches may use bare strings.
+export function issueLabelNames(labels: IssueRow['labels']): string[] {
+  return (labels ?? []).map(labelOf).filter(Boolean);
+}
+
+// In-flight (or last failed) label op for one issue row.
+export interface IssueLabelOp {
+  op: 'add' | 'remove';
+  label: string;
+}
+
+// Inline label editor for one issue row (#612): always-visible
+// chips with one-tap remove, plus an Edit toggle opening the add
+// form with repo-label typeahead. Server errors surface inline
+// with retry; the parent refreshes the row on success. Accessible
+// names carry kind + number like RowActionButton (#569).
+export function IssueRowLabels({
+  issue,
+  repoLabels,
+  pending,
+  error,
+  initialOpen = false,
+  onEnsureSuggestions,
+  onAdd,
+  onRemove,
+  onRetry,
+}: {
+  issue: IssueRow;
+  repoLabels: string[];
+  pending: IssueLabelOp | null;
+  error: string | null;
+  initialOpen?: boolean;
+  onEnsureSuggestions: () => void;
+  onAdd: (label: string) => void;
+  onRemove: (label: string) => void;
+  onRetry: () => void;
+}) {
+  const [open, setOpen] = useState(initialOpen);
+  const [draft, setDraft] = useState('');
+  const [problem, setProblem] = useState<string | null>(null);
+  const n = issue.number;
+  const names = issueLabelNames(issue.labels);
+  const busy = pending !== null;
+  return (
+    <>
+      <p className="row-meta" data-testid={`issue-labels-${n}`}>
+        {names.length === 0
+          ? 'no labels'
+          : names.map((name, i) => (
+              <span key={`${name}-${i}`}>
+                {i > 0 ? ', ' : ''}
+                {name}{' '}
+                <button
+                  type="button"
+                  data-testid={`label-remove-${n}-${i}`}
+                  aria-label={`Remove label ${name} from issue #${n}`}
+                  disabled={busy}
+                  onClick={() => onRemove(name)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+      </p>
+      <button
+        type="button"
+        data-testid={`edit-labels-issue-${n}`}
+        aria-label={`Edit labels on issue #${n}`}
+        aria-expanded={open}
+        onClick={() => {
+          if (!open) onEnsureSuggestions();
+          setOpen(!open);
+        }}
+      >
+        Edit labels
+      </button>
+      {open && (
+        <form
+          data-testid={`label-editor-${n}`}
+          onSubmit={(e) => {
+            e.preventDefault();
+            const name = draft.trim();
+            if (!name) {
+              setProblem('Label name is required.');
+              return;
+            }
+            setProblem(null);
+            setDraft('');
+            onAdd(name);
+          }}
+        >
+          <input
+            data-testid={`label-input-${n}`}
+            aria-label={`Label name for issue #${n}`}
+            value={draft}
+            list={`label-suggestions-${n}`}
+            placeholder="label name"
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <datalist id={`label-suggestions-${n}`} data-testid={`label-suggestions-${n}`}>
+            {repoLabels.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>{' '}
+          <button
+            type="submit"
+            data-testid={`label-add-${n}`}
+            aria-label={`Add label to issue #${n}`}
+            disabled={busy}
+          >
+            {pending?.op === 'add' ? 'Saving…' : 'Add'}
+          </button>
+        </form>
+      )}
+      {problem && (
+        <p className="row-meta" role="alert" data-testid={`label-problem-${n}`}>
+          {problem}
+        </p>
+      )}
+      {error && (
+        <p className="row-meta" role="alert" data-testid={`labels-error-${n}`}>
+          {error}{' '}
+          <button
+            type="button"
+            data-testid={`labels-retry-${n}`}
+            aria-label={`Retry label change on issue #${n}`}
+            disabled={busy}
+            onClick={onRetry}
+          >
+            Retry
+          </button>
+        </p>
+      )}
+    </>
+  );
+}
+
 // Bulk defer selection keys: "pr:12" / "issue:34" so one set spans
 // both Review lists without kind collisions.
 export function bulkRowKey(kind: 'pr' | 'issue', n: number): string {
@@ -528,6 +668,12 @@ export default function ReviewView({
   const [filter, setFilter] = useState('');
   const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Inline issue labels (#612): repo labels load lazily on first
+  // editor open; per-row pending/error/failed-op keyed by number.
+  const [repoLabels, setRepoLabels] = useState<string[] | null>(null);
+  const [labelPending, setLabelPending] = useState<Record<number, IssueLabelOp | null>>({});
+  const [labelError, setLabelError] = useState<Record<number, string | null>>({});
+  const [labelFailedOp, setLabelFailedOp] = useState<Record<number, IssueLabelOp | null>>({});
 
   // Deferred rows hide from the main lists (and from the triage
   // cursor) and surface in the Deferred disclosure instead. The
@@ -791,6 +937,67 @@ export default function ReviewView({
     }
   }
 
+  // Lazily fetch the repo label list for editor typeahead.
+  // Typeahead is an enhancement: the editor takes free text, so a
+  // failed fetch degrades to no suggestions (cached, no refetch).
+  async function ensureRepoLabels() {
+    if (repoLabels !== null || useMock()) return;
+    try {
+      const r = await fetchRepoLabels(repo);
+      setRepoLabels(r.labels);
+    } catch {
+      setRepoLabels([]);
+    }
+  }
+
+  // One add/remove op on an issue row: the edit posts, then the
+  // issue list re-reads so the row shows GitHub's own state (same
+  // refresh shape as refreshPrs). Failures stay in the row with
+  // retry; the view banner is untouched.
+  async function runLabelOp(n: number, op: 'add' | 'remove', label: string) {
+    setLabelError((prev) => ({ ...prev, [n]: null }));
+    if (useMock()) {
+      setIssues((prev) =>
+        prev
+          ? prev.map((r) => {
+              if (r.number !== n) return r;
+              const names = issueLabelNames(r.labels);
+              const next =
+                op === 'add'
+                  ? names.includes(label)
+                    ? names
+                    : [...names, label]
+                  : names.filter((x) => x !== label);
+              return { ...r, labels: next.map((x) => ({ name: x })) };
+            })
+          : prev,
+      );
+      setNotice(`Updated labels on issue #${n}.`);
+      return;
+    }
+    setLabelPending((prev) => ({ ...prev, [n]: { op, label } }));
+    try {
+      await editIssueLabel(repo, n, label, op);
+      setLabelFailedOp((prev) => ({ ...prev, [n]: null }));
+      const i = await fetchIssues(repo);
+      setIssues(i.issues);
+      setNotice(`Updated labels on issue #${n}.`);
+    } catch (err) {
+      setLabelFailedOp((prev) => ({ ...prev, [n]: { op, label } }));
+      setLabelError((prev) => ({
+        ...prev,
+        [n]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setLabelPending((prev) => ({ ...prev, [n]: null }));
+    }
+  }
+
+  function retryLabelOp(n: number) {
+    const failed = labelFailedOp[n];
+    if (failed) void runLabelOp(n, failed.op, failed.label);
+  }
+
   async function onCreateIssue() {
     setError(null);
     if (!newTitle.trim()) {
@@ -963,9 +1170,16 @@ export default function ReviewView({
                   <span className="row-title">
                     <IssueRowTitle issue={iss} />
                   </span>
-                  <p className="row-meta">
-                    {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
-                  </p>
+                  <IssueRowLabels
+                    issue={iss}
+                    repoLabels={repoLabels ?? []}
+                    pending={labelPending[iss.number] ?? null}
+                    error={labelError[iss.number] ?? null}
+                    onEnsureSuggestions={() => void ensureRepoLabels()}
+                    onAdd={(label) => void runLabelOp(iss.number, 'add', label)}
+                    onRemove={(label) => void runLabelOp(iss.number, 'remove', label)}
+                    onRetry={() => retryLabelOp(iss.number)}
+                  />
                   <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)} />
                 </li>
               ))}

@@ -564,6 +564,31 @@ export function draftIssue(repo: string, title: string, cause: string, details: 
   });
 }
 
+export interface RepoLabelsResponse {
+  repo: string;
+  labels: string[];
+}
+
+export function fetchRepoLabels(repo: string): Promise<RepoLabelsResponse> {
+  return getJson<RepoLabelsResponse>(
+    `api/labels?repo=${encodeURIComponent(repo)}`,
+  );
+}
+
+export function editIssueLabel(
+  repo: string,
+  issue: number,
+  label: string,
+  op: 'add' | 'remove',
+): Promise<{ ok: boolean; issue: number }> {
+  return postJson<{ ok: boolean; issue: number }>('api/issue-label', {
+    repo,
+    issue,
+    label,
+    op,
+  });
+}
+
 export function fetchPiProgress(rid: string): Promise<PiProgressResponse> {
   return getJson<PiProgressResponse>(`api/pi-progress/${encodeURIComponent(rid)}`);
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReviewView, {
   BulkDeferBar,
+  IssueRowLabels,
   IssueRowTitle,
   PrRowApprove,
   PrRowRequestChanges,
@@ -11,6 +12,7 @@ import ReviewView, {
   bulkDeferNotice,
   bulkRowKey,
   isRowDeferred,
+  issueLabelNames,
   nextPrAfterMerge,
   mergeBadge,
   openIssueUrl,
@@ -389,5 +391,95 @@ describe('bulk defer selection (issue #607)', () => {
     );
     expect(html).toContain('disabled');
     expect(html).toContain('>Deferring…<');
+  });
+});
+
+describe('issue label names', () => {
+  it('reads both the gh object shape and bare strings', () => {
+    expect(issueLabelNames([{ name: 'audit' }, 'ready'])).toEqual(['audit', 'ready']);
+  });
+
+  it('returns an empty list for missing or blank labels', () => {
+    expect(issueLabelNames(undefined)).toEqual([]);
+    expect(issueLabelNames([])).toEqual([]);
+    expect(issueLabelNames([{ name: '' }])).toEqual([]);
+  });
+});
+
+describe('issue row labels', () => {
+  const noop = () => {};
+
+  function renderLabels(
+    issue: { number: number; title: string; labels?: Array<{ name: string } | string> },
+    extra: {
+      repoLabels?: string[];
+      pending?: { op: 'add' | 'remove'; label: string } | null;
+      error?: string | null;
+      initialOpen?: boolean;
+    } = {},
+  ) {
+    return renderToStaticMarkup(
+      <IssueRowLabels
+        issue={issue}
+        repoLabels={extra.repoLabels ?? ['audit', 'ready']}
+        pending={extra.pending ?? null}
+        error={extra.error ?? null}
+        initialOpen={extra.initialOpen ?? false}
+        onEnsureSuggestions={noop}
+        onAdd={noop}
+        onRemove={noop}
+        onRetry={noop}
+      />,
+    );
+  }
+
+  it('renders one-tap remove per label with kind + number names', () => {
+    const html = renderLabels({ number: 7, title: 'T', labels: [{ name: 'audit' }, 'ready'] });
+    expect(html).toContain('data-testid="issue-labels-7"');
+    expect(html).toContain('aria-label="Remove label audit from issue #7"');
+    expect(html).toContain('aria-label="Remove label ready from issue #7"');
+    expect(html).toContain('aria-label="Edit labels on issue #7"');
+    expect(html).not.toContain('no labels');
+  });
+
+  it('shows the empty state for unlabeled rows', () => {
+    const html = renderLabels({ number: 7, title: 'T', labels: [] });
+    expect(html).toContain('no labels');
+    expect(html).toContain('data-testid="edit-labels-issue-7"');
+    expect(html).not.toContain('label-editor-7');
+  });
+
+  it('opens the add form with repo-label suggestions', () => {
+    const html = renderLabels({ number: 7, title: 'T', labels: [] }, { initialOpen: true });
+    expect(html).toContain('data-testid="label-editor-7"');
+    expect(html).toContain('aria-label="Label name for issue #7"');
+    expect(html).toContain('aria-label="Add label to issue #7"');
+    expect(html).toContain('data-testid="label-suggestions-7"');
+    expect(html).toContain('<option value="audit"');
+    expect(html).toContain('<option value="ready"');
+  });
+
+  it('surfaces errors inline with retry', () => {
+    const html = renderLabels({ number: 7, title: 'T', labels: [] }, { error: 'boom' });
+    expect(html).toContain('data-testid="labels-error-7"');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('boom');
+    expect(html).toContain('aria-label="Retry label change on issue #7"');
+  });
+
+  it('disables actions while an op is pending', () => {
+    const html = renderLabels(
+      { number: 7, title: 'T', labels: [{ name: 'audit' }] },
+      { initialOpen: true, pending: { op: 'remove', label: 'audit' } },
+    );
+    expect(html).toContain('disabled');
+  });
+
+  it('marks the add button while an add is in flight', () => {
+    const html = renderLabels(
+      { number: 7, title: 'T', labels: [] },
+      { initialOpen: true, pending: { op: 'add', label: 'audit' } },
+    );
+    expect(html).toContain('>Saving…<');
   });
 });
