@@ -268,12 +268,11 @@ export function digestScheduleLine(sched: DigestSchedule): string {
     ? `Next digest ${formatDigestStamp(sched.next_run)}`
     : 'Next digest not scheduled';
   const res = sched.last_result ?? {};
-  const held = sched.held_until ? ` · held until ${formatDigestStamp(sched.held_until)}` : '';
-  if (!res.at) return `${next}${held}.`;
-  if (res.ok) return `${next} · last sent ${formatDigestStamp(res.at)}${held}.`;
+  if (!res.at) return `${next}.`;
+  if (res.ok) return `${next} · last sent ${formatDigestStamp(res.at)}.`;
   const err = res.error || 'unknown error';
   const short = err.length > 120 ? `${err.slice(0, 120)}…` : err;
-  return `${next} · last scheduled send failed (${short})${held}.`;
+  return `${next} · last scheduled send failed (${short}).`;
 }
 
 export function DigestControlsView({
@@ -425,41 +424,25 @@ export function DigestControls() {
   );
 }
 
-// Notification preferences + quiet hours (issue #615's digest
-// cluster, issue #656). One prefs object, one round trip.
+// Notification preferences (issue #615's digest cluster, issue
+// #656). One prefs object, one round trip.
 export function prefsStatusLine(prefs: NotificationPreferences): string {
   const muted = prefs.muted_events.length > 0
     ? `Muted: ${prefs.muted_events.join(', ')}`
     : 'All events on';
-  const quiet = prefs.quiet_hours
-    ? `Quiet ${prefs.quiet_hours.start}–${prefs.quiet_hours.end}`
-    : 'No quiet hours';
-  const held = prefs.held_until
-    ? ` · Digest held until ${formatDigestStamp(prefs.held_until)}`
-    : '';
-  return `${muted} · ${quiet}${held}.`;
+  return `${muted}.`;
 }
 
 export function PrefsControlsView({
   prefs,
   prefsErr,
   busy,
-  draftStart,
-  draftEnd,
   onToggle,
-  onDraft,
-  onSaveQuiet,
-  onClearQuiet,
 }: {
   prefs: NotificationPreferences | null;
   prefsErr: string | null;
   busy: boolean;
-  draftStart: string;
-  draftEnd: string;
   onToggle: (event: string) => void;
-  onDraft: (start: string, end: string) => void;
-  onSaveQuiet: () => void;
-  onClearQuiet: () => void;
 }) {
   const line = prefsErr
     ? `Notification preferences unavailable — ${prefsErr}`
@@ -488,48 +471,6 @@ export function PrefsControlsView({
           </button>
         ))}
       </div>
-      <div className="actions">
-        <label className="row-meta" htmlFor="briefing-quiet-start">
-          Quiet from{' '}
-          <input
-            id="briefing-quiet-start"
-            data-testid="briefing-quiet-start"
-            type="time"
-            value={draftStart}
-            disabled={busy || !prefs}
-            onChange={(ev) => onDraft(ev.target.value, draftEnd)}
-          />
-        </label>
-        <label className="row-meta" htmlFor="briefing-quiet-end">
-          to{' '}
-          <input
-            id="briefing-quiet-end"
-            data-testid="briefing-quiet-end"
-            type="time"
-            value={draftEnd}
-            disabled={busy || !prefs}
-            onChange={(ev) => onDraft(draftStart, ev.target.value)}
-          />
-        </label>
-        <button
-          type="button"
-          data-testid="briefing-quiet-save"
-          title="Save quiet hours (server-local time; overnight windows allowed)"
-          disabled={busy || !prefs}
-          onClick={onSaveQuiet}
-        >
-          Save quiet hours
-        </button>
-        <button
-          type="button"
-          data-testid="briefing-quiet-clear"
-          title="Clear quiet hours"
-          disabled={busy || !prefs || !prefs?.quiet_hours}
-          onClick={onClearQuiet}
-        >
-          Clear
-        </button>
-      </div>
       <p className="row-meta" data-testid="briefing-prefs-status">
         {line}
       </p>
@@ -541,9 +482,6 @@ export function PrefsControls() {
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
   const [prefsErr, setPrefsErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [draftStart, setDraftStart] = useState('');
-  const [draftEnd, setDraftEnd] = useState('');
-  const draftsInit = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -560,17 +498,7 @@ export function PrefsControls() {
     };
   }, []);
 
-  // Seed the time inputs from saved quiet hours once; later prefs
-  // refreshes (e.g. after a mute toggle) must not clobber typing.
-  useEffect(() => {
-    if (!draftsInit.current && prefs?.quiet_hours) {
-      setDraftStart(prefs.quiet_hours.start);
-      setDraftEnd(prefs.quiet_hours.end);
-      draftsInit.current = true;
-    }
-  }, [prefs]);
-
-  async function save(body: { muted_events?: string[]; quiet_hours?: { start: string; end: string } | null }) {
+  async function save(body: { muted_events?: string[] }) {
     if (busy) return;
     setBusy(true);
     try {
@@ -596,19 +524,7 @@ export function PrefsControls() {
       prefs={prefs}
       prefsErr={prefsErr}
       busy={busy}
-      draftStart={draftStart}
-      draftEnd={draftEnd}
       onToggle={(e) => toggle(e)}
-      onDraft={(s, e) => {
-        setDraftStart(s);
-        setDraftEnd(e);
-      }}
-      onSaveQuiet={() => void save({ quiet_hours: { start: draftStart, end: draftEnd } })}
-      onClearQuiet={() => {
-        setDraftStart('');
-        setDraftEnd('');
-        void save({ quiet_hours: null });
-      }}
     />
   );
 }
