@@ -421,5 +421,191 @@ class TestFetchUrl(unittest.TestCase):
             self.assertTrue(out.startswith("FETCH_ERROR:"), repr(url))
 
 
+def _search_card(url, title, desc):
+    return (
+        f'<section data-ms-rank="5" class="card search-result" >'
+        f'<div class="url"><a rel="nofollow external" href="{url}">'
+        f"{url}</a></div> <h2> <a tabindex=\"-1\" class=\"title\" "
+        f"rel=\"nofollow external\" href=\"{url}\">{title}</a> </h2> "
+        f"<p class=\"description\">{desc}</p> "
+        f"<div class=\"utils\"> Also from example.com </div>"
+    )
+
+
+_SEARCH_PAGE_HEAD = (
+    "<html><body><span id=\"content-start\"></span>"
+    "<section class=\"sidebar-narrow\"><section id=\"results\""
+    " class=\"sb-left\"> <div class=\"infobox screenreader-only\">"
+    " Showing 25 search results. </div> "
+)
+
+
+def _search_page(*cards):
+    # Bytes: the shared _DoubleHandler writes bodies raw.
+    return (_SEARCH_PAGE_HEAD + " ".join(cards)
+            + "</section></section>").encode()
+
+
+def _wait_page(query, countdown=0):
+    return (
+        "<html><head><title>Error</title></head><body>"
+        "<div class=\"infobox\"><h1>Wait For A Moment</h1>"
+        "<p>The search engine is currently barraged by queries</p>"
+        f"<p>Please wait for <b id=\"countdown\" data-tr=\"{countdown}\">"
+        f"{countdown}</b> seconds.</p>"
+        f"<a href=\"/search?query={query}&sst=S-test\">this link</a>"
+        "</div></body></html>"
+    ).encode()
+
+
+class TestSearchWeb(unittest.TestCase):
+    def _double(self, routes):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(_DoubleHandler, BaseHTTPRequestHandler):
+            def do_GET(self):
+                self._serve()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        server.routes = routes
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        return f"http://127.0.0.1:{port}"
+
+    def _search(self, base, query, **kw):
+        kw.setdefault("_allow_loopback", True)
+        kw.setdefault("_base_url", base)
+        return s5tools.search_web(query, **kw)
+
+    def test_parses_ranked_hits(self):
+        page = _search_page(
+            _search_card("https://a.example/docs", "A docs",
+                         "how to a"),
+            _search_card("https://b.example/log", "B log",
+                         "b changes"),
+        )
+        base = self._double({"/search?query=ollama": (200, [], page)})
+        out = self._search(base, "ollama")
+        self.assertTrue(out.startswith("1. A docs\n"), out[:80])
+        self.assertIn("https://a.example/docs", out)
+        self.assertIn("how to a", out)
+        self.assertIn("2. B log\n", out)
+        self.assertIn("https://b.example/log", out)
+
+    def test_limit_clamps(self):
+        page = _search_page(*[
+            _search_card(f"https://x.example/{i}", f"T{i}", f"s{i}")
+            for i in range(7)
+        ])
+        base = self._double({"/search?query=q": (200, [], page)})
+        out = self._search(base, "q", limit=2)
+        self.assertIn("2. T1", out)
+        self.assertNotIn("3. T2", out)
+        out = self._search(base, "q", limit=99)
+        self.assertIn("7. T6", out)
+        self.assertNotIn("8. ", out)
+        out = self._search(base, "q", limit=0)
+        self.assertIn("1. T0", out)
+        self.assertNotIn("2. T1", out)
+        out = self._search(base, "q")
+        self.assertIn("5. T4", out)
+        self.assertNotIn("6. T5", out)
+
+    def test_bad_query_never_fetches(self):
+        for query in ("", "   ", None, 12345, "x" * 201):
+            out = s5tools.search_web(query)
+            self.assertTrue(out.startswith("SEARCH_ERROR:"), repr(query))
+
+    def test_bad_limit(self):
+        for limit in ("x", None, [1], object()):
+            out = s5tools.search_web("ollama", limit=limit)
+            self.assertTrue(out.startswith("SEARCH_ERROR:"), repr(limit))
+
+    def test_empty_page_is_no_results(self):
+        base = self._double({
+            "/search?query=qqq": (200, [], _search_page()),
+        })
+        self.assertEqual(self._search(base, "qqq"), "no results")
+
+    def test_cleans_entities_and_tags(self):
+        page = _search_page(_search_card(
+            "https://a.example/", "It&#x27;s <em>A</em>",
+            "line <b>bold</b>  spaced   out&#x27;s"))
+        base = self._double({"/search?query=e": (200, [], page)})
+        out = self._search(base, "e")
+        self.assertIn("1. It's A\n", out)
+        self.assertIn("line bold spaced out's", out)
+        self.assertNotIn("<b>", out)
+
+    def test_skips_non_http_hrefs(self):
+        page = _search_page(
+            _search_card("ftp://a.example/x", "FTP", "nope"),
+            _search_card("/relative/path", "REL", "nope"),
+            _search_card("https://ok.example/", "OK", "yes"),
+        )
+        base = self._double({"/search?query=s": (200, [], page)})
+        out = self._search(base, "s")
+        self.assertIn("1. OK", out)
+        self.assertNotIn("FTP", out)
+        self.assertNotIn("REL", out)
+
+    def test_wait_page_honors_countdown_and_retries(self):
+        page = _search_page(_search_card(
+            "https://r.example/", "Retry hit", "after wait"))
+        base = self._double({
+            "/search?query=w": (200, [], _wait_page("w", 0)),
+            "/search?query=w&sst=S-test": (200, [], page),
+        })
+        out = self._search(base, "w")
+        self.assertIn("1. Retry hit", out)
+        self.assertIn("https://r.example/", out)
+
+    def test_wait_page_without_retry_link(self):
+        body = ("<html><head><title>Error</title></head><body>"
+                "<h1>Wait For A Moment</h1></body></html>").encode()
+        base = self._double({"/search?query=w": (200, [], body)})
+        out = self._search(base, "w")
+        self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
+        self.assertIn("no retry link", out)
+
+    def test_double_wait_is_search_error(self):
+        base = self._double({
+            "/search?query=w": (200, [], _wait_page("w", 0)),
+            "/search?query=w&sst=S-test": (200, [], _wait_page("w", 0)),
+        })
+        out = self._search(base, "w")
+        self.assertEqual(out, "SEARCH_ERROR: provider still rate-limiting")
+
+    def test_provider_http_error_shaped(self):
+        base = self._double({})
+        out = self._search(base, "missing")
+        self.assertEqual(out, "SEARCH_ERROR: HTTP 404")
+
+    def test_timeout_shaped(self):
+        import time
+
+        def slow():
+            time.sleep(5)
+            return b"late"
+
+        base = self._double({"/search?query=slow": (200, [], slow)})
+        out = self._search(base, "slow", timeout=1)
+        self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
+        self.assertIn("timed out", out)
+
+    def test_never_raises_on_garbage(self):
+        for query in (b"bytes", ["q"], {"q": 1}, "http://[::1"):
+            out = s5tools.search_web(query, limit="x", _base_url=12345)
+            self.assertTrue(
+                out.startswith("SEARCH_ERROR:") or out == "no results",
+                repr(query))
+
+
 if __name__ == "__main__":
     unittest.main()

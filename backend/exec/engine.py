@@ -475,8 +475,8 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     if action == "check-notifications":
         # One-repo notify scan (#822): local exec (like run-plan, not
         # exec_argv into terminal) so the check reads/writes the same
-        # notifier state file the API serves. Steps run with
-        # cwd=stack_dir, so -m resolves core_cli from the checkout.
+        # notifier state file the API serves. step_env() points -m at
+        # this backend's tree: stack_dir() lags the image.
         if not gh:
             return None, "check-notifications needs a repo"
         return [[sys.executable, "-m", "core_cli.notify_check",
@@ -493,8 +493,50 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     return None, "unknown action"
 
 
+def _is_python_m_step(step):
+    """True for steps invoking this interpreter with ``-m``.
+
+    Only matches the running interpreter (``free -m`` and friends
+    are untouched).
+    """
+    return step[:1] == [sys.executable] and "-m" in step
+
+
+def step_env(steps):
+    """Extra child env for steps that run ``python -m ...``.
+
+    Belt-and-braces beside step_cwd(): -m modules resolve from this
+    backend's own tree (ENGINE_ROOT) even if the cwd override is
+    ever bypassed.
+    """
+    for step in steps:
+        if _is_python_m_step(step):
+            base = os.environ.get("PYTHONPATH", "")
+            path = ENGINE_ROOT + (os.pathsep + base if base else "")
+            return {"PYTHONPATH": path}
+    return None
+
+
+def step_cwd(steps):
+    """Child cwd override for steps that run ``python -m ...``.
+
+    Steps default to cwd=stack_dir(), a host bind-mount that lags
+    the deployed image — and cwd SHADOWS PYTHONPATH for the
+    top-level package, so a stale stack_dir()/core_cli (missing
+    notify_check.py) wins over /app and the import dies with No
+    module named (live 2026-11-04). -m steps therefore execute FROM
+    the deployed tree; their state paths are absolute, so no step
+    depends on the stack cwd. Returns None (keep stack_dir) for
+    everything else.
+    """
+    for step in steps:
+        if _is_python_m_step(step):
+            return ENGINE_ROOT
+    return None
+
+
 def run_step_pipe(step, append, runner=None, timeout=None,
-                  on_proc=None):
+                  on_proc=None, env=None, cwd=None):
     """Run one step, streaming output through append(chunk).
 
     Pipes (not a PTY: no ANSI in the UI). ``runner`` injects tests:
@@ -522,8 +564,9 @@ def run_step_pipe(step, append, runner=None, timeout=None,
     proc = subprocess.Popen(
         step, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=stack_dir(), start_new_session=True,
-        env={**os.environ, "TERM": "xterm-256color"})
+        text=True, cwd=cwd or stack_dir(), start_new_session=True,
+        env={**os.environ, "TERM": "xterm-256color",
+             **(env or {})})
     assert proc.stdout is not None
     if on_proc is not None:
         try:
@@ -657,6 +700,8 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
             registry.append(run_id, f"error: {err}\n")
             _done(1)
             return
+        child_env = step_env(steps)
+        child_cwd = step_cwd(steps)
         for step in steps:
             if _cancelled():
                 return
@@ -670,7 +715,8 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
             try:
                 code = run_step_pipe(step, _cb, runner=runner,
                                      timeout=step_timeout(action),
-                                     on_proc=_track)
+                                     on_proc=_track, env=child_env,
+                                     cwd=child_cwd)
             except Exception as exc:
                 registry.append(run_id, f"error: {exc}\n")
                 chunks.append("error")
