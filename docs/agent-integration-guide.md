@@ -2,7 +2,10 @@
 
 Peer side: `origin/main` @ `466c6d6`.
 Agent side: `origin/arii/muse-set-up` @ `ec63d35`.
-Line refs below are to those commits.
+Code refs below are symbol anchors (file + function/route
+name), never line numbers — they survive line shifts.
+`backend/tests/test_doc_anchors.py` fails when a cited
+backend/ or deep-agent/ symbol disappears.
 New contract only — no Pi/legacy endorsement.
 
 Agent contract source of truth:
@@ -11,57 +14,60 @@ Agent contract source of truth:
 
 ## 1. What the peer has today
 
-### Backend routers (`backend/api/routers/`, registered in `backend/server.py:9-20`)
+### Backend routers (`backend/api/routers/`, registered in `backend/server.py` via `include_router`)
 
-- `agents.py:39-56` — `GET /api/agents/health`,
-  `GET /api/agents/sessions`, `GET /api/agents/sessions/{name}`.
-  Backed by `backend/agents/sessions.py`.
-  Pi-shaped: lists Pi transcript `*.jsonl` files only.
-  No agent runs surface.
-- `chat.py:304-316` — `GET`/`POST /api/chat/stream` (SSE),
-  `chat.py:319` abort, `chat.py:331` ask, `chat.py:339` suggest,
-  `chat.py:347` pi-progress.
-  The stream generator (`_chat_events`, `chat.py:183`)
+- `agents.py` (`health`, `agent_runs`, `agent_run`) — `GET /api/agents/health`,
+  `GET /api/agents/runs`, `GET /api/agents/runs/{run_id}`.
+  Backed by `deep-agent/runs.py` (`runs.list_runs`, `runs.get_run`).
+  Agent-shaped: the runs surface from step 4.
+- `chat.py` (`chat_stream_get`, `chat_stream_post`) — `GET`/`POST /api/chat/stream` (SSE),
+  `chat_abort` abort, `pi_progress` pi-progress.
+  (`/api/ask` + `/api/suggest` were removed in #548.)
+  The stream generator (`_chat_events`)
   already spawns an agent process
-  (`ask_investigator.py`, `chat.py:204-206`)
-  and reads stdout in 16-byte chunks (`chat.py:231`).
+  (`deep_chat.py` — gap 1 done; `ask_investigator.py`
+  is no longer spawned in production)
+  and reads stdout in 16-byte chunks (`_chat_events`).
   Transport is agent-ready; only the argv changes.
-- `chat.py:87-97` — `run_pi_pipeline` raises
-  `"pi pipeline not configured"`.
+- `run_pi_pipeline` (removed in #548 with its ask/suggest endpoints) —
+  formerly raised `"pi pipeline not configured"`.
   Pi-shaped stub: ask/suggest have no executor
   in the FastAPI backend (no docker-exec transport).
 - `jobs.py` — list/run/clear/run-td/run-plan
   over `backend/exec/engine.py` `RunRegistry`.
   Agent-shaped, but not wired to agent runs.
-- `ops.py:219` — `GET /api/workflow-health`.
-  Contains a raw-gh mirror (`ops.py:68-70`,
+- `ops.py` (`workflow_health`) — `GET /api/workflow-health`.
+  Contains a raw-gh mirror (`fetch_workflow_health`,
   `gh api .../actions/runs/.../jobs`) — see gap 8.
 - `attention/briefing/issues/pulls/repo/system/notify` —
   unaffected by agent wiring.
 
 ### Frontend (`frontend/src/`)
 
-- `views/ChatView.tsx:41-58` — SSE pump handles
+- `views/ChatView.tsx` (`pumpStream`) — SSE pump handles
   `token`/`error` only; ignores `phase`/`done`,
   has no `approval` handling, no resume POST,
   no trace rendering.
-- `views/JobsView.tsx` — dispatches allowlisted actions
-  (`:13-24`), polls pi-progress for 12-hex ids (`:146`).
+- `views/JobsView.tsx` — dispatches td commands (`onDispatchTd`),
+  polls pi-progress for 12-hex ids (`fetchPiProgress` in `apiClient.ts`).
   No run-detail view.
 - `views/ReviewView.tsx` — PR/issue review + merge/assign.
   Fine as-is; gets cheaper via `pr-view` (gap 8).
 - Missing: approval card, resume buttons,
   runs list/detail, trace view.
 
-### `buttons/server.py` (legacy surface, being replaced)
+### `buttons/server.py` (legacy surface — deleted in `1464844`)
 
-- Chat: `_handle_chat_stream` `:7309`,
-  routes `:7553`/`:8365`, abort `:8375`.
-- Ask already runs `ask_investigator.py` (`:521-544`),
-  parses `FINAL:` + `_parse_proposal`.
-- Suggest is Pi print-mode (`:557-574`). Pi-shaped.
-- Raw-gh sites: `_pr_view` `:7197-7203`,
-  workflow jobs `:8037`, pr-details `:8156-8159`.
+Symbols below are for archaeology
+(`git show 1464844^:buttons/server.py`); the live
+surface is the backend routers + frontend above.
+
+- Chat: `_handle_chat_stream`, stream routes, abort.
+- Ask ran `ask_investigator.py`,
+  parsed `FINAL:` + `_parse_proposal`.
+- Suggest was Pi print-mode. Pi-shaped.
+- Raw-gh sites: `_pr_view`,
+  workflow jobs, pr-details.
 
 ## 2. Wiring recipe
 
@@ -75,8 +81,8 @@ else `/srv/repos/<name>`).
 ### Step 1 — Spawn `deep_chat.py` per turn
 
 Replace the `ask_investigator.py` argv
-(`backend/api/routers/chat.py:204-206`,
-`buttons/server.py:7351-7353`):
+(chat.py `_chat_events`; the `buttons/server.py`
+spawn is gone with the file — deleted in `1464844`):
 
 ```python
 b64 = base64.b64encode(prompt.encode()).decode()
@@ -99,8 +105,8 @@ Exit codes (`deep_chat.py:main`):
   `Sorry, ...` line. Stream it, then `done`.
 - `2` — bad argv. Server bug: log it,
   emit `error`.
-- `3` — needs approval. Parse the
-  `INTERRUPT` line, emit `approval` (step 2).
+- `3` (`EXIT_NEEDS_APPROVAL`) — needs approval.
+  Parse the `INTERRUPT` line, emit `approval` (step 2).
   Keep the SSE connection open.
 
 ### Step 2 — `INTERRUPT` line → `approval` event
@@ -195,7 +201,7 @@ the peer retires it (open question 4).
 
 Every run writes
 `deep-agent/traces/<script>_<thread>_<ts>.jsonl`
-(`observe.py:40-50`).
+(`observe.py` `default_trace_path`).
 Tail it live; each line is one event:
 
 ```python
@@ -204,7 +210,7 @@ for line in follow(trace_path):  # ledger extra.trace points here
 ```
 
 Shapes (`API_CONTRACT_PROPOSAL.md` §9,
-`observe.py:12-17`): every event carries `ts`.
+`observe.py` `TraceRecorder`): every event carries `ts`.
 
 - `run_start {script, thread, model}`
 - `model_request {n_messages}`
@@ -219,8 +225,10 @@ never a failed run.
 
 ### Step 6 — Ask flow via `ask_investigator` (PROPOSE protocol)
 
-Keep the existing spawn
-(`buttons/server.py:526-527`):
+Keep the `ask_investigator.py` spawn shape
+(`buttons/server.py` deleted in `1464844`; no production
+spawn site remains — only the manual `deep-agent/eval_ask.py`
+gate drives it):
 
 ```sh
 .venv/bin/python ask_investigator.py owner/repo <b64-instruction>
@@ -246,16 +254,16 @@ Execution stays server-side behind the
 validated run-td / create-issue endpoints —
 the agent never executes writes.
 
-Backend gap: implement `run_pi_pipeline`
-(`backend/api/routers/chat.py:87`)
-by spawning `ask_investigator.py` directly
-instead of raising. Needs the venv path
-(open question 5).
+Backend gap: the `run_pi_pipeline` stub is gone
+(removed in #548 with its endpoints); re-adding an
+ask flow means spawning `ask_investigator.py` directly.
+Needs the venv path (open question 5).
 
 ## 3. Gap list (dependency order)
 
 1. Swap chat spawn to `deep_chat.py` turn
-   (`chat.py:204-206`, `buttons/server.py:7351-7353`).
+   (chat.py `_chat_events`; `buttons/server.py`
+   deleted in `1464844`).
    Unblocks everything below.
 2. `INTERRUPT` parse + `approval` event +
    `--validate-proposal` gate (step 2).
@@ -270,29 +278,31 @@ instead of raising. Needs the venv path
    validate PROPOSE blocks (step 6).
 8. After the terminal image rebuild, switch
    three raw-`gh` sites in `buttons/server.py`
+   (deleted in `1464844` — live equivalent is the
+   backend `fetch_workflow_health` mirror)
    to boomtick cli-v0.18.0 commands:
-   - `:7200`
+   - `_pr_view`
      `gh pr view N --json statusCheckRollup,mergeStateStatus`
      → `td --json gh pr-view --pr N --repo R`.
      Keys: `prNumber, title, state, draft,`
      `reviewDecision, mergeable, checks[], checksSummary`.
      Rewrite the `_ci_label` input mapping and
-     the merge-gate strings in `_pr_view` (`:7197`).
-   - `:8037`
+     the merge-gate strings in `_pr_view`.
+   - the workflow-jobs call
      `gh api repos/.../actions/runs/.../jobs`
      → `td --json gh run-jobs --run ID --repo R`.
      Same for the backend mirror
-     (`backend/api/routers/ops.py:68-70`).
+     (`backend/api/routers/ops.py` `fetch_workflow_health`).
      Check the `run-jobs` payload covers failed
-     steps before dropping the annotations call (`:8050`).
-   - `:8157` `gh pr view` (pr-details)
+     steps before dropping the annotations call.
+   - pr-details `gh pr view`
      → `pr-view`. Map files/stats/author/draft
      from the new keys.
    (The deep-agent lane's own `pr_state` switch
-   in `ask_investigator.py:118-143` is handled
+   in `ask_investigator.py` `pr_state` is handled
    separately — not the peer's job.)
-   Also grep while there: `:7863` (list view),
-   `:7229` (update-branch PUT).
+   Also grep while there: the list view,
+   the update-branch PUT.
 9. `chat.db` under `deep-agent/.chat_threads/`
    + `langgraph-checkpoint-sqlite` need the
    image lane (out of scope here, §10);
