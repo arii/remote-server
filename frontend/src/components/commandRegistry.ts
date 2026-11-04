@@ -25,6 +25,31 @@ export interface CommandContext {
   codeUrl: string;
   repos: Array<{ name: string }>;
   repo: string;
+  // Operator verbs (issue #839), optional so older wirings keep
+  // compiling: outbox sync, container stats drawer, new-issue form.
+  syncNow?: () => void;
+  openStats?: () => void;
+  newIssue?: () => void;
+}
+
+// Palette sections (issue #839): the hint chips group into four
+// headed sections instead of one flat list.
+export const PALETTE_SECTIONS = ['Navigation', 'Actions', 'Repositories', 'System'] as const;
+
+export type PaletteSection = (typeof PALETTE_SECTIONS)[number];
+
+export function commandSection(cmd: PaletteCommand): PaletteSection {
+  switch (cmd.hint) {
+    case 'Navigate':
+      return 'Navigation';
+    case 'Repo':
+      return 'Repositories';
+    case 'Tools':
+    case 'System':
+      return 'System';
+    default:
+      return 'Actions';
+  }
 }
 
 // Every major action, grouped for the palette's hint chips. The base
@@ -35,11 +60,23 @@ export function buildCommands(ctx: CommandContext): PaletteCommand[] {
     { id: 'go-chat', label: 'Go to Chat', hint: 'Navigate', keywords: 'agent ask prompt', run: () => ctx.go('chat') },
     { id: 'go-briefing', label: 'Go to Briefing', hint: 'Navigate', keywords: 'digest summary', run: () => ctx.go('briefing') },
     { id: 'go-history', label: 'Go to History', hint: 'Navigate', keywords: 'trail ledger past runs', run: () => ctx.go('history') },
-    { id: 'open-review', label: 'Open Review section', hint: 'Now', keywords: 'prs issues merge', run: () => ctx.openSection('review') },
+    { id: 'open-review', label: 'Open Review section', hint: 'Now', keywords: 'prs issues merge pr status', run: () => ctx.openSection('review') },
     { id: 'open-jobs', label: 'Open Jobs section', hint: 'Now', keywords: 'runs repair dispatch', run: () => ctx.openSection('jobs') },
     { id: 'report-bug', label: 'Report a bug', hint: 'Now', keywords: 'file issue create', run: () => ctx.reportBug() },
-    { id: 'focus-chat', label: 'Focus chat prompt', hint: 'Chat', keywords: 'ask agent type prompt', run: () => ctx.focusChat() },
+    {
+      id: 'new-issue',
+      label: 'New issue…',
+      hint: 'Now',
+      keywords: 'create file issue draft triage',
+      run: () => {
+        ctx.openSection('review');
+        ctx.newIssue?.();
+      },
+    },
+    { id: 'focus-chat', label: 'Focus chat prompt', hint: 'Chat', keywords: 'ask agent type prompt run prompt', run: () => ctx.focusChat() },
     { id: 'refresh-briefing', label: 'Refresh briefing', hint: 'Briefing', keywords: 'reload fetch latest', run: () => ctx.refreshBriefing() },
+    { id: 'sync-now', label: 'Sync now', hint: 'System', keywords: 'flush outbox upload retry offline queue', run: () => ctx.syncNow?.() },
+    { id: 'open-stats', label: 'Container stats', hint: 'System', keywords: 'restart container health cpu ram docker', run: () => ctx.openStats?.() },
     { id: 'open-terminal', label: 'Open Terminal', hint: 'Tools', keywords: 'shell console ssh', run: () => ctx.openUrl(ctx.terminalUrl) },
     { id: 'open-code', label: 'Open Code editor', hint: 'Tools', keywords: 'vscode edit files', run: () => ctx.openUrl(ctx.codeUrl) },
   ];
@@ -82,13 +119,46 @@ function commandText(cmd: PaletteCommand): string {
   return `${cmd.label} ${cmd.hint} ${cmd.keywords ?? ''}`;
 }
 
+// Prefix sub-modes (issue #839): a leading sigil narrows the pool
+// before the fuzzy match runs. `>` actions (non-navigation), `@`
+// repos, `#` review (PRs/issues/merges), `/` chat prompts.
+export type PalettePrefix = 'all' | 'actions' | 'repos' | 'review' | 'chat';
+
+export interface PaletteQuery {
+  mode: PalettePrefix;
+  rest: string;
+}
+
+export function parsePalettePrefix(query: string): PaletteQuery {
+  const first = query.charAt(0);
+  if (first === '>') return { mode: 'actions', rest: query.slice(1) };
+  if (first === '@') return { mode: 'repos', rest: query.slice(1) };
+  if (first === '#') return { mode: 'review', rest: query.slice(1) };
+  if (first === '/') return { mode: 'chat', rest: query.slice(1) };
+  return { mode: 'all', rest: query };
+}
+
+const REVIEW_MODE_RE = /\bprs?\b|issue|review|merge|defer|approve/;
+const CHAT_MODE_RE = /chat|prompt|template|agent|send|ask/;
+
+export function inPrefixMode(cmd: PaletteCommand, mode: PalettePrefix): boolean {
+  if (mode === 'all') return true;
+  if (mode === 'actions') return cmd.hint !== 'Navigate';
+  if (mode === 'repos') return cmd.hint === 'Repo';
+  const text = commandText(cmd).toLowerCase();
+  if (mode === 'review') return REVIEW_MODE_RE.test(text);
+  return CHAT_MODE_RE.test(text);
+}
+
 // Filtered registry, best matches first. Stable: ties keep registry
 // order, and an empty query returns the registry untouched.
 export function filterCommands(commands: PaletteCommand[], query: string): PaletteCommand[] {
-  if (!query.trim()) return [...commands];
+  const { mode, rest } = parsePalettePrefix(query.trim());
+  const pool = mode === 'all' ? commands : commands.filter((cmd) => inPrefixMode(cmd, mode));
+  if (!rest.trim()) return [...pool];
   const scored: Array<{ cmd: PaletteCommand; score: number; index: number }> = [];
-  commands.forEach((cmd, index) => {
-    const score = fuzzyScore(query, commandText(cmd));
+  pool.forEach((cmd, index) => {
+    const score = fuzzyScore(rest, commandText(cmd));
     if (score !== null) scored.push({ cmd, score, index });
   });
   scored.sort((a, b) => b.score - a.score || a.index - b.index);

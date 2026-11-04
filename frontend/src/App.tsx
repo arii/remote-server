@@ -12,6 +12,7 @@ import {
   fetchRepoDiff,
   fetchRepos,
   fetchSystemHealth,
+  flushOutbox,
   startJobRun,
   subscribeApiFailures,
 } from './apiClient';
@@ -116,6 +117,7 @@ export default function App() {
   const [reportRequest, setReportRequest] = useState(0);
   const [chatFocusRequest, setChatFocusRequest] = useState(0);
   const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
+  const [createRequest, setCreateRequest] = useState(0);
 
   // Cheatsheet visibility for the app-level shortcuts (#808). Tab/send
   // shortcuts suspend while a modal/drawer owns the screen; the
@@ -158,6 +160,9 @@ export default function App() {
         focusChat: () => setChatFocusRequest((n) => n + 1),
         refreshBriefing: () => setBriefingReloadRequest((n) => n + 1),
         switchRepo: (name) => setRepo(name),
+        syncNow: () => void flushOutbox(),
+        openStats: () => setStatsOpen(true),
+        newIssue: () => setCreateRequest((n) => n + 1),
         openUrl: (url) => {
           window.location.href = url;
         },
@@ -176,7 +181,8 @@ export default function App() {
     if (
       cmd.id === 'open-review' ||
       cmd.id === 'open-jobs' ||
-      cmd.id === 'report-bug'
+      cmd.id === 'report-bug' ||
+      cmd.id === 'new-issue'
     ) {
       setTab('now');
     } else if (cmd.id === 'focus-chat') {
@@ -417,6 +423,7 @@ export default function App() {
           onOpenTab={(t) => setTab(t)}
           sectionRequest={sectionRequest}
           reportRequest={reportRequest}
+          createRequest={createRequest}
         />
       )}
       {tab === 'chat' &&

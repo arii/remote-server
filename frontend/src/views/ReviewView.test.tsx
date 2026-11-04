@@ -5,6 +5,7 @@ import ReviewView, {
   BulkRestoreBar,
   IssueRowLabels,
   IssueRowTitle,
+  MergeBlockDetail,
   PrRowApprove,
   PrRowRequestChanges,
   RequestChangesForm,
@@ -18,7 +19,10 @@ import ReviewView, {
   dropMergedPr,
   isRowDeferred,
   issueLabelNames,
+  linkedIssueNumbers,
+  linkedPrNumbers,
   nextPrAfterMerge,
+  prTitleRefs,
   mergeBadge,
   openIssueUrl,
   parseBulkRowKey,
@@ -717,5 +721,123 @@ describe('review list sort (issue #817)', () => {
     expect(html).toContain('data-testid="review-filter"');
     expect(html).toContain('Newest first');
     expect(html).toContain('Oldest first');
+  });
+});
+
+describe('PR↔issue linkage (issue #839)', () => {
+  function pr(overrides = {}) {
+    return {
+      number: 4849,
+      title: 'Fix webhook retry',
+      author: 'a',
+      branch: 'fix/webhook',
+      isDraft: false,
+      ciStatus: '',
+      ciLabel: '',
+      reviewDecision: '',
+      mergeable: '',
+      url: '',
+      ...overrides,
+    };
+  }
+  function issue(number: number, title: string) {
+    return { number, title };
+  }
+
+  it('reads #N references from titles and branches', () => {
+    expect(prTitleRefs('Fix it (closes #4848)')).toEqual([4848]);
+    expect(prTitleRefs('fix/4848-thing #12 and #12 again')).toEqual([12]);
+    expect(prTitleRefs('no refs here')).toEqual([]);
+  });
+
+  it('links explicit refs present in the loaded issues, ignoring ghosts', () => {
+    const issues = [issue(4848, 'Webhook retry broken')];
+    expect(linkedIssueNumbers(pr({ title: 'Fix it (closes #4848)' }), issues)).toEqual([4848]);
+    expect(linkedIssueNumbers(pr({ branch: 'fix/#4848' }), issues)).toEqual([4848]);
+    expect(linkedIssueNumbers(pr({ title: 'Fix it (closes #9999)' }), issues)).toEqual([]);
+  });
+
+  it('links same-title rows across the issue/PR filing pattern', () => {
+    const issues = [issue(4848, 'Webhook retry broken')];
+    expect(linkedIssueNumbers(pr({ title: 'webhook retry broken!' }), issues)).toEqual([4848]);
+    expect(linkedIssueNumbers(pr({ title: 'Unrelated work' }), issues)).toEqual([]);
+  });
+
+  it('reverses the link from the issue side in number order', () => {
+    const iss = issue(4848, 'Webhook retry broken');
+    const prs = [
+      pr({ number: 4850, title: 'webhook retry broken' }),
+      pr({ number: 4849, title: 'Fix it (closes #4848)' }),
+      pr({ number: 1, title: 'Unrelated' }),
+    ];
+    expect(linkedPrNumbers(iss, prs)).toEqual([4849, 4850]);
+  });
+});
+
+describe('merge-block decision context (issue #839 addendum)', () => {
+  function details(over = {}) {
+    return {
+      repo: 'r',
+      number: 4849,
+      title: 't',
+      branch: 'b',
+      base: 'main',
+      ci: 'passing',
+      failing: [],
+      merge: 'clean',
+      conflicted: false,
+      draft: false,
+      url: 'https://example.invalid/pr/4849',
+      files: [],
+      stats: { total_files: 0, additions: 0, deletions: 0 },
+      ai_prompts: [],
+      ...over,
+    };
+  }
+
+  it('renders nothing when the PR is mergeable', () => {
+    const html = renderToStaticMarkup(
+      <MergeBlockDetail details={details()} head={null} />,
+    );
+    expect(html).toBe('');
+  });
+
+  it('names failing checks, conflicts, and draft beside the head reason', () => {
+    const html = renderToStaticMarkup(
+      <MergeBlockDetail
+        details={details({ ci: 'failing', failing: ['e2e', 'lint'], conflicted: true, draft: true })}
+        head="Not mergeable: CI failing, merge dirty."
+      />,
+    );
+    expect(html).toContain('data-testid="review-merge-block"');
+    expect(html).toContain('Not mergeable: CI failing, merge dirty.');
+    expect(html).toContain('data-testid="review-merge-failing"');
+    expect(html).toContain('Failing checks: e2e, lint.');
+    expect(html).toContain('Has merge conflicts');
+    expect(html).toContain('Still a draft.');
+  });
+
+  it('explains ruleset-blocked-with-green as a likely untriggered required check', () => {
+    const html = renderToStaticMarkup(
+      <MergeBlockDetail
+        details={details({ merge: 'blocked' })}
+        head="Not mergeable: CI passing, merge blocked."
+      />,
+    );
+    expect(html).toContain('data-testid="review-merge-missing"');
+    expect(html).toContain('a required check probably never ran (path filters)');
+    expect(html).toContain('ruleset or branch protection');
+    expect(html).toContain('https://example.invalid/pr/4849');
+  });
+
+  it('tells a behind branch to update instead', () => {
+    const html = renderToStaticMarkup(
+      <MergeBlockDetail
+        details={details({ merge: 'behind' })}
+        head="Not mergeable: CI passing, merge behind."
+      />,
+    );
+    expect(html).toContain('Branch is behind main — update the branch, then merge.');
+    expect(html).not.toContain('review-merge-missing');
   });
 });

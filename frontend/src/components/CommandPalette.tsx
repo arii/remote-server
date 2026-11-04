@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { filterCommands, type PaletteCommand } from './commandRegistry';
+import { commandSection, filterCommands, type PaletteCommand } from './commandRegistry';
 
 // Ctrl+K / Cmd+K, from anywhere including inside inputs: the chord
 // never collides with plain typing, so no editable-focus guard.
@@ -21,6 +21,29 @@ export function movePaletteSelection(
   if (count <= 0) return null;
   if (cursor === null) return dir === 1 ? 0 : count - 1;
   return (cursor + dir + count) % count;
+}
+
+// Section headers over the flat filtered list (issue #839): a
+// header row opens each contiguous section run; item rows keep
+// their filtered-list index so the cursor math is untouched.
+export type PaletteListRow =
+  | { kind: 'header'; key: string; section: string }
+  | { kind: 'item'; cmd: PaletteCommand; index: number };
+
+export function groupedRows(filtered: PaletteCommand[]): PaletteListRow[] {
+  const rows: PaletteListRow[] = [];
+  let lastSection = '';
+  let headers = 0;
+  filtered.forEach((cmd, index) => {
+    const section = commandSection(cmd);
+    if (section !== lastSection) {
+      lastSection = section;
+      headers += 1;
+      rows.push({ kind: 'header', key: `h${headers}-${section}`, section });
+    }
+    rows.push({ kind: 'item', cmd, index });
+  });
+  return rows;
 }
 
 // Fuzzy command palette: an input over the registry, ArrowUp/Down to
@@ -121,30 +144,44 @@ export default function CommandPalette({
           </p>
         ) : (
           <ul className="palette-list" id="palette-list" role="listbox" data-testid="palette-list">
-            {filtered.map((cmd, i) => (
-              <li
-                key={cmd.id}
-                id={`palette-item-${cmd.id}`}
-                role="option"
-                aria-selected={i === cursor}
-                data-testid={`palette-item-${cmd.id}`}
-                className={`palette-item${i === cursor ? ' selected' : ''}`}
-                onMouseEnter={() => setCursor(i)}
-              >
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => onRun(cmd)}
+            {groupedRows(filtered).map((row) =>
+              row.kind === 'header' ? (
+                <li
+                  key={row.key}
+                  role="presentation"
+                  data-testid="palette-section"
+                  className="palette-section"
+                  aria-hidden="true"
                 >
-                  <span className="palette-label">{cmd.label}</span>
-                  <span className="row-meta palette-hint">{cmd.hint}</span>
-                </button>
-              </li>
-            ))}
+                  {row.section}
+                </li>
+              ) : (
+                <li
+                  key={row.cmd.id}
+                  id={`palette-item-${row.cmd.id}`}
+                  role="option"
+                  aria-selected={row.index === cursor}
+                  data-testid={`palette-item-${row.cmd.id}`}
+                  className={`palette-item${row.index === cursor ? ' selected' : ''}`}
+                  onMouseEnter={() => setCursor(row.index)}
+                >
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => onRun(row.cmd)}
+                  >
+                    <span className="palette-label">{row.cmd.label}</span>
+                    <span className="row-meta palette-hint">{row.cmd.hint}</span>
+                  </button>
+                </li>
+              ),
+            )}
           </ul>
         )}
-        <p className="row-meta palette-foot">Up/Down move · Enter runs · Esc closes</p>
+        <p className="row-meta palette-foot">
+          Up/Down move · Enter runs · Esc closes · &gt; actions · @ repos · # review · / chat
+        </p>
       </div>
     </div>
   );

@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CommandPalette, { isPaletteHotkey, movePaletteSelection } from './CommandPalette';
+import CommandPalette, { groupedRows, isPaletteHotkey, movePaletteSelection } from './CommandPalette';
 import {
   buildCommands,
+  commandSection,
   filterCommands,
   fuzzyScore,
+  inPrefixMode,
+  parsePalettePrefix,
   type CommandContext,
   type PaletteCommand,
 } from './commandRegistry';
@@ -192,5 +195,103 @@ describe('CommandPalette markup', () => {
     );
     expect(html).toContain('data-testid="palette-empty"');
     expect(html).toContain('No matching commands.');
+  });
+});
+
+describe('grouped palette sections (issue #839)', () => {
+  const noop = () => {};
+
+  it('maps hints to the four sections', () => {
+    const section = (hint: string) => commandSection({ id: 'x', label: 'x', hint, run: noop });
+    expect(section('Navigate')).toBe('Navigation');
+    expect(section('Now')).toBe('Actions');
+    expect(section('Chat')).toBe('Actions');
+    expect(section('Briefing')).toBe('Actions');
+    expect(section('Repo')).toBe('Repositories');
+    expect(section('Tools')).toBe('System');
+    expect(section('System')).toBe('System');
+  });
+
+  it('opens a header per contiguous section run, keeping item indexes', () => {
+    const rows = groupedRows(stubCommands());
+    expect(rows.map((r) => (r.kind === 'header' ? r.section : r.cmd.id))).toEqual([
+      'Navigation',
+      'a',
+      'Actions',
+      'b',
+    ]);
+    const items = rows.filter((r) => r.kind === 'item');
+    expect(items.map((r) => (r.kind === 'item' ? r.index : -1))).toEqual([0, 1]);
+  });
+
+  it('renders section headers above their commands', () => {
+    const html = renderToStaticMarkup(
+      <CommandPalette open={true} commands={stubCommands()} onClose={noop} onRun={noop} />,
+    );
+    expect(html).toContain('data-testid="palette-section"');
+    expect(html).toContain('Navigation');
+    expect(html).toContain('Actions');
+    expect(html).toContain('@ repos');
+  });
+});
+
+describe('palette prefix sub-modes (issue #839)', () => {
+  it('parses the leading sigil, defaulting to the full pool', () => {
+    expect(parsePalettePrefix('>sync')).toEqual({ mode: 'actions', rest: 'sync' });
+    expect(parsePalettePrefix('@boom')).toEqual({ mode: 'repos', rest: 'boom' });
+    expect(parsePalettePrefix('#48')).toEqual({ mode: 'review', rest: '48' });
+    expect(parsePalettePrefix('/tpl')).toEqual({ mode: 'chat', rest: 'tpl' });
+    expect(parsePalettePrefix('plain')).toEqual({ mode: 'all', rest: 'plain' });
+    expect(parsePalettePrefix('')).toEqual({ mode: 'all', rest: '' });
+  });
+
+  it('narrows the pool per mode before matching', () => {
+    const cmds = buildCommands(testCtx());
+    const actions = filterCommands(cmds, '>');
+    expect(actions.length).toBeGreaterThan(0);
+    expect(actions.every((c) => inPrefixMode(c, 'actions'))).toBe(true);
+    expect(actions.map((c) => c.id)).not.toContain('go-now');
+    const repos = filterCommands(cmds, '@');
+    expect(repos.every((c) => c.hint === 'Repo')).toBe(true);
+    const review = filterCommands(cmds, '#').map((c) => c.id);
+    expect(review).toContain('open-review');
+    expect(review).toContain('new-issue');
+    expect(review).not.toContain('open-code');
+    const chat = filterCommands(cmds, '/').map((c) => c.id);
+    expect(chat).toContain('focus-chat');
+    expect(chat).not.toContain('go-history');
+  });
+
+  it('fuzzy-matches the rest within the narrowed pool', () => {
+    const cmds = buildCommands(testCtx());
+    expect(filterCommands(cmds, '>sync').map((c) => c.id)[0]).toBe('sync-now');
+    expect(filterCommands(cmds, '#merge').map((c) => c.id)).toContain('open-review');
+    expect(filterCommands(cmds, 'zzz-no-such-command')).toEqual([]);
+  });
+});
+
+describe('palette operator verbs (issue #839)', () => {
+  it('registers sync, stats, and new-issue commands', () => {
+    const cmds = buildCommands(testCtx());
+    const ids = cmds.map((c) => c.id);
+    expect(ids).toContain('sync-now');
+    expect(ids).toContain('open-stats');
+    expect(ids).toContain('new-issue');
+  });
+
+  it('runs call through to the wired context, tolerating missing verbs', () => {
+    const ctx = testCtx({ syncNow: vi.fn(), openStats: vi.fn(), newIssue: vi.fn() });
+    const byId = Object.fromEntries(buildCommands(ctx).map((c) => [c.id, c]));
+    byId['sync-now'].run();
+    expect(ctx.syncNow).toHaveBeenCalled();
+    byId['open-stats'].run();
+    expect(ctx.openStats).toHaveBeenCalled();
+    byId['new-issue'].run();
+    expect(ctx.openSection).toHaveBeenCalledWith('review');
+    expect(ctx.newIssue).toHaveBeenCalled();
+    // Older wirings without the optional verbs do not throw.
+    const legacy = Object.fromEntries(buildCommands(testCtx()).map((c) => [c.id, c]));
+    expect(() => legacy['sync-now'].run()).not.toThrow();
+    expect(() => legacy['new-issue'].run()).not.toThrow();
   });
 });

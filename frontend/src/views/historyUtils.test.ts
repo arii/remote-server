@@ -1,6 +1,66 @@
 import { describe, expect, it } from 'vitest';
-import { historyRowMatches, kindBadge, sentenceCase, toHistoryRows } from './historyUtils';
+import {
+  facetCounts,
+  historyRowMatches,
+  kindBadge,
+  rowInFacet,
+  sentenceCase,
+  toHistoryRows,
+  visibleFacets,
+} from './historyUtils';
 import type { HistoryRow } from './historyUtils';
+
+function row(over: Partial<HistoryRow> = {}): HistoryRow {
+  return {
+    key: 'k',
+    kind: 'run',
+    summary: 's',
+    at: 't',
+    repeat: 1,
+    recovery: '',
+    tone: 'ok',
+    detail: '',
+    members: [],
+    ...over,
+  };
+}
+
+describe('history facets (issue #839)', () => {
+  const rows = [
+    row({ key: 'a', kind: 'run', tone: 'bad' }),
+    row({ key: 'b', kind: 'agent-turn', tone: 'ok' }),
+    row({ key: 'c', kind: 'webhook', tone: 'ok' }),
+    row({ key: 'd', kind: 'cron', tone: 'ok' }),
+    row({ key: 'e', kind: 'chat', tone: 'muted' }),
+  ];
+
+  it('routes rows to facets by tone and kind', () => {
+    expect(rows.filter((r) => rowInFacet(r, 'errors')).map((r) => r.key)).toEqual(['a']);
+    expect(rows.filter((r) => rowInFacet(r, 'agents')).map((r) => r.key)).toEqual(['b']);
+    expect(rows.filter((r) => rowInFacet(r, 'ci')).map((r) => r.key)).toEqual(['a', 'c']);
+    expect(rows.filter((r) => rowInFacet(r, 'cron')).map((r) => r.key)).toEqual(['d']);
+    expect(rows.filter((r) => rowInFacet(r, 'all')).length).toBe(5);
+  });
+
+  it('counts facets over the same rows', () => {
+    expect(facetCounts(rows)).toEqual({ all: 5, errors: 1, agents: 1, ci: 2, cron: 1 });
+    expect(facetCounts([])).toEqual({ all: 0, errors: 0, agents: 0, ci: 0, cron: 0 });
+  });
+
+  it('always chips All + Errors, others only with rows', () => {
+    expect(visibleFacets(facetCounts(rows)).map((f) => f.id)).toEqual([
+      'all',
+      'errors',
+      'agents',
+      'ci',
+      'cron',
+    ]);
+    expect(visibleFacets(facetCounts([])).map((f) => f.id)).toEqual(['all', 'errors']);
+    expect(
+      visibleFacets(facetCounts([row({ kind: 'run', tone: 'ok' })])).map((f) => f.id),
+    ).toEqual(['all', 'errors', 'ci']);
+  });
+});
 
 const TURN_DETAIL = [
   'asked: list files',

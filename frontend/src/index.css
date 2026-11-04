@@ -47,7 +47,7 @@ h3 { font-size: 1.12rem; font-weight: 650; margin: 1.25rem 0 0.35rem; }
 
 h1, h2, h3 { text-wrap: balance; }
 
-.layout { max-width: 960px; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; }
+.layout { max-width: 1400px; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; }
 
 /* Screen-reader-only: keeps the document outline honest (h1) without
    adding visual chrome the Operate surface does not need. */
@@ -158,13 +158,26 @@ button.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offse
   gap: 0.4rem;
 }
 
-.columns { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 1rem; }
+.columns { display: grid; grid-template-columns: minmax(300px, 38%) 1fr; gap: 1rem; }
 .columns > * { min-width: 0; }
 .columns.columns-single { grid-template-columns: 1fr; }
-@media (max-width: 700px) {
+@media (max-width: 900px) {
   .columns { grid-template-columns: 1fr; }
   .layout { padding: 0.9rem 0.9rem 3rem; }
   .page-head { flex-direction: column; align-items: stretch; }
+}
+
+/* Console split panes (#839): conversation/activity feed left,
+   inspector rail right. Single column under 900px. */
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 1rem; align-items: start; }
+.split > * { min-width: 0; }
+.split-narrow { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
+@media (max-width: 900px) {
+  .split, .split-narrow { grid-template-columns: 1fr; }
+}
+/* Sticky inspector rail on desktop: the feed scrolls, the detail stays. */
+@media (min-width: 901px) {
+  .split > .inspector { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
 }
 
 .session-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
@@ -288,12 +301,39 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
 .history-row .row-title { display: flex; align-items: center; gap: 0.45rem; }
 .history-row .row-meta { display: block; margin-top: 0.15rem; }
 .history-row summary { cursor: pointer; list-style-position: outside; }
+/* Inspector selection: the same accent outline as triage focus. */
+li.history-row.selected { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .history-row details pre { margin: 0.4rem 0 0.2rem; white-space: pre-wrap; }
 .history-run-output { margin: 0.2rem 0 0.2rem 0.75rem; padding-left: 0.6rem; border-left: 2px solid var(--border); }
 .history-icon { flex: none; }
 .tone-bad { color: var(--bad); }
 .tone-ok { color: var(--ok); }
 .tone-muted { color: var(--muted); }
+
+/* Faceted history filters (#839): instant chips with live counts. */
+.facet-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 0.75rem; }
+.facet-row button[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* Inspector rail: selected-row detail blocks reuse Detail grammar. */
+.inspector .Detail pre {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.82rem;
+  color: var(--muted);
+  max-height: 24rem;
+  overflow: auto;
+}
+/* Review PR↔issue linkage chips (#839): tappable repo-chip look. */
+button.link-chip { font: inherit; color: var(--accent); cursor: pointer; }
+button.link-chip:hover { border-color: var(--accent); }
+/* Briefing pipeline rows (#839): number/title lead, status trail. */
+.pipeline-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; }
+/* Composer single action row (#839): the backend pills ride
+   inline as one wrapped unit instead of their own row. */
+.actions > .inline-pills { display: inline-flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
 
 /* Trace folding: collapsed per-event summary rows on narrow
    viewports; tap a row to expand the full line inline. */
@@ -358,6 +398,27 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
 .sev-warn { color: #ffd9a0; border-color: var(--warn); }
 .sev-info { color: var(--muted); }
 
+/* Grouped attention (#839): one accordion row per repeating
+   failure; members render as plain rows inside. */
+.attention-group { padding: 0.6rem 0.9rem; }
+.attention-group > summary { cursor: pointer; list-style-position: outside; }
+.attention-group .session-list { margin-top: 0.6rem; }
+.attention-group .detail { background: var(--surface-2); }
+/* Per-row overflow: secondary actions behind one disclosure. */
+.row-overflow { display: inline; }
+.row-overflow > summary {
+  display: inline-block;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 0.45rem 0.8rem;
+  min-height: 44px;
+  line-height: 1.45;
+}
+.row-overflow > summary:hover { border-color: var(--accent); }
+.row-overflow .actions { margin-top: 0.5rem; }
+
 .turns { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.75rem; }
 .turn { border-top: 2px solid var(--border); padding-top: 0.5rem; }
 .turn-assistant { border-top-color: var(--accent); }
@@ -392,7 +453,7 @@ nav.actions.secondary button { min-height: 44px; }
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(3, 7, 18, 0.6);
+  background: rgba(3, 7, 18, 0.32);
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -436,6 +497,14 @@ nav.actions.secondary button { min-height: 44px; }
 }
 .palette-label { font-weight: 650; font-size: 0.95rem; }
 .palette-hint { margin: 0; white-space: nowrap; }
+/* Grouped sections (#839): plain muted header rows between groups. */
+.palette-section {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 0.45rem 0.55rem 0.1rem;
+  letter-spacing: 0.02em;
+}
 .palette-empty { margin: 0.6rem 0.25rem 0.2rem; }
 .palette-foot { margin: 0.5rem 0.25rem 0.1rem; }
 

@@ -1,9 +1,18 @@
 import { useState } from 'react';
-import { fetchJobRun, fetchJobs, fetchLedger } from '../apiClient';
+import { fetchJobRun, fetchJobs, fetchLedger, rerunJob } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
-import { historyRowMatches, jobPassesKindFilter, kindBadge, tailText, toHistoryRows } from './historyUtils';
-import type { HistoryMember, HistoryRow } from './historyUtils';
+import {
+  facetCounts,
+  historyRowMatches,
+  jobPassesKindFilter,
+  kindBadge,
+  rowInFacet,
+  tailText,
+  toHistoryRows,
+  visibleFacets,
+} from './historyUtils';
+import type { HistoryFacet, HistoryMember, HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
 import ActivityTimeline from './ActivityTimeline';
 import { useSnapshotData } from './useSnapshotData';
@@ -88,13 +97,79 @@ function MemberBlock({ member, grouped }: { member: HistoryMember; grouped: bool
   );
 }
 
+// Inspector rail (issue #839): the selected row with full logs
+// per member plus Re-run where a member came from a job run.
+// Re-run replays the run's own action/repo/argv via the same
+// endpoint Jobs uses; mock mode hides it (no live registry).
+export function HistoryInspector({
+  row,
+  canRerun,
+  rerunBusy,
+  rerunNote,
+  onRerun,
+}: {
+  row: HistoryRow | null;
+  canRerun: boolean;
+  rerunBusy: string | null;
+  rerunNote: string | null;
+  onRerun: (runId: string) => void;
+}) {
+  if (!row) {
+    return (
+      <div className="detail" data-testid="history-inspector">
+        <span className="row-title">No row selected</span>
+        <p className="row-meta">Select a feed row to inspect its full logs.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="detail" data-testid="history-inspector">
+      <span className="row-title">
+        <StatusIcon tone={row.tone} /> {row.summary}
+      </span>
+      <p className="row-meta">
+        {kindBadge(row.kind)} · {row.at}
+        {row.repeat > 1 ? ` · ×${row.repeat}` : ''}
+        {row.recovery && <> · Recovery: {row.recovery}</>}
+      </p>
+      {rerunNote && (
+        <p className="row-meta" data-testid="history-rerun-note" role="status">
+          {rerunNote}
+        </p>
+      )}
+      {row.members.map((m, mi) => (
+        // eslint-disable-next-line react/no-array-index-key
+        <div key={mi}>
+          <MemberBlock member={m} grouped={row.members.length > 1} />
+          {canRerun && m.runId && (
+            <div className="actions">
+              <button
+                type="button"
+                data-testid={`history-rerun-${m.runId}`}
+                disabled={rerunBusy !== null}
+                onClick={() => onRerun(m.runId as string)}
+              >
+                {rerunBusy === m.runId ? 'Re-running…' : 'Re-run'}
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function RowsList({
   rows,
   filtering,
+  selectedKey = null,
+  onSelect = () => {},
   onRefresh = () => {},
 }: {
   rows: HistoryRow[];
   filtering: boolean;
+  selectedKey?: string | null;
+  onSelect?: (row: HistoryRow) => void;
   onRefresh?: () => void;
 }) {
   if (rows.length === 0) {
@@ -133,11 +208,12 @@ export function RowsList({
         return (
           <li
             key={r.key}
-            className="history-row"
+            className={`history-row${selectedKey === r.key ? ' selected' : ''}`}
             data-testid={r.repeat > 1 ? 'history-incident' : 'history-row'}
+            aria-current={selectedKey === r.key ? true : undefined}
           >
             <details data-testid="history-detail">
-              <summary>
+              <summary onClick={() => onSelect(r)}>
                 <span className="row-title">
                   <StatusIcon tone={r.tone} /> {r.summary}
                 </span>
@@ -168,12 +244,39 @@ export default function HistoryView({
   const { jobs, entries } = data;
   const [kind, setKind] = useState('all');
   const [query, setQuery] = useState('');
+  const [facet, setFacet] = useState<HistoryFacet>('all');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [rerunBusy, setRerunBusy] = useState<string | null>(null);
+  const [rerunNote, setRerunNote] = useState<string | null>(null);
   const all = entries;
-  const filtering = query.trim().length > 0;
-  const rows = toHistoryRows(
+  const filtering = query.trim().length > 0 || facet !== 'all';
+  const scoped = toHistoryRows(
     jobs.filter((j) => jobPassesKindFilter(j.kind, kind)),
     filterByKind(all, kind),
   ).filter((r) => historyRowMatches(r, query));
+  const counts = facetCounts(scoped);
+  const rows = scoped.filter((r) => rowInFacet(r, facet));
+  // The inspector follows the selection, defaulting to the newest
+  // row; a selection that filters out falls back the same way.
+  const inspected = rows.find((r) => r.key === selectedKey) ?? rows[0] ?? null;
+
+  async function onRerun(runId: string) {
+    if (rerunBusy !== null) return;
+    setRerunBusy(runId);
+    setRerunNote(null);
+    try {
+      const p = await fetchJobRun(runId);
+      const started = await rerunJob(p.action, p.repo ?? repo, p.td_argv ?? [], true);
+      setRerunNote(`Re-run started: ${started.id}`);
+      await load();
+    } catch (err) {
+      setRerunNote(
+        `Re-run failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setRerunBusy(null);
+    }
+  }
 
   return (
     <div data-testid="history-view">
@@ -226,7 +329,46 @@ export default function HistoryView({
         )}
         {loading && <div data-testid="history-loading" role="status">Loading history…</div>}
         {!loading && !error && (
-          <RowsList rows={rows} filtering={filtering} onRefresh={() => void load()} />
+          <>
+            <div
+              className="facet-row"
+              role="group"
+              aria-label="Event facets"
+              data-testid="history-facets"
+            >
+              {visibleFacets(counts).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  data-testid={`history-facet-${f.id}`}
+                  aria-pressed={facet === f.id}
+                  onClick={() => setFacet(f.id)}
+                >
+                  {f.label} {counts[f.id]}
+                </button>
+              ))}
+            </div>
+            <div className="split">
+              <div>
+                <RowsList
+                  rows={rows}
+                  filtering={filtering}
+                  selectedKey={inspected?.key ?? null}
+                  onSelect={(r) => setSelectedKey(r.key)}
+                  onRefresh={() => void load()}
+                />
+              </div>
+              <aside className="inspector" aria-label="Row inspector">
+                <HistoryInspector
+                  row={inspected}
+                  canRerun={!useMock()}
+                  rerunBusy={rerunBusy}
+                  rerunNote={rerunNote}
+                  onRerun={(runId) => void onRerun(runId)}
+                />
+              </aside>
+            </div>
+          </>
         )}
       </section>
     </div>

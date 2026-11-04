@@ -5,7 +5,9 @@ import type { BriefingResponse, LedgerEntry } from '../apiTypes';
 import {
   ACTIVITY_WINDOWS,
   activityWindowSeconds,
+  boardStatusForBranch,
   BriefingBody,
+  briefingActions,
   briefingAllClear,
   dayTrend,
   DigestControlsView,
@@ -14,10 +16,15 @@ import {
   digestResultLine,
   digestScheduleLine,
   digestStatusLine,
+  GroupedLines,
+  groupBriefingLines,
   inActivityWindow,
   PrefsControlsView,
   prefsStatusLine,
+  prReviewNote,
+  prReviewVerdict,
   reviewsErrText,
+  visibleBoardItems,
 } from './BriefingView';
 import { isHistoryFailure } from './historyUtils';
 
@@ -626,5 +633,121 @@ describe('briefing enrichment cap note (issue #487)', () => {
       );
       expect(html).not.toContain('briefing-enrichment-note');
     }
+  });
+});
+
+describe('actionable briefing (issue #839)', () => {
+  function briefing(over: Record<string, unknown> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      reviews_err: {},
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      conf_err: '',
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function renderBody(data: BriefingResponse): string {
+    const noop = () => {};
+    return renderToStaticMarkup(
+      <BriefingBody
+        data={data}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+      />,
+    );
+  }
+
+  it('groups identical failure lines with counts in first-seen order', () => {
+    expect(groupBriefingLines([])).toEqual([]);
+    expect(
+      groupBriefingLines(['broke', 'broke', 'other', 'broke']),
+    ).toEqual([
+      { text: 'broke', count: 3 },
+      { text: 'other', count: 1 },
+    ]);
+  });
+
+  it('GroupedLines counts repeats and leaves singletons bare', () => {
+    const html = renderToStaticMarkup(
+      <GroupedLines lines={['same failure', 'same failure', 'solo']} />,
+    );
+    expect(html).toContain('same failure ×2');
+    expect(html).toContain('Same failure repeated 2 times.');
+    expect(html).toContain('solo');
+    expect(html).not.toContain('solo ×');
+  });
+
+  it('matches review lines to PR numbers', () => {
+    const lines = ['#12: 2 approvals, no changes requested', 'nothing here'];
+    expect(prReviewNote('12', lines)).toBe('#12: 2 approvals, no changes requested');
+    expect(prReviewNote('13', lines)).toBe('');
+  });
+
+  it('lifts all-caps verdicts into badges, leaving the rest note-only', () => {
+    expect(prReviewVerdict('#841: bot says Verdict: WARNINGS FOUND in review')).toBe(
+      'WARNINGS FOUND',
+    );
+    expect(prReviewVerdict('#841: bot says verdict: APPROVED')).toBe('APPROVED');
+    expect(prReviewVerdict('#12: 2 approvals, no changes requested')).toBe('');
+    expect(prReviewVerdict('verdict: needs work')).toBe('');
+  });
+
+  it('hides board branches owned by the PR pipeline', () => {
+    const board = [
+      { branch: 'feat/a', status: 'Doing' },
+      { branch: 'feat/b', status: 'Review' },
+    ];
+    expect(visibleBoardItems(board, [])).toEqual(board);
+    expect(visibleBoardItems(board, ['feat/a'])).toEqual([
+      { branch: 'feat/b', status: 'Review' },
+    ]);
+    expect(boardStatusForBranch('feat/b', board)).toBe('Review');
+    expect(boardStatusForBranch('feat/zzz', board)).toBe('');
+    expect(boardStatusForBranch('', board)).toBe('');
+  });
+
+  it('leads with the top action inline plus a failures shortcut', () => {
+    const html = renderBody(
+      briefing({
+        narrative: 'CI is red.',
+        workflow_lines: ['broke', 'broke'],
+        prs: [{ number: 12, title: 'Fix it', author: 'a', branch: 'fix/it', ci: 'failing', merge: 'blocked' }],
+        reviews_lines: ['#12: changes requested'],
+        board: [{ branch: 'fix/it', status: 'Doing' }],
+      }),
+    );
+    expect(html).toContain('data-testid="briefing-lead-action"');
+    expect(html).toContain('Explain the failures');
+    expect(html).toContain('View failures in History');
+    expect(html).toContain('data-testid="briefing-pipeline"');
+    expect(html).toContain('CI failing');
+    expect(html).toContain('merge blocked');
+    expect(html).toContain('Doing');
+    expect(html).toContain('Review: #12: changes requested');
+    expect(html).toContain('broke ×2');
+    // The pipeline owns the branch: no duplicate Board chip row.
+    expect(html).not.toContain('data-testid="board-chips"');
+  });
+
+  it('keeps Next actions for the remainder without repeating the lead', () => {
+    const data = briefing({ workflow_lines: ['broke'], conflicts_lines: ['clash'] });
+    expect(briefingActions(data).length).toBe(2);
+    const html = renderBody(data);
+    expect(html).toContain('Explain the failures');
+    expect(html).toContain('Resolve the conflicts');
+    expect(html.match(/Explain the failures/g)?.length).toBe(1);
   });
 });
