@@ -10,7 +10,7 @@ Ports of the buttons/server.py handlers:
 - GET  /api/jobs/runs/compare (unified diff of two runs' outputs)
 - GET  /api/jobs/runs/{rid}/stream (SSE per-run push; ends on done)
 - POST /api/jobs/runs/{rid}/cancel (cancel a running run: 202/404/409)
-- POST /api/jobs/run-plan (run one allowlisted td planning guide)
+- POST /api/jobs/run-plan (start a run for one allowlisted td planning guide)
 - POST /api/jobs/schedule (schedule a non-destructive action/run-td)
 - GET  /api/jobs/schedule (list action schedules + next runs)
 - DELETE /api/jobs/schedule/{id} (delete one action schedule)
@@ -37,13 +37,11 @@ from backend.api.routers.chat import SSE_HEADERS, sse_frame
 from backend.exec.engine import (
     ALLOWED_ACTIONS,
     DESTRUCTIVE_ACTIONS,
-    PLAN_TIMEOUT,
     REPO_SCOPED_ACTIONS,
     RunRegistry,
     build_plan_argv,
     execute_run,
     runs_store_path,
-    td_run_async,
     validate_td_command,
 )
 
@@ -66,7 +64,8 @@ class JobRecord(BaseModel):
     exit_code: int | None = None
     at: float | None = None
     # Replay params for one-click re-run: recorded td argv for
-    # run-td rows, [] for plain-action rows (action+repo replay).
+    # run-td/run-plan rows, [] for plain-action rows (action+repo
+    # replay).
     td_argv: list[str] = Field(default_factory=list)
 
 
@@ -117,12 +116,6 @@ class RunPlanRequest(BaseModel):
     pr: str = ""
     prs: list[str] = Field(default_factory=list)
     target: str = ""
-
-
-class RunPlanResult(BaseModel):
-    ok: bool = True
-    output: str = ""
-    plan_path: str = ""
 
 
 @router.get("/health", response_model=JobsHealth)
@@ -441,28 +434,28 @@ def run_stream(rid: str) -> StreamingResponse:
                              headers=SSE_HEADERS)
 
 
-@router.post("/run-plan", response_model=RunPlanResult)
-async def start_run_plan(body: RunPlanRequest) -> dict:
-    import json
-
+@router.post("/run-plan", response_model=RunStarted)
+def start_run_plan(body: RunPlanRequest) -> dict:
     argv, err = build_plan_argv(body.plan, body.pr, body.prs, body.target)
     if err:
         raise HTTPException(status_code=400, detail=err)
-    import shlex as _shlex
-
-    cmd = " ".join(_shlex.quote(t) for t in argv)
+    # First-class run (#452): single-flighted, listed in /api/jobs,
+    # and ledgered through the standard run path — no inline 5-minute
+    # await. The plan runs in the stack dir regardless of repo (as the
+    # old inline handler did); clients poll /runs/{rid} for the output
+    # JSON, which carries plan_path.
+    run_id, err = registry.start_run("run-plan", body.repo, td_argv=argv)
+    if err:
+        raise HTTPException(
+            status_code=409 if "already in progress" in err else 400,
+            detail=err,
+        )
     try:
-        # Async wait: a 5-minute plan run must not pin one of
-        # FastAPI's sync workers and starve the other routes (#294).
-        out = await td_run_async(cmd, timeout=PLAN_TIMEOUT)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)[:500])
-    plan_path = ""
-    try:
-        plan_path = json.loads(out).get("plan_path", "") or ""
+        _launch(run_id, "run-plan", body.repo, td_argv=argv)
     except Exception:
-        pass
-    return {"ok": True, "output": out[-4000:], "plan_path": plan_path}
+        registry.finish_run(run_id, 1)
+        raise
+    return {"id": run_id}
 
 
 PLAN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
