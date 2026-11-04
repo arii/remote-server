@@ -70,7 +70,11 @@ class PostMergeHookTest(unittest.TestCase):
         tmp = _fixture()
         shim, marker, path = _docker_shim()
         try:
-            proc = _run_hook(tmp.name, {"PATH": path})
+            # Pin the live project elsewhere: without this the hook
+            # falls back to proj_dir=$PWD on boxes with no canonical
+            # checkout, and the fixture looks live.
+            proc = _run_hook(tmp.name, {"REMOTE_BUTTONS_PROJECT_DIR": "/live-project-elsewhere",
+                                        "PATH": path})
             self.assertEqual(proc.returncode, 0)
             self.assertIn("skipping auto-rebuild", proc.stdout)
             self.assertIn("not the live project", proc.stdout)

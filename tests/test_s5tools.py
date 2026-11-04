@@ -6,6 +6,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import s5tools
 
+try:
+    import pytest  # noqa: F401
+    HAS_PYTEST = True
+except ImportError:
+    HAS_PYTEST = False
+
 
 class TestS5Tools(unittest.TestCase):
     def test_valid_repo(self):
@@ -143,6 +149,7 @@ class TestRunRepoCommand(unittest.TestCase):
                     "    assert True\n")
         return probe
 
+    @unittest.skipUnless(HAS_PYTEST, "needs pytest")
     def test_pytest_form_end_to_end(self):
         import tempfile
 
@@ -153,6 +160,7 @@ class TestRunRepoCommand(unittest.TestCase):
         self.assertTrue(out.startswith("exit=0\n"), out[:200])
         self.assertIn("1 passed", out)
 
+    @unittest.skipUnless(HAS_PYTEST, "needs pytest")
     def test_failing_exit_passthrough(self):
         import tempfile
 

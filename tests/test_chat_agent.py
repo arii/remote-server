@@ -10,7 +10,10 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
-import chat_agent
+try:
+    import chat_agent
+except ImportError:
+    raise unittest.SkipTest("needs deep-agent venv")
 
 
 def b64(text):
