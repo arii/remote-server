@@ -68,9 +68,13 @@ class TestQuote(unittest.TestCase):
 
 
 class TestSpendCap(unittest.TestCase):
-    def test_unset_means_uncapped(self):
+    def test_unset_means_default_cap(self):
+        # #885: unset fails closed to the conservative default —
+        # an Ollama outage must not route unlimited paid traffic.
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertIsNone(pricing.spend_cap())
+            self.assertEqual(pricing.spend_cap(),
+                             pricing.DEFAULT_SPEND_CAP_USD)
+            self.assertEqual(pricing.spend_cap(), 5.0)
 
     def test_zero_blocks_everything(self):
         with mock.patch.dict(os.environ,
@@ -82,12 +86,12 @@ class TestSpendCap(unittest.TestCase):
                              {"NEBIUS_SPEND_CAP_USD": "5.50"}, clear=True):
             self.assertEqual(pricing.spend_cap(), 5.5)
 
-    def test_blank_means_uncapped(self):
+    def test_blank_means_default_cap(self):
         for raw in ("", "  "):
             with mock.patch.dict(
                     os.environ, {"NEBIUS_SPEND_CAP_USD": raw},
                     clear=True):
-                self.assertIsNone(pricing.spend_cap())
+                self.assertEqual(pricing.spend_cap(), 5.0)
 
     def test_junk_cap_blocks(self):
         for raw in ("free", "-3"):

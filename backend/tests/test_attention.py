@@ -596,6 +596,10 @@ class OllamaOutageTest(unittest.TestCase):
             "list_failed_webhooks": lambda: [],
             "list_skipped_webhooks": lambda: [],
             "list_pending_approvals": lambda: [],
+            "failover_budget": lambda: {
+                "cap_usd": 5.0, "spent_usd": 0.0,
+                "remaining_usd": 5.0, "blocked": False,
+                "unknown": 0},
         }.items():
             self._orig[k] = getattr(attention, k)
             setattr(attention, k, v)
@@ -634,6 +638,42 @@ class OllamaOutageTest(unittest.TestCase):
         self.assertEqual(len(self._outage_items()), 1)
         attention.ollama_up = lambda: True
         self.assertEqual(self._outage_items(), [])
+
+    def test_outage_item_shows_spend_and_cap(self):
+        # #885: while failover is active the Now view shows live
+        # metered spend against the cap.
+        attention.ollama_up = lambda: False
+        attention.failover_budget = lambda: {
+            "cap_usd": 5.0, "spent_usd": 1.25,
+            "remaining_usd": 3.75, "blocked": False,
+            "unknown": 0}
+        items = self._outage_items()
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(
+            item["title"],
+            "Ollama unreachable \u2014 on metered Nebius "
+            "(spend $1.25 / cap $5.00)")
+        self.assertIn("$1.2500", item["detail"])
+        self.assertIn("$5.00", item["detail"])
+
+    def test_outage_item_degrades_when_budget_fails(self):
+        # A budget read failure degrades the numbers, never the
+        # item: the outage still surfaces.
+        attention.ollama_up = lambda: False
+        attention.failover_budget = self._orig["failover_budget"]
+        orig_budget = attention.agents.agent_budget
+
+        def _boom():
+            raise RuntimeError("budget bug")
+        attention.agents.agent_budget = _boom
+        try:
+            items = self._outage_items()
+        finally:
+            attention.agents.agent_budget = orig_budget
+        self.assertEqual(len(items), 1)
+        self.assertIn("$0.00", items[0]["title"])
+        self.assertIn("unlimited", items[0]["title"])
 
     def test_probe_error_hides_item(self):
         def _boom():

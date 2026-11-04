@@ -195,8 +195,9 @@ class RealRoutersTest(unittest.TestCase):
                 with mock.patch.dict(os.environ, {}, clear=True):
                     resp = self.client.get("/api/agents/budget")
                 body = resp.json()
-                self.assertIsNone(body["cap_usd"])
-                self.assertIsNone(body["remaining_usd"])
+                # #885: unset fails closed to the $5.00 default.
+                self.assertEqual(body["cap_usd"], 5.0)
+                self.assertAlmostEqual(body["remaining_usd"], 4.9992)
                 self.assertFalse(body["blocked"])
                 with mock.patch.dict(
                         os.environ, {"NEBIUS_SPEND_CAP_USD": "0"},
