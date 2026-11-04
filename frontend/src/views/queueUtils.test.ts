@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { DispatchItem } from '../apiTypes';
 import {
+  allQueuedAcrossGroups,
   groupQueueByRepo,
   nextDispatchable,
+  queueItemKey,
   queueListActive,
   queueRowActions,
   queueRowMeta,
@@ -72,5 +74,32 @@ describe('splitBlockReasons (issue #853)', () => {
   it('splits the joined 409 detail back into lines', () => {
     expect(splitBlockReasons('a; b ;c')).toEqual(['a', 'b', 'c']);
     expect(splitBlockReasons('')).toEqual([]);
+  });
+});
+
+describe('cross-group dispatch sweep (issue #882)', () => {
+  it('collects every queued row across groups in order, skipping the rest', () => {
+    const groups = groupQueueByRepo([
+      mkItem({ repo: 'tech-dancer', issue: 5, state: 'running' }),
+      mkItem({ repo: 'tech-dancer', issue: 3 }),
+      mkItem({ repo: 'portfolio', issue: 9 }),
+      mkItem({ repo: 'portfolio', issue: 2, state: 'failed' }),
+      mkItem({ repo: 'remote-server', issue: 7 }),
+    ]);
+    expect(allQueuedAcrossGroups(groups).map((i) => `${i.repo}#${i.issue}`)).toEqual([
+      'portfolio#9',
+      'remote-server#7',
+      'tech-dancer#3',
+    ]);
+  });
+
+  it('sweeps nothing when no group has queued rows', () => {
+    const groups = groupQueueByRepo([mkItem({ state: 'running' }), mkItem({ state: 'done' })]);
+    expect(allQueuedAcrossGroups(groups)).toEqual([]);
+    expect(allQueuedAcrossGroups([])).toEqual([]);
+  });
+
+  it('keys rows stably for gates state', () => {
+    expect(queueItemKey('tech-dancer', 4848)).toBe('tech-dancer#4848');
   });
 });

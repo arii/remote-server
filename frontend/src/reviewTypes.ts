@@ -67,6 +67,7 @@ export interface PrDetailsResponse {
 export interface IssueRow {
   number: number;
   title: string;
+  repo?: string;
   state?: string;
   assignees?: Array<{ login: string } | string>;
   labels?: Array<{ name: string } | string>;
