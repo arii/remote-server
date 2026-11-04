@@ -86,6 +86,7 @@ ALLOWED_ACTIONS = (
     "preflight",
     "create-plan",
     "run-td",
+    "run-plan",
     "merge-approved",
     "triage-fanout",
 )
@@ -261,6 +262,44 @@ def build_plan_argv(plan, pr="", prs=None, target=""):
     return argv, None
 
 
+def validate_plan_argv(tokens):
+    """True when tokens is exactly a build_plan_argv-shaped plan
+    command. Structural mirror of the builder: the run-plan action
+    step execs the attached argv directly, so anything the builder
+    could not have produced is rejected here."""
+    if not isinstance(tokens, (list, tuple)) or len(tokens) < 4:
+        return False
+    tokens = list(tokens)
+    if tokens[0:3] != ["td", "--json", "agent"]:
+        return False
+    if not all(isinstance(t, str) for t in tokens):
+        return False
+    sub, rest = tokens[3], tokens[4:]
+    if sub == "plan-issue-audit":
+        return rest == ["--all-open"]
+    if sub == "plan-workflow-audit":
+        return rest == []
+    if sub == "plan-review":
+        return (len(rest) == 2 and rest[0] == "--pr"
+                and rest[1].isdigit() and int(rest[1]) > 0)
+    if sub == "plan-aggregation":
+        # ["--pr", N] pairs (1..10) + ["--target", T].
+        if len(rest) < 4 or len(rest) % 2 != 0:
+            return False
+        if rest[-2] != "--target" or not TARGET_RE.fullmatch(rest[-1]):
+            return False
+        pairs = rest[:-2]
+        if not pairs or len(pairs) > 20:
+            return False
+        for i in range(0, len(pairs), 2):
+            if pairs[i] != "--pr":
+                return False
+            if not pairs[i + 1].isdigit() or int(pairs[i + 1]) <= 0:
+                return False
+        return True
+    return False
+
+
 def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     """Run one fixed td/gh command string; return stdout.
 
@@ -401,6 +440,15 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         return [
             exec_argv(prefix + " ".join(shlex.quote(t) for t in td_argv)),
         ], None
+    if action == "run-plan":
+        if not td_argv or not validate_plan_argv(td_argv):
+            return None, "run-plan needs a validated plan command attached"
+        # Direct exec of the builder-shaped argv: the same command the
+        # old inline handler ran via bash -c, minus the shell. The
+        # step inherits the default 300s watchdog, matching
+        # PLAN_TIMEOUT, plus single-flight, history, cancel, and
+        # ledgering through the standard run path (#452).
+        return [list(td_argv)], None
     if action == "merge-approved":
         return [
             exec_argv(prefix + "td --json agent merge-approved -r "

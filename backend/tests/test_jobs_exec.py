@@ -84,6 +84,55 @@ class ValidateTdCommandTest(unittest.TestCase):
         self.assertIsNone(engine.validate_td_command("td gh audit-pr --pr 12"))
 
 
+class ValidatePlanArgvTest(unittest.TestCase):
+    def test_accept_builder_shapes(self):
+        # Everything build_plan_argv produces must validate: the
+        # run-plan step execs the attached argv only when it does.
+        cases = [
+            ("issue-audit", "", [], ""),
+            ("workflow-audit", "", [], ""),
+            ("review", "12", [], ""),
+            ("aggregation", "", ["3", "7"], "rollup/x-1.md"),
+        ]
+        for plan, pr, prs, target in cases:
+            argv, err = engine.build_plan_argv(plan, pr, prs, target)
+            self.assertIsNone(err)
+            self.assertTrue(engine.validate_plan_argv(argv), argv)
+
+    def test_reject_non_plan_argv(self):
+        bad = [
+            None,
+            [],
+            ["td", "--json", "agent"],
+            ["td", "--json", "agent", "plan-issue-audit"],
+            ["td", "--json", "agent", "plan-issue-audit",
+             "--all-open", "--extra"],
+            ["td", "--json", "agent", "plan-workflow-audit",
+             "--all-open"],
+            ["td", "--json", "agent", "plan-review", "--pr", "0"],
+            ["td", "--json", "agent", "plan-review", "--pr", "abc"],
+            ["td", "--json", "agent", "plan-review", "--pr", "3",
+             "--execute"],
+            ["td", "--json", "agent", "plan-aggregation",
+             "--target", "x.md"],
+            ["td", "--json", "agent", "plan-aggregation",
+             "--pr", "3", "--target", "no spaces"],
+            ["td", "--json", "agent", "plan-aggregation",
+             "--pr", "0", "--target", "x.md"],
+            ["td", "--json", "agent", "plan-nuke", "--all-open"],
+            ["td", "context-warm"],
+            ["td", "--json", "agent", "plan-review", "--pr", "3; reboot"],
+            "td --json agent plan-issue-audit --all-open",
+        ]
+        for argv in bad:
+            self.assertFalse(engine.validate_plan_argv(argv), argv)
+        many = ["td", "--json", "agent", "plan-aggregation"]
+        for n in range(1, 12):
+            many += ["--pr", str(n)]
+        many += ["--target", "x.md"]
+        self.assertFalse(engine.validate_plan_argv(many))
+
+
 class TruncationTest(unittest.TestCase):
     def test_tail_kept(self):
         big = "x" * (engine.MAX_OUTPUT + 100)
@@ -183,24 +232,60 @@ class RouterTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
-    def test_run_plan_mocked(self):
-        with mock.patch.object(
-            engine, "subprocess"
-        ) as _sp, mock.patch(
-            "backend.api.routers.jobs.td_run_async",
-            new=mock.AsyncMock(return_value='{"plan_path": "p.md"}'),
-        ) as td_mock:
+    def test_run_plan_starts_first_class_run(self):
+        # #452: run-plan takes the single-flight slot, appears in the
+        # job list with progress, and launches through the standard
+        # run path — no inline 5-minute await.
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        with mock.patch(
+            "backend.api.routers.jobs._launch"
+        ) as launched:
             resp = self.client.post(
                 "/api/jobs/run-plan", json={"plan": "issue-audit"}
             )
-        self.assertEqual(resp.status_code, 200)
-        body = resp.json()
-        self.assertTrue(body["ok"])
-        self.assertEqual(body["plan_path"], "p.md")
-        self.assertEqual(td_mock.await_count, 1)
-        self.assertEqual(
-            td_mock.await_args[0][0],
-            "td --json agent plan-issue-audit --all-open")
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            launched.assert_called_once_with(
+                rid, "run-plan", "remote-server",
+                td_argv=["td", "--json", "agent",
+                         "plan-issue-audit", "--all-open"])
+            rows = self.client.get("/api/jobs").json()["jobs"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["id"], rid)
+            self.assertEqual(rows[0]["kind"], "run-plan")
+            self.assertFalse(rows[0]["done"])
+            prog = self.client.get(f"/api/jobs/runs/{rid}").json()
+            self.assertFalse(prog["done"])
+            self.assertEqual(prog["action"], "run-plan")
+            # Single-flighted both ways: a second plan 409s, and so
+            # does an action run while the plan holds the slot.
+            resp2 = self.client.post(
+                "/api/jobs/run-plan",
+                json={"plan": "review", "pr": "3"},
+            )
+            self.assertEqual(resp2.status_code, 409)
+            resp3 = self.client.post(
+                "/api/jobs/run", json={"action": "logs"})
+            self.assertEqual(resp3.status_code, 409)
+        jobs_router.registry.finish_run(rid, 0)
+        jobs_router.registry = RunRegistry()
+
+    def test_run_plan_conflicts_with_active_action_run(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        with mock.patch("backend.api.routers.jobs._launch"):
+            resp = self.client.post(
+                "/api/jobs/run", json={"action": "logs"})
+            self.assertEqual(resp.status_code, 200)
+            rid = resp.json()["id"]
+            resp2 = self.client.post(
+                "/api/jobs/run-plan", json={"plan": "issue-audit"})
+            self.assertEqual(resp2.status_code, 409)
+        jobs_router.registry.finish_run(rid, 0)
+        jobs_router.registry = RunRegistry()
 
     def test_td_run_timeout_and_error(self):
         runner = mock.Mock()
@@ -872,6 +957,46 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         self.assertIn("validated td command",
                       reg2.runs[rid2]["output"])
 
+    def test_run_plan_builds_validated_step(self):
+        argv, err = engine.build_plan_argv("review", "12", [], "")
+        self.assertIsNone(err)
+        steps, err = engine.action_steps(
+            "run-plan", "remote-server", "", "", argv)
+        self.assertIsNone(err)
+        self.assertEqual(steps, [argv])
+        for bad in (None, [], ["td", "context-warm"]):
+            steps, err = engine.action_steps(
+                "run-plan", "remote-server", "", "", bad)
+            self.assertIsNone(steps)
+            self.assertIn("validated plan command", err)
+
+    def test_run_plan_run_is_ledgered(self):
+        import json
+        import os
+
+        argv, err = engine.build_plan_argv("issue-audit", "", [], "")
+        self.assertIsNone(err)
+        reg, rid = self._reg("run-plan")
+        engine.execute_run(
+            reg, rid, "run-plan", "remote-server", "", "",
+            td_argv=argv,
+            runner=lambda step: (0, '{"plan_path": "p.md"}\n'))
+        run = reg.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertEqual(run["exit_code"], 0)
+        self.assertIn("plan_path", run["output"])
+        path = os.environ["BUTTONS_LEDGER_PATH"]
+        with open(path) as f:
+            entries = [json.loads(line) for line in f]
+        plans = [e for e in entries
+                 if e.get("kind") == "run"
+                 and e.get("action") == "run-plan"]
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["exit"], 0)
+        self.assertEqual(
+            plans[0]["command"],
+            "td --json agent plan-issue-audit --all-open")
+
 
 def _sleep_step(seconds):
     return [sys.executable, "-c",
@@ -956,6 +1081,7 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
         for path, payload in (
             ("/api/jobs/run", {"action": "logs"}),
             ("/api/jobs/run-td", {"command": "td context-warm"}),
+            ("/api/jobs/run-plan", {"plan": "issue-audit"}),
         ):
             jobs_router.registry = RunRegistry()
             with mock.patch(
@@ -976,10 +1102,13 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
 
 
 class AsyncPlanTest(unittest.TestCase):
-    def test_run_plan_route_is_coroutine(self):
+    def test_run_plan_route_is_sync(self):
+        # #452: the handler only starts the run and returns its id —
+        # the plan itself runs on a worker, so the route must not be
+        # a coroutine awaiting anything inline.
         import backend.api.routers.jobs as jobs_router
 
-        self.assertTrue(
+        self.assertFalse(
             inspect.iscoroutinefunction(jobs_router.start_run_plan))
 
     def test_td_run_async_echo(self):

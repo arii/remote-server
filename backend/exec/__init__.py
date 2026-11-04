@@ -12,6 +12,7 @@ from backend.exec.engine import (
     build_plan_argv,
     td_run,
     truncate_tail,
+    validate_plan_argv,
     validate_td_command,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "build_plan_argv",
     "td_run",
     "truncate_tail",
+    "validate_plan_argv",
     "validate_td_command",
 ]
