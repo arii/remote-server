@@ -8,20 +8,34 @@ import RepoLabel from '../components/RepoLabel';
 
 // Briefing lines come from the legacy briefing_summary passthrough and may
 // carry reviewer HTML-comment markers, markdown list markers, full reviewer
-// markdown (headings, quotes, bold, links), or run long. Present the human
-// part as one plain-text line, truncated at a word boundary (issue #574).
+// markdown (headings, quotes, bold, links), HTML-escaped quote entities, or
+// links cut mid-URL upstream — or run long. Present the human part as one
+// plain-text line, truncated at a word boundary (issue #574).
 export function cleanBriefingLine(line: string): string {
   const stripped = line
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/ai-review-state:\s*\S+/g, ' ')
     .replace(/<!--[\s\S]*$/g, ' ')
+    // Escaped quote markers arrive mid-line once review newlines collapse
+    // upstream: strip marker-position &gt;, decode glued stragglers.
+    .replace(/(^|\s)&gt;(?=[\s#]|$)/gm, '$1')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&amp;/g, '&')
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s{0,3}(?:>\s?)+/gm, '')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/>+(?=\s*#{1,6}\s)/g, '')
     .replace(/^\s*([-*_])\1{2,}\s*$/gm, ' ')
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')
+    // Links cut mid-URL upstream never close; keep the link text.
+    .replace(/!\[([^\]]*)\]\([^\s)]*$/g, '$1')
+    .replace(/\[([^\]]*)\]\([^\s)]*$/g, '$1')
     .replace(/`([^`]*)`/g, '$1')
     .replace(/\*\*\*([^*]+)\*\*\*/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')

@@ -328,6 +328,41 @@ describe('briefing sanitation', () => {
     expect(clean).toContain('minor nit');
   });
 
+  it('strips nested quotes guarding headings (#574 remainder)', () => {
+    expect(cleanBriefingLine('>> ## Nested verdict')).toBe('Nested verdict');
+    expect(cleanBriefingLine('> > ## Spaced nested verdict')).toBe(
+      'Spaced nested verdict',
+    );
+    expect(cleanBriefingLine('verdict text > ## quoted heading')).toBe(
+      'verdict text quoted heading',
+    );
+    expect(cleanBriefingLine('compare a > b stays')).toBe(
+      'compare a > b stays',
+    );
+  });
+
+  it('strips mid-line escaped quote entities (#574 remainder)', () => {
+    expect(
+      cleanBriefingLine('verdict line &gt; quoted remark mid-line'),
+    ).toBe('verdict line quoted remark mid-line');
+    expect(cleanBriefingLine('&gt; ## Escaped quote heading')).toBe(
+      'Escaped quote heading',
+    );
+    expect(cleanBriefingLine('x&gt;y')).toBe('x>y');
+  });
+
+  it('keeps link text for links cut mid-URL upstream (#574 remainder)', () => {
+    expect(
+      cleanBriefingLine(
+        '**Reviewing:** [PR #563](https://github.com/arii/remote-server/pull/56',
+      ),
+    ).toBe('Reviewing: PR #563');
+    expect(
+      cleanBriefingLine('see ![diagram](https://example.com/img.'),
+    ).toBe('see diagram');
+    expect(cleanBriefingLine('[PR #563](')).toBe('PR #563');
+  });
+
   it('truncates at a word boundary, never mid-URL', () => {
     const line = `${'ok '.repeat(90)}https://example.com/${'y'.repeat(200)}`;
     const clean = cleanBriefingLine(line);
