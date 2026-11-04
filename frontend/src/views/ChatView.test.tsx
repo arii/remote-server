@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, isStalled, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, turnPrompt } from './ChatView';
+import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, insertMention, isStalled, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, turnPrompt } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 import type { ChatMessage } from './mockViews';
@@ -455,5 +455,71 @@ describe('prompt chips (issue #664)', () => {
     expect(chipPickAction('Review my uncommitted changes', false, true)).toBe('none');
     expect(chipPickAction('Review my uncommitted changes', true, true)).toBe('none');
     expect(chipPickAction('   ', false, false)).toBe('none');
+  });
+});
+
+describe('@-mention completion (issue #653)', () => {
+  it('finds the query ending at the caret', () => {
+    expect(mentionQueryAt('look @sub/a', 11)).toEqual({ start: 5, query: 'sub/a' });
+    expect(mentionQueryAt('@', 1)).toEqual({ start: 0, query: '' });
+    expect(mentionQueryAt('(@a', 3)).toEqual({ start: 1, query: 'a' });
+    expect(mentionQueryAt('hi @a there', 5)).toEqual({ start: 3, query: 'a' });
+  });
+
+  it('ignores mid-word @, finished tokens, and empty heads', () => {
+    expect(mentionQueryAt('user@example.com', 16)).toBe(null);
+    expect(mentionQueryAt('a@b', 3)).toBe(null);
+    expect(mentionQueryAt('hi @a there', 4)).toBe(null);
+    expect(mentionQueryAt('hi @a there', 6)).toBe(null);
+    expect(mentionQueryAt('hi @a there', 3)).toBe(null);
+    expect(mentionQueryAt('', 0)).toBe(null);
+    expect(mentionQueryAt('@a', 0)).toBe(null);
+  });
+
+  it('inserts the picked path as chip text with a trailing space', () => {
+    expect(insertMention('look @sub/a', 11, 'sub/a.py')).toEqual({
+      text: 'look @sub/a.py ',
+      cursor: 15,
+    });
+    expect(insertMention('@', 1, 'README.md')).toEqual({
+      text: '@README.md ',
+      cursor: 11,
+    });
+  });
+
+  it('refuses insertion without an active query', () => {
+    expect(insertMention('plain', 5, 'x.py')).toBe(null);
+    expect(insertMention('user@example.com', 16, 'x.py')).toBe(null);
+  });
+
+  it('renders options with the active one marked', () => {
+    const html = renderToStaticMarkup(
+      <MentionDropdown
+        files={['sub/a.py', 'sub/b.py']}
+        truncated={false}
+        active={1}
+        onPick={() => {}}
+        onHover={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="chat-mention-list"');
+    expect(html).toContain('sub/a.py');
+    expect(html).toContain('sub/b.py');
+    expect(html).toContain('aria-selected="true"');
+    expect(html).not.toContain('chat-mention-more');
+  });
+
+  it('shows the refine-prefix hint when truncated', () => {
+    const html = renderToStaticMarkup(
+      <MentionDropdown
+        files={['a.py']}
+        truncated
+        active={0}
+        onPick={() => {}}
+        onHover={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="chat-mention-more"');
+    expect(html).toContain('Refine the prefix for more');
   });
 });

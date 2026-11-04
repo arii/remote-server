@@ -9,6 +9,7 @@ import {
   fetchAgentRun,
   fetchAgentRuns,
   fetchBudget,
+  fetchRepoFiles,
   fetchRouteHint,
   resumeChat,
 } from '../apiClient';
@@ -79,6 +80,91 @@ export function PromptChips({
           {c.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+// @-mention file attach (#653): typing "@" in the composer opens
+// repo-file completions; accepting inserts plain "@path" text (no
+// rich chips) and POST turns resolve it server-side.
+export interface MentionQuery {
+  start: number;
+  query: string;
+}
+
+const MENTION_QUERY_CHARS = /^[A-Za-z0-9_.\-/]*$/;
+const MENTION_QUERY_BOUNDARY = /[\s(\[{>"']/;
+
+export function mentionQueryAt(text: string, cursor: number): MentionQuery | null {
+  if (cursor <= 0 || cursor > text.length) return null;
+  const after = text[cursor];
+  if (after !== undefined && !/\s/.test(after)) return null;
+  const head = text.slice(0, cursor);
+  const at = head.lastIndexOf('@');
+  if (at === -1) return null;
+  const query = head.slice(at + 1);
+  if (!MENTION_QUERY_CHARS.test(query)) return null;
+  const prev = at > 0 ? (head[at - 1] ?? '') : '';
+  if (prev !== '' && !MENTION_QUERY_BOUNDARY.test(prev)) return null;
+  return { start: at, query };
+}
+
+export function insertMention(
+  text: string,
+  cursor: number,
+  path: string,
+): { text: string; cursor: number } | null {
+  const found = mentionQueryAt(text, cursor);
+  if (!found) return null;
+  const inserted = `@${path} `;
+  const rest = text.slice(cursor);
+  const tail = rest.startsWith(' ') ? rest.slice(1) : rest;
+  const next = text.slice(0, found.start) + inserted + tail;
+  return { text: next, cursor: found.start + inserted.length };
+}
+
+export function MentionDropdown({
+  files,
+  truncated,
+  active,
+  onPick,
+  onHover,
+}: {
+  files: string[];
+  truncated: boolean;
+  active: number;
+  onPick: (path: string) => void;
+  onHover: (index: number) => void;
+}) {
+  return (
+    <div
+      className="mention-list"
+      role="listbox"
+      aria-label="Attach a repo file"
+      data-testid="chat-mention-list"
+    >
+      {files.map((f, i) => (
+        <button
+          key={f}
+          type="button"
+          role="option"
+          aria-selected={i === active}
+          data-testid="chat-mention-option"
+          data-active={i === active ? 'true' : undefined}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onPick(f);
+          }}
+          onMouseEnter={() => onHover(i)}
+        >
+          {f}
+        </button>
+      ))}
+      {truncated && (
+        <span className="row-meta" data-testid="chat-mention-more">
+          Refine the prefix for more…
+        </span>
+      )}
     </div>
   );
 }
@@ -810,6 +896,20 @@ export default function ChatView({
   const [runsNotice, setRunsNotice] = useState<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // @-mention completion (#653): caret-tracked query over the
+  // repo-files endpoint; accepting inserts "@path" chip text.
+  const [caret, setCaret] = useState<number | null>(null);
+  const [mentionFiles, setMentionFiles] = useState<string[]>([]);
+  const [mentionTruncated, setMentionTruncated] = useState(false);
+  const [mentionActive, setMentionActive] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState<string | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
+  const mention = caret === null ? null : mentionQueryAt(prompt, caret);
+  const mentionOpen =
+    mention !== null &&
+    !streaming &&
+    mentionFiles.length > 0 &&
+    mentionDismissed !== mention.query;
   const [approval, setApproval] = useState<ApprovalPayload | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -862,6 +962,44 @@ export default function ChatView({
       cancelled = true;
     };
   }, [backend]);
+  // @-mention completions: refetch as the query changes; a fresh
+  // query re-arms after Escape. Mock mode stays offline (no
+  // dropdown in ?mock=1).
+  const mentionQuery = mention?.query;
+  useEffect(() => {
+    setMentionDismissed(null);
+    if (mentionQuery === undefined || useMock()) {
+      setMentionFiles([]);
+      setMentionTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    setMentionActive(0);
+    fetchRepoFiles(repo, mentionQuery).then(
+      (res) => {
+        if (cancelled) return;
+        setMentionFiles(res.files);
+        setMentionTruncated(res.truncated);
+      },
+      () => {
+        if (cancelled) return;
+        setMentionFiles([]);
+        setMentionTruncated(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionQuery, repo]);
+  // After a mention accept, land the caret past the inserted chip.
+  useEffect(() => {
+    if (pendingCaretRef.current === null) return;
+    const pos = pendingCaretRef.current;
+    pendingCaretRef.current = null;
+    promptRef.current?.setSelectionRange(pos, pos);
+    setCaret(pos);
+  });
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
   const lastEventRef = useRef(0);
@@ -1056,6 +1194,17 @@ export default function ChatView({
     }
   }
 
+  // @-mention accept: swap the "@query" token for "@path" chip
+  // text; the caret lands past the trailing space via the
+  // pending-caret effect, which also closes the dropdown.
+  function onAcceptMention(path: string) {
+    if (caret === null) return;
+    const next = insertMention(prompt, caret, path);
+    if (!next) return;
+    pendingCaretRef.current = next.cursor;
+    setPrompt(next.text);
+  }
+
   // Edit recalls a sent prompt into the composer for fix-and-resend;
   // the resend is a normal new turn (history stays append-only).
   // preventScroll keeps the recalled turn in view on phones.
@@ -1197,8 +1346,40 @@ export default function ChatView({
             data-testid="chat-prompt"
             ref={promptRef}
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => {
+              setPrompt(e.target.value);
+              setCaret(e.target.selectionStart);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
             onKeyDown={(e) => {
+              if (mentionOpen && e.key === 'ArrowDown') {
+                e.preventDefault();
+                setMentionActive((a) => (a + 1) % mentionFiles.length);
+                return;
+              }
+              if (mentionOpen && e.key === 'ArrowUp') {
+                e.preventDefault();
+                setMentionActive(
+                  (a) => (a - 1 + mentionFiles.length) % mentionFiles.length,
+                );
+                return;
+              }
+              if (
+                mentionOpen &&
+                (e.key === 'Enter' || e.key === 'Tab') &&
+                !(e.ctrlKey || e.metaKey)
+              ) {
+                e.preventDefault();
+                onAcceptMention(
+                  mentionFiles[mentionActive] ?? mentionFiles[0] ?? '',
+                );
+                return;
+              }
+              if (mentionOpen && e.key === 'Escape') {
+                e.preventDefault();
+                setMentionDismissed(mention?.query ?? '');
+                return;
+              }
               if (isKeyboardSend(e)) {
                 e.preventDefault();
                 void onSend();
@@ -1207,6 +1388,15 @@ export default function ChatView({
             disabled={streaming}
           />
         </label>
+        {mentionOpen && (
+          <MentionDropdown
+            files={mentionFiles}
+            truncated={mentionTruncated}
+            active={mentionActive}
+            onPick={(path) => onAcceptMention(path)}
+            onHover={(i) => setMentionActive(i)}
+          />
+        )}
         <p className="row-meta" data-testid="chat-route-hint" role="status">
           {hint ? hintLine(hint) : 'Next reply via …'}
         </p>

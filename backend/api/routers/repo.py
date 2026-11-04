@@ -3,7 +3,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.core import get_repo_diff, get_repo_status, list_repos
+from backend.core import (get_repo_diff, get_repo_status, list_repos,
+                          list_repo_files)
 
 router = APIRouter(prefix="/api/repo", tags=["repo"])
 
@@ -40,6 +41,13 @@ class RepoEntry(BaseModel):
 
 class ReposList(BaseModel):
     repos: list[RepoEntry]
+
+
+class RepoFiles(BaseModel):
+    repo: str
+    prefix: str
+    files: list[str]
+    truncated: bool
 
 
 @router.get("/health", response_model=RepoHealth)
@@ -79,3 +87,13 @@ def diff(repo: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/files", response_model=RepoFiles)
+def files(repo: str, prefix: str = "") -> dict:
+    try:
+        return list_repo_files(repo, prefix)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))

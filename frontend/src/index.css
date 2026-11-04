@@ -353,6 +353,21 @@ nav.actions.secondary {
 }
 nav.actions.secondary button { min-height: 44px; }
 
+/* @-mention completion list under the chat composer (#653). */
+.mention-list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.mention-list button { text-align: left; }
+.mention-list button[aria-selected="true"] {
+  border-color: var(--accent-solid);
+}
+
 button, select, input, textarea {
   font: inherit;
   color: var(--text);

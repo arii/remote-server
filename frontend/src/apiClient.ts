@@ -276,6 +276,22 @@ export function fetchRepoDiff(repo: string): Promise<RepoDiffResponse> {
   return getJson<RepoDiffResponse>(`api/repo/diff?repo=${encodeURIComponent(repo)}`);
 }
 
+// Repo file paths for @-mention completion in the chat composer
+// (#653). Prefix-filtered server-side; truncated means "refine
+// the prefix". Paths only, never contents.
+export interface RepoFilesResponse {
+  repo: string;
+  prefix: string;
+  files: string[];
+  truncated: boolean;
+}
+
+export function fetchRepoFiles(repo: string, prefix = ''): Promise<RepoFilesResponse> {
+  return getJson<RepoFilesResponse>(
+    `api/repo/files?repo=${encodeURIComponent(repo)}&prefix=${encodeURIComponent(prefix)}`,
+  );
+}
+
 export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListResponse> {
   return getJson<import('./reviewTypes').PrListResponse>(
     `api/prs?repo=${encodeURIComponent(repo)}`,
