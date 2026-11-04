@@ -24,6 +24,16 @@ import type {
 import { loadChat, useMock, type ChatMessage } from './mockViews';
 import AgentDrawer from './AgentDrawer';
 
+// Standard chat send: Ctrl+Enter / Cmd+Enter sends from the
+// prompt box; plain Enter keeps its newline.
+export function isKeyboardSend(e: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}): boolean {
+  return e.key === 'Enter' && (e.ctrlKey || e.metaKey);
+}
+
 // Composer backend picker options: Auto keeps today's ladder,
 // Local only forces Ollama (fails instead of spending), Cloud
 // allowed forces Nebius for the turn.
@@ -651,6 +661,7 @@ export default function ChatView({
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [runsNotice, setRunsNotice] = useState<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
   const [approval, setApproval] = useState<ApprovalPayload | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -952,6 +963,15 @@ export default function ChatView({
   const typing = awaitingFirstToken(streaming, messages);
   const shown = typing ? messages.slice(0, -1) : messages;
 
+  // Pin the live reply in view while streaming: the reply renders
+  // at the list end and used to demand a manual scroll back up past
+  // the runs after every send (#594). Nearest-scroll only moves when
+  // the tail is actually out of view.
+  useEffect(() => {
+    if (!streaming) return;
+    bottomRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [streaming, messages]);
+
   return (
     <section data-testid="chat-view">
       <header className="page-head">
@@ -988,6 +1008,7 @@ export default function ChatView({
         ))}
         {typing && <TypingIndicator />}
       </ul>
+      <div ref={bottomRef} data-testid="chat-bottom" aria-hidden="true" />
       {messages.length === 0 && (
         <p className="row-meta" data-testid="chat-empty">
           Ask anything about this repo.
@@ -1007,6 +1028,12 @@ export default function ChatView({
             ref={promptRef}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (isKeyboardSend(e)) {
+                e.preventDefault();
+                void onSend();
+              }
+            }}
             disabled={streaming}
           />
         </label>
@@ -1028,7 +1055,12 @@ export default function ChatView({
           ))}
         </div>
         <div className="actions">
-          <button type="submit" data-testid="chat-send" disabled={streaming || !prompt.trim()}>
+          <button
+            type="submit"
+            data-testid="chat-send"
+            title="Send (Ctrl+Enter or Cmd+Enter)"
+            disabled={streaming || !prompt.trim()}
+          >
             Send
           </button>
         </div>
