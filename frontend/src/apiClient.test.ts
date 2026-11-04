@@ -12,6 +12,7 @@ import {
   fetchInbox,
   fetchJobs,
   fetchLedger,
+  fetchNotificationStatus,
   fetchPrDetails,
   fetchPrDiff,
   fetchRouteHint,
@@ -24,6 +25,7 @@ import {
   startJobRun,
   subscribeJobsPush,
   subscribeRunPush,
+  triggerDigest,
   warmViewCaches,
 } from './apiClient';
 
@@ -71,6 +73,23 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/repair/abort',
       expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('fetches notification status (issue #615)', async () => {
+    const status = { ntfy_configured: true, last_digest: 5 };
+    vi.stubGlobal('fetch', mockFetchJson(status));
+    expect(await fetchNotificationStatus()).toEqual(status);
+    expect(fetch).toHaveBeenCalledWith('/api/notifications/status');
+  });
+
+  it('posts digest triggers with an empty body (issue #615)', async () => {
+    const res = { ok: true, results: {}, digest: 'd' };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await triggerDigest()).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/notifications/trigger-digest',
+      expect.objectContaining({ method: 'POST', body: '{}' }),
     );
   });
 

@@ -291,6 +291,10 @@ class NotificationsEndpointsTest(unittest.TestCase):
         body = r.json()
         self.assertTrue(body["ok"])
         self.assertIn("digest", body)
+        # The BriefingView run-now control (#615) derives its result
+        # line from per-channel results, never from ok.
+        self.assertIn("results", body)
+        self.assertIsInstance(body["results"], dict)
         after = N.load_notifier_state().get("last_digest", 0)
         self.assertGreaterEqual(after, before)
         self.assertGreater(after, 0)
