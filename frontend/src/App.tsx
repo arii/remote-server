@@ -4,10 +4,20 @@ import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
 import HistoryView from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
-import { fetchRepos, fetchSystemHealth, subscribeApiFailures } from './apiClient';
-import type { SystemHealthResponse } from './apiClient';
+import {
+  fetchContainerStats,
+  fetchRepoDiff,
+  fetchRepos,
+  fetchSystemHealth,
+  startJobRun,
+  subscribeApiFailures,
+} from './apiClient';
+import type { ContainerStatsRow, SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
-import { loadRepos, loadSystemHealth, useMock } from './views/mockViews';
+import { loadContainerStats, loadRepoDiff, loadRepos, loadSystemHealth, useMock } from './views/mockViews';
+import RepoDiffModal from './views/RepoDiffModal';
+import type { RepoDiffData } from './views/RepoDiffModal';
+import ContainerDrawer from './views/ContainerDrawer';
 
 // Stack root for Terminal/Code links: relative in production (same host),
 // VITE_STACK_URL override for `vite dev` on a port without those routes.
@@ -77,6 +87,18 @@ export default function App() {
   const [repo, setRepo] = useState('remote-server');
   const [health, setHealth] = useState<SystemHealthResponse | null>(null);
   const [chatSeed, setChatSeed] = useState<string | null>(null);
+  // Header drawers (issue #663): dirty-repo diff modal + container
+  // health drawer, both inline under the toolbar while open.
+  const [diffRepo, setDiffRepo] = useState<string | null>(null);
+  const [diffData, setDiffData] = useState<RepoDiffData | null>(null);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsRows, setStatsRows] = useState<ContainerStatsRow[]>([]);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [statsSeq, setStatsSeq] = useState(0);
+  const [restartRequested, setRestartRequested] = useState<string | null>(null);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   function askAgent(seed: string) {
     setChatSeed(seed);
@@ -136,14 +158,100 @@ export default function App() {
     };
   }, []);
 
+  // Diff modal fetch: on open only; the modal is a point-in-time
+  // read (close + reopen retries).
+  useEffect(() => {
+    if (!diffRepo) return;
+    let cancelled = false;
+    setDiffData(null);
+    setDiffError(null);
+    (async () => {
+      try {
+        const d = useMock() ? loadRepoDiff(diffRepo) : await fetchRepoDiff(diffRepo);
+        if (cancelled) return;
+        setDiffData({
+          statusShort: d.status_short,
+          diffStat: d.diff_stat,
+          diff: d.diff,
+          truncated: d.truncated,
+        });
+      } catch (err) {
+        if (!cancelled) setDiffError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [diffRepo]);
+
+  // Stats drawer fetch: on open + manual refresh (statsSeq), never
+  // a ticker — point-in-time CPU/RAM per the issue.
+  useEffect(() => {
+    if (!statsOpen) return;
+    let cancelled = false;
+    setStatsLoading(true);
+    setStatsError(null);
+    (async () => {
+      try {
+        const s = useMock() ? loadContainerStats() : await fetchContainerStats();
+        if (cancelled) return;
+        setStatsRows(s.containers);
+      } catch (err) {
+        if (!cancelled) setStatsError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setStatsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statsOpen, statsSeq]);
+
+  async function onRestartContainer(action: string) {
+    // Same engine path + confirm text as DangerZone restarts; the
+    // drawer only offers actions with a DangerZone entry.
+    setRestartError(null);
+    try {
+      await startJobRun(action, repo, true);
+      setRestartRequested(action);
+    } catch (err) {
+      setRestartError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function closeStats() {
+    setStatsOpen(false);
+    setRestartRequested(null);
+    setRestartError(null);
+  }
+
+  const selectedRepo = repos.find((r) => r.name === repo) ?? null;
+  const diffBranch = diffRepo ? (repos.find((r) => r.name === diffRepo)?.branch ?? '') : '';
+
   return (
     <main className="layout">
       <h1 className="sr-only">Operator console</h1>
       <header className="toolbar">
         <RepoPicker repos={repos} value={repo} onChange={setRepo} />
-        <span data-testid="stack-status" className="row-meta">
+        {selectedRepo && !selectedRepo.clean && (
+          <button
+            type="button"
+            className="repo-chip"
+            data-testid="repo-diff-chip"
+            onClick={() => setDiffRepo(repo)}
+          >
+            dirty · view diff
+          </button>
+        )}
+        <button
+          type="button"
+          className="repo-chip"
+          data-testid="stack-status"
+          onClick={() => setStatsOpen(true)}
+        >
           {healthSummary(health)}
-        </span>
+        </button>
         <span className="spacer" />
         <a data-testid="tool-terminal" href={`${stackBase()}/`}>
           Terminal
@@ -152,6 +260,27 @@ export default function App() {
           Code
         </a>
       </header>
+      {diffRepo && (
+        <RepoDiffModal
+          repo={diffRepo}
+          branch={diffBranch}
+          data={diffData}
+          error={diffError}
+          onClose={() => setDiffRepo(null)}
+        />
+      )}
+      {statsOpen && (
+        <ContainerDrawer
+          rows={statsRows}
+          loading={statsLoading}
+          error={statsError}
+          restartRequested={restartRequested}
+          restartError={restartError}
+          onRestart={(action) => void onRestartContainer(action)}
+          onRefresh={() => setStatsSeq((n) => n + 1)}
+          onClose={closeStats}
+        />
+      )}
       <nav className="actions" aria-label="Views">
         {TABS.map((t) => (
           <button

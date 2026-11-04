@@ -113,6 +113,10 @@ h1, h2, h3 { text-wrap: balance; }
 }
 .chip-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
+/* Tappable chips (header drawers): pill look, native button behavior. */
+button.repo-chip { font: inherit; color: inherit; cursor: pointer; }
+button.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 /* Page-head freshness stamp: metadata riding the heading baseline. */
 .head-stamp {
   color: var(--muted);

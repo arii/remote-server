@@ -3,6 +3,8 @@ import historyFixture from '../mocks/history.json';
 import jobsFixture from '../mocks/jobs.json';
 import chatFixture from '../mocks/chat.json';
 import systemHealthFixture from '../mocks/system-health.json';
+import systemStatsFixture from '../mocks/system-stats.json';
+import repoDiffFixture from '../mocks/repo-diff.json';
 import workflowHealthFixture from '../mocks/workflow-health.json';
 import type {
   BriefingResponse,
@@ -10,6 +12,8 @@ import type {
   LedgerResponse,
 } from '../apiTypes';
 import type {
+  ContainerStatsResponse,
+  RepoDiffResponse,
   SystemHealthResponse,
   WorkflowHealthResponse,
 } from '../apiClient';
@@ -45,6 +49,15 @@ export function loadHistory(): { jobs: JobsResponse['jobs']; entries: LedgerResp
 
 export function loadSystemHealth(): SystemHealthResponse {
   return { ...(systemHealthFixture as SystemHealthResponse) };
+}
+
+export function loadContainerStats(): ContainerStatsResponse {
+  const s = systemStatsFixture as unknown as ContainerStatsResponse;
+  return { containers: [...s.containers] };
+}
+
+export function loadRepoDiff(repo: string): RepoDiffResponse {
+  return { ...(repoDiffFixture as unknown as RepoDiffResponse), repo };
 }
 
 export function loadRepos(): RepoInfo[] {

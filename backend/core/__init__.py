@@ -100,6 +100,20 @@ def get_system_health() -> dict[str, Any]:
     except Exception as exc:
         mem_info = {"error": str(exc)}
 
+    containers = _compose_containers()
+
+    return {"disk": disk_info, "memory": mem_info, "containers": containers}
+
+
+def _compose_containers(run=None) -> list[dict[str, Any]]:
+    """Stack containers from `docker compose ps` (read-only).
+
+    Shared by system health and container stats; degrades to [].
+    ``run`` injects tests (defaults to subprocess.run).
+    """
+    import subprocess
+
+    run = run or subprocess.run
     containers: list[dict[str, Any]] = []
     try:
         stack = os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server")
@@ -107,7 +121,7 @@ def get_system_health() -> dict[str, Any]:
         # Inherit env: the compose plugin lives under the runtime
         # user's ~/.docker, and a HOME override blinds plugin
         # discovery (empty list, swallowed below).
-        proc = subprocess.run(
+        proc = run(
             compose + ["ps", "--format", "json"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=10, text=True,
@@ -141,8 +155,69 @@ def get_system_health() -> dict[str, Any]:
                 })
     except Exception:
         pass
+    return containers
 
-    return {"disk": disk_info, "memory": mem_info, "containers": containers}
+
+def get_container_stats(run=None) -> dict[str, Any]:
+    """Per-container state + live CPU/RAM for the drawer (#663).
+
+    Joins compose membership/state with one-shot
+    `docker stats --no-stream` (never a streaming daemon).
+    Containers without a stats row (stopped) carry null usage;
+    a stats failure keeps the state rows; compose failure
+    degrades to []. ``run`` injects tests.
+    """
+    import subprocess
+
+    run = run or subprocess.run
+    containers = _compose_containers(run=run)
+    usage: dict[str, dict[str, Any]] = {}
+    try:
+        proc = run(
+            ["docker", "stats", "--no-stream", "--format",
+             "{{json .}}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=15, text=True,
+        )
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line.strip())
+                except Exception:
+                    continue
+                if not isinstance(item, dict) or "Name" not in item:
+                    continue
+                usage[item["Name"]] = {
+                    "cpu_pct": _parse_cpu_pct(item.get("CPUPerc")),
+                    "mem_used": _parse_mem_half(item.get("MemUsage"), 0),
+                    "mem_limit": _parse_mem_half(item.get("MemUsage"), 1),
+                }
+    except Exception:
+        pass
+    rows = [{
+        "name": c["name"], "service": c["service"],
+        "state": c["state"],
+        "cpu_pct": usage.get(c["name"], {}).get("cpu_pct"),
+        "mem_used": usage.get(c["name"], {}).get("mem_used"),
+        "mem_limit": usage.get(c["name"], {}).get("mem_limit"),
+    } for c in containers]
+    return {"containers": rows}
+
+
+def _parse_cpu_pct(raw: Any) -> float | None:
+    try:
+        return float(str(raw).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_mem_half(raw: Any, half: int) -> str | None:
+    if not isinstance(raw, str) or "/" not in raw:
+        return None
+    parts = [p.strip() for p in raw.split("/", 1)]
+    return parts[half] if len(parts) == 2 and parts[half] else None
 
 
 REPO_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
@@ -274,6 +349,27 @@ def list_repos(repos_dir: Path | str | None = None,
     return sorted(repos, key=lambda r: r["name"])
 
 
+def _checkout_path(name: str) -> Path:
+    """Validated checkout dir; remote-server falls back to the stack
+    dir. Raises FileNotFoundError when the checkout (or its .git)
+    is absent."""
+    path = resolve_repo_path(name)
+    if name == "remote-server" and not path.exists():
+        stack = Path(os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server"))
+        if stack.is_dir():
+            path = stack
+    git_dir = path / ".git"
+    if not (git_dir.is_dir() or git_dir.is_file()):
+        raise FileNotFoundError(f"unknown repo checkout: {name!r}")
+    return path
+
+
+def _git_failed(proc, verb: str) -> RuntimeError:
+    err = (proc.stderr or "").strip()
+    detail = err.splitlines()[-1] if err else f"git {verb} failed"
+    return RuntimeError(detail)
+
+
 def get_repo_status(repo: str) -> dict[str, Any]:
     """Read-only git status for one repo checkout.
 
@@ -283,14 +379,7 @@ def get_repo_status(repo: str) -> dict[str, Any]:
     import subprocess
 
     name = validate_repo_name(repo)
-    path = resolve_repo_path(name)
-    if name == "remote-server" and not path.exists():
-        stack = Path(os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server"))
-        if stack.is_dir():
-            path = stack
-    git_dir = path / ".git"
-    if not (git_dir.is_dir() or git_dir.is_file()):
-        raise FileNotFoundError(f"unknown repo checkout: {name!r}")
+    path = _checkout_path(name)
     branch_proc = subprocess.run(
         ["git", "-c", f"safe.directory={path}", "-C", str(path),
          "rev-parse", "--abbrev-ref", "HEAD"],
@@ -305,11 +394,55 @@ def get_repo_status(repo: str) -> dict[str, Any]:
         timeout=30, text=True,
     )
     if status_proc.returncode != 0:
-        raise RuntimeError(
-            (status_proc.stderr or "").strip().splitlines()[-1]
-            if (status_proc.stderr or "").strip() else "git status failed")
+        raise _git_failed(status_proc, "status")
     short = status_proc.stdout
     lines = [ln for ln in short.splitlines()
              if ln and not ln.startswith("##")]
     return {"repo": name, "branch": branch, "short": short,
             "clean": len(lines) == 0}
+
+
+# Full-diff truncation cap for the diff modal (#663): the modal
+# shows status + stat in full and flags a cut diff.
+DIFF_CAP = 20000
+
+
+def get_repo_diff(repo: str, run=None) -> dict[str, Any]:
+    """Read-only status + diff for one repo checkout (#663).
+
+    Returns {"repo", "branch", "clean", "status_short",
+    "diff_stat", "diff", "truncated"}. Same error contract as
+    get_repo_status. ``run`` injects tests.
+    """
+    import subprocess
+
+    run = run or subprocess.run
+    name = validate_repo_name(repo)
+    path = _checkout_path(name)
+
+    def git(*args):
+        return run(
+            ["git", "-c", f"safe.directory={path}", "-C", str(path),
+             *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, text=True,
+        )
+
+    branch_proc = git("rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+    status_proc = git("status", "--short")
+    if status_proc.returncode != 0:
+        raise _git_failed(status_proc, "status")
+    stat_proc = git("diff", "--stat")
+    if stat_proc.returncode != 0:
+        raise _git_failed(stat_proc, "diff --stat")
+    diff_proc = git("diff")
+    if diff_proc.returncode != 0:
+        raise _git_failed(diff_proc, "diff")
+    short = status_proc.stdout
+    diff = diff_proc.stdout
+    truncated = len(diff) > DIFF_CAP
+    return {"repo": name, "branch": branch,
+            "clean": len([ln for ln in short.splitlines() if ln]) == 0,
+            "status_short": short, "diff_stat": stat_proc.stdout,
+            "diff": diff[:DIFF_CAP], "truncated": truncated}

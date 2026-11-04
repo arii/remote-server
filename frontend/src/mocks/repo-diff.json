@@ -1,0 +1,1 @@
+{"branch": "main", "clean": false, "diff": "diff --git a/talker.py b/talker.py\nindex 1a2b3c4..5d6e7f8 100644\n--- a/talker.py\n+++ b/talker.py\n@@ -1,2 +1,3 @@\n PRINT = True\n+VERBOSE = False\n run()\n", "diff_stat": " talker.py | 1 +\n 1 file changed, 1 insertion(+)\n", "repo": "demo", "status_short": " M talker.py\n?? notes.txt\n", "truncated": false}

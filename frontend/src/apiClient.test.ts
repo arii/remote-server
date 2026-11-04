@@ -10,6 +10,7 @@ import {
   fetchAgentProviders,
   fetchAttention,
   fetchBriefing,
+  fetchContainerStats,
   fetchInbox,
   fetchJobs,
   fetchDigestSchedule,
@@ -17,6 +18,7 @@ import {
   fetchNotificationStatus,
   fetchPrDetails,
   fetchPrDiff,
+  fetchRepoDiff,
   fetchRouteHint,
   fetchSystemHealth,
   fetchVerifyCommand,
@@ -81,6 +83,28 @@ describe('apiClient (fetch with inline shapes)', () => {
       '/api/repair/abort',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  it('fetches repo diffs (issue #663)', async () => {
+    const diff = {
+      repo: 'demo',
+      branch: 'main',
+      clean: false,
+      status_short: ' M a.py',
+      diff_stat: ' a.py | 2 +-',
+      diff: 'diff --git a/a.py b/a.py',
+      truncated: false,
+    };
+    vi.stubGlobal('fetch', mockFetchJson(diff));
+    expect(await fetchRepoDiff('demo')).toEqual(diff);
+    expect(fetch).toHaveBeenCalledWith('/api/repo/diff?repo=demo');
+  });
+
+  it('fetches container stats (issue #663)', async () => {
+    const stats = { containers: [] };
+    vi.stubGlobal('fetch', mockFetchJson(stats));
+    expect(await fetchContainerStats()).toEqual(stats);
+    expect(fetch).toHaveBeenCalledWith('/api/system/stats');
   });
 
   it('posts run cancels with an empty body (issue #589)', async () => {
