@@ -271,7 +271,7 @@ class TestApprovedProposalBlocks(unittest.TestCase):
         self.assertEqual(
             deep_chat.approved_proposal_blocks([None, "x", {}]),
             ["REJECTED: kind must be 'issue', 'td', 'dispatch', "
-             "'comment', or 'review'"])
+             "'coder', 'comment', or 'review'"])
         self.assertEqual(deep_chat.approved_proposal_blocks([]), [])
         self.assertEqual(deep_chat.approved_proposal_blocks(None), [])
 

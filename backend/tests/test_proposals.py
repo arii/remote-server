@@ -8,6 +8,8 @@ from unittest import mock
 
 from backend import proposals
 
+import deep_chat  # noqa: E402  (deep-agent/ is on sys.path via proposals)
+
 
 class FillExecutorPromptTest(unittest.TestCase):
     def test_substitutes_every_placeholder(self):
@@ -216,6 +218,41 @@ class ExecuteCoderProposalTest(unittest.TestCase):
         out = self._execute({"kind": "teleport"})
         self.assertTrue(out["skipped"])
         self.assertIn("'coder'", out["detail"])
+
+
+class CoderApprovalFlowTest(unittest.TestCase):
+    """Gate and executor agree: approval flows proposal->executor."""
+
+    def test_gate_accepts_coder_shape(self):
+        ok, text = deep_chat.validate_proposal(
+            {"kind": "coder", "repo": "arii/demo", "branch": "main",
+             "task": "Implement X"})
+        self.assertTrue(ok)
+        self.assertIn("PROPOSE coder", text)
+
+    def test_gate_rejects_bad_coder_shape(self):
+        ok, text = deep_chat.validate_proposal(
+            {"kind": "coder", "repo": "arii/demo", "branch": "main",
+             "task": ""})
+        self.assertFalse(ok)
+        self.assertIn("REJECTED", text)
+
+    def test_approval_flows_gate_to_executor(self):
+        args = {"kind": "coder", "repo": "arii/demo",
+                "branch": "main", "task": "Implement X"}
+        ok, _ = deep_chat.validate_proposal(args)
+        self.assertTrue(ok)
+        with mock.patch.object(
+                proposals, "run_coder_dispatch",
+                return_value={"worktree": "/tmp/wt-1",
+                              "branch": "wt-1",
+                              "log": "/tmp/wt-1/.coder-dispatch.log",
+                              "pid": 4242}):
+            out = proposals.execute_proposal(
+                args, "arii/demo", "demo", "sess:7")
+        self.assertFalse(out["skipped"])
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["kind"], "coder")
 
 
 if __name__ == "__main__":

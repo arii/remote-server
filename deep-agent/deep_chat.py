@@ -286,6 +286,24 @@ def validate_proposal(payload):
             f"PROPOSE dispatch\nREPO: {repo}\nBRANCH: {branch}\n"
             f"TASK:\n{task.strip()}\nEND PROPOSE"
         )
+    if kind == "coder":
+        repo = payload.get("repo")
+        branch = payload.get("branch")
+        task = payload.get("task")
+        if not s5tools.valid_repo(repo):
+            return False, "REJECTED: coder needs a repo (owner/name)"
+        branch = branch.strip() if isinstance(branch, str) else branch
+        if not _valid_branch(branch):
+            return False, ("REJECTED: coder needs a branch "
+                           "(1-120 chars, [A-Za-z0-9._/-], no ..)")
+        if not isinstance(task, str) or not task.strip() \
+                or len(task) > DISPATCH_TASK_LIMIT:
+            return False, ("REJECTED: coder needs a task "
+                           "(1-4000 chars)")
+        return True, (
+            f"PROPOSE coder\nREPO: {repo}\nBRANCH: {branch}\n"
+            f"TASK:\n{task.strip()}\nEND PROPOSE"
+        )
     if kind == "comment":
         repo = payload.get("repo")
         pr = payload.get("pr_number")
@@ -323,7 +341,7 @@ def validate_proposal(payload):
             f"BODY:\n{body.strip()}\nEND PROPOSE"
         )
     return False, ("REJECTED: kind must be 'issue', 'td', 'dispatch', "
-                   "'comment', or 'review'")
+                   "'coder', 'comment', or 'review'")
 
 
 def decision_for_verdict(verdict, message=""):
@@ -441,19 +459,22 @@ def build_tools(checkout, *, impact_tools=False):
         Args:
             kind: 'issue' (file a GitHub issue), 'td' (run one
                 allowlisted td command), 'dispatch' (implement via
-                a BoomTick worktree session), 'comment' (post a PR
-                comment), or 'review' (submit a PR review: comment
-                or request-changes only, never approve).
+                a BoomTick worktree session), 'coder' (implement via
+                a detached coder executor on a managed worktree),
+                'comment' (post a PR comment), or 'review' (submit a
+                PR review: comment or request-changes only, never
+                approve).
             title: Issue title (kind='issue').
             body: Issue body markdown (kind='issue'), PR comment
                 markdown (kind='comment'), or review body
                 (kind='review').
             command: Exact td command (kind='td'; allowlisted shapes
                 only, changing N to digits).
-            repo: Target repo owner/name (kind='dispatch',
+            repo: Target repo owner/name (kind='dispatch', 'coder',
                 'comment', 'review').
-            branch: Base branch to work from (kind='dispatch').
-            task: Implementation brief (kind='dispatch').
+            branch: Base branch to work from (kind='dispatch',
+                'coder').
+            task: Implementation brief (kind='dispatch', 'coder').
             pr_number: Target PR number, positive int
                 (kind='comment', 'review').
             review_event: 'comment' or 'request-changes'
