@@ -103,6 +103,23 @@ class LaneQueueTest(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(item["state"], "queued")
 
+    def test_enqueue_stores_title_idempotent_keeps_first(self):
+        item, err = lane_dispatch.enqueue(
+            "remote-server", 1, title="Fix the thing")
+        self.assertIsNone(err)
+        self.assertEqual(item["title"], "Fix the thing")
+        # Idempotent re-enqueue returns the item unchanged: the
+        # first title wins, a retry re-stamps.
+        again, err = lane_dispatch.enqueue(
+            "remote-server", "#1", title="Other title")
+        self.assertIsNone(err)
+        self.assertEqual(again["title"], "Fix the thing")
+
+    def test_enqueue_defaults_title_empty(self):
+        item, err = lane_dispatch.enqueue("remote-server", 1)
+        self.assertIsNone(err)
+        self.assertEqual(item["title"], "")
+
     def test_cancel_queued_and_unknown(self):
         lane_dispatch.enqueue("remote-server", 1)
         removed, err = lane_dispatch.cancel("remote-server", 1)
@@ -418,6 +435,15 @@ class DispatchRouterTest(unittest.TestCase):
                 dispatch_mod.EnqueueRequest(repo="remote-server",
                                             issue="abc"))
         self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_enqueue_passes_title_through(self):
+        row = dispatch_mod.enqueue(
+            dispatch_mod.EnqueueRequest(repo="tech-dancer",
+                                       issue="48",
+                                       title="Cross-repo gates"))
+        self.assertEqual(row["title"], "Cross-repo gates")
+        stored = lane_dispatch.get_item("tech-dancer", 48)
+        self.assertEqual(stored["title"], "Cross-repo gates")
 
     def test_gates_ok_and_bad_inputs(self):
         with patch.object(

@@ -37,6 +37,7 @@ class DispatchItem(BaseModel):
     started_at: float | None = None
     finished_at: float | None = None
     detail: str = ""
+    title: str = ""
 
 
 class DispatchQueue(BaseModel):
@@ -54,6 +55,7 @@ class GatesResponse(BaseModel):
 class EnqueueRequest(BaseModel):
     repo: str = "remote-server"
     issue: object = None
+    title: str = ""
 
 
 class StartRequest(BaseModel):
@@ -108,7 +110,8 @@ def gates(repo: str = "remote-server", issue: str = "") -> dict:
 
 @router.post("/enqueue", response_model=DispatchItem)
 def enqueue(body: EnqueueRequest) -> dict:
-    item, err = lane_dispatch.enqueue(body.repo, body.issue)
+    item, err = lane_dispatch.enqueue(body.repo, body.issue,
+                                      title=body.title or "")
     if err is not None or item is None:
         raise HTTPException(status_code=400, detail=err or "bad item")
     return item

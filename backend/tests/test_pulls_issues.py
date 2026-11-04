@@ -686,6 +686,41 @@ class IssuesTest(unittest.TestCase):
              "--state", "open", "--limit", "50",
              "--json", issues_mod.ISSUE_LIST_FIELDS])
 
+    def test_rollup_tags_rows_and_skips_failed_repos(self):
+        with patch.object(
+                issues_mod, "list_issue_repo_names",
+                return_value=["tech-dancer", "portfolio",
+                              "boomtick"]):
+            def fake_list(repo):
+                if repo == "portfolio":
+                    raise RuntimeError("gh down")
+                return [{"number": 1, "title": f"{repo} issue",
+                         "body": "x"}]
+
+            with patch.object(issues_mod, "list_open_issues",
+                              side_effect=fake_list):
+                out = issues_mod.issues(repo="all")
+        self.assertEqual(out["repo"], "all")
+        self.assertEqual(
+            [(r["repo"], r["number"], r["title"])
+             for r in out["issues"]],
+            [("tech-dancer", 1, "tech-dancer issue"),
+             ("boomtick", 1, "boomtick issue")])
+
+    def test_per_repo_errors_unchanged_by_rollup(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            issues_mod.issues(repo="nope/..")
+        self.assertEqual(ctx.exception.status_code, 400)
+        # A ValueError out of the read (e.g. gh JSON decode) is a
+        # 500, exactly as before the seam extraction.
+        with patch.object(issues_mod, "list_open_issues",
+                          side_effect=ValueError("bad json")):
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.issues(repo="remote-server")
+        self.assertEqual(ctx.exception.status_code, 500)
+
     def test_create_validation_and_url(self):
         from fastapi import HTTPException
 
