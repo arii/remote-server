@@ -1,6 +1,7 @@
 """coder slice tests. Part A (system python, stdlib-only import):
 argv parsing, run_check allowlist, system prompt builder, verify
 gate units (rounds env, trace predicate, re-invoke loop, marking),
+bounded-timeout units (fast/error/hung daemon worker),
 plan bar units (file tokens, needs_plan, plan validation, ledger
 lookup, staleness) + main branching with faked phases.
 Part B (deep-agent venv): FilesystemBackend root enforcement +
@@ -13,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -284,6 +286,38 @@ class TestRunWithVerify(unittest.TestCase):
         self.assertEqual((result, rounds, verified), ("r0", 0, False))
 
 
+class TestRunBounded(unittest.TestCase):
+    """run_bounded: daemon-thread wall timeout (#514). Stdlib-only."""
+
+    def test_fast_returns_value(self):
+        self.assertEqual(coder.run_bounded(lambda: 42, 5), 42)
+        self.assertIsNone(coder.run_bounded(lambda: None, 5))
+
+    def test_error_propagates(self):
+        def boom():
+            raise ValueError("kaput")
+
+        with self.assertRaises(ValueError):
+            coder.run_bounded(boom, 5)
+
+    def test_hung_raises_timeout_promptly(self):
+        stuck = threading.Event()
+        before = set(threading.enumerate())
+        start = time.time()
+        with self.assertRaises(TimeoutError) as ctx:
+            coder.run_bounded(lambda: stuck.wait(120), 1)
+        elapsed = time.time() - start
+        self.assertIn("timed out after 1s", str(ctx.exception))
+        self.assertLess(elapsed, 15)
+        # Process exit is proven: every surviving new worker is a
+        # daemon, so no join can hang the interpreter or the Sorry
+        # path when the worker is stuck.
+        survivors = [t for t in threading.enumerate() if t not in before]
+        self.assertTrue(survivors)
+        for thread in survivors:
+            self.assertTrue(thread.daemon, thread.name)
+
+
 class TestVerifyMarking(unittest.TestCase):
     def test_prefix(self):
         self.assertEqual(coder.mark_unverified("did x"),
@@ -420,6 +454,70 @@ class TestRunCoderVerifyGate(unittest.TestCase):
         self.assertFalse(verified)
         self.assertEqual(rounds, 0)
         self.assertNotIn("[unverified]", summary)
+
+    def test_hung_invoke_times_out_and_closes_trace(self):
+        import deep_chat
+        import observe
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+
+        class HungAgent:
+            def invoke(self, payload, config=None):
+                time.sleep(120)
+                return {"messages": []}
+
+        with (mock.patch.object(
+                coder, "build_model",
+                return_value=(object(), {"provider": "fake",
+                                        "model": "fake"})),
+              mock.patch.object(coder, "build_agent",
+                                return_value=HungAgent()),
+              mock.patch.object(deep_chat, "open_checkpointer",
+                                return_value=(None, False, object())),
+              mock.patch.object(observe, "default_trace_path",
+                                return_value=tmp.name),
+              mock.patch.dict(os.environ, {"CODER_VERIFY_ROUNDS": "0"})):
+            start = time.time()
+            with self.assertRaises(RuntimeError) as ctx:
+                coder.run_coder("/wt", "do the thing", "SYS",
+                                "thread-hung", 1)
+            elapsed = time.time() - start
+        self.assertIn("timed out after 1s", str(ctx.exception))
+        self.assertLess(elapsed, 15)
+        with open(tmp.name, encoding="utf-8") as fh:
+            trace = fh.read()
+        self.assertIn('"type": "run_end"', trace)
+        self.assertIn('"ok": false', trace)
+
+
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
+class TestImplementTimeoutLedger(unittest.TestCase):
+    """A timed-out run is ledgered with the error + Sorry exit 1."""
+
+    def test_timeout_ledgered_with_sorry(self):
+        import ledger
+
+        ledger_fh = tempfile.NamedTemporaryFile(suffix=".jsonl",
+                                                delete=False)
+        ledger_fh.close()
+        self.addCleanup(os.unlink, ledger_fh.name)
+        buf = io.StringIO()
+        with (mock.patch.object(ledger, "LEDGER", ledger_fh.name),
+              mock.patch.object(
+                  coder, "run_coder",
+                  side_effect=RuntimeError(
+                      "coder timed out after 1s")),
+              redirect_stdout(buf)):
+            code = coder._implement_and_finish(
+                "/wt", "do the thing", "SYS", "t1", 1)
+        self.assertEqual(code, 1)
+        self.assertIn("Sorry", buf.getvalue())
+        with open(ledger_fh.name, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("timed out", rows[0]["extra"]["error"])
 
 
 class TestFilesNamed(unittest.TestCase):
