@@ -32,7 +32,7 @@ A human-gated operate console: only decisions requiring a human are surfaced; al
 - No backwards compatibility, no legacy preservation, no compat shims; delete, don't deprecate.
 - No new infrastructure for automation (reuse webhook worker / existing scheduling).
 - No mock, fixture, or stub may leak into live paths; missing agent capabilities are mocked behind seams + tracked in wishlist issue arii/remote-server#225.
-- Jules is dead (sessions cancelled); Pi session browser is out (deep-agent APIs replace it).
+- External-agent session UI is out (service dead; sessions cancelled, #102); Pi session browser is out (deep-agent APIs replace it).
 - Preflight is editor/API-only; briefing/warm-context have zero human UI.
 
 ## Terminology

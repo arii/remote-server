@@ -3,8 +3,10 @@
 Faithful port of the allowlisted command execution surface:
 allowed td commands/shapes, run-plan allowlist, action steps,
 timeouts, and output truncation. Every command run goes through
-the same allowlists as the original. Jules actions are cut (Jules
-is dead); the Pi transcript step of logs is cut (Pi is dead).
+the same allowlists as the original. The dead-agent actions
+(sync-agents/nudge-agents) and the fix-ci dispatch are cut (dead
+backends, #102/#428); the Pi transcript step of logs is cut (Pi
+is dead).
 """
 
 from __future__ import annotations
@@ -25,16 +27,15 @@ import uuid
 MAX_OUTPUT = 200_000
 
 # Exact port of buttons/server.py ALLOWED_TD_COMMANDS, minus the
-# dead dispatch: fix-ci shelled to `td agent fix-ci --execute`,
-# whose backend is dead (#428).
+# dead dispatches: fix-ci shelled to `td agent fix-ci --execute`,
+# whose backend is dead (#428); list-sessions and
+# run-feedback-check shelled to the retired agent backend (#102).
 ALLOWED_TD_COMMANDS = [
     "td gh read-pr-reviews --pr N",
     "td gh read-pr-comments --pr N",
     "td gh resolve-conflicts --pr N",
     "td context-warm",
     "td --json preflight",
-    "td --json agent list-sessions",
-    "td --json agent run-feedback-check",
     # One-tap phone diagnostics (#393): read-only shapes only. audit-pr
     # pins the read-only stages; --submit is never allowlisted, and the
     # bare no-flag form is a server-side no-op so it stays rejected.
@@ -73,8 +74,8 @@ def step_timeout(action) -> int:
     unless ACTION_STEP_TIMEOUTS overrides it)."""
     return ACTION_STEP_TIMEOUTS.get(action, STEP_TIMEOUT)
 
-# Action names ported from buttons/server.py::ACTIONS (Jules actions
-# cut: sync-agents/nudge-agents are dead with Jules). "recreate"
+# Action names ported from buttons/server.py::ACTIONS (dead-agent
+# actions cut: sync-agents/nudge-agents, #102). "recreate"
 # (terminal restart) is cut too: it drops live agent sessions with
 # no resume path, so the console must not offer it (#444).
 ALLOWED_ACTIONS = (
@@ -103,8 +104,8 @@ DESTRUCTIVE_ACTIONS = (
 )
 
 # Actions scoped to the picked repo (original REPO_SCOPED_ACTIONS
-# plus run-td, minus the dead Jules pair). triage-fanout runs the
-# sweep for the run's repo only (one repo per run, #670).
+# plus run-td, minus the dead sync/nudge pair). triage-fanout runs
+# the sweep for the run's repo only (one repo per run, #670).
 REPO_SCOPED_ACTIONS = (
     "briefing-td",
     "warm-context",

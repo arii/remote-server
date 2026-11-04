@@ -59,9 +59,7 @@ class TestProposalValidation(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_td_exact_shapes(self):
-        for cmd in ("td context-warm", "td --json preflight",
-                    "td --json agent list-sessions",
-                    "td --json agent run-feedback-check"):
+        for cmd in ("td context-warm", "td --json preflight"):
             ok, text = deep_chat.validate_proposal(
                 {"kind": "td", "command": cmd})
             self.assertTrue(ok, cmd)
@@ -85,10 +83,10 @@ class TestProposalValidation(unittest.TestCase):
             # Retired shape (#428): valid N, but fix-ci dispatches
             # to a dead backend, so it is no longer allowlisted.
             "td --json agent fix-ci --pr 153 --execute",
-            # Drift shape (#477): the chat mirror accepted this while
-            # the engine rejected it, so an approved proposal could
-            # never run. Single-sourced now; stays rejected.
-            "td --json jules list-sessions",
+            # Retired shapes (#102): the agent backend shut down, so
+            # list-sessions and run-feedback-check are rejected.
+            "td --json agent list-sessions",
+            "td --json agent run-feedback-check",
             "td gh read-pr-reviews",  # missing N
             "td rm -rf /",  # invented subcommand
             "td --json preflight --force",  # invented flag

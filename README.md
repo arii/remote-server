@@ -108,8 +108,9 @@ See `docs/remote-access.md` for the threat model.
   WebM/MP4 for the web.
 - `docs/ux-evaluation-and-redesign-guide.md` — S5 Buttons UX evaluation
   & enhancement guide (design input; the as-built state is `docs/buttons.md`).
-- `docs/autonomous-triage-runbook.md` — autonomous multi-repo triage
-  loop protocol (20-minute cycle across the three repos).
+- `docs/autonomous-triage-runbook.md` — retired Nov 2026 (#102);
+  execution backend is now the repair worker
+  (`POST /api/repair/dispatch`).
 - `docs/deepagents.md` — DeepAgents direction: LangChain skills,
   Nebius-then-Ollama route, Pi succession plan.
 

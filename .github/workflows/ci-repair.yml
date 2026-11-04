@@ -26,7 +26,6 @@ jobs:
         uses: arii/boomtick/.github/actions/ci-repair@34d6757f39e3d6f9a0d03502489d3c41ee4688a6 # boomtick main as of 2026-11-03
         with:
           run_id: ${{ github.event.workflow_run.id }}
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

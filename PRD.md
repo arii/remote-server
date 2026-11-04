@@ -20,7 +20,7 @@ Non-goals:
 
 - N1. No backwards compatibility, legacy preservation, or compat shims.
 - N2. No light theme (night ops; dark only).
-- N3. No Jules UI (service dead; sessions cancelled). No Pi session browser (deep-agent APIs replace it).
+- N3. No external-agent session UI (service dead; sessions cancelled, #102). No Pi session browser (deep-agent APIs replace it).
 - N4. No free-text command execution; fixed actions only.
 
 ## 3. Users

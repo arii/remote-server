@@ -29,8 +29,6 @@ def _payload_for(argv):
         return {"work": []}, "", ""
     if "detect-conflicts" in argv:
         return {}, "", ""
-    if "list-sessions" in argv:
-        return {"sessions": []}, "", ""
     return {}, "", ""
 
 
@@ -61,8 +59,7 @@ class FetchScopeTest(unittest.TestCase):
         _, calls = self._run_fetch()
         scoped = [c for c, _ in calls
                   if "status-board" not in c
-                  and "detect-conflicts" not in c
-                  and "list-sessions" not in c]
+                  and "detect-conflicts" not in c]
         self.assertTrue(scoped)
         for cmd in scoped:
             self.assertIn("--repo", cmd, cmd)
@@ -116,9 +113,6 @@ def _analyze_data(**over):
         "runs_raw": "",
         "runs_err": "",
         "jobs": {},
-        "jules": [],
-        "jules_err": "",
-        "jules_raw": "",
     }
     data.update(over)
     return data

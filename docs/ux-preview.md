@@ -60,7 +60,7 @@ When finished, shut down the server safely:
 
 ### ⚠️ The `pkill` Trap
 **NEVER run `pkill -f python` or `pkill -f server`!**
-In many CI, agent (such as Jules), and remote shell environments, `pkill -f python` matches your own shell runner or orchestrator subagent processes and will immediately kill your active session. Always stop the preview server using `Ctrl+C` or `kill $(lsof -t -i :<port>)`.
+In many CI, agent, and remote shell environments, `pkill -f python` matches your own shell runner or orchestrator subagent processes and will immediately kill your active session. Always stop the preview server using `Ctrl+C` or `kill $(lsof -t -i :<port>)`.
 
 ### 🛡️ Loopback Only
 `serve.sh` passes `BUTTONS_HOST="127.0.0.1"`, binding the server strictly to loopback so local development is never exposed on the network.

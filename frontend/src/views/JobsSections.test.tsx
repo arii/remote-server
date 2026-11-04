@@ -165,8 +165,10 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).toContain('data-testid="td-pr"');
     // #428: fix-ci retired — no button.
     expect(html).not.toContain('dispatch-td-fix-ci');
+    // #102: retired agent-backend commands — no buttons.
+    expect(html).not.toContain('dispatch-td-list-sessions');
+    expect(html).not.toContain('dispatch-td-feedback-check');
     expect(html).toContain('data-testid="dispatch-td-resolve-conflicts"');
-    expect(html).toContain('data-testid="dispatch-td-list-sessions"');
     expect(html).toContain('data-testid="dispatch-td-doctor"');
     expect(html).toContain('data-testid="dispatch-td-preflight"');
     expect(html).toContain('data-testid="dispatch-td-audit-pr"');

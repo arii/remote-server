@@ -351,8 +351,8 @@ class TestAllowlistSync(unittest.TestCase):
 
     def test_chat_accepts_only_runnable_shapes(self):
         # #477 DoD: no shape validatable-but-unrunnable. deep_chat
-        # is the engine's list itself, every chat-accepted shape
-        # runs, and the drift shape is rejected on both sides.
+        # is the engine's list itself and every chat-accepted shape
+        # runs; retired shapes stay rejected on both sides.
         # (deep_chat + engine are stdlib-only: safe to import here.)
         self.assertIs(deep_chat.ALLOWED_TD, ALLOWED_TD_COMMANDS)
         for shape in ALLOWED_TD_COMMANDS:
@@ -361,8 +361,9 @@ class TestAllowlistSync(unittest.TestCase):
                 {"kind": "td", "command": cmd})
             self.assertTrue(ok, cmd)
             self.assertIsNotNone(validate_td_command(cmd), cmd)
-        for bad in ("td --json jules list-sessions",
-                    "td --json agent fix-ci --pr 153 --execute"):
+        for bad in ("td --json agent fix-ci --pr 153 --execute",
+                    "td --json agent list-sessions",
+                    "td --json agent run-feedback-check"):
             ok, _ = deep_chat.validate_proposal(
                 {"kind": "td", "command": bad})
             self.assertFalse(ok, bad)

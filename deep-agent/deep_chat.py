@@ -108,11 +108,10 @@ SUPERVISOR_BRIEF = (
 EXIT_NEEDS_APPROVAL = 3
 
 # Single-sourced from backend/exec/engine.py ALLOWED_TD_COMMANDS
-# (the truth): the hand mirror drifted — it accepted the
-# engine-rejected `td --json jules list-sessions` shape, so an
-# approved proposal could never run (#477). ALLOWED_TD is the
-# engine's list itself, never a copy (same pattern as
-# ask_investigator.py #521).
+# (the truth): the hand mirror drifted — it accepted a shape the
+# engine rejected, so an approved proposal could never run (#477).
+# ALLOWED_TD is the engine's list itself, never a copy (same
+# pattern as ask_investigator.py #521).
 # engine.py is stdlib-only, so the stdlib-only import contract holds.
 if cli.repo_root() not in sys.path:
     sys.path.insert(0, cli.repo_root())

@@ -2,9 +2,7 @@
 
 Copy-paste ready. The connector cannot write `arii/BoomTick`, so
 Ari's agent files these. Single-user greenfield: no backcompat
-shims in any acceptance list. Related open: #1086
-(jules_create_session token), #1084 (bare-array
-structuredContent) — both needed for the transition period.
+shims in any acceptance list.
 
 ---
 
@@ -107,32 +105,10 @@ Acceptance:
 
 ---
 
-## Draft 4 — Rename agent_merge_approved + td parity for local sessions
+## Draft 4 — RETIRED (Nov 2026, #102)
 
-Title: `feat(cli): submit-pr naming + local session commands (td agent run, skill, session)`
+The shutdown-transition draft (submit-pr naming + local session
+commands) is retired: the transition window closed and
+`agent_submit_pr` already ships in BoomTick. File fresh drafts
+above if CLI/MCP session parity is still wanted.
 
-Body:
-
-Two naming/parity problems block the Jules shutdown (Nov 11):
-
-1. Rename or re-scope `agent_merge_approved`: the standing
-   principle is submit-PR with no merge authority, and the
-   tool name still says merge. Either rename to
-   `agent_submit_pr` (preferred, greenfield) or re-scope its
-   contract so the name stops lying.
-2. `td agent dispatch` currently maps to Jules session
-   creation. Jules goes read-only in days — add a local mode:
-   `td agent run --worktree … --brief …` hitting the same
-   dispatch path as draft 1 without Jules.
-3. `td skill list` / `td skill read <name>` so CLI-driven
-   sessions can pull playbooks without MCP.
-4. `td session status` / `td session logs` mirroring the MCP
-   tools.
-
-Acceptance:
-
-- No `merge` authority in any agent tool name or contract.
-- `td agent run` dispatches a local worktree session end to
-  end (no Jules API involved — test with the key unset).
-- `td skill` and `td session` round-trip against the same
-  state the MCP tools read.
