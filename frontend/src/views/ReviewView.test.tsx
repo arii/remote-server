@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReviewView, {
   BulkDeferBar,
+  BulkRestoreBar,
   IssueRowLabels,
   IssueRowTitle,
   PrRowApprove,
@@ -12,6 +13,7 @@ import ReviewView, {
   appendReplyTemplate,
   applyOptimisticMerge,
   bulkDeferNotice,
+  bulkRestoreNotice,
   bulkRowKey,
   isRowDeferred,
   issueLabelNames,
@@ -457,6 +459,32 @@ describe('bulk defer selection (issue #607)', () => {
     );
     expect(html).toContain('disabled');
     expect(html).toContain('>Deferring…<');
+  });
+});
+
+describe('bulk restore selection (issue #591)', () => {
+  it('names the restored count in the notice', () => {
+    expect(bulkRestoreNotice(1)).toBe('Restored 1 row.');
+    expect(bulkRestoreNotice(11)).toBe('Restored 11 rows.');
+  });
+
+  it('renders the bulk bar with the count and one Restore-n action', () => {
+    const html = renderToStaticMarkup(
+      <BulkRestoreBar count={2} busy={false} onRestore={() => {}} />,
+    );
+    expect(html).toContain('data-testid="restore-bulk-bar"');
+    expect(html).toContain('2 selected');
+    expect(html).toContain('data-testid="restore-bulk-restore"');
+    expect(html).toContain('>Restore 2<');
+    expect(html).toContain('aria-label="Restore 2 selected rows"');
+  });
+
+  it('disables the bulk action while the request is in flight', () => {
+    const html = renderToStaticMarkup(
+      <BulkRestoreBar count={2} busy onRestore={() => {}} />,
+    );
+    expect(html).toContain('disabled');
+    expect(html).toContain('>Restoring…<');
   });
 });
 
