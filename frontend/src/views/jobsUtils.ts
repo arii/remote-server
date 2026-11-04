@@ -175,8 +175,6 @@ export function repairVerifyBlocksDispatch(preview: {
 // routes the console's assign dispatch to the site's repo.
 export const UX_AUDIT_SITES = ['arii.github.io', 'boomtick.blog'] as const;
 
-export type UxAuditSite = (typeof UX_AUDIT_SITES)[number];
-
 const UX_AUDIT_SITE_REPOS: Record<string, string> = {
   'arii.github.io': 'arii.github.io',
   'boomtick.blog': 'boomtick',
