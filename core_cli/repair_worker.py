@@ -30,7 +30,11 @@ except ImportError:
 
 try:
     from core_cli.ast_validator import validate_source_syntax
-    from core_cli.parse_task_spec import parse_task_spec
+    from core_cli.parse_task_spec import (
+        SCAFFOLD_HINT,
+        TaskSpecError,
+        parse_task_spec,
+    )
     from core_cli.verify_allowlist import (
         VERIFY_TIMEOUT,
         VERIFY_VERB_HELP,
@@ -39,7 +43,11 @@ try:
 except ImportError:
     try:
         from ast_validator import validate_source_syntax
-        from parse_task_spec import parse_task_spec
+        from parse_task_spec import (
+            SCAFFOLD_HINT,
+            TaskSpecError,
+            parse_task_spec,
+        )
         from verify_allowlist import (
             VERIFY_TIMEOUT,
             VERIFY_VERB_HELP,
@@ -49,7 +57,11 @@ except ImportError:
         # Fallback when running from different relative paths
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         from ast_validator import validate_source_syntax  # type: ignore
-        from parse_task_spec import parse_task_spec  # type: ignore
+        from parse_task_spec import (  # type: ignore
+            SCAFFOLD_HINT,
+            TaskSpecError,
+            parse_task_spec,
+        )
         from verify_allowlist import (  # type: ignore
             VERIFY_TIMEOUT,
             VERIFY_VERB_HELP,
@@ -70,6 +82,20 @@ MAX_RETRIES = 3
 DEFAULT_REPO = "remote-server"
 
 REPO_BASENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+class UnscaffoldedIssueError(RuntimeError):
+    """The issue body lacks the repair scaffold (Target Files /
+    Verification Command sections). Raised by the parse node so
+    run_repair can fail with an ACTIONABLE message instead of a
+    bare parse error, and the backend can surface it titled."""
+
+
+# Machine-greppable stderr line run_repair prints for an
+# unscaffolded issue. The backend worker thread scans its merged
+# log for this marker and records the titled failure_reason the
+# dispatch queue row shows (issue #908).
+UNSCAFFOLDED_MARKER = "repair-unscaffolded:"
 
 
 def normalize_repo(repo: Optional[str]) -> str:
@@ -274,7 +300,17 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
         else:
             raise RuntimeError(f"Failed to fetch issue #{issue_number}: {proc.stderr.strip()}")
 
-    spec = parse_task_spec(issue_body)
+    try:
+        spec = parse_task_spec(issue_body)
+    except TaskSpecError as exc:
+        # Unscaffolded issue (#908): a normal GitHub issue (audit,
+        # feature, UX finding) carries no repair scaffold. Fail with
+        # an actionable message naming the missing section and the
+        # template — never a bare parse error.
+        raise UnscaffoldedIssueError(
+            f"issue #{issue_number} is not scaffolded for repair: "
+            f"{exc}. To repair it, {SCAFFOLD_HINT}."
+        ) from exc
     verification_cmd = spec.get("verification_command", "")
     # Security gate (issue #483): issue text is untrusted — reject
     # non-allowlisted commands here, before the worktree stage, so
@@ -623,6 +659,13 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None,
     try:
         final_state = graph.invoke(initial_state)
         return final_state.get("tests_passed", False)
+    except UnscaffoldedIssueError as exc:
+        # Actionable + greppable: the log line keeps the human
+        # message, the marker line lets the backend lift the
+        # titled reason into the dispatch queue row (#908).
+        logging.error(f"Repair pipeline encountered error: {exc}")
+        print(f"{UNSCAFFOLDED_MARKER} {exc}", file=sys.stderr)
+        return False
     except Exception as exc:
         logging.error(f"Repair pipeline encountered error: {exc}")
         return False

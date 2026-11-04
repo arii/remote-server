@@ -905,6 +905,68 @@ class TestRunRepairPreflight(unittest.TestCase):
         graph.invoke.assert_called_once()
 
 
+class TestUnscaffoldedIssue(unittest.TestCase):
+    """Unscaffolded bodies fail actionably, never bare (#908)."""
+
+    def _state(self, body):
+        return {
+            "issue_number": 380,
+            "issue_body": body,
+            "repo": "arii/portfolio",
+            "target_files": [],
+            "verification_cmd": "",
+            "file_contents": {},
+            "current_errors": "",
+            "retry_count": 0,
+            "ast_valid": False,
+            "tests_passed": False,
+            "worktree_dir": "",
+            "branch_name": "",
+        }
+
+    def test_parse_node_names_missing_section_and_template(self):
+        with self.assertRaises(rw.UnscaffoldedIssueError) as ctx:
+            rw.parse_issue_node(self._state("just prose, no scaffold"))
+        msg = str(ctx.exception)
+        self.assertIn("#380", msg)
+        self.assertIn("not scaffolded", msg)
+        self.assertIn("Target Files", msg)
+        self.assertIn("deterministic-task.md", msg)
+
+    def test_parse_node_missing_verify_command_is_unscaffolded(self):
+        with self.assertRaises(rw.UnscaffoldedIssueError) as ctx:
+            rw.parse_issue_node(
+                self._state("## Target Files\n- app.py\n"))
+        self.assertIn("Verification Command", str(ctx.exception))
+
+    def test_run_repair_prints_marker_for_queue_row(self):
+        graph = MagicMock()
+        graph.invoke.side_effect = rw.UnscaffoldedIssueError(
+            "issue #380 is not scaffolded for repair: boom")
+        with patch("core_cli.repair_worker.build_repair_graph",
+                   return_value=graph):
+            with patch("core_cli.repair_worker.preflight_ollama",
+                       return_value=None):
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    self.assertFalse(rw.run_repair(issue_number=380))
+        err = buf.getvalue()
+        self.assertIn(rw.UNSCAFFOLDED_MARKER, err)
+        self.assertIn("not scaffolded", err)
+
+    def test_other_failures_print_no_marker(self):
+        graph = MagicMock()
+        graph.invoke.side_effect = RuntimeError("gh exploded")
+        with patch("core_cli.repair_worker.build_repair_graph",
+                   return_value=graph):
+            with patch("core_cli.repair_worker.preflight_ollama",
+                       return_value=None):
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    self.assertFalse(rw.run_repair(issue_number=99))
+        self.assertNotIn(rw.UNSCAFFOLDED_MARKER, buf.getvalue())
+
+
 class TestEditFileNodeOllamaGuard(unittest.TestCase):
     def _state(self):
         return {

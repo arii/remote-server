@@ -62,6 +62,10 @@ repair_state = {
     "issue": None,
     "repo": None,
     "exit_code": None,
+    # Titled failure lifted from the worker log (the
+    # repair-unscaffolded marker, #908); None when the run
+    # succeeded or failed without a titled reason.
+    "failure_reason": None,
 }
 repair_state_lock = threading.Lock()
 
@@ -205,6 +209,7 @@ class RepairStatus(BaseModel):
     issue: int | None = None
     repo: str | None = None
     exit_code: int | None = None
+    failure_reason: str | None = None
     schedules: list = Field(default_factory=list)
 
 
@@ -230,6 +235,23 @@ class RepairScheduleResult(BaseModel):
 REPAIR_FOCUS_MAX = 8000
 
 
+def _extract_failure_reason(log_buffer: str) -> str | None:
+    """Titled worker failure from the merged log, if any.
+
+    The repair worker prints one `repair-unscaffolded: <reason>`
+    line when the issue lacks the scaffold (#908); the last such
+    line is the queue-row detail. None when the log carries no
+    titled reason (plain exit-code detail, as before). Capped so
+    a hostile worker line cannot bloat the queue snapshot.
+    """
+    reason = None
+    for line in (log_buffer or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("repair-unscaffolded:"):
+            reason = stripped.partition(":")[2].strip()[:300]
+    return reason or None
+
+
 def _repair_worker_thread(issue_number: int,
                           repo: str = "remote-server",
                           focus: str = "") -> None:
@@ -252,6 +274,7 @@ def _repair_worker_thread(issue_number: int,
             f"({repo})"
             + (" [group focus]\n" if focus else "\n"))
         repair_state["exit_code"] = None
+        repair_state["failure_reason"] = None
         _repair_proc = None
         _repair_abort = False
     run = _repair_runner or subprocess
@@ -340,12 +363,17 @@ def _repair_worker_thread(issue_number: int,
                 # as the abort above.
                 repair_state["status"] = "failed"
                 repair_state["exit_code"] = code
+                repair_state["failure_reason"] = _extract_failure_reason(
+                    repair_state["log_buffer"])
                 repair_state["log_buffer"] += (
                     "\nRepair worker timed out after "
                     f"{REPAIR_WORKER_TIMEOUT}s and was killed.\n")
             else:
                 repair_state["status"] = "done" if code == 0 else "failed"
                 repair_state["exit_code"] = code
+                repair_state["failure_reason"] = _extract_failure_reason(
+                    repair_state["log_buffer"]) \
+                    if code != 0 else None
                 repair_state["log_buffer"] += (
                     f"\nProcess exited with code {code}\n")
     except Exception as exc:
@@ -788,6 +816,7 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
             f"({repo_name})"
             + (" [group focus]\n" if focus else "\n"))
         repair_state["exit_code"] = None
+        repair_state["failure_reason"] = None
         _repair_proc = None
         _repair_abort = False
     # Focus rides positionally only when set: the bare two-arg call

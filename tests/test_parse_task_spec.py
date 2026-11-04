@@ -3,7 +3,11 @@
 
 import os
 import unittest
-from core_cli.parse_task_spec import parse_task_spec
+from core_cli.parse_task_spec import (
+    SCAFFOLD_HINT,
+    TaskSpecError,
+    parse_task_spec,
+)
 
 
 class TestParseTaskSpec(unittest.TestCase):
@@ -192,6 +196,31 @@ pytest tests/
     def test_invalid_input_type(self):
         with self.assertRaises(ValueError):
             parse_task_spec(None)  # type: ignore
+
+    def test_missing_sections_raise_task_spec_error(self):
+        # Unscaffolded bodies (#908) raise the distinct type so the
+        # worker and gates can answer actionably; it stays a
+        # ValueError for existing callers.
+        self.assertTrue(issubclass(TaskSpecError, ValueError))
+        for body in (
+            "just prose, no sections at all",
+            "## Verification Command\n`make test`\n",
+            "## Target Files\n- file.py\n",
+        ):
+            with self.assertRaises(TaskSpecError, msg=body[:30]):
+                parse_task_spec(body)
+
+    def test_non_string_input_is_not_task_spec_error(self):
+        # A caller bug (non-string body) is not an unscaffolded
+        # issue: plain ValueError, never the scaffold type.
+        with self.assertRaises(ValueError) as ctx:
+            parse_task_spec(None)  # type: ignore
+        self.assertNotIsInstance(ctx.exception, TaskSpecError)
+
+    def test_scaffold_hint_names_template(self):
+        self.assertIn("deterministic-task.md", SCAFFOLD_HINT)
+        self.assertIn("Target Files", SCAFFOLD_HINT)
+        self.assertIn("Verification Command", SCAFFOLD_HINT)
 
 
 if __name__ == "__main__":
