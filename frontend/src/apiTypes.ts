@@ -54,6 +54,30 @@ export interface JobsResponse {
   jobs: JobRecord[];
 }
 
+// Cross-repo lane dispatch queue (issue #853): one item per
+// (repo, issue), mirroring the backend DispatchItem shape.
+export interface DispatchItem {
+  repo: string;
+  issue: number;
+  state: string;
+  added_at?: number | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+  detail?: string;
+}
+
+export interface DispatchQueueResponse {
+  items: DispatchItem[];
+}
+
+export interface DispatchGatesResponse {
+  repo: string;
+  issue: number;
+  ready: boolean;
+  reasons: string[];
+  gates: Record<string, unknown>;
+}
+
 export interface LedgerEntry {
   kind: string;
   repo?: string;
@@ -75,6 +99,21 @@ export interface LedgerEntry {
   command?: string;
   elapsed_s?: number;
   provider?: string;
+  // Webhook heal/skip decision fields (#855): machine reason,
+  // ladder outcome, held stash ref + note, and whether the pull
+  // moved the checkout. Absent on rows that predate the ladder.
+  skip_reason?: string;
+  heal?: string;
+  stash_ref?: string;
+  heal_note?: string;
+  advanced?: boolean;
+  observed?: {
+    lag?: number | null;
+    ahead?: number | null;
+    target?: string | null;
+    origin?: string | null;
+    head?: string | null;
+  } | null;
   // Normalized cli-turn fields from the deep-agent ledger (#590).
   script?: string;
   model?: string;

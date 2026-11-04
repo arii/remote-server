@@ -1,0 +1,78 @@
+# Console E2E smoke suite (issue #854).
+#
+# Proves the money flows (agent turn, approve/merge gates, review
+# context, job runs) against a live backend + built SPA with
+# stubbed gh/docker — no models, no daemons, no side effects.
+#
+# Deliberately NON-REQUIRED until three consecutive green runs
+# prove it stable; only then make it a required context. (No
+# branch-protection change ships with this workflow.)
+name: console-e2e
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'backend/**'
+      - 'tests/e2e/**'
+      - '.github/workflows/e2e.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: console E2E smoke (non-required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 10
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: build frontend SPA
+        run: pnpm --filter frontend build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install backend deps
+        run: pip install -r backend/requirements.txt
+
+      - name: install e2e deps
+        run: npm ci
+        working-directory: tests/e2e
+
+      - name: typecheck suite
+        run: npm run typecheck
+        working-directory: tests/e2e
+
+      - name: install chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: tests/e2e
+
+      - name: run console E2E suite
+        run: npx playwright test
+        working-directory: tests/e2e
+
+      - name: upload playwright report
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-report
+          path: tests/e2e/playwright-report
+          retention-days: 7

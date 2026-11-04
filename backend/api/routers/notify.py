@@ -16,11 +16,12 @@ import json
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend import notify as N
+from backend import webhook_heal
 
 router = APIRouter(tags=["notify"])
 
@@ -140,6 +141,30 @@ async def github_webhook(request: Request):
     if not _queue_pull(repo, path):
         return {"queued": True, "coalesced": True}
     return JSONResponse({"queued": True, "repo": repo}, status_code=202)
+
+
+class WebhookRetryResult(BaseModel):
+    queued: bool = True
+    repo: str = ""
+    coalesced: bool = False
+    skip_counts: dict = Field(default_factory=dict)
+
+
+@router.post("/api/webhook/retry", response_model=WebhookRetryResult)
+def webhook_retry(repo: str,
+                  payload: dict | None = Body(default=None)) -> dict:
+    """Operator recovery tap (#855): re-run the webhook pull for one
+    checkout. The POST body (the console sends {intent, confirmed})
+    is accepted and ignored; the repo rides the query string. A
+    pull already in flight coalesces instead of queueing twice.
+    404 when the repo has no local checkout."""
+    path = _resolve_repo_path(repo or "")
+    if not path:
+        raise HTTPException(
+            status_code=404, detail=f"unknown repo: {repo}")
+    queued = _queue_pull(repo, path)
+    return {"queued": True, "repo": repo, "coalesced": not queued,
+            "skip_counts": webhook_heal.get_counts()}
 
 
 @router.get("/api/notifications/status",

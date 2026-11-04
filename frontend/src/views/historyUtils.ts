@@ -72,6 +72,15 @@ function isFailure(kind: string, raw: string, summary: string): boolean {
 }
 
 const RECOVERY_RULES: Array<[RegExp, string]> = [
+  // Webhook skip causes (#855), most specific first: a held stash
+  // names its own step, then divergence (before dirt: every skip
+  // detail ends in "(local changes)", which would swallow the
+  // diverged rows if the dirt rule ran first).
+  [/stash.*held|held stash|earlier heal stash/, 'resolve the held stash, then retry the pull'],
+  [/not ff-able|diverged/, 'rebase local commits onto the remote default, then retry'],
+  [/local changes|tree dirty/, 'stash or commit local changes, then retry the pull'],
+  [/no remote default/, 'set the remote default branch, then retry'],
+  [/fetch failed/, 'retry the pull'],
   [/fast-forward|remote has new/, 'pull, resolve, push'],
   [/browser|playwright/, 'reinstall browsers and rerun'],
   [/network|could not be reached/, 'retry when the service is reachable'],
@@ -251,6 +260,15 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
   const lines = [`event: ${raw ?? e.kind}`];
   if (e.error && e.error.trim()) lines.push(`error: ${e.error.trim()}`.slice(0, 1500));
   if (e.detail) lines.push(`detail: ${e.detail}`.slice(0, 1500));
+  // Webhook heal/skip decision (#855): machine cause first so the
+  // expansion reads as cause, then outcome, then note.
+  if (e.skip_reason) lines.push(`skip: ${e.skip_reason}`);
+  if (e.heal) {
+    lines.push(`heal: ${e.heal}${e.stash_ref ? ` (${e.stash_ref})` : ''}`);
+  } else if (e.stash_ref) {
+    lines.push(`stash: ${e.stash_ref}`);
+  }
+  if (e.heal_note) lines.push(`note: ${e.heal_note}`.slice(0, 500));
   if (e.repo) lines.push(`repo: ${e.repo}`);
   if (e.session_id) lines.push(`session: ${e.session_id}`);
   if (e.prompt) lines.push(`prompt: ${e.prompt}`.slice(0, 500));
@@ -391,6 +409,11 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
   const count = members.length;
   const routineRun = entry.routine && count > 1;
   const failed = entry.failed && !entry.routine;
+  // Skipped pulls (#855) stay tone-ok (they are nudges, not
+  // failures) but still render their recovery hint inline, so a
+  // lagging checkout never shows a bare skip with no next step.
+  // Repeated skips keep folding into the existing ×N collapse.
+  const skipped = !failed && /skipped/i.test(entry.summary);
   const repeated = count > 1 && !routineRun
     ? failed
       ? `${entry.summary} ×${count} — same failure repeated`
@@ -402,7 +425,7 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
     summary: sentenceCase(routineRun ? activityLabel(entry.kind, count) : (repeated ?? entry.summary)),
     at: entry.at,
     repeat: count,
-    recovery: failed ? recoveryFor(entry.kind, entry.summary) : '',
+    recovery: failed || skipped ? recoveryFor(entry.kind, entry.summary) : '',
     tone: failed ? 'bad' : entry.routine ? 'muted' : 'ok',
     detail: entry.detail,
     members: members.map((m) => ({

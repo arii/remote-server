@@ -1,16 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import TapToFire from '../components/TapToFire';
-import { abortAgentSession, fetchAgentProviders, postAgentTurn } from '../apiClient';
+import {
+  abortAgentSession,
+  fetchAgentProviders,
+  fetchAgentSession,
+  postAgentTurn,
+} from '../apiClient';
+import type { AgentSessionFinished } from '../apiClient';
+import {
+  clearAgentSession,
+  loadAgentSession,
+  saveAgentSession,
+  settledAgentTurns,
+  transcriptDelta,
+} from './agentSessionStore';
+import type { AgentTurn } from './agentSessionStore';
 import { useMock } from './mockViews';
 
 // Mirrors backend PROVIDERS (agent_turn.py): the picker renders
 // these instantly and live status refines them.
 const FALLBACK_PROVIDERS = ['muse', 'agy'];
 
-interface Turn {
-  role: 'user' | 'assistant';
-  text: string;
-}
+// Reattach poll cadence (issue #856): a resumed live turn's text
+// refreshes this often until the server reports it finished.
+const REATTACH_POLL_MS = 2000;
 
 interface SseEvent {
   name: string;
@@ -214,6 +227,16 @@ export default function AgentDrawer({
   // live status refines it. Probes are binary checks now (issue
   // #499), so the blind window is milliseconds; a dead provider
   // fails fast into the guidance card.
+  // Restored live session (issue #856): the localStorage snapshot
+  // replays so a reload keeps the transcript instead of wiping to
+  // the launch form. A snapshot belongs to the repo it was taken
+  // in — another repo's drawer starts fresh. Mock mode starts
+  // empty and never touches the store.
+  const [restored] = useState(() =>
+    useMock() ? null : loadAgentSession(),
+  );
+  const snap =
+    restored !== null && restored.repo === repo ? restored : null;
   const [providers, setProviders] = useState<string[]>(
     initialProviders ?? FALLBACK_PROVIDERS,
   );
@@ -221,11 +244,11 @@ export default function AgentDrawer({
     initialStatus ?? {},
   );
   const [provider, setProvider] = useState(
-    defaultProvider(initialProviders ?? [], initialStatus ?? {}),
+    snap?.provider || defaultProvider(initialProviders ?? [], initialStatus ?? {}),
   );
   const [prompt, setPrompt] = useState('');
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [live, setLive] = useState(false);
+  const [turns, setTurns] = useState<AgentTurn[]>(snap?.turns ?? []);
+  const [live, setLive] = useState(snap?.live ?? false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ code: string; detail: string } | null>(
@@ -235,14 +258,21 @@ export default function AgentDrawer({
   // turn on one-tap Resume; salvage reports the timeout rescue;
   // warningSecs counts down the server's pre-timeout warning; now
   // ticks the elapsed/stall clock while a turn is working.
-  const [lastPrompt, setLastPrompt] = useState('');
+  const [lastPrompt, setLastPrompt] = useState(snap?.lastPrompt ?? '');
   const [salvage, setSalvage] = useState<SalvageInfo | null>(null);
   const [warningSecs, setWarningSecs] = useState<number | null>(null);
   const [now, setNow] = useState(0);
-  const sidRef = useRef<string | null>(null);
+  // Reload reattach (issue #856): orphan marks a restored session
+  // the server no longer knows (Resume reclaims it); reattachNote
+  // reports interrupted/offline restores. reattachRef generations
+  // the mount reattach run so abort/new/unmount retires its poll.
+  const [orphan, setOrphan] = useState(false);
+  const [reattachNote, setReattachNote] = useState<string | null>(null);
+  const sidRef = useRef<string | null>(snap?.sessionId ?? null);
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
   const tokenRef = useRef(0);
+  const reattachRef = useRef(0);
 
   useEffect(() => {
     if (initialProviders) return;
@@ -284,6 +314,119 @@ export default function AgentDrawer({
     return () => clearInterval(id);
   }, [working]);
 
+  // Persist the live session across reloads (issue #856): every
+  // transcript change lands in localStorage for the initializer
+  // above. `working` is a dep so the session id (a ref, set when a
+  // turn completes) persists with its transcript. Pristine state
+  // removes the snapshot instead of writing an empty one.
+  useEffect(() => {
+    if (useMock()) return;
+    if (!live && turns.length === 0 && sidRef.current === null) {
+      clearAgentSession();
+      return;
+    }
+    saveAgentSession({
+      sessionId: sidRef.current,
+      provider,
+      repo,
+      turns: settledAgentTurns(turns),
+      lastPrompt,
+      live,
+    });
+  }, [turns, live, lastPrompt, provider, repo, working]);
+
+  // Reattach after reload (issue #856): a restored live session asks
+  // the server for its state instead of firing a duplicate turn. A
+  // still-running turn resumes its text by polling; a finished turn
+  // backfills its verdict; an unknown id degrades to a readable
+  // orphan the operator can Resume (reclaim) or abandon. Mount-only:
+  // later turns stream over their own POST, never this poll.
+  useEffect(() => {
+    if (useMock()) return;
+    if (!snap || !snap.live) return;
+    const sid = sidRef.current;
+    if (sid === null) {
+      // Reloaded before the done event returned an id: the server
+      // turn (if any) is unreachable without it, so the transcript
+      // stays and Resume fires a fresh turn.
+      if (snap.turns.length > 0) {
+        setReattachNote('Turn was interrupted by the reload — Resume re-fires it.');
+      }
+      return;
+    }
+    const run = reattachRef.current + 1;
+    reattachRef.current = run;
+    const alive = () => reattachRef.current === run;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (alive()) timer = setTimeout(() => void poll(), REATTACH_POLL_MS);
+    };
+    const poll = async (): Promise<void> => {
+      if (!alive()) return;
+      let next;
+      try {
+        next = await fetchAgentSession(sid);
+      } catch {
+        schedule();
+        return;
+      }
+      if (!alive()) return;
+      applyServerTranscript(next.transcript);
+      tokenRef.current = Date.now();
+      setNow(Date.now());
+      if (!next.running) {
+        setWorking(false);
+        if (next.finished) {
+          finishReattachedTurn(next.finished, next.transcript_truncated);
+        } else if (alive()) {
+          setReattachNote('Turn was interrupted — Resume re-fires it.');
+        }
+        return;
+      }
+      schedule();
+    };
+    (async () => {
+      let state;
+      try {
+        state = await fetchAgentSession(sid);
+      } catch {
+        if (alive()) {
+          setReattachNote(
+            "Couldn't reach the server — showing the saved transcript.",
+          );
+        }
+        return;
+      }
+      if (!alive()) return;
+      if (!state.known) {
+        setOrphan(true);
+        return;
+      }
+      if (!state.running && !state.finished) {
+        // Known but idle with no verdict: the stream died with the
+        // reload before the turn completed.
+        setReattachNote('Turn was interrupted by the reload — Resume re-fires it.');
+        return;
+      }
+      applyServerTranscript(state.transcript);
+      if (!state.running && state.finished) {
+        finishReattachedTurn(state.finished, state.transcript_truncated);
+        return;
+      }
+      const at = Date.now();
+      startRef.current = at;
+      tokenRef.current = at;
+      setNow(at);
+      setWorking(true);
+      schedule();
+    })();
+    return () => {
+      reattachRef.current += 1;
+      if (timer !== null) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const streamedRef = useRef(0);
 
   function appendAnswer(token: string) {
@@ -311,15 +454,92 @@ export default function AgentDrawer({
     });
   }
 
-  async function sendTurn(text: string) {
+  function dropEmptyBubble() {
+    // A failed turn leaves an empty assistant bubble behind; retry
+    // sends cleanly only once it is gone.
+    setTurns((t) => {
+      const last = t[t.length - 1];
+      if (last && last.role === 'assistant' && !last.text) return t.slice(0, -1);
+      return t;
+    });
+  }
+
+  // Fold the server's live buffer into the restored trailing answer
+  // (issue #856): while the same turn streams, only the unseen
+  // suffix appends. The settled snapshot trimmed the live typing
+  // placeholder, so a user-final transcript opens the bubble first.
+  function applyServerTranscript(server: string) {
+    setTurns((t) => {
+      const last = t[t.length - 1];
+      if (!last || last.role !== 'assistant') {
+        if (!server) return t;
+        return [...t, { role: 'assistant', text: server }];
+      }
+      const delta = transcriptDelta(last.text, server);
+      if (delta.mode === 'append') {
+        if (!delta.text) return t;
+        const next = [...t];
+        next[next.length - 1] = {
+          role: 'assistant',
+          text: last.text + delta.text,
+        };
+        return next;
+      }
+      const next = [...t];
+      next[next.length - 1] = { role: 'assistant', text: delta.text };
+      return next;
+    });
+  }
+
+  // Verdict for a turn that finished while the console was gone
+  // (issue #856): mirrors sendTurn's done/error handling so a
+  // reattached finish renders exactly like a live one.
+  function finishReattachedTurn(
+    fin: AgentSessionFinished,
+    liveTruncated: boolean,
+  ) {
+    if (fin.truncated || liveTruncated) {
+      appendAnswer('\n\n[output truncated — the turn exceeded the size cap]');
+    }
+    if (fin.timed_out) {
+      const minutes = Math.max(1, Math.floor(fin.timeout / 60));
+      setError(`turn timed out after ${minutes}m`);
+      setFailure({ code: 'turn-timeout', detail: '' });
+      setSalvage(fin.rescue ?? null);
+      dropEmptyBubble();
+      return;
+    }
+    if (fin.exit !== 0) {
+      if (fin.guidance_code) {
+        setError(fin.guidance_message || 'Agent turn failed');
+        setFailure({
+          code: fin.guidance_code,
+          detail: fin.guidance_detail || '',
+        });
+      } else {
+        const lines = fin.stderr.trim().split('\n');
+        const tail = lines[lines.length - 1] || `exit ${fin.exit ?? -1}`;
+        setError(tail.slice(0, 500));
+        setFailure(null);
+      }
+      dropEmptyBubble();
+      return;
+    }
+  }
+
+  async function sendTurn(text: string, reclaim = false) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    // A fresh turn supersedes any mount reattach poll still in flight.
+    reattachRef.current += 1;
     const at = Date.now();
     startRef.current = at;
     tokenRef.current = at;
     setNow(at);
     setWarningSecs(null);
     setSalvage(null);
+    setOrphan(false);
+    setReattachNote(null);
     setLastPrompt(text);
     setWorking(true);
     setTurns((t) => [...t, { role: 'assistant', text: '' }]);
@@ -328,7 +548,14 @@ export default function AgentDrawer({
         appendAnswer('Mock agent reply.');
         return;
       }
-      const resp = await postAgentTurn(provider, repo, text, sidRef.current, ctrl.signal);
+      const resp = await postAgentTurn(
+        provider,
+        repo,
+        text,
+        sidRef.current,
+        ctrl.signal,
+        reclaim,
+      );
       if (!resp.ok || !resp.body) throw new Error(`Agent turn failed: ${resp.status}`);
       streamedRef.current = 0;
       const {
@@ -363,12 +590,7 @@ export default function AgentDrawer({
             ? (errSalvage as SalvageInfo)
             : null,
         );
-        // Drop the empty assistant bubble so retry sends cleanly.
-        setTurns((t) => {
-          const last = t[t.length - 1];
-          if (last && last.role === 'assistant' && !last.text) return t.slice(0, -1);
-          return t;
-        });
+        dropEmptyBubble();
       }
     } finally {
       abortRef.current = null;
@@ -406,19 +628,26 @@ export default function AgentDrawer({
 
   // One-tap Resume (issue #838): replay the failed turn's prompt on
   // the same session — the user bubble is already in the transcript,
-  // so only the assistant turn re-fires.
+  // so only the assistant turn re-fires. From an orphan (issue #856)
+  // the turn reclaims the id with a spawn confirm, since the server
+  // no longer knows it.
   async function onResume() {
     if (working || lastPrompt === '') return;
     setError(null);
     setFailure(null);
     setSalvage(null);
-    await sendTurn(lastPrompt);
+    await sendTurn(lastPrompt, orphan);
   }
 
   async function onAbort() {
     abortRef.current?.abort();
+    // Retire the reattach poll: its verdicts belong to the killed turn.
+    reattachRef.current += 1;
     const sid = sidRef.current;
     setWorking(false);
+    // Abort kills server-side and clears the persisted snapshot; the
+    // settled transcript re-persists via the effect as history.
+    clearAgentSession();
     if (!sid || (useMock() && !initialProviders)) return;
     try {
       await abortAgentSession(sid);
@@ -429,6 +658,7 @@ export default function AgentDrawer({
 
   function onNewSession() {
     abortRef.current?.abort();
+    reattachRef.current += 1;
     sidRef.current = null;
     setTurns([]);
     setError(null);
@@ -438,6 +668,9 @@ export default function AgentDrawer({
     setLastPrompt('');
     setWorking(false);
     setLive(false);
+    setOrphan(false);
+    setReattachNote(null);
+    clearAgentSession();
   }
 
   function onSwitchProvider() {
@@ -445,12 +678,15 @@ export default function AgentDrawer({
     if (!other) return;
     // Fresh session on the new provider: session ids are
     // provider-side state (each provider pins its own conversation),
-    // so the sid must not cross over.
+    // so the sid must not cross over. Any orphan/reattach state
+    // belonged to the dropped id.
     sidRef.current = null;
     setProvider(other);
     setError(null);
     setFailure(null);
     setSalvage(null);
+    setOrphan(false);
+    setReattachNote(null);
   }
 
   return (
@@ -470,7 +706,18 @@ export default function AgentDrawer({
           Agent failed: {error}
         </p>
       )}
-      {error && !working && lastPrompt !== '' && (
+      {orphan && (
+        <p className="row-meta" data-testid="agent-orphan" role="status">
+          Session ended while away — transcript kept. Resume reclaims it,
+          or start a new session.
+        </p>
+      )}
+      {reattachNote !== null && !orphan && (
+        <p className="row-meta" data-testid="agent-reattach-note" role="status">
+          {reattachNote}
+        </p>
+      )}
+      {(error !== null || orphan || reattachNote !== null) && !working && lastPrompt !== '' && (
         <div className="actions">
           <button
             type="button"
