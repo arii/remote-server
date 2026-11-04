@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Stub `gh` for the console E2E suite (tests/e2e).
+
+Serves canned PR/issue answers from the JSON state file at
+$E2E_STATE_FILE (seeded from fixtures/state/seed.json by
+global-setup) so the specs exercise the REAL backend gating
+(pulls._pr_action, mergeBlockReason, the #848 self-approval
+translation) without touching GitHub.
+
+State is file-backed and fcntl-locked: approve/merge mutate the
+PR rows, and the suite's refresh re-reads observe the change —
+the same read-your-write the live console relies on.
+
+Unknown argv fails LOUD (exit 1): a new backend gh call the
+harness does not model must surface as a red spec, never as a
+silent pass.
+"""
+
+import fcntl
+import json
+import os
+import sys
+
+STATE_FILE = os.environ.get("E2E_STATE_FILE", "")
+LOG_FILE = os.environ.get("E2E_GH_LOG", "")
+
+SELF_APPROVAL_ERROR = (
+    "GraphQL: Can not approve your own pull request "
+    "(Reviews may only be requested from collaborators)"
+)
+
+
+def log(argv):
+    if not LOG_FILE:
+        return
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(argv) + "\n")
+    except OSError:
+        pass
+
+
+def die(msg):
+    sys.stderr.write("stub gh: %s\n" % msg)
+    raise SystemExit(1)
+
+
+def load():
+    if not STATE_FILE:
+        die("E2E_STATE_FILE is not set")
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                return json.load(f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except FileNotFoundError:
+        die("state file missing: %s" % STATE_FILE)
+    except json.JSONDecodeError as exc:
+        die("state file corrupt: %s" % exc)
+
+
+def save(state):
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            json.dump(state, f, sort_keys=True)
+            f.write("\n")
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+    os.replace(tmp, STATE_FILE)
+
+
+def find_pr(state, num):
+    for pr in state.get("prs", []):
+        if isinstance(pr, dict) and pr.get("number") == num:
+            return pr
+    return None
+
+
+def parse_number(argv, idx):
+    try:
+        num = int(argv[idx])
+    except (IndexError, ValueError):
+        die("expected a PR number at argv[%d]: %r" % (idx, argv))
+    if num <= 0:
+        die("bad PR number: %r" % argv[idx])
+    return num
+
+
+def canned_diff(num):
+    return (
+        "diff --git a/tests/e2e/seed.txt b/tests/e2e/seed.txt\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/tests/e2e/seed.txt\n"
+        "+++ b/tests/e2e/seed.txt\n"
+        "@@ -1,2 +1,4 @@\n"
+        " seed\n"
+        "-old\n"
+        "+new (PR #%d)\n"
+        "+e2e\n" % num
+    )
+
+
+def main(argv):
+    log(argv)
+    if not argv:
+        die("no argv")
+    verb = argv[0]
+
+    if verb == "api" and len(argv) > 1 and argv[1] == "user":
+        # `gh api user --jq .login`: the #848 viewer signal.
+        print(load().get("viewer", ""))
+        return
+    if verb == "api":
+        # Self-scoped API calls (e.g. update-branch PUT).
+        print("{}")
+        return
+    if verb == "label":
+        print(json.dumps(load().get("labels", [])))
+        return
+
+    if verb == "issue" and len(argv) > 1 and argv[1] == "list":
+        print(json.dumps(load().get("issues", [])))
+        return
+
+    if verb == "pr" and len(argv) > 1:
+        sub = argv[1]
+        if sub == "list":
+            # The seed models open PRs only; callers asking for any
+            # other state (e.g. a real `td` fanning out behind
+            # workflow-health) truthfully get none.
+            try:
+                want = argv[argv.index("--state") + 1]
+            except (ValueError, IndexError):
+                want = "open"
+            prs = load().get("prs", []) if want == "open" else []
+            print(json.dumps(prs))
+            return
+        if sub == "view":
+            num = parse_number(argv, 2)
+            pr = find_pr(load(), num)
+            if pr is None:
+                sys.stderr.write(
+                    "GraphQL: Could not resolve to an issue or "
+                    "pull request with the number %d\n" % num
+                )
+                raise SystemExit(1)
+            print(json.dumps(pr))
+            return
+        if sub == "diff":
+            num = parse_number(argv, 2)
+            if find_pr(load(), num) is None:
+                sys.stderr.write(
+                    "could not find PR #%d\n" % num
+                )
+                raise SystemExit(1)
+            print(canned_diff(num))
+            return
+        if sub == "review":
+            num = parse_number(argv, 2)
+            state = load()
+            pr = find_pr(state, num)
+            if pr is None:
+                sys.stderr.write("could not find PR #%d\n" % num)
+                raise SystemExit(1)
+            if "--approve" in argv:
+                author = (pr.get("author") or {}).get("login", "")
+                if author == state.get("viewer"):
+                    # The #848 shape: GitHub rejects self-approval;
+                    # the backend must translate this to a 400.
+                    sys.stderr.write(SELF_APPROVAL_ERROR + "\n")
+                    raise SystemExit(1)
+                pr["reviewDecision"] = "APPROVED"
+                save(state)
+                print("Approved #%d" % num)
+                return
+            if "--request-changes" in argv:
+                pr["reviewDecision"] = "CHANGES_REQUESTED"
+                save(state)
+                print("Requested changes on #%d" % num)
+                return
+            die("unsupported review flags: %r" % argv)
+        if sub == "merge":
+            num = parse_number(argv, 2)
+            state = load()
+            pr = find_pr(state, num)
+            if pr is None:
+                sys.stderr.write("could not find PR #%d\n" % num)
+                raise SystemExit(1)
+            state["prs"] = [
+                p for p in state.get("prs", [])
+                if not (isinstance(p, dict)
+                        and p.get("number") == num)
+            ]
+            save(state)
+            print("Merged #%d" % num)
+            return
+
+    die("unhandled argv: %r" % argv)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
