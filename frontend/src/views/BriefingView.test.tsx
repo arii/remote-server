@@ -7,6 +7,8 @@ import {
   activityWindowSeconds,
   BriefingBody,
   briefingAllClear,
+  briefingDigestText,
+  CopyDigestButton,
   dayTrend,
   DigestControlsView,
   digestChannels,
@@ -20,6 +22,7 @@ import {
   reviewsErrText,
 } from './BriefingView';
 import { isHistoryFailure } from './historyUtils';
+import type { HistoryRow } from './historyUtils';
 
 function status(over: Partial<NotificationsStatus> = {}): NotificationsStatus {
   return {
@@ -626,5 +629,106 @@ describe('briefing enrichment cap note (issue #487)', () => {
       );
       expect(html).not.toContain('briefing-enrichment-note');
     }
+  });
+});
+
+describe('copy-as-text digest (issue #816)', () => {
+  function briefing(over: Partial<BriefingResponse> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      reviews_err: {},
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      conf_err: '',
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function row(over: Partial<HistoryRow> = {}): HistoryRow {
+    return {
+      key: 'k',
+      kind: 'run',
+      summary: 'deploy-buttons ok',
+      at: '2h ago',
+      repeat: 1,
+      recovery: '',
+      tone: 'ok',
+      detail: '',
+      members: [],
+      ...over,
+    };
+  }
+
+  const noop = () => {};
+
+  it('builds headers, sections, board chips, and activity in screen order', () => {
+    const text = briefingDigestText(
+      briefing({
+        attention: ['**Failing** run on main'],
+        prs: [{ number: 12, title: 'Fix it', author: 'a', branch: 'b', ciLabel: 'red' }],
+        board: [{ branch: 'feat-x', issue: '7', status: 'open' }],
+        workflow_lines: ['deploy red'],
+      }),
+      [row()],
+    );
+    expect(text).toContain('# Briefing — r');
+    expect(text).toContain('## Needs attention');
+    expect(text).toContain('- Failing run on main');
+    expect(text).toContain('## Open pull requests');
+    expect(text).toContain('- #12 Fix it (a · b · red)');
+    expect(text).toContain('## Board');
+    expect(text).toContain('- feat-x · issue 7 · open');
+    expect(text).toContain('## Failing runs');
+    expect(text).toContain('- deploy red');
+    expect(text).toContain('## Recent activity');
+    expect(text).toContain('- deploy-buttons ok (run · 2h ago)');
+    const order = [
+      'Needs attention',
+      'Open pull requests',
+      'Reviews',
+      'Board',
+      'Conflicts',
+      'Overlaps',
+      'Failing runs',
+      'Recent activity',
+    ].map((h) => text.indexOf(`## ${h}`));
+    expect(order.filter((i) => i >= 0)).toEqual(
+      [...order.filter((i) => i >= 0)].sort((a, b) => a - b),
+    );
+  });
+
+  it('omits empty sections and keeps full board text', () => {
+    const text = briefingDigestText(briefing(), []);
+    expect(text).toContain('# Briefing — r');
+    expect(text).not.toContain('## Needs attention');
+    expect(text).not.toContain('## Board');
+    expect(text).not.toContain('## Recent activity');
+    const long = briefingDigestText(
+      briefing({ board: [{ branch: 'x'.repeat(60), status: 'open' }] }),
+      [],
+    );
+    expect(long).toContain('x'.repeat(60));
+  });
+
+  it('renders a copy button atop the briefing body', () => {
+    const html = renderToStaticMarkup(
+      <BriefingBody data={briefing({ attention: ['a'] })} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+    );
+    expect(html).toContain('data-testid="briefing-copy"');
+    expect(html).toContain('>Copy briefing<');
+    expect(html).not.toContain('briefing-copied');
+    expect(html).not.toContain('briefing-copy-error');
+    const btn = renderToStaticMarkup(<CopyDigestButton text="t" />);
+    expect(btn).toContain('data-testid="briefing-copy"');
   });
 });

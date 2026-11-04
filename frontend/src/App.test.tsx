@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import App, { HEALTH_POLL_MS, RollupGate, singleFlight } from './App';
+import App, {
+  HEALTH_POLL_MS,
+  RollupGate,
+  buildReportContext,
+  bundleBasename,
+  reportPath,
+  servedBundleName,
+  singleFlight,
+} from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
@@ -945,6 +953,59 @@ describe('merge relevance', () => {
     for (const c of cases) {
       expect(mergeBlockReason(c.row)).toBe(c.expected);
     }
+  });
+});
+
+describe('report prefill context (issue #818)', () => {
+  it('keeps the repo+health prefix and appends view, path, and bundle', () => {
+    const ctx = buildReportContext({
+      repo: 'r',
+      health: null,
+      tab: 'now',
+      path: '/?mock=1',
+      bundle: 'index-B-EWD50T.js',
+    });
+    expect(ctx).toContain('Repo r · Status: loading…');
+    expect(ctx).toContain('view: now');
+    expect(ctx).toContain('/?mock=1');
+    expect(ctx).toContain('bundle: index-B-EWD50T.js');
+  });
+
+  it('works from every tab and the rollup', () => {
+    for (const tab of ['now', 'chat', 'briefing', 'history']) {
+      expect(
+        buildReportContext({ repo: 'r', health: null, tab, path: '/p', bundle: 'b.js' }),
+      ).toContain(`view: ${tab}`);
+    }
+    expect(
+      buildReportContext({ repo: 'all', health: null, tab: 'now', path: '', bundle: null }),
+    ).toBe('All repos · Status: loading… · view: now');
+  });
+
+  it('degrades to view+path when the script tag is missing', () => {
+    const ctx = buildReportContext({
+      repo: 'r',
+      health: null,
+      tab: 'briefing',
+      path: '/x?y=1',
+      bundle: null,
+    });
+    expect(ctx).toContain('view: briefing');
+    expect(ctx).toContain('/x?y=1');
+    expect(ctx).not.toContain('bundle:');
+  });
+
+  it('parses bundle basenames past query strings', () => {
+    expect(bundleBasename('/assets/index-B-EWD50T.js')).toBe('index-B-EWD50T.js');
+    expect(bundleBasename('/buttons/assets/index-abc.js?v=1#h')).toBe('index-abc.js');
+    expect(bundleBasename('')).toBe(null);
+    expect(bundleBasename(null)).toBe(null);
+    expect(bundleBasename(undefined)).toBe(null);
+  });
+
+  it('degrades without a DOM (SSR render)', () => {
+    expect(servedBundleName()).toBe(null);
+    expect(reportPath()).toBe('');
   });
 });
 

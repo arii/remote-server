@@ -256,6 +256,68 @@ function sevClass(severity: string): string {
   return 'sev sev-info';
 }
 
+// Severity filter chips (issue #813): client-only narrowing of the
+// attention list. Unknown severities read as info so nothing hides
+// silently behind a new backend value.
+export type SeverityFilter = 'crit' | 'warn' | 'info';
+export const SEVERITY_FILTERS: SeverityFilter[] = ['crit', 'warn', 'info'];
+
+export function sevKey(severity: string): SeverityFilter {
+  const s = severity.toLowerCase();
+  if (s === 'crit' || s === 'critical') return 'crit';
+  if (s === 'warn' || s === 'warning') return 'warn';
+  return 'info';
+}
+
+export function severityCounts(items: AttentionItem[]): Record<SeverityFilter, number> {
+  const counts: Record<SeverityFilter, number> = { crit: 0, warn: 0, info: 0 };
+  for (const item of items) counts[sevKey(item.severity)] += 1;
+  return counts;
+}
+
+export function filterBySeverity(
+  items: AttentionItem[],
+  visible: Record<SeverityFilter, boolean>,
+): AttentionItem[] {
+  return items.filter((i) => visible[sevKey(i.severity)]);
+}
+
+// Snooze-all-info targets (issue #815): visible info rows not already
+// collapsed behind a stub. Coordinated with #813: the caller passes
+// the severity-filtered list, so hidden rows are never snoozed.
+export function snoozeAllInfoTargets(
+  visibleItems: AttentionItem[],
+  snoozed: Record<string, SnoozedEntry>,
+): AttentionItem[] {
+  return visibleItems.filter((i) => sevKey(i.severity) === 'info' && !(i.id in snoozed));
+}
+
+export function SeverityChips({
+  counts,
+  visible,
+  onToggle,
+}: {
+  counts: Record<SeverityFilter, number>;
+  visible: Record<SeverityFilter, boolean>;
+  onToggle: (sev: SeverityFilter) => void;
+}) {
+  return (
+    <div className="actions" role="group" aria-label="Filter by severity" data-testid="now-sev-filters">
+      {SEVERITY_FILTERS.map((s) => (
+        <button
+          key={s}
+          type="button"
+          data-testid={`now-sev-${s}`}
+          aria-pressed={visible[s]}
+          onClick={() => onToggle(s)}
+        >
+          <span className={sevClass(s)}>{s}</span> ({counts[s]})
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ReportDialog({
   initialBody,
   availableLabels = [],
@@ -608,6 +670,15 @@ export default function NowView({
   // instantly; refresh() reconciles against the server list.
   const [snoozed, setSnoozed] = useState<Record<string, SnoozedEntry>>({});
   const [snoozeBusy, setSnoozeBusy] = useState<string | null>(null);
+  // Bulk snooze (issue #815) runs its own in-flight flag: the single
+  // id stays the single-snooze contract, untouched.
+  const [snoozeAllBusy, setSnoozeAllBusy] = useState(false);
+  // Severity filter (issue #813): all visible by default.
+  const [visibleSevs, setVisibleSevs] = useState<Record<SeverityFilter, boolean>>({
+    crit: true,
+    warn: true,
+    info: true,
+  });
   const rollup = isRollupRepo(repo);
 
   useEffect(() => {
@@ -698,7 +769,7 @@ export default function NowView({
   }
 
   async function onSnooze(item: AttentionItem, minutes: number) {
-    if (snoozeBusy !== null) return;
+    if (snoozeBusy !== null || snoozeAllBusy) return;
     const optimisticUntil = Date.now() / 1000 + minutes * 60;
     setSnoozed((prev) => ({ ...prev, [item.id]: { until: optimisticUntil, title: item.title } }));
     setSnoozeBusy(item.id);
@@ -721,7 +792,7 @@ export default function NowView({
   }
 
   async function onUnsnooze(id: string) {
-    if (snoozeBusy !== null) return;
+    if (snoozeBusy !== null || snoozeAllBusy) return;
     setSnoozeBusy(id);
     try {
       await unsnoozeAttention(id);
@@ -731,6 +802,44 @@ export default function NowView({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSnoozeBusy(null);
+    }
+  }
+
+  // One-tap snooze-all-info (issue #815): same per-item endpoint and
+  // stub semantics as single snooze, run sequentially over the
+  // visible info rows with one terminal refresh. Successes keep
+  // their stubs; each failure drops its stub and names its row.
+  async function onSnoozeAllInfo(targets: AttentionItem[]) {
+    if (snoozeBusy !== null || snoozeAllBusy || targets.length === 0) return;
+    setSnoozeAllBusy(true);
+    const failed: string[] = [];
+    let ok = 0;
+    try {
+      for (const item of targets) {
+        const optimisticUntil = Date.now() / 1000 + 60 * 60;
+        setSnoozed((prev) => ({
+          ...prev,
+          [item.id]: { until: optimisticUntil, title: item.title },
+        }));
+        try {
+          const res = await snoozeAttention(item.id, 60, item.repo);
+          setSnoozed((prev) => ({
+            ...prev,
+            [item.id]: { until: res.snoozed_until, title: item.title },
+          }));
+          ok += 1;
+        } catch {
+          dropStub(item.id);
+          failed.push(item.title);
+        }
+      }
+      const noun = ok === 1 ? 'info item' : 'info items';
+      if (ok > 0 && failed.length === 0) setFired(`Snoozed ${ok} ${noun} for 1h`);
+      else if (ok > 0) setFired(`Snoozed ${ok} ${noun} for 1h; failed: ${failed.join(', ')}`);
+      else setError(`Couldn't snooze info rows: ${failed.join(', ')}`);
+      await refresh();
+    } finally {
+      setSnoozeAllBusy(false);
     }
   }
 
@@ -843,6 +952,12 @@ export default function NowView({
   }
 
   const stubRows = data ? snoozedRows(snoozed, data.attention.map((i) => i.id)) : [];
+  // Severity-narrowed list (issue #813): chips + hero counts read the
+  // full feed; only the row list narrows. All-off lands on the empty
+  // state with the chips still up so the operator can toggle back.
+  const visibleItems = data ? filterBySeverity(data.attention, visibleSevs) : [];
+  const infoTargets = data ? snoozeAllInfoTargets(visibleItems, snoozed) : [];
+  const snoozeAnyBusy = snoozeBusy !== null || snoozeAllBusy;
 
   return (
     <section data-testid="now-view">
@@ -923,24 +1038,44 @@ export default function NowView({
                   itemId={id}
                   title={entry.title}
                   until={entry.until}
-                  busy={snoozeBusy === id}
+                  busy={snoozeBusy === id || snoozeAllBusy}
                   onUnsnooze={() => void onUnsnooze(id)}
                 />
               ))}
             </ul>
           )}
-      {data.attention.length === 0 ? (
+      {data.attention.length > 0 && (
+        <>
+          <SeverityChips
+            counts={severityCounts(data.attention)}
+            visible={visibleSevs}
+            onToggle={(s) => setVisibleSevs((v) => ({ ...v, [s]: !v[s] }))}
+          />
+          <div className="actions">
+            <button
+              type="button"
+              data-testid="now-snooze-all-info"
+              disabled={infoTargets.length === 0 || snoozeAnyBusy}
+              title={infoTargets.length === 0 ? 'No visible info rows to snooze' : `Snooze ${infoTargets.length} visible info rows for 1h`}
+              onClick={() => void onSnoozeAllInfo(infoTargets)}
+            >
+              {snoozeAllBusy ? 'Snoozing…' : `Snooze all info (${infoTargets.length})`}
+            </button>
+          </div>
+        </>
+      )}
+      {visibleItems.length === 0 ? (
         <NowEmptyState onRunCheck={() => setSection('jobs')} />
       ) : (
         <ul className="session-list" data-testid="now-list">
-          {data.attention.map((item) =>
+          {visibleItems.map((item) =>
             snoozed[item.id] ? (
               <SnoozedStub
                 key={item.id}
                 itemId={item.id}
                 title={item.title}
                 until={snoozed[item.id].until}
-                busy={snoozeBusy === item.id}
+                busy={snoozeBusy === item.id || snoozeAllBusy}
                 onUnsnooze={() => void onUnsnooze(item.id)}
               />
             ) : (
@@ -980,7 +1115,7 @@ export default function NowView({
                 </button>
                 <SnoozeButtons
                   itemId={item.id}
-                  busy={snoozeBusy !== null}
+                  busy={snoozeAnyBusy}
                   onSnooze={(m) => void onSnooze(item, m)}
                 />
               </div>

@@ -9,14 +9,20 @@ import {
   lastDeployAt,
   NowEmptyState,
   NowHero,
+  filterBySeverity,
   reconcileSnoozed,
   RepoTag,
   resolveAttentionTarget,
+  SeverityChips,
+  SEVERITY_FILTERS,
+  severityCounts,
+  sevKey,
   showRepoTag,
   SnoozedStub,
   SNOOZE_PRESETS,
   SnoozeButtons,
   snoozedRows,
+  snoozeAllInfoTargets,
   snoozePresetLabel,
   topUrgent,
 } from './NowView';
@@ -401,5 +407,86 @@ describe('guided empty state (issue #809)', () => {
     expect(html).toContain('Failing checks, approvals, and incidents will land here.');
     expect(html).toContain('data-testid="now-empty-jobs"');
     expect(html).toContain('>Run a check<');
+  });
+});
+
+function attentionItem(over: Partial<AttentionItem> = {}): AttentionItem {
+  return {
+    id: 'a1',
+    kind: 'job',
+    title: 'Failed job',
+    detail: 'd',
+    repo: 'r',
+    severity: 'info',
+    action: { label: 'Open', method: 'GET', href: '/api/jobs', destructive: false, intent: 'open' },
+    created_at: 1700000000,
+    ...over,
+  };
+}
+
+describe('severity filter chips (issue #813)', () => {
+  it('normalizes long-form and unknown severities', () => {
+    expect(sevKey('crit')).toBe('crit');
+    expect(sevKey('critical')).toBe('crit');
+    expect(sevKey('warn')).toBe('warn');
+    expect(sevKey('warning')).toBe('warn');
+    expect(sevKey('info')).toBe('info');
+    expect(sevKey('something-new')).toBe('info');
+  });
+
+  it('counts per severity across the feed', () => {
+    const items = [
+      attentionItem({ id: 'c', severity: 'crit' }),
+      attentionItem({ id: 'w', severity: 'warn' }),
+      attentionItem({ id: 'i1', severity: 'info' }),
+      attentionItem({ id: 'i2', severity: 'info' }),
+    ];
+    expect(severityCounts(items)).toEqual({ crit: 1, warn: 1, info: 2 });
+    expect(severityCounts([])).toEqual({ crit: 0, warn: 0, info: 0 });
+  });
+
+  it('filters instantly with all-off hiding everything', () => {
+    const items = [
+      attentionItem({ id: 'c', severity: 'crit' }),
+      attentionItem({ id: 'i', severity: 'info' }),
+    ];
+    expect(filterBySeverity(items, { crit: true, warn: true, info: true })).toHaveLength(2);
+    expect(filterBySeverity(items, { crit: true, warn: true, info: false }).map((i) => i.id)).toEqual(['c']);
+    expect(filterBySeverity(items, { crit: false, warn: false, info: false })).toEqual([]);
+  });
+
+  it('renders one pressed-state chip per severity with counts', () => {
+    const html = renderToStaticMarkup(
+      <SeverityChips
+        counts={{ crit: 1, warn: 2, info: 3 }}
+        visible={{ crit: true, warn: false, info: true }}
+        onToggle={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="now-sev-filters"');
+    for (const s of SEVERITY_FILTERS) expect(html).toContain(`data-testid="now-sev-${s}"`);
+    expect(html).toContain('(1)');
+    expect(html).toContain('(2)');
+    expect(html).toContain('(3)');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain('sev-crit');
+    expect(html).toContain('sev-warn');
+    expect(html).toContain('sev-info');
+  });
+});
+
+describe('snooze-all-info targets (issue #815)', () => {
+  it('scopes to visible info rows without stubs', () => {
+    const items = [
+      attentionItem({ id: 'c', severity: 'crit' }),
+      attentionItem({ id: 'i1', severity: 'info' }),
+      attentionItem({ id: 'i2', severity: 'info' }),
+    ];
+    expect(snoozeAllInfoTargets(items, {}).map((i) => i.id)).toEqual(['i1', 'i2']);
+    expect(
+      snoozeAllInfoTargets(items, { i1: { until: 9, title: 't' } }).map((i) => i.id),
+    ).toEqual(['i2']);
+    expect(snoozeAllInfoTargets([], {})).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@ import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPrefe
 import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { isHistoryFailure, toHistoryRows } from './historyUtils';
+import type { HistoryRow } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
 import RepoLabel from '../components/RepoLabel';
 
@@ -703,6 +704,98 @@ export function briefingAllClear(data: BriefingResponse): boolean {
   );
 }
 
+// Copy-as-text digest (issue #816): plain-text mirror of the
+// rendered briefing in on-screen section order, empty sections
+// omitted. Line-builder shape follows the chat transcript export;
+// lines reuse cleanBriefingLine so the digest reads like the view.
+export function briefingDigestText(data: BriefingResponse, activity: HistoryRow[]): string {
+  const lines = [`# Briefing — ${data.repo}`, ''];
+  lines.push(briefingSummary(data), '');
+  if (typeof data.narrative === 'string' && data.narrative.trim() !== '') {
+    lines.push(data.narrative.trim(), '');
+  }
+  function section(title: string, items: string[]) {
+    if (items.length === 0) return;
+    lines.push(`## ${title}`, '');
+    for (const item of items) lines.push(`- ${item}`);
+    lines.push('');
+  }
+  section('Needs attention', data.attention.map(cleanBriefingLine).filter((l) => l !== ''));
+  section(
+    'Open pull requests',
+    data.prs.map((pr) => {
+      const meta = [pr.author, pr.branch, pr.ciLabel ?? pr.ciStatus]
+        .map((v) => String(v ?? '').trim())
+        .filter((v) => v.length > 0);
+      const head = `#${String(pr.number ?? '?')} ${String(pr.title ?? 'Untitled')}`;
+      return meta.length > 0 ? `${head} (${meta.join(' · ')})` : head;
+    }),
+  );
+  const reviewItems = [
+    ...(reviewsErrText(data.reviews_err) ? [`Unavailable: ${reviewsErrText(data.reviews_err)}`] : []),
+    ...data.reviews_lines.map(cleanBriefingLine).filter((l) => l !== ''),
+  ];
+  section('Reviews', reviewItems);
+  // Board mirrors BoardSection: structured chips win when present,
+  // full text kept (no chip truncation) for a shareable digest.
+  const boardItems =
+    (data.board ?? []).length > 0
+      ? (data.board ?? []).map((b) =>
+          [b.branch, b.issue ? `issue ${b.issue}` : '', b.status]
+            .map((v) => (v ?? '').trim())
+            .filter((v) => v.length > 0 && v !== '?')
+            .join(' · '),
+        ).filter((l) => l !== '')
+      : data.board_lines.map(cleanBriefingLine).filter((l) => l !== '');
+  if (data.board_err) boardItems.unshift(`Unavailable: ${data.board_err}`);
+  section('Board', boardItems);
+  const conflictItems = [
+    ...(data.conf_err ? [`Unavailable: ${data.conf_err}`] : []),
+    ...data.conflicts_lines.map(cleanBriefingLine).filter((l) => l !== ''),
+  ];
+  section('Conflicts', conflictItems);
+  section('Overlaps', data.overlaps_lines.map(cleanBriefingLine).filter((l) => l !== ''));
+  const runItems = [
+    ...(data.runs_err ? [`Unavailable: ${data.runs_err}`] : []),
+    ...data.workflow_lines.map(cleanBriefingLine).filter((l) => l !== ''),
+  ];
+  section('Failing runs', runItems);
+  section('Recent activity', activity.map((r) => `${r.summary} (${r.kind} · ${r.at})`));
+  return lines.join('\n').replace(/\n+$/, '\n');
+}
+
+export function CopyDigestButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  async function onCopy() {
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch (err) {
+      setCopied(false);
+      setCopyError(err instanceof Error ? err.message : String(err));
+    }
+  }
+  return (
+    <div className="actions">
+      <button type="button" data-testid="briefing-copy" onClick={() => void onCopy()}>
+        Copy briefing
+      </button>
+      {copied && (
+        <span className="row-meta" data-testid="briefing-copied" role="status">
+          Copied.
+        </span>
+      )}
+      {copyError && (
+        <span className="row-meta" data-testid="briefing-copy-error" role="alert">
+          Couldn&apos;t copy: {copyError}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function PrRow({ pr }: { pr: Record<string, unknown> }) {
   const meta = [pr.author, pr.branch, pr.ciLabel ?? pr.ciStatus]
     .map((v) => String(v ?? '').trim())
@@ -869,6 +962,7 @@ export function BriefingBody({
           {freshness}
         </p>
       )}
+      <CopyDigestButton text={briefingDigestText(data, highlights)} />
       {typeof data.narrative === 'string' && data.narrative.trim() !== '' && (
         <p className="briefing-narrative" data-testid="briefing-narrative">
           {data.narrative}

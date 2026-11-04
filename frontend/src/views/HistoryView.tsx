@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { fetchJobRun, fetchJobs, fetchLedger } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
+import { nowPollMs } from './NowView';
 import { historyRowMatches, jobPassesKindFilter, kindBadge, tailText, toHistoryRows } from './historyUtils';
 import type { HistoryMember, HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
@@ -157,6 +158,22 @@ export function RowsList({
   );
 }
 
+// Opt-in live-follow toggle (issue #814): presentational half so the
+// pressed states render-test without timers.
+export function FollowButton({ follow, onToggle }: { follow: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="history-follow"
+      aria-pressed={follow}
+      title={follow ? 'Stop auto-refreshing history' : 'Auto-refresh history while on'}
+      onClick={onToggle}
+    >
+      {follow ? 'Following' : 'Follow'}
+    </button>
+  );
+}
+
 export default function HistoryView({
   repo,
   health,
@@ -168,6 +185,22 @@ export default function HistoryView({
   const { jobs, entries } = data;
   const [kind, setKind] = useState('all');
   const [query, setQuery] = useState('');
+  // Live-follow (issue #814): off by default (mount-only, as before);
+  // while on, re-run load() on Now's adaptive cadence, paused in
+  // hidden tabs. Kind/search live in separate state, so refreshes
+  // never reset them.
+  const [follow, setFollow] = useState(false);
+  useEffect(() => {
+    if (!follow || useMock()) return;
+    const timer = window.setInterval(
+      () => {
+        if (!document.hidden) void load();
+      },
+      nowPollMs(jobs.length + entries.length),
+    );
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [follow, jobs.length, entries.length]);
   const all = entries;
   const filtering = query.trim().length > 0;
   const rows = toHistoryRows(
@@ -216,6 +249,7 @@ export default function HistoryView({
             <button type="button" data-testid="history-refresh" onClick={() => void load()}>
               Refresh
             </button>
+            <FollowButton follow={follow} onToggle={() => setFollow((f) => !f)} />
           </div>
         </div>
 

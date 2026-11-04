@@ -56,6 +56,56 @@ function healthSummary(health: SystemHealthResponse | null): string {
   return `Status: ${up}/${health.containers.length} containers up`;
 }
 
+// Bug-report prefill context (issue #818): the existing Repo/health
+// prefix plus the current view, in-app path, and served JS bundle
+// basename, so triage stops re-asking which bundle produced the
+// report. SSR-safe: render tests have no window/document.
+export function bundleBasename(src: string | null | undefined): string | null {
+  if (!src) return null;
+  const base = src.split('?')[0].split('#')[0].split('/').pop() ?? '';
+  return base || null;
+}
+
+export function servedBundleName(): string | null {
+  try {
+    if (typeof document === 'undefined') return null;
+    return bundleBasename(document.querySelector('script[src]')?.getAttribute('src'));
+  } catch {
+    return null;
+  }
+}
+
+export function reportPath(): string {
+  try {
+    if (typeof window === 'undefined') return '';
+    return `${window.location.pathname}${window.location.search}`;
+  } catch {
+    return '';
+  }
+}
+
+export function buildReportContext({
+  repo,
+  health,
+  tab,
+  path,
+  bundle,
+}: {
+  repo: string;
+  health: SystemHealthResponse | null;
+  tab: string;
+  path: string;
+  bundle: string | null;
+}): string {
+  const parts = [
+    `${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`,
+    `view: ${tab}`,
+  ];
+  if (path) parts.push(path);
+  if (bundle) parts.push(`bundle: ${bundle}`);
+  return parts.join(' · ');
+}
+
 type Tab = 'now' | 'chat' | 'briefing' | 'history';
 
 // Now is the triage inbox (attention + Review/Jobs sections); History
@@ -412,7 +462,13 @@ export default function App() {
           repo={repo}
           defaultBranch={repos.find((r) => r.name === repo)?.branch}
           health={health}
-          reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
+          reportContext={buildReportContext({
+            repo,
+            health,
+            tab,
+            path: reportPath(),
+            bundle: servedBundleName(),
+          })}
           onAskAgent={askAgent}
           onOpenTab={(t) => setTab(t)}
           sectionRequest={sectionRequest}
