@@ -16,6 +16,7 @@
 backend/tests/
 backend/**/__pycache__/
 deep-agent/.venv/
+deep-agent/chroma_db/
 deep-agent/traces/
 deep-agent/.chat_threads/
 deep-agent/ledger.jsonl
