@@ -216,8 +216,8 @@ class TestCheckChatCase(unittest.TestCase):
             c, 0, "ok", "ok",
             ["list_dir", "grep_repo", "read_repo_file", "search_docs",
              "propose_action", "run_repo_command", "fetch_url",
-             "search_turns", "write_todos", "ls", "read_file",
-             "glob", "grep"],
+             "search_web", "search_turns", "write_todos", "ls",
+             "read_file", "glob", "grep"],
             [entry()], False)
         self.assertEqual(v, "pass")
 

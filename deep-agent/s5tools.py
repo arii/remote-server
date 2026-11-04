@@ -11,12 +11,14 @@ Do NOT put secrets in here; the model router (`model_router.py`) and the
 ledger (`ledger.py`) own their own concerns.
 """
 
+import html
 import ipaddress
 import os
 import re
 import shlex
 import socket
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -364,3 +366,118 @@ def fetch_url(url, timeout=FETCH_DEFAULT_TIMEOUT,
         except Exception as exc:
             return f"FETCH_ERROR: {_one_line(exc)}"
     return "FETCH_ERROR: too many redirects"
+
+
+SEARCH_PROVIDER_HOST = "old-search.marginalia.nu"
+SEARCH_DEFAULT_TIMEOUT = 20
+SEARCH_MAX_RESULTS = 10
+SEARCH_MAX_QUERY = 200
+SEARCH_MAX_WAIT_S = 10
+SEARCH_TITLE_CAP = 200
+SEARCH_SNIPPET_CAP = 400
+
+_SEARCH_CARD_RE = re.compile(
+    r'<section[^>]*class="card search-result"[^>]*>')
+_SEARCH_TITLE_RE = re.compile(
+    r'<a[^>]*class="title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+_SEARCH_DESC_RE = re.compile(r'<p class="description">(.*?)</p>', re.S)
+_SEARCH_TAG_RE = re.compile(r"<[^>]+>")
+_SEARCH_WAIT_RE = re.compile(r"Wait For A Moment")
+_SEARCH_SST_RE = re.compile(r'href="(/search\?[^"]*?&sst=[^"]+)"')
+_SEARCH_WAIT_SECS_RE = re.compile(r'data-tr="(\d+)"')
+
+
+def _clean_search_text(raw, cap):
+    """De-tagged, entity-decoded, single-spaced text, capped."""
+    text = _SEARCH_TAG_RE.sub("", raw or "")
+    return " ".join(html.unescape(text).split())[:cap]
+
+
+def _parse_search_results(page, limit):
+    """(url, title, snippet) hits from a provider result page.
+
+    Cards are siblings, so each segment between card openings holds
+    exactly one hit: the first title anchor and description in it.
+    Non-http(s) hrefs never become hits."""
+    hits = []
+    for segment in _SEARCH_CARD_RE.split(page)[1:]:
+        if len(hits) >= limit:
+            break
+        title = _SEARCH_TITLE_RE.search(segment)
+        if title is None:
+            continue
+        url = html.unescape(title.group(1)).strip()
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except Exception:
+            continue
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            continue
+        desc = _SEARCH_DESC_RE.search(segment)
+        hits.append((
+            url,
+            _clean_search_text(title.group(2), SEARCH_TITLE_CAP),
+            _clean_search_text(
+                desc.group(1) if desc else "", SEARCH_SNIPPET_CAP),
+        ))
+    return hits
+
+
+def search_web(query, limit=5, timeout=SEARCH_DEFAULT_TIMEOUT,
+               _allow_loopback=False, _base_url=None):
+    """Keyless web search. Never raises: failures return
+    "SEARCH_ERROR: <one-line reason>", no matches return
+    "no results".
+
+    One canonical provider (SEARCH_PROVIDER_HOST), fetched through
+    fetch_url so the SSRF guard, per-request timeout, and redirect
+    discipline apply unchanged. When the provider answers its
+    documented bot-barrage wait page, honor the embedded countdown
+    and follow its retry link once, then parse. Output is numbered
+    title/URL/snippet hits for pairing with fetch_url (search the
+    web to discover a URL, fetch_url to read it).
+    """
+    try:
+        if not isinstance(query, str) or not query.strip():
+            return "SEARCH_ERROR: empty query"
+        words = query.strip()
+        if len(words) > SEARCH_MAX_QUERY:
+            return (f"SEARCH_ERROR: query too long "
+                    f"(max {SEARCH_MAX_QUERY} chars)")
+        try:
+            count = int(limit)
+        except (TypeError, ValueError):
+            return "SEARCH_ERROR: bad limit"
+        count = max(1, min(SEARCH_MAX_RESULTS, count))
+        base = _base_url or f"https://{SEARCH_PROVIDER_HOST}"
+        url = base + "/search?query=" + urllib.parse.quote(words)
+        body = fetch_url(url, timeout=timeout,
+                         _allow_loopback=_allow_loopback)
+        if body.startswith("FETCH_ERROR:"):
+            return "SEARCH_ERROR: " + body[len("FETCH_ERROR:"):].strip()
+        if _SEARCH_WAIT_RE.search(body):
+            retry = _SEARCH_SST_RE.search(body)
+            if retry is None:
+                return ("SEARCH_ERROR: provider asked to wait but "
+                        "gave no retry link")
+            asked = _SEARCH_WAIT_SECS_RE.search(body)
+            wait = min(SEARCH_MAX_WAIT_S,
+                       int(asked.group(1)) if asked else 2)
+            time.sleep(wait)
+            again = base + html.unescape(retry.group(1))
+            body = fetch_url(again, timeout=timeout,
+                             _allow_loopback=_allow_loopback)
+            if body.startswith("FETCH_ERROR:"):
+                return ("SEARCH_ERROR: " +
+                        body[len("FETCH_ERROR:"):].strip())
+            if _SEARCH_WAIT_RE.search(body):
+                return "SEARCH_ERROR: provider still rate-limiting"
+        hits = _parse_search_results(body, count)
+        if not hits:
+            return "no results"
+        lines = []
+        for pos, (hit_url, title, snippet) in enumerate(hits, 1):
+            lines.append(f"{pos}. {title}\n   {hit_url}\n   {snippet}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"SEARCH_ERROR: {_one_line(exc)}"

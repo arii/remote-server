@@ -455,14 +455,14 @@ class TestTrivialTrace(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
-    def test_eight_tools(self):
+    def test_nine_tools(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 8)
+        self.assertEqual(len(tools), 9)
         self.assertEqual(
             {t.name for t in tools},
             {"read_repo_file", "grep_repo", "list_dir", "search_docs",
              "propose_action", "run_repo_command", "fetch_url",
-             "search_turns"},
+             "search_web", "search_turns"},
         )
 
     def test_read_grep_list_delegate(self):
@@ -552,6 +552,24 @@ class TestToolSurface(unittest.TestCase):
         self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
         out = tool.invoke({"url": "file:///etc/passwd"})
         self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+
+    def test_search_web_tool(self):
+        from unittest import mock
+
+        import s5tools
+
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        tool = by_name["search_web"]
+        self.assertIn("fetch_url", tool.description)
+        # Guarded shapes fail without touching the network.
+        out = tool.invoke({"query": ""})
+        self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
+        with mock.patch.object(s5tools, "search_web",
+                               return_value="1. T\n   https://x/\n   s"
+                               ) as m:
+            out = tool.invoke({"query": "ollama", "limit": 3})
+        m.assert_called_once_with("ollama", limit=3)
+        self.assertIn("1. T", out)
 
     def test_search_turns_tool(self):
         import tempfile

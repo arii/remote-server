@@ -270,6 +270,46 @@ class TestAskTools(unittest.TestCase):
         self.assertIn("usage:",
                       ai.search_turns.invoke({"query": ""}))
 
+    def test_search_web_registered_and_guarded(self):
+        from unittest import mock
+
+        import s5tools
+
+        self.assertIn("fetch_url", ai.search_web.description)
+        # Guarded shapes fail without touching the network.
+        out = ai.search_web.invoke({"query": "  "})
+        self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
+        with mock.patch.object(s5tools, "search_web",
+                               return_value="1. T\n   https://x/\n   s"
+                               ) as m:
+            out = ai.search_web.invoke({"query": "ollama"})
+        m.assert_called_once_with("ollama", limit=5)
+        self.assertIn("1. T", out)
+
+    def test_search_web_in_main_tool_list(self):
+        # Same ast parse as the search_turns twin below: main()'s
+        # create_agent tools=[...] must include search_web.
+        import ast
+
+        src = os.path.join(os.path.dirname(__file__), "..",
+                           "deep-agent", "ask_investigator.py")
+        with open(src, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        names = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = getattr(node, "func", None)
+            if getattr(func, "id", "") != "create_agent":
+                continue
+            for kw in node.keywords:
+                if kw.arg == "tools" and isinstance(kw.value, ast.List):
+                    names.update(
+                        e.id for e in kw.value.elts
+                        if isinstance(e, ast.Name))
+        self.assertIn("search_web", names)
+        self.assertIn("fetch_url", names)
+
     def test_search_turns_in_main_tool_list(self):
         # main()'s create_agent tools=[...] is inline; parse it via
         # ast like TestAllowlistSync does (no agent run needed).
