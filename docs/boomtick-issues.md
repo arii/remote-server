@@ -54,12 +54,6 @@ Verified against BoomTick `main` on 2026-10-29; states reconciled with live GitH
 
 ## Resolved (verified 2026-10-29)
 
-### #1010 — `jules.list_sessions` returns raw array, breaks structuredContent validation
-- **State:** RESOLVED / CLOSED ([Issue #1010](https://github.com/arii/boomtick/issues/1010); merged in [PR #1013](https://github.com/arii/boomtick/pull/1013)).
-- **Symptom:** `MCP error -32602: Invalid tools/call result: structuredContent: Invalid input: expected record, received array`.
-- **Cause:** `listJulesSessionsHandler` (`mcp/src/tools/jules/list-sessions.ts`) returned `Promise<JulesSession[]>` — a bare array — while the declared `JulesListSessionsResponseSchema` is `z.object({ sessions: ... })`.
-- **Fix:** Jules opened PR #1013 (`fix(mcp): wrap jules.list_sessions response in object`) with full unit test coverage. Merged into `main`.
-
 ### #1012 — Align resource URI schemes with MCP server discovery and add context status check tool
 - **State:** RESOLVED / CLOSED ([Issue #1012](https://github.com/arii/boomtick/issues/1012); merged in [PR #1016](https://github.com/arii/boomtick/pull/1016)).
 - **Symptom:** Small/medium LLMs calling `read_mcp_resource` deduce `server: "workspace"` and `server: "repo"` from URIs like `mcp://workspace/agent-contract` and `repo://package-json`, causing immediate MCP errors (`MCP server "workspace" has no resources. Servers with resources: boomtick`).

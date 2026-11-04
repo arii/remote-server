@@ -12,7 +12,6 @@ def _make_briefing_data(**overrides):
         "conf": {}, "conf_err": None, "conf_raw": "",
         "runs": None, "runs_err": None, "runs_raw": "",
         "jobs": {},
-        "jules": [], "jules_err": None, "jules_raw": "",
     }
     base.update(overrides)
     return base

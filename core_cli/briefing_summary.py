@@ -59,11 +59,6 @@ one section, never the whole briefing):
       read existing expert work, not redo it.
   gh api repos/<repo>/actions/runs/ID/jobs   failing
       job + step names for each failing run (the likely cause).
-  td --json agent list-sessions   Jules sessions. Needs JULES_API_KEY
-      in the terminal environment; any failure degrades to an
-      unavailable note. Sessions are repo-scoped defensively: only
-      sessions whose source context names the repo are listed as such;
-      others are counted, never claimed.
 
 Attention ranking (first match wins per PR, in this order):
   conflicted > CI failing > changes requested > overlaps > stale (>30 days).
@@ -75,7 +70,7 @@ briefing shout. Drafts are listed, never attention items.
 
 Single-run worst case (#487): the serial chain is pr-list-open 60s
   + pr-list-merged 30s + status-board 60s + detect-conflicts 120s
-  + workflow-runs 60s + list-sessions 60s, plus per-PR enrichment
+  + workflow-runs 60s, plus per-PR enrichment
   capped at ENRICHMENT_CAP PRs × (gh pr view 30s + read-pr-reviews
   30s), plus one 30s jobs call per failing run. Enrichment covers
   the most-recently-updated open PRs first; when open PRs exceed
@@ -283,55 +278,6 @@ def _normalize_review(raw):
                      default="") or ""))
 
 
-def _session_repo(session):
-    """An 'owner/repo', or None, from a Jules session object —
-    checked across the field spellings the Jules API and td's
-    client use. A display name mentioning this run's repo name
-    maps to this run's gh path."""
-    if not isinstance(session, dict):
-        return None
-    candidates = []
-    ctx = session.get("sourceContext") or session.get("source_context") or {}
-    if isinstance(ctx, dict):
-        repo_ctx = ctx.get("githubRepoContext") or ctx.get("github_repo_context") or {}
-        if isinstance(repo_ctx, dict):
-            candidates.append(repo_ctx)
-        candidates.append(ctx)
-    src = session.get("source") or {}
-    if isinstance(src, dict):
-        candidates.append(src.get("githubRepo") or src.get("github_repo") or {})
-        candidates.append(src)
-    candidates.append(session)
-    for cand in candidates:
-        if not isinstance(cand, dict):
-            continue
-        owner = cand.get("owner")
-        repo = cand.get("repo")
-        if owner and repo:
-            return f"{owner}/{repo}"
-        full = cand.get("full_name") or cand.get("fullName")
-        if isinstance(full, str) and "/" in full:
-            return full
-    return None
-
-
-def _session_title(session):
-    title = getf(session, "title", default="") or ""
-    if title:
-        return _excerpt(title, 100)
-    prompt = getf(session, "prompt", default="") or ""
-    if prompt:
-        first = str(prompt).strip().splitlines()
-        if first:
-            return _excerpt(first[0], 100)
-    name = str(getf(session, "name", default="") or "")
-    return name.split("/")[-1] if name else "Jules session"
-
-
-TERMINAL_SESSION_STATES = {"SUCCEEDED", "COMPLETED", "FAILED",
-                           "CANCELLED", "TERMINATED"}
-
-
 def _overlap_prs(node, out, in_conf=False):
     """Collect {number: {"files": [...], "with": [...]}} from a
     detect-conflicts payload of unknown shape.
@@ -530,29 +476,6 @@ def fetch():
                          and getf(s, "conclusion") == "failure"]
                 failed.append((getf(job, "name", default="?"), steps[:3]))
         data["jobs"][str(run_id)] = failed[:3]
-    # Jules sessions (background agent work). One canonical command path:
-    # td --json agent list-sessions.
-    data["jules"] = None
-    data["jules_err"] = ""
-    data["jules_raw"] = ""
-    payload, raw, err = run_json(
-        ["td", "--json", "agent", "list-sessions"], 60)
-    if payload is not None:
-        found = _deep_list(payload, "sessions")
-        if isinstance(found, list):
-            data["jules"] = found
-            data["jules_raw"] = raw
-        else:
-            data["jules_err"] = "list-sessions returned no sessions list"
-    else:
-        data["jules_err"] = err
-    # A td without the agent group (e.g. the pinned
-    # cli-v0.14.2) fails with Click's "No such command" — the
-    # raw wording reads as a page bug, so say what it means
-    # and what fixes it instead.
-    if data["jules"] is None and "No such command" in (data["jules_err"] or ""):
-        data["jules_err"] = ("this td version can't list Jules sessions — "
-                             "rebuild the terminal for a newer td")
     return data
 
 
@@ -843,52 +766,6 @@ def analyze(data):
     attention_with_markers = [(t[1], t[2] if len(t) > 2 else "")
                               for t in attention_ranked]
 
-    sessions = data["jules"]
-    jules_items = []
-    jules_other = 0
-    jules_unscoped = 0
-    jules_lines = []
-    if sessions is None:
-        jules_lines.append(f"Jules sessions unavailable: {data['jules_err']}")
-    else:
-        matched = []
-        seen_session_ids = set()
-        for session in sessions:
-            if not isinstance(session, dict):
-                continue
-            sid = getf(session, "id", "sessionId", "session_id", "name")
-            if sid:
-                if sid in seen_session_ids:
-                    continue
-                seen_session_ids.add(sid)
-            state = str(getf(session, "state", default="") or "").upper()
-            if state in TERMINAL_SESSION_STATES:
-                continue
-            repo = _session_repo(session)
-            title = _session_title(session)
-            created = str(getf(session, "createTime", "create_time",
-                               default="") or "")[:10]
-            item = f"- {title} — {state.lower()}"
-            if created:
-                item += f" — {created}"
-            if repo == REPO_GH or (repo and (repo == REPO_KEY or repo.endswith("/" + REPO_KEY))):
-                matched.append(item)
-            else:
-                jules_other += 1
-        if matched:
-            jules_lines.extend(matched)
-        else:
-            jules_lines.append(
-                f"No active Jules sessions for {REPO_KEY}.")
-        if jules_other:
-            jules_lines.append(f"({jules_other} active session(s) for other "
-                               "repos, not listed.)")
-        if jules_unscoped:
-            jules_lines.append(f"({jules_unscoped} active session(s) above "
-                               "carry no repo info — listed unscoped, not "
-                               "claimed.)")
-        jules_items = matched
-
     enrichment_note = data.get("enrichment_note", "")
     enrichment_total = data.get("enrichment_total", len(prs))
     enrichment_shown = data.get("enrichment_shown", len(prs))
@@ -921,10 +798,6 @@ def analyze(data):
         "overlaps": overlaps_list, "overlaps_lines": overlaps_lines,
         "failing_runs": failing_runs, "workflow_lines": workflow_lines,
         "runs_err": data["runs_err"],
-        "jules": {"items": jules_items, "other": jules_other,
-                  "unscoped": jules_unscoped,
-                  "unavailable": data["jules_err"] if sessions is None else None},
-        "jules_lines": jules_lines,
     }
 
 
@@ -969,9 +842,6 @@ def build(data, analysis=None):
     lines.append("## Workflow health")
     lines.extend(_or_none(a["workflow_lines"]))
     lines.append("")
-    lines.append("## Agent sessions (Jules)")
-    lines.extend(a["jules_lines"])
-    lines.append("")
 
     raw_parts = []
     for name, key in (("pr-list", "prs_raw"), ("status-board", "board_raw"),
@@ -987,9 +857,6 @@ def build(data, analysis=None):
         rev_combined = "\n".join(data["reviews_raw_parts"])
         rev_cleaned = context_filter.enforce_context_budget(rev_combined, max_tokens=2000)
         raw_parts.append(f"### read-pr-reviews\n{rev_cleaned[:RAW_CAP]}")
-    if data["jules_raw"]:
-        jules_cleaned = context_filter.enforce_context_budget(data["jules_raw"], max_tokens=2000)
-        raw_parts.append(f"### agent list-sessions\n{jules_cleaned[:RAW_CAP]}")
     raw_text = "\n\n".join(raw_parts)
     return "\n".join(lines), a["attention"], raw_text
 

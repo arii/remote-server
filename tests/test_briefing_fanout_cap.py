@@ -43,8 +43,6 @@ def _payload_for(open_rows):
             return {"work": []}, "", ""
         if "detect-conflicts" in argv:
             return {}, "", ""
-        if "list-sessions" in argv:
-            return {"sessions": []}, "", ""
         return {}, "", ""
     return payload
 
@@ -80,8 +78,7 @@ def _analyze_data(**over):
         "reviews_raw_parts": [],
         "board": None, "board_raw": "", "board_err": "",
         "runs": None, "runs_raw": "", "runs_err": "",
-        "jobs": {}, "jules": [], "jules_err": "",
-        "jules_raw": "", "merged_heads": set(),
+        "jobs": {}, "merged_heads": set(),
         "enrichment_total": 0, "enrichment_shown": 0,
         "enrichment_truncated": False, "enrichment_note": "",
         "enrichment_cap": bs.ENRICHMENT_CAP,

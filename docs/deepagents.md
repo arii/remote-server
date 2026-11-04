@@ -89,7 +89,7 @@ Status: ✅ proven live · ⚙️ partial · 🔬 mapped, unrun · ⏸ stays on 
 | Suggest next actions (SUGGEST lines → allowlisted td, one-tap approve) | Reuse `td agent suggest -r <repo>` as the deterministic core; LLM adds judgment/explanation only; `interrupt_on` per action mirrors Approve | ⚙️ `td` core verified; LLM runnable-commands unproven on small models — no buttons cutover until proven |
 | Ask Pi (read-only investigate → PROPOSE → confirm → validated endpoints) | Read-only investigator subagent → structured proposal → HITL approve → validated run tool | 🔬 open-ended small-model Q&A unproven; server-side validation stays regardless |
 | Agent briefing (`pi -p` slow path) | Deterministic briefing (already `td`+Python) + optional summarizer subagent | 🔬 summarizer unrun; briefing data stays deterministic |
-| BoomTick MCP tools (PR/CI/Jules ops) | Python tools wrapping the same `td`/`gh` binaries | ✅ proven pattern (harness check, resolver, explainer all use it) |
+| BoomTick MCP tools (PR/CI ops) | Python tools wrapping the same `td`/`gh` binaries | ✅ proven pattern (harness check, resolver, explainer all use it) |
 | Sessions + `/model` switching | `checkpointer` + `thread_id`; model chosen per agent instance | ✅ mechanics proven (HITL spike, resolver); cross-thread Store memory proven |
 | Steering + skills (APPEND_SYSTEM.md, skills/) | `system_prompt` + `skills=[...]` with FilesystemBackend | 🔬 skills-on-agent unrun; custom subagents need explicit `skills` |
 | Jobs approval gates (Approve/Decline taps) | `interrupt_on` + `Command(resume=...)` approve/reject/edit | ✅ mechanics proven on Nebius; buttons-tap bridge still open |

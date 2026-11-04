@@ -34,20 +34,6 @@ const TD_COMMANDS: TdCommand[] = [
     build: (pr) => `td gh resolve-conflicts --pr ${pr}`,
   },
   {
-    slug: 'list-sessions',
-    label: 'Agent sessions',
-    desc: 'Active background agent sessions.',
-    needsPr: false,
-    build: () => 'td --json agent list-sessions',
-  },
-  {
-    slug: 'feedback-check',
-    label: 'Feedback check',
-    desc: 'Pending agent run feedback.',
-    needsPr: false,
-    build: () => 'td --json agent run-feedback-check',
-  },
-  {
     slug: 'doctor',
     label: 'Doctor',
     desc: 'Full-stack runtime diagnostic.',

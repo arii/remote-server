@@ -73,15 +73,6 @@ DEFAULT_NARRATOR_NEBIUS_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_NARRATOR_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 
 
-class JulesSection(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    items: list = Field(default_factory=list)
-    other: int = 0
-    unscoped: int = 0
-    unavailable: str | None = None
-
-
 class Briefing(BaseModel):
     """Structured briefing payload: shape of analyze() in
     core_cli/briefing_summary.py. Extra keys allowed so new briefing
@@ -111,8 +102,6 @@ class Briefing(BaseModel):
     failing_runs: list = Field(default_factory=list)
     workflow_lines: list = Field(default_factory=list)
     runs_err: str = ""
-    jules: JulesSection = Field(default_factory=JulesSection)
-    jules_lines: list = Field(default_factory=list)
     narrative: str | None = None
     narrative_at: float | None = None
     # Fixture marker (#453): True + source path when canned data

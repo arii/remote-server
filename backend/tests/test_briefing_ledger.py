@@ -102,8 +102,6 @@ class BriefingLedgerTest(unittest.TestCase):
             "attention": ["#1 — CI failing"],
             "prs": [{"number": 1, "title": "t"}],
             "failing_runs": [{"name": "ci"}],
-            "jules": {"items": [], "other": 0, "unscoped": 0,
-                      "unavailable": None},
         })
         resp = self.client.get("/api/briefing",
                                params={"repo": "remote-server"})
@@ -356,9 +354,6 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(entries[0]["kind"], "run")
         # Unknown kind -> 400, mirroring buttons.
         resp = self.client.get("/api/ledger", params={"kind": "nope"})
-        self.assertEqual(resp.status_code, 400)
-        # No Jules kind is served.
-        resp = self.client.get("/api/ledger", params={"kind": "jules"})
         self.assertEqual(resp.status_code, 400)
 
     def test_ledger_agent_turn_kind_queryable(self):

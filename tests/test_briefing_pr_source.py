@@ -39,8 +39,6 @@ def _payload_for(argv):
         return {"work": []}, "", ""
     if "detect-conflicts" in argv:
         return {}, "", ""
-    if "list-sessions" in argv:
-        return {"sessions": []}, "", ""
     return {}, "", ""
 
 
@@ -87,9 +85,6 @@ def _analyze_data(**over):
         "runs_raw": "",
         "runs_err": "",
         "jobs": {},
-        "jules": [],
-        "jules_err": "",
-        "jules_raw": "",
         "merged_heads": set(),
     }
     data.update(over)

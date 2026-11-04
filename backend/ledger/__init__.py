@@ -8,9 +8,7 @@ newest-first kind-filtered reads, and the same clear-with-tombstone
 semantics. FILE FORMAT IS IDENTICAL — data, not code, compat.
 
 Kind allowlist covers terminal/td + buttons action kinds plus the
-interactive agent-turn kind. There is deliberately no Jules-session kind:
-Jules dies post-Nov-11 and no Jules-session ledger events are
-recorded here.
+interactive agent-turn kind.
 """
 
 import json

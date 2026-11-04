@@ -2,9 +2,9 @@
 
 Security boundary: HMAC-SHA256 verification and the fail-closed
 missing-secret behavior are preserved exactly. No backcompat shims,
-no new behavior. Jules-related triggers were intentionally NOT ported
-(Jules integration is retired); only CI-fail / conflict / digest
-paths are carried over.
+no new behavior. Only CI-fail / conflict / digest paths are carried
+over (the retired agent-backend triggers were intentionally NOT
+ported, #102).
 """
 
 from __future__ import annotations
@@ -73,10 +73,9 @@ def save_notifier_state(state: dict) -> None:
         print(f"notifier state save failed: {exc}", flush=True)
 
 
-# Operator-togglable event classes (#656). `jules` is deliberately
-# absent (dead: no sender emits it — a toggle would be a fake
-# control); `test` always bypasses (explicit tap) and `info` is an
-# unused default, so neither is mutable.
+# Operator-togglable event classes (#656). `test` always bypasses
+# (explicit tap) and `info` is an unused default, so neither is
+# mutable.
 MUTABLE_EVENTS = ("ci_fail", "conflict", "digest")
 
 QUIET_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -270,7 +269,7 @@ def digest_interval_hours(default=12.0):
 
 def enabled_events():
     return [e.strip() for e in
-            os.environ.get("NOTIFY_EVENTS", "ci_fail,jules,conflict")
+            os.environ.get("NOTIFY_EVENTS", "ci_fail,conflict")
             .split(",") if e.strip()]
 
 
@@ -601,7 +600,8 @@ def delivered(results) -> bool:
 
 def check_notifications_and_digest(fetcher=None, sender=None,
                                    now=None):
-    """Port of _check_notifications_and_digest minus the Jules block.
+    """Port of _check_notifications_and_digest (CI-fail / conflict /
+    digest paths only).
 
     fetcher(repo_name) -> briefing dict (or None to skip); defaults to
     a skip (backend owns no briefing pipeline yet). sender defaults to

@@ -21,7 +21,7 @@ core_cli repair --issue N --repo R). Dispatch is a confirmed
 worker runs), repo-scoped action; a run holding the slot past
 REPAIR_WORKER_TIMEOUT is killed and records failed, never running
 forever. No labeled-event wiring here (later follow-up, and
-no notify.py changes in this port). No Jules dispatch surface.
+no notify.py changes in this port).
 """
 
 from __future__ import annotations

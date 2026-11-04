@@ -150,8 +150,7 @@ don't have:
   routes, read CI logs.
 - **Validation:** isolated repair-branch creation, verification suites
   (tests, Lighthouse, Playwright).
-- **Jules ops:** create, monitor, and interact with macro-agent Jules
-  sessions. Plus MCP resources (`mcp://workspace/agent-contract`, `repo://diff/{pr}`, `repo://ci/{pr}` … accessed via server `boomtick`)
+- **Resources & prompts:** MCP resources (`mcp://workspace/agent-contract`, `repo://diff/{pr}`, `repo://ci/{pr}` … accessed via server `boomtick`)
   and prompts (`prompt://repair-agent`, `prompt://pr-writer` …).
 
 ### Single-repo scoping — read this before use

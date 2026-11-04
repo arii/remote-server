@@ -15,9 +15,8 @@ Ports of the buttons/server.py handlers:
 - GET  /api/jobs/schedule (list action schedules + next runs)
 - DELETE /api/jobs/schedule/{id} (delete one action schedule)
 
-No Jules dispatch surface exists here (cut). Execution goes through
-backend.exec.engine, which enforces the same allowlists, timeouts,
-and output truncation as the original.
+Execution goes through backend.exec.engine, which enforces the
+same allowlists, timeouts, and output truncation as the original.
 """
 
 import difflib

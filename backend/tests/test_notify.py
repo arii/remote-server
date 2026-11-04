@@ -829,7 +829,7 @@ class NotificationsEndpointsTest(unittest.TestCase):
         self.assertFalse(body["webhook_configured"])
         self.assertEqual(body["digest_interval_hours"], 12.0)
         self.assertEqual(body["enabled_events"],
-                         ["ci_fail", "jules", "conflict"])
+                         ["ci_fail", "conflict"])
         self.assertIn("last_digest", body)
 
     def test_status_misconfig_surfaces(self):
@@ -912,7 +912,7 @@ class DigestLogicTest(unittest.TestCase):
         finally:
             os.environ.pop("DIGEST_INTERVAL_HOURS", None)
 
-    def test_ci_conflict_detection_no_jules(self):
+    def test_ci_conflict_detection(self):
         sent = []
 
         def fetcher():
@@ -937,7 +937,6 @@ class DigestLogicTest(unittest.TestCase):
                 fetcher=fetcher, sender=sender, now=1000.0)
             kinds = sorted(s["event_type"] for s in sent)
             self.assertEqual(kinds, ["ci_fail", "conflict"])
-            self.assertNotIn("jules", kinds)
             # Second run: no new transitions -> only digest logic may fire;
             # digest scheduled far future so nothing new.
             os.environ["DIGEST_INTERVAL_HOURS"] = "100000"

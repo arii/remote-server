@@ -5,7 +5,7 @@ description: Instructions and schema reference for calling BoomTick MCP tools (w
 
 # BoomTick MCP Tools & Schemas
 
-The BoomTick MCP server (`boomtick`) exposes tools for GitHub operations, repository inspections, Jules macro-agent sessions, and CI/workflow log inspections.
+The BoomTick MCP server (`boomtick`) exposes tools for GitHub operations, repository inspections, agent session dispatch, and CI/workflow log inspections.
 
 ## Working Directory & Repo-Override Convention
 

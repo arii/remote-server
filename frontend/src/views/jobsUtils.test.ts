@@ -39,7 +39,7 @@ describe('td block reasons', () => {
   it('leaves read-only commands ungated', () => {
     const pr = { n: 1, ci: 'passing', conflicted: false };
     expect(tdBlockReason('read-reviews', pr)).toBeNull();
-    expect(tdBlockReason('list-sessions', pr)).toBeNull();
+    expect(tdBlockReason('doctor', pr)).toBeNull();
   });
 });
 
