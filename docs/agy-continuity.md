@@ -38,6 +38,9 @@ separate from Muse's. Probed 2026-11-04 in the terminal container.
 
 ## Scope note
 
-No code change: `backend/exec/agent_turn.py` already runs
-`agy -p` / `agy --continue -p`, which is exactly what was probed.
+`backend/exec/agent_turn.py` runs
+`agy --output-format stream-json -p` /
+`agy --conversation <cid> --output-format stream-json -p`
+(issue #440; `--continue` is never used — it resumes the global
+most-recent conversation).
 No replacement provider needed.

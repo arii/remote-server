@@ -333,8 +333,8 @@ export default function AgentDrawer({
     const other = otherProvider(provider, providers, status);
     if (!other) return;
     // Fresh session on the new provider: session ids are
-    // provider-side state (agy --continue would resume the wrong
-    // conversation), so the sid must not cross over.
+    // provider-side state (each provider pins its own conversation),
+    // so the sid must not cross over.
     sidRef.current = null;
     setProvider(other);
     setError(null);
