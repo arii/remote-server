@@ -291,6 +291,22 @@ export function meteredTotal(runs: AgentRun[]): MeteredTotal {
   return { total: Math.round(total * 1e6) / 1e6, unknown, free };
 }
 
+// One quiet Past-runs refetch after a completed send: the backend
+// has recorded a new run, so the list would otherwise stay stale
+// until a remount. The fresh list replaces, never appends (no
+// duplicate rows); failures stay silent — a stale list beats a
+// bogus chat error.
+export async function refreshRunsQuiet(
+  fetchRuns: () => Promise<{ runs: AgentRun[] }>,
+  setRuns: (runs: AgentRun[]) => void,
+): Promise<void> {
+  try {
+    setRuns((await fetchRuns()).runs);
+  } catch {
+    // Past runs stay as they were; live chat still works.
+  }
+}
+
 export interface RunDecision {
   what: string;
   why: string;
@@ -887,6 +903,7 @@ export default function ChatView({
     setMessages((m) => [...m, { role: 'assistant', text: '' }]);
     try {
       await streamLive(text, sessionId);
+      await refreshRunsQuiet(fetchAgentRuns, setRuns);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
