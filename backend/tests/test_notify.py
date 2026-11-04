@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -167,13 +168,17 @@ class WebhookWorkerTest(unittest.TestCase):
         state = N.webhook_state.get("arii/x", {})
         self.assertFalse(state.get("ok"))
         self.assertIn("boom", state.get("detail", ""))
+        self.assertIsNone(state.get("observed"))
         self.assertEqual(len(appended), 1)
         self.assertEqual(appended[0]["kind"], "webhook")
         self.assertFalse(appended[0]["ok"])
+        self.assertIsNone(appended[0]["observed"])
 
     def test_success_appends_ledger(self):
         orig_pull = N.webhook_pull
-        N.webhook_pull = lambda path: (True, "up to date", False)
+        obs = {"ok": True, "detail": "observed", "origin": "ooo",
+               "head": "aaa", "lag": 0, "ahead": 0}
+        N.webhook_pull = lambda path: (True, "up to date", False, obs)
         appended = []
         orig_append = N.ledger.append
         N.ledger.append = appended.append
@@ -185,6 +190,30 @@ class WebhookWorkerTest(unittest.TestCase):
         self.assertEqual(len(appended), 1)
         self.assertTrue(appended[0]["ok"])
         self.assertEqual(appended[0]["repo"], "arii/x")
+        self.assertEqual(appended[0]["observed"], obs)
+        state = N.webhook_state.get("arii/x", {})
+        self.assertEqual(state.get("observed"), obs)
+
+    def test_skip_records_observed_positions(self):
+        orig_pull = N.webhook_pull
+        obs = {"ok": True, "detail": "observed", "origin": "ooo",
+               "head": "aaa", "lag": 3, "ahead": 0}
+        detail = ("skipped: tree dirty \u2014 behind by 3 "
+                  "(local changes)")
+        N.webhook_pull = lambda path: (True, detail, False, obs)
+        appended = []
+        orig_append = N.ledger.append
+        N.ledger.append = appended.append
+        try:
+            N.webhook_worker("arii/x", "/tmp")
+        finally:
+            N.webhook_pull = orig_pull
+            N.ledger.append = orig_append
+        self.assertEqual(len(appended), 1)
+        self.assertTrue(appended[0]["ok"])
+        self.assertFalse(appended[0]["advanced"])
+        self.assertEqual(appended[0]["observed"], obs)
+        self.assertEqual(appended[0]["observed"]["lag"], 3)
 
 
 class WebhookPullSkipTest(unittest.TestCase):
@@ -208,44 +237,128 @@ class WebhookPullSkipTest(unittest.TestCase):
     GIT = ["git", "-c", "safe.directory=/tmp", "-C", "/tmp",
            "-c", "core.hooksPath=/dev/null"]
 
+    OBSERVE = [
+        (0, "aaa\n", ""),   # rev-parse HEAD
+        (0, "", ""),        # fetch
+        (0, "ooo\n", ""),   # rev-parse origin/main
+        (0, "3\n", ""),     # rev-list lag
+        (0, "0\n", ""),     # rev-list ahead
+    ]
+    OBSERVE_CALLS = [
+        ["rev-parse", "HEAD"],
+        ["fetch", "origin"],
+        ["rev-parse", "origin/main"],
+        ["rev-list", "--count", "HEAD..origin/main"],
+        ["rev-list", "--count", "origin/main..HEAD"],
+    ]
+
     def test_not_ancestor_skips_quietly(self):
-        (ok, detail, advanced), calls = self._pull([
-            (0, "aaa\n", ""),   # rev-parse HEAD
-            (0, "", ""),        # fetch
-            (1, "", ""),        # merge-base: not ff-able
-        ])
+        (ok, detail, advanced, observed), calls = self._pull(
+            self.OBSERVE + [
+                (1, "", ""),        # merge-base: not ff-able
+            ])
         self.assertTrue(ok)
-        self.assertEqual(detail, "skipped: tree not ff-able")
+        self.assertEqual(
+            detail,
+            "skipped: tree not ff-able \u2014 behind by 3 "
+            "(local changes)")
         self.assertFalse(advanced)
+        # Remote state is fresh even though the tree did not move.
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["origin"], "ooo")
+        self.assertEqual(observed["head"], "aaa")
+        self.assertEqual(observed["lag"], 3)
+        self.assertEqual(observed["ahead"], 0)
         # Merge never attempted.
         self.assertEqual(
             calls,
-            [self.GIT + ["rev-parse", "HEAD"],
-             self.GIT + ["fetch", "origin"],
-             self.GIT + ["merge-base", "--is-ancestor",
-                         "HEAD", "origin/main"]])
+            [self.GIT + args for args in self.OBSERVE_CALLS] + [
+                self.GIT + ["merge-base", "--is-ancestor",
+                            "HEAD", "origin/main"]])
 
     def test_dirty_tree_skips_quietly(self):
-        (ok, detail, _), calls = self._pull([
+        (ok, detail, advanced, observed), calls = self._pull(
+            self.OBSERVE + [
+                (0, "", ""),        # merge-base: ff-able
+                (0, " M x\n", ""),  # status: dirty
+            ])
+        self.assertTrue(ok)
+        self.assertEqual(
+            detail,
+            "skipped: tree dirty \u2014 behind by 3 (local changes)")
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["lag"], 3)
+        self.assertEqual(
+            calls,
+            [self.GIT + args for args in self.OBSERVE_CALLS] + [
+                self.GIT + ["merge-base", "--is-ancestor",
+                            "HEAD", "origin/main"],
+                self.GIT + ["status", "--porcelain"]])
+
+    def test_skip_without_lag_falls_back_to_bare_reason(self):
+        (ok, detail, advanced, observed), _ = self._pull([
             (0, "aaa\n", ""),
             (0, "", ""),
-            (0, "", ""),        # merge-base: ff-able
-            (0, " M x\n", ""),  # status: dirty
+            (0, "ooo\n", ""),
+            (1, "", "fatal: bad revision"),  # lag unresolvable
+            (1, "", "fatal: bad revision"),  # ahead unresolvable
+            (0, "", ""),
+            (0, " M x\n", ""),
         ])
         self.assertTrue(ok)
         self.assertEqual(detail, "skipped: tree dirty")
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertIsNone(observed["lag"])
+
+    def test_fetch_failure_is_an_error(self):
+        (ok, detail, advanced, observed), calls = self._pull([
+            (0, "aaa\n", ""),
+            (1, "", "fatal: could not read from remote\n"
+                   "network unreachable"),
+        ])
+        self.assertFalse(ok)
+        self.assertEqual(detail, "network unreachable")
+        self.assertFalse(advanced)
+        self.assertFalse(observed["ok"])
+        self.assertIsNone(observed["origin"])
+        self.assertEqual(observed["head"], "aaa")
+        # Nothing past the failed fetch is attempted.
         self.assertEqual(
             calls,
             [self.GIT + ["rev-parse", "HEAD"],
-             self.GIT + ["fetch", "origin"],
-             self.GIT + ["merge-base", "--is-ancestor",
-                         "HEAD", "origin/main"],
-             self.GIT + ["status", "--porcelain"]])
+             self.GIT + ["fetch", "origin"]])
 
     def test_clean_ffable_merges(self):
-        (ok, detail, advanced), calls = self._pull([
+        (ok, detail, advanced, observed), calls = self._pull(
+            self.OBSERVE + [
+                (0, "", ""),
+                (0, "", ""),
+                (0, "Updating aaa..ooo\n", ""),
+                (0, "ooo\n", ""),
+            ])
+        self.assertTrue(ok)
+        self.assertEqual(detail, "Updating aaa..ooo")
+        self.assertTrue(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["lag"], 3)
+        self.assertEqual(
+            calls,
+            [self.GIT + args for args in self.OBSERVE_CALLS] + [
+                self.GIT + ["merge-base", "--is-ancestor",
+                            "HEAD", "origin/main"],
+                self.GIT + ["status", "--porcelain"],
+                self.GIT + ["merge", "--ff-only", "origin/main"],
+                self.GIT + ["rev-parse", "HEAD"]])
+
+    def test_clean_current_is_noop(self):
+        (ok, detail, advanced, observed), _ = self._pull([
             (0, "aaa\n", ""),
             (0, "", ""),
+            (0, "aaa\n", ""),
+            (0, "0\n", ""),
+            (0, "0\n", ""),
             (0, "", ""),
             (0, "", ""),
             (0, "Already up to date.\n", ""),
@@ -254,15 +367,110 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(detail, "Already up to date.")
         self.assertFalse(advanced)
-        self.assertEqual(
-            calls,
-            [self.GIT + ["rev-parse", "HEAD"],
-             self.GIT + ["fetch", "origin"],
-             self.GIT + ["merge-base", "--is-ancestor",
-                         "HEAD", "origin/main"],
-             self.GIT + ["status", "--porcelain"],
-             self.GIT + ["merge", "--ff-only", "origin/main"],
-             self.GIT + ["rev-parse", "HEAD"]])
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["lag"], 0)
+
+
+@unittest.skipUnless(shutil.which("git"), "git binary not available")
+class WebhookPullRealGitTest(unittest.TestCase):
+    """End-to-end pull behavior against fixture repos: dirty and
+    diverged checkouts observe fresh remote state without advancing,
+    clean checkouts fast-forward exactly as before. The dirt
+    byte-identity assert is the #715 zero-writes-to-dirty-trees
+    acceptance."""
+
+    def _git(self, args, cwd):
+        env = dict(os.environ)
+        env.update({"GIT_AUTHOR_NAME": "lane",
+                    "GIT_AUTHOR_EMAIL": "lane@test",
+                    "GIT_COMMITTER_NAME": "lane",
+                    "GIT_COMMITTER_EMAIL": "lane@test",
+                    "GIT_CONFIG_NOSYSTEM": "1"})
+        proc = subprocess.run(
+            ["git", "-c", "init.defaultBranch=main",
+             "-c", "commit.gpgsign=false",
+             "-c", f"safe.directory={cwd}", "-C", cwd] + args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60, text=True, env=env)
+        self.assertEqual(proc.returncode, 0,
+                         f"git {args}: {proc.stderr[-300:]}")
+        return proc.stdout.strip()
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pull715-")
+        self.origin = os.path.join(self.tmp, "origin.git")
+        self._git(["init", "--bare", self.origin], cwd=self.tmp)
+        seed = os.path.join(self.tmp, "seed")
+        self._git(["clone", self.origin, seed], cwd=self.tmp)
+        self._git(["checkout", "-b", "main"], cwd=seed)
+        with open(os.path.join(seed, "file.txt"), "w") as f:
+            f.write("v1\n")
+        self._git(["add", "file.txt"], cwd=seed)
+        self._git(["commit", "-m", "v1"], cwd=seed)
+        self._git(["push", "-u", "origin", "main"], cwd=seed)
+        self.v1 = self._git(["rev-parse", "HEAD"], cwd=seed)
+        # Clone at v1, then advance origin: work starts behind by 1.
+        self.work = os.path.join(self.tmp, "work")
+        self._git(["clone", "-b", "main", self.origin, self.work],
+                  cwd=self.tmp)
+        with open(os.path.join(seed, "file.txt"), "a") as f:
+            f.write("v2\n")
+        self._git(["commit", "-am", "v2"], cwd=seed)
+        self._git(["push", "origin", "main"], cwd=seed)
+        self.v2 = self._git(["rev-parse", "HEAD"], cwd=seed)
+        self.assertNotEqual(self.v1, self.v2)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _head(self):
+        return self._git(["rev-parse", "HEAD"], cwd=self.work)
+
+    def test_dirty_tree_observes_without_advancing(self):
+        target = os.path.join(self.work, "file.txt")
+        with open(target, "ab") as f:
+            f.write(b"local-dirt\n")
+        with open(target, "rb") as f:
+            before = f.read()
+        ok, detail, advanced, observed = N.webhook_pull(self.work)
+        self.assertTrue(ok)
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["origin"], self.v2)
+        self.assertEqual(observed["head"], self.v1)
+        self.assertEqual(observed["lag"], 1)
+        self.assertEqual(observed["ahead"], 0)
+        self.assertTrue(detail.startswith("skipped: tree dirty"))
+        self.assertIn("behind by 1 (local changes)", detail)
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(self._head(), self.v1)
+
+    def test_diverged_tree_observes_without_advancing(self):
+        with open(os.path.join(self.work, "file.txt"), "a") as f:
+            f.write("local-commit\n")
+        self._git(["commit", "-am", "local"], cwd=self.work)
+        local = self._head()
+        ok, detail, advanced, observed = N.webhook_pull(self.work)
+        self.assertTrue(ok)
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["origin"], self.v2)
+        self.assertEqual(observed["lag"], 1)
+        self.assertEqual(observed["ahead"], 1)
+        self.assertTrue(
+            detail.startswith("skipped: tree not ff-able"))
+        self.assertIn("behind by 1 (local changes)", detail)
+        self.assertEqual(self._head(), local)
+
+    def test_clean_tree_still_fast_forwards(self):
+        ok, detail, advanced, observed = N.webhook_pull(self.work)
+        self.assertTrue(ok)
+        self.assertTrue(advanced)
+        self.assertTrue(observed["ok"])
+        self.assertEqual(observed["origin"], self.v2)
+        self.assertEqual(observed["lag"], 1)
+        self.assertEqual(self._head(), self.v2)
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")

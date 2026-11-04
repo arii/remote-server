@@ -23,7 +23,8 @@ from backend import ledger
 
 WEBHOOK_MAX_BODY = 10_000_000
 
-webhook_state: dict = {}  # repo -> {"at": epoch, "ok": bool, "detail": str}
+webhook_state: dict = {}  # repo -> {"at": epoch, "ok": bool,
+#   "detail": str, "advanced": bool, "observed": {...}}
 webhook_state_lock = threading.Lock()
 webhook_pull_lock = threading.Lock()  # serializes pulls, not status reads
 webhook_pending: set = set()
@@ -690,31 +691,100 @@ def check_notifications_and_digest(fetcher=None, sender=None,
         return state
 
 
+def _git_base(path):
+    """git argv prefix for the pull path: quarantined hooks, explicit
+    safe.directory. Observe/advance only — never rebuilds, never
+    installs deps, never runs hooks (core.hooksPath=/dev/null)."""
+    return ["git", "-c", f"safe.directory={path}", "-C", path,
+            "-c", "core.hooksPath=/dev/null"]
+
+
+def webhook_observe(path):
+    """Observe-only remote state: fetch origin, record origin/main +
+    HEAD positions and lag. Never writes to the tree: no merge, no
+    checkout, no stash, no reset — safe on dirty/diverged checkouts.
+
+    Returns {"ok", "detail", "origin", "head", "lag", "ahead"}: lag
+    is commits behind origin/main (HEAD..origin/main), ahead is
+    local-only commits (origin/main..HEAD). ok=False means the fetch
+    itself failed and no remote state was observed.
+    """
+    git = _git_base(path)
+    env = dict(os.environ)
+    observed = {"ok": False, "detail": "", "origin": None,
+                "head": None, "lag": None, "ahead": None}
+    try:
+        observed["head"] = subprocess.run(
+            git + ["rev-parse", "HEAD"], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=30, text=True,
+            env=env).stdout.strip() or None
+    except Exception:
+        observed["head"] = None
+    fetch = subprocess.run(
+        git + ["fetch", "origin"], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=120, text=True, env=env)
+    if fetch.returncode != 0:
+        observed["detail"] = (
+            (fetch.stderr or "").strip().splitlines()[-1]
+            if (fetch.stderr or "").strip() else "fetch failed")
+        return observed
+    try:
+        observed["origin"] = subprocess.run(
+            git + ["rev-parse", "origin/main"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, text=True, env=env).stdout.strip() or None
+    except Exception:
+        observed["origin"] = None
+    for key, rev_range in (("lag", "HEAD..origin/main"),
+                           ("ahead", "origin/main..HEAD")):
+        try:
+            out = subprocess.run(
+                git + ["rev-list", "--count", rev_range],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=30, text=True, env=env).stdout.strip()
+            observed[key] = int(out)
+        except Exception:
+            observed[key] = None
+    observed["ok"] = True
+    observed["detail"] = "observed"
+    return observed
+
+
+def _skip_detail(reason, observed):
+    """Skip detail with fresh lag: 'skipped: <reason> — behind by N
+    (local changes)'. Falls back to the bare reason when lag is
+    unknown. Always starts with 'skipped' (attention matcher)."""
+    lag = (observed or {}).get("lag")
+    if isinstance(lag, bool) or not isinstance(lag, int):
+        return f"skipped: {reason}"
+    return f"skipped: {reason} \u2014 behind by {lag} (local changes)"
+
+
 def webhook_pull(path):
-    """Pull-only auto-pull: fetch + fast-forward merge of origin/main.
+    """Pull-only auto-pull: observe remote state, then fast-forward.
+
+    Observe (fetch + record origin/main and HEAD positions + lag)
+    always runs, even on dirty/diverged trees; advance (merge
+    --ff-only) runs only when status --porcelain is empty AND HEAD is
+    an ancestor of origin/main. Never touches local modifications: no
+    stash, no reset, no checkout, no branch changes.
 
     Never rebuilds, never installs deps, never runs hooks
-    (core.hooksPath=/dev/null). Returns (ok, detail, advanced).
+    (core.hooksPath=/dev/null). Returns (ok, detail, advanced,
+    observed): observed is the webhook_observe dict — remote state
+    fresh even when the local tree did not move.
     """
-    git = ["git", "-c", f"safe.directory={path}", "-C", path,
-           "-c", "core.hooksPath=/dev/null"]
+    git = _git_base(path)
     env = dict(os.environ)
+    observed = {"ok": False, "detail": "", "origin": None,
+                "head": None, "lag": None, "ahead": None}
     with webhook_pull_lock:
         try:
-            old_head = subprocess.run(
-                git + ["rev-parse", "HEAD"], stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=30, text=True,
-                env=env).stdout.strip() or None
-        except Exception:
-            old_head = None
-        try:
-            fetch = subprocess.run(
-                git + ["fetch", "origin"], stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=120, text=True, env=env)
-            if fetch.returncode != 0:
+            observed = webhook_observe(path)
+            if not observed.get("ok"):
                 raise RuntimeError(
-                    (fetch.stderr or "").strip().splitlines()[-1]
-                    if fetch.stderr.strip() else "fetch failed")
+                    observed.get("detail") or "fetch failed")
+            old_head = observed.get("head")
             ancestor = subprocess.run(
                 git + ["merge-base", "--is-ancestor",
                        "HEAD", "origin/main"],
@@ -722,13 +792,16 @@ def webhook_pull(path):
                 timeout=30, text=True, env=env)
             if ancestor.returncode == 1:
                 # Mid-work checkout: quiet skip, not a failure alert.
-                return True, "skipped: tree not ff-able", False
+                # Remote state was still observed (fetch + lag above).
+                return True, _skip_detail(
+                    "tree not ff-able", observed)[:200], False, observed
             tree = subprocess.run(
                 git + ["status", "--porcelain"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=30, text=True, env=env)
             if (tree.stdout or "").strip():
-                return True, "skipped: tree dirty", False
+                return True, _skip_detail(
+                    "tree dirty", observed)[:200], False, observed
             merge = subprocess.run(
                 git + ["merge", "--ff-only", "origin/main"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -750,21 +823,26 @@ def webhook_pull(path):
                             and old_head != new_head)
         except Exception as exc:
             ok, detail, advanced = False, str(exc)[:200], False
-    return ok, detail, advanced
+    return ok, detail, advanced, observed
 
 
 def webhook_worker(repo, path):
     try:
-        ok, detail, advanced = webhook_pull(path)
+        ok, detail, advanced, observed = webhook_pull(path)
     except Exception as exc:  # never stick pending: coalesce would
         ok, detail, advanced = False, f"worker crashed: {exc}", False
+        observed = None
     with webhook_state_lock:
         webhook_state[repo] = {"at": time.time(), "ok": ok,
-                               "detail": detail, "advanced": advanced}
+                               "detail": detail, "advanced": advanced,
+                               "observed": observed}
         webhook_pending.discard(repo)
     # Every outcome hits the ledger: successes resolve the attention
-    # incidents that failures raise. append() never raises.
+    # incidents that failures raise. Skips carry fresh observed
+    # positions + lag so lagging checkouts never go stale. append()
+    # never raises.
     ledger.append({"kind": "webhook", "repo": repo, "ok": ok,
-                   "advanced": advanced, "detail": detail[:200]})
+                   "advanced": advanced, "detail": detail[:200],
+                   "observed": observed})
     print(f"webhook pull {repo}: {'ok' if ok else 'FAILED'}: {detail}",
           flush=True)
