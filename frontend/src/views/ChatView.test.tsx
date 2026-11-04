@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, runCost, runDecisions, RunsPane, saveChatMessages, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, RunsPane, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1071,5 +1071,71 @@ describe('stream error parsing (issue #466)', () => {
     await expect(pump(['event: error\ndata: {"error":""}\n\n'])).rejects.toThrow(
       /^\{"error":""\}$/,
     );
+  });
+});
+
+describe('conversation thread continuity (issue #467)', () => {
+  function stubSessionStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reuses the live id across sends without minting', () => {
+    const mint = vi.fn(() => 'fresh-id');
+    expect(resolveChatSessionId('live-id', 'stored-id', mint)).toBe('live-id');
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it('restores the stored snapshot when no live id exists', () => {
+    const mint = vi.fn(() => 'fresh-id');
+    expect(resolveChatSessionId(null, 'stored-id', mint)).toBe('stored-id');
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  it('mints only when neither a live id nor a snapshot exists', () => {
+    const mint = vi.fn(() => 'fresh-id');
+    expect(resolveChatSessionId(null, null, mint)).toBe('fresh-id');
+    expect(mint).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats empty ids as absent, falling through to mint', () => {
+    const mint = vi.fn(() => 'fresh-id');
+    expect(resolveChatSessionId('', '', mint)).toBe('fresh-id');
+    expect(resolveChatSessionId('', 'stored-id', mint)).toBe('stored-id');
+    expect(mint).toHaveBeenCalledTimes(1);
+  });
+
+  it('round-trips the thread id through sessionStorage under the session key', () => {
+    const store = stubSessionStorage();
+    saveChatSessionId('thread-abc');
+    expect(store.get(CHAT_SESSION_KEY)).toBe('thread-abc');
+    expect(loadChatSessionId()).toBe('thread-abc');
+  });
+
+  it('loads null when no snapshot is stored', () => {
+    stubSessionStorage();
+    expect(loadChatSessionId()).toBe(null);
+    stubSessionStorage({ [CHAT_SESSION_KEY]: '' });
+    expect(loadChatSessionId()).toBe(null);
+  });
+
+  it('clears the snapshot on new chat so the next send mints fresh', () => {
+    const store = stubSessionStorage({ [CHAT_SESSION_KEY]: 'thread-abc' });
+    clearChatSessionId();
+    expect(store.has(CHAT_SESSION_KEY)).toBe(false);
+    expect(loadChatSessionId()).toBe(null);
   });
 });
