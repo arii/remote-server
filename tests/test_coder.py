@@ -47,7 +47,6 @@ class TestAllowlist(unittest.TestCase):
             ["pnpm", "exec", "vitest", "run", "x.test.ts"]))
         self.assertTrue(coder.check_allowed(
             ["git", "diff", "--stat"]))
-        self.assertTrue(coder.check_allowed(["npx", "tsc", "--noEmit"]))
 
     def test_direct_test_file(self):
         self.assertTrue(coder.check_allowed(
@@ -70,6 +69,9 @@ class TestAllowlist(unittest.TestCase):
         self.assertFalse(coder.check_allowed(
             ["python3", "-m", "pytester"]))
         self.assertFalse(coder.check_allowed(["pytestx"]))
+        # `npx tsc` fetches the `tsc` squat placeholder, not TypeScript.
+        self.assertFalse(coder.check_allowed(["npx", "tsc", "--noEmit"]))
+        self.assertFalse(coder.check_allowed(["npx", "tsc"]))
 
 
 class TestSystemPrompt(unittest.TestCase):

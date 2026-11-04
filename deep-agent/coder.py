@@ -44,6 +44,8 @@ CHECK_TIMEOUT = 300
 CHECK_OUTPUT_LIMIT = 4000
 
 # run_check allowlist: argv prefixes (pinned cwd, capped output).
+# NOTE: no ("npx", "tsc") — it fetches the `tsc` squat placeholder,
+# not TypeScript, so it stays rejected (see #517 for the twin fix).
 CHECK_PREFIXES = (
     ("python3", "-m", "pytest"),
     ("pytest",),
@@ -52,7 +54,6 @@ CHECK_PREFIXES = (
     ("pnpm", "run", "lint"),
     ("pnpm", "run", "type-check"),
     ("npm", "test"),
-    ("npx", "tsc"),
     ("go", "test"),
     ("git", "diff"),
     ("git", "status"),
