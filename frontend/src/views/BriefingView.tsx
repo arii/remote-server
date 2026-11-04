@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
 import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
-import { toHistoryRows } from './historyUtils';
+import { isHistoryFailure, toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
 import RepoLabel from '../components/RepoLabel';
 
@@ -660,13 +660,16 @@ export function inActivityWindow(
 }
 
 // Activity counts from ledger timestamps, labelled by window.
+// Failures reuse the History tone predicate (issue #506): only
+// webhook entries carry ok, so ok-only missed run/chat/agent
+// failures and the two views disagreed on the same ledger.
 export function dayTrend(
   entries: LedgerEntry[],
   nowSec: number,
   window: ActivityWindow = '24h',
 ): string {
   const recent = inActivityWindow(entries, window, nowSec);
-  const failures = recent.filter((e) => e.ok === false).length;
+  const failures = recent.filter(isHistoryFailure).length;
   return `Last ${window}: ${recent.length} event${recent.length === 1 ? '' : 's'}, ${failures} failure${failures === 1 ? '' : 's'}.`;
 }
 
