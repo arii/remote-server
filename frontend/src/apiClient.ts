@@ -1364,14 +1364,11 @@ export function triggerDigest(): Promise<DigestResult> {
   return postJson<DigestResult>('api/notifications/trigger-digest', {});
 }
 
-// Notification preferences + quiet hours (issue #656). One object,
-// one round trip: muted event classes, the quiet window (or null),
-// the toggleable vocabulary, and a held-digest timestamp (or null).
+// Notification preferences (issue #656). One object, one round
+// trip: muted event classes plus the toggleable vocabulary.
 export interface NotificationPreferences {
   muted_events: string[];
-  quiet_hours: { start: string; end: string } | null;
   events: string[];
-  held_until: number | null;
 }
 
 export function fetchNotificationPreferences(): Promise<NotificationPreferences> {
@@ -1380,7 +1377,6 @@ export function fetchNotificationPreferences(): Promise<NotificationPreferences>
 
 export function saveNotificationPreferences(body: {
   muted_events?: string[];
-  quiet_hours?: { start: string; end: string } | null;
 }): Promise<NotificationPreferences> {
   return postJson<NotificationPreferences>('api/notifications/preferences', body);
 }
@@ -1392,7 +1388,6 @@ export interface DigestSchedule {
   next_run: number | null;
   last_sent: number | null;
   last_result: { ok?: boolean; at?: number; error?: string };
-  held_until: number | null;
 }
 
 export function fetchDigestSchedule(): Promise<DigestSchedule> {

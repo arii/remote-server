@@ -78,13 +78,13 @@ def gh_list_prs():
     }])
 
 
-def gh_pr_view(ci_conclusion="SUCCESS", merge="CLEAN"):
+def gh_pr_view(ci_conclusion="SUCCESS", merge="CLEAN", review="APPROVED"):
     status = "COMPLETED" if ci_conclusion != "IN_PROGRESS" else "IN_PROGRESS"
     concl = ci_conclusion if ci_conclusion != "IN_PROGRESS" else ""
     return json.dumps({
         "number": 7, "title": "Fix thing", "headRefName": "fix-thing",
         "baseRefName": "main", "mergeable": "MERGEABLE",
-        "mergeStateStatus": merge, "reviewDecision": "APPROVED",
+        "mergeStateStatus": merge, "reviewDecision": review,
         "statusCheckRollup": [{"name": "ci", "conclusion": concl,
                                "status": status}],
         "updatedAt": "2026-01-01T00:00:00Z",
@@ -121,7 +121,8 @@ class CiLabelTest(unittest.TestCase):
 
 PR_VIEW_GATE_ARGV = ["gh", "pr", "view", "7", "--repo",
                      "arii/remote-server", "--json",
-                     "statusCheckRollup,mergeStateStatus"]
+                     "statusCheckRollup,mergeStateStatus,"
+                     "reviewDecision"]
 PR_DIFF_ARGV = ["gh", "pr", "diff", "7", "--repo",
                 "arii/remote-server"]
 
@@ -129,14 +130,16 @@ PR_DIFF_ARGV = ["gh", "pr", "diff", "7", "--repo",
 class PrsTest(unittest.TestCase):
     def test_list_shapes_rows(self):
         runner = FakeRunner().on(
-            ["gh"], FakeProc(stdout=gh_list_prs()))
+            ["gh", "pr", "list"], FakeProc(stdout=gh_list_prs())).on(
+            ["gh", "api", "user"], FakeProc(stdout="octo"))
         out = pulls_mod.prs(repo="remote-server", runner=runner)
         self.assertEqual(out["repo"], "remote-server")
         self.assertEqual(
             runner.calls,
             [["gh", "pr", "list", "--repo", "arii/remote-server",
               "--state", "open", "--limit", "50",
-              "--json", pulls_mod.PR_LIST_FIELDS]])
+              "--json", pulls_mod.PR_LIST_FIELDS],
+             ["gh", "api", "user", "--jq", ".login"]])
         row = out["prs"][0]
         self.assertEqual(
             (row["number"], row["title"], row["author"], row["branch"],
@@ -144,6 +147,10 @@ class PrsTest(unittest.TestCase):
              row["mergeable"]),
             (7, "Fix thing", "octo", "fix-thing", "passing", "passing",
              "APPROVED", "MERGEABLE"))
+        # #848: an APPROVED decision means reviews are in play, and
+        # the list carries the viewer login for self-approval checks.
+        self.assertTrue(row["reviewRequired"])
+        self.assertEqual(out["viewer"], "octo")
 
     def test_list_rows_carry_updated_at(self):
         # Backend follow-up for #817: Review sort orders by updatedAt.
@@ -546,6 +553,119 @@ class PrActionTest(unittest.TestCase):
                 intent="pr-approve", confirmed=True))
             self.assertTrue(out["ok"])
             branch_mock.assert_called_once_with("remote-server", "")
+
+
+class ApproveMergeGate848Test(unittest.TestCase):
+    """Console approve/merge gating for self-authored PRs (#848)."""
+
+    def test_approve_own_pr_is_400_not_500(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "review"],
+            FakeProc(stderr="GraphQL: Can not approve your own "
+                            "pull request",
+                     returncode=1))
+        with self.assertRaises(ValueError) as ctx:
+            _pr_action("arii/remote-server", 7, "approve",
+                       runner=runner)
+        # ValueError (not RuntimeError) so the endpoint answers 400.
+        self.assertNotIsInstance(ctx.exception, RuntimeError)
+        self.assertIn("own PR", str(ctx.exception))
+
+    def test_approve_other_errors_still_raise(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "review"],
+            FakeProc(stderr="GraphQL: something else broke",
+                     returncode=1))
+        with self.assertRaises(RuntimeError):
+            _pr_action("arii/remote-server", 7, "approve",
+                       runner=runner)
+
+    def test_approve_own_pr_endpoint_returns_400(self):
+        from fastapi import HTTPException
+
+        with patch.object(
+                pulls_mod, "run_gh",
+                side_effect=RuntimeError(
+                    "Can not approve your own pull request")):
+            with self.assertRaises(HTTPException) as ctx:
+                pulls_mod.pr_action(pulls_mod.PrActionRequest(
+                    repo="remote-server", pr_number=7,
+                    action="approve", intent="pr-approve",
+                    confirmed=True))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("own PR", ctx.exception.detail)
+
+    def test_merge_refuses_review_required(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=gh_pr_view(
+                "SUCCESS", "CLEAN", "REVIEW_REQUIRED")))
+        with self.assertRaises(ValueError) as ctx:
+            _pr_action("arii/remote-server", 7, "merge",
+                       runner=runner)
+        self.assertIn("REVIEW_REQUIRED", str(ctx.exception))
+        self.assertEqual(runner.calls, [PR_VIEW_GATE_ARGV])
+
+    def test_merge_refuses_changes_requested(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=gh_pr_view(
+                "SUCCESS", "CLEAN", "CHANGES_REQUESTED")))
+        with self.assertRaises(ValueError) as ctx:
+            _pr_action("arii/remote-server", 7, "merge",
+                       runner=runner)
+        self.assertIn("changes were requested", str(ctx.exception))
+
+    def test_merge_allows_blank_decision(self):
+        # Blank decision = no required-review rule: a green PR merges.
+        runner = FakeRunner().on(
+            ["gh", "pr", "view"],
+            FakeProc(stdout=gh_pr_view("SUCCESS", "CLEAN", ""))).on(
+            ["gh", "pr", "merge"], FakeProc(stdout="merged"))
+        out = _pr_action("arii/remote-server", 7, "merge",
+                         runner=runner)
+        self.assertTrue(out["ok"])
+
+    def test_rows_flag_blank_decision_not_required(self):
+        payload = json.dumps([
+            {"number": 7, "title": "Reviewed", "isDraft": False,
+             "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
+             "headRefName": "a", "statusCheckRollup": [],
+             "url": "https://example.invalid/7",
+             "author": {"login": "octo"}},
+            {"number": 9, "title": "Unreviewed", "isDraft": False,
+             "mergeable": "MERGEABLE", "reviewDecision": None,
+             "headRefName": "b", "statusCheckRollup": [],
+             "url": "https://example.invalid/9",
+             "author": {"login": "octo"}},
+        ])
+        runner = FakeRunner().on(
+            ["gh", "pr", "list"], FakeProc(stdout=payload)).on(
+            ["gh", "api", "user"], FakeProc(stdout="octo"))
+        out = pulls_mod.prs(repo="remote-server", runner=runner)
+        rows = {r["number"]: r for r in out["prs"]}
+        self.assertTrue(rows[7]["reviewRequired"])
+        self.assertEqual(rows[9]["reviewDecision"], "")
+        self.assertFalse(rows[9]["reviewRequired"])
+        self.assertEqual(out["viewer"], "octo")
+
+    def test_viewer_failure_fails_open(self):
+        runner = FakeRunner().on(
+            ["gh", "pr", "list"],
+            FakeProc(stdout=gh_list_prs())).on(
+            ["gh", "api", "user"],
+            FakeProc(stderr="auth error", returncode=1))
+        out = pulls_mod.prs(repo="remote-server", runner=runner)
+        self.assertEqual(out["viewer"], "")
+        self.assertEqual(len(out["prs"]), 1)
+
+    def test_viewer_rejects_garbage(self):
+        for stdout in ("", "   ", "[1, 2]", "a/b", '"quoted login"'):
+            runner = FakeRunner().on(
+                ["gh", "pr", "list"],
+                FakeProc(stdout=gh_list_prs())).on(
+                ["gh", "api", "user"], FakeProc(stdout=stdout))
+            out = pulls_mod.prs(repo="remote-server", runner=runner)
+            self.assertEqual(out["viewer"], "",
+                             f"stdout={stdout!r}")
 
 
 class IssuesTest(unittest.TestCase):

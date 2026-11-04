@@ -277,7 +277,7 @@ describe('activity window (issue #609)', () => {
 
 describe('digest schedule line (issue #636)', () => {
   function sched(over: Partial<DigestSchedule> = {}): DigestSchedule {
-    return { cadence: 'off', next_run: null, last_sent: null, last_result: {}, held_until: null, ...over };
+    return { cadence: 'off', next_run: null, last_sent: null, last_result: {}, ...over };
   }
 
   it('reports off plainly', () => {
@@ -323,7 +323,7 @@ describe('digest schedule control (issue #636)', () => {
   }
 
   it('renders Daily/Weekly/Off with the current cadence pressed', () => {
-    const html = view({ cadence: 'weekly', next_run: 1793760000, last_sent: null, last_result: {}, held_until: null });
+    const html = view({ cadence: 'weekly', next_run: 1793760000, last_sent: null, last_result: {} });
     expect(html).toContain('data-testid="briefing-digest-schedule"');
     expect(html).toContain('data-testid="briefing-schedule-daily"');
     expect(html).toContain('data-testid="briefing-schedule-weekly"');
@@ -342,31 +342,22 @@ describe('digest schedule control (issue #636)', () => {
 
 describe('notification preferences (issue #656)', () => {
   function prefs(over: Partial<NotificationPreferences> = {}): NotificationPreferences {
-    return { muted_events: [], quiet_hours: null, events: ['ci_fail', 'conflict', 'digest'], held_until: null, ...over };
+    return { muted_events: [], events: ['ci_fail', 'conflict', 'digest'], ...over };
   }
 
-  it('summarizes muted + quiet + held in one line', () => {
-    expect(prefsStatusLine(prefs())).toBe('All events on · No quiet hours.');
-    expect(prefsStatusLine(prefs({ muted_events: ['ci_fail'] }))).toContain('Muted: ci_fail');
-    expect(prefsStatusLine(prefs({ quiet_hours: { start: '22:00', end: '07:00' } }))).toContain(
-      'Quiet 22:00–07:00',
-    );
-    expect(prefsStatusLine(prefs({ held_until: 1793760000 }))).toContain('Digest held until');
+  it('summarizes muted state in one line', () => {
+    expect(prefsStatusLine(prefs())).toBe('All events on.');
+    expect(prefsStatusLine(prefs({ muted_events: ['ci_fail'] }))).toBe('Muted: ci_fail.');
   });
 
   it('renders event chips pressed by muted state', () => {
     const noop = () => {};
     const html = renderToStaticMarkup(
       <PrefsControlsView
-        prefs={prefs({ muted_events: ['ci_fail'], quiet_hours: { start: '22:00', end: '07:00' } })}
+        prefs={prefs({ muted_events: ['ci_fail'] })}
         prefsErr={null}
         busy={false}
-        draftStart="22:00"
-        draftEnd="07:00"
         onToggle={noop}
-        onDraft={noop}
-        onSaveQuiet={noop}
-        onClearQuiet={noop}
       />,
     );
     expect(html).toContain('data-testid="briefing-prefs-events"');
@@ -375,11 +366,6 @@ describe('notification preferences (issue #656)', () => {
     expect(html).toContain('data-testid="briefing-prefs-mute-digest"');
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('aria-pressed="false"');
-    expect(html).toContain('data-testid="briefing-quiet-start"');
-    expect(html).toContain('data-testid="briefing-quiet-end"');
-    expect(html).toContain('value="22:00"');
-    expect(html).toContain('data-testid="briefing-quiet-save"');
-    expect(html).toContain('data-testid="briefing-quiet-clear"');
     expect(html).toContain('data-testid="briefing-prefs-status"');
     expect(html).toContain('Muted: ci_fail');
     expect(html).not.toContain('disabled');
@@ -388,37 +374,22 @@ describe('notification preferences (issue #656)', () => {
   it('disables while busy and surfaces errors', () => {
     const noop = () => {};
     const busy = renderToStaticMarkup(
-      <PrefsControlsView prefs={prefs()} prefsErr={null} busy draftStart="" draftEnd="" onToggle={noop} onDraft={noop} onSaveQuiet={noop} onClearQuiet={noop} />,
+      <PrefsControlsView prefs={prefs()} prefsErr={null} busy onToggle={noop} />,
     );
     expect(busy).toContain('disabled');
     const failed = renderToStaticMarkup(
-      <PrefsControlsView prefs={null} prefsErr="boom" busy={false} draftStart="" draftEnd="" onToggle={noop} onDraft={noop} onSaveQuiet={noop} onClearQuiet={noop} />,
+      <PrefsControlsView prefs={null} prefsErr="boom" busy={false} onToggle={noop} />,
     );
     expect(failed).toContain('Notification preferences unavailable — boom');
   });
 
   it('reports suppressed digests honestly, never as sent', () => {
     const line = digestResultLine(
-      { suppressed: 'quiet hours until 07:00' } as unknown as Record<string, DigestChannelResult>,
+      { suppressed: "event 'digest' muted" } as unknown as Record<string, DigestChannelResult>,
       'STAMP',
     );
-    expect(line).toBe('Digest not sent — quiet hours until 07:00.');
+    expect(line).toBe("Digest not sent — event 'digest' muted.");
     expect(line).not.toContain('sent STAMP');
-  });
-
-  it('shows held digests in the schedule line', () => {
-    const sched = (over: Partial<DigestSchedule> = {}): DigestSchedule => ({
-      cadence: 'off',
-      next_run: null,
-      last_sent: null,
-      last_result: {},
-      held_until: null,
-      ...over,
-    });
-    expect(
-      digestScheduleLine(sched({ cadence: 'daily', next_run: 1793760000, held_until: 1793742000 })),
-    ).toContain('held until');
-    expect(digestScheduleLine(sched())).not.toContain('held until');
   });
 });
 
