@@ -241,6 +241,7 @@ async function mutateWith<T>(
   path: string,
   body: unknown,
   read: (resp: Response) => Promise<T>,
+  timeoutMs: number = API_TIMEOUT_MS,
 ): Promise<T> {
   ensureOnlineListener();
   const key = newIdempotencyKey();
@@ -251,8 +252,12 @@ async function mutateWith<T>(
       method,
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
       body: JSON.stringify(body),
-    });
-  } catch {
+    }, timeoutMs);
+  } catch (err) {
+    // A timeout is not an offline signal: the server may have
+    // applied the mutation, so replaying could double-apply.
+    // Surface it instead of queuing.
+    if (err instanceof RequestTimeoutError) throw err;
     queueEntry(method, path, body, key);
   }
   return read(resp);
@@ -314,18 +319,56 @@ function ensureOnlineListener(): void {
   });
 }
 
-async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
-  try {
-    // No init arg on plain GETs: tests assert exact fetch call shapes.
-    return init === undefined ? await fetch(apiUrl(path)) : await fetch(apiUrl(path), init);
-  } catch (err) {
-    notifyApiFailure();
-    throw err;
+// Request timeouts (issue #460): every JSON fetch carries an
+// AbortController signal with a bounded budget, so a wedged
+// backend fails visibly instead of spinning forever. Generous
+// default; known-slow reads (briefing generation, plan reads)
+// get a longer budget. Timeout failures throw
+// RequestTimeoutError, whose message matches the historyUtils
+// /timeout/i friendly-error rule. Streams (postAgentTurn, the
+// EventSource pushes) keep user-abort behavior only.
+export const API_TIMEOUT_MS = 30_000;
+export const API_SLOW_TIMEOUT_MS = 120_000;
+
+export class RequestTimeoutError extends Error {
+  readonly path: string;
+  readonly budgetMs: number;
+
+  constructor(method: string, path: string, budgetMs: number) {
+    super(`${method} ${path} failed: request timeout after ${budgetMs}ms`);
+    this.name = 'RequestTimeoutError';
+    this.path = path;
+    this.budgetMs = budgetMs;
   }
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  return readJson<T>(await fetchApi(path), 'GET', path);
+async function fetchApi(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number = API_TIMEOUT_MS,
+): Promise<Response> {
+  const method = typeof init?.method === 'string' ? init.method : 'GET';
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => {
+    ctrl.abort(new DOMException(`${method} ${path} timed out`, 'TimeoutError'));
+  }, timeoutMs);
+  try {
+    // Every request carries the timeout signal: tests assert its
+    // presence, including on plain GETs.
+    return await fetch(apiUrl(path), { ...init, signal: ctrl.signal });
+  } catch (err) {
+    notifyApiFailure();
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new RequestTimeoutError(method, path, timeoutMs);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getJson<T>(path: string, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
+  return readJson<T>(await fetchApi(path, undefined, timeoutMs), 'GET', path);
 }
 
 export function fetchSystemHealth(): Promise<SystemHealthResponse> {
@@ -412,7 +455,7 @@ export function fetchJobs(): Promise<JobsResponse> {
 export function fetchBriefing(repo: string): Promise<BriefingResponse> {
   const path = `api/briefing?repo=${encodeURIComponent(repo)}`;
   return cachedViewFetch<BriefingResponse>(path, VIEW_CACHE_TTL_MS, () =>
-    getJson<BriefingResponse>(path),
+    getJson<BriefingResponse>(path, API_SLOW_TIMEOUT_MS),
   );
 }
 
@@ -495,8 +538,8 @@ export interface PiProgressResponse {
   error?: string | null;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  return mutateWith<T>('POST', path, body, (resp) => readJson<T>(resp, 'POST', path));
+async function postJson<T>(path: string, body: unknown, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
+  return mutateWith<T>('POST', path, body, (resp) => readJson<T>(resp, 'POST', path), timeoutMs);
 }
 
 // Server-sent attention action hrefs ('api/…'-relative): the same
@@ -915,8 +958,8 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
   );
 }
 
-async function deleteJson<T>(path: string, body: unknown): Promise<T> {
-  return mutateWith<T>('DELETE', path, body, (resp) => readJson<T>(resp, 'DELETE', path));
+async function deleteJson<T>(path: string, body: unknown, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {
+  return mutateWith<T>('DELETE', path, body, (resp) => readJson<T>(resp, 'DELETE', path), timeoutMs);
 }
 
 export function fetchDeferred(repo: string): Promise<import('./reviewTypes').DeferredListResponse> {
@@ -1106,6 +1149,7 @@ export interface PlanReadResponse {
 export function fetchPlan(repo: string, name: string): Promise<PlanReadResponse> {
   return getJson<PlanReadResponse>(
     `api/jobs/plans/${encodeURIComponent(name)}?repo=${encodeURIComponent(repo)}`,
+    API_SLOW_TIMEOUT_MS,
   );
 }
 

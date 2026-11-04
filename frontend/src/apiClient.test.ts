@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { plainLanguage } from './views/historyUtils';
 import {
+  API_SLOW_TIMEOUT_MS,
+  API_TIMEOUT_MS,
   QueuedOfflineError,
+  RequestTimeoutError,
   __clearOutbox,
   __clearPrCaches,
   abortAgentSession,
@@ -76,21 +80,30 @@ describe('apiClient (fetch with inline shapes)', () => {
     const queue = { updated_at: 1, items: [] };
     vi.stubGlobal('fetch', mockFetchJson(queue));
     expect(await fetchAttention('remote-server')).toEqual(queue);
-    expect(fetch).toHaveBeenCalledWith('/api/attention?repo=remote-server');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/attention?repo=remote-server',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('fetches jobs', async () => {
     const jobs = { jobs: [] };
     vi.stubGlobal('fetch', mockFetchJson(jobs));
     expect(await fetchJobs()).toEqual(jobs);
-    expect(fetch).toHaveBeenCalledWith('/api/jobs');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/jobs',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('fetches repair verify previews', async () => {
     const preview = { ok: true, issue: 9, command: 'pytest', allowlisted: true, error: '' };
     vi.stubGlobal('fetch', mockFetchJson(preview));
     expect(await fetchVerifyCommand('9')).toEqual(preview);
-    expect(fetch).toHaveBeenCalledWith('/api/repair/verify-command?issue=9');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/repair/verify-command?issue=9',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('posts repair aborts', async () => {
@@ -114,14 +127,20 @@ describe('apiClient (fetch with inline shapes)', () => {
     };
     vi.stubGlobal('fetch', mockFetchJson(diff));
     expect(await fetchRepoDiff('demo')).toEqual(diff);
-    expect(fetch).toHaveBeenCalledWith('/api/repo/diff?repo=demo');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/repo/diff?repo=demo',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('fetches container stats (issue #663)', async () => {
     const stats = { containers: [] };
     vi.stubGlobal('fetch', mockFetchJson(stats));
     expect(await fetchContainerStats()).toEqual(stats);
-    expect(fetch).toHaveBeenCalledWith('/api/system/stats');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/system/stats',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('posts run cancels with an empty body (issue #589)', async () => {
@@ -138,7 +157,10 @@ describe('apiClient (fetch with inline shapes)', () => {
     const status = { ntfy_configured: true, last_digest: 5 };
     vi.stubGlobal('fetch', mockFetchJson(status));
     expect(await fetchNotificationStatus()).toEqual(status);
-    expect(fetch).toHaveBeenCalledWith('/api/notifications/status');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/notifications/status',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('posts digest triggers with an empty body (issue #615)', async () => {
@@ -155,7 +177,10 @@ describe('apiClient (fetch with inline shapes)', () => {
     const sched = { cadence: 'daily', next_run: 9, last_sent: null, last_result: {} };
     vi.stubGlobal('fetch', mockFetchJson(sched));
     expect(await fetchDigestSchedule()).toEqual(sched);
-    expect(fetch).toHaveBeenCalledWith('/api/notifications/digest-schedule');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/notifications/digest-schedule',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('sets digest cadence (issue #636)', async () => {
@@ -172,7 +197,10 @@ describe('apiClient (fetch with inline shapes)', () => {
     const prefs = { muted_events: [], quiet_hours: null, events: ['ci_fail'], held_until: null };
     vi.stubGlobal('fetch', mockFetchJson(prefs));
     expect(await fetchNotificationPreferences()).toEqual(prefs);
-    expect(fetch).toHaveBeenCalledWith('/api/notifications/preferences');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/notifications/preferences',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('saves notification preferences partially (issue #656)', async () => {
@@ -215,35 +243,50 @@ describe('apiClient (fetch with inline shapes)', () => {
     const ledger = { entries: [] };
     vi.stubGlobal('fetch', mockFetchJson(ledger));
     expect(await fetchLedger('all', 10)).toEqual(ledger);
-    expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=10');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/ledger?kind=all&limit=10',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('passes since for windowed ledger reads (issue #609)', async () => {
     const ledger = { entries: [] };
     vi.stubGlobal('fetch', mockFetchJson(ledger));
     expect(await fetchLedger('all', 200, 123.5)).toEqual(ledger);
-    expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=200&since=123.5');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/ledger?kind=all&limit=200&since=123.5',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('passes source for ledger union reads (issue #590)', async () => {
     const ledger = { entries: [] };
     vi.stubGlobal('fetch', mockFetchJson(ledger));
     expect(await fetchLedger('all', 50, undefined, 'cli')).toEqual(ledger);
-    expect(fetch).toHaveBeenCalledWith('/api/ledger?kind=all&limit=50&source=cli');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/ledger?kind=all&limit=50&source=cli',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('fetches system health', async () => {
     const sys = { disk: {}, memory: {}, containers: [] };
     vi.stubGlobal('fetch', mockFetchJson(sys));
     expect(await fetchSystemHealth()).toEqual(sys);
-    expect(fetch).toHaveBeenCalledWith('/api/system/health');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/system/health',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('fetches workflow health', async () => {
     const health = { repo: 'demo', status: 'ok', total_failing: 0, workflows: [] };
     vi.stubGlobal('fetch', mockFetchJson(health));
     expect(await fetchWorkflowHealth('demo')).toEqual(health);
-    expect(fetch).toHaveBeenCalledWith('/api/workflow-health?repo=demo');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workflow-health?repo=demo',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('throws visibly on HTTP errors (no silent fallback)', async () => {
@@ -300,13 +343,19 @@ describe('apiClient (fetch with inline shapes)', () => {
     };
     vi.stubGlobal('fetch', mockFetchJson(feed));
     expect(await fetchInbox('remote-server')).toEqual(feed);
-    expect(fetch).toHaveBeenCalledWith('/api/inbox?repo=remote-server');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/inbox?repo=remote-server',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('fetches the pr diff for a repo and number', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ number: 1095, diff: 'x', truncated: false }));
     await fetchPrDiff('boomtick', 1095);
-    expect(fetch).toHaveBeenCalledWith('/api/pr-diff?repo=boomtick&pr=1095');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/pr-diff?repo=boomtick&pr=1095',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('absolutizes api paths from the Vite base, passes the rest through', () => {
@@ -318,7 +367,10 @@ describe('apiClient (fetch with inline shapes)', () => {
   it('fetches the agent provider allowlist', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ providers: ['muse', 'agy'] }));
     expect(await fetchAgentProviders()).toEqual({ providers: ['muse', 'agy'] });
-    expect(fetch).toHaveBeenCalledWith('/api/agent/providers');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/agent/providers',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('starts a conversation behind hold-to-confirm', async () => {
@@ -366,6 +418,7 @@ describe('apiClient (fetch with inline shapes)', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({ session_id: 'abc123' }),
+      signal: expect.any(AbortSignal),
     });
   });
 });
@@ -551,6 +604,7 @@ describe('repo files for @-mention completion (issue #653)', () => {
     expect(await fetchRepoFiles('demo', 'sub/')).toEqual(body);
     expect(fetch).toHaveBeenCalledWith(
       '/api/repo/files?repo=demo&prefix=sub%2F',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -558,7 +612,10 @@ describe('repo files for @-mention completion (issue #653)', () => {
     const body = { repo: 'demo', prefix: '', files: [], truncated: false };
     vi.stubGlobal('fetch', mockFetchJson(body));
     expect(await fetchRepoFiles('demo')).toEqual(body);
-    expect(fetch).toHaveBeenCalledWith('/api/repo/files?repo=demo&prefix=');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/repo/files?repo=demo&prefix=',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 });
 
@@ -698,6 +755,7 @@ describe('pr review actions (issue #616)', () => {
         intent: 'pr-approve',
         confirmed: true,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -718,6 +776,7 @@ describe('pr review actions (issue #616)', () => {
         intent: 'pr-request-changes',
         confirmed: true,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -737,6 +796,7 @@ describe('job re-run (issue #630)', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({ command: 'td --json preflight', repo: 'remote-server' }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -752,6 +812,7 @@ describe('job re-run (issue #630)', () => {
         intent: 'jobs-run',
         confirmed: true,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -762,6 +823,7 @@ describe('job re-run (issue #630)', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({ action: 'logs', repo: 'remote-server' }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -792,6 +854,7 @@ describe('explicit action branch (issue #708)', () => {
         confirmed: true,
         branch: 'main',
       }),
+      signal: expect.any(AbortSignal),
     });
     await approvePr('remote-server', 7, 'feat/x');
     expect(fetch).toHaveBeenCalledWith('/api/pr-action', {
@@ -804,6 +867,7 @@ describe('explicit action branch (issue #708)', () => {
         confirmed: true,
         branch: 'feat/x',
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -819,6 +883,7 @@ describe('explicit action branch (issue #708)', () => {
         intent: 'pr-approve',
         confirmed: true,
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -828,6 +893,7 @@ describe('explicit action branch (issue #708)', () => {
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
       ...postHeaders,
       body: JSON.stringify({ action: 'logs', repo: 'remote-server', branch: 'main' }),
+      signal: expect.any(AbortSignal),
     });
     await startTdRun('td context-warm', 'remote-server', 'feat/x');
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run-td', {
@@ -837,6 +903,7 @@ describe('explicit action branch (issue #708)', () => {
         repo: 'remote-server',
         branch: 'feat/x',
       }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -850,11 +917,13 @@ describe('explicit action branch (issue #708)', () => {
         repo: 'remote-server',
         branch: 'main',
       }),
+      signal: expect.any(AbortSignal),
     });
     await rerunJob('logs', 'remote-server', [], false, 'main');
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
       ...postHeaders,
       body: JSON.stringify({ action: 'logs', repo: 'remote-server', branch: 'main' }),
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -864,11 +933,13 @@ describe('explicit action branch (issue #708)', () => {
     expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
       ...postHeaders,
       body: JSON.stringify({ issue: '9', branch: 'main' }),
+      signal: expect.any(AbortSignal),
     });
     await dispatchRepair('9', '');
     expect(fetch).toHaveBeenCalledWith('/api/repair/dispatch', {
       ...postHeaders,
       body: JSON.stringify({ issue: '9' }),
+      signal: expect.any(AbortSignal),
     });
   });
 });
@@ -885,6 +956,7 @@ describe('run compare (issue #657)', () => {
     expect(await fetchRunCompare('aaaaaaaaaaaa', 'bbbbbbbbbbbb')).toEqual(body);
     expect(fetch).toHaveBeenCalledWith(
       '/api/jobs/runs/compare?a=aaaaaaaaaaaa&b=bbbbbbbbbbbb',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -1135,5 +1207,116 @@ describe('offline outbox (issue #404)', () => {
     clearOutbox();
     expect(getOutbox()).toHaveLength(0);
     expect(getOutboxStatus()).toEqual({ online: false, pending: 0, syncing: false, lastError: null });
+  });
+});
+
+describe('request timeouts (issue #460)', () => {
+  // Mimics real fetch against a wedged backend: pending until the
+  // signal aborts, then rejects with the abort reason.
+  function mockHungFetch() {
+    return vi.fn().mockImplementation((_url: unknown, init?: RequestInit) => new Promise(
+      (_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(init?.signal?.reason ?? new DOMException('aborted', 'AbortError'));
+        });
+      },
+    ));
+  }
+
+  it('fails a hung GET within its budget', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', mockHungFetch());
+      const pending = fetchJobs();
+      const assertion = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
+      await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS);
+      await assertion;
+      const caught: unknown = await pending.catch((e: unknown) => e);
+      const err = caught as RequestTimeoutError;
+      expect(err.message).toMatch(/timeout/i);
+      expect(plainLanguage(err.message, 'Job')).toBe(
+        'Network request failed — the service could not be reached',
+      );
+      expect(err.path).toBe('api/jobs');
+      expect(err.budgetMs).toBe(API_TIMEOUT_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives briefing the slow budget', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', mockHungFetch());
+      const pending = fetchBriefing('remote-server');
+      let settled = false;
+      pending.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+      await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS);
+      expect(settled).toBe(false);
+      const assertion = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
+      await vi.advanceTimersByTimeAsync(API_SLOW_TIMEOUT_MS - API_TIMEOUT_MS);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('broadcasts timeouts to API failure listeners', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', mockHungFetch());
+      let calls = 0;
+      const unsubscribe = subscribeApiFailures(() => { calls += 1; });
+      try {
+        const pending = fetchSystemHealth();
+        const assertion = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
+        await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS);
+        await assertion;
+        expect(calls).toBe(1);
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces mutation timeouts instead of queuing them offline', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', mockHungFetch());
+      const pending = abortRepair();
+      const assertion = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
+      await vi.advanceTimersByTimeAsync(API_TIMEOUT_MS);
+      await assertion;
+      expect(getOutbox()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the timeout once the request settles', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', mockFetchJson({ jobs: [] }));
+      await fetchJobs();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('passes caller abort signals on streams untouched', async () => {
+    const resp = { ok: true, status: 200 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(resp));
+    const ctrl = new AbortController();
+    expect(await postAgentTurn('muse', 'remote-server', 'hi', 'sess1', ctrl.signal)).toBe(resp);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/agent/turn',
+      expect.objectContaining({ signal: ctrl.signal }),
+    );
   });
 });
