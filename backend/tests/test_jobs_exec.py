@@ -1662,5 +1662,222 @@ class RunStorePersistenceTest(unittest.TestCase):
             jobs_router.registry = RunRegistry()
 
 
+class JobsClearFailedAcceptanceTest(unittest.TestCase):
+    """#451(1): clear after a failed run clears it, honestly."""
+
+    def setUp(self):
+        from backend.server import app
+
+        self.client = TestClient(app)
+
+    def test_clear_failed_run_returns_cleared_and_empties_list(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        try:
+            rid, err = jobs_router.registry.start_run("logs")
+            self.assertIsNone(err)
+            jobs_router.registry.append(rid, "boom\n")
+            jobs_router.registry.finish_run(rid, 1)
+            resp = self.client.post(
+                "/api/jobs/clear",
+                json={"intent": "jobs-clear", "confirmed": True})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json(), {"ok": True, "cleared": 1})
+            self.assertEqual(
+                self.client.get("/api/jobs").json(), {"jobs": []})
+        finally:
+            jobs_router.registry = RunRegistry()
+
+
+class ListJobsRunsTest(unittest.TestCase):
+    """#451: list_jobs reads runs — one collection, newest first."""
+
+    def test_empty_registry_lists_nothing(self):
+        self.assertEqual(RunRegistry().list_jobs(), [])
+
+    def test_rows_are_newest_first_with_job_shape(self):
+        reg = RunRegistry()
+        first, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(first, 0)
+        second, err = reg.start_run("run-td", "boomtick",
+                                    td_argv=["td", "doctor"])
+        self.assertIsNone(err)
+        rows = reg.list_jobs()
+        self.assertEqual([r["id"] for r in rows], [second, first])
+        row = rows[1]
+        self.assertEqual(row["name"], "logs")
+        self.assertEqual(row["repo"], "remote-server")
+        self.assertTrue(row["done"])
+        self.assertEqual(row["exit_code"], 0)
+        self.assertEqual(row["created_at"],
+                         reg.runs[first]["started_at"])
+        self.assertEqual(row["error"], "")
+        self.assertEqual(rows[0]["td_argv"], ["td", "doctor"])
+
+    def test_failed_run_carries_last_output_line_as_error(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.append(rid, "step one ok\nstill going\nbang: no disk\n")
+        reg.finish_run(rid, 1)
+        (row,) = reg.list_jobs()
+        self.assertEqual(row["id"], rid)
+        self.assertEqual(row["error"], "bang: no disk")
+        self.assertEqual(row["exit_code"], 1)
+
+    def test_failed_run_without_output_names_exit(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(rid, 130)
+        (row,) = reg.list_jobs()
+        self.assertEqual(row["error"], "exit 130")
+
+    def test_error_line_is_capped(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.append(rid, "x" * (engine.JOB_ERROR_MAX + 50) + "\n")
+        reg.finish_run(rid, 1)
+        (row,) = reg.list_jobs()
+        self.assertEqual(len(row["error"]), engine.JOB_ERROR_MAX)
+
+    def test_running_run_has_no_error(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.append(rid, "chatter\n")
+        (row,) = reg.list_jobs()
+        self.assertFalse(row["done"])
+        self.assertIsNone(row["exit_code"])
+        self.assertEqual(row["error"], "")
+
+    def test_rows_are_copies(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(rid, 0)
+        (row,) = reg.list_jobs()
+        row["done"] = False
+        self.assertTrue(reg.runs[rid]["done"])
+
+
+class CompletedRunEvictionTest(unittest.TestCase):
+    """#451(3): completed runs older than COMPLETED_RUN_TTL go."""
+
+    def _finish_aged(self, reg, age_s, exit_code=0):
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(rid, exit_code)
+        with reg._lock:
+            reg.runs[rid]["finished_at"] = time.time() - age_s
+        return rid
+
+    def test_stale_completed_run_evicted(self):
+        reg = RunRegistry()
+        rid = self._finish_aged(reg, engine.COMPLETED_RUN_TTL + 10)
+        self.assertEqual(reg.evict_completed(), 1)
+        self.assertNotIn(rid, reg.runs)
+
+    def test_fresh_completed_run_survives(self):
+        reg = RunRegistry()
+        rid = self._finish_aged(reg, engine.COMPLETED_RUN_TTL - 60)
+        self.assertEqual(reg.evict_completed(), 0)
+        self.assertIn(rid, reg.runs)
+
+    def test_active_run_never_evicted(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        with reg._lock:
+            reg.runs[rid]["started_at"] = \
+                time.time() - 10 * engine.COMPLETED_RUN_TTL
+        self.assertEqual(reg.evict_completed(), 0)
+        self.assertIn(rid, reg.runs)
+
+    def test_done_run_without_timestamps_survives(self):
+        reg = RunRegistry()
+        rid = self._finish_aged(reg, 0)
+        with reg._lock:
+            reg.runs[rid]["finished_at"] = None
+            reg.runs[rid]["started_at"] = None
+        self.assertEqual(reg.evict_completed(), 0)
+        self.assertIn(rid, reg.runs)
+
+    def test_done_run_falls_back_to_started_at(self):
+        reg = RunRegistry()
+        rid = self._finish_aged(reg, 0)
+        with reg._lock:
+            reg.runs[rid]["finished_at"] = None
+            reg.runs[rid]["started_at"] = \
+                time.time() - engine.COMPLETED_RUN_TTL - 10
+        self.assertEqual(reg.evict_completed(), 1)
+        self.assertNotIn(rid, reg.runs)
+
+    def test_evict_noop_bumps_nothing(self):
+        reg = RunRegistry()
+        rid = self._finish_aged(reg, 0)
+        before = reg._version
+        self.assertEqual(reg.evict_completed(), 0)
+        self.assertEqual(reg._version, before)
+        self.assertIn(rid, reg.runs)
+
+    def test_start_sweeps_stale(self):
+        reg = RunRegistry()
+        old = self._finish_aged(reg, engine.COMPLETED_RUN_TTL + 10)
+        fresh, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        self.assertNotIn(old, reg.runs)
+        self.assertIn(fresh, reg.runs)
+
+    def test_finish_sweeps_stale(self):
+        reg = RunRegistry()
+        old, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(old, 0)
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        # Age past TTL after the start sweep ran: only the finish
+        # sweep can catch it.
+        with reg._lock:
+            reg.runs[old]["finished_at"] = \
+                time.time() - engine.COMPLETED_RUN_TTL - 10
+        reg.finish_run(rid, 0)
+        self.assertNotIn(old, reg.runs)
+        self.assertIn(rid, reg.runs)
+
+    def test_evict_bumps_and_persists(self):
+        import json
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "runs.json")
+            reg = RunRegistry(store_path=path)
+            rid = self._finish_aged(reg, engine.COMPLETED_RUN_TTL + 10)
+            before = reg._version
+            self.assertEqual(reg.evict_completed(), 1)
+            self.assertEqual(reg._version, before + 1)
+            with open(path, encoding="utf-8") as f:
+                ids = [r["id"] for r in json.load(f)["runs"]]
+            self.assertNotIn(rid, ids)
+
+    def test_boot_rehydrate_drops_stale(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "runs.json")
+            reg = RunRegistry(store_path=path)
+            rid = self._finish_aged(reg, engine.COMPLETED_RUN_TTL + 10)
+            with reg._lock:
+                reg._persist_locked()
+            boot = RunRegistry(store_path=path)
+            self.assertNotIn(rid, boot.runs)
+            self.assertEqual(boot.runs, {})
+
+
 if __name__ == "__main__":
     unittest.main()

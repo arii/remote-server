@@ -4,7 +4,7 @@ GET /api/attention?repo= returns {updated_at, items: [...]} where each
 item is {id, kind, title, detail, repo, severity, action, created_at}.
 Sources (existing helpers only, no new infra):
 - failing runs: ops.fetch_workflow_health (workflow-health logic)
-- failed jobs: jobs registry (non-ok/failed/terminal-error records)
+- failed jobs: jobs registry (done runs with a nonzero exit)
 - failed webhooks: ledger kind-filtered reads
 - skipped webhooks: newest unresolved pull skip per repo (info)
 - pending approvals: ledger + jobs-registry pending records
@@ -188,16 +188,17 @@ def ollama_up() -> bool:
 
 
 def list_failed_jobs() -> list:
-    """Injectable seam: failed jobs from the jobs registry."""
+    """Injectable seam: failed runs from the jobs registry (#451).
+
+    Runs are the one collection: a failed job is a done run with
+    a nonzero exit.
+    """
     out = []
     for job in registry.list_jobs():
         if not isinstance(job, dict):
             continue
-        state = str(job.get("state", "")).lower()
-        status = str(job.get("status", "")).lower()
-        if state in ("failed", "error") or status in ("failed", "error"):
-            out.append(job)
-        elif job.get("done") is True and job.get("exit_code") not in (None, 0):
+        if job.get("done") is True and \
+                job.get("exit_code") not in (None, 0):
             out.append(job)
     return out
 

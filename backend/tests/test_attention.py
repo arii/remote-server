@@ -643,5 +643,58 @@ class FailingRunTimestampTest(unittest.TestCase):
             self.assertEqual(self._run_item(items)["created_at"], now)
 
 
+class AttentionFailedRunsTest(unittest.TestCase):
+    """#451(2): failed runs surface as failed-job attention items.
+
+    The registry seam is real here (a fresh RunRegistry); only the
+    unrelated sources are stubbed."""
+
+    def setUp(self):
+        from backend.exec.engine import RunRegistry
+
+        self.reg = RunRegistry()
+        self._orig = {}
+        for k in ("registry", "get_workflow_health",
+                  "list_failed_webhooks", "list_skipped_webhooks",
+                  "list_pending_approvals", "ollama_up"):
+            self._orig[k] = getattr(attention, k)
+        attention.registry = self.reg
+        attention.get_workflow_health = lambda repo: {"workflows": []}
+        attention.list_failed_webhooks = lambda: []
+        attention.list_skipped_webhooks = lambda: []
+        attention.list_pending_approvals = lambda: []
+        attention.ollama_up = lambda: True
+
+    def tearDown(self):
+        for k, v in self._orig.items():
+            setattr(attention, k, v)
+
+    def test_failed_run_appears_in_attention(self):
+        rid, err = self.reg.start_run("logs")
+        self.assertIsNone(err)
+        self.reg.append(rid, "bang: no disk\n")
+        self.reg.finish_run(rid, 1)
+        self.assertEqual(
+            [j["id"] for j in attention.list_failed_jobs()], [rid])
+        body = attention.attention("remote-server")
+        failed = [i for i in body["items"] if i["kind"] == "failed-job"]
+        self.assertEqual(len(failed), 1)
+        item = failed[0]
+        self.assertEqual(item["id"], f"job-{rid}")
+        self.assertEqual(item["repo"], "remote-server")
+        self.assertIn("logs", item["title"])
+        self.assertIn("bang: no disk", item["detail"])
+
+    def test_ok_and_running_runs_stay_quiet(self):
+        ok, err = self.reg.start_run("logs")
+        self.assertIsNone(err)
+        self.reg.finish_run(ok, 0)
+        active, err = self.reg.start_run("logs")
+        self.assertIsNone(err)
+        self.assertEqual(attention.list_failed_jobs(), [])
+        body = attention.attention("remote-server")
+        self.assertEqual(body["items"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
