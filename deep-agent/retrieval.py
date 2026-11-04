@@ -24,6 +24,7 @@ IndexNotReadyError instead of serving empty-silent results.
 """
 
 import os
+import re
 
 import cli
 
@@ -31,6 +32,7 @@ DB_DIR = os.path.join(cli.repo_root(), "deep-agent", "chroma_db")
 COLLECTION = "s5-docs"
 EMBED_MODEL = "nomic-embed-text"
 DEFAULT_URL = "http://ollama:11434"
+REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 
 BUILDING_MARKER = ".index_building"
 FAILED_MARKER = ".index_failed"
@@ -108,25 +110,56 @@ def get_embeddings():
     )
 
 
-def get_retriever(k=3):
-    """Shared Chroma retriever over the S5 docs index. Cached per k.
+def normalize_repo(repo):
+    """Full owner/name for a repo filter, or None when unfiltered.
+
+    Blank/None means all repos, ranked mixed. A bare checkout name
+    gains the arii/ owner prefix (index metadata is always the full
+    owner/name). Raises ValueError on malformed input. Stdlib-only
+    so every search_docs tool shares the one normalization.
+    """
+    if repo is None:
+        return None
+    if not isinstance(repo, str):
+        raise ValueError(f"bad repo filter: {repo!r}")
+    text = repo.strip()
+    if not text:
+        return None
+    if "/" not in text:
+        text = f"arii/{text}"
+    if not REPO_RE.match(text):
+        raise ValueError(f"bad repo filter: {repo!r}")
+    return text
+
+
+def get_retriever(k=3, repo=None):
+    """Shared Chroma retriever over the S5 docs index.
+
+    Cached per (k, repo). repo is an optional owner/name (or bare
+    checkout name) filter; None/"" searches all repos, ranked mixed.
 
     Raises IndexNotReadyError while the background build is warming
     (or failed/missing) instead of serving empty-silent results.
     """
     if isinstance(k, bool) or not isinstance(k, int) or k <= 0:
         raise ValueError(f"bad k: {k!r}")
+    filt = normalize_repo(repo)
     require_ready()
-    if k not in _retrievers:
+    key = (k, filt)
+    if key not in _retrievers:
         from langchain_chroma import Chroma
 
+        search_kwargs = {"k": k}
+        if filt is not None:
+            search_kwargs["filter"] = {"repo": filt}
         store = Chroma(
             persist_directory=chroma_dir(),
             embedding_function=get_embeddings(),
             collection_name=collection_name(),
         )
-        _retrievers[k] = store.as_retriever(search_kwargs={"k": k})
-    return _retrievers[k]
+        _retrievers[key] = store.as_retriever(
+            search_kwargs=search_kwargs)
+    return _retrievers[key]
 
 
 def format_hits(hits, limit=700):

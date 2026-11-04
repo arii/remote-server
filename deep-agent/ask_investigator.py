@@ -59,38 +59,47 @@ from backend.exec.engine import ALLOWED_TD_COMMANDS as ALLOWED_TD  # noqa: E402
 
 _repo = ""
 _checkout = ""
-_retriever = None
+_retrievers = {}
 
 
-def _retriever_for():
-    global _retriever
+def _retriever_for(repo=None):
+    filt = retrieval.normalize_repo(repo)
     retrieval.require_ready()
-    if _retriever is None:
+    if filt not in _retrievers:
         from langchain_chroma import Chroma
         from langchain_ollama import OllamaEmbeddings
 
-        _retriever = Chroma(
+        search_kwargs = {"k": 3}
+        if filt is not None:
+            search_kwargs["filter"] = {"repo": filt}
+        _retrievers[filt] = Chroma(
             persist_directory=os.path.join(
                 cli.repo_root(), "deep-agent", "chroma_db"),
             embedding_function=OllamaEmbeddings(
                 model="nomic-embed-text", base_url=OLLAMA_URL
             ),
             collection_name="s5-docs",
-        ).as_retriever(search_kwargs={"k": 3})
-    return _retriever
+        ).as_retriever(search_kwargs=search_kwargs)
+    return _retrievers[filt]
 
 
 @tool
-def search_docs(query: str) -> str:
+def search_docs(query: str, repo: str = "") -> str:
     """Search S5 runbooks and docs for how-to and process answers.
 
     Args:
         query: Short question (2-10 words).
+        repo: Optional owner/name (or bare checkout name) to
+            search one repo; blank searches all repos.
     """
     if not query or not query.strip() or len(query) > 500:
         return "REJECTED: bad query"
     try:
-        hits = _retriever_for().invoke(query)
+        filt = retrieval.normalize_repo(repo)
+    except ValueError:
+        return "REJECTED: bad repo filter"
+    try:
+        hits = _retriever_for(filt).invoke(query)
     except retrieval.IndexNotReadyError as exc:
         return str(exc)
     except Exception as exc:

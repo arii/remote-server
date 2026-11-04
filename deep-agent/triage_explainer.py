@@ -25,11 +25,21 @@ MODEL_ID = "qwen3:8b"
 _embeddings = OllamaEmbeddings(
     model="nomic-embed-text", base_url="http://ollama:11434"
 )
-_retriever = Chroma(
-    persist_directory=DB_DIR,
-    embedding_function=_embeddings,
-    collection_name="s5-docs",
-).as_retriever(search_kwargs={"k": 2})
+_retrievers = {}
+
+
+def _retriever_for(repo=None):
+    filt = retrieval.normalize_repo(repo)
+    if filt not in _retrievers:
+        search_kwargs = {"k": 2}
+        if filt is not None:
+            search_kwargs["filter"] = {"repo": filt}
+        _retrievers[filt] = Chroma(
+            persist_directory=DB_DIR,
+            embedding_function=_embeddings,
+            collection_name="s5-docs",
+        ).as_retriever(search_kwargs=search_kwargs)
+    return _retrievers[filt]
 
 
 @tool
@@ -45,7 +55,7 @@ def triage_counts(repo: str) -> str:
 
 
 @tool
-def search_docs(query: str) -> str:
+def search_docs(query: str, repo: str = "") -> str:
     """Search S5 runbooks for triage guidance.
 
     Use this after triage_counts if you need runbook context for the
@@ -53,12 +63,18 @@ def search_docs(query: str) -> str:
 
     Args:
         query: Short question about triage process or commands.
+        repo: Optional owner/name (or bare checkout name) to
+            search one repo; blank searches all repos.
     """
+    try:
+        filt = retrieval.normalize_repo(repo)
+    except ValueError:
+        return "REJECTED: bad repo filter"
     try:
         retrieval.require_ready()
     except retrieval.IndexNotReadyError as exc:
         return str(exc)
-    hits = _retriever.invoke(query)
+    hits = _retriever_for(filt).invoke(query)
     parts = [
         f"[{h.metadata.get('source')}] {h.page_content[:700]}" for h in hits
     ]

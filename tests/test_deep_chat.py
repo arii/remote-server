@@ -517,6 +517,38 @@ class TestToolSurface(unittest.TestCase):
                 by_name["search_docs"].invoke({"query": "how to"}),
                 "RAG index is warming, retry shortly")
 
+    def test_search_docs_repo_filter_passed_through(self):
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import retrieval
+
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        hit = SimpleNamespace(
+            metadata={"repo": "arii/tech-dancer", "source": "README.md"},
+            page_content="how to x")
+        fake = SimpleNamespace(invoke=lambda q: [hit])
+        with mock.patch.object(retrieval, "get_retriever",
+                               return_value=fake) as get:
+            out = by_name["search_docs"].invoke(
+                {"query": "how to", "repo": "tech-dancer"})
+        self.assertIn("[arii/tech-dancer/README.md]", out)
+        get.assert_called_once_with(k=3, repo="tech-dancer")
+
+    def test_search_docs_bad_repo_degrades(self):
+        from unittest import mock
+
+        import retrieval
+
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        with mock.patch.object(
+                retrieval, "get_retriever",
+                side_effect=ValueError("bad repo filter: '??'")):
+            self.assertIn(
+                "doc search unavailable",
+                by_name["search_docs"].invoke(
+                    {"query": "how to", "repo": "??"}))
+
     def test_propose_action_tool(self):
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
         out = by_name["propose_action"].invoke(

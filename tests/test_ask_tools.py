@@ -198,6 +198,30 @@ class TestAskTools(unittest.TestCase):
                 "RAG index is warming, retry shortly",
             )
 
+    def test_search_docs_repo_filter_passed_through(self):
+        hits = [
+            SimpleNamespace(metadata={"repo": "arii/portfolio",
+                                      "source": "README.md"},
+                            page_content="how to run"),
+        ]
+        retriever = mock.Mock()
+        retriever.invoke.return_value = hits
+        with mock.patch.object(ai, "_retriever_for",
+                               return_value=retriever) as get:
+            out = ai.search_docs.invoke(
+                {"query": "run server", "repo": "portfolio"})
+        self.assertIn("[arii/portfolio/README.md]", out)
+        get.assert_called_once_with("arii/portfolio")
+
+    def test_search_docs_bad_repo_rejected(self):
+        with mock.patch.object(ai, "_retriever_for") as get:
+            self.assertEqual(
+                ai.search_docs.invoke(
+                    {"query": "run server", "repo": "??"}),
+                "REJECTED: bad repo filter",
+            )
+        get.assert_not_called()
+
     def test_grep_skips_index_and_log_noise(self):
         # Regression: code-locate failed 4/5 live because .boomtick /
         # chroma_db / ledger noise flooded grep's -m 20 window and

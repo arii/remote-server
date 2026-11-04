@@ -63,11 +63,22 @@ class PrRow(BaseModel):
     # by updatedAt; extra="allow" would pass it through undeclared,
     # but the named field documents the contract the UI relies on.
     updatedAt: str = ""
+    # #848: True when GitHub reports any review decision for the PR
+    # (APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED). A blank
+    # decision means no required-review rule is in play, so the
+    # console merge gate must not demand an approval GitHub itself
+    # would never require. Defaults strict for older payloads.
+    reviewRequired: bool = True
 
 
 class PrList(BaseModel):
     repo: str = ""
     prs: list = Field(default_factory=list)
+    # #848: login gh authenticates as. The UI compares it to each
+    # row's author to disable Approve on self-authored PRs with an
+    # inline reason. Blank when unknown: Approve stays enabled and
+    # the endpoint's readable 400 is the fallback.
+    viewer: str = ""
 
 
 class PrDetails(BaseModel):
@@ -133,6 +144,35 @@ def _gh(runner=None):
     return runner or subprocess
 
 
+def _gh_viewer(runner=None) -> str:
+    """Login gh authenticates as (#848 self-approval signal).
+
+    Runs `gh api user` directly instead of via run_gh: the viewer
+    endpoint is account-scoped, and run_gh's #544 guard requires a
+    --repo argv the call has no use for. Fail-open: any failure
+    returns "" and the UI keeps Approve enabled (the endpoint's
+    readable 400 stays the fallback)."""
+    run = _gh(runner)
+    try:
+        proc = run.run(
+            ["gh", "api", "user", "--jq", ".login"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            text=True,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    out = (proc.stdout or "").strip()
+    if len(out) >= 2 and out.startswith('"') and out.endswith('"'):
+        out = out[1:-1]
+    if not out or "/" in out or any(c.isspace() for c in out):
+        return ""
+    return out
+
+
 @router.get("/prs", response_model=PrList)
 def prs(repo: str = "remote-server", runner=None) -> dict:
     try:
@@ -155,6 +195,7 @@ def prs(repo: str = "remote-server", runner=None) -> dict:
                   if isinstance(author_val, dict)
                   else (author_val or ""))
         label = ci_label(pr.get("statusCheckRollup"))
+        review_decision = str(pr.get("reviewDecision") or "")
         rows.append({
             "number": pr.get("number"),
             "title": pr.get("title", ""),
@@ -163,21 +204,29 @@ def prs(repo: str = "remote-server", runner=None) -> dict:
             "isDraft": bool(pr.get("isDraft")),
             "ciStatus": label,
             "ciLabel": label,
-            "reviewDecision": str(pr.get("reviewDecision") or ""),
+            "reviewDecision": review_decision,
+            # #848: any reported decision means reviews are in play
+            # for this PR; blank means no required-review rule.
+            "reviewRequired": review_decision != "",
             "mergeable": str(pr.get("mergeable") or "UNKNOWN").upper(),
             "url": pr.get("url", ""),
             "updatedAt": pr.get("updatedAt") or "",
         })
-    return {"repo": repo, "prs": rows}
+    return {"repo": repo, "prs": rows, "viewer": _gh_viewer(runner)}
+
+
+PR_VIEW_GATE_FIELDS = ("statusCheckRollup,mergeStateStatus,"
+                         "reviewDecision")
 
 
 def _pr_view(gh: str, pr_number: int, runner=None) -> tuple:
-    """Fresh (CI label, merge state) for gating, at tap time."""
+    """Fresh (CI label, merge state, review decision) for gating."""
     view = run_gh_json(gh, ["pr", "view", str(pr_number), "--repo", gh,
-                            "--json", "statusCheckRollup,mergeStateStatus"],
+                            "--json", PR_VIEW_GATE_FIELDS],
                        timeout=60, runner=_gh(runner))
     return (ci_label(view.get("statusCheckRollup")),
-            str(view.get("mergeStateStatus") or "?").lower())
+            str(view.get("mergeStateStatus") or "?").lower(),
+            str(view.get("reviewDecision") or ""))
 
 
 def _pr_action(gh: str, pr_number: int, action: str,
@@ -189,9 +238,20 @@ def _pr_action(gh: str, pr_number: int, action: str,
         # No CI/merge gate: a review is valid whatever the checks say.
         # --repo is explicit: #544 showed an unscoped verb resolves
         # against the backend cwd, not the gated repo.
-        out = run_gh(gh, ["pr", "review", str(pr_number),
-                          "--repo", gh, "--approve"],
-                     runner=run)
+        try:
+            out = run_gh(gh, ["pr", "review", str(pr_number),
+                              "--repo", gh, "--approve"],
+                         runner=run)
+        except RuntimeError as exc:
+            # #848: GitHub forbids self-approval ("Can not approve
+            # your own pull request"). Translate to a gate refusal
+            # (400 with a human message) instead of an opaque 500.
+            if "approve your own" in str(exc).lower():
+                raise ValueError(
+                    "GitHub forbids approving your own PR — ask a "
+                    "teammate for a review, or merge directly if the "
+                    "repo allows it")
+            raise
         return {"ok": True, "output": out[-2000:]}
     if action == "request-changes":
         if not body or not body.strip():
@@ -206,16 +266,28 @@ def _pr_action(gh: str, pr_number: int, action: str,
                      runner=run)
         return {"ok": True, "output": out[-2000:]}
     if action == "merge":
-        ci, merge = _pr_view(gh, pr_number, run)
+        ci, merge, review = _pr_view(gh, pr_number, run)
         if ci != "passing" or merge != "clean":
             raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
+        # #848: demand an approval only when the target repo does.
+        # REVIEW_REQUIRED is GitHub's own required-but-missing signal;
+        # CHANGES_REQUESTED is an explicit human veto. A blank decision
+        # means no required-review rule — fail open and let `gh pr
+        # merge` (which enforces the repo's real rules) decide.
+        if review == "REVIEW_REQUIRED":
+            raise ValueError(
+                "not mergeable: approval required by branch rules "
+                "(review is REVIEW_REQUIRED)")
+        if review == "CHANGES_REQUESTED":
+            raise ValueError(
+                "not mergeable: changes were requested on this PR")
         out = run_gh(gh, ["pr", "merge", str(pr_number),
                           "--repo", gh,
                           "--squash", "--delete-branch"],
                      runner=run)
         return {"ok": True, "output": out[-2000:]}
     if action == "update":
-        _ci, merge = _pr_view(gh, pr_number, run)
+        _ci, merge, _review = _pr_view(gh, pr_number, run)
         if merge != "behind":
             raise ValueError(f"cannot update: merge state is {merge} "
                              "(only behind branches update this way)")

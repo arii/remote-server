@@ -362,14 +362,16 @@ def build_tools(checkout, *, impact_tools=False):
         return s5tools.list_dir(checkout, path or "")
 
     @tool
-    def search_docs(query: str) -> str:
+    def search_docs(query: str, repo: str = "") -> str:
         """Search S5 runbooks and docs for how-to and process answers.
 
         Args:
             query: Short question (2-10 words).
+            repo: Optional owner/name (or bare checkout name) to
+                search one repo; blank searches all repos.
         """
         try:
-            hits = retrieval.get_retriever(k=3).invoke(query)
+            hits = retrieval.get_retriever(k=3, repo=repo).invoke(query)
         except retrieval.IndexNotReadyError as exc:
             return str(exc)
         except Exception as exc:
