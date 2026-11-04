@@ -1,7 +1,8 @@
 name: CI
 
 # Builds the terminal image on every push/PR, validates the compose file,
-# lints the shell scripts, scans for leaked secrets, and runs the
+# lints the shell scripts, verifies the skills lock against upstream,
+# scans for leaked secrets, and runs the
 # backend + root + frontend test suites with the backend type-check.
 #
 # Docker workflow replicates arii/BoomTick's pattern:
@@ -84,6 +85,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  skills-lock:
+    name: verify skills lock vs upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: check lock matches upstream skill sources
+        run: bash scripts/verify-skills.sh --check-upstream
 
   secret-scan:
     name: scan for leaked secrets
