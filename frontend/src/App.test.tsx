@@ -142,8 +142,10 @@ describe('history utils', () => {
       ],
       [],
     );
-    expect(rows[0].summary).toContain('new');
-    expect(rows[1].summary).toContain('old');
+    // Case-insensitive: #572 sentence-cases summaries at display;
+    // this test asserts newest-first order, not casing.
+    expect(rows[0].summary).toMatch(/new/i);
+    expect(rows[1].summary).toMatch(/old/i);
   });
 
   it('marks failures bad, routine chatter muted, rest ok', () => {

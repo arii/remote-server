@@ -210,6 +210,17 @@ function activityLabel(kind: string, count: number): string {
   return `${what} activity ×${count}`;
 }
 
+// One casing convention for collapsed summaries (issue #572):
+// backend event text arrives lowercase ('chat started') while
+// frontend labels are capitalized ('Chat session activity').
+// Capitalize the first letter at display; the rest stays verbatim
+// so model names, paths, and error detail are never mangled.
+// Grouping still keys on the raw summary, so counts are unchanged.
+export function sentenceCase(text: string): string {
+  if (!text) return text;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 export function jobPassesKindFilter(jobKind: string | undefined, filter: string): boolean {
   if (filter === 'all') return true;
   // Job rows are runs: they answer to the run filter whatever action ran.
@@ -240,7 +251,7 @@ function toRow(entry: FlatEntry, members: FlatEntry[], index: number): HistoryRo
   return {
     key: `${entry.kind}-${entry.summary}-${index}`,
     kind: entry.kind,
-    summary: routineRun ? activityLabel(entry.kind, count) : (repeated ?? entry.summary),
+    summary: sentenceCase(routineRun ? activityLabel(entry.kind, count) : (repeated ?? entry.summary)),
     at: entry.at,
     repeat: count,
     recovery: failed ? recoveryFor(entry.kind, entry.summary) : '',
