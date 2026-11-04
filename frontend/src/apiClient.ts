@@ -23,6 +23,7 @@ export interface SystemHealthResponse {
   disk: DiskSummary;
   memory: DiskSummary;
   containers: ContainerStatus[];
+  containers_error?: string | null;
 }
 
 // Absolute API URLs from Vite's base: '/' in dev, '/buttons/' in the

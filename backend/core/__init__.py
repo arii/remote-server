@@ -54,7 +54,9 @@ def get_system_health() -> dict[str, Any]:
 
     Port of the logic behind buttons/server.py _get_system_health:
     shutil disk usage, /proc/meminfo parsing, and
-    `docker compose ps --format json` (read-only, degrades to [])."""
+    `docker compose ps --format json` (read-only). A docker
+    failure surfaces as ``containers_error`` (#530); only a
+    successful empty listing reads as zero containers."""
     import shutil
     import subprocess
 
@@ -100,61 +102,91 @@ def get_system_health() -> dict[str, Any]:
     except Exception as exc:
         mem_info = {"error": str(exc)}
 
-    containers = _compose_containers()
+    containers, containers_error = _compose_containers_result()
 
-    return {"disk": disk_info, "memory": mem_info, "containers": containers}
+    return {"disk": disk_info, "memory": mem_info,
+            "containers": containers,
+            "containers_error": containers_error}
 
 
-def _compose_containers(run=None) -> list[dict[str, Any]]:
+def _compose_containers_result(run=None) -> tuple[list[dict[str, Any]], str | None]:
     """Stack containers from `docker compose ps` (read-only).
 
-    Shared by system health and container stats; degrades to [].
+    Returns (containers, error): ``error`` names the failure
+    class (spawn/timeout/exit code/parse) so callers can tell
+    "nothing running" from "couldn't ask docker" (#530).
     ``run`` injects tests (defaults to subprocess.run).
     """
     import subprocess
 
     run = run or subprocess.run
-    containers: list[dict[str, Any]] = []
+    stack = os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server")
+    compose = ["docker", "compose", "-f", f"{stack}/docker-compose.yml"]
+    # Inherit env: the compose plugin lives under the runtime
+    # user's ~/.docker, and a HOME override blinds plugin
+    # discovery (surfaces as an exit-code error below).
     try:
-        stack = os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server")
-        compose = ["docker", "compose", "-f", f"{stack}/docker-compose.yml"]
-        # Inherit env: the compose plugin lives under the runtime
-        # user's ~/.docker, and a HOME override blinds plugin
-        # discovery (empty list, swallowed below).
         proc = run(
             compose + ["ps", "--format", "json"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=10, text=True,
         )
-        if proc.returncode == 0 and proc.stdout.strip():
-            raw = proc.stdout.strip()
-            items: list[Any] = []
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    items = parsed
-                elif isinstance(parsed, dict):
-                    items = [parsed]
-            except Exception:
-                for line in raw.splitlines():
-                    if line.strip():
-                        try:
-                            items.append(json.loads(line.strip()))
-                        except Exception:
-                            pass
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                service = item.get("Service") or item.get("Name") or "unknown"
-                containers.append({
-                    "name": item.get("Name", service),
-                    "service": service,
-                    "state": item.get("State") or "unknown",
-                    "status": item.get("Status") or "",
-                    "health": item.get("Health") or "",
-                })
+    except subprocess.TimeoutExpired:
+        return [], "docker compose ps timed out after 10s"
+    except Exception as exc:
+        return [], f"docker compose ps failed: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip()
+        tail = err.splitlines()[-1] if err else "unknown error"
+        return [], f"docker compose ps exited {proc.returncode}: {tail}"
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        return [], None
+    items: list[Any] = []
+    try:
+        parsed = json.loads(raw)
     except Exception:
-        pass
+        parsed = None
+    if parsed is None:
+        for line in raw.splitlines():
+            if line.strip():
+                try:
+                    items.append(json.loads(line.strip()))
+                except Exception:
+                    pass
+        if not any(isinstance(item, dict) for item in items):
+            return [], "docker compose ps output unparseable: " \
+                f"{raw[:120]}"
+    elif isinstance(parsed, list):
+        items = parsed
+    elif isinstance(parsed, dict):
+        items = [parsed]
+    else:
+        return [], "docker compose ps output unparseable: " \
+            f"unexpected JSON {type(parsed).__name__}"
+    containers: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        service = item.get("Service") or item.get("Name") or "unknown"
+        containers.append({
+            "name": item.get("Name", service),
+            "service": service,
+            "state": item.get("State") or "unknown",
+            "status": item.get("Status") or "",
+            "health": item.get("Health") or "",
+        })
+    return containers, None
+
+
+def _compose_containers(run=None) -> list[dict[str, Any]]:
+    """Stack containers from `docker compose ps` (read-only).
+
+    Stats-path wrapper that keeps the degrade-to-[] contract;
+    system health uses _compose_containers_result for the error.
+    ``run`` injects tests (defaults to subprocess.run).
+    """
+    containers, _ = _compose_containers_result(run=run)
     return containers
 
 

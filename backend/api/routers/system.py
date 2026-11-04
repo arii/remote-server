@@ -38,6 +38,7 @@ class SystemHealth(BaseModel):
     disk: DiskInfo = Field(default_factory=DiskInfo)
     memory: MemoryInfo = Field(default_factory=MemoryInfo)
     containers: list[ContainerInfo] = Field(default_factory=list)
+    containers_error: str | None = None
 
 
 @router.get("/health", response_model=SystemHealth)
