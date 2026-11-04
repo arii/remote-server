@@ -65,13 +65,31 @@ def _short(exc, limit=200):
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _td_json(argv, timeout=TD_TIMEOUT):
+def _td_cwd(repo):
+    """cwd for td subprocesses: the target checkout when present.
+
+    td discovers project_config.json upward from cwd, but the engine
+    runs -m steps from ENGINE_ROOT (/app), which has no config
+    (#925). Aiming td at the target checkout keeps ENGINE_ROOT
+    module resolution AND checkout config discovery. Falls back to
+    None (inherit cwd) when the checkout is absent, so human runs
+    from a dev checkout keep working. Mirrors the jobs router td_cwd
+    mapping (backend/api/routers/jobs.py::_repo_target) and
+    s5tools.checkout_for.
+    """
+    name = repo.split("/", 1)[1] if "/" in repo else repo
+    checkout = ("/srv/remote-server" if name == "remote-server"
+                else f"/srv/repos/{name}")
+    return checkout if os.path.isdir(checkout) else None
+
+
+def _td_json(argv, timeout=TD_TIMEOUT, cwd=None):
     """Run td --json; return the merged payload dict or raise ReviewError."""
     try:
         proc = subprocess.run(
             ["td", "--json", *argv],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=timeout, text=True,
+            timeout=timeout, text=True, cwd=cwd,
         )
     except subprocess.TimeoutExpired:
         raise ReviewError(f"td {' '.join(argv)} timed out after {timeout}s")
@@ -91,7 +109,8 @@ def _td_json(argv, timeout=TD_TIMEOUT):
 
 def fetch_pr_diff(repo, pr):
     """(files, diff_text, truncated) via td's diff primitive."""
-    payload = _td_json(["gh", "pr-diff", "--pr", str(pr), "--repo", repo])
+    payload = _td_json(["gh", "pr-diff", "--pr", str(pr), "--repo", repo],
+                       cwd=_td_cwd(repo))
     files = payload.get("files")
     files = [f for f in files if isinstance(f, dict)] \
         if isinstance(files, list) else []
@@ -102,7 +121,8 @@ def fetch_pr_diff(repo, pr):
 def fetch_pr_view(repo, pr):
     """PR title/state snapshot via td; {} when unavailable (best-effort)."""
     try:
-        return _td_json(["gh", "pr-view", "--pr", str(pr), "--repo", repo])
+        return _td_json(["gh", "pr-view", "--pr", str(pr), "--repo", repo],
+                        cwd=_td_cwd(repo))
     except ReviewError as exc:
         print(f"review: pr-view unavailable ({exc}); continuing", file=sys.stderr)
         return {}
@@ -442,7 +462,7 @@ def post_body(repo, pr, body):
         try:
             proc = subprocess.run(argv, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, timeout=TD_TIMEOUT,
-                                  text=True)
+                                  text=True, cwd=_td_cwd(repo))
         except subprocess.TimeoutExpired:
             raise ReviewError(f"td post-comment timed out after {TD_TIMEOUT}s")
         except OSError as exc:
