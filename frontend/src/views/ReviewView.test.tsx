@@ -37,7 +37,7 @@ import ReviewView, {
   toggleBulkSelected,
   validateRequestChangesBody,
 } from './ReviewView';
-import { approveBlockReason } from '../reviewTypes';
+import { approveBlockReason, isOwnPr, mergeBlockReason } from '../reviewTypes';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -839,5 +839,95 @@ describe('merge-block decision context (issue #839 addendum)', () => {
     );
     expect(html).toContain('Branch is behind main — update the branch, then merge.');
     expect(html).not.toContain('review-merge-missing');
+  });
+});
+
+describe('approve/merge gating for self-authored PRs (issue #848)', () => {
+  const SELF_REASON = 'you authored this PR — GitHub forbids self-approval';
+  const base = {
+    number: 7,
+    title: 't',
+    author: 'octo',
+    branch: 'b',
+    isDraft: false,
+    ciStatus: 'passing',
+    ciLabel: 'passing',
+    reviewDecision: '',
+    mergeable: 'MERGEABLE',
+    url: 'https://example.invalid/7',
+  };
+
+  it('merge gate fails open when the repo requires no reviews', () => {
+    expect(mergeBlockReason({ ...base, reviewRequired: false })).toBeNull();
+    expect(mergeBadge({ ...base, reviewRequired: false })).toBe('merge-clean');
+  });
+
+  it('merge gate stays strict without the signal (fixtures, older payloads)', () => {
+    expect(mergeBlockReason(base)).toBe('review is unapproved');
+    expect(mergeBlockReason({ ...base, reviewRequired: true })).toBe('review is unapproved');
+  });
+
+  it('merge gate still blocks explicit negative reviews without required reviews', () => {
+    expect(
+      mergeBlockReason({ ...base, reviewRequired: false, reviewDecision: 'CHANGES_REQUESTED' }),
+    ).toBe('review is CHANGES_REQUESTED');
+    expect(
+      mergeBlockReason({ ...base, reviewRequired: false, reviewDecision: 'REVIEW_REQUIRED' }),
+    ).toBe('review is REVIEW_REQUIRED');
+  });
+
+  it('merge gate still blocks drafts, CI, and conflicts without required reviews', () => {
+    expect(mergeBlockReason({ ...base, reviewRequired: false, isDraft: true })).toBe('is a draft');
+    expect(mergeBlockReason({ ...base, reviewRequired: false, ciStatus: 'failing' })).toBe(
+      'CI is failing',
+    );
+    expect(mergeBlockReason({ ...base, reviewRequired: false, mergeable: 'CONFLICTING' })).toBe(
+      'merge state is CONFLICTING',
+    );
+  });
+
+  it('approve blocks self with a viewer match (case-insensitive)', () => {
+    expect(approveBlockReason({ ...base }, 'octo')).toBe(SELF_REASON);
+    expect(approveBlockReason({ ...base }, 'OCTO')).toBe(SELF_REASON);
+    expect(approveBlockReason({ ...base }, 'someone-else')).toBeNull();
+  });
+
+  it('approve stays legacy without a viewer', () => {
+    expect(approveBlockReason({ ...base })).toBeNull();
+    expect(approveBlockReason({ ...base }, '')).toBeNull();
+    expect(approveBlockReason({ ...base, author: '' }, 'octo')).toBeNull();
+  });
+
+  it('approve keeps draft/approved precedence over self', () => {
+    expect(approveBlockReason({ ...base, isDraft: true }, 'octo')).toBe('is a draft');
+    expect(approveBlockReason({ ...base, reviewDecision: 'APPROVED' }, 'octo')).toBe(
+      'already approved',
+    );
+  });
+
+  it('matches author to viewer only', () => {
+    expect(isOwnPr({ ...base }, 'octo')).toBe(true);
+    expect(isOwnPr({ ...base }, 'OCTO')).toBe(true);
+    expect(isOwnPr({ ...base }, 'someone-else')).toBe(false);
+    expect(isOwnPr({ ...base }, undefined)).toBe(false);
+    expect(isOwnPr({ ...base }, '')).toBe(false);
+    expect(isOwnPr({ ...base, author: '' }, 'octo')).toBe(false);
+  });
+
+  it('approve chip shows the inline reason for own PRs', () => {
+    const html = renderToStaticMarkup(
+      <PrRowApprove pr={{ ...base }} busy={false} onApprove={() => {}} viewer="octo" />,
+    );
+    expect(html).toContain('disabled');
+    expect(html).toContain('data-testid="approve-self-note-7"');
+    expect(html).toContain(SELF_REASON);
+  });
+
+  it('approve chip shows no inline note for reviewable PRs', () => {
+    const html = renderToStaticMarkup(
+      <PrRowApprove pr={{ ...base }} busy={false} onApprove={() => {}} viewer="someone-else" />,
+    );
+    expect(html).not.toContain('approve-self-note-7');
+    expect(html).not.toContain('disabled');
   });
 });
