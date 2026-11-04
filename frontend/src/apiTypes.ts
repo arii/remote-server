@@ -75,6 +75,21 @@ export interface LedgerEntry {
   command?: string;
   elapsed_s?: number;
   provider?: string;
+  // Webhook heal/skip decision fields (#855): machine reason,
+  // ladder outcome, held stash ref + note, and whether the pull
+  // moved the checkout. Absent on rows that predate the ladder.
+  skip_reason?: string;
+  heal?: string;
+  stash_ref?: string;
+  heal_note?: string;
+  advanced?: boolean;
+  observed?: {
+    lag?: number | null;
+    ahead?: number | null;
+    target?: string | null;
+    origin?: string | null;
+    head?: string | null;
+  } | null;
   // Normalized cli-turn fields from the deep-agent ledger (#590).
   script?: string;
   model?: string;
