@@ -228,7 +228,7 @@ describe('row action accessible names (issue #569)', () => {
   });
 });
 
-describe('review columns layout (issue #570)', () => {
+describe('review columns layout (issues #570, #599)', () => {
   it('keeps two columns when detail content exists', () => {
     expect(reviewColumnsClass(true)).toBe('columns');
   });
@@ -237,12 +237,12 @@ describe('review columns layout (issue #570)', () => {
     expect(reviewColumnsClass(false)).toBe('columns columns-single');
   });
 
-  it('wires the loading state to two columns (details prompt shows)', () => {
+  it('wires no-selection to a single column with the prompt above the lists (#599)', () => {
     const html = renderToStaticMarkup(
       <ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />,
     );
-    expect(html).toContain('class="columns"');
-    expect(html).not.toContain('columns-single');
+    expect(html).toContain('columns columns-single');
+    expect(html).toContain('data-testid="review-details-empty"');
   });
 });
 

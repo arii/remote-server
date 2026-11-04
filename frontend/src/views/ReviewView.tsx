@@ -101,10 +101,9 @@ export function detailsPromptVisible(prsLoaded: boolean, visiblePrCount: number)
   return !prsLoaded || visiblePrCount > 0;
 }
 
-// Two columns only when the right side holds detail content
-// (PrDetails or the details prompt). With zero PRs the right side
-// keeps just two collapsed disclosures, so the lists take the full
-// width instead of the 320px rail.
+// Two columns only when a PR detail pane is open (PrDetails). The
+// "Select a PR..." prompt renders as a slim notice above the lists,
+// so it never justifies the 320px rail (#599).
 export function reviewColumnsClass(hasDetail: boolean): string {
   return hasDetail ? 'columns' : 'columns columns-single';
 }
@@ -1061,7 +1060,12 @@ export default function ReviewView({
       {bulkSelected.size > 0 && (
         <BulkDeferBar count={bulkSelected.size} busy={bulkBusy} onDefer={() => void deferBulk()} />
       )}
-      <div className={reviewColumnsClass(sel !== null || promptVisible)}>
+      {!sel && promptVisible && (
+        <p className="row-meta" data-testid="review-details-empty">
+          Select a PR to see file stats and review prompts.
+        </p>
+      )}
+      <div className={reviewColumnsClass(sel !== null)}>
         <div>
           <h3>
             Pull requests{' '}
@@ -1209,14 +1213,6 @@ export default function ReviewView({
           )}
         </div>
         <div>
-          {!sel && promptVisible && (
-            <>
-              <h3>Details</h3>
-              <p className="row-meta" data-testid="review-details-empty">
-                Select a PR to see file stats and review prompts.
-              </p>
-            </>
-          )}
           {sel && (
             <PrDetails
               repo={repo}
