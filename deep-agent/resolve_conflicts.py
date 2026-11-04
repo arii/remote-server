@@ -1,10 +1,11 @@
 """Deep Agent merge-conflict resolver (repair worktree).
 
-Usage: resolve_conflicts.py <worktree-path> [base-ref]
+Usage: resolve_conflicts.py [--prefer=ollama|nebius|auto] <worktree-path> [base-ref]
 The agent merges the base ref (default origin/main), resolves every
 conflict on real disk, and verifies zero markers remain. Commit +
 replacement PR happen outside via BoomTick MCP tools after human
 diff review. Works for any repo, any PR, any base branch.
+auto (the default) uses Nebius when keyed, else the local model.
 """
 
 import os
@@ -82,41 +83,89 @@ def git_diff_check() -> str:
     return out if out.strip("exit=0\n ") else "CLEAN: no markers or whitespace errors"
 
 
+def extract_prefer(argv):
+    """Backend override from --prefer=ollama|nebius|auto (default auto).
+
+    Mirrors triage_fanout.extract_prefer (#622/#626), plus the auto
+    ladder: Nebius when keyed, else the default ladder (local
+    Ollama). Returns the provider or "auto". Raises ValueError on a
+    value the router would reject, so misuse fails at the CLI.
+    """
+    for arg in argv[1:]:
+        if isinstance(arg, str) and arg.startswith("--prefer="):
+            value = arg.split("=", 1)[1].strip().lower()
+            if value not in ("ollama", "nebius", "auto"):
+                raise ValueError(
+                    f"bad --prefer={value!r}: want 'ollama', 'nebius', "
+                    "or 'auto'")
+            return value
+    return "auto"
+
+
 def main() -> int:
     global WORKTREE, BASE
-    if len(sys.argv) < 2:
-        return cli.usage_error(
-            "usage: resolve_conflicts.py <worktree-path> [base-ref]")
-    WORKTREE = sys.argv[1]
-    BASE = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_BASE
     started = time.time()
     load_dotenv(os.path.join(cli.repo_root(), ".env"))
-    if not os.environ.get("NEBIUS_API_KEY"):
+    try:
+        prefer = extract_prefer(sys.argv)
+    except ValueError as exc:
+        return cli.usage_error(str(exc))
+    if prefer == "auto":
+        # Ladder: Nebius when keyed (today's behavior), else local.
+        prefer = "nebius" if os.environ.get("NEBIUS_API_KEY") else None
+    keyless_auto = prefer is None
+    if prefer == "nebius" and not os.environ.get("NEBIUS_API_KEY"):
         print("NEBIUS_API_KEY is not set", file=sys.stderr)
         return 1
+    # Strip before positional parsing so the flag never shifts them.
+    positionals = [a for a in sys.argv[1:]
+                   if not (isinstance(a, str)
+                           and a.startswith("--prefer="))]
+    if not positionals:
+        return cli.usage_error(
+            "usage: resolve_conflicts.py [--prefer=...] "
+            "<worktree-path> [base-ref]")
+    WORKTREE = positionals[0]
+    BASE = positionals[1] if len(positionals) > 1 else DEFAULT_BASE
     if not os.path.isdir(os.path.join(WORKTREE, ".git")) and not os.path.isfile(
         os.path.join(WORKTREE, ".git")
     ):
         print(f"not a worktree: {WORKTREE}", file=sys.stderr)
         return 1
     try:
-        spec = model_router.resolve_llm(prefer="nebius")
+        spec = model_router.resolve_llm(prefer=prefer)
     except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 1
-    # Cap checked above; keep this entrypoint's pinned model/endpoint.
-    spec = dict(spec, model=MODEL_ID,
-                base_url="https://api.studio.nebius.com/v1")
-    kwargs = model_router.chat_kwargs(spec)
-    model = ChatOpenAI(
-        api_key=os.environ["NEBIUS_API_KEY"],
-        # Reasoning model: needs headroom for hidden reasoning tokens
-        # plus the visible reply + tool call.
-        max_tokens=4000,
-        **kwargs,
-    )
+    provider = spec.get("provider")
+    if provider == "ollama":
+        # Local path (#647): resolved spec as-is, no Nebius pin/endpoint.
+        if keyless_auto:
+            print("resolve: no Nebius key — resolve on local model (weaker)",
+                  file=sys.stderr)
+        kwargs = model_router.chat_kwargs(spec)
+        # No-think default mirrors fanout/chat/coder: a qwen3 thinking
+        # trace takes 15+ min per prompt on this CPU-only box.
+        if os.environ.get("RESOLVER_THINK", "") != "1":
+            kwargs["model_kwargs"] = {"think": False}
+        from langchain_ollama import ChatOllama  # noqa: E402
+        model = ChatOllama(**kwargs)
+        model_id = spec["model"]
+    else:
+        # Cap checked above; keep this entrypoint's pinned model/endpoint.
+        spec = dict(spec, model=MODEL_ID,
+                    base_url="https://api.studio.nebius.com/v1")
+        kwargs = model_router.chat_kwargs(spec)
+        model = ChatOpenAI(
+            api_key=os.environ["NEBIUS_API_KEY"],
+            # Reasoning model: needs headroom for hidden reasoning tokens
+            # plus the visible reply + tool call.
+            max_tokens=4000,
+            **kwargs,
+        )
+        model_id = MODEL_ID
     thread = "resolve-" + os.path.basename(os.path.normpath(WORKTREE))
-    label = f"nebius:{MODEL_ID}"
+    label = f"{provider}:{model_id}"
     recorder = observe.TraceRecorder(
         observe.default_trace_path("resolve_conflicts", thread))
     recorder.run_start("resolve_conflicts.py", thread, label)
