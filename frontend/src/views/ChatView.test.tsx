@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, saveChatMessages, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, runCost, runDecisions, RunsPane, saveChatMessages, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1033,5 +1033,43 @@ describe('live conversation persistence (issue #573)', () => {
     saveChatMessages(settledChatMessages([]));
     expect(store.get(CHAT_MESSAGES_KEY)).toBe('[]');
     expect(loadChatMessages()).toEqual([]);
+  });
+});
+
+describe('stream error parsing (issue #466)', () => {
+  function sseReader(frames: string[]): ReadableStreamDefaultReader<Uint8Array> {
+    const enc = new TextEncoder();
+    const queue = frames.map((f) => enc.encode(f));
+    return {
+      read: async () => {
+        const value = queue.shift();
+        if (!value) return { done: true, value: undefined };
+        return { done: false, value };
+      },
+    } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+  }
+
+  function pump(frames: string[]) {
+    return pumpStream(sseReader(frames), () => {}, () => {}, () => {}, () => {}, () => {});
+  }
+
+  it('throws the human message, not the JSON envelope', async () => {
+    await expect(pump(['event: error\ndata: {"error":"unknown repo"}\n\n'])).rejects.toThrow(
+      'unknown repo',
+    );
+    await expect(pump(['event: error\ndata: {"error":"unknown repo"}\n\n'])).rejects.toThrow(
+      /^unknown repo$/,
+    );
+  });
+
+  it('falls back to raw data when the body is not JSON', async () => {
+    await expect(pump(['event: error\ndata: boom\n\n'])).rejects.toThrow(/^boom$/);
+  });
+
+  it('falls back to raw data when the JSON has no message', async () => {
+    await expect(pump(['event: error\ndata: {}\n\n'])).rejects.toThrow(/^\{\}$/);
+    await expect(pump(['event: error\ndata: {"error":""}\n\n'])).rejects.toThrow(
+      /^\{"error":""\}$/,
+    );
   });
 });
