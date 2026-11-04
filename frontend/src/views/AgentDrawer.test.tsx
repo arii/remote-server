@@ -46,13 +46,40 @@ describe('turn failure detail (issue #410)', () => {
 
 describe('provider switch (issue #410)', () => {
   it('picks the other allowlisted provider', () => {
-    expect(otherProvider('muse', ['muse', 'agy'])).toBe('agy');
-    expect(otherProvider('agy', ['muse', 'agy'])).toBe('muse');
+    expect(otherProvider('muse', ['muse', 'agy'], {})).toBe('agy');
+    expect(otherProvider('agy', ['muse', 'agy'], {})).toBe('muse');
   });
 
   it('returns empty with no alternative', () => {
-    expect(otherProvider('muse', ['muse'])).toBe('');
-    expect(otherProvider('muse', [])).toBe('');
+    expect(otherProvider('muse', ['muse'], {})).toBe('');
+    expect(otherProvider('muse', [], {})).toBe('');
+  });
+});
+
+describe('provider switch availability (issue #497)', () => {
+  it('returns empty when the only alternative is unreachable', () => {
+    expect(
+      otherProvider('muse', ['muse', 'agy'], { muse: false, agy: false }),
+    ).toBe('');
+  });
+
+  it('never returns a status-false target', () => {
+    expect(
+      otherProvider(
+        'muse',
+        ['muse', 'agy', 'codex'],
+        { muse: false, agy: false, codex: true },
+      ),
+    ).toBe('codex');
+    expect(
+      otherProvider('muse', ['muse', 'agy'], { muse: true, agy: false }),
+    ).toBe('');
+  });
+
+  it('treats unknown status as live like the default pick', () => {
+    expect(
+      otherProvider('muse', ['muse', 'agy'], { muse: false }),
+    ).toBe('agy');
   });
 });
 

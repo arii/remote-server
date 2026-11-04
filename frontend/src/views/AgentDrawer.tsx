@@ -96,9 +96,17 @@ export function defaultProvider(
 }
 
 // The one-tap recovery target: the first allowlisted provider that
-// is not the failed one. Empty when there is no alternative.
-export function otherProvider(provider: string, providers: string[]): string {
-  return providers.find((p) => p !== provider) ?? '';
+// is not the failed one and is not known-unreachable (same
+// non-false filter as defaultProvider). Empty when there is no
+// live alternative, which hides the switch button.
+export function otherProvider(
+  provider: string,
+  providers: string[],
+  status: Record<string, boolean>,
+): string {
+  return (
+    providers.find((p) => p !== provider && status[p] !== false) ?? ''
+  );
 }
 
 export function GuidanceCard({
@@ -322,7 +330,7 @@ export default function AgentDrawer({
   }
 
   function onSwitchProvider() {
-    const other = otherProvider(provider, providers);
+    const other = otherProvider(provider, providers, status);
     if (!other) return;
     // Fresh session on the new provider: session ids are
     // provider-side state (agy --continue would resume the wrong
@@ -340,7 +348,7 @@ export default function AgentDrawer({
         <GuidanceCard
           message={error}
           detail={failure.detail}
-          other={otherProvider(provider, providers)}
+          other={otherProvider(provider, providers, status)}
           onSwitch={onSwitchProvider}
         />
       )}
