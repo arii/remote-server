@@ -16,6 +16,7 @@
     "lint": "bash -n scripts/*.sh && (command -v shellcheck >/dev/null 2>&1 && shellcheck -S warning scripts/*.sh || true) && npm run type-check && pnpm --filter frontend lint",
     "build": "pnpm --filter frontend build",
     "test:backend": "python3 -m unittest discover -s backend/tests",
+    "test:root": "python3 -m unittest discover -s tests",
     "test": "npm run test:backend && pnpm --filter frontend test",
     "clean": "docker compose down --remove-orphans",
     "down": "docker compose down",

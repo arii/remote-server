@@ -26,7 +26,10 @@ _spec = importlib.util.spec_from_file_location(
                  "ask_investigator.py"),
 )
 ai = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(ai)
+try:
+    _spec.loader.exec_module(ai)
+except ImportError:
+    raise unittest.SkipTest("needs deep-agent venv")
 
 
 class TestAskTools(unittest.TestCase):

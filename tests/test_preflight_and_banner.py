@@ -3,12 +3,25 @@
 
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout
 
 import core_cli.preflight_digest as pfd
+
+
+def _full_js_toolchain_available():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tsc = os.path.join(root, "frontend", "node_modules", ".bin", "tsc")
+    return (
+        shutil.which("node") is not None
+        and shutil.which("pnpm") is not None
+        and shutil.which("fallow") is not None
+        and os.path.isfile(tsc)
+    )
 
 
 class TestPreflightDigest(unittest.TestCase):
@@ -76,6 +89,10 @@ class TestPreflightDigest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Not valid json", out)
 
+    @unittest.skipUnless(
+        _full_js_toolchain_available(),
+        "needs full JS toolchain (node, pnpm, tsc, fallow)",
+    )
     def test_package_scripts_and_antipatterns(self):
         # Verify npm run type-check passes
         proc_tc = subprocess.run(
@@ -116,6 +133,7 @@ class TestPreflightDigest(unittest.TestCase):
         self.assertEqual(proc_fallow.returncode, 0, f"pnpm run audit:fallow failed: {proc_fallow.stderr}")
 
 
+@unittest.skipUnless(shutil.which("node"), "Node.js is not available")
 class TestBannerExtraction(unittest.TestCase):
     def extract_error_line_js(self, output_text):
         node_code = f"""

@@ -13,6 +13,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import observe
 
+try:
+    import langchain  # noqa: F401
+    HAS_LANGCHAIN = True
+except ImportError:
+    HAS_LANGCHAIN = False
+
 
 class TestRecorder(unittest.TestCase):
     def test_events_are_jsonl(self):
@@ -92,6 +98,7 @@ class TestTotals(unittest.TestCase):
             self.assertEqual(calls, [])
 
 
+@unittest.skipUnless(HAS_LANGCHAIN, "needs deep-agent venv")
 class TestMiddleware(unittest.TestCase):
     def test_wrap_tool_call_ok_and_error(self):
         with tempfile.TemporaryDirectory() as d:

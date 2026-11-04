@@ -51,6 +51,16 @@ def run_script(name, *args, env=None):
 class TestBootstrap(unittest.TestCase):
     def test_adds_own_dir_once(self):
         want = os.path.dirname(os.path.abspath(cli.__file__))
+        # Full-suite isolation: other modules (e.g. build_index)
+        # insert the same entry at import time depending on
+        # listdir order, so start from a clean slate.
+        saved = list(sys.path)
+
+        def restore():
+            sys.path[:] = saved
+
+        self.addCleanup(restore)
+        sys.path[:] = [p for p in sys.path if p != want]
         cli.bootstrap()
         cli.bootstrap()
         self.assertEqual(sys.path.count(want), 1)

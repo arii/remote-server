@@ -2,7 +2,7 @@ name: CI
 
 # Builds the terminal image on every push/PR, validates the compose file,
 # lints the shell scripts, scans for leaked secrets, and runs the
-# backend + frontend test suites with the backend type-check.
+# backend + root + frontend test suites with the backend type-check.
 #
 # Docker workflow replicates arii/BoomTick's pattern:
 # .github/actions/setup-docker-buildx (ghcr.io login + buildx),
@@ -148,5 +148,7 @@ jobs:
         run: npm run type-check
       - name: backend unit tests
         run: npm run test:backend
+      - name: root unit tests
+        run: npm run test:root
       - name: validate configs
         run: python3 -m core_cli validate-config
