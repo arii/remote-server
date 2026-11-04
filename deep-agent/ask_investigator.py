@@ -24,11 +24,25 @@ from langchain_core.tools import tool  # noqa: E402
 from langchain_ollama import ChatOllama  # noqa: E402
 
 import ledger  # noqa: E402
+import model_router  # noqa: E402
 import observe  # noqa: E402
 import s5tools  # noqa: E402
 
-MODEL_ID = os.environ.get("ASK_MODEL", "qwen3:8b")
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
+
+def _model_config():
+    """(model_id, ollama_url); blank env falls back to defaults.
+
+    Blank-tolerant read shared with model_router (cf. #620, where
+    set-but-empty env beat working defaults and produced provider
+    400s): ASK_MODEL/OLLAMA_URL resolve here, never as raw .get().
+    """
+    return (
+        model_router._env("ASK_MODEL", model_router.DEFAULT_OLLAMA_MODEL),
+        model_router._env("OLLAMA_URL", model_router.DEFAULT_OLLAMA_URL),
+    )
+
+
+MODEL_ID, OLLAMA_URL = _model_config()
 
 # Mirror of ALLOWED_TD_COMMANDS in backend/exec/engine.py (source of
 # truth). Jules shapes are dead with Jules.
@@ -214,6 +228,43 @@ def _short_line(content, limit=160):
     return line if len(line) <= limit else line[:limit] + "…"
 
 
+class _ProgressRecorder(observe.TraceRecorder):
+    """TraceRecorder that narrates each step to stdout.
+
+    Local LLM steps cost 60-120s each; without life signs a 5-10
+    minute run looks hung and every caller timeout fires blind.
+    Step lines are additive: parsers match REPORT/FINAL:/
+    tool_calls_made: only, so banner -> steps -> REPORT/FINAL stays
+    parseable, and a timeout-killed run (#475) leaves its steps on
+    record. Stdout, not stderr: run_pi_pipeline streams stdout to
+    the pi-progress tail.
+    """
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.steps = 0
+        self._mark = time.time()
+
+    def _say(self, kind, name, elapsed):
+        self.steps += 1
+        try:
+            print(f"ask: step {self.steps} {kind} {name} "
+                  f"{elapsed:.1f}s", flush=True)
+        except (OSError, ValueError):
+            pass  # observability must not break runs
+        self._mark = time.time()
+
+    def model_response(self, usage):
+        super().model_response(usage)
+        self._say("model", MODEL_ID, time.time() - self._mark)
+
+    def tool_call(self, name, args, duration_s, ok, result=None,
+                  error=None):
+        super().tool_call(name, args, duration_s, ok, result=result,
+                          error=error)
+        self._say("tool", name, duration_s)
+
+
 def main() -> int:
     if len(sys.argv) < 3 or not s5tools.valid_repo(sys.argv[1]):
         return cli.usage_error(
@@ -238,7 +289,7 @@ def main() -> int:
         model_kwargs={} if think else {"think": False},
     )
     thread = "ask-" + _repo.replace("/", "-")
-    recorder = observe.TraceRecorder(
+    recorder = _ProgressRecorder(
         observe.default_trace_path("ask_investigator", thread))
     recorder.run_start("ask_investigator.py", thread,
                        f"ollama:{MODEL_ID}")
@@ -276,6 +327,9 @@ def main() -> int:
         extra={"trace": recorder.path},
     )
     print(f"tool_calls_made: {calls}")
+    elapsed = time.time() - started
+    word = "step" if recorder.steps == 1 else "steps"
+    print(f"done in {elapsed:.1f}s, {recorder.steps} {word}")
     outcomes = [
         _short_line(str(m.content))
         for m in result["messages"]
