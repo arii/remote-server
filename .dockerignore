@@ -12,6 +12,9 @@
 !frontend/**
 !core_cli/
 !core_cli/**
+# Ops scripts (buttons entrypoint ships from here).
+!scripts/
+!scripts/**
 # Build inputs excluded even from the above.
 backend/tests/
 backend/**/__pycache__/
