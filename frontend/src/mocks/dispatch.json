@@ -1,0 +1,7 @@
+{
+  "items": [
+    { "repo": "remote-server", "issue": 853, "state": "queued", "detail": "" },
+    { "repo": "tech-dancer", "issue": 4848, "state": "running", "detail": "" },
+    { "repo": "tech-dancer", "issue": 4850, "state": "queued", "detail": "" }
+  ]
+}

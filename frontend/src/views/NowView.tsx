@@ -23,6 +23,7 @@ import { ContainerPills } from './ObservabilitySection';
 import InboxStrips from './InboxStrips';
 import ReviewView from './ReviewView';
 import JobsView from './JobsView';
+import QueueView from './QueueView';
 import { loadJobs, loadPrs, useMock } from './mockViews';
 
 function isGetAction(item: AttentionItem): boolean {
@@ -827,7 +828,8 @@ export default function NowView({
   const [reportLabels, setReportLabels] = useState<string[] | null>(null);
   // One section mounted at a time: Review and Jobs each bind window
   // triage keys, so mounting both would double-bind j/k/Enter.
-  const [section, setSection] = useState<'review' | 'jobs' | null>(null);
+  // Queue binds none, but still mounts solo for a stable layout.
+  const [section, setSection] = useState<'review' | 'jobs' | 'queue' | null>(null);
   // Last Review row selection, surviving section switches so Jobs can
   // prefill its PR field from row context. Reset on repo change.
   const [lastPr, setLastPr] = useState<number | null>(null);
@@ -1284,10 +1286,19 @@ export default function NowView({
           >
             Jobs{data.runs.active ? ' •' : ''}
           </button>
+          <button
+            type="button"
+            data-testid="inbox-open-queue"
+            aria-pressed={section === 'queue'}
+            onClick={() => setSection((s) => (s === 'queue' ? null : 'queue'))}
+          >
+            Queue
+          </button>
         </div>
       )}
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
           {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
+          {section === 'queue' && <QueueView repo={repo} />}
         </>
       )}
     </section>
