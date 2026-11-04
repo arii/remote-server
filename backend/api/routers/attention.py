@@ -260,8 +260,9 @@ def list_skipped_webhooks() -> list:
 
     Skips (ok=True, advanced=False, detail "skipped: ...") are safe
     no-ops — the pull logic is unchanged — but a checkout that keeps
-    skipping lags origin/main silently, so the newest skip per repo
-    surfaces as its own info item until an advancing pull clears it.
+    skipping lags its remote default branch silently, so the newest
+    skip per repo surfaces as its own info item until an advancing
+    pull clears it.
     """
     resolved_before = latest_webhook_success_ts()
     entries = ledger.read(kind="webhook", limit=200)
