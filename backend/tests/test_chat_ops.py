@@ -5,7 +5,6 @@ import json
 import os
 import tempfile
 import threading
-import time
 import unittest
 
 try:
@@ -65,8 +64,6 @@ class ChatOpsTest(unittest.TestCase):
         self.client = make_client()
         self._orig_repo = chat.get_repo_info
         self._orig_spawn = chat.spawn_chat_process
-        self._orig_pspawn = chat.spawn_pipeline_process
-        self._orig_pipeline = chat.run_pi_pipeline
         self._orig_validate = chat.validate_action_request
         self._orig_resume_spawn = chat.run_resume_spawn
         self._orig_venv = chat.deep_agent_python
@@ -92,8 +89,6 @@ class ChatOpsTest(unittest.TestCase):
             os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
         chat.get_repo_info = self._orig_repo
         chat.spawn_chat_process = self._orig_spawn
-        chat.spawn_pipeline_process = self._orig_pspawn
-        chat.run_pi_pipeline = self._orig_pipeline
         chat.validate_action_request = self._orig_validate
         chat.run_resume_spawn = self._orig_resume_spawn
         chat.deep_agent_python = self._orig_venv
@@ -508,81 +503,42 @@ class ChatOpsTest(unittest.TestCase):
         sent = base64.b64decode(seen[0][3]).decode()
         self.assertEqual(sent, "Declined by reviewer.")
 
-    def test_run_pi_pipeline_parses_shapes(self):
-        out = ("Investigating…\n"
-               "REPORT (authoritative, from tool results):\n"
-               "  buttons/server.py: chat handler\n"
-               "FINAL: It serves chat.\n"
-               "PROPOSE issue\n"
-               "TITLE: Fix chat\n"
-               "BODY:\n"
-               "Details here.\n"
-               "END PROPOSE\n")
-        chat.spawn_pipeline_process = lambda argv: FakeProc(out)
-        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
-            path = fh.name
+    def test_pi_progress(self):
+        # No route can start a pi run since /api/ask + /api/suggest
+        # were removed (#548), so seed the store directly to cover
+        # the kept tail route the jobs view polls as a fallback.
+        rid = "ab12cd34ef56"
+        with chat.pi_runs_lock:
+            chat.pi_runs[rid] = {"id": rid, "kind": "ask",
+                                 "repo": "remote-server",
+                                 "done": True,
+                                 "result": {"reply": "answer"},
+                                 "error": None}
         try:
-            result = chat.run_pi_pipeline("ask", "remote-server",
-                                          "what does it do?", path)
-        finally:
-            with open(path) as fh:
-                logged = fh.read()
-            os.remove(path)
-        self.assertIn("chat handler", logged)
-        self.assertEqual(result["report"], ["buttons/server.py: chat handler"])
-        self.assertIn("It serves chat.", result["reply"])
-        self.assertEqual(result["proposal"]["kind"], "issue")
-        self.assertEqual(result["proposal"]["title"], "Fix chat")
-        self.assertIn("Details here.", result["proposal"]["body"])
-        chat.spawn_pipeline_process = lambda argv: FakeProc("boom\n", code=1)
-        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
-            path = fh.name
-        try:
-            with self.assertRaises(RuntimeError) as ctx:
-                chat.run_pi_pipeline("suggest", "remote-server", None, path)
-        finally:
-            os.remove(path)
-        self.assertIn("boom", str(ctx.exception))
-
-    def test_ask_suggest_pi_progress(self):
-        def _pipeline(kind, repo, instruction, log_path):
-            with open(log_path, "a") as f:
+            with open(chat._pi_progress_path(rid), "w") as f:
                 f.write("working…\n")
-            if kind == "suggest":
-                return {"repo": repo, "suggestions": [], "raw": "clean"}
-            return {"repo": repo, "reply": "answer",
-                    "proposal": None}
-
-        chat.run_pi_pipeline = _pipeline
-        resp = self.client.post("/api/suggest",
-                               json={"repo": "remote-server"})
-        self.assertEqual(resp.status_code, 200)
-        rid = resp.json()["id"]
-        self.assertRegex(rid, r"^[0-9a-f]{12}$")
-        for _ in range(100):
             prog = self.client.get(f"/api/pi-progress/{rid}").json()
-            if prog["done"]:
-                break
-            time.sleep(0.05)
+        finally:
+            with chat.pi_runs_lock:
+                chat.pi_runs.pop(rid, None)
+            try:
+                os.remove(chat._pi_progress_path(rid))
+            except OSError:
+                pass
         self.assertTrue(prog["done"])
         self.assertIn("working", prog["output"])
-        self.assertEqual(prog["result"]["suggestions"], [])
-        resp = self.client.post("/api/ask", json={"repo": "remote-server",
-                                                  "instruction": "why slow?"})
-        arid = resp.json()["id"]
-        for _ in range(100):
-            prog = self.client.get(f"/api/pi-progress/{arid}").json()
-            if prog["done"]:
-                break
-            time.sleep(0.05)
         self.assertEqual(prog["result"]["reply"], "answer")
-        # Validation mirrors buttons: bad instruction, bad rid.
-        resp = self.client.post("/api/ask", json={"repo": "remote-server",
-                                                  "instruction": "  "})
-        self.assertEqual(resp.status_code, 400)
         resp = self.client.get("/api/pi-progress/nothex")
         self.assertEqual(resp.status_code, 404)
         resp = self.client.get("/api/pi-progress/aaaaaaaaaaaa")
+        self.assertEqual(resp.status_code, 404)
+        # /api/ask + /api/suggest are gone (#548): no route serves them.
+        resp = self.client.post("/api/ask",
+                               json={"repo": "remote-server",
+                                     "instruction": "why slow?"})
+        self.assertEqual(resp.status_code, 404)
+        resp = self.client.post("/api/suggest",
+                               json={"repo": "remote-server"})
         self.assertEqual(resp.status_code, 404)
 
     def test_takeover(self):

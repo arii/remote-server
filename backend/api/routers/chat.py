@@ -1,4 +1,4 @@
-"""chat router: interactive chat (SSE) + ask/suggest background runs.
+"""chat router: interactive chat (SSE).
 
 Ports of the buttons/server.py handlers, under the backend's /api
 prefix convention (buttons serves /buttons/api/*; this backend serves
@@ -10,9 +10,10 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 - GET      /api/chat/route-hint  pre-send backend + cost hint (ladder probe only)
 - POST     /api/chat/abort   abort an active chat session
 - POST     /api/chat/resume  decide a pending approval, return the turn result
-- POST     /api/ask          start an ask background run, return {id}
-- POST     /api/suggest      start a suggest background run, return {id}
 - GET      /api/pi-progress/{rid}  live tail of a background run
+  (legacy: /api/ask + /api/suggest were removed in #548 so no
+  run can start anymore; kept because the jobs view polls it
+  as a fallback)
 
 SSE framing is identical to buttons: one frame per event,
 ``event: <name>\\ndata: <json>\\n\\n``. Event names are the same:
@@ -26,13 +27,10 @@ approval?}. Errors: 400 bad shape, 404 unknown session,
 409 no pending approval / turn in progress.
 
 Chat turns spawn deep-agent/deep_chat.py (exit 0 done, 1 failed
-with Sorry line on stdout, 2 server bug, 3 approval needed);
-ask/suggest spawn deep-agent/ask_investigator.py and parse its
-REPORT/FINAL/PROPOSE shapes.
+with Sorry line on stdout, 2 server bug, 3 approval needed).
 
-Ask/suggest runs are reads-only background work (like briefing
-reads): starting one is not a ledger entry, but chat start/finish/
-abort are, exactly like the original.
+Chat start/finish/abort are ledger entries, exactly like the
+original.
 """
 
 import base64
@@ -48,7 +46,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from backend.core import get_checkout_path, validate_repo_name
 from backend.ledger import append as ledger_append
@@ -56,7 +54,6 @@ from backend.ledger import append as ledger_append
 router = APIRouter(prefix="/api", tags=["chat"])
 
 CHAT_MAX_PROMPT = 3000
-ASK_MAX_CHARS = 2000
 PI_PROGRESS_TAIL = 6000
 RID_RE = re.compile(r"^[0-9a-f]{12}$")
 TOOL_HINTS = ("read", "find", "grep", "search", "list", "check",
@@ -122,17 +119,6 @@ def spawn_chat_process(argv: list):
     on stderr, and merging them would leak machine lines into the
     streamed reply tokens.
     """
-    return subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-    )
-
-
-def spawn_pipeline_process(argv: list):
-    """Spawn the ask/suggest agent subprocess. Injectable for tests."""
     return subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
@@ -210,143 +196,8 @@ def strip_agent_markers(text: str) -> str:
     return "\n".join(kept).strip()
 
 
-def _parse_propose_block(lines: list[str]) -> dict | None:
-    for i, line in enumerate(lines):
-        if line.startswith("PROPOSE "):
-            kind = line[len("PROPOSE "):].strip()
-            body: dict = {"kind": kind}
-            acc: list[str] = []
-            for rest in lines[i + 1:]:
-                if rest.strip() == "END PROPOSE":
-                    break
-                if rest.startswith("TITLE:"):
-                    body["title"] = rest[len("TITLE:"):].strip()
-                elif rest.startswith("COMMAND:"):
-                    body["command"] = rest[len("COMMAND:"):].strip()
-                elif rest.startswith("BODY:"):
-                    tail = rest[len("BODY:"):].strip()
-                    if tail:
-                        acc.append(tail)
-                else:
-                    acc.append(rest)
-            if acc:
-                body["body"] = "\n".join(acc).strip()
-            return body
-    return None
-
-
-def run_pi_pipeline(kind: str, repo: str, instruction: str | None,
-                    log_path: str) -> dict:
-    """Run ask/suggest via ask_investigator; return the result dict.
-
-    Streams progress lines to log_path (the pi-progress tail) and
-    parses the REPORT/FINAL/PROPOSE shapes. The error path matches
-    buttons (last line, capped at 500 chars).
-    """
-    venv = deep_agent_python()
-    script = deep_agent_script("ask_investigator.py")
-    if not (os.path.isfile(venv) and os.path.isfile(script)):
-        raise RuntimeError("agent runtime not installed")
-    info = get_repo_info(repo)
-    prompt = (instruction.strip() if kind == "ask" and instruction
-              else "Suggest the next actions for this repo as td commands.")
-    b64 = base64.b64encode(prompt.encode()).decode()
-    proc = spawn_pipeline_process([venv, script, info["gh"], b64])
-    report: list[str] = []
-    in_report = False
-    final_lines: list[str] = []
-    last = ""
-    assert proc.stdout is not None
-    with open(log_path, "a") as log:
-        for line in proc.stdout:
-            last = line.rstrip("\n")
-            log.write(line)
-            log.flush()
-            if last.startswith("REPORT"):
-                in_report = True
-                continue
-            if last.startswith("FINAL:"):
-                in_report = False
-                final_lines.append(last[len("FINAL:"):].strip())
-                continue
-            if in_report:
-                report.append(last.strip())
-            elif final_lines:
-                final_lines.append(last)
-    code = proc.wait()
-    if code != 0:
-        raise RuntimeError((last or f"ask failed (exit {code})")[:500])
-    return {"reply": "\n".join(final_lines).strip(),
-            "report": [r for r in report if r],
-            "proposal": _parse_propose_block(final_lines)}
-
-
 def _pi_progress_path(rid: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
-
-
-def _pi_start(kind: str, repo: str,
-              instruction: str | None = None) -> tuple[str | None, str | None]:
-    try:
-        get_repo_info(repo)
-    except ValueError:
-        return None, "unknown repo"
-    if kind == "ask":
-        if (not isinstance(instruction, str) or not instruction.strip()
-                or len(instruction) > ASK_MAX_CHARS):
-            return None, "bad instruction"
-        instruction = instruction.strip()
-    elif kind != "suggest":
-        return None, "unknown kind"
-    rid = uuid.uuid4().hex[:12]
-    with pi_runs_lock:
-        now = time.time()
-        for k in [k for k, v in pi_runs.items()
-                  if v.get("done") and now - v.get("finished_at", now)
-                  > 3600]:
-            try:
-                os.remove(_pi_progress_path(k))
-            except Exception:
-                pass
-            del pi_runs[k]
-        pi_runs[rid] = {"id": rid, "kind": kind, "repo": repo, "done": False,
-                        "started_at": now, "finished_at": None,
-                        "instruction": instruction or (
-                            "Suggest next actions" if kind == "suggest"
-                            else ""),
-                        "result": None, "error": None}
-    with open(_pi_progress_path(rid), "w"):
-        pass
-
-    def _thread():
-        path = _pi_progress_path(rid)
-        try:
-            with open(path, "a") as f:
-                f.write("Investigating with local agent…\n"
-                        if kind == "ask"
-                        else "Fetching briefing…\n")
-            result = run_pi_pipeline(kind, repo, instruction, path)
-            with pi_runs_lock:
-                r = pi_runs.get(rid)
-                if r is not None:
-                    r["result"] = result
-                    r["done"] = True
-                    r["finished_at"] = time.time()
-        except Exception as exc:
-            with pi_runs_lock:
-                r = pi_runs.get(rid)
-                if r is not None:
-                    r["error"] = str(exc)[:500]
-                    r["done"] = True
-                    r["finished_at"] = time.time()
-            try:
-                with open(path, "a") as f:
-                    f.write(f"\nPi failed: {exc}\n")
-            except Exception:
-                pass
-
-    threading.Thread(target=_thread, daemon=True).start()
-    return rid, None
 
 
 def _abort_session(session_id: str) -> tuple[bool, str | None]:
@@ -808,19 +659,6 @@ class ChatResumeRequest(BaseModel):
     message: str = ""
 
 
-class AskRequest(BaseModel):
-    repo: str = "remote-server"
-    instruction: str = ""
-
-
-class SuggestRequest(BaseModel):
-    repo: str = "remote-server"
-
-
-class RunStarted(BaseModel):
-    id: str = Field(default_factory=lambda: "")
-
-
 class PiProgress(BaseModel):
     done: bool = False
     output: str = ""
@@ -912,22 +750,6 @@ def chat_resume(body: ChatResumeRequest) -> dict:
     if result is None:
         raise HTTPException(status_code=status, detail=err)
     return result
-
-
-@router.post("/ask", response_model=RunStarted)
-def ask(body: AskRequest) -> dict:
-    rid, err = _pi_start("ask", body.repo, body.instruction)
-    if err:
-        raise HTTPException(status_code=400, detail=err)
-    return {"id": rid}
-
-
-@router.post("/suggest", response_model=RunStarted)
-def suggest(body: SuggestRequest) -> dict:
-    rid, err = _pi_start("suggest", body.repo)
-    if err:
-        raise HTTPException(status_code=400, detail=err)
-    return {"id": rid}
 
 
 @router.get("/pi-progress/{rid}", response_model=PiProgress)
