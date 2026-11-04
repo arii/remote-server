@@ -176,6 +176,20 @@ class RealRoutersTest(unittest.TestCase):
                         clear=True):
                     resp = self.client.get("/api/agents/budget")
                 self.assertTrue(resp.json()["blocked"])
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(
+                        {"kind": "deep-agent-run",
+                         "model": "nebius:uncarded/future-9z",
+                         "usage": {"input_tokens": 2000,
+                                   "output_tokens": 1000,
+                                   "total_tokens": 3000}}) + "\n")
+                with mock.patch.dict(
+                        os.environ,
+                        {"NEBIUS_SPEND_CAP_USD": "5.00"}, clear=True):
+                    resp = self.client.get("/api/agents/budget")
+                body = resp.json()
+                self.assertEqual(body["unknown"], 1)
+                self.assertTrue(body["blocked"])
             finally:
                 agents.runs.LEDGER = real_ledger
 
