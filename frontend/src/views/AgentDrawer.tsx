@@ -690,7 +690,7 @@ export default function AgentDrawer({
   }
 
   return (
-    <section data-testid="agent-drawer">
+    <section data-testid="agent-drawer" className="chat-module">
       <h3>Agent session</h3>
       {error && failure && (
         <GuidanceCard

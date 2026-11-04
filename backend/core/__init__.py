@@ -614,3 +614,77 @@ def get_repo_diff(repo: str, run=None) -> dict[str, Any]:
             "clean": len([ln for ln in short.splitlines() if ln]) == 0,
             "status_short": short, "diff_stat": stat_proc.stdout,
             "diff": diff[:DIFF_CAP], "truncated": truncated}
+
+
+# Top marker hits returned per metrics read; the count itself is
+# complete (the strip shows "N TODOs", hits are a preview).
+TODO_HITS_SHOWN = 8
+
+
+def get_repo_metrics(repo: str, run=None) -> dict[str, Any]:
+    """Read-only worklist metrics for one repo checkout (#897).
+
+    Returns {"repo", "branch", "clean", "status_count",
+    "todo_count", "todo_hits", "diff_stat", "diff_files"}. Same
+    error contract as get_repo_status. ``run`` injects tests. All
+    three reads are local and unmetered, so the console prefetches
+    on every repo select with zero model turns.
+    """
+    import subprocess
+
+    run = run or subprocess.run
+    name = validate_repo_name(repo)
+    path = _checkout_path(name)
+
+    def git(*args):
+        return run(
+            ["git", "-c", f"safe.directory={path}", "-C", str(path),
+             *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, text=True,
+        )
+
+    branch_proc = git("rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch_proc.stdout.strip() \
+        if branch_proc.returncode == 0 else ""
+    status_proc = git("status", "--short")
+    if status_proc.returncode != 0:
+        raise _git_failed(status_proc, "status")
+    stat_proc = git("diff", "--stat")
+    if stat_proc.returncode != 0:
+        raise _git_failed(stat_proc, "diff --stat")
+    short = status_proc.stdout
+    stat = stat_proc.stdout
+    diff_files = len([ln for ln in stat.splitlines() if "|" in ln])
+
+    # Tracked files only: git grep is gitignore-aware, so vendored
+    # build output (.pnpm-store, dist) never pollutes the count.
+    todo_proc = git("grep", "-n", "-i", "-E",
+                    r"\b(TODO|FIXME|XXX|HACK)\b", "--", ".")
+    if todo_proc.returncode not in (0, 1):
+        raise RuntimeError(
+            f"todo grep failed: "
+            f"{(todo_proc.stderr or '').strip()[:200]}")
+    hits = []
+    count = 0
+    for line in (todo_proc.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        count += 1
+        if len(hits) >= TODO_HITS_SHOWN:
+            continue
+        file_part, _, rest = line.partition(":")
+        lineno, _, text = rest.partition(":")
+        try:
+            lineno = int(lineno.strip())
+        except ValueError:
+            continue
+        hits.append({"file": file_part.strip(), "line": lineno,
+                     "text": text.strip()[:120]})
+    return {"repo": name, "branch": branch,
+            "clean": len([ln for ln in short.splitlines()
+                          if ln]) == 0,
+            "status_count": len([ln for ln in short.splitlines()
+                                 if ln]),
+            "todo_count": count, "todo_hits": hits,
+            "diff_stat": stat, "diff_files": diff_files}

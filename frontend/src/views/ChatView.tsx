@@ -8,6 +8,7 @@ import {
   fetchAgentRuns,
   fetchBudget,
   fetchRepoFiles,
+  fetchRepoMetrics,
   fetchRouteHint,
   postChatStream,
   resumeChat,
@@ -18,6 +19,7 @@ import type {
   ApprovalPayload,
   BudgetStatus,
   ChatBackend,
+  RepoMetricsResponse,
   RouteHintResponse,
   TraceEvent,
 } from '../apiClient';
@@ -56,6 +58,28 @@ export const CHAT_PROMPT_CHIPS: Array<{ id: string; label: string; prompt: strin
 export function chipPickAction(text: string, altKey: boolean, streaming: boolean): 'send' | 'fill' | 'none' {
   if (streaming || !text.trim()) return 'none';
   return altKey ? 'fill' : 'send';
+}
+
+// Prefetched worklist metrics (issue #897): uncommitted count,
+// TODO markers, and diff size with zero taps and zero model turns.
+// Sourced from local reads only, so it can warm on repo select.
+export function repoMetricsLine(m: RepoMetricsResponse): string {
+  const dirty = m.status_count === 0 ? 'Clean' : `${m.status_count} uncommitted`;
+  const todos = `${m.todo_count} TODO${m.todo_count === 1 ? '' : 's'}`;
+  const diff = m.diff_files === 0 ? 'no diff' : `${m.diff_files} file${m.diff_files === 1 ? '' : 's'} changed`;
+  return `${dirty} · ${todos} · ${diff}`;
+}
+
+export function RepoMetricsStrip({ metrics }: { metrics: RepoMetricsResponse }) {
+  return (
+    <p
+      className="row-meta"
+      data-testid="chat-metrics-strip"
+      title={metrics.diff_stat.trim() === '' ? 'No uncommitted changes' : metrics.diff_stat}
+    >
+      {repoMetricsLine(metrics)}
+    </p>
+  );
 }
 
 export function PromptChips({
@@ -870,7 +894,7 @@ export function RunsPane({
   const t0 = detail && detail.trace.length > 0 ? num(detail.trace[0].ts) : 0;
   const metered = meteredTotal(runs);
   return (
-    <section data-testid="chat-runs">
+    <section data-testid="chat-runs" className="chat-module">
       <h3>Past runs</h3>
       <p className="row-meta" data-testid="chat-runs-metered-total">
         Metered total {usd(metered.total)}
@@ -1557,6 +1581,30 @@ export default function ChatView({
   const [streaming, setStreaming] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Prefetched repo metrics (issue #897): refreshed per repo so
+  // the strip above the chips shows current counts; a failed read
+  // hides the strip instead of erroring (chips still work).
+  const [metrics, setMetrics] = useState<RepoMetricsResponse | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  useEffect(() => {
+    if (useMock()) return;
+    let cancelled = false;
+    setMetrics(null);
+    setMetricsLoading(true);
+    void fetchRepoMetrics(repo).then(
+      (m) => {
+        if (cancelled) return;
+        setMetrics(m);
+        setMetricsLoading(false);
+      },
+      () => {
+        if (!cancelled) setMetricsLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [repo]);
   const [lastSent, setLastSent] = useState('');
   const [runs, setRuns] = useState<AgentRun[]>(initialRuns ?? []);
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
@@ -2217,6 +2265,12 @@ export default function ChatView({
       {approval && (
         <ApprovalCard approval={approval} decided={decided} onDecide={(d) => void onDecide(d)} />
       )}
+      {metricsLoading && !metrics && (
+        <p className="row-meta" data-testid="chat-metrics-loading" role="status">
+          Loading repo metrics…
+        </p>
+      )}
+      {metrics && <RepoMetricsStrip metrics={metrics} />}
       {/* Starters only start conversations: once a thread
           exists the chips would be a third button row (#839). */}
       {messages.length === 0 && (
@@ -2363,6 +2417,14 @@ export default function ChatView({
           >
             Send
           </button>
+          {/* Session utilities trail the pills + Send behind a
+              hairline divider (#897): one row, three groups. */}
+          <div
+            className="composer-utils"
+            role="group"
+            aria-label="Chat utilities"
+            data-testid="chat-utils"
+          >
           <DictateButton
             recording={dictating}
             disabled={streaming}
@@ -2395,6 +2457,7 @@ export default function ChatView({
           >
             Templates
           </button>
+          </div>
         </div>
       </form>
       </div>

@@ -15,6 +15,7 @@ import {
   flushOutbox,
   startJobRun,
   subscribeApiFailures,
+  warmRepoMetrics,
 } from './apiClient';
 import type { ContainerStatsRow, SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
@@ -232,22 +233,24 @@ export default function App() {
       setHealth(loadSystemHealth());
       return;
     }
+    // Repos + health fetch in parallel (#897): independent reads,
+    // per-fetch errors preserved.
     (async () => {
-      try {
-        const live = await fetchRepos();
+      const [reposResult, healthResult] = await Promise.allSettled([
+        fetchRepos(),
+        fetchSystemHealth(),
+      ]);
+      if (reposResult.status === 'fulfilled') {
+        const live = reposResult.value;
         if (live.repos.length > 0) {
           setRepos(live.repos);
           if (repo !== ALL_REPOS && !live.repos.some((x) => x.name === repo))
             setRepo(live.repos[0].name);
         }
-      } catch {
-        // Keep fallback repo; header still renders the picker.
       }
-      try {
-        setHealth(await fetchSystemHealth());
-      } catch {
-        // Header pill stays in loading state; History shows the error.
-      }
+      // Keep fallback repo; header still renders the picker.
+      if (healthResult.status === 'fulfilled') setHealth(healthResult.value);
+      // Header pill stays in loading state; History shows the error.
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -343,6 +346,27 @@ export default function App() {
     setRestartRequested(null);
     setRestartError(null);
   }
+
+  // Prefetch repo metrics on select (issue #897): fire-and-forget
+  // into the view cache so the Chat strip renders instantly with
+  // zero taps and zero model turns. Skipped for the rollup pseudo
+  // repo (Chat never mounts there — RollupGate).
+  useEffect(() => {
+    if (useMock() || isRollupRepo(repo)) return;
+    void warmRepoMetrics(repo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
+  // Keep-alive tabs (issue #897): Briefing + History mount on
+  // first visit and stay mounted hidden afterwards, so warm
+  // switches render with zero remount and zero network. Now keeps
+  // remounting (its section resets to the inbox on return); Chat
+  // keeps remounting (#573 persistence restores the conversation).
+  const [seenTabs, setSeenTabs] = useState<Set<string>>(() => new Set(['now']));
+  useEffect(() => {
+    setSeenTabs((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   const selectedRepo = repos.find((r) => r.name === repo) ?? null;
   const diffBranch = diffRepo ? (repos.find((r) => r.name === diffRepo)?.branch ?? '') : '';
@@ -455,10 +479,9 @@ export default function App() {
             focusRequest={chatFocusRequest}
           />
         ))}
-      {tab === 'briefing' &&
-        (isRollupRepo(repo) ? (
-          <RollupGate view="Briefing" />
-        ) : (
+      {tab === 'briefing' && isRollupRepo(repo) && <RollupGate view="Briefing" />}
+      {seenTabs.has('briefing') && !isRollupRepo(repo) && (
+        <div hidden={tab !== 'briefing'} data-testid="keepalive-briefing">
           <BriefingView
             repo={repo}
             onAskAgent={askAgent}
@@ -468,14 +491,21 @@ export default function App() {
               setSectionRequest((r) => ({ section: 'review', nonce: (r?.nonce ?? 0) + 1 }));
             }}
             reloadRequest={briefingReloadRequest}
+            active={tab === 'briefing'}
           />
-        ))}
-      {tab === 'history' &&
-        (isRollupRepo(repo) ? (
-          <RollupGate view="History" />
-        ) : (
-          <HistoryView repo={repo} health={health} onOpenStats={() => setStatsOpen(true)} />
-        ))}
+        </div>
+      )}
+      {tab === 'history' && isRollupRepo(repo) && <RollupGate view="History" />}
+      {seenTabs.has('history') && !isRollupRepo(repo) && (
+        <div hidden={tab !== 'history'} data-testid="keepalive-history">
+          <HistoryView
+            repo={repo}
+            health={health}
+            onOpenStats={() => setStatsOpen(true)}
+            active={tab === 'history'}
+          />
+        </div>
+      )}
       <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
     </main>
   );

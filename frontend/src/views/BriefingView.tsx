@@ -820,6 +820,7 @@ export default function BriefingView({
   onOpenHistory,
   onOpenReview,
   reloadRequest = 0,
+  active = true,
 }: {
   repo: string;
   onAskAgent: (seed: string) => void;
@@ -831,11 +832,18 @@ export default function BriefingView({
   // briefing while mounted. Mount already loads, so the opening
   // nonce is adopted, not acted on — only later bumps reload.
   reloadRequest?: number;
+  // Keep-alive visibility (issue #897): refresh loops pause while
+  // the tab is hidden; returning revalidates once.
+  active?: boolean;
 }) {
   const [data, setData] = useState<BriefingResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[] | null>(null);
   const [window, setWindow] = useState<ActivityWindow>('24h');
+  const [staleTries, setStaleTries] = useState(0);
+  useEffect(() => {
+    setStaleTries(0);
+  }, [repo]);
 
   async function load() {
     setError(null);
@@ -855,6 +863,34 @@ export default function BriefingView({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadRequest]);
+
+  // SWR-aware refresh (issue #897): a stale payload means the
+  // server is regenerating in the background — re-fetch until
+  // fresh, bounded, so the "refreshing…" indicator always resolves
+  // instead of sitting on old data.
+  useEffect(() => {
+    if (!data || !data.stale || !active || useMock() || staleTries >= 3) return;
+    // Bare timer globals: the activity `window` state shadows
+    // window.* in this component.
+    const t = setTimeout(() => {
+      setStaleTries((n) => n + 1);
+      void load();
+    }, 5000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, active, staleTries]);
+
+  // Return revalidation (issue #897): with keep-alive the view
+  // stays mounted while hidden — one cheap re-fetch on return
+  // (fresh cache serves instantly; a stale flag starts the loop
+  // above instead of showing old data silently).
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const returning = active && !wasActive.current;
+    wasActive.current = active;
+    if (returning && data && !useMock()) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   useEffect(() => {
     let cancelled = false;

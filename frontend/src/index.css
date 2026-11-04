@@ -178,6 +178,12 @@ button.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offse
    inspector rail right. Single column under 900px. */
 .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 1rem; align-items: start; }
 .split > * { min-width: 0; }
+/* Chat rail modules (#897): rail sections read as distinct
+   operational modules via tint + padding, not nested cards (the
+   rows inside keep their own surfaces). */
+.chat-side { display: grid; gap: 1rem; align-content: start; }
+.chat-module { background: var(--surface-2); border-radius: 10px; padding: 0.75rem 0.9rem; }
+.chat-module > h3:first-child { margin-top: 0; }
 .split-narrow { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
 @media (max-width: 900px) {
   .split, .split-narrow { grid-template-columns: 1fr; }
@@ -347,6 +353,10 @@ a.link-chip:hover { border-color: var(--accent); }
 /* Composer single action row (#839): the backend pills ride
    inline as one wrapped unit instead of their own row. */
 .actions > .inline-pills { display: inline-flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
+/* Composer control grouping (#897): session utilities ride inline
+   behind a hairline divider so pills / Send / utilities read as
+   three groups, still one wrapped row. */
+.actions > .composer-utils { display: inline-flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 0 0.25rem; border-left: 1px solid var(--border); padding-left: 0.75rem; }
 
 /* Trace folding: collapsed per-event summary rows on narrow
    viewports; tap a row to expand the full line inline. */

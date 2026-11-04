@@ -296,3 +296,10 @@ describe('session restore on mount (issue #856)', () => {
     expect(html).toContain('data-testid="agent-prompt"');
   });
 });
+
+describe('rail module (issue #897)', () => {
+  it('agent drawer renders as a distinct module', () => {
+    const html = renderToStaticMarkup(<AgentDrawer repo="remote-server" />);
+    expect(html).toContain('class="chat-module"');
+  });
+});

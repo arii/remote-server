@@ -75,11 +75,11 @@ export function TimelineList({ items }: { items: TimelineItem[] }) {
   );
 }
 
-export default function ActivityTimeline() {
+export default function ActivityTimeline({ active = true }: { active?: boolean }) {
   const { data: feeds, error, loading, load } = useSnapshotData(loadTimelineFeeds, EMPTY_FEEDS);
 
   useEffect(() => {
-    if (useMock()) return;
+    if (useMock() || !active) return;
     const timer = window.setInterval(() => {
       if (isTabVisible()) void load();
     }, TIMELINE_POLL_MS);
@@ -88,7 +88,7 @@ export default function ActivityTimeline() {
       window.clearInterval(timer);
       stopResume();
     };
-  }, [load]);
+  }, [load, active]);
 
   const items = toTimelineItems(feeds.jobs, feeds.turns, feeds.pulls, feeds.merges);
 

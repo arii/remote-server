@@ -961,6 +961,15 @@ describe('app', () => {
     expect(html).toContain('History');
   });
 
+  it('keep-alive tabs mount lazily (issue #897)', () => {
+    // Unvisited Briefing/History stay unmounted on first paint;
+    // they mount on first visit and persist hidden afterwards.
+    const html = renderToStaticMarkup(<App />);
+    expect(html).not.toContain('data-testid="keepalive-briefing"');
+    expect(html).not.toContain('data-testid="keepalive-history"');
+    expect(html).not.toContain('data-testid="briefing-loading"');
+  });
+
   it('App renders Now/History nav only', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('Now');
