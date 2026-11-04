@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import BranchField, { useBranchField } from '../components/BranchField';
 import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerifyCommand, setRepairSchedule } from '../apiClient';
 import type { RepairStatusResponse, RepairVerifyPreview } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
@@ -68,16 +69,21 @@ export function RepairPicker({
 
 export default function RepairSection({
   repo,
+  defaultBranch,
   initialStatus,
   initialPreview,
   initialPicked,
 }: {
   repo: string;
+  // Repair targets the stack checkout only, so this default is the
+  // stack repo's branch (#708), not necessarily the viewed repo's.
+  defaultBranch?: string;
   initialStatus?: RepairStatusResponse;
   initialPreview?: RepairVerifyPreview | null;
   initialPicked?: string;
 }) {
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
+  const [branch, setBranch] = useBranchField(repo, defaultBranch);
   const [picked, setPicked] = useState(initialPicked ?? '');
   const [manual, setManual] = useState('');
   const [filter, setFilter] = useState('');
@@ -207,7 +213,7 @@ export default function RepairSection({
         setStatus({ ...IDLE_REPAIR, status: 'running', issue: Number(target) || null });
         return;
       }
-      const started = await dispatchRepair(target);
+      const started = await dispatchRepair(target, branch);
       setStatus({ ...IDLE_REPAIR, status: started.status, issue: started.issue });
       stopWatch();
       timerRef.current = window.setInterval(() => void refresh(), 3000);
@@ -242,6 +248,12 @@ export default function RepairSection({
                 : prev,
             );
           }}
+        />
+        <BranchField
+          id="repair-branch"
+          testid="repair-branch"
+          value={branch}
+          onChange={setBranch}
         />
         <button
           type="button"

@@ -629,24 +629,51 @@ export function fetchPrDetails(repo: string, pr: number): Promise<import('./revi
   );
 }
 
-export function mergePr(repo: string, prNumber: number): Promise<{ ok: boolean; output: string }> {
-  return postJson<{ ok: boolean; output: string }>('api/pr-action', {
-    repo,
-    pr_number: prNumber,
-    action: 'merge',
-    intent: 'pr-merge',
-    confirmed: true,
-  });
+// Explicit action branch (#708): sent only when non-blank, so
+// payloads without one stay byte-identical to today.
+function withBranch<T extends object>(body: T, branch?: string): T & { branch?: string } {
+  const b = branch?.trim();
+  return b ? { ...body, branch: b } : body;
 }
 
-export function approvePr(repo: string, prNumber: number): Promise<{ ok: boolean; output: string }> {
-  return postJson<{ ok: boolean; output: string }>('api/pr-action', {
-    repo,
-    pr_number: prNumber,
-    action: 'approve',
-    intent: 'pr-approve',
-    confirmed: true,
-  });
+export function mergePr(
+  repo: string,
+  prNumber: number,
+  branch?: string,
+): Promise<{ ok: boolean; output: string }> {
+  return postJson<{ ok: boolean; output: string }>(
+    'api/pr-action',
+    withBranch(
+      {
+        repo,
+        pr_number: prNumber,
+        action: 'merge',
+        intent: 'pr-merge',
+        confirmed: true,
+      },
+      branch,
+    ),
+  );
+}
+
+export function approvePr(
+  repo: string,
+  prNumber: number,
+  branch?: string,
+): Promise<{ ok: boolean; output: string }> {
+  return postJson<{ ok: boolean; output: string }>(
+    'api/pr-action',
+    withBranch(
+      {
+        repo,
+        pr_number: prNumber,
+        action: 'approve',
+        intent: 'pr-approve',
+        confirmed: true,
+      },
+      branch,
+    ),
+  );
 }
 
 export function requestPrChanges(
@@ -668,10 +695,14 @@ export function startJobRun(
   action: string,
   repo: string,
   confirmed = false,
+  branch?: string,
 ): Promise<{ id: string }> {
   return postJson<{ id: string }>(
-     'api/jobs/run',
-    confirmed ? { action, repo, intent: 'jobs-run', confirmed: true } : { action, repo },
+    'api/jobs/run',
+    withBranch(
+      confirmed ? { action, repo, intent: 'jobs-run', confirmed: true } : { action, repo },
+      branch,
+    ),
   ).then((r) => {
     invalidateViewCaches();
     return r;
@@ -681,8 +712,12 @@ export function startJobRun(
 export function startTdRun(
   command: string,
   repo: string,
+  branch?: string,
 ): Promise<{ id: string }> {
-  return postJson<{ id: string }>('api/jobs/run-td', { command, repo }).then((r) => {
+  return postJson<{ id: string }>(
+    'api/jobs/run-td',
+    withBranch({ command, repo }, branch),
+  ).then((r) => {
     invalidateViewCaches();
     return r;
   });
@@ -698,9 +733,10 @@ export function rerunJob(
   repo: string,
   tdArgv: string[],
   confirmed = false,
+  branch?: string,
 ): Promise<{ id: string }> {
-  if (tdArgv.length > 0) return startTdRun(tdArgv.join(' '), repo);
-  return startJobRun(action, repo, confirmed);
+  if (tdArgv.length > 0) return startTdRun(tdArgv.join(' '), repo, branch);
+  return startJobRun(action, repo, confirmed, branch);
 }
 
 // Cancel a running run (issue #589): flags the run and SIGTERMs
@@ -1019,10 +1055,14 @@ export interface RepairStatusResponse {
   schedules?: RepairSchedule[];
 }
 
-export function dispatchRepair(issue: string): Promise<{ ok: boolean; issue: number; status: string }> {
-  return postJson<{ ok: boolean; issue: number; status: string }>('api/repair/dispatch', {
-    issue,
-  });
+export function dispatchRepair(
+  issue: string,
+  branch?: string,
+): Promise<{ ok: boolean; issue: number; status: string }> {
+  return postJson<{ ok: boolean; issue: number; status: string }>(
+    'api/repair/dispatch',
+    withBranch({ issue }, branch),
+  );
 }
 
 export function fetchRepairStatus(): Promise<RepairStatusResponse> {

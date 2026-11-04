@@ -254,12 +254,42 @@ def _parse_mem_half(raw: Any, half: int) -> str | None:
 
 REPO_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
 
+BRANCH_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
+
 
 def validate_repo_name(repo: str) -> str:
     """Basename of a repo checkout; raises ValueError when invalid."""
     name = repo.strip().removeprefix("arii/").strip("/")
     if not name or "/" in name or not REPO_NAME_RE.match(name):
         raise ValueError(f"invalid repo name: {repo!r}")
+    return name
+
+
+def validate_action_branch(repo: str, branch, run=None) -> str:
+    """Optional action branch (#708): "" when omitted or blank (the
+    endpoint behaves exactly as today), otherwise the stripped name
+    after an existence check against the repo checkout (git
+    rev-parse refs/heads/<name>). Raises ValueError on a malformed
+    name, an unknown repo, or a branch the checkout lacks. ``run``
+    is the injectable subprocess.run seam for tests."""
+    if branch is None:
+        return ""
+    if not isinstance(branch, str):
+        raise ValueError(f"invalid branch name: {branch!r}")
+    name = branch.strip()
+    if not name:
+        return ""
+    if (not BRANCH_NAME_RE.match(name) or ".." in name
+            or "//" in name or name.endswith((".lock", "/", "."))):
+        raise ValueError(f"invalid branch name: {branch!r}")
+    try:
+        path = _checkout_path(validate_repo_name(repo))
+    except FileNotFoundError:
+        raise ValueError(f"unknown branch: {name!r}")
+    proc = _git_run(run, ["rev-parse", "--verify", "--quiet",
+                          f"refs/heads/{name}"], path)
+    if proc.returncode != 0:
+        raise ValueError(f"unknown branch: {name!r}")
     return name
 
 

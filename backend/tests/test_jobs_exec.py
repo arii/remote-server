@@ -246,6 +246,107 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(resp3.json(), {"ok": True, "cleared": 0})
         jobs_router.registry.finish_run(rid, 0)
 
+    def test_run_accepts_branch(self):
+        # Explicit branch (#708): validated, then the run starts
+        # exactly as today.
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        seen = {}
+
+        def fake_branch(repo, branch, run=None):
+            seen["repo"] = repo
+            seen["branch"] = branch
+            return branch
+
+        with mock.patch(
+            "backend.api.routers.jobs._launch"
+        ), mock.patch(
+            "backend.core.get_repo_status",
+            return_value={"repo": "remote-server"},
+        ), mock.patch(
+            "backend.core.validate_action_branch",
+            side_effect=fake_branch,
+        ):
+            resp = self.client.post(
+                "/api/jobs/run",
+                json={"action": "logs", "repo": "remote-server",
+                      "branch": "main"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(
+                seen, {"repo": "remote-server", "branch": "main"})
+        jobs_router.registry = RunRegistry()
+
+    def test_run_rejects_unknown_branch(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        with mock.patch(
+            "backend.api.routers.jobs._launch"
+        ), mock.patch(
+            "backend.core.get_repo_status",
+            return_value={"repo": "remote-server"},
+        ), mock.patch(
+            "backend.core.validate_action_branch",
+            side_effect=ValueError("unknown branch: 'gone'"),
+        ):
+            resp = self.client.post(
+                "/api/jobs/run",
+                json={"action": "logs", "repo": "remote-server",
+                      "branch": "gone"},
+            )
+            self.assertEqual(resp.status_code, 400)
+            self.assertIn("unknown branch", resp.json()["detail"])
+            self.assertEqual(self.client.get("/api/jobs").json(), {"jobs": []})
+        jobs_router.registry = RunRegistry()
+
+    def test_run_without_branch_validates_blank(self):
+        # Omitted branch reaches validation as "" (which the helper
+        # short-circuits without git): behavior is today's.
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        with mock.patch(
+            "backend.api.routers.jobs._launch"
+        ), mock.patch(
+            "backend.core.get_repo_status",
+            return_value={"repo": "remote-server"},
+        ), mock.patch(
+            "backend.core.validate_action_branch",
+            return_value="",
+        ) as branch_mock:
+            resp = self.client.post(
+                "/api/jobs/run",
+                json={"action": "logs", "repo": "remote-server"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            branch_mock.assert_called_once_with("remote-server", "")
+        jobs_router.registry = RunRegistry()
+
+    def test_run_td_accepts_branch(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        with mock.patch(
+            "backend.api.routers.jobs._launch"
+        ) as launched, mock.patch(
+            "backend.core.get_repo_status",
+            return_value={"repo": "remote-server"},
+        ), mock.patch(
+            "backend.core.validate_action_branch",
+            return_value="main",
+        ) as branch_mock:
+            resp = self.client.post(
+                "/api/jobs/run-td",
+                json={"command": "td context-warm",
+                      "repo": "remote-server", "branch": "main"},
+            )
+            self.assertEqual(resp.status_code, 200)
+            branch_mock.assert_called_once_with("remote-server", "main")
+            launched.assert_called_once()
+        jobs_router.registry = RunRegistry()
+
     def test_clear_all_conflicts_while_active(self):
         # Endpoint pins #512: clear-all refuses with 409 naming the
         # still-visible active run; post-clear conflicts never name

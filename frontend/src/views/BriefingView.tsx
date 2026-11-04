@@ -705,12 +705,10 @@ function PrRow({ pr }: { pr: Record<string, unknown> }) {
 
 export default function BriefingView({
   repo,
-  branch,
   onAskAgent,
   onOpenHistory,
 }: {
   repo: string;
-  branch?: string;
   onAskAgent: (seed: string) => void;
   onOpenHistory: () => void;
 }) {
@@ -781,7 +779,7 @@ export default function BriefingView({
       <header className="page-head">
         <div>
           <h2>Briefing</h2>
-          <RepoLabel repo={data?.repo || repo} branch={branch} />
+          <RepoLabel repo={data?.repo || repo} />
         </div>
         {error && (
           <div className="actions">

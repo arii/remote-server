@@ -267,3 +267,19 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(mergeRow(renderZone(2))).not.toContain('disabled');
   });
 });
+
+describe('repair dispatch branch (issue #708)', () => {
+  it('carries an explicit branch field seeded from the default', () => {
+    const html = renderToStaticMarkup(
+      <RepairSection repo="remote-server" defaultBranch="main" />,
+    );
+    expect(html).toContain('data-testid="repair-branch"');
+    expect(html).toContain('value="main"');
+  });
+
+  it('renders the field empty without a default', () => {
+    const html = renderToStaticMarkup(<RepairSection repo="remote-server" />);
+    expect(html).toContain('data-testid="repair-branch"');
+    expect(html).toContain('value=""');
+  });
+});

@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import BranchField, { useBranchField } from '../components/BranchField';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
@@ -494,11 +495,18 @@ function JobsListPanel({
 
 export default function JobsView({
   repo,
+  defaultBranch,
+  stackBranch,
   triageSuspended = false,
   onAskAgent,
   initialPr = null,
 }: {
   repo: string;
+  // Checkout branch of the viewed repo: seeds the launch branch
+  // field (#708). stackBranch seeds the repair dispatch instead —
+  // repair targets the stack checkout only.
+  defaultBranch?: string;
+  stackBranch?: string;
   // Drawer-open flag: while true (agent drawer / PTY terminal open),
   // triage keys are disabled.
   triageSuspended?: boolean;
@@ -508,6 +516,7 @@ export default function JobsView({
   initialPr?: number | null;
 }) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
+  const [branch, setBranch] = useBranchField(repo, defaultBranch);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
@@ -640,8 +649,13 @@ export default function JobsView({
     }
     const action = job.kind || job.name || '';
     const argv = job.td_argv ?? [];
+    const target = job.repo || repo;
+    // The branch field seeds from the viewed repo: only send it
+    // when the re-run targets that same repo, otherwise omit and
+    // keep today's server behavior.
+    const targetBranch = target === repo ? branch : undefined;
     await launch(`re-run ${job.id}`, () =>
-      rerunJob(action, job.repo || repo, argv, confirmed),
+      rerunJob(action, target, argv, confirmed, targetBranch),
     );
   }
 
@@ -719,7 +733,7 @@ export default function JobsView({
       setError('Enter a PR number first.');
       return;
     }
-    void guarded(() => launch(cmd.label, () => startTdRun(cmd.build(n), repo)));
+    void guarded(() => launch(cmd.label, () => startTdRun(cmd.build(n), repo, branch)));
   }
 
   async function onClear(all: boolean) {
@@ -743,7 +757,7 @@ export default function JobsView({
   }
 
   function onDangerAction(action: string, label: string) {
-    void guarded(() => launch(label, () => startJobRun(action, repo, true)));
+    void guarded(() => launch(label, () => startJobRun(action, repo, true, branch)));
   }
 
   function handleClear(all: boolean) {
@@ -776,6 +790,14 @@ export default function JobsView({
           {notice}
         </p>
       )}
+      <div className="actions">
+        <BranchField
+          id="jobs-branch"
+          testid="jobs-branch"
+          value={branch}
+          onChange={setBranch}
+        />
+      </div>
       <RunProgressPanel
         key={runId ?? 'none'}
         tail={tail}
@@ -791,12 +813,12 @@ export default function JobsView({
         onToggle={() => void onTogglePlan()}
         onExecute={() => void onExecutePlan()}
       />
-      <RepairSection repo={repo} />
+      <RepairSection repo={repo} defaultBranch={stackBranch ?? defaultBranch} />
 
       <TriageFanoutSection
         repo={repo}
         onDispatch={() =>
-          void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo)))
+          void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)))
         }
       />
 
