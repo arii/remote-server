@@ -109,6 +109,31 @@ class TestHtml(unittest.TestCase):
         self.assertNotIn("</pre><script>", page)
         self.assertIn("&lt;lbl&gt;", page)
 
+    def test_escapes_trace_controlled_html_fields(self):
+        hostile = [
+            {"type": "model_response", "ts": 1000.0,
+             "usage": {"input_tokens": "<img src=x onerror=alert(1)>",
+                      "output_tokens": "0.5<script>alert(2)</script>",
+                      "total_tokens": "\"><svg onload=alert(3)>\""}},
+            {"type": "tool_call", "name": "probe", "ok": True,
+             "duration_s": "0.5<script>alert(2)</script>",
+             "args_preview": "", "result_preview": "", "ts": 1000.1},
+            {"type": "run_end", "ok": "<img src=x onerror=alert(4)>",
+             "duration_s": "0.5<script>alert(2)</script>",
+             "ts": 1000.2},
+        ]
+        page = trace_view.render_html(hostile, 0, "lbl")
+        lowered = page.lower()
+        self.assertNotIn("<script", lowered)
+        self.assertNotIn("<img", lowered)
+        self.assertNotIn("<svg", lowered)
+        for raw in ("<img src=x onerror=alert(1)>",
+                    "0.5<script>alert(2)</script>",
+                    "<img src=x onerror=alert(4)>"):
+            self.assertNotIn(raw, page)
+        self.assertIn("&lt;img", page)
+        self.assertIn("&lt;script&gt;", page)
+
     def test_well_formed_tags(self):
         from html.parser import HTMLParser
 
