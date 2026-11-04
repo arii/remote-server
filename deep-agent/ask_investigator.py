@@ -3,8 +3,9 @@
 Usage: ask_investigator.py owner/repo <base64-instruction>
 Prints progress lines, then a FINAL: line with the reply (same shape the
 server already parses for proposals). Read-only tools plus one
-allowlisted run_repo_command verify tool, all scoped to the repo's
-checkout. Local model first (qwen3:8b via Ollama).
+allowlisted run_repo_command verify tool plus one SSRF-guarded
+fetch_url tool, all scoped to the repo's checkout. Local model
+first (qwen3:8b via Ollama).
 
 Every run is recorded to the ledger with tool results.
 """
@@ -210,6 +211,22 @@ def run_repo_command(command: str) -> str:
     return s5tools.run_repo_command(_checkout, command)
 
 
+@tool
+def fetch_url(url: str) -> str:
+    """Fetch a URL's text: upstream docs, API references, changelogs.
+
+    Use when you have a URL in hand (never guess deep links).
+    Returns decoded text capped at 256KB with a truncation marker;
+    private/loopback/metadata addresses, non-http(s) schemes, and
+    failures come back as FETCH_ERROR text. No search, no JS
+    rendering, no auth, no POST.
+
+    Args:
+        url: Full http(s) URL to GET.
+    """
+    return s5tools.fetch_url(url)
+
+
 SYSTEM = (
     "You are helping Ari from his phone. Be terse, no filler. "
     "Investigate read-only with your tools; never propose running "
@@ -313,7 +330,7 @@ def main() -> int:
     agent = create_agent(
         model=model,
         tools=[search_docs, read_repo_file, grep_repo, pr_state,
-               run_repo_command],
+               run_repo_command, fetch_url],
         system_prompt=f"Repo: {_repo}. " + SYSTEM,
         middleware=observe.trace_middleware(recorder),
     )

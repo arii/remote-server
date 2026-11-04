@@ -260,5 +260,158 @@ class TestRunRepoCommand(unittest.TestCase):
         self.assertIn("git status", text)
 
 
+class _DoubleHandler:
+    """Returns (status, headers, body); BaseHTTPRequestHandler mixin."""
+
+    def _serve(self):
+        route = self.server.routes.get(self.path)
+        if route is None:
+            body = b"not found"
+            self.send_response(404)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        status, headers, body = route
+        if callable(body):
+            body = body()
+        self.send_response(status)
+        for k, v in headers:
+            self.send_header(k, v)
+        if not any(k.lower() == "content-length" for k, v in headers):
+            self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class TestFetchUrl(unittest.TestCase):
+    def _double(self, routes):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(_DoubleHandler, BaseHTTPRequestHandler):
+            def do_GET(self):
+                self._serve()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        server.routes = routes
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        # LIFO: shut down first so the serving thread can exit,
+        # then close, then join.
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        return f"http://127.0.0.1:{port}"
+
+    def _fetch(self, base, path, **kw):
+        kw.setdefault("_allow_loopback", True)
+        return s5tools.fetch_url(base + path, **kw)
+
+    def test_blocks_non_public_literals(self):
+        for url in (
+            "http://127.0.0.1/",
+            "http://127.0.0.1:8080/x",
+            "http://[::1]/",
+            "http://10.1.2.3/",
+            "http://192.168.0.1/",
+            "http://172.16.0.1/",
+            "http://169.254.169.254/latest",
+            "http://224.0.0.1/",
+            "http://0.0.0.0/",
+            "http://100.64.0.1/",
+        ):
+            out = s5tools.fetch_url(url)
+            self.assertTrue(out.startswith("FETCH_ERROR: blocked"),
+                            url)
+
+    def test_rejects_schemes(self):
+        for url in ("file:///etc/passwd", "ftp://x/y",
+                    "javascript:alert(1)", "", "   ", "notaurl",
+                    "http:///nohost"):
+            out = s5tools.fetch_url(url)
+            self.assertTrue(out.startswith("FETCH_ERROR:"), repr(url))
+        self.assertTrue(s5tools.fetch_url(None).startswith("FETCH_ERROR:"))
+
+    def test_dns_failure_is_fetch_error(self):
+        import socket
+        from unittest import mock
+
+        with mock.patch.object(
+                socket, "getaddrinfo",
+                side_effect=socket.gaierror("nope")):
+            out = s5tools.fetch_url("http://docs.example.com/")
+        self.assertIn("FETCH_ERROR: DNS failed", out)
+
+    def test_ok_double_returns_text(self):
+        page = (b"<html><head><title>Docs</title></head>"
+                b"<body>do the thing</body></html>")
+        base = self._double({"/ok": (200, [], page)})
+        self.assertEqual(self._fetch(base, "/ok"), page.decode())
+
+    def test_cap_marker_exact(self):
+        body = b"y" * 300000
+        base = self._double({"/big": (200, [], body)})
+        out = self._fetch(base, "/big")
+        over = 300000 - s5tools.FETCH_DEFAULT_MAX_BYTES
+        self.assertTrue(out.endswith(f"[truncated {over} bytes]"), out[-60:])
+        self.assertEqual(
+            len(out) - len(f"\n[truncated {over} bytes]"),
+            s5tools.FETCH_DEFAULT_MAX_BYTES)
+
+    def test_timeout_text(self):
+        import time
+
+        def slow():
+            time.sleep(5)
+            return b"late"
+
+        base = self._double({"/slow": (200, [], slow)})
+        out = self._fetch(base, "/slow", timeout=1)
+        self.assertTrue(out.startswith("FETCH_ERROR:"), out[:120])
+        self.assertIn("timed out", out)
+
+    def test_redirect_followed(self):
+        base = self._double({
+            "/redir": (302, [("Location", "/ok")], b""),
+            "/ok": (200, [], b"FINAL-TEXT"),
+        })
+        self.assertEqual(self._fetch(base, "/redir"), "FINAL-TEXT")
+
+    def test_redirect_to_private_blocked(self):
+        base = self._double({
+            "/evil": (302, [("Location", "http://10.0.0.1/")], b""),
+        })
+        out = self._fetch(base, "/evil")
+        self.assertTrue(out.startswith("FETCH_ERROR: blocked"), out[:120])
+
+    def test_too_many_redirects(self):
+        base = self._double({
+            "/loop": (302, [("Location", "/loop")], b""),
+        })
+        out = self._fetch(base, "/loop")
+        self.assertEqual(out, "FETCH_ERROR: too many redirects")
+
+    def test_http_error_status(self):
+        base = self._double({})
+        out = self._fetch(base, "/missing")
+        self.assertEqual(out, "FETCH_ERROR: HTTP 404")
+
+    def test_loopback_blocked_by_default(self):
+        base = self._double({"/ok": (200, [], b"hi")})
+        out = s5tools.fetch_url(base + "/ok")
+        self.assertTrue(out.startswith("FETCH_ERROR: blocked"), out[:120])
+
+    def test_never_raises_on_garbage(self):
+        for url in ("http://", "http://[::1", 12345, "https://"):
+            out = s5tools.fetch_url(url)
+            self.assertTrue(out.startswith("FETCH_ERROR:"), repr(url))
+
+
 if __name__ == "__main__":
     unittest.main()

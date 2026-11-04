@@ -11,10 +11,15 @@ Do NOT put secrets in here; the model router (`model_router.py`) and the
 ledger (`ledger.py`) own their own concerns.
 """
 
+import ipaddress
 import os
 import re
 import shlex
+import socket
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CHECKOUTS = {"arii/remote-server": "/srv/remote-server"}
@@ -212,3 +217,150 @@ def grep_repo(checkout, pattern, limit=2000):
         return f"grep failed: {exc}"
     out = (proc.stdout or "").strip()
     return out[:limit] or "no matches"
+
+
+FETCH_DEFAULT_TIMEOUT = 20
+FETCH_DEFAULT_MAX_BYTES = 262144
+FETCH_MAX_REDIRECTS = 3
+FETCH_DRAIN_BOUND = 1024 * 1024
+FETCH_CHUNK = 65536
+
+
+class _NoAutoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse automatic redirect-following: each hop is re-validated
+    by fetch_url instead (urllib would follow blindly)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _host_blocked(host, allow_loopback=False):
+    """Error text when host must not be fetched, else None.
+
+    Every resolved IP must be globally routable: loopback,
+    link-local (169.254/16 metadata), private (10/8...), multicast,
+    reserved, and unspecified ranges all fail closed, as do DNS
+    failures. allow_loopback is a test seam for local HTTP doubles
+    (loopback only — every other range still blocks).
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        return f"DNS failed for {host}: {exc}"
+    except Exception as exc:
+        return f"cannot resolve {host}: {exc}"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return f"unparseable address for {host}"
+        if allow_loopback and ip.is_loopback:
+            continue
+        # Union, not is_global alone: stdlib marks multicast
+        # (224.0.0.0/4) global, and only is_global catches 100.64/10.
+        if (ip.is_loopback or ip.is_link_local or ip.is_private
+                or ip.is_multicast or ip.is_reserved
+                or ip.is_unspecified or not ip.is_global):
+            return f"blocked non-public address {ip} for {host}"
+    return None
+
+
+def _one_line(exc, limit=200):
+    return " ".join(str(exc).split())[:limit]
+
+
+def fetch_url(url, timeout=FETCH_DEFAULT_TIMEOUT,
+              max_bytes=FETCH_DEFAULT_MAX_BYTES,
+              _allow_loopback=False):
+    """Fetch a URL's text. Never raises: failures return
+    "FETCH_ERROR: <one-line reason>".
+
+    SSRF guard: http(s) only, every hop's resolved IPs must be
+    globally routable, at most FETCH_MAX_REDIRECTS redirects (each
+    re-validated), per-request timeout. Bodies decode as UTF-8 with
+    errors replaced and truncate past max_bytes with a
+    "[truncated N bytes]" marker (N+ when more than the drain bound
+    remains). Known limit: resolve-then-connect is not atomic, so a
+    rebinding hostname could swap answers between check and connect
+    (TOCTOU hardening is out of scope).
+    """
+    if not isinstance(url, str) or not url.strip():
+        return "FETCH_ERROR: empty url"
+    max_bytes = max(1, int(max_bytes or 0))
+    current = url.strip()
+    opener = urllib.request.build_opener(_NoAutoRedirect)
+    opener.addheaders = [("User-Agent", "S5-agent-fetch")]
+    for _ in range(FETCH_MAX_REDIRECTS + 1):
+        try:
+            parts = urllib.parse.urlsplit(current)
+        except Exception as exc:
+            return f"FETCH_ERROR: bad url: {_one_line(exc)}"
+        if parts.scheme not in ("http", "https"):
+            return (f"FETCH_ERROR: scheme must be http(s): "
+                    f"{parts.scheme or '(none)'}")
+        host = parts.hostname or ""
+        if not host:
+            return "FETCH_ERROR: url has no host"
+        blocked = _host_blocked(host, allow_loopback=_allow_loopback)
+        if blocked is not None:
+            return f"FETCH_ERROR: {blocked}"
+        req = urllib.request.Request(current, method="GET")
+        try:
+            resp = opener.open(req, timeout=timeout)
+            try:
+                status = getattr(resp, "status", 200)
+                if status < 200 or status >= 300:
+                    return f"FETCH_ERROR: HTTP {status}"
+                chunks = []
+                remaining = max_bytes + FETCH_DRAIN_BOUND
+                eof = False
+                while remaining > 0:
+                    chunk = resp.read(min(FETCH_CHUNK, remaining))
+                    if not chunk:
+                        eof = True
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                data = b"".join(chunks)
+                text = data[:max_bytes].decode("utf-8", errors="replace")
+                if len(data) <= max_bytes and eof:
+                    return text
+                over = len(data) - max_bytes
+                plus = "" if eof else "+"
+                return f"{text}\n[truncated {over}{plus} bytes]"
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+            try:
+                exc.close()
+            except Exception:
+                pass
+            # Refused auto-follow surfaces 30x here (never as a
+            # returned response): re-validate the next hop in-loop.
+            if 300 <= code < 400:
+                try:
+                    location = (exc.headers or {}).get("Location", "") or ""
+                except Exception:
+                    location = ""
+                if not location:
+                    return f"FETCH_ERROR: redirect {code} without Location"
+                current = urllib.parse.urljoin(current, location)
+                continue
+            return f"FETCH_ERROR: HTTP {code}"
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            if isinstance(reason, socket.timeout):
+                return (f"FETCH_ERROR: timed out after "
+                        f"{timeout}s: {host}")
+            return f"FETCH_ERROR: {_one_line(reason)}"
+        except socket.timeout:
+            return f"FETCH_ERROR: timed out after {timeout}s: {host}"
+        except (OSError, ValueError) as exc:
+            return f"FETCH_ERROR: {_one_line(exc)}"
+        except Exception as exc:
+            return f"FETCH_ERROR: {_one_line(exc)}"
+    return "FETCH_ERROR: too many redirects"
