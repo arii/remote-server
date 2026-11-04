@@ -9,6 +9,7 @@ import {
   fetchAgentRun,
   fetchAgentRuns,
   fetchBudget,
+  fetchRouteHint,
   resumeChat,
 } from '../apiClient';
 import type {
@@ -17,6 +18,7 @@ import type {
   ApprovalPayload,
   BudgetStatus,
   ChatBackend,
+  RouteHintResponse,
   TraceEvent,
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
@@ -206,6 +208,23 @@ export function runCost(run: AgentRun): string {
   if (!run.metered) return 'free';
   if (run.cost_usd === null || run.cost_usd === undefined) return 'metered';
   return usd(run.cost_usd);
+}
+
+// Pre-send composer line from a route hint: backend + cost signal.
+// Same vocabulary as runCost (free / metered / $), with the card
+// per-1M range since usage is unknown before generation. Failures
+// stay visible but short: signal only, never a send block.
+export function hintLine(hint: RouteHintResponse): string {
+  if (!hint.ok) {
+    const err = hint.error.trim().slice(0, 120) || 'unknown reason';
+    return `Next reply unavailable (${err})`;
+  }
+  const via = `Next reply via ${hint.provider}:${hint.model}`;
+  if (!hint.metered) return `${via} · free`;
+  if (hint.rate_in_per_1m === null || hint.rate_out_per_1m === null) {
+    return `${via} · metered`;
+  }
+  return `${via} · metered ~${usd(hint.rate_in_per_1m)}–${usd(hint.rate_out_per_1m)}/1M`;
 }
 
 // Remaining-budget line for the runs header. Uncapped is stated
@@ -618,7 +637,50 @@ export default function ChatView({
   // View-level state, so the choice persists across sends for this
   // view session. Auto = today's ladder, untouched.
   const [backend, setBackend] = useState<ChatBackend>('auto');
+  // Pre-send route hint for the composer line. Refetched whenever
+  // the picker changes; cleared first so a stale backend never
+  // shows under a new selection. Mock mode uses a canned local
+  // hint (no network, deterministic ?mock=1).
+  const [hint, setHint] = useState<RouteHintResponse | null>(null);
   const sessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (useMock()) {
+      setHint({
+        ok: true,
+        provider: 'ollama',
+        model: 'qwen3:8b',
+        metered: false,
+        rate_in_per_1m: null,
+        rate_out_per_1m: null,
+        error: '',
+      });
+      return;
+    }
+    setHint(null);
+    fetchRouteHint(backend).then(
+      (h) => {
+        if (!cancelled) setHint(h);
+      },
+      () => {
+        if (!cancelled) {
+          setHint({
+            ok: false,
+            provider: '',
+            model: '',
+            metered: false,
+            rate_in_per_1m: null,
+            rate_out_per_1m: null,
+            error: 'hint unavailable',
+          });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [backend]);
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
   const lastEventRef = useRef(0);
@@ -935,6 +997,9 @@ export default function ChatView({
             disabled={streaming}
           />
         </label>
+        <p className="row-meta" data-testid="chat-route-hint" role="status">
+          {hint ? hintLine(hint) : 'Next reply via …'}
+        </p>
         <div className="actions" role="group" aria-label="Chat backend" data-testid="chat-backend-picker">
           {CHAT_BACKEND_OPTIONS.map((o) => (
             <button

@@ -5,6 +5,7 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 /api/* like its sibling routers):
 
 - GET/POST /api/chat/stream  SSE stream of a chat session
+- GET      /api/chat/route-hint  pre-send backend + cost hint (ladder probe only)
 - POST     /api/chat/abort   abort an active chat session
 - POST     /api/chat/resume  decide a pending approval, return the turn result
 - POST     /api/ask          start an ask background run, return {id}
@@ -69,6 +70,11 @@ pending_resumes_lock = threading.Lock()
 REPO_ROOT = os.path.dirname(
     os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+sys.path.insert(0, os.path.join(REPO_ROOT, "deep-agent"))
+
+import model_router  # noqa: E402
+import pricing  # noqa: E402
 
 
 def deep_agent_dir() -> str:
@@ -658,6 +664,16 @@ class ChatStreamRequest(BaseModel):
     prefer: str = "auto"
 
 
+class RouteHint(BaseModel):
+    ok: bool = True
+    provider: str = ""
+    model: str = ""
+    metered: bool = False
+    rate_in_per_1m: float | None = None
+    rate_out_per_1m: float | None = None
+    error: str = ""
+
+
 class ChatAbortRequest(BaseModel):
     session_id: str = ""
 
@@ -719,6 +735,37 @@ def chat_stream_post(body: ChatStreamRequest) -> StreamingResponse:
                                           body.prefer),
                              media_type="text/event-stream",
                              headers=SSE_HEADERS)
+
+
+@router.get("/chat/route-hint", response_model=RouteHint)
+def chat_route_hint(prefer: str = "auto") -> dict:
+    """Pre-send backend + cost hint for the composer line.
+
+    Resolves the same ladder the next turn would take (Ollama
+    reachability probe only — never a model call) and pairs it
+    with the pricing card rate. Failures degrade to ok:false with
+    the router's reason; the composer shows it as signal, never a
+    send block.
+    """
+    want = prefer.strip().lower() if isinstance(prefer, str) else "auto"
+    if want not in CHAT_PREFER:
+        raise HTTPException(status_code=400, detail="bad prefer")
+    try:
+        spec = model_router.resolve_llm(prefer=CHAT_PREFER[want])
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200]}
+    label = f"{spec['provider']}:{spec['model']}"
+    metered = not label.startswith(pricing.FREE_PREFIX)
+    rate = pricing.rate_for(label) if metered else None
+    return {
+        "ok": True,
+        "provider": spec["provider"],
+        "model": spec["model"],
+        "metered": metered,
+        "rate_in_per_1m": rate[0] if rate else None,
+        "rate_out_per_1m": rate[1] if rate else None,
+        "error": "",
+    }
 
 
 @router.post("/chat/abort", response_model=ChatAbortResult)

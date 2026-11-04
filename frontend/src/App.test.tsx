@@ -23,6 +23,7 @@ import ChatView, {
   TypingIndicator,
   awaitingFirstToken,
   cleanAgentText,
+  hintLine,
   traceLine,
   traceSummary,
 } from './views/ChatView';
@@ -574,6 +575,69 @@ describe('chat backend picker', () => {
     expect(html).toContain('data-testid="chat-backend-local"');
     expect(html).toContain('data-testid="chat-backend-cloud"');
     expect(html).toContain('aria-pressed="true"');
+  });
+});
+
+describe('chat route hint line', () => {
+  const noop = () => {};
+
+  it('names a free local backend', () => {
+    expect(
+      hintLine({
+        ok: true,
+        provider: 'ollama',
+        model: 'qwen3:8b',
+        metered: false,
+        rate_in_per_1m: null,
+        rate_out_per_1m: null,
+        error: '',
+      }),
+    ).toBe('Next reply via ollama:qwen3:8b · free');
+  });
+
+  it('shows the rated metered range', () => {
+    expect(
+      hintLine({
+        ok: true,
+        provider: 'nebius',
+        model: 'zai-org/GLM-5.3-Flash',
+        metered: true,
+        rate_in_per_1m: 0.15,
+        rate_out_per_1m: 0.5,
+        error: '',
+      }),
+    ).toBe('Next reply via nebius:zai-org/GLM-5.3-Flash · metered ~$0.15–$0.5/1M');
+  });
+
+  it('stays a bare tag when unrated, short on failure', () => {
+    expect(
+      hintLine({
+        ok: true,
+        provider: 'nebius',
+        model: 'Some/Future-Model',
+        metered: true,
+        rate_in_per_1m: null,
+        rate_out_per_1m: null,
+        error: '',
+      }),
+    ).toBe('Next reply via nebius:Some/Future-Model · metered');
+    expect(
+      hintLine({
+        ok: false,
+        provider: '',
+        model: '',
+        metered: false,
+        rate_in_per_1m: null,
+        rate_out_per_1m: null,
+        error: 'Ollama unreachable at http://ollama:11434',
+      }),
+    ).toBe('Next reply unavailable (Ollama unreachable at http://ollama:11434)');
+  });
+
+  it('renders the composer line slot', () => {
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('data-testid="chat-route-hint"');
+    expect(html).toContain('Next reply via …');
   });
 });
 

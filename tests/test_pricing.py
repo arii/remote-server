@@ -97,5 +97,31 @@ class TestSpendCap(unittest.TestCase):
                 self.assertEqual(pricing.spend_cap(), 0.0)
 
 
+class TestRateFor(unittest.TestCase):
+    def test_card_rate_returned(self):
+        self.assertEqual(pricing.rate_for("nebius:zai-org/GLM-5.3-Flash"),
+                         (0.15, 0.50))
+
+    def test_free_model_has_no_rate(self):
+        self.assertIsNone(pricing.rate_for("ollama:qwen3:8b"))
+
+    def test_unrated_model_has_no_rate(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(pricing.rate_for("nebius:Some/Future-Model"))
+
+    def test_env_override_covers_uncarded(self):
+        with mock.patch.dict(
+                os.environ,
+                {"METERED_RATE_IN_PER_1M": "0.11",
+                 "METERED_RATE_OUT_PER_1M": "0.22"},
+                clear=True):
+            self.assertEqual(pricing.rate_for("nebius:Some/Future-Model"),
+                             (0.11, 0.22))
+
+    def test_junk_never_raises(self):
+        for bad in (None, "", 123, {"m": 1}):
+            self.assertIsNone(pricing.rate_for(bad))
+
+
 if __name__ == "__main__":
     unittest.main()

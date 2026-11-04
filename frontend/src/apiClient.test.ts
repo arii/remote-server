@@ -13,6 +13,7 @@ import {
   fetchLedger,
   fetchPrDetails,
   fetchPrDiff,
+  fetchRouteHint,
   fetchSystemHealth,
   fetchVerifyCommand,
   fetchWorkflowHealth,
@@ -311,5 +312,24 @@ describe('chat stream url', () => {
     expect(chatStreamUrl('hi', 'r', 's')).toContain('prefer=auto');
     expect(chatStreamUrl('hi', 'r', 's', 'local')).toContain('prefer=local');
     expect(chatStreamUrl('hi', 'r', 's', 'cloud')).toContain('prefer=cloud');
+  });
+});
+
+describe('route hint', () => {
+  it('fetches the hint for the picked backend', async () => {
+    const body = {
+      ok: true,
+      provider: 'nebius',
+      model: 'm',
+      metered: true,
+      rate_in_per_1m: 0.15,
+      rate_out_per_1m: 0.5,
+      error: '',
+    };
+    const fetchMock = mockFetchJson(body);
+    vi.stubGlobal('fetch', fetchMock);
+    const hint = await fetchRouteHint('cloud');
+    expect(hint).toEqual(body);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('prefer=cloud');
   });
 });
