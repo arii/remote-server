@@ -7,7 +7,8 @@ this backend serves /api/* like its sibling routers):
 - GET  /api/prs?repo=            open PRs, shaped rows
 - GET  /api/pr-details?repo=&pr= enriched details + AI prompts
 - GET  /api/pr-diff?repo=&pr=    filtered unified diff, truncated
-- POST /api/pr-action             merge / update / fix-ci with gating
+- POST /api/pr-action             merge / update / fix-ci /
+                                  approve / request-changes with gating
 
 Note: the legacy /buttons/api/prs handler calls _format_ci_status
 and _format_review_decision, which are not defined anywhere in
@@ -35,7 +36,11 @@ PR_VIEW_FIELDS = ("number,title,headRefName,baseRefName,mergeable,"
                   "mergeStateStatus,reviewDecision,statusCheckRollup,"
                   "updatedAt,author,isDraft,url,files")
 
-PR_ACTIONS = ("merge", "update", "fix-ci")
+PR_ACTIONS = ("merge", "update", "fix-ci", "approve",
+              "request-changes")
+
+# Max chars for a request-changes review body (#616).
+REVIEW_BODY_MAX = 2000
 
 
 class PrRow(BaseModel):
@@ -85,6 +90,8 @@ class PrActionRequest(BaseModel):
     action: str = ""
     intent: str = ""
     confirmed: bool = False
+    # Review text for request-changes only; ignored otherwise.
+    body: str = ""
 
 
 class PrActionResult(BaseModel):
@@ -163,10 +170,30 @@ def _pr_view(gh: str, pr_number: int, runner=None) -> tuple:
 
 
 def _pr_action(gh: str, pr_number: int, action: str,
-               runner=None) -> dict:
+               runner=None, body: str = "") -> dict:
     """Port of buttons/server.py::_pr_action: gating + gh/td argv.
     ValueError = gate refused (400)."""
     run = _gh(runner)
+    if action == "approve":
+        # No CI/merge gate: a review is valid whatever the checks say.
+        # --repo is explicit (unlike the merge branch): #544 showed an
+        # unscoped review/merge verb resolves against the backend cwd.
+        out = run_gh(gh, ["pr", "review", str(pr_number),
+                          "--repo", gh, "--approve"],
+                     runner=run)
+        return {"ok": True, "output": out[-2000:]}
+    if action == "request-changes":
+        if not body or not body.strip():
+            raise ValueError(
+                "request-changes requires a review body")
+        if len(body) > REVIEW_BODY_MAX:
+            raise ValueError(
+                f"review body too long (max {REVIEW_BODY_MAX} chars)")
+        out = run_gh(gh, ["pr", "review", str(pr_number),
+                          "--repo", gh, "--request-changes",
+                          "-b", body],
+                     runner=run)
+        return {"ok": True, "output": out[-2000:]}
     if action == "merge":
         ci, merge = _pr_view(gh, pr_number, run)
         if ci != "passing" or merge != "clean":
@@ -308,6 +335,10 @@ def pr_action(body: PrActionRequest) -> dict:
 
     if body.action == "merge":
         require_confirm(body, "pr-merge")
+    elif body.action == "approve":
+        require_confirm(body, "pr-approve")
+    elif body.action == "request-changes":
+        require_confirm(body, "pr-request-changes")
     # Strict validation, same as legacy: int PR number only (bools
     # are ints in Python, so excluded), allowlisted action.
     if (not isinstance(body.pr_number, int)
@@ -321,7 +352,8 @@ def pr_action(body: PrActionRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        return _pr_action(gh, body.pr_number, body.action)
+        return _pr_action(gh, body.pr_number, body.action,
+                          body=body.body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ReviewView, {
   IssueRowTitle,
+  PrRowApprove,
+  PrRowRequestChanges,
+  RequestChangesForm,
   RowActionButton,
   applyOptimisticMerge,
   isRowDeferred,
@@ -11,7 +14,9 @@ import ReviewView, {
   revertOptimisticMerge,
   reviewColumnsClass,
   rowMatchesFilter,
+  validateRequestChangesBody,
 } from './ReviewView';
+import { approveBlockReason } from '../reviewTypes';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -230,5 +235,92 @@ describe('review columns layout (issue #570)', () => {
     );
     expect(html).toContain('class="columns"');
     expect(html).not.toContain('columns-single');
+  });
+});
+
+describe('one-tap review chips (issue #616)', () => {
+  const pr = {
+    number: 7,
+    title: 't',
+    author: 'a',
+    branch: 'b',
+    isDraft: false,
+    ciStatus: 'failing',
+    ciLabel: 'failing',
+    reviewDecision: '',
+    mergeable: 'CONFLICTING',
+    url: 'https://example.invalid/7',
+  };
+
+  it('enables approve on unreviewed PRs regardless of CI/merge state', () => {
+    expect(approveBlockReason(pr)).toBeNull();
+    expect(approveBlockReason({ ...pr, reviewDecision: 'CHANGES_REQUESTED' })).toBeNull();
+    expect(approveBlockReason({ ...pr, ciStatus: 'passing', mergeable: 'MERGEABLE' })).toBeNull();
+  });
+
+  it('blocks approve on drafts and already-approved PRs', () => {
+    expect(approveBlockReason({ ...pr, isDraft: true })).toBe('is a draft');
+    expect(approveBlockReason({ ...pr, reviewDecision: 'APPROVED' })).toBe('already approved');
+  });
+
+  it('renders the approve chip with kind + number in the name', () => {
+    const html = renderToStaticMarkup(<PrRowApprove pr={pr} busy={false} onApprove={() => {}} />);
+    expect(html).toContain('data-testid="approve-pr-7"');
+    expect(html).toContain('aria-label="Approve PR #7"');
+    expect(html).toContain('>Approve<');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('disables the approve chip when blocked or busy', () => {
+    const draft = renderToStaticMarkup(
+      <PrRowApprove pr={{ ...pr, isDraft: true }} busy={false} onApprove={() => {}} />,
+    );
+    expect(draft).toContain('disabled');
+    expect(draft).toContain('title="is a draft"');
+    const approved = renderToStaticMarkup(
+      <PrRowApprove pr={{ ...pr, reviewDecision: 'APPROVED' }} busy={false} onApprove={() => {}} />,
+    );
+    expect(approved).toContain('disabled');
+    const busy = renderToStaticMarkup(<PrRowApprove pr={pr} busy onApprove={() => {}} />);
+    expect(busy).toContain('disabled');
+  });
+
+  it('renders the request-changes toggle with expanded state', () => {
+    const html = renderToStaticMarkup(
+      <PrRowRequestChanges pr={pr} busy={false} expanded={false} onToggle={() => {}} />,
+    );
+    expect(html).toContain('data-testid="request-changes-pr-7"');
+    expect(html).toContain('aria-label="Request changes on PR #7"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('>Request changes<');
+  });
+
+  it('renders the inline body field with send + cancel', () => {
+    const html = renderToStaticMarkup(
+      <RequestChangesForm n={7} busy={false} onSubmit={() => {}} onCancel={() => {}} />,
+    );
+    expect(html).toContain('data-testid="request-changes-form-7"');
+    expect(html).toContain('data-testid="request-changes-body-7"');
+    expect(html).toContain('maxLength="2000"');
+    expect(html).toContain('data-testid="request-changes-submit-7"');
+    expect(html).toContain('>Send review<');
+    expect(html).toContain('data-testid="request-changes-cancel-7"');
+  });
+
+  it('shows a sending state while the review posts', () => {
+    const html = renderToStaticMarkup(
+      <RequestChangesForm n={7} busy onSubmit={() => {}} onCancel={() => {}} />,
+    );
+    expect(html).toContain('>Sending…<');
+  });
+
+  it('requires a non-blank body and caps length', () => {
+    expect(validateRequestChangesBody('')).toBe('Review feedback is required.');
+    expect(validateRequestChangesBody('   ')).toBe('Review feedback is required.');
+    expect(validateRequestChangesBody('Fix the leak.')).toBeNull();
+    expect(validateRequestChangesBody('x'.repeat(2000))).toBeNull();
+    expect(validateRequestChangesBody('x'.repeat(2001))).toBe(
+      'Keep feedback under 2000 characters.',
+    );
   });
 });
