@@ -336,6 +336,72 @@ class WebhookPullSkipTest(unittest.TestCase):
             [self.GIT + ["rev-parse", "HEAD"],
              self.GIT + ["fetch", "origin"]])
 
+    def test_ref_lock_fetch_retries_and_recovers(self):
+        # #406: a transient ref-lock race (the terminal container's
+        # racing git op holding the lock) backs off and retries, and
+        # the pull then proceeds normally.
+        sleeps = []
+        lock_err = ("error: cannot lock ref "
+                    "'refs/remotes/origin/main': unable to "
+                    "update local ref")
+        script = [
+            (0, "aaa\n", ""),   # rev-parse HEAD
+            (1, "", lock_err),  # fetch attempt 1: lock race
+            (0, "", ""),        # fetch attempt 2: lock released
+        ] + self.OBSERVE[2:] + [
+            (1, "", ""),        # merge-base: not ff-able
+        ]
+        with mock.patch.object(N.time, "sleep",
+                               side_effect=sleeps.append):
+            (ok, detail, advanced, observed), calls = self._pull(script)
+        self.assertTrue(ok)
+        self.assertIn("skipped: tree not ff-able", detail)
+        self.assertFalse(advanced)
+        self.assertTrue(observed["ok"])
+        fetches = [c for c in calls if c[-2:] == ["fetch", "origin"]]
+        self.assertEqual(len(fetches), 2)
+        self.assertEqual(sleeps, [N.WEBHOOK_FETCH_RETRY_DELAY])
+
+    def test_persistent_ref_lock_fails_after_retries(self):
+        # #406: a lock that never clears still fails — with the last
+        # attempt's detail, after exactly RETRIES+1 attempts.
+        sleeps = []
+        lock_err = ("error: cannot lock ref "
+                    "'refs/remotes/origin/main': unable to "
+                    "update local ref")
+        script = [(0, "aaa\n", "")] + [(1, "", lock_err)] * 3
+        with mock.patch.object(N.time, "sleep",
+                               side_effect=sleeps.append):
+            (ok, detail, advanced, observed), calls = self._pull(script)
+        self.assertFalse(ok)
+        self.assertEqual(detail, lock_err)
+        self.assertFalse(advanced)
+        self.assertFalse(observed["ok"])
+        fetches = [c for c in calls if c[-2:] == ["fetch", "origin"]]
+        self.assertEqual(len(fetches), N.WEBHOOK_FETCH_RETRIES + 1)
+        self.assertEqual(
+            sleeps,
+            [N.WEBHOOK_FETCH_RETRY_DELAY] * N.WEBHOOK_FETCH_RETRIES)
+
+    def test_non_lock_fetch_failure_does_not_retry(self):
+        # #406: network/auth failures are never retried — a bigger
+        # retry budget there would mask the cause.
+        sleeps = []
+        with mock.patch.object(N.time, "sleep",
+                               side_effect=sleeps.append):
+            (ok, detail, advanced, observed), calls = self._pull([
+                (0, "aaa\n", ""),
+                (1, "", "fatal: could not read from remote\n"
+                       "network unreachable"),
+            ])
+        self.assertFalse(ok)
+        self.assertEqual(detail, "network unreachable")
+        self.assertFalse(advanced)
+        self.assertFalse(observed["ok"])
+        fetches = [c for c in calls if c[-2:] == ["fetch", "origin"]]
+        self.assertEqual(len(fetches), 1)
+        self.assertEqual(sleeps, [])
+
     def test_clean_ffable_merges(self):
         (ok, detail, advanced, observed), calls = self._pull(
             self.OBSERVE + [
@@ -474,6 +540,33 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertNotIn(
             self.GIT + ["merge", "--ff-only", "origin/main"],
             calls)
+
+
+class FetchLockContentionTest(unittest.TestCase):
+    def test_lock_signatures_match(self):
+        # #406: only ref-lock contention is retried.
+        for stderr in (
+            "error: cannot lock ref 'refs/remotes/origin/main': "
+            "unable to update local ref",
+            "Unable to Update Local Ref",
+            "fatal: cannot store ref 'refs/remotes/origin/main'",
+            "fatal: Unable to create '/srv/.git/refs/remotes/"
+            "origin/main.lock': File exists.",
+            "fatal: index.lock exists",
+        ):
+            self.assertTrue(N._fetch_lock_contended(stderr), stderr)
+
+    def test_real_failures_do_not_match(self):
+        # #406: network/auth/generic failures fail fast, never retry.
+        for stderr in (
+            "",
+            "fatal: could not read from remote\nnetwork unreachable",
+            "fatal: Authentication failed",
+            "fatal: repository not found",
+            "error: some other failure",
+            "fetch failed",
+        ):
+            self.assertFalse(N._fetch_lock_contended(stderr), stderr)
 
 
 @unittest.skipUnless(shutil.which("git"), "git binary not available")

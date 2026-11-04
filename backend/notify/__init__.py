@@ -731,6 +731,55 @@ def _webhook_target(git, env):
     return None
 
 
+# Ref-lock races (#406): the webhook pull shares its checkout with
+# the terminal container's git ops, so `git fetch origin` can fail
+# with a transient lock error ("unable to update local ref") while
+# another process holds the ref lock. Each failed fetch ledgers a
+# genuine ok:false webhook row, and every push regroups them into
+# "same failure repeated" incidents. The fetch below retries lock
+# contention only — never network/auth errors (retrying those would
+# mask the cause, per the issue's rejected alternatives).
+WEBHOOK_FETCH_RETRIES = 2
+WEBHOOK_FETCH_RETRY_DELAY = 2.0
+
+_REF_LOCK_RES = (
+    re.compile(r"unable to update local ref", re.IGNORECASE),
+    re.compile(r"cannot lock ref", re.IGNORECASE),
+    re.compile(r"cannot store ref", re.IGNORECASE),
+    re.compile(r"\.lock['\"]?\s*(file)?\s*exists", re.IGNORECASE),
+    re.compile(r"unable to create .*\.lock", re.IGNORECASE),
+)
+
+
+def _fetch_lock_contended(stderr: str) -> bool:
+    """True when a failed fetch's stderr shows ref-lock contention
+    (another git process holds the lock) rather than a real
+    failure. Only these transient races are retried."""
+    return any(rx.search(stderr or "") for rx in _REF_LOCK_RES)
+
+
+def _fetch_origin(git, env):
+    """`git fetch origin` with ref-lock backoff (#406): a fetch that
+    fails on lock contention sleeps briefly and retries (up to
+    WEBHOOK_FETCH_RETRIES), since the lock holder is usually a
+    seconds-long racing git op. Returns the final CompletedProcess —
+    success, or the last attempt's failure for the caller to report
+    exactly as before."""
+    fetch = None
+    for attempt in range(WEBHOOK_FETCH_RETRIES + 1):
+        fetch = subprocess.run(
+            git + ["fetch", "origin"], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=120, text=True, env=env)
+        if fetch.returncode == 0:
+            return fetch
+        if attempt < WEBHOOK_FETCH_RETRIES \
+                and _fetch_lock_contended(fetch.stderr):
+            time.sleep(WEBHOOK_FETCH_RETRY_DELAY)
+            continue
+        return fetch
+    return fetch
+
+
 def webhook_observe(path):
     """Observe-only remote state: fetch origin, record the remote
     default branch + HEAD positions and lag. Never writes to the
@@ -757,9 +806,7 @@ def webhook_observe(path):
             env=env).stdout.strip() or None
     except Exception:
         observed["head"] = None
-    fetch = subprocess.run(
-        git + ["fetch", "origin"], stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, timeout=120, text=True, env=env)
+    fetch = _fetch_origin(git, env)
     if fetch.returncode != 0:
         observed["detail"] = (
             (fetch.stderr or "").strip().splitlines()[-1]
