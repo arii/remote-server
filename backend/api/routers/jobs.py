@@ -524,15 +524,17 @@ def read_plan(name: str, repo: str = "remote-server") -> dict:
 
 
 # Scheduled jobs actions (#655). Any non-destructive action (plus
-# run-td argv) can carry a daily/weekly cadence; due runs fire
-# through the same registry internals as manual launches, so
-# single-flight applies and scheduled/manual runs are
-# indistinguishable downstream. The store is a JSON file beside the
-# digest schedule so cadences survive restarts; firing rides the
-# shared tick in backend/api/routers/issues.py (single ticker —
-# never add a second one here). Destructive actions are a hard
-# exclusion: confirm gates need a live operator.
-ACTION_SCHEDULE_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600}
+# run-td argv) can carry a cadence; due runs fire through the same
+# registry internals as manual launches, so single-flight applies
+# and scheduled/manual runs are indistinguishable downstream. The
+# store is a JSON file beside the digest schedule so cadences
+# survive restarts; firing rides the shared tick in
+# backend/api/routers/issues.py (single ticker — never add a second
+# one here). Destructive actions are a hard exclusion: confirm
+# gates need a live operator. quarter-hourly exists for the notify
+# check loop (#822): 15 min balances push timeliness vs gh load.
+ACTION_SCHEDULE_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600,
+                             "quarter-hourly": 15 * 60}
 
 DEFAULT_ACTION_SCHEDULE_PATH = "/var/lib/buttons/jobs_schedules.json"
 
@@ -604,10 +606,11 @@ class ActionScheduleDeleted(BaseModel):
 def create_action_schedule(body: ActionScheduleRequest) -> dict:
     cadence = (body.cadence or "").strip().lower()
     if cadence not in ACTION_SCHEDULE_INTERVALS:
+        valid = ", ".join(sorted(ACTION_SCHEDULE_INTERVALS))
         raise HTTPException(
             status_code=400,
-            detail="cadence must be daily or weekly "
-                   "(delete the schedule to stop it)")
+            detail=f"cadence must be {valid} "
+                   f"(delete the schedule to stop it)")
     action = (body.action or "").strip()
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail="unknown action")
@@ -731,11 +734,123 @@ def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
         sid, {"ok": True, "at": now, "run_id": run_id})
 
 
+# Default notify-check seeds (#822): one quarter-hourly
+# check-notifications schedule per checkout, so ci_fail/conflict
+# pushes and the interval digest fire with zero setup. Seeds
+# stagger by two minutes per repo: the engine is single-flight and
+# a busy claim still advances (#655 contract), so same-tick seeds
+# would starve every repo but the first in sid order forever.
+NOTIFY_SEED_ACTION = "check-notifications"
+NOTIFY_SEED_CADENCE = "quarter-hourly"
+NOTIFY_SEED_STAGGER = 120
+
+
+def _notify_seed_repos() -> list:
+    """Checkout names that can carry a notify seed. Discovery first
+    (stack checkout + every repos-dir .git), remote-server always a
+    candidate; each must pass _repo_target, so unknown checkouts
+    never seed an error-every-15-min schedule."""
+    names: list = []
+    try:
+        from backend.core import list_repos
+
+        for row in list_repos():
+            name = row.get("name") if isinstance(row, dict) else None
+            if name and name not in names:
+                names.append(name)
+    except Exception:
+        pass
+    if "remote-server" not in names:
+        names.insert(0, "remote-server")
+    out = []
+    for name in names:
+        try:
+            _repo_target(name)
+        except ValueError:
+            continue
+        out.append(name)
+    return out
+
+
+def _notify_seed_path() -> str:
+    """Sentinel beside the schedule store: the seeded repo names.
+    Separate file (not a store row) so it never renders as a bogus
+    schedule in the list endpoint."""
+    return action_schedule_path() + ".seeded"
+
+
+def _load_notify_seeded() -> list:
+    try:
+        with open(_notify_seed_path(), encoding="utf-8") as f:
+            names = json.load(f)
+        if isinstance(names, list):
+            return [n for n in names if isinstance(n, str)]
+    except Exception:
+        pass
+    return []
+
+
+def _save_notify_seeded(names) -> None:
+    path = _notify_seed_path()
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(sorted(set(names)), f)
+    os.replace(tmp, path)
+
+
+def _ensure_default_notify_schedules(now: float | None = None) -> int:
+    """Seed one notify schedule per checkout. Returns the seeded
+    count. The sentinel records every repo ever seeded: operator
+    deletes stick (seeded-but-deleted is never reseeded), while
+    brand-new checkouts still get a schedule on a later tick and
+    servers that predate the seed get the one-time migration. The
+    first seed is due immediately so the first tick fires it; rows
+    stagger out by NOTIFY_SEED_STAGGER each. Never raises."""
+    try:
+        repos = _notify_seed_repos()
+        if not repos:
+            return 0
+        missing = [r for r in repos if r not in _load_notify_seeded()]
+        if not missing:
+            return 0
+        at = time.time() if now is None else now
+        with action_schedule_lock:
+            done = set(_load_notify_seeded())
+            missing = [r for r in repos if r not in done]
+            if not missing:
+                return 0
+            state = load_action_schedules()
+            live = {s.get("repo") for s in state.values()
+                    if isinstance(s, dict)
+                    and s.get("action") == NOTIFY_SEED_ACTION}
+            fresh = [r for r in missing if r not in live]
+            base = len(live) * NOTIFY_SEED_STAGGER
+            for idx, name in enumerate(fresh):
+                sid = uuid.uuid4().hex[:12]
+                state[sid] = {"action": NOTIFY_SEED_ACTION,
+                              "td_argv": [], "repo": name,
+                              "cadence": NOTIFY_SEED_CADENCE,
+                              "next_run": at + base
+                              + idx * NOTIFY_SEED_STAGGER,
+                              "last_run": None,
+                              "last_result": {}}
+            if fresh:
+                save_action_schedules(state)
+            _save_notify_seeded(done | set(missing))
+        return len(fresh)
+    except Exception:
+        return 0
+
+
 def fire_due_action_schedules(now: float | None = None) -> int:
     """Fire every due action schedule. Returns the fired count.
     Never raises: the shared tick must not die on a job failure."""
     try:
         at = time.time() if now is None else now
+        _ensure_default_notify_schedules(at)
         fired = 0
         for sid, sched in _claim_due_action_schedules(at):
             try:

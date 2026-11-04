@@ -38,8 +38,15 @@ class ActionScheduleStoreTest(unittest.TestCase):
         self.old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
         os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.path
         self.reg = _registry_snapshot()
+        # Fire/claim tests pre-date the notify seed (#822): repo
+        # discovery stays stubbed here so firing never touches git
+        # or the seed store. NotifySeedTest covers the seed itself.
+        self._seed_patch = patch.object(
+            jobs_mod, "_notify_seed_repos", return_value=[])
+        self._seed_patch.start()
 
     def tearDown(self):
+        self._seed_patch.stop()
         if self.old is None:
             os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
         else:
@@ -283,6 +290,135 @@ class ActionScheduleStoreTest(unittest.TestCase):
         with patch.object(jobs_mod, "_fire_action_schedule",
                           side_effect=RuntimeError("launch down")):
             self.assertEqual(jobs_mod.fire_due_action_schedules(), 0)
+
+
+class NotifySeedTest(unittest.TestCase):
+    """Default notify-check seeds (issue #822). Discovery is
+    stubbed; the store + sentinel live in tmp."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "sched.json")
+        self.old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+        os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.path
+        self.reg = _registry_snapshot()
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.old
+        _registry_restore(self.reg)
+        self.tmp.cleanup()
+
+    def _seeded(self, repos):
+        with patch.object(jobs_mod, "_notify_seed_repos",
+                          return_value=list(repos)):
+            return jobs_mod._ensure_default_notify_schedules(now=10000.0)
+
+    def test_seed_one_per_repo_due_first_staggered(self):
+        count = self._seeded(["remote-server", "boomtick"])
+        self.assertEqual(count, 2)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 2)
+        by_repo = {r["repo"]: r for r in rows}
+        for repo in ("remote-server", "boomtick"):
+            self.assertEqual(by_repo[repo]["action"],
+                             "check-notifications")
+            self.assertEqual(by_repo[repo]["cadence"], "quarter-hourly")
+            self.assertEqual(by_repo[repo]["td_argv"], [])
+            self.assertIsNone(by_repo[repo]["last_run"])
+        first = min(r["next_run"] for r in rows)
+        second = max(r["next_run"] for r in rows)
+        self.assertEqual(first, 10000.0)
+        self.assertEqual(second, 10000.0 + jobs_mod.NOTIFY_SEED_STAGGER)
+
+    def test_seed_is_idempotent_and_deletes_stick(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 1)
+        jobs_mod.delete_action_schedule(rows[0]["id"])
+        # Deleted stays deleted: the sentinel remembers the repo.
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        self.assertEqual(
+            jobs_mod.list_action_schedules()["schedules"], [])
+
+    def test_seed_picks_up_new_checkouts_later(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        self.assertEqual(
+            self._seeded(["remote-server", "boomtick"]), 1)
+        repos = sorted(r["repo"] for r in
+                       jobs_mod.list_action_schedules()["schedules"])
+        self.assertEqual(repos, ["boomtick", "remote-server"])
+
+    def test_seed_skips_live_manual_schedule_without_dup(self):
+        with patch("backend.api.routers.issues._ensure_schedule_ticker"), \
+                patch.object(jobs_mod, "_repo_target",
+                             return_value=("arii/remote-server", "/x")):
+            jobs_mod.create_action_schedule(
+                jobs_mod.ActionScheduleRequest(
+                    action="check-notifications", repo="remote-server",
+                    cadence="quarter-hourly"))
+        # Operator beat the seed: no dup, repo still marked seeded.
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 1)
+
+    def test_seed_nothing_without_repos(self):
+        self.assertEqual(self._seeded([]), 0)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_fire_seeds_then_fires_first_repo(self):
+        with patch.object(jobs_mod, "_notify_seed_repos",
+                          return_value=["remote-server"]):
+            with patch.object(
+                    jobs_mod, "_launch",
+                    side_effect=lambda rid, a, r, td_argv=None: None) \
+                    as launcher:
+                fired = jobs_mod.fire_due_action_schedules(now=20000.0)
+        self.assertEqual(fired, 1)
+        launcher.assert_called_once()
+        rid, action, repo = launcher.call_args[0][:3]
+        self.assertEqual((action, repo),
+                         ("check-notifications", "remote-server"))
+        jobs_mod.registry.finish_run(rid, 0)
+
+    def test_notify_seed_repos_skips_unknown(self):
+        with patch("backend.core.list_repos",
+                   return_value=[{"name": "remote-server"},
+                                 {"name": "ghost"}]), \
+                patch.object(jobs_mod, "_repo_target",
+                             side_effect=lambda n: ("g", "c")
+                             if n == "remote-server"
+                             else (_ for _ in ()).throw(
+                                 ValueError("unknown repo"))):
+            self.assertEqual(jobs_mod._notify_seed_repos(),
+                             ["remote-server"])
+
+    def test_quarter_hourly_cadence_accepted(self):
+        with patch("backend.api.routers.issues._ensure_schedule_ticker"):
+            out = jobs_mod.create_action_schedule(
+                jobs_mod.ActionScheduleRequest(
+                    action="logs", repo="remote-server",
+                    cadence="quarter-hourly"))
+        sched = out["schedule"]
+        self.assertEqual(sched["cadence"], "quarter-hourly")
+        self.assertGreaterEqual(sched["next_run"], time.time() + 890)
+        self.assertLessEqual(sched["next_run"], time.time() + 910)
+
+    def test_bad_cadence_lists_valid_options(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            with patch("backend.api.routers.issues._ensure_schedule_ticker"):
+                jobs_mod.create_action_schedule(
+                    jobs_mod.ActionScheduleRequest(
+                        action="logs", repo="remote-server",
+                        cadence="hourly"))
+        self.assertEqual(ctx.exception.status_code, 400)
+        for name in ("daily", "weekly", "quarter-hourly"):
+            self.assertIn(name, ctx.exception.detail)
 
 
 if __name__ == "__main__":

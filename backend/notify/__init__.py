@@ -576,6 +576,73 @@ def _fire_budget_watch(now: float, sender) -> bool:
     return True
 
 
+# gh field sets for the scheduled notify check (#822): the two
+# cheapest calls that still cover both push paths. mergeStateStatus
+# rides `pr list` directly (verified live), so conflicts need no
+# per-PR view calls; DIRTY is the only conflict verdict, mirroring
+# core_cli/briefing_summary.py (overlap scans never count).
+NOTIFY_RUN_FIELDS = "name,headBranch,conclusion,event"
+NOTIFY_PR_FIELDS = "number,title,mergeStateStatus"
+NOTIFY_GH_TIMEOUT = 60
+
+
+def collect_notify_brief(repo_name, gh, runner=None):
+    """Fresh {failing_runs, prs} brief for one repo, or None.
+
+    Two gh calls (failed runs + open PR merge states). Any failure —
+    gh error, empty output, unparseable JSON — returns None
+    (unknown), and check_notifications_and_digest skips unknown
+    repos without touching their stored state: a failed fetch must
+    never look like an all-clear, or recovery would push a storm of
+    "new" failures. ``runner`` injects a subprocess-like module.
+    """
+    from backend.gh import run_gh_json
+
+    try:
+        runs = run_gh_json(
+            gh, ["run", "list", "--repo", gh,
+                 "--limit", "50", "--json", NOTIFY_RUN_FIELDS],
+            timeout=NOTIFY_GH_TIMEOUT, runner=runner)
+        rows = run_gh_json(
+            gh, ["pr", "list", "--repo", gh, "--state", "open",
+                 "--limit", "50", "--json", NOTIFY_PR_FIELDS],
+            timeout=NOTIFY_GH_TIMEOUT, runner=runner)
+    except Exception as exc:
+        print(f"notify brief fetch failed for {repo_name}: {exc}",
+              flush=True)
+        return None
+    if not isinstance(runs, list) or not isinstance(rows, list):
+        return None
+    failing_runs = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        # gh run list exposes no conclusion filter: recent runs are
+        # fetched and failures picked client-side (capped at 10 so
+        # one red week cannot bloat the stored keys).
+        if run.get("conclusion") != "failure":
+            continue
+        if len(failing_runs) >= 10:
+            break
+        failing_runs.append({
+            "name": run.get("name") or "?",
+            "branch": run.get("headBranch") or "?",
+            "failed": run.get("conclusion") or run.get("event")
+            or "failure",
+        })
+    prs = []
+    for pr in rows:
+        if not isinstance(pr, dict):
+            continue
+        prs.append({
+            "number": pr.get("number"),
+            "title": pr.get("title", ""),
+            "conflicted": str(pr.get("mergeStateStatus") or "")
+            .lower() == "dirty",
+        })
+    return {"failing_runs": failing_runs, "prs": prs}
+
+
 def delivered(results) -> bool:
     """True when a digest send earned its `last_digest` stamp (#532).
 
@@ -620,6 +687,11 @@ def check_notifications_and_digest(fetcher=None, sender=None,
             briefs = repos
 
         for repo_name, brief in briefs.items():
+            if brief is None:
+                # Unknown (#822): the fetch failed for this repo, so
+                # its stored ci/conflict keys stay untouched — neither
+                # pushed nor cleared — until a good fetch lands.
+                continue
             if not isinstance(brief, dict):
                 continue
             if "ci_fail" in notify_events:
@@ -677,7 +749,9 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                         message=build_digest_text(
                             summaries=briefs.get("_digest_")  # type: ignore
                             if isinstance(briefs, dict) else None,
-                            total_repos=(len(briefs) - ("_digest_" in briefs))
+                            total_repos=sum(
+                                1 for k, v in briefs.items()
+                                if k != "_digest_" and v is not None)
                             if isinstance(briefs, dict) else 0,
                         ),
                         priority="low",
