@@ -2,8 +2,9 @@
 
 Usage: ask_investigator.py owner/repo <base64-instruction>
 Prints progress lines, then a FINAL: line with the reply (same shape the
-server already parses for proposals). Read-only tools, all scoped to the
-repo's checkout. Local model first (qwen3:8b via Ollama).
+server already parses for proposals). Read-only tools plus one
+allowlisted run_repo_command verify tool, all scoped to the repo's
+checkout. Local model first (qwen3:8b via Ollama).
 
 Every run is recorded to the ledger with tool results.
 """
@@ -193,6 +194,22 @@ def pr_state(number: str) -> str:
         f"title={snap.get('title')}", limit=400)
 
 
+@tool
+def run_repo_command(command: str) -> str:
+    """Run an allowlisted verification command in the repo checkout.
+
+    Use AFTER reasoning to verify a claim — run the failing test,
+    check git state — not to explore; read and grep first. Never
+    executes anything else: anything outside the allowlist comes
+    back as REJECTED text.
+
+    Args:
+        command: Full command line (allowlisted tests/lint/git
+            shapes only).
+    """
+    return s5tools.run_repo_command(_checkout, command)
+
+
 SYSTEM = (
     "You are helping Ari from his phone. Be terse, no filler. "
     "Investigate read-only with your tools; never propose running "
@@ -295,7 +312,8 @@ def main() -> int:
                        f"ollama:{MODEL_ID}")
     agent = create_agent(
         model=model,
-        tools=[search_docs, read_repo_file, grep_repo, pr_state],
+        tools=[search_docs, read_repo_file, grep_repo, pr_state,
+               run_repo_command],
         system_prompt=f"Repo: {_repo}. " + SYSTEM,
         middleware=observe.trace_middleware(recorder),
     )

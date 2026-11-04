@@ -11,8 +11,9 @@ create_agent):
 - create_deep_agent with a persistent SqliteSaver checkpointer keyed
   by thread_id, so conversation memory AND HITL pause state survive
   across one-shot processes (the server spawns per turn / per tap).
-- 5 custom tools reusing the shared helpers (s5tools read-only file
-  tools + retrieval RAG + one gated propose_action).
+- 6 custom tools reusing the shared helpers (s5tools read-only file
+  tools + retrieval RAG + one gated propose_action + one allowlisted
+  run_repo_command for verify-after-reason).
 - interrupt_on={"propose_action": approve/reject} mirrors the buttons
   Approve/Reject taps; resume is Command(resume={"decisions": [...]}).
 
@@ -315,10 +316,12 @@ def resume_payload(decisions):
 
 
 def build_tools(checkout):
-    """The 5 custom tools. Venv-only (imports langchain + retrieval)."""
+    """The 6 custom tools. Venv-only (imports langchain + retrieval)."""
     from langchain_core.tools import tool  # noqa: E402
 
     import retrieval  # noqa: E402
+
+    allowed = s5tools.allowed_commands_text()
 
     @tool
     def read_repo_file(path: str) -> str:
@@ -394,7 +397,26 @@ def build_tools(checkout):
         )
         return text
 
-    return [read_repo_file, grep_repo, list_dir, search_docs, propose_action]
+    @tool
+    def run_repo_command(command: str) -> str:
+        """Run an allowlisted verification command in the repo checkout.
+
+        Use AFTER reasoning to verify a claim — run the failing test,
+        check git state — not to explore; read and grep first. Never
+        executes anything else: anything outside the allowlist comes
+        back as REJECTED text. Read-only in effect (tests may write
+        caches); source edits still go through propose_action.
+
+        Args:
+            command: Full command line; must start with one of:
+                {allowed}.
+        """
+        return s5tools.run_repo_command(checkout, command)
+
+    run_repo_command.description = run_repo_command.description.format(
+        allowed=allowed)
+    return [read_repo_file, grep_repo, list_dir, search_docs,
+            propose_action, run_repo_command]
 
 
 def build_model(prefer=None):
