@@ -676,5 +676,213 @@ class NotificationPrefsTest(unittest.TestCase):
             "quiet hours")
 
 
+class BudgetWatchTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self.sent = []
+        self.spend = (None, 0.0)
+        cap_spend = mock.patch.object(
+            N, "_budget_cap_spend", side_effect=lambda: self.spend)
+        cap_spend.start()
+        self.addCleanup(cap_spend.stop)
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+
+    def _sender(self, result=None):
+        def send(title, message, **kw):
+            self.sent.append(
+                {"title": title, "message": message, **kw})
+            if result is None:
+                return {"ntfy": {"ok": True, "status": 200}}
+            return result() if callable(result) else result
+        return send
+
+    def _alert(self):
+        return N.load_notifier_state().get("last_budget_alert")
+
+    def test_band_boundaries(self):
+        self.assertIsNone(N._budget_band(None, 999.0))
+        self.assertIsNone(N._budget_band(10.0, 7.999))
+        self.assertEqual(N._budget_band(10.0, 8.0), "warning")
+        self.assertEqual(N._budget_band(10.0, 9.999), "warning")
+        self.assertEqual(N._budget_band(10.0, 10.0), "blocked")
+        self.assertEqual(N._budget_band(10.0, 12.0), "blocked")
+        self.assertEqual(N._budget_band(0.0, 0.0), "blocked")
+
+    def test_warn_crossing_fires_once(self):
+        self.spend = (10.0, 8.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1000.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 1)
+        push = self.sent[0]
+        self.assertIn("80%", push["title"])
+        self.assertIn("$8.00", push["message"])
+        self.assertIn("$10.00", push["message"])
+        self.assertIn("$2.00", push["message"])
+        self.assertEqual(push["priority"], "default")
+        self.assertEqual(push["tags"], ["warning", "budget"])
+        self.assertEqual(push["event_type"], "budget")
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1000.0})
+
+    def test_blocked_crossing_fires_once(self):
+        self.spend = (10.0, 10.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1000.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 1)
+        push = self.sent[0]
+        self.assertIn("blocked", push["title"])
+        self.assertIn("next metered call will refuse",
+                      push["message"])
+        self.assertEqual(push["priority"], "high")
+        self.assertEqual(self._alert(),
+                         {"band": "blocked", "at": 1000.0})
+
+    def test_warn_then_blocked_fires_both(self):
+        self.spend = (10.0, 8.0)
+        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        self.spend = (10.0, 10.0)
+        N.fire_budget_watch(now=1060.0, sender=self._sender())
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self._alert(),
+                         {"band": "blocked", "at": 1060.0})
+
+    def test_no_repeat_while_in_band(self):
+        self.spend = (10.0, 8.5)
+        self.assertTrue(N.fire_budget_watch(
+            now=1000.0, sender=self._sender()))
+        for tick in (1060.0, 1120.0):
+            self.assertFalse(N.fire_budget_watch(
+                now=tick, sender=self._sender()))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1000.0})
+
+    def test_rearm_on_cap_raise_then_recross(self):
+        self.spend = (10.0, 8.0)
+        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        # Cap raised: spend drops below every threshold, silent
+        # re-arm (stamp cleared).
+        self.spend = (20.0, 8.0)
+        self.assertFalse(N.fire_budget_watch(
+            now=1060.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIsNone(self._alert())
+        # Re-crossing fires again.
+        self.spend = (20.0, 16.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1120.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1120.0})
+
+    def test_downward_move_silently_rearms(self):
+        self.spend = (10.0, 10.0)
+        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        # Cap raised into the warning band: no push (drops never
+        # push), stored band steps down so a re-crossing fires.
+        self.spend = (12.0, 10.0)
+        self.assertFalse(N.fire_budget_watch(
+            now=1060.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1060.0})
+        self.spend = (12.0, 12.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1120.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self._alert(),
+                         {"band": "blocked", "at": 1120.0})
+
+    def test_uncapped_silence(self):
+        self.spend = (None, 999.0)
+        self.assertFalse(N.fire_budget_watch(
+            now=1000.0, sender=self._sender()))
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(self._alert())
+
+    def test_below_threshold_silence(self):
+        self.spend = (10.0, 1.0)
+        self.assertFalse(N.fire_budget_watch(
+            now=1000.0, sender=self._sender()))
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(self._alert())
+
+    def test_sender_exception_never_dies_and_retries(self):
+        self.spend = (10.0, 8.0)
+
+        def boom(*a, **k):
+            raise RuntimeError("ntfy down")
+
+        self.assertTrue(N.fire_budget_watch(now=1000.0, sender=boom))
+        self.assertIsNone(self._alert())
+        # Next tick retries and stamps on success.
+        self.assertTrue(N.fire_budget_watch(
+            now=1060.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1060.0})
+
+    def test_fire_never_raises_on_broken_state(self):
+        self.spend = (10.0, 8.0)
+        with mock.patch.object(
+                N, "load_notifier_state",
+                side_effect=RuntimeError("disk gone")):
+            self.assertFalse(N.fire_budget_watch(
+                now=1000.0, sender=self._sender()))
+        self.assertEqual(self.sent, [])
+
+    def test_suppressed_send_never_stamps_then_fires(self):
+        self.spend = (10.0, 8.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1000.0,
+            sender=self._sender({"suppressed": "quiet hours"})))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIsNone(self._alert())
+        # Past quiet hours the same band fires (held, not dropped).
+        self.assertTrue(N.fire_budget_watch(
+            now=1060.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1060.0})
+
+    def test_failed_send_retries_next_tick(self):
+        self.spend = (10.0, 8.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1000.0,
+            sender=self._sender({"ntfy": {"ok": False,
+                                          "error": "boom"}})))
+        self.assertIsNone(self._alert())
+        self.assertTrue(N.fire_budget_watch(
+            now=1060.0, sender=self._sender()))
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1060.0})
+
+    def test_partial_channel_ok_stamps(self):
+        self.spend = (10.0, 8.0)
+        self.assertTrue(N.fire_budget_watch(
+            now=1000.0,
+            sender=self._sender({"ntfy": {"ok": True, "status": 200},
+                                 "webhook": {"ok": False,
+                                             "error": "down"}})))
+        self.assertEqual(self._alert(),
+                         {"band": "warning", "at": 1000.0})
+
+    @unittest.skipUnless(HAS_CLIENT, "notify router not importable")
+    def test_status_shows_budget_alert(self):
+        client = _make_client()
+        body = client.get("/api/notifications/status").json()
+        self.assertIsNone(body["budget_alert"])
+        self.spend = (10.0, 8.0)
+        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        body = client.get("/api/notifications/status").json()
+        self.assertEqual(body["budget_alert"],
+                         {"band": "warning", "at": 1000.0})
+
+
 if __name__ == "__main__":
     unittest.main()
