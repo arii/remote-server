@@ -26,6 +26,21 @@ def bootstrap():
         sys.path.insert(0, here)
 
 
+def repo_root():
+    """Checkout root for this deep-agent install (S5_CHECKOUT override).
+
+    Derived from this file's location so worktree and non-production
+    runs resolve their own checkout's .env and chroma_db instead of
+    the production paths (#540): dotenv loading and the RAG index
+    stay hermetic per checkout. Production behavior unchanged: there
+    this file lives under the production checkout's deep-agent dir.
+    """
+    override = os.environ.get("S5_CHECKOUT", "")
+    if isinstance(override, str) and override.strip():
+        return override.strip()
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def usage_error(*lines):
     """Print usage lines to stderr. Returns 2 (caller: `return` it)."""
     for line in lines:

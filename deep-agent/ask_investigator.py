@@ -72,7 +72,8 @@ def _retriever_for():
         from langchain_ollama import OllamaEmbeddings
 
         _retriever = Chroma(
-            persist_directory="/srv/remote-server/deep-agent/chroma_db",
+            persist_directory=os.path.join(
+                cli.repo_root(), "deep-agent", "chroma_db"),
             embedding_function=OllamaEmbeddings(
                 model="nomic-embed-text", base_url=OLLAMA_URL
             ),

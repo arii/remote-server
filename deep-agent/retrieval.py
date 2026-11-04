@@ -17,7 +17,9 @@ index and query embeddings.
 
 import os
 
-DB_DIR = "/srv/remote-server/deep-agent/chroma_db"
+import cli
+
+DB_DIR = os.path.join(cli.repo_root(), "deep-agent", "chroma_db")
 COLLECTION = "s5-docs"
 EMBED_MODEL = "nomic-embed-text"
 DEFAULT_URL = "http://ollama:11434"
