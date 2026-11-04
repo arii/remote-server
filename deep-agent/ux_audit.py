@@ -1124,24 +1124,26 @@ def render_issue(site, report):
     return title, "\n".join(lines) + "\n"
 
 
-def file_issue(site, title, body, run=None):
+def file_issue(site, title, body):
     """File the findings issue via gh. Returns {number, url, repo}.
 
-    Raises RuntimeError with a capped message on gh failure. run
-    is the injectable subprocess.run seam for tests.
+    Runs the real `gh issue create` and parses the created-issue
+    URL from stdout, deriving the number from the URL. No --json:
+    the subcommand has no such flag (#876 — gh exits non-zero
+    printing usage help). Raises RuntimeError with the full gh
+    output on failure. No run seam: tests cover this through a
+    stub gh binary on PATH instead of mocks.
     """
     cfg = site_config(site)
-    runner = run or subprocess.run
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", prefix="ux-audit-",
         delete=False, encoding="utf-8")
     try:
         tmp.write(body)
         tmp.close()
-        proc = runner(
+        proc = subprocess.run(
             ["gh", "issue", "create", "--repo", cfg["repo"],
-             "--title", title, "--body-file", tmp.name,
-             "--json", "number,url"],
+             "--title", title, "--body-file", tmp.name],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=120, text=True)
     finally:
@@ -1151,17 +1153,19 @@ def file_issue(site, title, body, run=None):
             pass
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
-        detail = detail.splitlines()[-1][:200] if detail \
-            else f"exit {proc.returncode}"
+        if not detail:
+            detail = f"exit {proc.returncode}"
+        if len(detail) > 4000:
+            detail = detail[:4000] + "…[truncated]"
         raise RuntimeError(f"gh issue create failed: {detail}")
-    try:
-        payload = json.loads(proc.stdout or "")
-    except ValueError:
-        raise RuntimeError("gh issue create returned bad JSON")
-    number = payload.get("number")
-    if not isinstance(number, int) or number <= 0:
-        raise RuntimeError("gh issue create returned no number")
-    return {"number": number, "url": str(payload.get("url", "")),
+    words = (proc.stdout or "").strip().split()
+    url = words[-1] if words else ""
+    match = re.search(r"/issues/(\d+)$", url)
+    if not match:
+        raise RuntimeError(
+            "gh issue create returned no issue URL: "
+            f"{(proc.stdout or '').strip()[:200]}")
+    return {"number": int(match.group(1)), "url": url,
             "repo": cfg["repo"]}
 
 
