@@ -1017,6 +1017,12 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
   );
 }
 
+// Cross-repo open-issue discovery (issue #882): one tagged list
+// across every checkout, no picker switching.
+export function fetchAllIssues(): Promise<import('./reviewTypes').IssueListResponse> {
+  return getJson<import('./reviewTypes').IssueListResponse>('api/issues?repo=all');
+}
+
 // Cross-repo lane dispatch queue (issue #853). Reads are plain
 // GETs; mutations ride the outbox like other console taps.
 export function fetchDispatchQueue(): Promise<DispatchQueueResponse> {
@@ -1032,8 +1038,9 @@ export function fetchDispatchGates(repo: string, issue: number): Promise<Dispatc
 export function enqueueDispatch(
   repo: string,
   issue: string,
+  title?: string,
 ): Promise<DispatchItem> {
-  return postJson<DispatchItem>('api/dispatch/enqueue', { repo, issue }).then((r) => {
+  return postJson<DispatchItem>('api/dispatch/enqueue', { repo, issue, title: title ?? '' }).then((r) => {
     invalidateViewCaches();
     return r;
   });

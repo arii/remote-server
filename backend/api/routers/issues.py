@@ -5,6 +5,7 @@ backend's /api prefix convention (buttons serves /buttons/api/*;
 this backend serves /api/* like its sibling routers):
 
 - GET  /api/issues?repo=          open issues, body truncated
+  (repo=all rolls up every checkout with per-row repo tags)
 - POST /api/create-issue          create an issue with optional labels
 - POST /api/issue-draft           build a structured issue draft
 - GET  /api/labels?repo=           repo label names (typeahead source)
@@ -497,22 +498,68 @@ def _ensure_schedule_ticker() -> None:
         _schedule_ticker.start()
 
 
-@router.get("/issues", response_model=IssueList)
-def issues(repo: str = "remote-server") -> dict:
-    try:
-        gh = repo_gh(repo)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    try:
-        rows = run_gh_json(gh, ["issue", "list", "--repo", gh,
-                                "--state", "open", "--limit", "50",
-                                "--json", ISSUE_LIST_FIELDS], timeout=60)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)[:500])
+# Cross-repo open-issue discovery (issue #882): repo=all fans out
+# like the #610 inbox rollup. ALL_ISSUES mirrors inbox.ALL_REPOS
+# without importing the inbox router (no cycle).
+ALL_ISSUES = "all"
+
+
+def list_issue_repo_names() -> list:
+    """Injectable seam: known checkout names in picker order."""
+    from backend.core import list_repos
+
+    return [r.get("name", "") for r in list_repos()
+            if isinstance(r, dict) and r.get("name")]
+
+
+def list_open_issues(repo: str) -> list:
+    """Open issue rows for one repo: the gh read + body truncation
+    the per-repo endpoint has always served. Raises ValueError for
+    an unknown repo (repo_gh) and anything else on gh failure."""
+    gh = repo_gh(repo)
+    rows = run_gh_json(gh, ["issue", "list", "--repo", gh,
+                            "--state", "open", "--limit", "50",
+                            "--json", ISSUE_LIST_FIELDS], timeout=60)
     for row in rows if isinstance(rows, list) else []:
         if isinstance(row, dict) and isinstance(row.get("body"), str) \
                 and len(row["body"]) > 600:
             row["body"] = row["body"][:600] + "…"
+    return rows
+
+
+def rollup_issues() -> dict:
+    """All-repos open-issue discovery: fan out per repo, tagging
+    each row with its repo. A repo whose gh read fails is skipped
+    (discovery degrades; the per-repo path still 500s loudly)."""
+    tagged = []
+    for name in list_issue_repo_names():
+        try:
+            rows = list_open_issues(name)
+        except Exception:
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                tagged.append({**row, "repo": name})
+    return {"repo": ALL_ISSUES, "issues": tagged}
+
+
+@router.get("/issues", response_model=IssueList)
+def issues(repo: str = "remote-server") -> dict:
+    if repo == ALL_ISSUES:
+        return rollup_issues()
+    # Validate first: an unknown repo is a 400, while any gh/read
+    # failure below (including JSON decode, a ValueError) is a 500 —
+    # the same split the inline read has always made.
+    try:
+        repo_gh(repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        rows = list_open_issues(repo)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
     return {"repo": repo, "issues": rows}
 
 

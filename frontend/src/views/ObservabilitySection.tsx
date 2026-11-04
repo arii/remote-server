@@ -11,9 +11,12 @@ import { loadWorkflowHealth, useMock } from './mockViews';
 export function ContainerPills({
   containers,
   error,
+  onOpenStats,
 }: {
   containers: ContainerStatus[];
   error?: string | null;
+  // Opens the container stats drawer (#896): every pill navigates.
+  onOpenStats?: () => void;
 }) {
   if (error) {
     return (
@@ -34,17 +37,23 @@ export function ContainerPills({
       {containers.map((c, i) => {
         const running = (c.state ?? '').toLowerCase() === 'running';
         const sick = (c.health ?? '').toLowerCase() === 'unhealthy';
+        const label = `${c.service ?? c.name ?? 'container'}: ${c.state ?? '?'}${c.health ? ` (${c.health})` : ''}`;
         // eslint-disable-next-line react/no-array-index-key
         return (
           <li key={`${c.service ?? c.name ?? 'container'}-${i}`} data-testid="container-pill">
-            <span className="repo-chip pill-dot" title={c.status ?? ''}>
+            <button
+              type="button"
+              className="repo-chip pill-dot"
+              title={c.status ?? ''}
+              aria-label={`${label} — open container stats`}
+              onClick={onOpenStats}
+            >
               <span
                 aria-hidden="true"
                 className={running && !sick ? 'dot dot-ok' : 'dot dot-bad'}
               />
-              {c.service ?? c.name ?? 'container'}: {c.state ?? '?'}
-              {c.health ? ` (${c.health})` : ''}
-            </span>
+              {label}
+            </button>
           </li>
         );
       })}
@@ -55,9 +64,11 @@ export function ContainerPills({
 function HealthLine({
   health,
   flow,
+  onOpenStats,
 }: {
   health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
+  onOpenStats?: () => void;
 }) {
   if (!health) {
     return (
@@ -81,7 +92,7 @@ function HealthLine({
         {health.memory.summary ? ` · Mem: ${health.memory.summary}` : ''}
         {flowText}
       </p>
-      <ContainerPills containers={health.containers} error={health.containers_error} />
+      <ContainerPills containers={health.containers} error={health.containers_error} onOpenStats={onOpenStats} />
     </div>
   );
 }
@@ -130,14 +141,16 @@ export function ObservabilityBody({
   health,
   flow,
   error,
+  onOpenStats,
 }: {
   health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
   error: string | null;
+  onOpenStats?: () => void;
 }) {
   return (
     <>
-      <HealthLine health={health} flow={flow} />
+      <HealthLine health={health} flow={flow} onOpenStats={onOpenStats} />
       {error ? (
         <div data-testid="observability-error" role="alert">
           Automated runs unavailable: {error}
@@ -152,9 +165,11 @@ export function ObservabilityBody({
 export default function ObservabilitySection({
   repo,
   health,
+  onOpenStats,
 }: {
   repo: string;
   health: SystemHealthResponse | null;
+  onOpenStats?: () => void;
 }) {
   const [flow, setFlow] = useState<WorkflowHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -182,7 +197,7 @@ export default function ObservabilitySection({
   return (
     <section aria-label="System observability" data-testid="observability">
       <h2>System observability</h2>
-      <ObservabilityBody health={health} flow={flow} error={error} />
+      <ObservabilityBody health={health} flow={flow} error={error} onOpenStats={onOpenStats} />
     </section>
   );
 }

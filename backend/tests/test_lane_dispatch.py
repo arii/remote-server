@@ -60,12 +60,37 @@ def _verify_ok(issue, repo="remote-server"):
             "allowlisted": True, "error": ""}
 
 
-class LaneQueueTest(unittest.TestCase):
+class _QueueStoreTmpDir:
+    """Point the dispatch queue store at a tmp dir: mutations now
+    persist, and tests must not touch the real path."""
+
+    def _queue_store_setup(self):
+        import os
+        import tempfile
+
+        self._q_tmp = tempfile.TemporaryDirectory()
+        self._q_old = os.environ.get("BUTTONS_DISPATCH_QUEUE_PATH")
+        os.environ["BUTTONS_DISPATCH_QUEUE_PATH"] = os.path.join(
+            self._q_tmp.name, "queue.json")
+
+    def _queue_store_teardown(self):
+        import os
+
+        if self._q_old is None:
+            os.environ.pop("BUTTONS_DISPATCH_QUEUE_PATH", None)
+        else:
+            os.environ["BUTTONS_DISPATCH_QUEUE_PATH"] = self._q_old
+        self._q_tmp.cleanup()
+
+
+class LaneQueueTest(_QueueStoreTmpDir, unittest.TestCase):
     def setUp(self):
+        self._queue_store_setup()
         lane_dispatch.reset_queue()
 
     def tearDown(self):
         lane_dispatch.reset_queue()
+        self._queue_store_teardown()
 
     def test_enqueue_roundtrip_keyed_by_repo_and_issue(self):
         item, err = lane_dispatch.enqueue("remote-server", "853")
@@ -103,6 +128,23 @@ class LaneQueueTest(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(item["state"], "queued")
 
+    def test_enqueue_stores_title_idempotent_keeps_first(self):
+        item, err = lane_dispatch.enqueue(
+            "remote-server", 1, title="Fix the thing")
+        self.assertIsNone(err)
+        self.assertEqual(item["title"], "Fix the thing")
+        # Idempotent re-enqueue returns the item unchanged: the
+        # first title wins, a retry re-stamps.
+        again, err = lane_dispatch.enqueue(
+            "remote-server", "#1", title="Other title")
+        self.assertIsNone(err)
+        self.assertEqual(again["title"], "Fix the thing")
+
+    def test_enqueue_defaults_title_empty(self):
+        item, err = lane_dispatch.enqueue("remote-server", 1)
+        self.assertIsNone(err)
+        self.assertEqual(item["title"], "")
+
     def test_cancel_queued_and_unknown(self):
         lane_dispatch.enqueue("remote-server", 1)
         removed, err = lane_dispatch.cancel("remote-server", 1)
@@ -120,6 +162,108 @@ class LaneQueueTest(unittest.TestCase):
         removed, err = lane_dispatch.cancel("remote-server", 1)
         self.assertFalse(removed)
         self.assertEqual(err, "item is running")
+
+
+class DispatchQueueStoreTest(_QueueStoreTmpDir, unittest.TestCase):
+    """Durable queue store (issue #883): persist on mutation,
+    rehydrate on first touch, reconcile running items honestly."""
+
+    def setUp(self):
+        self._queue_store_setup()
+        lane_dispatch.reset_queue()
+
+    def tearDown(self):
+        lane_dispatch.reset_queue()
+        self._queue_store_teardown()
+
+    def _path(self):
+        import os
+
+        return os.environ["BUTTONS_DISPATCH_QUEUE_PATH"]
+
+    def _restart(self):
+        """Simulate a console restart: drop memory, keep the file."""
+        with lane_dispatch._lock:
+            lane_dispatch._items.clear()
+            lane_dispatch._loaded_path = None
+
+    def _snapshot(self):
+        with open(self._path(), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_enqueue_persists_and_rehydrates(self):
+        lane_dispatch.enqueue("tech-dancer", 48, title="Gates work")
+        snap = self._snapshot()
+        self.assertEqual(snap["version"], 1)
+        self.assertEqual(len(snap["items"]), 1)
+        row = snap["items"][0]
+        self.assertEqual(
+            (row["repo"], row["issue"], row["state"],
+             row["title"]),
+            ("tech-dancer", 48, "queued", "Gates work"))
+        self.assertEqual(
+            row["artifact_url"],
+            "https://github.com/arii/tech-dancer/issues/48")
+        self._restart()
+        items = lane_dispatch.queue_list()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Gates work")
+
+    def test_running_reconciles_to_failed_with_verdict(self):
+        lane_dispatch.enqueue("remote-server", 1, title="T")
+        with lane_dispatch._lock:
+            lane_dispatch._items[("remote-server", "1")][
+                "state"] = lane_dispatch.RUNNING
+            lane_dispatch._persist_locked()
+        self._restart()
+        item = lane_dispatch.get_item("remote-server", 1)
+        self.assertEqual(item["state"], "failed")
+        self.assertEqual(item["detail"],
+                         lane_dispatch.RESTART_DETAIL)
+        self.assertIsNotNone(item["finished_at"])
+        # Titles survive the reconcile; the verdict persisted back.
+        self.assertEqual(item["title"], "T")
+        row = self._snapshot()["items"][0]
+        self.assertEqual(row["state"], "failed")
+
+    def test_corrupt_and_missing_stores_load_empty(self):
+        import os
+
+        with open(self._path(), "w", encoding="utf-8") as f:
+            f.write("not json{{{")
+        self._restart()
+        self.assertEqual(lane_dispatch.queue_list(), [])
+        os.remove(self._path())
+        self._restart()
+        self.assertEqual(lane_dispatch.queue_list(), [])
+
+    def test_cancel_persists_removal(self):
+        lane_dispatch.enqueue("remote-server", 1)
+        lane_dispatch.enqueue("remote-server", 2)
+        lane_dispatch.cancel("remote-server", 1)
+        rows = self._snapshot()["items"]
+        self.assertEqual([r["issue"] for r in rows], [2])
+
+    def test_cap_evicts_oldest_first(self):
+        with patch.object(lane_dispatch,
+                          "DISPATCH_QUEUE_MAX_ITEMS", 2):
+            lane_dispatch.enqueue("remote-server", 1)
+            lane_dispatch.enqueue("remote-server", 2)
+            lane_dispatch.enqueue("remote-server", 3)
+            rows = self._snapshot()["items"]
+        self.assertEqual([r["issue"] for r in rows], [2, 3])
+
+    def test_enqueue_sets_artifact_url(self):
+        from backend.api.routers import dispatch as dispatch_mod
+
+        item, err = lane_dispatch.enqueue("portfolio", 12)
+        self.assertIsNone(err)
+        self.assertEqual(
+            item["artifact_url"],
+            "https://github.com/arii/portfolio/issues/12")
+        self.assertEqual(
+            dispatch_mod.DispatchItem(**item).artifact_url,
+            "https://github.com/arii/portfolio/issues/12")
 
 
 class RepoGatesTest(unittest.TestCase):
@@ -174,12 +318,14 @@ class GhArgvTest(unittest.TestCase):
                 f"unscoped gh argv breaks the #544 guard: {argv}")
 
 
-class ReadinessTest(unittest.TestCase):
+class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
     def setUp(self):
+        self._queue_store_setup()
         lane_dispatch.reset_queue()
 
     def tearDown(self):
         lane_dispatch.reset_queue()
+        self._queue_store_teardown()
 
     def _ready(self, **over):
         kw = {"repo_status": _clean_status,
@@ -254,12 +400,14 @@ class ReadinessTest(unittest.TestCase):
         self.assertFalse(ready["ready"])
 
 
-class DispatchTest(unittest.TestCase):
+class DispatchTest(_QueueStoreTmpDir, unittest.TestCase):
     def setUp(self):
+        self._queue_store_setup()
         lane_dispatch.reset_queue()
 
     def tearDown(self):
         lane_dispatch.reset_queue()
+        self._queue_store_teardown()
 
     def _seams(self, **over):
         kw = {"repo_status": _clean_status,
@@ -327,8 +475,9 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(err, "invalid repo")
 
 
-class MonitorTest(unittest.TestCase):
+class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
     def setUp(self):
+        self._queue_store_setup()
         lane_dispatch.reset_queue()
         with issues_mod.repair_state_lock:
             self._saved = dict(issues_mod.repair_state)
@@ -338,6 +487,7 @@ class MonitorTest(unittest.TestCase):
             issues_mod.repair_state.clear()
             issues_mod.repair_state.update(self._saved)
         lane_dispatch.reset_queue()
+        self._queue_store_teardown()
 
     def _running_item(self):
         lane_dispatch.enqueue("remote-server", 1)
@@ -392,12 +542,14 @@ class MonitorTest(unittest.TestCase):
         self.assertIn("timed out", stored["detail"])
 
 
-class DispatchRouterTest(unittest.TestCase):
+class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
     def setUp(self):
+        self._queue_store_setup()
         lane_dispatch.reset_queue()
 
     def tearDown(self):
         lane_dispatch.reset_queue()
+        self._queue_store_teardown()
 
     def test_health(self):
         self.assertEqual(dispatch_mod.health(), {"ok": True})
@@ -418,6 +570,15 @@ class DispatchRouterTest(unittest.TestCase):
                 dispatch_mod.EnqueueRequest(repo="remote-server",
                                             issue="abc"))
         self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_enqueue_passes_title_through(self):
+        row = dispatch_mod.enqueue(
+            dispatch_mod.EnqueueRequest(repo="tech-dancer",
+                                       issue="48",
+                                       title="Cross-repo gates"))
+        self.assertEqual(row["title"], "Cross-repo gates")
+        stored = lane_dispatch.get_item("tech-dancer", 48)
+        self.assertEqual(stored["title"], "Cross-repo gates")
 
     def test_gates_ok_and_bad_inputs(self):
         with patch.object(

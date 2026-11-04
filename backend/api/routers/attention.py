@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend import lane_dispatch
 from backend import ledger
 from backend import webhook_heal
 from backend.api.routers import ops
@@ -297,6 +298,22 @@ def list_skipped_webhooks() -> list:
     return list(best.values())
 
 
+def list_terminal_dispatches() -> list:
+    """Injectable seam: terminal lane-dispatch items (done/failed).
+
+    A terminal row surfaces until the operator removes it from the
+    queue — completion is never silent, and clearing the row acks
+    the item. Empty on any read failure (attention degrades).
+    """
+    try:
+        rows = lane_dispatch.queue_list()
+    except Exception as exc:
+        logger.warning("attention: dispatch queue read failed: %s", exc)
+        return []
+    return [i for i in rows if isinstance(i, dict)
+            and i.get("state") in ("done", "failed")]
+
+
 def list_pending_approvals() -> list:
     """Injectable seam: pending approvals (ledger + jobs registry)."""
     out = []
@@ -422,6 +439,36 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             "action": {"label": "View jobs", "method": "GET",
                        "href": "api/jobs", "destructive": False, "intent": ""},
             "created_at": float(job.get("created_at", now) or now),
+        })
+    # One row per terminal dispatch (done info, failed warn): the
+    # operator who is elsewhere still sees the outcome (#883).
+    for item in list_terminal_dispatches():
+        if item.get("state") not in ("done", "failed"):
+            continue
+        repo = _event_repo(item.get("repo"), name)
+        if repo != name:
+            continue
+        failed = item.get("state") == "failed"
+        label = f"{repo}#{item.get('issue', '?')}"
+        title = str(item.get("title") or "").strip()
+        if title:
+            label += f" — {title}"
+        detail = str(item.get("detail") or "").strip() \
+            or ("repair worker failed" if failed
+                else "repair worker finished")
+        items.append({
+            "id": f"dispatch-{repo}-{item.get('issue', '?')}",
+            "kind": "failed-dispatch" if failed
+            else "completed-dispatch",
+            "title": f"Dispatch {'failed' if failed else 'done'}: "
+                     f"{label}",
+            "detail": detail,
+            "repo": repo,
+            "severity": "warn" if failed else "info",
+            "action": {"label": "View queue", "method": "GET",
+                       "href": "api/dispatch/queue",
+                       "destructive": False, "intent": ""},
+            "created_at": float(item.get("finished_at", now) or now),
         })
     # One row per incident: repeat failures with the same repo+detail
     # collapse into a single item with a count (latest first).

@@ -44,6 +44,18 @@ describe('container list failure (issue #530)', () => {
     expect(html).toContain('No containers reporting.');
     expect(html).not.toContain('unavailable');
   });
+
+  it('renders pills as buttons that open container stats (issue #896)', () => {
+    const html = renderToStaticMarkup(
+      <ContainerPills
+        containers={[{ service: 'buttons', state: 'running', health: 'healthy' }]}
+        onOpenStats={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="container-pill"');
+    expect(html).toContain('buttons: running (healthy) — open container stats');
+    expect(html).toContain('<button');
+  });
 });
 
 describe('independent stack/flow rendering (issue #474)', () => {
