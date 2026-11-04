@@ -12,6 +12,7 @@ Ports of the buttons/server.py handlers:
 - POST /api/jobs/runs/{rid}/cancel (cancel a running run: 202/404/409)
 - POST /api/jobs/run-plan (start a run for one allowlisted td planning guide)
 - POST /api/jobs/run-ux-audit (start a dispatched site UX audit)
+- POST /api/jobs/run-review (start a local-model PR review)
 - GET  /api/jobs/ux-audit/groups (finding groups from the latest audit)
 - POST /api/jobs/schedule (schedule a non-destructive action/run-td)
 - GET  /api/jobs/schedule (list action schedules + next runs)
@@ -528,6 +529,48 @@ def ux_audit_groups(site: str = "") -> dict:
     if groups is None:
         raise HTTPException(status_code=404, detail="no report yet")
     return {"site": site, "groups": groups}
+
+
+class RunReviewRequest(BaseModel):
+    repo: str = "remote-server"
+    pr: int = 0
+    post: bool = False
+
+
+@router.post("/run-review", response_model=RunStarted)
+def start_run_review(body: RunReviewRequest) -> dict:
+    """Dispatch a local-model PR review (#886): review plan +
+    Ollama/Nebius diff review at zero marginal cost.
+
+    First-class run (single-flighted, listed, ledgered) like
+    run-ux-audit: clients poll /runs/{rid} for the markdown body
+    (or the plan JSON on a dry run). Read-only by default: the
+    run dry-runs (prints the plan, no model call, no post) unless
+    post=true explicitly asks for a posted review.
+    """
+    try:
+        _repo_target(body.repo)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="unknown repo")
+    pr = body.pr
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
+        raise HTTPException(status_code=400, detail="bad pr")
+    argv = ["review-pr", str(pr)]
+    if body.post:
+        argv.append("--post")
+    run_id, err = registry.start_run("review-pr", body.repo,
+                                     td_argv=argv)
+    if err:
+        raise HTTPException(
+            status_code=409 if "already in progress" in err else 400,
+            detail=err,
+        )
+    try:
+        _launch(run_id, "review-pr", body.repo, td_argv=argv)
+    except Exception:
+        registry.finish_run(run_id, 1)
+        raise
+    return {"id": run_id}
 
 
 @router.post("/run-plan", response_model=RunStarted)
@@ -1063,6 +1106,122 @@ def _ensure_default_autofile_schedules(
         return 0
 
 
+# Default impact seed (#886): one daily console-wide impact-pass
+# schedule. A singleton, not per-repo: the pass diffs the console
+# itself, so per-repo rows would all do the same work. Same
+# contract as the siblings otherwise (operator deletes stick, own
+# sentinel file, never raises). The seed still keys off checkout
+# discovery: no checkouts, no console to regress, no schedule —
+# which also keeps the pre-seed fire tests hermetic (they stub
+# discovery to []). The 300s phase keeps the first firing off the
+# notify (0s) and autofile (60s) grids: daily is an exact multiple
+# of quarter-hourly, so a shared phase would contend single-flight
+# on the same tick every day.
+IMPACT_SEED_ACTION = "impact-pass"
+IMPACT_SEED_CADENCE = "daily"
+IMPACT_SEED_OFFSET = 300
+IMPACT_SEED_REPO = "remote-server"
+
+
+def _impact_seed_path() -> str:
+    return action_schedule_path() + ".impact-seeded"
+
+
+def _ensure_default_impact_schedules(
+        now: float | None = None) -> int:
+    """Seed the one console-wide impact schedule. Returns 1 on the
+    first seed, 0 after. Never raises."""
+    try:
+        if not _notify_seed_repos():
+            return 0
+        if _load_seed_names(_impact_seed_path()):
+            return 0
+        at = time.time() if now is None else now
+        with action_schedule_lock:
+            if _load_seed_names(_impact_seed_path()):
+                return 0
+            state = load_action_schedules()
+            live = any(isinstance(s, dict)
+                       and s.get("action") == IMPACT_SEED_ACTION
+                       for s in state.values())
+            fresh = [] if live else [IMPACT_SEED_REPO]
+            for name in fresh:
+                sid = uuid.uuid4().hex[:12]
+                state[sid] = {"action": IMPACT_SEED_ACTION,
+                              "td_argv": [], "repo": name,
+                              "cadence": IMPACT_SEED_CADENCE,
+                              "next_run": at + IMPACT_SEED_OFFSET,
+                              "last_run": None,
+                              "last_result": {},
+                              "enabled": True}
+            if fresh:
+                save_action_schedules(state)
+            _save_seed_names(_impact_seed_path(), [IMPACT_SEED_ACTION])
+        return len(fresh)
+    except Exception:
+        return 0
+
+
+# Default supervise seeds (#886): one weekly --supervise schedule
+# per checkout, same shape as the autofile seeds above (own
+# sentinel, stagger by NOTIFY_SEED_STAGGER, deletes stick, new
+# checkouts seed on a later tick). Weekly: the sweep runs a local
+# model over the checkout, so it is the heaviest seed. The 540s
+# phase keeps the first firings off the notify/autofile/impact
+# grids (weekly is a multiple of quarter-hourly too).
+SUPERVISE_SEED_ACTION = "supervise"
+SUPERVISE_SEED_CADENCE = "weekly"
+SUPERVISE_SEED_OFFSET = 540
+
+
+def _supervise_seed_path() -> str:
+    return action_schedule_path() + ".supervise-seeded"
+
+
+def _ensure_default_supervise_schedules(
+        now: float | None = None) -> int:
+    """Seed one supervise schedule per checkout. Same contract as
+    the autofile seed. Never raises."""
+    try:
+        repos = _notify_seed_repos()
+        if not repos:
+            return 0
+        missing = [r for r in repos
+                   if r not in _load_seed_names(_supervise_seed_path())]
+        if not missing:
+            return 0
+        at = time.time() if now is None else now
+        with action_schedule_lock:
+            done = set(_load_seed_names(_supervise_seed_path()))
+            missing = [r for r in repos if r not in done]
+            if not missing:
+                return 0
+            state = load_action_schedules()
+            live = {s.get("repo") for s in state.values()
+                    if isinstance(s, dict)
+                    and s.get("action") == SUPERVISE_SEED_ACTION}
+            fresh = [r for r in missing if r not in live]
+            base = len(live) * NOTIFY_SEED_STAGGER
+            for idx, name in enumerate(fresh):
+                sid = uuid.uuid4().hex[:12]
+                state[sid] = {"action": SUPERVISE_SEED_ACTION,
+                              "td_argv": [], "repo": name,
+                              "cadence": SUPERVISE_SEED_CADENCE,
+                              "next_run": at + base
+                              + idx * NOTIFY_SEED_STAGGER
+                              + SUPERVISE_SEED_OFFSET,
+                              "last_run": None,
+                              "last_result": {},
+                              "enabled": True}
+            if fresh:
+                save_action_schedules(state)
+            _save_seed_names(_supervise_seed_path(),
+                             done | set(missing))
+        return len(fresh)
+    except Exception:
+        return 0
+
+
 def fire_due_action_schedules(now: float | None = None) -> int:
     """Fire every due action schedule. Returns the fired count.
     Never raises: the shared tick must not die on a job failure."""
@@ -1070,6 +1229,8 @@ def fire_due_action_schedules(now: float | None = None) -> int:
         at = time.time() if now is None else now
         _ensure_default_notify_schedules(at)
         _ensure_default_autofile_schedules(at)
+        _ensure_default_impact_schedules(at)
+        _ensure_default_supervise_schedules(at)
         fired = 0
         for sid, sched in _claim_due_action_schedules(at):
             try:

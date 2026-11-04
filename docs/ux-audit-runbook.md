@@ -15,13 +15,14 @@ modify the audited sites.
 
 | Console site     | Start URL              | Findings repo      |
 |------------------|------------------------|--------------------|
-| arii.github.io   | https://arii.github.io/ | arii/arii.github.io |
-| boomtick.blog    | https://boomtick.blog/  | arii/boomtick       |
+| arii.github.io   | https://arii.github.io/ | arii/portfolio     |
+| boomtick.blog    | https://boomtick.blog/  | arii/tech-dancer   |
 
 The registry lives in `deep-agent/ux_audit.py` (`SITES`); the jobs
-router and the console read it through that module. No dedicated
-site repo exists for boomtick.blog, so its findings file to
-`arii/boomtick` (coder-confirmed per #850).
+router and the console read it through that module. Findings file
+to the site *sources*: `arii.github.io` is build output deployed
+from `arii/portfolio`, and `boomtick.blog` is served from
+`arii/tech-dancer` (#886).
 
 ## The flow (console)
 

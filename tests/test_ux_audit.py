@@ -40,12 +40,15 @@ def stub_fetch_factory(pages):
 
 class SiteRegistryTest(unittest.TestCase):
     def test_both_sites_registered(self):
+        # Findings file to the site sources (#886): github.io is
+        # build output deployed from portfolio, boomtick.blog is
+        # served from tech-dancer.
         self.assertEqual(
             ux_audit.site_config("arii.github.io")["repo"],
-            "arii/arii.github.io")
+            "arii/portfolio")
         self.assertEqual(
             ux_audit.site_config("boomtick.blog")["repo"],
-            "arii/boomtick")
+            "arii/tech-dancer")
 
     def test_unknown_site_fails_closed(self):
         with self.assertRaises(ValueError):
@@ -339,8 +342,8 @@ class GroupingTest(unittest.TestCase):
              "viewport": "static", "evidence": "e",
              "category": "Accessibility"}])
         body = ux_audit.group_spec_body(
-            "boomtick.blog", "arii/boomtick", "arii/boomtick#1", 1,
-            groups[0])
+            "boomtick.blog", "arii/tech-dancer",
+            "arii/tech-dancer#1", 1, groups[0])
         spec = parse_task_spec(body)
         self.assertTrue(spec["target_files"])
         self.assertTrue(validate_verify_command(
@@ -426,18 +429,18 @@ class FileIssueTest(unittest.TestCase):
             {"PATH": tmp + os.pathsep + os.environ.get("PATH", "")})
 
     def test_success_parses_url_and_number(self):
-        url = "https://github.com/arii/boomtick/issues/12"
+        url = "https://github.com/arii/tech-dancer/issues/12"
         with tempfile.TemporaryDirectory() as tmp:
             self._stub_gh(tmp, stdout=url + "\n")
             with self._path_with(tmp):
                 out = ux_audit.file_issue("boomtick.blog", "t", "b")
         self.assertEqual(out, {"number": 12, "url": url,
-                               "repo": "arii/boomtick"})
+                               "repo": "arii/tech-dancer"})
 
     def test_argv_has_no_unsupported_flags(self):
         # Regression guard for #876: gh issue create has no --json,
         # and a fake run seam hid the bad flag from the suite.
-        url = "https://github.com/arii/boomtick/issues/3"
+        url = "https://github.com/arii/tech-dancer/issues/3"
         with tempfile.TemporaryDirectory() as tmp:
             argv_file, body_file = self._stub_gh(
                 tmp, stdout=url + "\n")
@@ -447,7 +450,7 @@ class FileIssueTest(unittest.TestCase):
                 argv = fh.read().strip().split(" ")
             self.assertEqual(
                 argv[:7],
-                ["issue", "create", "--repo", "arii/boomtick",
+                ["issue", "create", "--repo", "arii/tech-dancer",
                  "--title", "t", "--body-file"])
             self.assertNotIn("--json", argv)
             with open(body_file, encoding="utf-8") as fh:
@@ -479,15 +482,15 @@ class FileIssueTest(unittest.TestCase):
         self.assertIn("no issue URL", str(ctx.exception))
 
     def test_files_to_mapped_repo(self):
-        url = "https://github.com/arii/arii.github.io/issues/3"
+        url = "https://github.com/arii/portfolio/issues/3"
         with tempfile.TemporaryDirectory() as tmp:
             argv_file, _ = self._stub_gh(tmp, stdout=url + "\n")
             with self._path_with(tmp):
                 out = ux_audit.file_issue("arii.github.io", "t", "b")
             with open(argv_file, encoding="utf-8") as fh:
-                self.assertIn("arii/arii.github.io",
+                self.assertIn("arii/portfolio",
                               fh.read().split(" "))
-        self.assertEqual(out["repo"], "arii/arii.github.io")
+        self.assertEqual(out["repo"], "arii/portfolio")
 
 
 class ModelSynthesisTest(unittest.TestCase):
