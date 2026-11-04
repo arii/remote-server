@@ -1549,6 +1549,7 @@ export interface ActionSchedule {
   next_run: number;
   last_run: number | null;
   last_result: { ok?: boolean; at?: number; run_id?: string; error?: string };
+  enabled: boolean;
 }
 
 export interface ActionScheduleList {
@@ -1580,6 +1581,26 @@ export function deleteActionSchedule(id: string): Promise<{ ok: boolean }> {
       return r;
     },
   );
+}
+
+export function pauseActionSchedule(id: string): Promise<{ ok: boolean; schedule: ActionSchedule }> {
+  return postJson<{ ok: boolean; schedule: ActionSchedule }>(
+    `api/jobs/schedule/${encodeURIComponent(id)}/pause`,
+    {},
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function resumeActionSchedule(id: string): Promise<{ ok: boolean; schedule: ActionSchedule }> {
+  return postJson<{ ok: boolean; schedule: ActionSchedule }>(
+    `api/jobs/schedule/${encodeURIComponent(id)}/resume`,
+    {},
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 // Attention snooze (issue #614): hide a queue item id until expiry.

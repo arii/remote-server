@@ -233,6 +233,7 @@ describe('extracted jobs sections (issue #363)', () => {
             next_run: 1790000000,
             last_run: null,
             last_result: {},
+            enabled: true,
           },
         ]}
       />,
