@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import tempfile
 import time
 import unittest
@@ -1068,3 +1069,409 @@ class AgentRouterTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ok": True,
                                        "killed": False})
+
+
+class TurnTimeoutEnvTest(unittest.TestCase):
+    def test_default_budget_is_thirty_minutes(self):
+        self.assertEqual(agent_turn.TURN_TIMEOUT, 1800)
+
+    def test_unset_env_falls_back_to_default(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AGENT_TURN_TIMEOUT", None)
+            self.assertEqual(agent_turn.turn_timeout(), 1800)
+
+    def test_env_override_wins(self):
+        with mock.patch.dict(os.environ,
+                             {"AGENT_TURN_TIMEOUT": "600"}):
+            self.assertEqual(agent_turn.turn_timeout(), 600)
+
+    def test_garbage_and_non_positive_fall_back(self):
+        for raw in ("", "  ", "ten", "1.5", "0", "-30"):
+            with mock.patch.dict(os.environ,
+                                 {"AGENT_TURN_TIMEOUT": raw}):
+                self.assertEqual(agent_turn.turn_timeout(), 1800,
+                                 raw)
+
+    def test_timeout_message_uses_effective_budget(self):
+        detail, error = agent_turn.turn_decisions(
+            "muse", "hi", False, None, time.time(), "", "",
+            False, True, timeout=600)
+        self.assertIn("600s", detail)
+        self.assertIn("600s", error)
+
+
+class TurnWarningTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp.name, "ledger.jsonl")
+        self.addCleanup(self._restore_ledger)
+        self.mgr = agent_turn.AgentTurnManager()
+
+    def _restore_ledger(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
+
+    def _collect(self, **kw):
+        async def go():
+            return [c async for c in self.mgr.run_turn(**kw)]
+        return asyncio.run(go())
+
+    def test_silent_turn_warns_once_then_times_out(self):
+        with mock.patch.object(agent_turn, "TURN_TIMEOUT", 6), \
+                mock.patch.object(agent_turn, "TURN_WARNING_LEAD",
+                                  3), \
+                mock.patch.object(agent_turn, "KILL_GRACE", 1), \
+                mock.patch.object(agent_turn,
+                                  "rescue_partial_work",
+                                  return_value={"branch": None,
+                                                "commit": None,
+                                                "committed": False,
+                                                "pushed": False}):
+            chunks = self._collect(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-warn", prompt="hi", continued=False,
+                argv=["/bin/sleep", "30"])
+        warnings = [c for c in chunks
+                    if isinstance(c, agent_turn.TurnWarning)]
+        self.assertEqual(len(warnings), 1)
+        self.assertLessEqual(warnings[0].seconds_left, 3)
+        self.assertGreaterEqual(warnings[0].seconds_left, 0)
+        # Zero-text: joining the stream is unaffected.
+        self.assertEqual("".join(chunks), "")
+        result = self.mgr.pop_result("s-warn")
+        self.assertTrue(result["timed_out"])
+
+    def test_no_warning_when_budget_shorter_than_lead(self):
+        with mock.patch.object(agent_turn, "TURN_TIMEOUT", 1), \
+                mock.patch.object(agent_turn, "KILL_GRACE", 1), \
+                mock.patch.object(agent_turn,
+                                  "rescue_partial_work",
+                                  return_value={"branch": None,
+                                                "commit": None,
+                                                "committed": False,
+                                                "pushed": False}):
+            chunks = self._collect(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-no-warn", prompt="hi",
+                continued=False, argv=["/bin/sleep", "30"])
+        self.assertEqual(chunks, [])
+        self.assertTrue(self.mgr.pop_result("s-no-warn")[
+            "timed_out"])
+
+    def test_fast_turn_never_warns(self):
+        chunks = self._collect(
+            provider="muse", repo="r", cwd="/tmp",
+            session_id="s-fast", prompt="hi", continued=False,
+            argv=["/bin/echo", "hello"])
+        self.assertEqual("".join(chunks), "hello\n")
+        self.assertFalse(self.mgr.pop_result("s-fast")[
+            "timed_out"])
+
+
+class RescueTest(unittest.TestCase):
+    def _completed(self, code=0, out=""):
+        return subprocess.CompletedProcess(
+            args=["git"], returncode=code, stdout=out, stderr="")
+
+    def test_dirty_tree_commits_and_pushes(self):
+        calls = []
+
+        def fake(args, timeout):
+            calls.append(list(args))
+            if args[:2] == ["rev-parse", "--abbrev-ref"]:
+                return self._completed(out="feat-x\n")
+            if args[:1] == ["status"]:
+                return self._completed(out=" M a.txt\n")
+            if args[:1] == ["rev-parse"]:
+                return self._completed(out="abc123\n")
+            return self._completed()
+
+        record = agent_turn.rescue_partial_work(
+            "/srv/repos/x", _exec=fake)
+        self.assertEqual(record,
+                         {"branch": "feat-x", "commit": "abc123",
+                          "committed": True, "pushed": True})
+        self.assertIn(["add", "-A"], calls)
+        self.assertIn(["commit", "-m",
+                       agent_turn.RESCUE_COMMIT_MESSAGE], calls)
+        self.assertIn(["push", "origin", "feat-x"], calls)
+
+    def test_clean_tree_reports_head_without_push(self):
+        def fake(args, timeout):
+            if args[:2] == ["rev-parse", "--abbrev-ref"]:
+                return self._completed(out="main\n")
+            if args[:1] == ["status"]:
+                return self._completed(out="")
+            if args[:1] == ["rev-parse"]:
+                return self._completed(out="head1\n")
+            raise AssertionError("must not commit: %r" % (args,))
+
+        record = agent_turn.rescue_partial_work("/srv/x",
+                                                _exec=fake)
+        self.assertEqual(record,
+                         {"branch": "main", "commit": "head1",
+                          "committed": False, "pushed": False})
+
+    def test_detached_head_commits_without_push(self):
+        def fake(args, timeout):
+            if args[:2] == ["rev-parse", "--abbrev-ref"]:
+                return self._completed(out="HEAD\n")
+            if args[:1] == ["status"]:
+                return self._completed(out=" M a.txt\n")
+            if args[:1] == ["rev-parse"]:
+                return self._completed(out="sha9\n")
+            if args[:1] == ["push"]:
+                raise AssertionError("must not push detached")
+            return self._completed()
+
+        record = agent_turn.rescue_partial_work("/srv/x",
+                                                _exec=fake)
+        self.assertTrue(record["committed"])
+        self.assertFalse(record["pushed"])
+
+    def test_runner_exception_is_best_effort(self):
+        def boom(args, timeout):
+            raise OSError("docker down")
+
+        record = agent_turn.rescue_partial_work("/srv/x",
+                                                _exec=boom)
+        self.assertEqual(record,
+                         {"branch": None, "commit": None,
+                          "committed": False, "pushed": False})
+
+    def test_zero_timeout_returns_empty_record(self):
+        def boom(args, timeout):
+            raise AssertionError("must not run past the cap")
+
+        record = agent_turn.rescue_partial_work(
+            "/srv/x", timeout=0, _exec=boom)
+        self.assertFalse(record["committed"])
+        self.assertFalse(record["pushed"])
+
+    def test_real_git_repo_gets_wip_commit(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = tmp.name
+
+        def git(*args):
+            return subprocess.run(
+                ["git", "-C", repo, *args], capture_output=True,
+                text=True, timeout=30)
+
+        self.assertEqual(git("init", "-b", "main").returncode, 0)
+        git("config", "user.email", "rescue@test")
+        git("config", "user.name", "rescue")
+        with open(os.path.join(repo, "note.txt"), "w") as fh:
+            fh.write("v1\n")
+        self.assertEqual(git("add", "-A").returncode, 0)
+        self.assertEqual(git("commit", "-m", "base").returncode,
+                         0)
+        with open(os.path.join(repo, "note.txt"), "a") as fh:
+            fh.write("partial work\n")
+        record = agent_turn.rescue_partial_work(
+            repo, _exec=lambda args, timeout: subprocess.run(
+                ["git", "-C", repo, *args], capture_output=True,
+                text=True, timeout=timeout))
+        self.assertEqual(record["branch"], "main")
+        self.assertTrue(record["committed"])
+        # No origin remote: the push fails, best-effort.
+        self.assertFalse(record["pushed"])
+        log = git("log", "--format=%s", "-1")
+        self.assertEqual(log.stdout.strip(),
+                         agent_turn.RESCUE_COMMIT_MESSAGE)
+        self.assertEqual(git("status", "--porcelain").stdout,
+                         "")
+        self.assertEqual(
+            git("rev-parse", "HEAD").stdout.strip(),
+            record["commit"])
+
+
+class TimeoutRescueWiringTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp.name, "ledger.jsonl")
+        self.addCleanup(self._restore_ledger)
+        self.mgr = agent_turn.AgentTurnManager()
+
+    def _restore_ledger(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
+
+    def test_timeout_stores_rescue_and_budget(self):
+        salvage = {"branch": "feat-y", "commit": "c1" * 20,
+                   "committed": True, "pushed": True}
+        with mock.patch.object(agent_turn, "TURN_TIMEOUT", 1), \
+                mock.patch.object(agent_turn, "KILL_GRACE", 1), \
+                mock.patch.object(agent_turn,
+                                  "rescue_partial_work",
+                                  return_value=salvage) as run:
+            async def go():
+                return [c async for c in self.mgr.run_turn(
+                    provider="muse", repo="r", cwd="/tmp",
+                    session_id="s-salv", prompt="hi",
+                    continued=False, argv=["/bin/sleep", "30"])]
+            asyncio.run(go())
+        run.assert_called_once_with("/tmp")
+        result = self.mgr.pop_result("s-salv")
+        self.assertTrue(result["timed_out"])
+        self.assertEqual(result["timeout"], 1)
+        self.assertEqual(result["rescue"], salvage)
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            entries = [json.loads(line) for line in fh
+                       if line.strip()]
+        entry = [e for e in entries
+                 if e.get("session_id") == "s-salv"][0]
+        self.assertEqual(entry["rescue"], salvage)
+        self.assertIn("salvaged:", entry["detail"])
+        self.assertIn("feat-y", entry["detail"])
+
+    def test_success_never_rescues(self):
+        with mock.patch.object(agent_turn,
+                               "rescue_partial_work",
+                               side_effect=AssertionError(
+                                   "no rescue on success")):
+            async def go():
+                return [c async for c in self.mgr.run_turn(
+                    provider="muse", repo="r", cwd="/tmp",
+                    session_id="s-ok", prompt="hi",
+                    continued=False,
+                    argv=["/bin/echo", "done"])]
+            chunks = asyncio.run(go())
+        self.assertEqual("".join(chunks), "done\n")
+        result = self.mgr.pop_result("s-ok")
+        self.assertFalse(result["timed_out"])
+        self.assertIsNone(result["rescue"])
+
+
+class GuardPromptTest(unittest.TestCase):
+    def test_guardrail_appends_to_prompt(self):
+        guarded = agent_turn.guard_prompt("implement x")
+        self.assertTrue(guarded.startswith("implement x"))
+        self.assertIn(agent_turn.FILE_HYGIENE_GUARDRAIL,
+                      guarded)
+        self.assertIn("revert", guarded)
+
+    def test_run_turn_sends_guarded_prompt_to_cli(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ledger = os.path.join(tmp.name, "ledger.jsonl")
+        with mock.patch.dict(os.environ,
+                             {"BUTTONS_LEDGER_PATH": ledger}):
+            mgr = agent_turn.AgentTurnManager()
+            with mock.patch.object(
+                    agent_turn, "turn_argv",
+                    return_value=["/bin/echo", "ok"]) as argv_mock:
+                async def go():
+                    return [c async for c in mgr.run_turn(
+                        provider="muse", repo="r", cwd="/tmp",
+                        session_id="s-guard", prompt="do it",
+                        continued=False)]
+                asyncio.run(go())
+        sent = argv_mock.call_args[0][3]
+        self.assertIn("do it", sent)
+        self.assertIn(agent_turn.FILE_HYGIENE_GUARDRAIL, sent)
+        # The ledger keeps the raw user prompt, not the boilerplate.
+        with open(ledger) as fh:
+            entries = [json.loads(line) for line in fh
+                       if line.strip()]
+        entry = [e for e in entries
+                 if e.get("session_id") == "s-guard"][0]
+        self.assertEqual(entry["prompt"], "do it")
+
+
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class TurnSurvivalRouterTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp.name, "ledger.jsonl")
+        self.addCleanup(self._restore_ledger)
+        _patch_repo(self)
+        app = FastAPI()
+        app.include_router(agent.router)
+        self.client = TestClient(app)
+
+    def _restore_ledger(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
+
+    def test_warning_marker_renders_warning_event(self):
+        async def _fake(*args, **kwargs):
+            yield agent_turn.TurnWarning(120)
+            yield "partial-"
+
+        with mock.patch.object(agent_turn.manager, "run_turn",
+                               _fake), \
+                mock.patch.object(
+                    agent_turn.manager, "pop_result",
+                    return_value={"exit": 0, "stderr": "",
+                                  "truncated": False,
+                                  "timed_out": False}):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("event: warning", resp.text)
+        self.assertIn('"seconds_left": 120', resp.text)
+        # The marker never leaks into the transcript.
+        done = [json.loads(line[6:]) for line in
+                resp.text.splitlines()
+                if line.startswith("data: ")][-1]
+        self.assertEqual(done["text"], "partial-")
+
+    def test_timeout_error_carries_session_and_salvage(self):
+        async def _fake(*args, **kwargs):
+            return
+            yield  # pragma: no cover - make this an async generator
+
+        salvage = {"branch": "feat-z", "commit": "d" * 40,
+                   "committed": True, "pushed": False}
+        with mock.patch.object(agent_turn.manager, "run_turn",
+                               _fake), \
+                mock.patch.object(
+                    agent_turn.manager, "pop_result",
+                    return_value={"exit": -15, "stderr": "",
+                                  "truncated": False,
+                                  "timed_out": True,
+                                  "timeout": 1800,
+                                  "rescue": salvage}):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("event: error", resp.text)
+        self.assertIn("turn timed out after 30m", resp.text)
+        self.assertIn('"code": "turn-timeout"', resp.text)
+        self.assertIn('"session_id"', resp.text)
+        self.assertIn('"salvage"', resp.text)
+        self.assertIn("feat-z", resp.text)
+        self.assertIn("pushed", resp.text)
+
+    def test_timeout_minutes_follow_effective_budget(self):
+        async def _fake(*args, **kwargs):
+            return
+            yield  # pragma: no cover - make this an async generator
+
+        with mock.patch.object(agent_turn.manager, "run_turn",
+                               _fake), \
+                mock.patch.object(
+                    agent_turn.manager, "pop_result",
+                    return_value={"exit": -15, "stderr": "",
+                                  "truncated": False,
+                                  "timed_out": True,
+                                  "timeout": 600,
+                                  "rescue": None}):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("turn timed out after 10m", resp.text)
+        self.assertNotIn('"salvage"', resp.text)

@@ -24,11 +24,30 @@ function parseSsePart(part: string): SseEvent | null {
   return { name, data: dataMatch[1] };
 }
 
+// Salvage summary from the bounded timeout rescue (issue #838):
+// which branch holds the wip snapshot, its commit, and whether
+// the push landed.
+export interface SalvageInfo {
+  branch: string | null;
+  commit: string | null;
+  committed: boolean;
+  pushed: boolean;
+}
+
+export function formatElapsed(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
 // Pump one turn's SSE stream: token chunks append to the live answer,
-// done resolves {session id, full text, truncated}, error rejects.
+// warning reports seconds left via onWarning, done resolves
+// {session id, full text, truncated}, error rejects with code,
+// detail, sessionId, and salvage attached when the server sent them.
 export async function pumpTurn(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
+  onWarning?: (secondsLeft: number) => void,
 ): Promise<{ sessionId: string; text: string; truncated: boolean }> {
   const decoder = new TextDecoder();
   let buf = '';
@@ -48,19 +67,43 @@ export async function pumpTurn(
         let detail = ev.data;
         let code: string | undefined;
         let raw: string | undefined;
+        let errorSessionId: string | undefined;
+        let salvage: SalvageInfo | undefined;
         try {
           const data = JSON.parse(ev.data) as {
             error?: string;
             code?: string;
             detail?: string;
+            session_id?: string;
+            salvage?: SalvageInfo;
           };
           detail = data.error ?? ev.data;
           if (typeof data.code === 'string') code = data.code;
           if (typeof data.detail === 'string') raw = data.detail;
+          if (typeof data.session_id === 'string' && data.session_id !== '') {
+            errorSessionId = data.session_id;
+          }
+          if (data.salvage !== null && typeof data.salvage === 'object') {
+            salvage = data.salvage;
+          }
         } catch {
           /* raw text */
         }
-        throw Object.assign(new Error(detail), { code, detail: raw });
+        throw Object.assign(new Error(detail), {
+          code,
+          detail: raw,
+          sessionId: errorSessionId,
+          salvage,
+        });
+      }
+      if (ev.name === 'warning') {
+        try {
+          const secs = (JSON.parse(ev.data) as { seconds_left?: unknown })
+            .seconds_left;
+          if (typeof secs === 'number') onWarning?.(secs);
+        } catch {
+          /* ignore */
+        }
       }
       if (ev.name === 'token') {
         try {
@@ -114,15 +157,29 @@ export function GuidanceCard({
   detail,
   other,
   onSwitch,
+  salvage,
 }: {
   message: string;
   detail: string;
   other: string;
   onSwitch: () => void;
+  salvage?: SalvageInfo | null;
 }) {
   return (
     <div className="detail" data-testid="agent-guidance" role="alert">
       <span className="row-title">Agent failed: {message}</span>
+      {salvage !== null && salvage !== undefined && (
+        <div className="row-meta" data-testid="agent-salvage">
+          <span>Branch: {salvage.branch ?? 'unknown'}</span>{' '}
+          <span>
+            Commit:{' '}
+            {salvage.commit !== null
+              ? salvage.commit.slice(0, 12)
+              : 'nothing committed'}
+          </span>{' '}
+          <span>Pushed: {salvage.pushed ? 'yes' : 'no'}</span>
+        </div>
+      )}
       <div className="actions">
         {other !== '' && (
           <button
@@ -174,8 +231,18 @@ export default function AgentDrawer({
   const [failure, setFailure] = useState<{ code: string; detail: string } | null>(
     null,
   );
+  // Turn survivability (issue #838): lastPrompt replays the failed
+  // turn on one-tap Resume; salvage reports the timeout rescue;
+  // warningSecs counts down the server's pre-timeout warning; now
+  // ticks the elapsed/stall clock while a turn is working.
+  const [lastPrompt, setLastPrompt] = useState('');
+  const [salvage, setSalvage] = useState<SalvageInfo | null>(null);
+  const [warningSecs, setWarningSecs] = useState<number | null>(null);
+  const [now, setNow] = useState(0);
   const sidRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const startRef = useRef(0);
+  const tokenRef = useRef(0);
 
   useEffect(() => {
     if (initialProviders) return;
@@ -211,11 +278,18 @@ export default function AgentDrawer({
     [],
   );
 
+  useEffect(() => {
+    if (!working) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [working]);
+
   const streamedRef = useRef(0);
 
   function appendAnswer(token: string) {
     if (!token) return;
     streamedRef.current += token.length;
+    tokenRef.current = Date.now();
     setTurns((t) => {
       const next = [...t];
       const last = next[next.length - 1];
@@ -240,6 +314,13 @@ export default function AgentDrawer({
   async function sendTurn(text: string) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const at = Date.now();
+    startRef.current = at;
+    tokenRef.current = at;
+    setNow(at);
+    setWarningSecs(null);
+    setSalvage(null);
+    setLastPrompt(text);
     setWorking(true);
     setTurns((t) => [...t, { role: 'assistant', text: '' }]);
     try {
@@ -254,7 +335,9 @@ export default function AgentDrawer({
         sessionId,
         text: full,
         truncated,
-      } = await pumpTurn(resp.body.getReader(), appendAnswer);
+      } = await pumpTurn(resp.body.getReader(), appendAnswer, (secs) =>
+        setWarningSecs(secs),
+      );
       if (sessionId) sidRef.current = sessionId;
       backfillAnswer(full);
       if (truncated) appendAnswer('\n\n[output truncated — the turn exceeded the size cap]');
@@ -266,6 +349,18 @@ export default function AgentDrawer({
         setFailure(
           typeof code === 'string' && code !== ''
             ? { code, detail: typeof raw === 'string' ? raw : '' }
+            : null,
+        );
+        // Timeout errors carry the session so Resume continues the
+        // same server-known session, plus the rescue's salvage.
+        const errSid = (err as { sessionId?: unknown }).sessionId;
+        if (typeof errSid === 'string' && errSid !== '' && !sidRef.current) {
+          sidRef.current = errSid;
+        }
+        const errSalvage = (err as { salvage?: unknown }).salvage;
+        setSalvage(
+          errSalvage !== null && typeof errSalvage === 'object'
+            ? (errSalvage as SalvageInfo)
             : null,
         );
         // Drop the empty assistant bubble so retry sends cleanly.
@@ -290,6 +385,7 @@ export default function AgentDrawer({
     }
     setError(null);
     setFailure(null);
+    setSalvage(null);
     setTurns([{ role: 'user', text }]);
     setPrompt('');
     setLive(true);
@@ -302,9 +398,21 @@ export default function AgentDrawer({
     if (working || !text) return;
     setError(null);
     setFailure(null);
+    setSalvage(null);
     setTurns((t) => [...t, { role: 'user', text }]);
     setPrompt('');
     await sendTurn(text);
+  }
+
+  // One-tap Resume (issue #838): replay the failed turn's prompt on
+  // the same session — the user bubble is already in the transcript,
+  // so only the assistant turn re-fires.
+  async function onResume() {
+    if (working || lastPrompt === '') return;
+    setError(null);
+    setFailure(null);
+    setSalvage(null);
+    await sendTurn(lastPrompt);
   }
 
   async function onAbort() {
@@ -325,6 +433,9 @@ export default function AgentDrawer({
     setTurns([]);
     setError(null);
     setFailure(null);
+    setSalvage(null);
+    setWarningSecs(null);
+    setLastPrompt('');
     setWorking(false);
     setLive(false);
   }
@@ -339,6 +450,7 @@ export default function AgentDrawer({
     setProvider(other);
     setError(null);
     setFailure(null);
+    setSalvage(null);
   }
 
   return (
@@ -350,12 +462,24 @@ export default function AgentDrawer({
           detail={failure.detail}
           other={otherProvider(provider, providers, status)}
           onSwitch={onSwitchProvider}
+          salvage={salvage}
         />
       )}
       {error && !failure && (
         <p className="row-meta" data-testid="agent-error" role="alert">
           Agent failed: {error}
         </p>
+      )}
+      {error && !working && lastPrompt !== '' && (
+        <div className="actions">
+          <button
+            type="button"
+            data-testid="agent-resume"
+            onClick={() => void onResume()}
+          >
+            Resume
+          </button>
+        </div>
       )}
       {!live && (
         <div className="detail">
@@ -407,6 +531,16 @@ export default function AgentDrawer({
           <span className="row-title">
             {provider} · {repo}
           </span>
+          {working && warningSecs !== null && (
+            <p
+              className="row-meta"
+              data-testid="agent-timeout-warning"
+              role="status"
+            >
+              Turn ends in ~{Math.max(1, Math.round(warningSecs / 60))} min —
+              partial work will be committed and pushed.
+            </p>
+          )}
           <ul className="session-list" data-testid="agent-transcript">
             {turns.map((t, i) => (
               // eslint-disable-next-line react/no-array-index-key
@@ -421,6 +555,12 @@ export default function AgentDrawer({
                 >
                   {t.text || (working && i === turns.length - 1 ? 'Working…' : '')}
                 </p>
+                {working && t.role === 'assistant' && i === turns.length - 1 && (
+                  <p className="row-meta" data-testid="agent-elapsed">
+                    {formatElapsed((now - startRef.current) / 1000)} · idle{' '}
+                    {formatElapsed((now - tokenRef.current) / 1000)}
+                  </p>
+                )}
               </li>
             ))}
           </ul>
