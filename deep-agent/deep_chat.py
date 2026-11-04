@@ -722,7 +722,8 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
                   extra={"repo": repo, "mode": "turn", "intent": "trivial",
                          "prompt": prompt, "trace": recorder.path,
                          "decisions": decisions.build_decisions(
-                             [], [], reply)},
+                             [], [], reply,
+                             reason="trivial greeting, fast path")},
                   usage=usage, calls=[])
     return 0
 
@@ -800,7 +801,8 @@ def _cmd_turn(repo, thread_id, raw_prompt):
                         "trace": recorder.path, "intent": turn_intent,
                         "prompt": prompt,
                         "decisions": decisions.build_decisions(
-                            _calls, tool_results, reply),
+                            _calls, tool_results, reply,
+                            reason=f"{turn_intent} turn, full path"),
                         **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )
@@ -895,7 +897,8 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
                             for m in tool_msgs],
                    reply, verdict=verdict, message=message,
                    proposals=approved_proposal_blocks(
-                       first.get("action_requests", []))),
+                       first.get("action_requests", [])),
+                   reason=f"resumed after {verdict}, full path"),
                **({"salvaged": True} if salvaged else {})},
         usage=_usage, calls=_calls,
     )
