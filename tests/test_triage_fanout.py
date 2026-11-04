@@ -1,8 +1,10 @@
-"""triage_fanout empty-model guard tests (#620).
+"""triage_fanout empty-model guard tests (#620) + prefer selection (#622).
 
 Blank/unset NEBIUS_MODEL must fall back to the pinned model, and
 provider failures must exit 1 with a one-line stderr message (no
 traceback). No network: the provider call is stubbed to raise.
+--prefer=ollama|nebius|auto selects the backend; auto (default) uses
+Nebius when keyed, else the local model with a stderr note.
 
 Needs the deep-agent venv (langchain import at module top); skipped
 under system python.
@@ -12,6 +14,7 @@ import importlib
 import io
 import os
 import sys
+import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -146,8 +149,10 @@ class TestMainFailures(unittest.TestCase):
             "fanout: no model resolved "
             "(NEBIUS_MODEL is blank and no default)\n")
 
-    def test_api_key_missing_unchanged(self):
-        argv = ["triage_fanout.py", "arii/remote-server"]
+    def test_api_key_missing_explicit_nebius_refuses(self):
+        # #622 changed the keyless default (auto -> local); only an
+        # explicit --prefer=nebius still refuses cleanly.
+        argv = ["triage_fanout.py", "--prefer=nebius", "arii/remote-server"]
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sys, "argv", argv), \
                 mock.patch.dict(os.environ, {}, clear=True), \
@@ -157,6 +162,122 @@ class TestMainFailures(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(err.getvalue(), "NEBIUS_API_KEY is not set\n")
         self.assertEqual(out.getvalue(), "")
+
+
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
+class TestPreferSelection(unittest.TestCase):
+    LOCAL_SPEC = {"provider": "ollama", "model": "qwen3:8b",
+                  "base_url": "http://ollama:11434"}
+    CLOUD_SPEC = {"provider": "nebius", "model": "x", "base_url": "y"}
+    NOTE = "fanout: no Nebius key — triage on local model (weaker)\n"
+
+    def _run_main(self, argv, env, spec):
+        agent = mock.Mock()
+        scout = types.SimpleNamespace(
+            tool_calls=[{"name": "task"}], content="scout report")
+        final = types.SimpleNamespace(tool_calls=[], content="done")
+        agent.invoke.return_value = {"messages": [scout, final]}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(triage_fanout, "load_dotenv"), \
+                mock.patch.object(
+                    triage_fanout.model_router, "resolve_llm",
+                    return_value=spec) as resolve_mock, \
+                mock.patch.object(triage_fanout, "ChatOpenAI") as chat_cls, \
+                mock.patch("langchain_ollama.ChatOllama") as ollama_cls, \
+                mock.patch.object(
+                    triage_fanout, "create_deep_agent",
+                    return_value=agent), \
+                mock.patch.object(
+                    triage_fanout.ledger, "record") as record_mock, \
+                redirect_stdout(out), redirect_stderr(err):
+            code = triage_fanout.main()
+        return (code, out.getvalue(), err.getvalue(), resolve_mock,
+                chat_cls, ollama_cls, record_mock)
+
+    def test_extract_prefer_defaults_to_auto(self):
+        self.assertEqual(
+            triage_fanout.extract_prefer(["triage_fanout.py"]), "auto")
+        self.assertEqual(
+            triage_fanout.extract_prefer(
+                ["triage_fanout.py", "arii/remote-server"]),
+            "auto")
+
+    def test_extract_prefer_explicit_honored(self):
+        for value in ("ollama", "nebius", "auto"):
+            self.assertEqual(
+                triage_fanout.extract_prefer(
+                    ["triage_fanout.py", f"--prefer={value}"]),
+                value)
+
+    def test_extract_prefer_normalizes_case_and_space(self):
+        self.assertEqual(
+            triage_fanout.extract_prefer(
+                ["triage_fanout.py", "--prefer= Ollama "]),
+            "ollama")
+
+    def test_extract_prefer_invalid_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            triage_fanout.extract_prefer(
+                ["triage_fanout.py", "--prefer=bogus"])
+        self.assertIn("bad --prefer='bogus'", str(ctx.exception))
+
+    def test_keyed_auto_uses_nebius_pin(self):
+        (code, _, stderr, resolve_mock, chat_cls, ollama_cls,
+         record_mock) = self._run_main(
+            ["triage_fanout.py", "arii/remote-server"],
+            {"NEBIUS_API_KEY": "dummy"}, self.CLOUD_SPEC)
+        self.assertEqual(code, 0)
+        resolve_mock.assert_called_once_with(prefer="nebius")
+        self.assertEqual(chat_cls.call_args.kwargs["model"], PIN)
+        self.assertEqual(
+            chat_cls.call_args.kwargs["base_url"],
+            "https://api.studio.nebius.com/v1")
+        ollama_cls.assert_not_called()
+        self.assertNotIn("no Nebius key", stderr)
+        self.assertEqual(record_mock.call_args.args[1], f"nebius:{PIN}")
+
+    def test_keyless_auto_uses_local_spec_with_note(self):
+        (code, _, stderr, resolve_mock, chat_cls, ollama_cls,
+         record_mock) = self._run_main(
+            ["triage_fanout.py", "arii/remote-server"],
+            {}, dict(self.LOCAL_SPEC))
+        self.assertEqual(code, 0)
+        resolve_mock.assert_called_once_with(prefer=None)
+        chat_cls.assert_not_called()
+        kwargs = ollama_cls.call_args.kwargs
+        self.assertEqual(kwargs["model"], "qwen3:8b")
+        self.assertEqual(kwargs["base_url"], "http://ollama:11434")
+        self.assertEqual(kwargs["model_kwargs"], {"think": False})
+        self.assertIn(self.NOTE, stderr)
+        self.assertEqual(
+            record_mock.call_args.args[1], "ollama:qwen3:8b")
+
+    def test_explicit_prefer_ollama_honored_without_note(self):
+        (code, _, stderr, resolve_mock, chat_cls, ollama_cls, _) = \
+            self._run_main(
+                ["triage_fanout.py", "--prefer=ollama",
+                 "arii/remote-server"],
+                {"NEBIUS_API_KEY": "dummy"}, dict(self.LOCAL_SPEC))
+        self.assertEqual(code, 0)
+        resolve_mock.assert_called_once_with(prefer="ollama")
+        ollama_cls.assert_called_once()
+        chat_cls.assert_not_called()
+        self.assertNotIn("no Nebius key", stderr)
+
+    def test_prefer_bogus_is_usage_error(self):
+        argv = ["triage_fanout.py", "--prefer=bogus", "arii/remote-server"]
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.dict(
+                    os.environ, {"NEBIUS_API_KEY": "dummy"},
+                    clear=True), \
+                mock.patch.object(triage_fanout, "load_dotenv"), \
+                redirect_stdout(out), redirect_stderr(err):
+            code = triage_fanout.main()
+        self.assertEqual(code, 2)
+        self.assertIn("bad --prefer='bogus'", err.getvalue())
 
 
 if __name__ == "__main__":
