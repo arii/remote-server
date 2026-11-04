@@ -120,6 +120,22 @@ function detailWith(extra: Record<string, unknown>): AgentRunDetail {
   return { id: 'run-0', entry: { thread_id: 't', extra }, trace: [] };
 }
 
+function selectedPaneHtml(runs: AgentRun[], selected: string | null, detail: AgentRunDetail | null): string {
+  return renderToStaticMarkup(
+    <RunsPane
+      runs={runs}
+      selected={selected}
+      detail={detail}
+      onSelect={() => {}}
+      onContinue={() => {}}
+      onDelete={() => {}}
+      onClearFinished={() => {}}
+      notice={null}
+      budget={null}
+    />,
+  );
+}
+
 describe('run decisions (issue #414)', () => {
   it('parses decisions from the entry extra', () => {
     const entry = {
@@ -179,6 +195,40 @@ describe('run decisions (issue #414)', () => {
       />,
     );
     expect(html).not.toContain('chat-run-decisions');
+  });
+});
+
+describe('selected past run (issue #567)', () => {
+  const runs = [pastRun({ id: 'run-1' }), pastRun({ id: 'run-0' })];
+
+  it('marks exactly the selected card with the selected class', () => {
+    const html = selectedPaneHtml(runs, 'run-1', detailWith({}));
+    expect(html.match(/class="detail selected"/g)).toHaveLength(1);
+    const rowAt = html.indexOf('data-testid="chat-run-run-1"');
+    const selectedAt = html.indexOf('class="detail selected"');
+    expect(selectedAt).toBeGreaterThanOrEqual(0);
+    expect(selectedAt).toBeLessThan(rowAt);
+  });
+
+  it('renders the detail adjacent to the selected row, not after the list', () => {
+    const html = selectedPaneHtml(runs, 'run-1', detailWith({}));
+    const rowAt = html.indexOf('data-testid="chat-run-run-1"');
+    const detailAt = html.indexOf('data-testid="chat-run-detail"');
+    const nextRowAt = html.indexOf('data-testid="chat-run-run-0"');
+    expect(detailAt).toBeGreaterThan(rowAt);
+    expect(detailAt).toBeLessThan(nextRowAt);
+  });
+
+  it('shows no selection and no detail when nothing is selected', () => {
+    const html = selectedPaneHtml(runs, null, null);
+    expect(html).not.toContain('detail selected');
+    expect(html).not.toContain('data-testid="chat-run-detail"');
+  });
+
+  it('marks the row even while its detail is still loading', () => {
+    const html = selectedPaneHtml(runs, 'run-0', null);
+    expect(html.match(/class="detail selected"/g)).toHaveLength(1);
+    expect(html).not.toContain('data-testid="chat-run-detail"');
   });
 });
 

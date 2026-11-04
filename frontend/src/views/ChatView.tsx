@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
 import TapToFire from '../components/TapToFire';
 import {
@@ -311,6 +311,31 @@ export function runDecisions(entry: Record<string, unknown>): RunDecision[] {
     .map((d) => ({ what: d.what as string, why: d.why as string }));
 }
 
+// Expanded detail for one past run: decisions + full trace.
+// Rendered as the list item right after its row so the trace lands
+// adjacent to the click target instead of below the whole list.
+function RunDetail({ detail, t0 }: { detail: AgentRunDetail; t0: number }) {
+  return (
+    <li className="detail" data-testid="chat-run-detail">
+      <span className="row-title">{detail.id}</span>
+      {runDecisions(detail.entry).length > 0 && (
+        <div data-testid="chat-run-decisions">
+          <span className="row-title">Decisions</span>
+          <ul className="session-list">
+            {runDecisions(detail.entry).map((d, i) => (
+              <li key={i} data-testid={`chat-run-decision-${i}`}>
+                <span>{d.what}</span>{' '}
+                <span className="row-meta">{d.why}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <TraceTimeline trace={detail.trace} t0={t0} />
+    </li>
+  );
+}
+
 export function RunsPane({
   runs,
   selected,
@@ -363,58 +388,42 @@ export function RunsPane({
       )}
       <ul className="session-list">
         {runs.map((r) => (
-          <li key={r.id} className="detail">
-            <button
-              type="button"
-              data-testid={`chat-run-${r.id}`}
-              aria-label={runButtonLabel(r)}
-              aria-pressed={selected === r.id}
-              onClick={() => onSelect(r.id)}
-            >
-              <span className="row-title">{r.preview || r.id}</span>{' '}
-              <span className="row-meta">
-                {r.id} · {runMeta(r)}
-              </span>
-            </button>
-            <div className="actions">
+          <Fragment key={r.id}>
+            <li className={`detail${selected === r.id ? ' selected' : ''}`}>
               <button
                 type="button"
-                data-testid={`chat-run-continue-${r.id}`}
-                disabled={!r.has_prompt}
-                title={r.has_prompt ? undefined : 'No stored prompt for this run'}
-                onClick={() => onContinue(r.id)}
+                data-testid={`chat-run-${r.id}`}
+                aria-label={runButtonLabel(r)}
+                aria-pressed={selected === r.id}
+                onClick={() => onSelect(r.id)}
               >
-                Continue
+                <span className="row-title">{r.preview || r.id}</span>{' '}
+                <span className="row-meta">
+                  {r.id} · {runMeta(r)}
+                </span>
               </button>
-              <TapToFire
-                label="Delete"
-                confirm="This cannot be undone."
-                testid={`chat-run-delete-${r.id}`}
-                onFire={() => onDelete(r.id)}
-              />
-            </div>
-          </li>
+              <div className="actions">
+                <button
+                  type="button"
+                  data-testid={`chat-run-continue-${r.id}`}
+                  disabled={!r.has_prompt}
+                  title={r.has_prompt ? undefined : 'No stored prompt for this run'}
+                  onClick={() => onContinue(r.id)}
+                >
+                  Continue
+                </button>
+                <TapToFire
+                  label="Delete"
+                  confirm="This cannot be undone."
+                  testid={`chat-run-delete-${r.id}`}
+                  onFire={() => onDelete(r.id)}
+                />
+              </div>
+            </li>
+            {selected === r.id && detail && <RunDetail detail={detail} t0={t0} />}
+          </Fragment>
         ))}
       </ul>
-      {selected && detail && (
-        <div className="detail" data-testid="chat-run-detail">
-          <span className="row-title">{detail.id}</span>
-          {runDecisions(detail.entry).length > 0 && (
-            <div data-testid="chat-run-decisions">
-              <span className="row-title">Decisions</span>
-              <ul className="session-list">
-                {runDecisions(detail.entry).map((d, i) => (
-                  <li key={i} data-testid={`chat-run-decision-${i}`}>
-                    <span>{d.what}</span>{' '}
-                    <span className="row-meta">{d.why}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <TraceTimeline trace={detail.trace} t0={t0} />
-        </div>
-      )}
     </section>
   );
 }
