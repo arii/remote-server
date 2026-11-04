@@ -1,3 +1,6 @@
+# Action pins (issue #529): third-party actions are SHA-pinned (immutable refs).
+# Bumps arrive as reviewed PRs via Dependabot (github-actions ecosystem, weekly;
+# see .github/dependabot.yml) — verify the boomtick diff before merging.
 name: ChatOps Trigger
 
 on:
@@ -19,10 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Dispatch ChatOps Command
-        uses: arii/boomtick@main
+        uses: arii/boomtick@34d6757f39e3d6f9a0d03502489d3c41ee4688a6 # boomtick main as of 2026-11-03
         with:
           pr_number: "${{ github.event.issue.number }}"
           comment_body: ${{ github.event.comment.body }}
