@@ -48,6 +48,7 @@ import { loadBriefing, loadContainerStats, loadHistory, loadPrDetails, loadRepoD
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
 import { detailsMergeBlockReason, mergeBlockReason } from './reviewTypes';
 import type { PrDetailsResponse, PrRow } from './reviewTypes';
+import mergeReadinessFixtures from './mergeReadiness.fixtures.json';
 
 describe('history utils', () => {
   it('uses plain language, never raw stderr', () => {
@@ -849,6 +850,19 @@ describe('merge relevance', () => {
     expect(detailsMergeBlockReason(d)).toBeNull();
     expect(detailsMergeBlockReason({ ...d, ci: 'pending' })).toContain('pending');
     expect(detailsMergeBlockReason({ ...d, merge: 'dirty' })).toContain('dirty');
+  });
+  it('matches the shared cross-language fixture exactly (#553)', () => {
+    // Same table backend/tests/test_inbox.py asserts against: any
+    // semantic change must update the fixture and BOTH predicates.
+    const cases = (
+      mergeReadinessFixtures as unknown as {
+        cases: Array<{ name: string; row: PrRow; expected: string | null }>;
+      }
+    ).cases;
+    expect(cases.length).toBeGreaterThan(0);
+    for (const c of cases) {
+      expect(mergeBlockReason(c.row)).toBe(c.expected);
+    }
   });
 });
 

@@ -1,0 +1,90 @@
+{
+  "_note": "Shared cross-language pin for merge readiness (issue #553). Consumed by BOTH frontend/src/App.test.tsx (vitest, exact assertions on TS mergeBlockReason) and backend/tests/test_inbox.py (unittest, exact assertions on Python merge_block_reason). The row holds only the four fields the predicates read; missing-key cases pin the shared empty/unknown normalization. Any semantic change must update this table AND both implementations together — changing one side alone fails its suite.",
+  "cases": [
+    {
+      "name": "ready",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "passing", "mergeable": "MERGEABLE"},
+      "expected": null
+    },
+    {
+      "name": "draft",
+      "row": {"isDraft": true, "reviewDecision": "APPROVED", "ciStatus": "passing", "mergeable": "MERGEABLE"},
+      "expected": "is a draft"
+    },
+    {
+      "name": "draft-wins-over-all",
+      "row": {"isDraft": true, "reviewDecision": "CHANGES_REQUESTED", "ciStatus": "failing", "mergeable": "CONFLICTING"},
+      "expected": "is a draft"
+    },
+    {
+      "name": "draft-missing-means-ready",
+      "row": {"reviewDecision": "APPROVED", "ciStatus": "passing", "mergeable": "MERGEABLE"},
+      "expected": null
+    },
+    {
+      "name": "changes-requested",
+      "row": {"isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "ciStatus": "passing", "mergeable": "MERGEABLE"},
+      "expected": "review is CHANGES_REQUESTED"
+    },
+    {
+      "name": "review-empty",
+      "row": {"isDraft": false, "reviewDecision": "", "ciStatus": "passing", "mergeable": "MERGEABLE"},
+      "expected": "review is unapproved"
+    },
+    {
+      "name": "review-missing",
+      "row": {"isDraft": false, "ciStatus": "passing", "mergeable": "MERGEABLE"},
+      "expected": "review is unapproved"
+    },
+    {
+      "name": "review-wins-over-ci",
+      "row": {"isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "ciStatus": "failing", "mergeable": "MERGEABLE"},
+      "expected": "review is CHANGES_REQUESTED"
+    },
+    {
+      "name": "ci-failing",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "failing", "mergeable": "MERGEABLE"},
+      "expected": "CI is failing"
+    },
+    {
+      "name": "ci-pending",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "pending", "mergeable": "MERGEABLE"},
+      "expected": "CI is pending"
+    },
+    {
+      "name": "ci-empty",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "", "mergeable": "MERGEABLE"},
+      "expected": "CI is unknown"
+    },
+    {
+      "name": "ci-missing",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "mergeable": "MERGEABLE"},
+      "expected": "CI is unknown"
+    },
+    {
+      "name": "ci-wins-over-mergeable",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "failing", "mergeable": "CONFLICTING"},
+      "expected": "CI is failing"
+    },
+    {
+      "name": "mergeable-conflicting",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "passing", "mergeable": "CONFLICTING"},
+      "expected": "merge state is CONFLICTING"
+    },
+    {
+      "name": "mergeable-unknown-default",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "passing", "mergeable": "UNKNOWN"},
+      "expected": "merge state is UNKNOWN"
+    },
+    {
+      "name": "mergeable-empty",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "passing", "mergeable": ""},
+      "expected": "merge state is unknown"
+    },
+    {
+      "name": "mergeable-missing",
+      "row": {"isDraft": false, "reviewDecision": "APPROVED", "ciStatus": "passing"},
+      "expected": "merge state is unknown"
+    }
+  ]
+}

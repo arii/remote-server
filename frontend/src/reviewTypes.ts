@@ -92,6 +92,9 @@ export interface DeferredListResponse {
 // Merge relevance, mirroring the server gates (td evaluate_pr_merge_readiness
 // for batch merge; pulls._pr_action for single merge). Buttons stay enabled
 // when state is unknown — these gate only on known-bad state, fail open.
+// Sync guard (#553): mergeReadiness.fixtures.json pins this predicate to the
+// backend port (inbox.merge_block_reason) via exact-equality tests on both
+// sides — update the table with any semantic change.
 export function mergeBlockReason(p: PrRow): string | null {
   if (p.isDraft) return 'is a draft';
   if (p.reviewDecision !== 'APPROVED') return `review is ${p.reviewDecision || 'unapproved'}`;
