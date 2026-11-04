@@ -6,6 +6,8 @@ import {
   createIssue,
   fetchDeferred,
   fetchInbox,
+  fetchJobs,
+  fetchPrs,
   fetchRepoLabels,
   postActionHref,
   snoozeAttention,
@@ -13,6 +15,7 @@ import {
   warmViewCaches,
 } from '../apiClient';
 import type { InboxFeed, SystemHealthResponse } from '../apiClient';
+import type { JobRecord } from '../apiTypes';
 import type { AttentionItem } from '../attentionTypes';
 import type { DeferredRow } from '../reviewTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
@@ -20,7 +23,7 @@ import { ContainerPills } from './ObservabilitySection';
 import InboxStrips from './InboxStrips';
 import ReviewView from './ReviewView';
 import JobsView from './JobsView';
-import { useMock } from './mockViews';
+import { loadJobs, loadPrs, useMock } from './mockViews';
 
 function isGetAction(item: AttentionItem): boolean {
   return item.action.method.toUpperCase() === 'GET';
@@ -386,6 +389,159 @@ export function ActionControl({
   );
 }
 
+// Status hero (issue #811): one glanceable strip atop Now answering
+// "is everything fine?". Every count comes from a live fetch —
+// inbox, PRs, jobs, system health — never invented. Worst status
+// wins: a sick container or crit item reads crit, a warn item or
+// silent stack reads warn, otherwise all clear.
+export type HeroStatus = 'loading' | 'ok' | 'warn' | 'crit';
+
+export function heroStatus(
+  health: SystemHealthResponse | null,
+  attention: AttentionItem[],
+): HeroStatus {
+  if (!health) return 'loading';
+  if (health.containers_error) return 'crit';
+  const stackBad = health.containers.some(
+    (c) =>
+      (c.state ?? '').toLowerCase() !== 'running'
+      || (c.health ?? '').toLowerCase() === 'unhealthy',
+  );
+  if (stackBad) return 'crit';
+  const sevs = new Set(attention.map((i) => i.severity.toLowerCase()));
+  if (sevs.has('crit') || sevs.has('critical')) return 'crit';
+  if (sevs.has('warn') || sevs.has('warning')) return 'warn';
+  if (health.containers.length === 0) return 'warn';
+  return 'ok';
+}
+
+const HERO_SEV_RANK: Record<string, number> = {
+  crit: 0,
+  critical: 0,
+  warn: 1,
+  warning: 1,
+  info: 2,
+};
+
+// Most urgent attention item: worst severity wins, backend feed
+// order breaks ties (stable — the first of the worst ranks).
+export function topUrgent(items: AttentionItem[]): AttentionItem | null {
+  if (items.length === 0) return null;
+  let best = items[0];
+  for (const item of items) {
+    const rank = HERO_SEV_RANK[item.severity.toLowerCase()] ?? 2;
+    const bestRank = HERO_SEV_RANK[best.severity.toLowerCase()] ?? 2;
+    if (rank < bestRank) best = item;
+  }
+  return best;
+}
+
+// Console self-deploy action (engine allowlist): the hero's last
+// deploy age is the newest deploy-buttons run's start.
+export const DEPLOY_ACTION = 'deploy-buttons';
+
+export function lastDeployAt(jobs: JobRecord[]): number | null {
+  let best: number | null = null;
+  for (const job of jobs) {
+    if ((job.kind ?? job.name ?? '') !== DEPLOY_ACTION) continue;
+    const at = job.at ?? job.created_at ?? null;
+    if (typeof at !== 'number' || !at) continue;
+    if (best === null || at > best) best = at;
+  }
+  return best;
+}
+
+export function heroCountsText({
+  attentionOpen,
+  runsActive,
+  prCount,
+  deployAt,
+}: {
+  attentionOpen: number;
+  runsActive: boolean;
+  // Null in the rollup: open PRs are a per-repo count.
+  prCount: number | null;
+  // Null when no deploy run is on record.
+  deployAt: number | null;
+}): string {
+  const parts = [
+    `${attentionOpen} needing attention`,
+    runsActive ? '1 active run' : 'no active runs',
+  ];
+  if (prCount !== null) parts.push(`${prCount} PR${prCount === 1 ? '' : 's'} open`);
+  parts.push(deployAt ? `deploy ${relativeStamp(deployAt)}` : 'no recent deploys');
+  return parts.join(' · ');
+}
+
+const HERO_DOT: Record<HeroStatus, string> = {
+  loading: 'dot dot-idle',
+  ok: 'dot dot-ok',
+  warn: 'dot dot-warn',
+  crit: 'dot dot-bad',
+};
+
+const HERO_LABEL: Record<HeroStatus, string> = {
+  loading: 'Loading status…',
+  ok: 'All clear',
+  warn: 'Needs attention',
+  crit: 'Action needed',
+};
+
+export function NowHero({
+  health,
+  feed,
+  prCount,
+  deployAt,
+  onDone,
+  onError,
+  onSection,
+  onTab,
+}: {
+  health: SystemHealthResponse | null;
+  feed: InboxFeed;
+  prCount: number | null;
+  deployAt: number | null;
+  onDone: (title: string) => void;
+  onError: (message: string) => void;
+  onSection: (section: 'review' | 'jobs') => void;
+  onTab: (tab: AttentionNavTab) => void;
+}) {
+  const status = heroStatus(health, feed.attention);
+  const top = topUrgent(feed.attention);
+  const counts = heroCountsText({
+    attentionOpen: feed.attention.length,
+    runsActive: feed.runs.active !== null,
+    prCount,
+    deployAt,
+  });
+  return (
+    <section data-testid="now-hero" aria-label="Status summary" className="health now-hero">
+      <span aria-hidden="true" data-testid="now-hero-dot" className={HERO_DOT[status]} />
+      <strong data-testid="now-hero-status">{HERO_LABEL[status]}</strong>
+      <span className="row-meta" data-testid="now-hero-counts">
+        {counts}
+      </span>
+      <span className="spacer" aria-hidden="true" />
+      {top ? (
+        <span data-testid="now-hero-urgent">
+          <span className="row-meta">Top: {top.title} </span>
+          <ActionControl
+            item={top}
+            onDone={onDone}
+            onError={onError}
+            onSection={onSection}
+            onTab={onTab}
+          />
+        </span>
+      ) : (
+        <span className="row-meta" data-testid="now-hero-urgent">
+          Nothing urgent.
+        </span>
+      )}
+    </section>
+  );
+}
+
 export default function NowView({
   repo,
   defaultBranch,
@@ -407,6 +563,10 @@ export default function NowView({
   // Deferred flags backing the strips bulk bar (issue #591). The
   // strips render outside the rollup only; rollup keeps [].
   const [deferred, setDeferred] = useState<DeferredRow[]>([]);
+  // Hero extras (issue #811): open-PR count (per-repo; the rollup
+  // keeps null and hides the segment) and last deploy start.
+  const [prCount, setPrCount] = useState<number | null>(null);
+  const [deployAt, setDeployAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fired, setFired] = useState<string | null>(null);
   const [reported, setReported] = useState<string | null>(null);
@@ -434,6 +594,30 @@ export default function NowView({
     setSection(null);
   }, [repo]);
 
+  // Hero extras ride the inbox refresh so the strip never goes
+  // stale. Best effort: a failed extra keeps its last value.
+  async function refreshHeroExtras() {
+    if (useMock()) {
+      setPrCount(rollup ? null : loadPrs().length);
+      setDeployAt(lastDeployAt(loadJobs().jobs));
+      return;
+    }
+    if (!rollup) {
+      try {
+        setPrCount((await fetchPrs(repo)).prs.length);
+      } catch {
+        // Keeps the last count; Review shows its own error.
+      }
+    } else {
+      setPrCount(null);
+    }
+    try {
+      setDeployAt(lastDeployAt((await fetchJobs()).jobs));
+    } catch {
+      // Keeps the last deploy age.
+    }
+  }
+
   async function refresh() {
     try {
       const live = await fetchInbox(repo);
@@ -446,6 +630,7 @@ export default function NowView({
           // Strips keep their last flags; Review shows its own error.
         }
       }
+      await refreshHeroExtras();
       setSnoozed((prev) =>
         reconcileSnoozed(
           prev,
@@ -512,6 +697,8 @@ export default function NowView({
       const empty = params.get('empty') === '1';
       setData(empty ? loadInboxEmpty() : loadInbox());
       setDeferred([]);
+      setPrCount(rollup ? null : loadPrs().length);
+      setDeployAt(lastDeployAt(loadJobs().jobs));
       return;
     }
     (async () => {
@@ -529,6 +716,22 @@ export default function NowView({
           // Deferred flags load independently: strips stay empty.
           if (!cancelled) setDeferred([]);
         }
+      }
+      if (!rollup) {
+        try {
+          const prs = await fetchPrs(repo);
+          if (!cancelled) setPrCount(prs.prs.length);
+        } catch {
+          // Hero hides a never-loaded PR count; Review shows errors.
+        }
+      } else if (!cancelled) {
+        setPrCount(null);
+      }
+      try {
+        const jobs = await fetchJobs();
+        if (!cancelled) setDeployAt(lastDeployAt(jobs.jobs));
+      } catch {
+        // Hero shows no deploy age until a poll lands one.
       }
     })();
     return () => {
@@ -614,6 +817,21 @@ export default function NowView({
           Report a bug
         </button>
       </header>
+      {data && (
+        <NowHero
+          health={health}
+          feed={data}
+          prCount={prCount}
+          deployAt={deployAt}
+          onDone={(title) => {
+            setFired(title);
+            void refresh();
+          }}
+          onError={setError}
+          onSection={(s) => setSection(s)}
+          onTab={(t) => onOpenTab(t)}
+        />
+      )}
       {error && (
         <div data-testid="now-error" role="alert">
           Couldn&apos;t load what needs you: {error}{' '}
