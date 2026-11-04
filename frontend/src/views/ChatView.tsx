@@ -1260,6 +1260,15 @@ export async function pumpStream(
   }
 }
 
+// Seed staging (#507): Briefing/Now/Review "Ask agent" seeds land
+// in the composer for review and edit — never auto-sent, so one
+// tap can't start a metered turn. Returns the text to stage, or
+// null when there is no seed or it was already staged.
+export function stageSeed(seed: string | null, staged: boolean): string | null {
+  if (!seed || staged) return null;
+  return seed;
+}
+
 export default function ChatView({
   repo,
   seed,
@@ -1281,16 +1290,18 @@ export default function ChatView({
     useMock() ? [] : loadChatMessages(),
   );
   const [prompt, setPrompt] = useState(seed ?? '');
-  // One tap on Ask agent anywhere lands here with a seed and the agent
-  // starts working immediately; the ref survives StrictMode's double
-  // effect-invoke so dev never double-sends.
-  const seedSentRef = useRef(false);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  // A seed stages into the composer for review and edit — the turn
+  // starts only when the user taps Send (#507). The ref survives
+  // StrictMode's double effect-invoke so dev never double-stages.
+  const seedStagedRef = useRef(false);
   useEffect(() => {
-    if (seed && !seedSentRef.current) {
-      seedSentRef.current = true;
-      onSeedUsed();
-      void onSend();
-    }
+    const staged = stageSeed(seed, seedStagedRef.current);
+    if (staged === null) return;
+    seedStagedRef.current = true;
+    setPrompt(staged);
+    onSeedUsed();
+    promptRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [streaming, setStreaming] = useState(false);
@@ -1302,7 +1313,6 @@ export default function ChatView({
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [runsNotice, setRunsNotice] = useState<string | null>(null);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   // @-mention completion (#653): caret-tracked query over the
   // repo-files endpoint; accepting inserts "@path" chip text.
