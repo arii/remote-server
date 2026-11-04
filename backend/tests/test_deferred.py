@@ -106,6 +106,61 @@ class DeferredTest(unittest.TestCase):
         out = deferred_mod.list_deferred(repo="remote-server")
         self.assertEqual(out, {"deferred": []})
 
+    def _bulk(self, op, rows, repo="remote-server"):
+        return deferred_mod.bulk_defer_restore(
+            deferred_mod.DeferredBulkRequest(repo=repo, op=op, rows=[
+                deferred_mod.DeferredBulkRow(kind=k, number=n)
+                for k, n in rows]))
+
+    def test_bulk_defer_many(self):
+        out = self._bulk("defer", [("pr", 1), ("pr", 2),
+                                   ("issue", 3)])
+        self.assertEqual(
+            {(r["kind"], r["number"]) for r in out["deferred"]},
+            {("pr", 1), ("pr", 2), ("issue", 3)})
+        for r in out["deferred"]:
+            self.assertGreater(r["deferred_at"], 0)
+
+    def test_bulk_redefer_is_noop(self):
+        self._bulk("defer", [("pr", 1)])
+        out = self._bulk("defer", [("pr", 1), ("issue", 3)])
+        self.assertEqual(len(out["deferred"]), 2)
+
+    def test_bulk_restore_many(self):
+        self._bulk("defer", [("pr", 1), ("pr", 2),
+                              ("issue", 3)])
+        out = self._bulk("restore", [("pr", 1), ("pr", 2)])
+        self.assertEqual(
+            [(r["kind"], r["number"]) for r in out["deferred"]],
+            [("issue", 3)])
+
+    def test_bulk_bad_row_is_atomic(self):
+        self._bulk("defer", [("pr", 1)])
+        with self.assertRaises(HTTPException) as ctx:
+            deferred_mod.bulk_defer_restore(
+                deferred_mod.DeferredBulkRequest(
+                    repo="remote-server", op="defer", rows=[
+                        deferred_mod.DeferredBulkRow(
+                            kind="pr", number=2),
+                        deferred_mod.DeferredBulkRow(
+                            kind="banana", number=9)]))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("bad row 1", str(ctx.exception.detail))
+        # Nothing was written: the good row 0 did not land.
+        listed = deferred_mod.list_deferred(repo="remote-server")
+        self.assertEqual(
+            [(r["kind"], r["number"])
+             for r in listed["deferred"]],
+            [("pr", 1)])
+
+    def test_bulk_bad_op_and_empty_rows_are_400(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self._bulk("snooze", [("pr", 1)])
+        self.assertEqual(ctx.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            self._bulk("defer", [])
+        self.assertEqual(ctx.exception.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

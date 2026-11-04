@@ -5,6 +5,7 @@ import {
   approvePr,
   createIssue,
   deferRow,
+  deferRowsBulk,
   draftIssue,
   fetchDeferred,
   fetchIssues,
@@ -419,6 +420,82 @@ export function RowActionButton({
   );
 }
 
+// Bulk defer selection keys: "pr:12" / "issue:34" so one set spans
+// both Review lists without kind collisions.
+export function bulkRowKey(kind: 'pr' | 'issue', n: number): string {
+  return `${kind}:${n}`;
+}
+
+export function parseBulkRowKey(key: string): { kind: 'pr' | 'issue'; number: number } | null {
+  const parts = key.split(':');
+  if (parts.length !== 2) return null;
+  const [kind, num] = parts;
+  const number = Number(num);
+  if ((kind === 'pr' || kind === 'issue') && Number.isInteger(number) && number > 0) {
+    return { kind, number };
+  }
+  return null;
+}
+
+// Toggle one row checkbox without mutating the prior set.
+export function toggleBulkSelected(
+  selected: ReadonlySet<string>,
+  key: string,
+): ReadonlySet<string> {
+  const next = new Set(selected);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
+// Select-all toggle for one list: when every visible key is already
+// selected, deselect the list; otherwise select the whole list. Keys
+// from the other list pass through untouched.
+export function toggleBulkSelectAll(
+  selected: ReadonlySet<string>,
+  keys: readonly string[],
+): ReadonlySet<string> {
+  const next = new Set(selected);
+  const all = keys.length > 0 && keys.every((k) => next.has(k));
+  if (all) {
+    for (const k of keys) next.delete(k);
+  } else {
+    for (const k of keys) next.add(k);
+  }
+  return next;
+}
+
+export function bulkDeferNotice(count: number): string {
+  return `Deferred ${count} row${count === 1 ? '' : 's'}.`;
+}
+
+// Bulk bar: rendered only while rows are selected. One Defer-n action;
+// single-row Defer/Restore buttons keep their own shapes.
+export function BulkDeferBar({
+  count,
+  busy,
+  onDefer,
+}: {
+  count: number;
+  busy: boolean;
+  onDefer: () => void;
+}) {
+  return (
+    <div className="actions" data-testid="defer-bulk-bar" role="status">
+      {count} selected{' '}
+      <button
+        type="button"
+        data-testid="defer-bulk-defer"
+        aria-label={`Defer ${count} selected row${count === 1 ? '' : 's'}`}
+        disabled={busy}
+        onClick={onDefer}
+      >
+        {busy ? 'Deferring…' : `Defer ${count}`}
+      </button>
+    </div>
+  );
+}
+
 export default function ReviewView({
   repo,
   onAskAgent,
@@ -449,6 +526,8 @@ export default function ReviewView({
   const [requestChangesFor, setRequestChangesFor] = useState<number | null>(null);
   const [creatingIssue, setCreatingIssue] = useState(false);
   const [filter, setFilter] = useState('');
+  const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Deferred rows hide from the main lists (and from the triage
   // cursor) and surface in the Deferred disclosure instead. The
@@ -461,6 +540,10 @@ export default function ReviewView({
     .filter((i) => !isRowDeferred(deferred, 'issue', i.number))
     .filter((i) => rowMatchesFilter(i, filter));
   const filtering = filter.trim().length > 0;
+  // Bulk selection keys for the currently visible (filtered) rows;
+  // select-all toggles exactly this set per list.
+  const visiblePrKeys = visiblePrs.map((p) => bulkRowKey('pr', p.number));
+  const visibleIssueKeys = visibleIssues.map((i) => bulkRowKey('issue', i.number));
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
   // a PR row in the details pane, an issue row in a new tab.
@@ -500,6 +583,7 @@ export default function ReviewView({
     setSelected(null);
     setDetails(null);
     setError(null);
+    setBulkSelected(new Set());
     if (useMock()) {
       setPrs(loadPrs());
       setIssues(loadIssues());
@@ -578,7 +662,54 @@ export default function ReviewView({
       onSelectPr(null);
       setDetails(null);
     }
+    // A singly-deferred row leaves the visible list; drop its checkbox
+    // so the bulk count never names an already-deferred row.
+    setBulkSelected((prev) => {
+      const key = bulkRowKey(kind, n);
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
     setNotice(`Deferred ${kind === 'pr' ? 'PR' : 'issue'} #${n}.`);
+  }
+
+  // One request defers every checked row; the response hides them and
+  // the selection clears. Pointer-path only — j/k/d still defer the
+  // single cursor row via deferSelected.
+  async function deferBulk() {
+    const rows = [...bulkSelected]
+      .map(parseBulkRowKey)
+      .filter((r): r is { kind: 'pr' | 'issue'; number: number } => r !== null);
+    if (rows.length === 0) return;
+    setError(null);
+    setBulkBusy(true);
+    try {
+      if (useMock()) {
+        setDeferred((prev) => {
+          const have = new Set(prev.map((d) => bulkRowKey(d.kind, d.number)));
+          const fresh = rows.filter((r) => !have.has(bulkRowKey(r.kind, r.number)));
+          return [
+            ...prev,
+            ...fresh.map((r) => ({ ...r, deferred_at: Date.now() / 1000 })),
+          ];
+        });
+      } else {
+        const r = await deferRowsBulk(repo, 'defer', rows);
+        setDeferred(r.deferred);
+      }
+      if (selected !== null && rows.some((r) => r.kind === 'pr' && r.number === selected)) {
+        setSelected(null);
+        onSelectPr(null);
+        setDetails(null);
+      }
+      setBulkSelected(new Set());
+      setNotice(bulkDeferNotice(rows.length));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   async function restoreSelected(kind: 'pr' | 'issue', n: number) {
@@ -720,9 +851,26 @@ export default function ReviewView({
           />
         </label>
       </div>
+      {bulkSelected.size > 0 && (
+        <BulkDeferBar count={bulkSelected.size} busy={bulkBusy} onDefer={() => void deferBulk()} />
+      )}
       <div className={reviewColumnsClass(sel !== null || promptVisible)}>
         <div>
-          <h3>Pull requests</h3>
+          <h3>
+            Pull requests{' '}
+            {visiblePrs.length > 0 && (
+              <label className="row-meta">
+                <input
+                  type="checkbox"
+                  data-testid="defer-select-all-prs"
+                  aria-label="Select all pull requests"
+                  checked={visiblePrKeys.every((k) => bulkSelected.has(k))}
+                  onChange={() => setBulkSelected((prev) => toggleBulkSelectAll(prev, visiblePrKeys))}
+                />{' '}
+                all
+              </label>
+            )}
+          </h3>
           {!prs ? (
             <p className="row-meta" data-testid="review-prs-loading" role="status">Loading…</p>
           ) : visiblePrs.length === 0 ? (
@@ -738,6 +886,13 @@ export default function ReviewView({
                   data-testid={`review-pr-${p.number}`}
                   aria-current={selected === p.number ? true : undefined}
                 >
+                  <input
+                    type="checkbox"
+                    data-testid={`defer-row-check-pr-${p.number}`}
+                    aria-label={`Select PR #${p.number}`}
+                    checked={bulkSelected.has(bulkRowKey('pr', p.number))}
+                    onChange={() => setBulkSelected((prev) => toggleBulkSelected(prev, bulkRowKey('pr', p.number)))}
+                  />{' '}
                   <span className="row-title">#{p.number} {p.title}</span>
                   <p className="row-meta">
                     {p.author} · {p.branch} · CI {p.ciLabel}
@@ -769,7 +924,21 @@ export default function ReviewView({
               ))}
             </ul>
           )}
-          <h3>Issues</h3>
+          <h3>
+            Issues{' '}
+            {visibleIssues.length > 0 && (
+              <label className="row-meta">
+                <input
+                  type="checkbox"
+                  data-testid="defer-select-all-issues"
+                  aria-label="Select all issues"
+                  checked={visibleIssueKeys.every((k) => bulkSelected.has(k))}
+                  onChange={() => setBulkSelected((prev) => toggleBulkSelectAll(prev, visibleIssueKeys))}
+                />{' '}
+                all
+              </label>
+            )}
+          </h3>
           {!issues ? (
             <p className="row-meta" data-testid="review-issues-loading" role="status">Loading…</p>
           ) : visibleIssues.length === 0 ? (
@@ -784,6 +953,13 @@ export default function ReviewView({
                   className={`detail${cursor === prCount + ii ? ' kbd-focus' : ''}`}
                   data-testid={`review-issue-${iss.number}`}
                 >
+                  <input
+                    type="checkbox"
+                    data-testid={`defer-row-check-issue-${iss.number}`}
+                    aria-label={`Select issue #${iss.number}`}
+                    checked={bulkSelected.has(bulkRowKey('issue', iss.number))}
+                    onChange={() => setBulkSelected((prev) => toggleBulkSelected(prev, bulkRowKey('issue', iss.number)))}
+                  />{' '}
                   <span className="row-title">
                     <IssueRowTitle issue={iss} />
                   </span>

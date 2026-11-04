@@ -542,6 +542,18 @@ export function restoreRow(
   });
 }
 
+export function deferRowsBulk(
+  repo: string,
+  op: 'defer' | 'restore',
+  rows: Array<{ kind: 'pr' | 'issue'; number: number }>,
+): Promise<import('./reviewTypes').DeferredListResponse> {
+  return postJson<import('./reviewTypes').DeferredListResponse>('api/deferred/bulk', {
+    repo,
+    op,
+    rows,
+  });
+}
+
 export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<import('./reviewTypes').IssueDraftResponse> {
   return postJson<import('./reviewTypes').IssueDraftResponse>('api/issue-draft', {
     repo,
