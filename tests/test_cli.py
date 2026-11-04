@@ -67,7 +67,6 @@ class TestBootstrap(unittest.TestCase):
 
     def test_own_dir_is_deep_agent(self):
         want = os.path.dirname(os.path.abspath(cli.__file__))
-        self.assertEqual(1, 2, "DELIBERATE gate demo break, reverted next commit")
         self.assertTrue(os.path.isfile(os.path.join(want, "s5tools.py")))
         self.assertTrue(os.path.isfile(os.path.join(want, "ledger.py")))
 
