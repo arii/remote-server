@@ -10,10 +10,12 @@ export interface BriefingResponse {
   prs: Array<Record<string, unknown>>;
   prs_err: string;
   reviews_lines: string[];
+  reviews_err: Record<string, string>;
   board: BoardItem[];
   board_lines: string[];
   board_err: string;
   conflicts_lines: string[];
+  conf_err: string;
   overlaps_lines: string[];
   failing_runs: Array<Record<string, unknown>>;
   workflow_lines: string[];

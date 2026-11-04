@@ -6,6 +6,7 @@ import {
   ACTIVITY_WINDOWS,
   activityWindowSeconds,
   BriefingBody,
+  briefingAllClear,
   dayTrend,
   DigestControlsView,
   digestChannels,
@@ -16,6 +17,7 @@ import {
   inActivityWindow,
   PrefsControlsView,
   prefsStatusLine,
+  reviewsErrText,
 } from './BriefingView';
 import { isHistoryFailure } from './historyUtils';
 
@@ -228,10 +230,12 @@ describe('activity window (issue #609)', () => {
       prs: [],
       prs_err: '',
       reviews_lines: [],
+      reviews_err: {},
       board: [],
       board_lines: [],
       board_err: '',
       conflicts_lines: [],
+      conf_err: '',
       overlaps_lines: [],
       failing_runs: [],
       workflow_lines: [],
@@ -419,10 +423,12 @@ describe('briefing narrative lede (issue #671)', () => {
       prs: [],
       prs_err: '',
       reviews_lines: [],
+      reviews_err: {},
       board: [],
       board_lines: [],
       board_err: '',
       conflicts_lines: [],
+      conf_err: '',
       overlaps_lines: [],
       failing_runs: [],
       workflow_lines: [],
@@ -497,5 +503,72 @@ describe('trend failure predicate (issue #506)', () => {
     const recent = inActivityWindow(entries, '24h', now);
     expect(recent.filter(isHistoryFailure)).toHaveLength(4);
     expect(dayTrend(entries, now)).toContain('4 failures');
+  });
+});
+
+describe('briefing conflict/review errors (issue #463)', () => {
+  function briefing(over: Partial<BriefingResponse> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      reviews_err: {},
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      conf_err: '',
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function renderBody(data: BriefingResponse): string {
+    const noop = () => {};
+    return renderToStaticMarkup(
+      <BriefingBody
+        data={data}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+      />,
+    );
+  }
+
+  it('formats the reviews error dict as one alert line', () => {
+    expect(reviewsErrText({})).toBe('');
+    expect(reviewsErrText(undefined)).toBe('');
+    expect(reviewsErrText(null)).toBe('');
+    expect(reviewsErrText({ '3': 'denied' })).toBe('#3: denied');
+    expect(reviewsErrText({ '9': 'timeout', '3': 'denied' })).toBe(
+      '#3: denied; #9: timeout',
+    );
+  });
+
+  it('blocks all-clear on either error', () => {
+    expect(briefingAllClear(briefing())).toBe(true);
+    expect(briefingAllClear(briefing({ conf_err: 'scan failed' }))).toBe(false);
+    expect(briefingAllClear(briefing({ reviews_err: { '3': 'denied' } }))).toBe(
+      false,
+    );
+  });
+
+  it('renders conf_err in the Conflicts section instead of all-clear', () => {
+    const html = renderBody(briefing({ conf_err: 'scan failed' }));
+    expect(html).not.toContain('data-testid="briefing-clear"');
+    expect(html).toContain('Conflicts');
+    expect(html).toContain('scan failed');
+  });
+
+  it('renders reviews_err in the Reviews section instead of all-clear', () => {
+    const html = renderBody(briefing({ reviews_err: { '3': 'denied' } }));
+    expect(html).not.toContain('data-testid="briefing-clear"');
+    expect(html).toContain('Reviews');
+    expect(html).toContain('#3: denied');
   });
 });
