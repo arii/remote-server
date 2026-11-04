@@ -10,6 +10,7 @@ diff review. Works for any repo, any PR, any base branch.
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from dotenv import load_dotenv
@@ -22,12 +23,24 @@ from deepagents.backends import FilesystemBackend
 import cli
 import ledger
 import model_router
+import observe
 
 MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 DEFAULT_BASE = "origin/main"
+DEFAULT_TIMEOUT = 1800
+RECURSION_LIMIT = 100
 
 WORKTREE = None
 BASE = DEFAULT_BASE
+
+
+def _timeout():
+    """Wall-clock bound in seconds (RESOLVER_TIMEOUT override)."""
+    try:
+        return max(60, int(os.environ.get(
+            "RESOLVER_TIMEOUT", DEFAULT_TIMEOUT)))
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT
 
 
 def _git(*args: str) -> str:
@@ -102,6 +115,11 @@ def main() -> int:
         max_tokens=4000,
         **kwargs,
     )
+    thread = "resolve-" + os.path.basename(os.path.normpath(WORKTREE))
+    label = f"nebius:{MODEL_ID}"
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("resolve_conflicts", thread))
+    recorder.run_start("resolve_conflicts.py", thread, label)
     agent = create_deep_agent(
         model=model,
         tools=[git_status, git_merge_base, git_show_stage, git_diff_check],
@@ -122,29 +140,74 @@ def main() -> int:
         ),
         backend=FilesystemBackend(root_dir=WORKTREE, virtual_mode=True),
         checkpointer=MemorySaver(),
+        middleware=observe.trace_middleware(recorder),
     )
-    thread = "resolve-" + os.path.basename(os.path.normpath(WORKTREE))
-    result = agent.invoke(
-        {
-            "messages": [
+    outcome = {}
+
+    def _invoke():
+        try:
+            outcome["result"] = agent.invoke(
                 {
-                    "role": "user",
-                    "content": (
-                        f"Merge {BASE} into this repair branch and "
-                        "resolve all merge conflicts."
-                    ),
-                }
-            ]
-        },
-        config={"configurable": {"thread_id": thread}},
-    )
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Merge {BASE} into this repair branch and "
+                                "resolve all merge conflicts."
+                            ),
+                        }
+                    ]
+                },
+                config={"configurable": {"thread_id": thread},
+                        "recursion_limit": RECURSION_LIMIT},
+            )
+        except Exception as exc:
+            outcome["error"] = exc
+
+    # Daemon thread, not a pool: pool shutdown would wait out the very
+    # hang the timeout exists to terminate. The abandoned worker dies
+    # with the process right after the timeout row is ledgered.
+    timeout = _timeout()
+    worker = threading.Thread(target=_invoke, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+    if worker.is_alive():
+        recorder.run_end(False)
+        recorder.close()
+        usage, calls = recorder.totals()
+        ledger.record(
+            "resolve_conflicts.py",
+            label,
+            thread,
+            [],
+            started,
+            extra={"worktree": WORKTREE, "base": BASE,
+                   "trace": recorder.path,
+                   "error": f"timed out after {timeout}s"},
+            usage=usage,
+            calls=calls,
+        )
+        print(f"resolve_conflicts timed out after {timeout}s",
+              file=sys.stderr)
+        return 1
+    if "error" in outcome:
+        recorder.run_end(False)
+        recorder.close()
+        raise outcome["error"]
+    result = outcome["result"]
+    recorder.run_end(True)
+    recorder.close()
+    usage, calls = recorder.totals()
     ledger.record(
         "resolve_conflicts.py",
-        f"nebius:{MODEL_ID}",
+        label,
         thread,
         result["messages"],
         started,
-        extra={"worktree": WORKTREE, "base": BASE},
+        extra={"worktree": WORKTREE, "base": BASE,
+               "trace": recorder.path},
+        usage=usage,
+        calls=calls,
     )
     print(result["messages"][-1].content)
     return 0
