@@ -1,5 +1,8 @@
 import type {
   BriefingResponse,
+  DispatchGatesResponse,
+  DispatchItem,
+  DispatchQueueResponse,
   JobRecord,
   JobsResponse,
   LedgerResponse,
@@ -967,6 +970,54 @@ export function fetchIssues(repo: string): Promise<import('./reviewTypes').Issue
   return getJson<import('./reviewTypes').IssueListResponse>(
     `api/issues?repo=${encodeURIComponent(repo)}`,
   );
+}
+
+// Cross-repo lane dispatch queue (issue #853). Reads are plain
+// GETs; mutations ride the outbox like other console taps.
+export function fetchDispatchQueue(): Promise<DispatchQueueResponse> {
+  return getJson<DispatchQueueResponse>('api/dispatch/queue');
+}
+
+export function fetchDispatchGates(repo: string, issue: number): Promise<DispatchGatesResponse> {
+  return getJson<DispatchGatesResponse>(
+    `api/dispatch/gates?repo=${encodeURIComponent(repo)}&issue=${issue}`,
+  );
+}
+
+export function enqueueDispatch(
+  repo: string,
+  issue: string,
+): Promise<DispatchItem> {
+  return postJson<DispatchItem>('api/dispatch/enqueue', { repo, issue }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function startDispatch(
+  repo: string,
+  issue: number,
+): Promise<{ ok: boolean; repo: string; issue: number; status: string }> {
+  return postJson<{ ok: boolean; repo: string; issue: number; status: string }>(
+    'api/dispatch/start',
+    { repo, issue, intent: 'dispatch-start', confirmed: true },
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
+}
+
+export function cancelDispatch(
+  repo: string,
+  issue: number,
+): Promise<{ ok: boolean; removed: boolean }> {
+  return postJson<{ ok: boolean; removed: boolean }>('api/dispatch/cancel', {
+    repo,
+    issue,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 async function deleteJson<T>(path: string, body: unknown, timeoutMs: number = API_TIMEOUT_MS): Promise<T> {

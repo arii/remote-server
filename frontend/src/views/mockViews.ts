@@ -1,6 +1,7 @@
 import briefingFixture from '../mocks/briefing.json';
 import historyFixture from '../mocks/history.json';
 import jobsFixture from '../mocks/jobs.json';
+import dispatchFixture from '../mocks/dispatch.json';
 import chatFixture from '../mocks/chat.json';
 import systemHealthFixture from '../mocks/system-health.json';
 import systemStatsFixture from '../mocks/system-stats.json';
@@ -8,6 +9,7 @@ import repoDiffFixture from '../mocks/repo-diff.json';
 import workflowHealthFixture from '../mocks/workflow-health.json';
 import type {
   BriefingResponse,
+  DispatchQueueResponse,
   JobsResponse,
   LedgerResponse,
 } from '../apiTypes';
@@ -93,6 +95,11 @@ export interface ChatMessage {
 export function loadJobs(): JobsResponse {
   const j = jobsFixture as unknown as JobsResponse;
   return { jobs: [...j.jobs] };
+}
+
+export function loadDispatchQueue(): DispatchQueueResponse {
+  const q = dispatchFixture as unknown as DispatchQueueResponse;
+  return { items: [...q.items] };
 }
 
 export function loadChat(): { messages: ChatMessage[]; progress: { done: boolean; output: string } } {
