@@ -9,7 +9,8 @@ Sources (existing helpers only, no new infra):
 - skipped webhooks: newest unresolved pull skip per repo (info)
 - pending approvals: ledger + jobs-registry pending records
 - ollama outage: model_router.ollama_reachable probe (derived item —
-  present while local models are down, clears itself on recovery)
+  present while local models are down, clears itself on recovery;
+  carries live metered spend/cap while failover is active)
 
 Empty items = all-clear. All source readers are module-level
 functions so tests can monkeypatch them (injectable seams).
@@ -36,6 +37,7 @@ from pydantic import BaseModel, Field
 from backend import lane_dispatch
 from backend import ledger
 from backend import webhook_heal
+from backend.api.routers import agents
 from backend.api.routers import ops
 from backend.api.routers.jobs import registry
 from backend.core import validate_repo_name
@@ -187,6 +189,22 @@ def ollama_up() -> bool:
     up = model_router.ollama_reachable(timeout=2)
     _OLLAMA_CACHE["up"] = (time.time(), up)
     return up
+
+
+def failover_budget() -> dict:
+    """Injectable seam: spend/cap for the metered-failover item.
+
+    Reuses the agents budget endpoint shape (cap_usd, spent_usd,
+    remaining_usd, blocked, unknown). A read failure degrades to
+    zeros — the outage item still renders, never 500s.
+    """
+    try:
+        return agents.agent_budget()
+    except Exception as exc:
+        logger.warning("attention: budget read failed: %s", exc)
+        return {"cap_usd": None, "spent_usd": 0.0,
+                "remaining_usd": None, "blocked": False,
+                "unknown": 0}
 
 
 def list_failed_jobs() -> list:
@@ -557,12 +575,25 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         logger.warning("attention: ollama probe failed: %s", exc)
         local_up = True
     if not local_up:
+        budget = failover_budget()
+        try:
+            spent = float(budget.get("spent_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            spent = 0.0
+        cap = budget.get("cap_usd")
+        cap_txt = "unlimited"
+        if isinstance(cap, (int, float)) \
+                and not isinstance(cap, bool):
+            cap_txt = f"${cap:.2f}"
         items.append({
             "id": "ollama-outage",
             "kind": "provider-outage",
-            "title": "Local models down \u2014 replies are metered",
+            "title": (f"Ollama unreachable \u2014 on metered Nebius "
+                      f"(spend ${spent:.2f} / cap {cap_txt})"),
             "detail": ("Ollama is unreachable; default traffic falls back "
-                       "to metered Nebius until it recovers."),
+                       "to metered Nebius until it recovers. "
+                       f"Lifetime metered spend ${spent:.4f} "
+                       f"of {cap_txt}."),
             "repo": name,
             "severity": "warn",
             "action": {"label": "View budget", "method": "GET",

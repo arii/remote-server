@@ -29,18 +29,25 @@ FREE_PREFIX = "ollama:"
 
 SPEND_CAP_ENV = "NEBIUS_SPEND_CAP_USD"
 
+# Fail-closed default when NEBIUS_SPEND_CAP_USD is unset/blank
+# (#885): an Ollama outage must not silently route unlimited paid
+# traffic. Explicit-set behavior is unchanged — only the unset
+# default moved from uncapped to this conservative cap.
+DEFAULT_SPEND_CAP_USD = 5.0
+
 
 def spend_cap():
-    """Configured metered-spend cap in USD, or None when uncapped.
+    """Configured metered-spend cap in USD. Never None, never raises.
 
-    Unset/blank means uncapped; 0 blocks every metered call;
-    negatives clamp to 0. Unparseable fails closed to 0 (a typo'd
-    cap must block, never silently uncap). Never raises.
+    Unset/blank means the conservative DEFAULT_SPEND_CAP_USD; 0
+    blocks every metered call; negatives clamp to 0. Unparseable
+    fails closed to 0 (a typo'd cap must block, never silently
+    uncap).
     """
     try:
         raw = (os.environ.get(SPEND_CAP_ENV) or "").strip()
         if not raw:
-            return None
+            return DEFAULT_SPEND_CAP_USD
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 0.0

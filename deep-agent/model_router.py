@@ -20,8 +20,8 @@ Env contract:
   NEBIUS_BASE_URL (default https://api.tokenfactory.nebius.com/v1),
   NEBIUS_API_KEY (required for the nebius path),
   NEBIUS_ONLY=1 (force cloud), OLLAMA_STRICT=1 (fail instead of falling back).
-  NEBIUS_SPEND_CAP_USD (optional lifetime metered cap; 0 blocks
-  every metered call, unset means uncapped).
+  NEBIUS_SPEND_CAP_USD (lifetime metered cap, default $5.00
+  when unset; 0 blocks every metered call).
 
 Routing ladder (policy, 2026-11-02):
   deterministic command -> Ollama qwen3:8b -> Ollama qwen3:14b ->
@@ -39,8 +39,10 @@ import logging
 import os
 import re
 import sys
+import time
 import urllib.request
 
+import ledger
 import pricing
 import runs
 
@@ -83,6 +85,11 @@ def _nebius_spec():
             "Nebius fallback needs NEBIUS_API_KEY in the environment"
         )
     cap = pricing.spend_cap()
+    # Effective cap, logged each time the metered path initializes
+    # (#885). Info, not warning: the outage signal below stays the
+    # one warning per failover.
+    logger.info("nebius effective spend cap: $%s",
+                "unlimited" if cap is None else f"{cap:.2f}")
     if cap is not None:
         # Single choke point: every metered path flows through here
         # (guarded by tests/test_nebius_choke.py — no direct Nebius
@@ -139,13 +146,14 @@ def resolve_llm(prefer=None):
 
 
 def _announce_fallback(spec):
-    """One-line outage signal when the default path goes metered.
+    """Outage signal when the default path goes metered.
 
     Fires exactly when an Ollama outage reroutes a resolve to paid
     Nebius (never on the explicit prefer="nebius" path — that is a
     choice, not a downgrade). Journals get it via logging, run
-    output via stderr. Never logs the spec itself (no-secrets rule:
-    model names and URLs only).
+    output via stderr, and the run ledger gets a zero-usage marker
+    row (timestamp, reason, model) for the audit trail. Never logs
+    the spec itself (no-secrets rule: model names and URLs only).
     """
     url = _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
     model = spec.get("model", "?")
@@ -153,6 +161,21 @@ def _announce_fallback(spec):
                    url, model)
     print(f"model_router: ollama unreachable at {url}, "
           f"using metered nebius ({model})", file=sys.stderr)
+    # Marker row, not a turn: zero usage quotes to $0 on carded
+    # models, so spend totals are untouched. record() never raises,
+    # so a ledger failure cannot break the failover it records.
+    ledger.record(
+        script="model_router",
+        model="nebius:" + str(model),
+        thread_id="",
+        messages=[],
+        started=time.time(),
+        extra={"event": "metered-failover",
+               "reason": "ollama unreachable"},
+        usage={"input_tokens": 0, "output_tokens": 0,
+               "total_tokens": 0},
+        calls=[],
+    )
 
 
 # Mid-turn failover (#649): explicit non-5xx codes worth one local
