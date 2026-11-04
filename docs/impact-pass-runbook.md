@@ -109,6 +109,11 @@ curl -s -X POST localhost:8000/api/jobs/schedule \
   `route:viewport` pairs (`/:desktop,/:mobile,/jobs:desktop`).
   Keep the list small — the step watchdog is 1200s and each
   capture can take up to 600s.
+- Capture target: `scripts/config/ux-audit.config.json` points at
+  the deployed console (Caddy `/buttons`); `UX_BASE_URL` overrides
+  it per fire (dev: the vite server). The checkout's `scripts/ux-*`
+  + root tsx/playwright deps are the `td ux` contract (#880); CI
+  guards it (`tests/test_ux_scripts_contract.py`).
 
 ## Troubleshooting
 
