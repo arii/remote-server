@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { applyOptimisticMerge, isRowDeferred, nextPrAfterMerge, revertOptimisticMerge } from './ReviewView';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  IssueRowTitle,
+  applyOptimisticMerge,
+  isRowDeferred,
+  nextPrAfterMerge,
+  openIssueUrl,
+  revertOptimisticMerge,
+} from './ReviewView';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -60,5 +68,41 @@ describe('deferred row matching', () => {
   it('returns false for undeferred rows and empty lists', () => {
     expect(isRowDeferred(deferred, 'pr', 12)).toBe(false);
     expect(isRowDeferred([], 'pr', 7)).toBe(false);
+  });
+});
+
+describe('issue row open action', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('links the title when the row carries a URL', () => {
+    const html = renderToStaticMarkup(
+      <IssueRowTitle issue={{ number: 7, title: 'Flaky CI', url: 'https://example.invalid/i/7' }} />,
+    );
+    expect(html).toContain('href="https://example.invalid/i/7"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('#7 Flaky CI');
+  });
+
+  it('renders plain text without a URL', () => {
+    const html = renderToStaticMarkup(<IssueRowTitle issue={{ number: 7, title: 'Flaky CI' }} />);
+    expect(html).not.toContain('<a');
+    expect(html).toContain('#7 Flaky CI');
+  });
+
+  it('opens the URL in a new tab', () => {
+    const open = vi.fn();
+    vi.stubGlobal('window', { open });
+    openIssueUrl('https://example.invalid/i/7');
+    expect(open).toHaveBeenCalledWith('https://example.invalid/i/7', '_blank', 'noopener');
+  });
+
+  it('ignores missing URLs', () => {
+    const open = vi.fn();
+    vi.stubGlobal('window', { open });
+    openIssueUrl(undefined);
+    openIssueUrl('');
+    expect(open).not.toHaveBeenCalled();
   });
 });

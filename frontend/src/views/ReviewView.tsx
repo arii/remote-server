@@ -33,6 +33,26 @@ export function revertOptimisticMerge(merging: ReadonlySet<number>, n: number): 
   return next;
 }
 
+// Issue rows have no in-app detail view: opening one means following
+// its GitHub URL in a new tab (triage state stays put). No-op without
+// a URL or outside the DOM.
+export function openIssueUrl(url: string | undefined): void {
+  if (!url || typeof window === 'undefined') return;
+  window.open(url, '_blank', 'noopener');
+}
+
+// Issue row title: a link when the row carries a URL, plain text
+// otherwise (older payloads, fixtures without urls).
+export function IssueRowTitle({ issue }: { issue: IssueRow }) {
+  const text = `#${issue.number} ${issue.title}`;
+  if (!issue.url) return <>{text}</>;
+  return (
+    <a href={issue.url} target="_blank" rel="noreferrer">
+      {text}
+    </a>
+  );
+}
+
 // Next PR row to auto-advance to after a successful merge, in current
 // list order. Skips the merged row; wraps to the first row when the
 // merged one was last. Returns null when there is no other PR (single
@@ -256,7 +276,7 @@ export default function ReviewView({
   );
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
-  // a PR row; issue rows have no detail view, so Enter is a no-op there.
+  // a PR row in the details pane, an issue row in a new tab.
   // d defers the cursor row (reversible via Restore).
   const rows: Array<{ kind: 'pr' | 'issue'; number: number }> = [
     ...visiblePrs.map((p) => ({ kind: 'pr' as const, number: p.number })),
@@ -267,7 +287,12 @@ export default function ReviewView({
     suspended: triageSuspended,
     onOpen: (i) => {
       const r = rows[i];
-      if (r && r.kind === 'pr') void selectPr(r.number);
+      if (!r) return;
+      if (r.kind === 'pr') {
+        void selectPr(r.number);
+        return;
+      }
+      openIssueUrl(visibleIssues.find((v) => v.number === r.number)?.url);
     },
     onDefer: (i) => {
       const r = rows[i];
@@ -498,7 +523,9 @@ export default function ReviewView({
                   className={`detail${cursor === prCount + ii ? ' kbd-focus' : ''}`}
                   data-testid={`review-issue-${iss.number}`}
                 >
-                  <span className="row-title">#{iss.number} {iss.title}</span>
+                  <span className="row-title">
+                    <IssueRowTitle issue={iss} />
+                  </span>
                   <p className="row-meta">
                     {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
                   </p>
