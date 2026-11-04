@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, insertMention, isStalled, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, turnPrompt } from './ChatView';
+import { budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, insertMention, isStalled, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import type { SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 import type { ChatMessage } from './mockViews';
@@ -592,5 +593,129 @@ describe('@-mention completion (issue #653)', () => {
     );
     expect(html).toContain('data-testid="chat-mention-more"');
     expect(html).toContain('Refine the prefix for more');
+  });
+});
+
+describe('composer slash commands (issue #669)', () => {
+  it('holds the v1 table in one const', () => {
+    expect(SLASH_COMMANDS.map((c) => c.cmd)).toEqual([
+      'retry',
+      'clear',
+      'model',
+      'attach',
+      'export',
+    ]);
+    for (const c of SLASH_COMMANDS) {
+      expect(c.label.length).toBeGreaterThan(0);
+      expect(c.hint.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('routes each command to its own UI action only', () => {
+    const calls: Record<keyof SlashActions, ReturnType<typeof vi.fn>> = {
+      retry: vi.fn(),
+      clear: vi.fn(),
+      focusModel: vi.fn(),
+      attach: vi.fn(),
+      exportTranscript: vi.fn(),
+    };
+    const byCmd: Record<string, keyof SlashActions> = {
+      retry: 'retry',
+      clear: 'clear',
+      model: 'focusModel',
+      attach: 'attach',
+      export: 'exportTranscript',
+    };
+    for (const c of SLASH_COMMANDS) {
+      for (const fn of Object.values(calls)) fn.mockClear();
+      c.run(calls);
+      for (const [name, fn] of Object.entries(calls)) {
+        expect(fn).toHaveBeenCalledTimes(name === byCmd[c.cmd] ? 1 : 0);
+      }
+    }
+  });
+
+  it('opens on a leading slash only', () => {
+    expect(slashQueryAt('/')).toBe('');
+    expect(slashQueryAt('/re')).toBe('re');
+    expect(slashQueryAt('a/b')).toBe(null);
+    expect(slashQueryAt('use /retry here')).toBe(null);
+    expect(slashQueryAt('  /retry')).toBe(null);
+    expect(slashQueryAt('/retry now')).toBe(null);
+    expect(slashQueryAt('')).toBe(null);
+  });
+
+  it('filters case-insensitively, unknown tokens match nothing', () => {
+    expect(matchSlashCommands('')).toHaveLength(5);
+    expect(matchSlashCommands('r').map((c) => c.cmd)).toEqual(['retry']);
+    expect(matchSlashCommands('RE').map((c) => c.cmd)).toEqual(['retry']);
+    expect(matchSlashCommands('e').map((c) => c.cmd)).toEqual(['export']);
+    // Unknown "/foo": token recognized, zero matches, so the menu
+    // stays shut and the text sends as a plain prompt.
+    expect(slashQueryAt('/foo')).toBe('foo');
+    expect(matchSlashCommands('foo')).toEqual([]);
+  });
+
+  it('renders the menu as a labelled listbox with the active option marked', () => {
+    const html = renderToStaticMarkup(
+      <SlashMenu
+        commands={matchSlashCommands('')}
+        active={2}
+        onPick={() => {}}
+        onHover={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="chat-slash-menu"');
+    expect(html).toContain('role="listbox"');
+    expect(html).toContain('aria-label="Composer commands"');
+    expect(html).toContain('role="option"');
+    for (const c of SLASH_COMMANDS) {
+      expect(html).toContain(`/${c.cmd}`);
+      expect(html).toContain(c.hint);
+    }
+    expect(html).toContain('aria-selected="true"');
+    expect(html).toContain('data-active="true"');
+  });
+});
+
+describe('chat transcript export (issue #669)', () => {
+  it('renders turns in order as Markdown with cleaned assistant text', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'first prompt' },
+      { role: 'assistant', text: 'first reply\nINTERRUPT: blob\ntrace: noise' },
+      { role: 'user', text: 'second prompt' },
+      { role: 'assistant', text: 'second reply' },
+    ];
+    expect(transcriptMarkdown(messages)).toBe(
+      [
+        '# Chat transcript',
+        '',
+        '## You',
+        '',
+        'first prompt',
+        '',
+        '## Assistant',
+        '',
+        'first reply',
+        '',
+        '## You',
+        '',
+        'second prompt',
+        '',
+        '## Assistant',
+        '',
+        'second reply',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('exports an empty conversation as a bare header', () => {
+    expect(transcriptMarkdown([])).toBe('# Chat transcript\n');
+  });
+
+  it('names the file chat-<date>.md', () => {
+    expect(transcriptFilename(new Date('2026-11-04T12:00:00Z'))).toBe('chat-2026-11-04.md');
+    expect(transcriptFilename()).toMatch(/^chat-\d{4}-\d{2}-\d{2}\.md$/);
   });
 });
