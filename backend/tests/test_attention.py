@@ -373,6 +373,94 @@ class AttentionShapeTest(unittest.TestCase):
             {"webhook-skip-s-foreign"})
 
 
+class DispatchTerminalTest(unittest.TestCase):
+    """Terminal dispatch surfacing (issue #883): done rows info,
+    failed rows warn, queued rows silent, foreign repos filtered."""
+
+    def _patch(self, **kw):
+        orig = {}
+        for k, v in kw.items():
+            orig[k] = getattr(attention, k)
+            setattr(attention, k, v)
+        return orig
+
+    def _restore(self, orig):
+        for k, v in orig.items():
+            setattr(attention, k, v)
+
+    def _quiet(self, **kw):
+        base = dict(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [],
+            list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
+        )
+        base.update(kw)
+        return self._patch(**base)
+
+    def test_done_info_failed_warn_queued_silent(self):
+        orig = self._quiet(list_terminal_dispatches=lambda: [
+            {"repo": "remote-server", "issue": 1, "state": "done",
+             "title": "Fix it", "detail": "repair worker finished",
+             "finished_at": 10.0},
+            {"repo": "remote-server", "issue": 2, "state": "failed",
+             "title": "", "detail": "repair worker failed (exit 3)",
+             "finished_at": 11.0},
+            {"repo": "remote-server", "issue": 3,
+             "state": "queued"},
+        ])
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        by_id = {i["id"]: i for i in body["items"]}
+        self.assertEqual(sorted(by_id),
+                         ["dispatch-remote-server-1",
+                          "dispatch-remote-server-2"])
+        done = by_id["dispatch-remote-server-1"]
+        self.assertEqual(done["kind"], "completed-dispatch")
+        self.assertEqual(done["severity"], "info")
+        self.assertEqual(done["title"],
+                         "Dispatch done: remote-server#1 — Fix it")
+        self.assertEqual(done["detail"], "repair worker finished")
+        self.assertEqual(done["action"]["href"], "api/dispatch/queue")
+        self.assertEqual(done["created_at"], 10.0)
+        failed = by_id["dispatch-remote-server-2"]
+        self.assertEqual(failed["kind"], "failed-dispatch")
+        self.assertEqual(failed["severity"], "warn")
+        self.assertEqual(failed["title"],
+                         "Dispatch failed: remote-server#2")
+
+    def test_foreign_repos_filtered(self):
+        orig = self._quiet(list_terminal_dispatches=lambda: [
+            {"repo": "tech-dancer", "issue": 9, "state": "done",
+             "finished_at": 10.0},
+        ])
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        self.assertEqual(body["items"], [])
+
+    def test_seam_reads_terminal_states_only(self):
+        from unittest.mock import patch
+
+        from backend import lane_dispatch
+
+        rows = [
+            {"repo": "r", "issue": 1, "state": "done"},
+            {"repo": "r", "issue": 2, "state": "failed"},
+            {"repo": "r", "issue": 3, "state": "queued"},
+            {"repo": "r", "issue": 4, "state": "running"},
+        ]
+        with patch.object(lane_dispatch, "queue_list",
+                          return_value=rows):
+            out = attention.list_terminal_dispatches()
+        self.assertEqual([i["issue"] for i in out], [1, 2])
+
+
 class SnoozeAttentionTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp()

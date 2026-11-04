@@ -24,6 +24,8 @@ repo #1 of N, dispatched through the same worker as before.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 
@@ -41,10 +43,48 @@ TERMINAL_STATES = frozenset({DONE, FAILED})
 DISPATCH_MONITOR_TIMEOUT = 2100
 MONITOR_POLL_SECONDS = 5
 
+# Durable queue store (#883). The queue used to be pure in-memory,
+# so every console restart wiped queued/running items with their
+# fates unknown (the #461 amnesia class). Item dicts persist to a
+# JSON snapshot on the buttons-data volume; a fresh process
+# rehydrates on first touch. Single-writer: one console owns the
+# file (cross-replica sharing is an explicit non-goal).
+DEFAULT_DISPATCH_QUEUE_PATH = "/var/lib/buttons/dispatch_queue.json"
+
+# Snapshot keeps the newest items only (oldest-first eviction past
+# the cap). Items are small dicts; the cap bounds the file, not RAM.
+DISPATCH_QUEUE_MAX_ITEMS = 200
+
+# Reconcile verdict for items marked running when the previous
+# process died: the repair worker died with it, so the outcome is
+# honestly unknown. Terminal failed, never silently re-queued: the
+# operator retries explicitly after checking the issue.
+RESTART_DETAIL = ("console restarted while this item was running; "
+                  "outcome unknown — check the issue before retrying")
+
+
+def queue_store_path() -> str:
+    """Current queue-store file path (env override read dynamically
+    so tests can point it at tmp)."""
+    return os.environ.get("BUTTONS_DISPATCH_QUEUE_PATH",
+                          DEFAULT_DISPATCH_QUEUE_PATH)
+
+
+def issue_url(repo: str, issue: int) -> str:
+    """One-tap outcome link for a queue item: the GitHub issue. No
+    PR URL is recorded anywhere (the repair worker drops gh's
+    output), so the issue — which cross-links its PRs — is the
+    stable artifact link."""
+    return f"https://github.com/arii/{repo}/issues/{issue}"
+
+
 _lock = threading.Lock()
-# (repo, issue) -> item dict. In-memory like the repair schedules:
-# the queue is an operator worklist, not durable state.
+# (repo, issue) -> item dict. Durable via the snapshot below.
 _items: dict[tuple[str, str], dict] = {}
+# Store path whose snapshot is currently loaded (None before the
+# first touch). Compared per call so tests that repoint the env
+# mid-process reload instead of reading stale memory.
+_loaded_path: str | None = None
 
 
 def _now() -> float:
@@ -59,8 +99,98 @@ def _copy(item: dict) -> dict:
     return dict(item)
 
 
+def _persist_locked() -> None:
+    """Write the queue snapshot atomically. Never raises: a store
+    failure must not fail the mutation it records. Caller must hold
+    _lock."""
+    try:
+        ordered = sorted(_items.values(),
+                         key=lambda i: (i.get("added_at", 0),
+                                        i.get("repo", ""),
+                                        i.get("issue", 0)))
+        snap = [dict(i)
+                for i in ordered[-DISPATCH_QUEUE_MAX_ITEMS:]]
+        path = queue_store_path()
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "items": snap}, f)
+        os.replace(tmp, path)
+    except Exception as exc:
+        print(f"dispatch queue persist failed: {exc}", flush=True)
+
+
+def _load_locked() -> None:
+    """Rehydrate the snapshot left by the previous process. Items
+    still marked running died with it: record failed with the
+    restart verdict instead of wedging or silently re-queueing.
+    Missing/corrupt stores load as empty. Caller must hold _lock."""
+    _items.clear()
+    try:
+        with open(queue_store_path(), encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        return
+    rows = state.get("items") if isinstance(state, dict) else None
+    if not isinstance(rows, list):
+        return
+    now = _now()
+    reconciled = False
+    for rec in rows:
+        if not isinstance(rec, dict):
+            continue
+        repo = rec.get("repo")
+        issue = rec.get("issue")
+        if not repo or not isinstance(repo, str) \
+                or not isinstance(issue, int) \
+                or isinstance(issue, bool) or issue <= 0:
+            continue
+        added = rec.get("added_at")
+        state_name = rec.get("state")
+        if state_name not in (QUEUED, RUNNING, DONE, FAILED):
+            state_name = QUEUED
+        item = {
+            "repo": repo,
+            "issue": issue,
+            "state": state_name,
+            "added_at": added
+            if isinstance(added, (int, float))
+            and not isinstance(added, bool) else now,
+            "started_at": rec.get("started_at"),
+            "finished_at": rec.get("finished_at"),
+            "detail": rec.get("detail")
+            if isinstance(rec.get("detail"), str) else "",
+            "title": rec.get("title")
+            if isinstance(rec.get("title"), str) else "",
+            "artifact_url": rec.get("artifact_url")
+            if isinstance(rec.get("artifact_url"), str) else "",
+        }
+        if item["state"] == RUNNING:
+            item["state"] = FAILED
+            item["finished_at"] = now
+            item["detail"] = RESTART_DETAIL
+            reconciled = True
+        _items[_key(repo, issue)] = item
+    if reconciled:
+        _persist_locked()
+
+
+def _ensure_loaded_locked() -> None:
+    """Load once per store path. Caller must hold _lock."""
+    global _loaded_path
+    path = queue_store_path()
+    if _loaded_path == path:
+        return
+    _load_locked()
+    _loaded_path = path
+
+
 def reset_queue() -> None:
-    """Drop every queued item. Tests only."""
+    """Drop every queued item. Tests only. The store file keeps its
+    bytes: _loaded_path stays, so nothing resurrects until the path
+    itself changes."""
     with _lock:
         _items.clear()
 
@@ -91,6 +221,7 @@ def enqueue(repo: str, issue, parse_number=None,
     if number is None:
         return None, "invalid issue"
     with _lock:
+        _ensure_loaded_locked()
         key = _key(name, number)
         existing = _items.get(key)
         if existing is not None and \
@@ -105,14 +236,17 @@ def enqueue(repo: str, issue, parse_number=None,
             "finished_at": None,
             "detail": "",
             "title": title if isinstance(title, str) else "",
+            "artifact_url": issue_url(name, number),
         }
         _items[key] = item
+        _persist_locked()
         return _copy(item), None
 
 
 def get_item(repo: str, issue: int) -> dict | None:
     """Stored item copy, or None."""
     with _lock:
+        _ensure_loaded_locked()
         item = _items.get(_key(repo, issue))
         return _copy(item) if item is not None else None
 
@@ -120,6 +254,7 @@ def get_item(repo: str, issue: int) -> dict | None:
 def queue_list() -> list[dict]:
     """Every queued item, oldest first. The console groups by repo."""
     with _lock:
+        _ensure_loaded_locked()
         ordered = sorted(_items.values(),
                          key=lambda i: (i.get("added_at", 0),
                                         i.get("repo", ""),
@@ -132,6 +267,7 @@ def cancel(repo: str, issue: int) -> tuple[bool, str | None]:
     a 409-style reason — abort it through the repair worker, which
     owns the proc. Returns (removed, error)."""
     with _lock:
+        _ensure_loaded_locked()
         key = _key(repo, issue)
         item = _items.get(key)
         if item is None:
@@ -139,6 +275,7 @@ def cancel(repo: str, issue: int) -> tuple[bool, str | None]:
         if item.get("state") == RUNNING:
             return False, "item is running"
         del _items[key]
+        _persist_locked()
         return True, None
 
 
@@ -223,6 +360,7 @@ def readiness(repo: str, issue: int, repo_status=None,
         reasons.append(str(exc)[:200])
 
     with _lock:
+        _ensure_loaded_locked()
         repo_running = [i for i in _items.values()
                         if i.get("repo") == repo
                         and i.get("state") == RUNNING
@@ -292,11 +430,13 @@ def _monitor_item(repo: str, issue: int,
     except Exception as exc:  # pragma: no cover - defensive
         detail = f"monitor error: {exc}"[:200]
     with _lock:
+        _ensure_loaded_locked()
         item = _items.get(_key(repo, issue))
         if item is not None and item.get("state") == RUNNING:
             item["state"] = outcome
             item["finished_at"] = _now()
             item["detail"] = detail
+            _persist_locked()
 
 
 def dispatch(repo: str, issue: int, launcher=None,
@@ -336,6 +476,7 @@ def dispatch(repo: str, issue: int, launcher=None,
         current["finished_at"] = None
         current["detail"] = ""
         snapshot = _copy(current)
+        _persist_locked()
     try:
         launcher(number, name)
     except Exception as exc:
@@ -344,6 +485,7 @@ def dispatch(repo: str, issue: int, launcher=None,
             if current is not None:
                 current["state"] = QUEUED
                 current["detail"] = f"launch failed: {exc}"[:200]
+                _persist_locked()
         return None, f"launch failed: {exc}"[:200]
     if monitor is None:
         thread = threading.Thread(target=_monitor_item,
