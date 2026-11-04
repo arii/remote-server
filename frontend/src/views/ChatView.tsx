@@ -169,6 +169,118 @@ export function MentionDropdown({
   );
 }
 
+// Composer slash commands (#669): client-only shortcuts over
+// EXISTING UI actions (retry, clear, backend-picker focus,
+// @-mention trigger, transcript export). Nothing new hits the
+// backend; adding a command is one table entry + test.
+export interface SlashActions {
+  retry: () => void;
+  clear: () => void;
+  focusModel: () => void;
+  attach: () => void;
+  exportTranscript: () => void;
+}
+
+export interface SlashCommand {
+  cmd: string;
+  label: string;
+  hint: string;
+  run: (actions: SlashActions) => void;
+}
+
+export const SLASH_COMMANDS: SlashCommand[] = [
+  { cmd: 'retry', label: 'Retry', hint: 'Re-send the last prompt', run: (a) => a.retry() },
+  { cmd: 'clear', label: 'New chat', hint: 'Clear this conversation', run: (a) => a.clear() },
+  { cmd: 'model', label: 'Model', hint: 'Focus the backend picker', run: (a) => a.focusModel() },
+  { cmd: 'attach', label: 'Attach', hint: 'Mention a repo file with @', run: (a) => a.attach() },
+  { cmd: 'export', label: 'Export', hint: 'Download transcript as Markdown', run: (a) => a.exportTranscript() },
+];
+
+// Leading-slash token only: the menu opens on "/re", never on
+// mid-text slashes ("a/b") or once the token ends ("… --flag").
+// Unknown tokens ("/foo") return the query but match nothing, so
+// the menu stays shut and the text sends normally.
+export function slashQueryAt(text: string): string | null {
+  if (!text.startsWith('/')) return null;
+  const query = text.slice(1);
+  if (/\s/.test(query)) return null;
+  return query;
+}
+
+export function matchSlashCommands(query: string): SlashCommand[] {
+  const q = query.toLowerCase();
+  return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(q));
+}
+
+export function SlashMenu({
+  commands,
+  active,
+  onPick,
+  onHover,
+}: {
+  commands: SlashCommand[];
+  active: number;
+  onPick: (cmd: string) => void;
+  onHover: (index: number) => void;
+}) {
+  return (
+    <div
+      className="mention-list"
+      role="listbox"
+      aria-label="Composer commands"
+      data-testid="chat-slash-menu"
+    >
+      {commands.map((c, i) => (
+        <button
+          key={c.cmd}
+          type="button"
+          role="option"
+          aria-selected={i === active}
+          aria-label={`/${c.cmd}: ${c.hint}`}
+          data-testid="chat-slash-option"
+          data-active={i === active ? 'true' : undefined}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onPick(c.cmd);
+          }}
+          onMouseEnter={() => onHover(i)}
+        >
+          /{c.cmd} <span className="row-meta">{c.hint}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Transcript export (#669): turns in order as Markdown. Assistant
+// turns reuse cleanAgentText (no INTERRUPT/trace blobs).
+// ChatMessage carries no timestamps and no per-turn traces, so the
+// export omits both rather than inventing them.
+export function transcriptMarkdown(messages: ChatMessage[]): string {
+  const lines = ['# Chat transcript', ''];
+  for (const m of messages) {
+    lines.push(m.role === 'user' ? '## You' : '## Assistant', '');
+    lines.push(m.role === 'assistant' ? cleanAgentText(m.text) : m.text, '');
+  }
+  return lines.join('\n');
+}
+
+export function transcriptFilename(when: Date = new Date()): string {
+  return `chat-${when.toISOString().slice(0, 10)}.md`;
+}
+
+export function downloadTranscript(messages: ChatMessage[]): void {
+  const blob = new Blob([transcriptMarkdown(messages)], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = transcriptFilename();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // Streamed tokens carry raw agent stdout, which ends with the
 // INTERRUPT blob on approval turns. The backend strips markers
 // from done.text; strip them here too so the chat log stays human.
@@ -933,6 +1045,19 @@ export default function ChatView({
     !streaming &&
     mentionFiles.length > 0 &&
     mentionDismissed !== mention.query;
+  // Slash-command menu (#669): leading-"/" token over SLASH_COMMANDS.
+  // Unknown tokens match nothing, so the menu stays shut and the
+  // text sends normally. Mirrors the mention dismissed/active pattern.
+  const [slashActive, setSlashActive] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState<string | null>(null);
+  const backendGroupRef = useRef<HTMLDivElement>(null);
+  const slashQuery = slashQueryAt(prompt);
+  const slashMatches = slashQuery === null ? [] : matchSlashCommands(slashQuery);
+  const slashOpen =
+    slashQuery !== null &&
+    !streaming &&
+    slashMatches.length > 0 &&
+    slashDismissed !== slashQuery;
   const [approval, setApproval] = useState<ApprovalPayload | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -1023,6 +1148,12 @@ export default function ChatView({
     promptRef.current?.setSelectionRange(pos, pos);
     setCaret(pos);
   });
+  // A fresh slash token re-arms the menu after Escape and resets
+  // the highlight, mirroring the mention-query effect.
+  useEffect(() => {
+    setSlashDismissed(null);
+    setSlashActive(0);
+  }, [slashQuery]);
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
   const lastEventRef = useRef(0);
@@ -1221,6 +1352,45 @@ export default function ChatView({
     }
   }
 
+  // New-chat reset (#669): drops the visible conversation and its
+  // pending state. Past runs on the backend are untouched.
+  function onClearChat() {
+    if (streaming) return;
+    setMessages([]);
+    setPrompt('');
+    setError(null);
+    setLastSent('');
+    setApproval(null);
+    setDecided(null);
+    setPhase(null);
+    promptRef.current?.focus();
+  }
+
+  function onExportTranscript() {
+    downloadTranscript(messages);
+  }
+
+  // Slash pick (#669): the token is always cleared first, then the
+  // table entry runs its UI action. /attach seeds a bare "@" so the
+  // mention dropdown opens; /model lands focus on the picker group.
+  function onPickSlash(cmd: string) {
+    const found = SLASH_COMMANDS.find((c) => c.cmd === cmd);
+    if (!found) return;
+    setPrompt('');
+    found.run({
+      retry: () => onRetry(),
+      clear: () => onClearChat(),
+      focusModel: () => backendGroupRef.current?.focus(),
+      attach: () => {
+        if (streaming) return;
+        setPrompt('@');
+        pendingCaretRef.current = 1;
+        promptRef.current?.focus();
+      },
+      exportTranscript: () => onExportTranscript(),
+    });
+  }
+
   // @-mention accept: swap the "@query" token for "@path" chip
   // text; the caret lands past the trailing space via the
   // pending-caret effect, which also closes the dropdown.
@@ -1407,6 +1577,34 @@ export default function ChatView({
                 setMentionDismissed(mention?.query ?? '');
                 return;
               }
+              if (slashOpen && e.key === 'ArrowDown') {
+                e.preventDefault();
+                setSlashActive((a) => (a + 1) % slashMatches.length);
+                return;
+              }
+              if (slashOpen && e.key === 'ArrowUp') {
+                e.preventDefault();
+                setSlashActive(
+                  (a) => (a - 1 + slashMatches.length) % slashMatches.length,
+                );
+                return;
+              }
+              if (
+                slashOpen &&
+                (e.key === 'Enter' || e.key === 'Tab') &&
+                !(e.ctrlKey || e.metaKey)
+              ) {
+                e.preventDefault();
+                onPickSlash(
+                  slashMatches[slashActive]?.cmd ?? slashMatches[0]?.cmd ?? '',
+                );
+                return;
+              }
+              if (slashOpen && e.key === 'Escape') {
+                e.preventDefault();
+                setSlashDismissed(slashQuery ?? '');
+                return;
+              }
               if (isKeyboardSend(e)) {
                 e.preventDefault();
                 void onSend();
@@ -1424,10 +1622,25 @@ export default function ChatView({
             onHover={(i) => setMentionActive(i)}
           />
         )}
+        {slashOpen && (
+          <SlashMenu
+            commands={slashMatches}
+            active={slashActive}
+            onPick={(cmd) => onPickSlash(cmd)}
+            onHover={(i) => setSlashActive(i)}
+          />
+        )}
         <p className="row-meta" data-testid="chat-route-hint" role="status">
           {hint ? hintLine(hint) : 'Next reply via …'}
         </p>
-        <div className="actions" role="group" aria-label="Chat backend" data-testid="chat-backend-picker">
+        <div
+          className="actions"
+          role="group"
+          aria-label="Chat backend"
+          data-testid="chat-backend-picker"
+          ref={backendGroupRef}
+          tabIndex={-1}
+        >
           {CHAT_BACKEND_OPTIONS.map((o) => (
             <button
               key={o.value}
@@ -1449,6 +1662,24 @@ export default function ChatView({
             disabled={streaming || !prompt.trim()}
           >
             Send
+          </button>
+          <button
+            type="button"
+            data-testid="chat-clear"
+            title="Clear this conversation (or type /clear)"
+            disabled={streaming}
+            onClick={() => onClearChat()}
+          >
+            New chat
+          </button>
+          <button
+            type="button"
+            data-testid="chat-export"
+            title="Download transcript as Markdown (or type /export)"
+            disabled={messages.length === 0}
+            onClick={() => onExportTranscript()}
+          >
+            Export
           </button>
         </div>
       </form>
