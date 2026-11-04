@@ -52,28 +52,19 @@ class DigestScheduleStatus(BaseModel):
     next_run: float | None = None
     last_sent: float | None = None
     last_result: dict = Field(default_factory=dict)
-    held_until: float | None = None
 
 
 class DigestScheduleRequest(BaseModel):
     cadence: str = ""
 
 
-class QuietHours(BaseModel):
-    start: str = ""
-    end: str = ""
-
-
 class NotificationPreferences(BaseModel):
     muted_events: list[str] = Field(default_factory=list)
-    quiet_hours: QuietHours | None = None
     events: list[str] = Field(default_factory=list)
-    held_until: float | None = None
 
 
 class PreferencesUpdate(BaseModel, extra="forbid"):
     muted_events: list[str] | None = None
-    quiet_hours: dict | None = None
 
 
 def _resolve_repo_path(repo_full_name: str):
@@ -172,12 +163,11 @@ def notifications_status() -> dict:
 @router.post("/api/notifications/test",
              response_model=NotificationResult)
 def notifications_test() -> dict:
-    # Explicit tap: bypasses quiet hours (mute never applies —
-    # `test` is not a mutable class).
+    # Explicit tap: mute never applies — `test` is not a mutable
+    # class — so this always attempts a real send.
     res = N.send_notification(
         "Test Notification", "Test push from S5 backend.",
-        priority="default", tags=["test"], event_type="test",
-        bypass_quiet=True)
+        priority="default", tags=["test"], event_type="test")
     # Truth in response (#430): empty results mean no channel is
     # configured, so report failure with guidance instead of ok:true.
     # Note delivered()'s empty→True rule is digest-stamp specific
@@ -193,12 +183,11 @@ def notifications_test() -> dict:
              response_model=DigestResult)
 def notifications_trigger_digest() -> dict:
     digest_msg = N.build_digest_text()
-    # Explicit tap: bypasses quiet hours, but a muted `digest`
-    # class still suppresses (mute wins over tap).
+    # Explicit tap, but a muted `digest` class still suppresses
+    # (mute wins over tap).
     res = N.send_notification(
         "Manual Briefing Digest", digest_msg, priority="low",
-        tags=["clipboard", "digest"], event_type="digest",
-        bypass_quiet=True)
+        tags=["clipboard", "digest"], event_type="digest")
     # Stamp only on actual delivery (#532): a failed manual digest
     # must not eat the next scheduled one. ok mirrors delivery so
     # the operator sees the failure alongside the per-target errors
@@ -216,9 +205,7 @@ def _preferences_payload() -> dict:
     prefs = N.get_notification_prefs()
     return {
         "muted_events": prefs["muted_events"],
-        "quiet_hours": prefs["quiet_hours"],
         "events": list(N.MUTABLE_EVENTS),
-        "held_until": N.digest_schedule_status().get("held_until"),
     }
 
 
@@ -234,8 +221,6 @@ def notifications_set_preferences(body: PreferencesUpdate) -> dict:
     try:
         if "muted_events" in body.model_fields_set:
             N.set_notification_prefs(muted_events=body.muted_events)
-        if "quiet_hours" in body.model_fields_set:
-            N.set_notification_prefs(quiet_hours=body.quiet_hours)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return _preferences_payload()

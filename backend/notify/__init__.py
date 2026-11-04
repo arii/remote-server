@@ -78,8 +78,6 @@ def save_notifier_state(state: dict) -> None:
 # mutable.
 MUTABLE_EVENTS = ("ci_fail", "conflict", "digest")
 
-QUIET_TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
-
 
 def validate_muted_events(value) -> list:
     """Cleaned muted list, or ValueError naming the offender."""
@@ -93,104 +91,44 @@ def validate_muted_events(value) -> list:
     return sorted(set(value))
 
 
-def validate_quiet_hours(value):
-    """Cleaned {start, end} HH:MM pair, None (cleared), or ValueError."""
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise ValueError("quiet_hours must be {start, end} or null")
-    start = value.get("start", "")
-    end = value.get("end", "")
-    for label, text in (("start", start), ("end", end)):
-        if not isinstance(text, str) or not QUIET_TIME_RE.match(text):
-            raise ValueError(
-                f"quiet_hours.{label} must be HH:MM (00:00-23:59)")
-    if start == end:
-        raise ValueError("quiet_hours start and end must differ")
-    return {"start": start, "end": end}
-
-
 def get_notification_prefs() -> dict:
-    """Operator prefs from notifier state (never raises: corrupt
-    rows fall back to unmuted/no-quiet)."""
+    """Operator prefs from notifier state (never raises: a corrupt
+    row falls back to unmuted). A stale hold-window key left in
+    the store by the retired feature (#846) is ignored, never read."""
     with notifier_lock:
         state = load_notifier_state()
     try:
         muted = validate_muted_events(state.get("muted_events", []))
     except ValueError:
         muted = []
-    try:
-        quiet = validate_quiet_hours(state.get("quiet_hours"))
-    except ValueError:
-        quiet = None
-    return {"muted_events": muted, "quiet_hours": quiet}
+    return {"muted_events": muted}
 
 
 _UNSET = object()
 
 
-def set_notification_prefs(muted_events=_UNSET, quiet_hours=_UNSET) -> dict:
+def set_notification_prefs(muted_events=_UNSET) -> dict:
     """Validated prefs write (raises ValueError). _UNSET fields are
-    left unchanged; quiet_hours=None clears the window."""
+    left unchanged."""
     with notifier_lock:
         state = load_notifier_state()
         if muted_events is not _UNSET:
             state["muted_events"] = validate_muted_events(muted_events)
-        if quiet_hours is not _UNSET:
-            state["quiet_hours"] = validate_quiet_hours(quiet_hours)
         save_notifier_state(state)
     return get_notification_prefs()
 
 
-def in_quiet_hours(now=None, quiet=None) -> bool:
-    """True when server-local wall time falls in the quiet window
-    (inclusive start, exclusive end, overnight-aware)."""
-    if quiet is None:
-        quiet = get_notification_prefs()["quiet_hours"]
-    if not quiet:
-        return False
-    if now is None:
-        now = time.time()
-    mins = time.localtime(now).tm_hour * 60 + time.localtime(now).tm_min
-    start = int(quiet["start"][:2]) * 60 + int(quiet["start"][3:])
-    end = int(quiet["end"][:2]) * 60 + int(quiet["end"][3:])
-    if start <= end:
-        return start <= mins < end
-    return mins >= start or mins < end
-
-
-def quiet_window_end(now, quiet) -> float:
-    """Epoch seconds of the current quiet window's end (server-local;
-    DST transitions may shift it by an hour — acceptable for a
-    hold-until hint). now must fall inside quiet."""
-    local = time.localtime(now)
-    end_h, end_m = int(quiet["end"][:2]), int(quiet["end"][3:])
-    midnight = time.mktime((local.tm_year, local.tm_mon, local.tm_mday,
-                            0, 0, 0, 0, 0, -1))
-    end_today = midnight + end_h * 3600 + end_m * 60
-    if end_today > now:
-        return float(end_today)
-    return float(end_today + 86400)
-
-
 def send_notification(title, message, priority="default", tags=None,
-                      click_url=None, event_type="info", *,
-                      bypass_quiet=False):
+                      click_url=None, event_type="info"):
     """Dispatch a notification via ntfy and/or generic webhook if configured.
 
-    Gate first (#656): muted event classes and quiet hours suppress
-    the send with {"suppressed": reason} (never an error, never a
-    blind stamp). bypass_quiet is for explicit operator taps (test +
-    manual digest): it skips the time gate only — a muted class stays
-    muted even when tapped.
+    Gate first (#656): a muted event class suppresses the send with
+    {"suppressed": reason} (never an error, never a blind stamp).
+    Otherwise sends fire on schedule regardless of time of day (#846).
     """
     prefs = get_notification_prefs()
     if event_type in prefs["muted_events"]:
         return {"suppressed": f"event '{event_type}' muted"}
-    if not bypass_quiet and prefs["quiet_hours"] and in_quiet_hours(
-            quiet=prefs["quiet_hours"]):
-        return {"suppressed":
-                f"quiet hours until {prefs['quiet_hours']['end']}"}
     results = {}
     ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
     ntfy_url = os.environ.get("NTFY_URL", "https://ntfy.sh").rstrip("/")
@@ -296,7 +234,7 @@ def digest_schedule_path() -> str:
 
 def _default_digest_schedule() -> dict:
     return {"cadence": "off", "next_run": None, "last_sent": None,
-            "last_result": {}, "held_until": None}
+            "last_result": {}}
 
 
 def load_digest_schedule() -> dict:
@@ -388,20 +326,9 @@ def _fire_due_digest(now: float) -> bool:
             return False
         if (state.get("next_run") or 0) > now:
             return False
-    # Due inside quiet hours: hold, don't send. next_run stays due
-    # so the first tick past the window fires exactly once
-    # (coalesced, never dropped). held_until shows the wait.
-    quiet = get_notification_prefs()["quiet_hours"]
-    if quiet and in_quiet_hours(now, quiet):
-        with digest_schedule_lock:
-            state = load_digest_schedule()
-            state["held_until"] = quiet_window_end(now, quiet)
-            save_digest_schedule(state)
-        return False
     with digest_schedule_lock:
         # Claim before sending so a slow send can't double-fire.
         state = load_digest_schedule()
-        state.pop("held_until", None)
         state["next_run"] = now + interval
         save_digest_schedule(state)
     try:
@@ -564,9 +491,8 @@ def _fire_budget_watch(now: float, sender) -> bool:
         # it on a transient failure would silence it forever.
         return True
     if isinstance(results, dict) and "suppressed" in results:
-        # Quiet-held (#532: suppressed sends never stamp): the next
-        # tick retries, so the alert waits out quiet hours instead
-        # of being dropped.
+        # Suppressed (#532: suppressed sends never stamp): the next
+        # tick retries, so the alert waits instead of being dropped.
         return True
     if _budget_send_ok(results):
         with notifier_lock:
@@ -738,28 +664,23 @@ def check_notifications_and_digest(fetcher=None, sender=None,
         if interval > 0:
             last_digest = state.get("last_digest", 0)
             if (now - last_digest) >= (interval * 3600):
-                # Quiet holds the legacy digest too: leave the stamp
-                # so the first tick past the window fires (coalesced).
                 # Suppressed/failed sends never stamp (#532).
-                if in_quiet_hours(now):
-                    pass
-                else:
-                    res = sender(
-                        title="Scheduled Briefing Digest",
-                        message=build_digest_text(
-                            summaries=briefs.get("_digest_")  # type: ignore
-                            if isinstance(briefs, dict) else None,
-                            total_repos=sum(
-                                1 for k, v in briefs.items()
-                                if k != "_digest_" and v is not None)
-                            if isinstance(briefs, dict) else 0,
-                        ),
-                        priority="low",
-                        tags=["clipboard", "digest"],
-                        event_type="digest",
-                    )
-                    if delivered(res):
-                        state["last_digest"] = now
+                res = sender(
+                    title="Scheduled Briefing Digest",
+                    message=build_digest_text(
+                        summaries=briefs.get("_digest_")  # type: ignore
+                        if isinstance(briefs, dict) else None,
+                        total_repos=sum(
+                            1 for k, v in briefs.items()
+                            if k != "_digest_" and v is not None)
+                        if isinstance(briefs, dict) else 0,
+                    ),
+                    priority="low",
+                    tags=["clipboard", "digest"],
+                    event_type="digest",
+                )
+                if delivered(res):
+                    state["last_digest"] = now
 
         save_notifier_state(state)
         return state
