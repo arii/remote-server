@@ -32,7 +32,7 @@ describe('job re-run button (issue #630)', () => {
   it('asks for confirmation on destructive re-runs, fires directly otherwise', () => {
     const danger = renderToStaticMarkup(
       <JobListItem
-        job={mkJob({ kind: 'recreate', name: 'recreate' })}
+        job={mkJob({ kind: 'recreate-code', name: 'recreate-code' })}
         repo="remote-server"
         onSelect={() => {}}
         onRerun={() => {}}
@@ -48,9 +48,12 @@ describe('job re-run button (issue #630)', () => {
   });
 
   it('resolves destructive confirm text from the danger list', () => {
-    expect(dangerEntryFor('recreate')).toEqual({ confirm: 'Live terminal sessions will drop.' });
+    expect(dangerEntryFor('recreate-code')).toEqual({ confirm: 'The code editor will restart.' });
     expect(dangerEntryFor('create-plan')).toEqual({});
     expect(dangerEntryFor('logs')).toBeNull();
+    // Terminal restart is not offered: sessions cannot survive
+    // it and there is no resume path (#444).
+    expect(dangerEntryFor('recreate')).toBeNull();
   });
 });
 
@@ -164,7 +167,7 @@ describe('job schedule button (issue #655)', () => {
   it('hides Schedule on destructive runs and run-td rows keep it', () => {
     const danger = renderToStaticMarkup(
       <JobListItem
-        job={mkJob({ kind: 'recreate', name: 'recreate' })}
+        job={mkJob({ kind: 'recreate-code', name: 'recreate-code' })}
         repo="remote-server"
         onSelect={noop}
         onRerun={noop}

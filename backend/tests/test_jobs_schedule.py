@@ -95,7 +95,7 @@ class ActionScheduleStoreTest(unittest.TestCase):
     def test_create_rejects_destructive(self):
         from fastapi import HTTPException
 
-        for action in ("recreate", "deploy-buttons", "recreate-code",
+        for action in ("deploy-buttons", "recreate-code",
                        "create-plan", "merge-approved"):
             with self.assertRaises(HTTPException, msg=action) as ctx:
                 self._create(action=action)
@@ -106,10 +106,14 @@ class ActionScheduleStoreTest(unittest.TestCase):
     def test_create_rejects_unknown_action(self):
         from fastapi import HTTPException
 
-        with self.assertRaises(HTTPException) as ctx:
-            self._create(action="nuke")
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertEqual(ctx.exception.detail, "unknown action")
+        # "recreate" (terminal restart) is rejected as unknown:
+        # the console must not offer it while sessions cannot
+        # survive it (#444).
+        for action in ("nuke", "recreate"):
+            with self.assertRaises(HTTPException, msg=action) as ctx:
+                self._create(action=action)
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertEqual(ctx.exception.detail, "unknown action")
 
     def test_create_run_td_roundtrip(self):
         argv = ["td", "context-warm"]

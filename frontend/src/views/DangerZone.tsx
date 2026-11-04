@@ -28,12 +28,9 @@ const DANGER: DangerAction[] = [
     consequence: 'Pulls, rebuilds and restarts the console container.',
     confirm: 'The console will restart.',
   },
-  {
-    action: 'recreate',
-    label: 'Restart terminal',
-    consequence: 'Force-restarts the terminal container; drops live sessions.',
-    confirm: 'Live terminal sessions will drop.',
-  },
+  // No terminal restart: force-recreating terminal drops live
+  // agent sessions with no resume path, so the console must not
+  // offer it (#444). recreate-code below is unaffected.
   {
     action: 'recreate-code',
     label: 'Restart code editor',

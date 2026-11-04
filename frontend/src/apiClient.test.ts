@@ -826,12 +826,12 @@ describe('job re-run (issue #630)', () => {
 
   it('replays plain actions to run with the confirm intent when destructive', async () => {
     vi.stubGlobal('fetch', mockFetchJson({ id: 'abc123def456' }));
-    await rerunJob('recreate', 'remote-server', [], true);
+    await rerunJob('recreate-code', 'remote-server', [], true);
     expect(fetch).toHaveBeenCalledWith('/api/jobs/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
       body: JSON.stringify({
-        action: 'recreate',
+        action: 'recreate-code',
         repo: 'remote-server',
         intent: 'jobs-run',
         confirmed: true,

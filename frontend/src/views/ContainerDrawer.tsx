@@ -5,8 +5,9 @@ import { dangerEntryFor } from './DangerZone';
 // Engine restart action per compose service (issue #663). Only
 // services with a DangerZone action restart from the drawer —
 // anything else has no privileged path and renders no button.
+// Terminal is deliberately absent: restarting it drops live agent
+// sessions with no resume path (#444).
 const RESTART_ACTION_FOR_SERVICE: Record<string, string> = {
-  terminal: 'recreate',
   'code-server': 'recreate-code',
   buttons: 'deploy-buttons',
 };
