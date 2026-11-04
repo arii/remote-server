@@ -336,6 +336,12 @@ li.history-row.selected { outline: 2px solid var(--accent); outline-offset: 2px;
 /* Review PR↔issue linkage chips (#839): tappable repo-chip look. */
 button.link-chip { font: inherit; color: var(--accent); cursor: pointer; }
 button.link-chip:hover { border-color: var(--accent); }
+/* Briefing pipeline pills (#902): same look as anchors when the
+   backend shipped the PR's web URL. */
+a.repo-chip { text-decoration: none; }
+a.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a.link-chip { color: var(--accent); }
+a.link-chip:hover { border-color: var(--accent); }
 /* Briefing pipeline rows (#839): number/title lead, status trail. */
 .pipeline-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; }
 /* Composer single action row (#839): the backend pills ride
