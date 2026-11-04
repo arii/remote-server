@@ -126,6 +126,29 @@ function RunsList({ flow }: { flow: WorkflowHealthResponse }) {
   );
 }
 
+export function ObservabilityBody({
+  health,
+  flow,
+  error,
+}: {
+  health: SystemHealthResponse | null;
+  flow: WorkflowHealthResponse | null;
+  error: string | null;
+}) {
+  return (
+    <>
+      <HealthLine health={health} flow={flow} />
+      {error ? (
+        <div data-testid="observability-error" role="alert">
+          Automated runs unavailable: {error}
+        </div>
+      ) : (
+        flow && <RunsList flow={flow} />
+      )}
+    </>
+  );
+}
+
 export default function ObservabilitySection({
   repo,
   health,
@@ -138,6 +161,7 @@ export default function ObservabilitySection({
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     if (useMock()) {
       setFlow(loadWorkflowHealth());
       return;
@@ -155,21 +179,10 @@ export default function ObservabilitySection({
     };
   }, [repo]);
 
-  if (error) {
-    return (
-      <section aria-label="System observability" data-testid="observability">
-        <h2>System observability</h2>
-        <div data-testid="observability-error" role="alert">
-          Observability unavailable: {error}
-        </div>
-      </section>
-    );
-  }
   return (
     <section aria-label="System observability" data-testid="observability">
       <h2>System observability</h2>
-      <HealthLine health={health} flow={flow} />
-      {flow && <RunsList flow={flow} />}
+      <ObservabilityBody health={health} flow={flow} error={error} />
     </section>
   );
 }
