@@ -188,6 +188,33 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_ast_check_node_logs_degraded_gate(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            state: rw.AgentState = {
+                "issue_number": 1,
+                "issue_body": "",
+                "target_files": ["a.ts"],
+                "verification_cmd": "",
+                "file_contents": {"a.ts": "const x = 1;\n"},
+                "current_errors": "",
+                "retry_count": 0,
+                "ast_valid": False,
+                "tests_passed": False,
+                "worktree_dir": temp_dir,
+                "branch_name": "repair/issue-1",
+            }
+            with patch("core_cli.ast_validator.shutil.which",
+                       return_value=None):
+                with self.assertLogs(level="WARNING") as logs:
+                    updates = rw.ast_check_node(state)
+            self.assertTrue(updates["ast_valid"])
+            self.assertTrue(
+                any("syntax gate degraded for a.ts" in line
+                    for line in logs.output))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_setup_worktree_node_rejects_escape(self):
         import subprocess
         from unittest.mock import MagicMock, patch

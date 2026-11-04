@@ -13,6 +13,10 @@ RUN npm install -g "pnpm@10.28.2" \
  && pnpm install --frozen-lockfile
 COPY frontend/ ./frontend/
 RUN VITE_BASE=/buttons/ pnpm --filter frontend build
+# Repair syntax gate (issue #488): the worker validates .ts/.tsx via
+# the repo's own pinned TypeScript. Stage the compiler lib for the
+# runtime image (-L: pnpm installs are symlinked).
+RUN mkdir -p /tscheck && cp -rL /build/frontend/node_modules/typescript/lib /tscheck/lib
 
 # ---- Runtime ----
 FROM python:3.11-slim
@@ -20,7 +24,9 @@ ARG BOOMTICK_CLI_REF=main
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git gh curl ca-certificates openssh-client \
+ && apt-get install -y --no-install-recommends git gh curl ca-certificates openssh-client nodejs \
+ && node --version \
+ && echo "node available for repair syntax gate (issue #488)" \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /home/ari \
  && ln -sfn /root/.ssh /home/ari/.ssh \
@@ -51,6 +57,8 @@ COPY backend/ ./backend/
 COPY deep-agent/ ./deep-agent/
 COPY core_cli/ ./core_cli/
 COPY --from=spa /build/frontend/dist ./frontend/dist/
+COPY --from=spa /tscheck/lib /opt/tscheck/lib
+ENV TS_LIB_DIR=/opt/tscheck/lib
 # Build-time smoke: CLI intact after our pins, server + agent imports resolve.
 RUN git config --system --get-all safe.directory | grep -qF '*' \
  && /opt/venvs/td/bin/td --help > /dev/null \
@@ -58,6 +66,14 @@ RUN git config --system --get-all safe.directory | grep -qF '*' \
  && /opt/venvs/td/bin/python -c "import backend.server; print('server imports ok')" \
  && /opt/venvs/td/bin/python /app/core_cli/briefing_summary.py 2>&1 | grep -q "usage:" \
  && echo "briefing script imports ok"
+# Syntax-gate smoke (issue #488): bad .ts must be INVALID (brackets
+# alone would pass it, so INVALID proves the real toolchain ran).
+RUN printf 'const x: = 3;\n' > /tmp/gate-bad.ts \
+ && printf 'const x: number = 3;\n' > /tmp/gate-good.ts \
+ && /opt/venvs/td/bin/python /app/core_cli/ast_validator.py /tmp/gate-bad.ts 2>&1 | grep -q "^INVALID:" \
+ && /opt/venvs/td/bin/python /app/core_cli/ast_validator.py /tmp/gate-good.ts | grep -q "^VALID:" \
+ && rm /tmp/gate-bad.ts /tmp/gate-good.ts \
+ && echo "ts syntax gate live"
 # Agent runtime = same venv (chat spawn inherits the langchain stack).
 # Repo state (git status, compose file, .env) resolves to the mounted
 # live checkout, not the baked code.
