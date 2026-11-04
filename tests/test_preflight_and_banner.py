@@ -78,17 +78,36 @@ class TestPreflightDigest(unittest.TestCase):
         self.assertIn("✗ Typecheck: FAIL — TypeScript compiler error: TS2304", out)
         self.assertIn("preflight: 1 passed, 1 failed", out)
 
-    def test_unrecognized_json_falls_back_to_raw(self):
+    def test_unrecognized_json_fails_closed(self):
+        # Zero classifiable checks: nonzero exit + banner + raw (#489).
         raw = '{"some_random_key": 123}'
         code, out = self.run_digest(raw)
-        self.assertEqual(code, 0)
-        self.assertEqual(out.strip(), raw.strip())
+        self.assertEqual(code, 2)
+        self.assertIn(pfd.UNRECOGNIZED_BANNER, out)
+        self.assertIn(raw.strip(), out)
 
-    def test_invalid_json_falls_back_to_raw(self):
+    def test_invalid_json_fails_closed(self):
+        # Non-JSON stdin: nonzero exit + banner + raw passthrough (#489).
         raw = "Not valid json\nJust plain text"
         code, out = self.run_digest(raw)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
+        self.assertIn(pfd.UNRECOGNIZED_BANNER, out)
         self.assertIn("Not valid json", out)
+
+    def test_empty_stdin_fails_closed(self):
+        code, out = self.run_digest("")
+        self.assertEqual(code, 2)
+        self.assertIn(pfd.UNRECOGNIZED_BANNER, out)
+
+    def test_unrecognized_banner_is_extractable_failure(self):
+        # The banner must carry the ✗/FAIL marks the buttons
+        # error-line extraction looks for, so the loud failure
+        # surfaces instead of a raw JSON dump.
+        code, out = self.run_digest('{"drifted": true}')
+        self.assertNotEqual(code, 0)
+        first = out.splitlines()[0]
+        self.assertTrue(first.startswith("✗"))
+        self.assertIn("FAIL", first)
 
     @unittest.skipUnless(
         _full_js_toolchain_available(),

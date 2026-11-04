@@ -11,10 +11,13 @@ The schema is not pinned: checks are found heuristically (a dict
 with a name-ish key and a status-ish key, at any nesting depth, the
 parent key serving as the name when the dict has none). Anything
 unrecognized is skipped; if nothing classifies, the raw input is
-printed so the run never loses the underlying output.
+printed behind an unrecognized-schema banner and the digest exits
+nonzero, so a drifted schema never reads as green.
 
-Exit 0 when every found check passes, 1 when any fails. Pair with
-`set -o pipefail` so td's own non-zero exit still fails the step.
+Exit 0 when every found check passes, 1 when any check fails, 2
+when stdin is not JSON or no checks classify (raw output is still
+printed for diagnosis). Pair with `set -o pipefail` so td's own
+non-zero exit still fails the step.
 """
 
 import json
@@ -42,6 +45,9 @@ STATUS_CONFIG = {
     "warn": {"mark": "⚠", "label": "Warnings"},
     "fail": {"mark": "✗", "label": "FAIL"},
 }
+
+UNRECOGNIZED_EXIT = 2
+UNRECOGNIZED_BANNER = "✗ Preflight: FAIL — schema unrecognized, showing raw output"
 
 
 def _classify(value):
@@ -120,13 +126,22 @@ def _collect(node, checks, depth=0, key_name=None):
             _collect(v, checks, depth + 1)
 
 
+def _passthrough_raw(raw):
+    """Banner + raw passthrough for unrecognized input. Fails closed:
+    exit 2 (distinct from 1 = a classified check failed) so unknown
+    output never reads as green. The banner carries the ✗/FAIL marks
+    the buttons error-line extraction looks for."""
+    sys.stdout.write(UNRECOGNIZED_BANNER + "\n")
+    sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
+    return UNRECOGNIZED_EXIT
+
+
 def main(argv=None):
     raw = sys.stdin.read()
     try:
         data = json.loads(raw)
     except Exception:
-        sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
-        return 0
+        return _passthrough_raw(raw)
     checks = []
     _collect(data, checks)
     # Dedupe identical (name, status) pairs; keep first detail.
@@ -136,8 +151,7 @@ def main(argv=None):
             seen.add((name, status))
             uniq.append((name, status, detail))
     if not uniq:
-        sys.stdout.write(raw if raw.endswith("\n") else raw + "\n")
-        return 0
+        return _passthrough_raw(raw)
     lines = []
     passed = 0
     failed = 0
