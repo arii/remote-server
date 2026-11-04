@@ -160,6 +160,60 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(events[0][0], "error")
         self.assertEqual(events[0][1], {"error": "empty prompt"})
 
+    def test_chat_stream_prefer_passes_to_argv(self):
+        argvs = []
+
+        def _spawn(cmd):
+            argvs.append(cmd)
+            return FakeProc("x")
+
+        chat.spawn_chat_process = _spawn
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={"prompt": "hi", "repo": "remote-server",
+                  "session_id": "prefer000001", "prefer": "local"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("--prefer=ollama", argvs[-1])
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={"prompt": "hi", "repo": "remote-server",
+                  "session_id": "prefer000002", "prefer": "cloud"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("--prefer=nebius", argvs[-1])
+
+    def test_chat_stream_prefer_get_and_auto_default(self):
+        argvs = []
+
+        def _spawn(cmd):
+            argvs.append(cmd)
+            return FakeProc("x")
+
+        chat.spawn_chat_process = _spawn
+        resp = self.client.get(
+            "/api/chat/stream",
+            params={"prompt": "hi", "repo": "remote-server",
+                    "session_id": "prefer000003", "prefer": "cloud"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("--prefer=nebius", argvs[-1])
+        # Auto (and omitted prefer) pass no flag: today's ladder.
+        resp = self.client.get(
+            "/api/chat/stream",
+            params={"prompt": "hi", "repo": "remote-server",
+                    "session_id": "prefer000004"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(any(a.startswith("--prefer=")
+                             for a in argvs[-1]))
+
+    def test_chat_stream_bad_prefer_errors(self):
+        chat.spawn_chat_process = lambda cmd: FakeProc("x")
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={"prompt": "hi", "repo": "remote-server",
+                  "prefer": "Muse"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[0][0], "error")
+        self.assertEqual(events[0][1], {"error": "bad prefer"})
+
     def test_chat_abort_flow(self):
         block = threading.Event()
         procs = []

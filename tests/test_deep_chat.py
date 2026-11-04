@@ -1134,5 +1134,82 @@ class TestCheckpointer(unittest.TestCase):
                 self.assertIsNone(holder)
 
 
+class TestExtractPrefer(unittest.TestCase):
+    def test_flag_values(self):
+        self.assertEqual(
+            deep_chat.extract_prefer(["deep_chat.py", "--prefer=ollama"]),
+            "ollama",
+        )
+        self.assertEqual(
+            deep_chat.extract_prefer(["deep_chat.py", "--prefer=nebius"]),
+            "nebius",
+        )
+
+    def test_absent_is_none(self):
+        self.assertIsNone(deep_chat.extract_prefer(["deep_chat.py"]))
+        # The b64 prompt slot can never match: '-' is outside the
+        # base64 alphabet.
+        self.assertIsNone(
+            deep_chat.extract_prefer(
+                ["deep_chat.py", "o/r", "t", b64("say --prefer=nebius")]
+            )
+        )
+
+    def test_bad_value_raises(self):
+        with self.assertRaises(ValueError):
+            deep_chat.extract_prefer(["deep_chat.py", "--prefer=Muse"])
+
+    def test_main_threads_prefer_to_turn(self):
+        from unittest import mock
+
+        seen = {}
+
+        def fake_turn(repo, thread, raw, prefer=None):
+            seen["prefer"] = prefer
+            return 0
+
+        with mock.patch.object(deep_chat, "_cmd_turn",
+                               side_effect=fake_turn), \
+                mock.patch.object(deep_chat.s5tools, "valid_repo",
+                                  return_value=True), \
+                mock.patch.object(deep_chat.s5tools, "checkout_for",
+                                  return_value="/tmp"), \
+                mock.patch.object(deep_chat, "valid_thread_id",
+                                  return_value=True):
+            rc = deep_chat.main(
+                ["deep_chat.py", "o/r", "thread-1", b64("hi"),
+                 "--prefer=nebius"]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(seen["prefer"], "nebius")
+
+    def test_main_defaults_to_auto(self):
+        from unittest import mock
+
+        seen = {}
+
+        def fake_turn(repo, thread, raw, prefer=None):
+            seen["prefer"] = prefer
+            return 0
+
+        with mock.patch.object(deep_chat, "_cmd_turn",
+                               side_effect=fake_turn), \
+                mock.patch.object(deep_chat.s5tools, "valid_repo",
+                                  return_value=True), \
+                mock.patch.object(deep_chat.s5tools, "checkout_for",
+                                  return_value="/tmp"), \
+                mock.patch.object(deep_chat, "valid_thread_id",
+                                  return_value=True):
+            rc = deep_chat.main(
+                ["deep_chat.py", "o/r", "thread-1", b64("hi")]
+            )
+        self.assertEqual(rc, 0)
+        self.assertIsNone(seen["prefer"])
+
+    def test_main_rejects_bad_prefer(self):
+        rc = deep_chat.main(["deep_chat.py", "--prefer=bogus"])
+        self.assertEqual(rc, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

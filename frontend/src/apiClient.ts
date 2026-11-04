@@ -410,8 +410,15 @@ export function fetchPiProgress(rid: string): Promise<PiProgressResponse> {
   return getJson<PiProgressResponse>(`api/pi-progress/${encodeURIComponent(rid)}`);
 }
 
-export function chatStreamUrl(prompt: string, repo: string, sessionId: string): string {
-  const q = new URLSearchParams({ prompt, repo, session_id: sessionId });
+export type ChatBackend = 'auto' | 'local' | 'cloud';
+
+export function chatStreamUrl(
+  prompt: string,
+  repo: string,
+  sessionId: string,
+  prefer: ChatBackend = 'auto',
+): string {
+  const q = new URLSearchParams({ prompt, repo, session_id: sessionId, prefer });
   return apiUrl(`api/chat/stream?${q.toString()}`);
 }
 

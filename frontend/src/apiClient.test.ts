@@ -4,6 +4,7 @@ import {
   abortAgentSession,
   abortRepair,
   apiUrl,
+  chatStreamUrl,
   fetchAgentProviders,
   fetchAttention,
   fetchBriefing,
@@ -302,5 +303,13 @@ describe('view cache (briefing/jobs/attention)', () => {
     await fetchJobs();
     await fetchAttention('demo');
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('chat stream url', () => {
+  it('carries the backend prefer flag, defaulting to auto', () => {
+    expect(chatStreamUrl('hi', 'r', 's')).toContain('prefer=auto');
+    expect(chatStreamUrl('hi', 'r', 's', 'local')).toContain('prefer=local');
+    expect(chatStreamUrl('hi', 'r', 's', 'cloud')).toContain('prefer=cloud');
   });
 });

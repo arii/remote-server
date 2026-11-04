@@ -397,9 +397,12 @@ def build_tools(checkout):
     return [read_repo_file, grep_repo, list_dir, search_docs, propose_action]
 
 
-def build_model():
-    """Chat model via model_router. Returns (model, spec). Venv-only."""
-    spec = model_router.resolve_llm()
+def build_model(prefer=None):
+    """Chat model via model_router. Returns (model, spec). Venv-only.
+
+    prefer is the per-turn override ("ollama"/"nebius"); None keeps
+    today's ladder (env contract applies)."""
+    spec = model_router.resolve_llm(prefer=prefer)
     kwargs = model_router.chat_kwargs(spec)
     # No-think is the production setting: on this CPU-only box a qwen3
     # thinking trace takes 15+ min per prompt. CHAT_THINK=1 re-enables.
@@ -727,7 +730,7 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     return 0
 
 
-def _cmd_turn(repo, thread_id, raw_prompt):
+def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
     prompt = cli.b64decode(raw_prompt)
     if prompt is None:
         return cli.usage_error("bad base64 prompt")
@@ -735,7 +738,7 @@ def _cmd_turn(repo, thread_id, raw_prompt):
         return cli.usage_error("bad prompt")
     started = time.time()
     try:
-        model, spec = build_model()
+        model, spec = build_model(prefer=prefer)
     except (RuntimeError, ValueError) as exc:
         return cli.sorry(
             f"Sorry, no model is available right now: {_short_err(exc)}")
@@ -909,8 +912,34 @@ def _cmd_resume(repo, thread_id, verdict, raw_message):
     return 0
 
 
+def extract_prefer(argv):
+    """Per-turn backend override from --prefer=ollama|nebius.
+
+    Scanned (not positional) so it survives every argv shape; the
+    b64 prompt slot can never match ('-' is outside the base64
+    alphabet). Returns the provider or None. Raises ValueError on a
+    value the router would reject, so misuse fails at the CLI, not
+    as a confusing Sorry."""
+    for arg in argv[1:]:
+        if isinstance(arg, str) and arg.startswith("--prefer="):
+            value = arg.split("=", 1)[1].strip().lower()
+            if value not in ("ollama", "nebius"):
+                raise ValueError(
+                    f"bad --prefer={value!r}: want 'ollama' or 'nebius'")
+            return value
+    return None
+
+
 def main(argv=None) -> int:
     argv = sys.argv if argv is None else argv
+    try:
+        prefer = extract_prefer(argv)
+    except ValueError as exc:
+        return cli.usage_error(str(exc))
+    # Strip before positional parsing so the flag never shifts the
+    # resume/message slots.
+    argv = [a for a in argv
+           if not (isinstance(a, str) and a.startswith("--prefer="))]
     if len(argv) == 3 and argv[1] == "--validate-proposal":
         return _cmd_validate(argv[2])
     if len(argv) == 3 and argv[2] == "--supervise":
@@ -921,7 +950,8 @@ def main(argv=None) -> int:
         return _cmd_turn(argv[1], thread, raw)
     if len(argv) < 4 or not s5tools.valid_repo(argv[1]):
         return cli.usage_error(
-            "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>",
+            "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>"
+            " [--prefer=ollama|nebius]",
             "   or: deep_chat.py owner/repo <thread-id> --resume "
             "approve|reject [b64-message]",
             "   or: deep_chat.py owner/repo --supervise",
@@ -938,7 +968,7 @@ def main(argv=None) -> int:
             return cli.usage_error("resume needs a verdict")
         return _cmd_resume(repo, thread_id, argv[4],
                            argv[5] if len(argv) > 5 else None)
-    return _cmd_turn(repo, thread_id, argv[3])
+    return _cmd_turn(repo, thread_id, argv[3], prefer=prefer)
 
 
 if __name__ == "__main__":

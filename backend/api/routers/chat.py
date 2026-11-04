@@ -509,7 +509,15 @@ def _resume_decision(session_id: str, decision: str,
     return body, 202, ""
 
 
-def _chat_events(prompt: str, repo: str, session_id: str):
+# Composer backend picker: per-turn override for one stream. None
+# means Auto — no flag, today's ladder exactly (env contract
+# applies). local/cloud map to the router's strict prefers, the
+# one-turn equivalents of OLLAMA_STRICT=1 / NEBIUS_ONLY=1.
+CHAT_PREFER = {"auto": None, "local": "ollama", "cloud": "nebius"}
+
+
+def _chat_events(prompt: str, repo: str, session_id: str,
+                 prefer: str = "auto"):
     try:
         info = get_repo_info(repo)
     except ValueError:
@@ -517,6 +525,10 @@ def _chat_events(prompt: str, repo: str, session_id: str):
         return
     if not isinstance(prompt, str) or not prompt.strip():
         yield sse_frame("error", {"error": "empty prompt"})
+        return
+    want = prefer.strip().lower() if isinstance(prefer, str) else "auto"
+    if want not in CHAT_PREFER:
+        yield sse_frame("error", {"error": "bad prefer"})
         return
     prompt = prompt.strip()[:CHAT_MAX_PROMPT]
     venv = deep_agent_python()
@@ -537,6 +549,8 @@ def _chat_events(prompt: str, repo: str, session_id: str):
                               "message": "Analyzing context and preparing request..."})
     b64 = base64.b64encode(prompt.encode()).decode()
     argv = [venv, script, info["gh"], session_id, b64]
+    if CHAT_PREFER[want]:
+        argv.append(f"--prefer={CHAT_PREFER[want]}")
     if any(k in prompt.lower() for k in TOOL_HINTS):
         time.sleep(0.05)
         yield sse_frame("phase", {"phase": "tool_call",
@@ -641,6 +655,7 @@ class ChatStreamRequest(BaseModel):
     prompt: str = ""
     repo: str = "remote-server"
     session_id: str = ""
+    prefer: str = "auto"
 
 
 class ChatAbortRequest(BaseModel):
@@ -689,9 +704,10 @@ SSE_HEADERS = {
 
 @router.get("/chat/stream")
 def chat_stream_get(prompt: str = "", repo: str = "remote-server",
-                    session_id: str = "") -> StreamingResponse:
+                    session_id: str = "",
+                    prefer: str = "auto") -> StreamingResponse:
     sid = session_id or uuid.uuid4().hex[:12]
-    return StreamingResponse(_chat_events(prompt, repo, sid),
+    return StreamingResponse(_chat_events(prompt, repo, sid, prefer),
                              media_type="text/event-stream",
                              headers=SSE_HEADERS)
 
@@ -699,7 +715,8 @@ def chat_stream_get(prompt: str = "", repo: str = "remote-server",
 @router.post("/chat/stream")
 def chat_stream_post(body: ChatStreamRequest) -> StreamingResponse:
     sid = body.session_id or uuid.uuid4().hex[:12]
-    return StreamingResponse(_chat_events(body.prompt, body.repo, sid),
+    return StreamingResponse(_chat_events(body.prompt, body.repo, sid,
+                                          body.prefer),
                              media_type="text/event-stream",
                              headers=SSE_HEADERS)
 
