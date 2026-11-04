@@ -40,11 +40,19 @@ def repo_gh(name: str) -> str:
 def run_gh(gh: str, argv: list, timeout: int = GH_TIMEOUT,
            runner=None) -> str:
     """Run gh with an argv list; return stdout. Raises RuntimeError
-    with the last stderr line on failure (same contract as _td_run)."""
+    with the last stderr line on failure (same contract as _td_run).
+    Raises ValueError when the argv does not scope a repo: every
+    caller must pass ``--repo gh`` or a self-scoped ``repos/...``
+    api URL, since the backend cwd is not a git repo (#544)."""
     validate_gh(gh)
+    args = list(argv)
+    if "--repo" not in args and not any(
+            str(a).startswith("repos/") for a in args):
+        raise ValueError(
+            "gh argv must scope the repo (--repo or repos/... api URL)")
     run = runner or subprocess
     proc = run.run(
-        ["gh"] + list(argv),
+        ["gh"] + args,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
