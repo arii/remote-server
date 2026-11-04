@@ -245,6 +245,11 @@ li.detail.reviewing { opacity: 0.55; }
   30% { opacity: 1; }
 }
 
+/* Voice dictation (#659): mic button beside Send; the recording dot
+   reuses the typing pulse while the mic is live. */
+button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; gap: 0.45rem; }
+.dictate-rec { animation: typing-pulse 1.2s ease-in-out infinite; }
+
 /* Jobs: vertical rhythm between stacked cards and sections. */
 [data-testid="jobs-view"] > .detail { margin-top: 0.75rem; }
 [data-testid="jobs-view"] > section { margin-top: 1rem; }

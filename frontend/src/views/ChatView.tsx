@@ -252,6 +252,167 @@ export function SlashMenu({
   );
 }
 
+// Voice dictation (#659): tap-to-dictate into the composer via the
+// Web Speech API. Purely client-side: no backend, no deps, no keys.
+// Chrome/Android ship SpeechRecognition; Firefox and iOS Safari do
+// not — the capability check hides the button there (no polyfill,
+// no dead button, nothing to explain in the UI).
+export interface DictationRecognition {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  onresult: ((ev: DictationResultEvent) => void) | null;
+  onerror: ((ev: DictationErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+export type DictationRecognitionCtor = new () => DictationRecognition;
+
+// The dom lib has no SpeechRecognition types, so the constructor is
+// read off window structurally. Standard name first, webkit-prefixed
+// fallback second (older Chrome/Android).
+export function dictationCtor(): DictationRecognitionCtor | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as Record<string, unknown>;
+  const ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+  return typeof ctor === 'function'
+    ? (ctor as unknown as DictationRecognitionCtor)
+    : null;
+}
+
+export function dictationSupported(): boolean {
+  return dictationCtor() !== null;
+}
+
+// One recognition result event, structurally typed: results from
+// resultIndex on are new since the previous event; each carries
+// isFinal plus transcript alternatives (first only is used).
+export interface DictationResultEvent {
+  resultIndex: number;
+  results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
+}
+
+export interface DictationErrorEvent {
+  error: string;
+}
+
+// Split one event's new results into final vs in-flight text.
+// Interim text is a live preview of an utterance that a later final
+// result replaces — never appended twice (see applyDictationResult).
+export function extractDictationText(ev: DictationResultEvent): {
+  finalText: string;
+  interimText: string;
+} {
+  let finalText = '';
+  let interimText = '';
+  for (let i = ev.resultIndex; i < ev.results.length; i++) {
+    const res = ev.results[i];
+    const transcript = res[0]?.transcript ?? '';
+    if (res.isFinal) finalText += transcript;
+    else interimText += transcript;
+  }
+  return { finalText, interimText };
+}
+
+// Dictation lands as ordinary composer text: appended with a single
+// separating space, editable before send. The backend picker, cost
+// line, @-mentions, and send flow all behave identically.
+export function appendDictationText(current: string, addition: string): string {
+  const text = addition.trim();
+  if (!text) return current;
+  if (current.length === 0 || /\s$/.test(current)) return current + text;
+  return `${current} ${text}`;
+}
+
+// Fold one result event into the composer: strip the previous
+// event's interim preview first (an interim preview is replaced by
+// its final, never duplicated), then append this event's new finals
+// plus its new interim preview. Only the interim suffix is tracked
+// for rebasing — committed finals are never stripped, so later
+// utterances accumulate. Returns the composer text plus the exact
+// interim suffix this call inserted. Typed-during-dictation text
+// survives — the strip only fires when the composer still ends with
+// our last preview — except the in-flight interim then stays AND its
+// final appends; accepted (the text is editable before send, and
+// tap-to-dictate sessions are short).
+export function applyDictationResult(
+  prev: string,
+  inserted: string,
+  finalText: string,
+  interimText: string,
+): { next: string; inserted: string } {
+  const base =
+    inserted.length > 0 && prev.endsWith(inserted)
+      ? prev.slice(0, prev.length - inserted.length)
+      : prev;
+  const finalChunk = finalText.trim();
+  const interimChunk = interimText.trim();
+  let next = base;
+  if (finalChunk) next = appendDictationText(next, finalChunk);
+  if (!interimChunk) return { next, inserted: '' };
+  const withPreview = appendDictationText(next, interimChunk);
+  return { next: withPreview, inserted: withPreview.slice(next.length) };
+}
+
+// One-line composer hints for recognition failures: never toasts,
+// never send-blocking. Denied-mic names the browser permission path.
+// 'aborted' is tap-to-stop (and the stop behind unmount), not an
+// error; unknown codes stay silent rather than guessing.
+export function dictationErrorHint(error: string): string | null {
+  switch (error) {
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return 'Mic blocked — allow microphone access in the browser site settings, then tap Dictate again.';
+    case 'no-speech':
+      return 'No speech heard — tap Dictate and try again.';
+    case 'network':
+      return 'Dictation needs a network connection — check connectivity and retry.';
+    case 'audio-capture':
+      return 'No microphone found — check the device input and retry.';
+    default:
+      return null;
+  }
+}
+
+export function DictationHint({ text }: { text: string }) {
+  return (
+    <p className="row-meta" data-testid="chat-dictate-hint" role="status">
+      {text}
+    </p>
+  );
+}
+
+// Mic button beside Send. Rendered ONLY where the API exists —
+// elsewhere this returns null (no dead button, no polyfill). While
+// live, the pulsing dot + aria-pressed carry the recording state.
+export function DictateButton({
+  recording,
+  disabled,
+  onToggle,
+}: {
+  recording: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  if (!dictationSupported()) return null;
+  return (
+    <button
+      type="button"
+      data-testid="chat-dictate"
+      aria-pressed={recording}
+      aria-label={recording ? 'Stop dictation' : 'Dictate with voice'}
+      title={recording ? 'Stop dictation' : 'Dictate with voice'}
+      disabled={disabled}
+      onClick={() => onToggle()}
+    >
+      {recording && <span className="dot dot-bad dictate-rec" aria-hidden="true" />}
+      {recording ? 'Stop' : 'Dictate'}
+    </button>
+  );
+}
+
 // Transcript export (#669): turns in order as Markdown. Assistant
 // turns reuse cleanAgentText (no INTERRUPT/trace blobs).
 // ChatMessage carries no timestamps and no per-turn traces, so the
@@ -1058,6 +1219,14 @@ export default function ChatView({
     !streaming &&
     slashMatches.length > 0 &&
     slashDismissed !== slashQuery;
+  // Voice dictation (#659): tap-to-dictate session state. The live
+  // recognition object sits in a ref (mute, event-driven — never
+  // state); inserted tracks this session's preview suffix for
+  // applyDictationResult rebasing.
+  const [dictating, setDictating] = useState(false);
+  const [dictationHint, setDictationHint] = useState<string | null>(null);
+  const dictationRecRef = useRef<DictationRecognition | null>(null);
+  const dictationInsertedRef = useRef('');
   const [approval, setApproval] = useState<ApprovalPayload | null>(null);
   const [decided, setDecided] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -1154,6 +1323,21 @@ export default function ChatView({
     setSlashDismissed(null);
     setSlashActive(0);
   }, [slashQuery]);
+  // Leaving the view mid-dictation stops the mic: no orphan session
+  // keeps appending into an unmounted composer.
+  useEffect(() => {
+    return () => {
+      const rec = dictationRecRef.current;
+      dictationRecRef.current = null;
+      if (rec) {
+        try {
+          rec.stop();
+        } catch {
+          // Already ended.
+        }
+      }
+    };
+  }, []);
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
   const lastEventRef = useRef(0);
@@ -1418,6 +1602,64 @@ export default function ChatView({
     void sendText(text);
   }
 
+  // Tap toggles a recognition session: interim results stream into
+  // the composer live, finals commit; tap again (or silence
+  // auto-end — continuous is false) stops. Mic permission is
+  // browser-mediated per tap; there is no app permission flow.
+  function onToggleDictation() {
+    const active = dictationRecRef.current;
+    if (active) {
+      try {
+        active.stop();
+      } catch {
+        // Already ended; onend still resets the state below.
+      }
+      return;
+    }
+    const Ctor = dictationCtor();
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.lang =
+      typeof navigator !== 'undefined' && navigator.language
+        ? navigator.language
+        : 'en-US';
+    rec.interimResults = true;
+    rec.continuous = false;
+    dictationInsertedRef.current = '';
+    rec.onresult = (ev) => {
+      const { finalText, interimText } = extractDictationText(ev);
+      setPrompt((prev) => {
+        const applied = applyDictationResult(
+          prev,
+          dictationInsertedRef.current,
+          finalText,
+          interimText,
+        );
+        dictationInsertedRef.current = applied.inserted;
+        return applied.next;
+      });
+      setCaret(null);
+    };
+    rec.onerror = (ev) => {
+      const hintText = dictationErrorHint(ev.error);
+      if (hintText) setDictationHint(hintText);
+    };
+    rec.onend = () => {
+      dictationRecRef.current = null;
+      dictationInsertedRef.current = '';
+      setDictating(false);
+    };
+    dictationRecRef.current = rec;
+    setDictationHint(null);
+    try {
+      rec.start();
+    } catch {
+      dictationRecRef.current = null;
+      return;
+    }
+    setDictating(true);
+  }
+
   function stopStream() {
     abortRef.current?.abort();
     abortRef.current = null;
@@ -1633,6 +1875,7 @@ export default function ChatView({
         <p className="row-meta" data-testid="chat-route-hint" role="status">
           {hint ? hintLine(hint) : 'Next reply via …'}
         </p>
+        {dictationHint && <DictationHint text={dictationHint} />}
         <div
           className="actions"
           role="group"
@@ -1663,6 +1906,11 @@ export default function ChatView({
           >
             Send
           </button>
+          <DictateButton
+            recording={dictating}
+            disabled={streaming}
+            onToggle={() => onToggleDictation()}
+          />
           <button
             type="button"
             data-testid="chat-clear"
