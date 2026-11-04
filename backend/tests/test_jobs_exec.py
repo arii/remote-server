@@ -1377,5 +1377,161 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
                     os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = old
 
 
+class RunStorePersistenceTest(unittest.TestCase):
+    """Restart recovery: the run store rehydrates history (#461)."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._tmp.name, "runs.json")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _read_store(self):
+        import json
+
+        with open(self.path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_restart_preserves_completed_runs(self):
+        reg = RunRegistry(store_path=self.path)
+        first, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.append(first, "$ echo hi\nhi\n")
+        reg.finish_run(first, 0)
+        second, err = reg.start_run(
+            "run-td", "boomtick", td_argv=["td", "doctor"])
+        self.assertIsNone(err)
+        reg.append(second, "diag output\n")
+        reg.finish_run(second, 1)
+        # "Restart": a fresh registry over the same store.
+        boot = RunRegistry(store_path=self.path)
+        self.assertIsNone(boot.active_id)
+        self.assertEqual(set(boot.runs), {first, second})
+        for rid, exit_code, tail in ((first, 0, "hi\n"),
+                                     (second, 1, "diag output\n")):
+            run = boot.runs[rid]
+            self.assertTrue(run["done"])
+            self.assertEqual(run["exit_code"], exit_code)
+            self.assertIn(tail, run["output"])
+            self.assertNotIn("restarted", run["output"])
+        self.assertEqual(boot.runs[second]["td_argv"], ["td", "doctor"])
+        self.assertEqual(boot.runs[second]["repo"], "boomtick")
+        # Single-flight is free and seqs keep increasing (no
+        # collision with rehydrated rows).
+        top = max(r["seq"] for r in boot.runs.values())
+        third, err = boot.start_run("logs")
+        self.assertIsNone(err)
+        self.assertGreater(boot.runs[third]["seq"], top)
+
+    def test_restart_marks_interrupted_run_done_with_note(self):
+        reg = RunRegistry(store_path=self.path)
+        rid, err = reg.start_run("deploy-buttons")
+        self.assertIsNone(err)
+        # Past the append throttle, like a long-lived run: the
+        # partial tail reaches the store before the process dies.
+        reg._last_save = 0.0
+        reg.append(rid, "deploying...\n")
+        # No finish_run: the console restarts mid-run.
+        boot = RunRegistry(store_path=self.path)
+        run = boot.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertIsNone(run["exit_code"])
+        self.assertTrue(run["output"].startswith("deploying...\n"))
+        self.assertTrue(run["output"].endswith(engine.RESTART_NOTE))
+        self.assertIsNotNone(run["finished_at"])
+        # The interrupted run never wedges single-flight.
+        nxt, err = boot.start_run("logs")
+        self.assertIsNone(err)
+
+    def test_append_persist_is_throttled(self):
+        reg = RunRegistry(store_path=self.path)
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg._last_save = 0.0
+        reg.append(rid, "first\n")
+        self.assertIn("first",
+                      self._read_store()["runs"][0]["output"])
+        reg.append(rid, "second\n")
+        self.assertNotIn("second",
+                         self._read_store()["runs"][0]["output"])
+        reg.finish_run(rid, 0)
+        self.assertIn("second",
+                      self._read_store()["runs"][0]["output"])
+
+    def test_clear_persists_across_restart(self):
+        reg = RunRegistry(store_path=self.path)
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.finish_run(rid, 0)
+        self.assertEqual(reg.clear_jobs(), (1, None))
+        boot = RunRegistry(store_path=self.path)
+        self.assertEqual(boot.runs, {})
+
+    def test_missing_or_corrupt_store_loads_empty(self):
+        boot = RunRegistry(store_path=self.path)
+        self.assertEqual(boot.runs, {})
+        self.assertEqual(boot._seq, 0)
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        boot = RunRegistry(store_path=self.path)
+        self.assertEqual(boot.runs, {})
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write('{"runs": [{"no": "id"}, 42, {"id": "abc123"}]}')
+        boot = RunRegistry(store_path=self.path)
+        self.assertEqual(set(boot.runs), {"abc123"})
+        self.assertTrue(boot.runs["abc123"]["done"])
+
+    def test_default_registry_stays_in_memory(self):
+        reg = RunRegistry()
+        self.assertIsNone(reg._store_path)
+        rid, err = reg.start_run("logs")
+        self.assertIsNone(err)
+        reg.append(rid, "x\n")
+        reg.finish_run(rid, 0)
+        self.assertIn(rid, reg.runs)
+
+    def test_runs_store_path_env_override(self):
+        import os
+
+        old = os.environ.get("BUTTONS_JOBS_RUNS_PATH")
+        os.environ["BUTTONS_JOBS_RUNS_PATH"] = self.path
+        try:
+            self.assertEqual(engine.runs_store_path(), self.path)
+        finally:
+            if old is None:
+                os.environ.pop("BUTTONS_JOBS_RUNS_PATH", None)
+            else:
+                os.environ["BUTTONS_JOBS_RUNS_PATH"] = old
+        self.assertEqual(engine.runs_store_path(),
+                         engine.DEFAULT_RUNS_PATH)
+
+    def test_jobs_view_survives_restart(self):
+        import backend.api.routers.jobs as jobs_router
+        from backend.server import app
+
+        client = TestClient(app)
+        jobs_router.registry = RunRegistry(store_path=self.path)
+        try:
+            rid, err = jobs_router.registry.start_run("logs")
+            self.assertIsNone(err)
+            jobs_router.registry.append(rid, "tail line\n")
+            jobs_router.registry.finish_run(rid, 0)
+            before = client.get("/api/jobs").json()["jobs"]
+            self.assertEqual(len(before), 1)
+            # "Restart": swap in a fresh registry over the same store.
+            jobs_router.registry = RunRegistry(store_path=self.path)
+            after = client.get("/api/jobs").json()["jobs"]
+            self.assertEqual(after, before)
+            progress = client.get(f"/api/jobs/runs/{rid}").json()
+            self.assertTrue(progress["done"])
+            self.assertIn("tail line", progress["output"])
+        finally:
+            jobs_router.registry = RunRegistry()
+
+
 if __name__ == "__main__":
     unittest.main()

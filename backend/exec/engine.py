@@ -10,6 +10,7 @@ is dead); the Pi transcript step of logs is cut (Pi is dead).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -600,11 +601,40 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
             pass
 
 
+# Durable run store (#461). The registry used to be pure in-memory,
+# so every console restart wiped the Jobs view. Run records persist
+# to a JSON snapshot on the buttons-data volume; a fresh registry
+# rehydrates from it on boot. Single-writer: one console owns the
+# file (cross-replica sharing is an explicit non-goal).
+DEFAULT_RUNS_PATH = "/var/lib/buttons/jobs_runs.json"
+
+# Snapshot keeps the newest runs only: outputs run to MAX_OUTPUT
+# each, so an unbounded file would balloon.
+RUN_STORE_MAX_RUNS = 200
+
+# Minimum seconds between output-append persists. Appends arrive
+# per output line; the throttle bounds snapshot rewrites while a
+# run chats. start/finish/clear always persist immediately.
+RUN_STORE_SAVE_INTERVAL = 2.0
+
+# Suffix for runs that were active when the previous process died:
+# the tail above it ends at the last persist, and the outcome is
+# honestly unknown (exit stays None).
+RESTART_NOTE = ("note: console restarted while this run was active; "
+                "output ends at the last persist.\n")
+
+
+def runs_store_path() -> str:
+    """Current run-store file path (env override read dynamically
+    so tests can point it at tmp)."""
+    return os.environ.get("BUTTONS_JOBS_RUNS_PATH", DEFAULT_RUNS_PATH)
+
+
 class RunRegistry:
     """Single-flight run records + job list. Ports the runs/jobs
     dicts, locks, and clear semantics of buttons/server.py."""
 
-    def __init__(self):
+    def __init__(self, store_path=None):
         self._lock = threading.Lock()
         self.runs = {}
         self.active_id = None
@@ -617,11 +647,93 @@ class RunRegistry:
         # bump nothing, so wakeups always mean new state.
         self._cond = threading.Condition(self._lock)
         self._version = 0
+        # Durable snapshot path (#461), or None for pure in-memory
+        # (unit tests). The jobs router passes runs_store_path();
+        # loading here means every boot rehydrates.
+        self._store_path = store_path
+        self._last_save = 0.0
+        if store_path is not None:
+            with self._lock:
+                self._load_locked()
 
     def _bump(self):
         """Bump the push version. Caller must hold _lock."""
         self._version += 1
         self._cond.notify_all()
+
+    def _persist_locked(self):
+        """Write the run snapshot atomically. Never raises: a store
+        failure must not fail the run it records. Caller must hold
+        _lock."""
+        if self._store_path is None:
+            return
+        try:
+            ordered = sorted(self.runs.values(),
+                             key=lambda r: r.get("seq", 0))
+            snap = [{k: v for k, v in r.items()
+                     if not k.startswith("_")}
+                    for r in ordered[-RUN_STORE_MAX_RUNS:]]
+            d = os.path.dirname(self._store_path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            tmp = self._store_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"version": 1, "runs": snap}, f)
+            os.replace(tmp, self._store_path)
+            self._last_save = time.monotonic()
+        except Exception as exc:
+            print(f"run store persist failed: {exc}", flush=True)
+
+    def _load_locked(self):
+        """Rehydrate the snapshot left by the previous process. Runs
+        still marked active died with it: finish them with the
+        restart note and an unknown outcome instead of wedging
+        single-flight. Missing/corrupt stores load as empty. Caller
+        must hold _lock."""
+        try:
+            with open(self._store_path, encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            return
+        rows = state.get("runs") if isinstance(state, dict) else None
+        if not isinstance(rows, list):
+            return
+        now = time.time()
+        seq = 0
+        for rec in rows:
+            if not isinstance(rec, dict):
+                continue
+            rid = rec.get("id")
+            if not rid or not isinstance(rid, str):
+                continue
+            run = {k: v for k, v in rec.items()
+                   if not k.startswith("_")}
+            run.pop("cancel_requested", None)
+            run["id"] = rid
+            keep = run.get("seq")
+            run["seq"] = keep if isinstance(keep, int) \
+                and not isinstance(keep, bool) else seq
+            seq = max(seq, run["seq"]) + 1
+            out = run.get("output", "")
+            run["output"] = out if isinstance(out, str) else ""
+            argv = run.get("td_argv", [])
+            run["td_argv"] = list(argv) if isinstance(argv, list) \
+                else []
+            run.setdefault("action", "")
+            run.setdefault("repo", "")
+            run.setdefault("exit_code", None)
+            run.setdefault("started_at", now)
+            run.setdefault("finished_at", None)
+            run.setdefault("last_output_at", now)
+            if not run.get("done"):
+                run["done"] = True
+                run["finished_at"] = now
+                run["output"] += RESTART_NOTE
+            else:
+                run["done"] = True
+            self.runs[rid] = run
+        self._seq = seq
+        self.active_id = None
 
     def start_run(self, action, repo="remote-server", td_argv=None):
         """Create a run for an allowlisted action. Exact port of
@@ -652,6 +764,7 @@ class RunRegistry:
             self.runs[run_id] = run
             self.active_id = run_id
             self._bump()
+            self._persist_locked()
         return run_id, None
 
     def append(self, run_id, text):
@@ -660,6 +773,9 @@ class RunRegistry:
             if run is not None:
                 append_output(run, text)
                 self._bump()
+                if time.monotonic() - self._last_save >= \
+                        RUN_STORE_SAVE_INTERVAL:
+                    self._persist_locked()
 
     def finish_run(self, run_id, exit_code):
         with self._lock:
@@ -672,6 +788,7 @@ class RunRegistry:
             run["done"] = True
             run["finished_at"] = time.time()
             self._bump()
+            self._persist_locked()
 
     def set_proc(self, run_id, proc):
         """Track the live step child for cancellation (#589). The
@@ -708,6 +825,7 @@ class RunRegistry:
             run["cancel_requested"] = True
             proc = run.get("_proc")
             self._bump()
+            self._persist_locked()
         if proc is not None:
             _terminate_tree(proc, grace)
         return run_id, None
@@ -727,6 +845,7 @@ class RunRegistry:
             run["output"] = ""
             run["last_output_at"] = time.time()
             self._bump()
+            self._persist_locked()
             return run["id"], None
 
     def clear_jobs(self, all_jobs=False):
@@ -761,6 +880,7 @@ class RunRegistry:
                 del self.runs[rid]
             if to_del:
                 self._bump()
+                self._persist_locked()
         return len(to_del), None
 
     def list_jobs(self):
