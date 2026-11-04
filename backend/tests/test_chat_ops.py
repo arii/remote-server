@@ -15,6 +15,7 @@ try:
     from fastapi.testclient import TestClient
 
     from backend.api.routers import chat, ops
+    from backend import proposals
 
     HAS_CLIENT = True
 except ImportError:
@@ -92,6 +93,9 @@ class ChatOpsTest(unittest.TestCase):
         self._orig_script = chat.deep_agent_script
         self._orig_takeover = ops.run_takeover
         self._orig_wf = ops.fetch_workflow_health
+        self._orig_gh_issue = proposals.run_gh_create_issue
+        self._orig_td_run = proposals.run_td_command
+        self._orig_dispatch = proposals.run_dispatch
         chat.get_repo_info = lambda repo: {"gh": "arii/remote-server",
                                            "td_cwd": "/srv/remote-server"}
         chat.deep_agent_python = lambda: os.path.abspath(chat.__file__)
@@ -118,6 +122,9 @@ class ChatOpsTest(unittest.TestCase):
         chat.pending_resumes.clear()
         ops.run_takeover = self._orig_takeover
         ops.fetch_workflow_health = self._orig_wf
+        proposals.run_gh_create_issue = self._orig_gh_issue
+        proposals.run_td_command = self._orig_td_run
+        proposals.run_dispatch = self._orig_dispatch
         import backend.core as _core
         _core.get_repo_status = self._orig_status
         import backend.api.routers.ops as _opsmod
@@ -770,6 +777,259 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 202)
         sent = base64.b64decode(seen[0][3]).decode()
         self.assertEqual(sent, "Declined by reviewer.")
+
+    def _seed_pending(self, sid, requests):
+        chat.pending_resumes[sid] = {
+            "gh": "arii/remote-server", "repo": "remote-server",
+            "value": {"action_requests": [{"args": a}
+                                          for a in requests]},
+            "proposals": ["P"], "pending": True, "busy": False,
+            "created_at": time.time()}
+
+    def _ledger_events(self):
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def _executed_rows(self):
+        return [e for e in self._ledger_events()
+                if e.get("event") == "proposal executed"]
+
+    def test_chat_resume_approve_executes_issue_once(self):
+        self._seed_pending("execissue0001", [
+            {"kind": "issue", "title": "Fix it", "body": "Details here"}])
+        seen = []
+        proposals.run_gh_create_issue = lambda *a: seen.append(a) or \
+            "https://github.com/arii/remote-server/issues/999"
+        chat.run_resume_spawn = lambda *a: (0, "All done.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execissue0001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(seen, [("arii/remote-server", "Fix it",
+                                 "Details here")])
+        self.assertIn("✓ issue filed", body["text"])
+        self.assertIn("issues/999", body["text"])
+        self.assertEqual(len(body["executions"]), 1)
+        self.assertTrue(body["executions"][0]["ok"])
+        self.assertEqual(body["executions"][0]["proposal_id"],
+                         "execissue0001:0")
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proposal_kind"], "issue")
+        self.assertIn("999", rows[0]["detail"])
+        # Double-approve: 409, no second execution.
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execissue0001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(self._executed_rows()), 1)
+
+    def test_chat_resume_approve_executes_td(self):
+        self._seed_pending("exectd0000001", [
+            {"kind": "td", "command": "td doctor"}])
+        seen = []
+        proposals.run_td_command = lambda *a: seen.append(a) or "all green"
+        chat.run_resume_spawn = lambda *a: (0, "Checked.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "exectd0000001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(seen, [(["td", "doctor"], "remote-server")])
+        self.assertIn("✓ td `td doctor`", body["text"])
+        self.assertIn("all green", body["text"])
+        self.assertEqual(body["executions"][0]["target"], "td doctor")
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proposal_kind"], "td")
+
+    def test_chat_resume_approve_executes_dispatch(self):
+        self._seed_pending("execdisp00001", [
+            {"kind": "dispatch", "repo": "arii/remote-server",
+             "branch": "main", "task": "Implement X"}])
+        seen = []
+
+        def _disp(*a):
+            seen.append(a)
+            return {"session_id": "sess_abc123", "state": "running",
+                    "worktree": "/tmp/wt-1", "branch": "wt-1"}
+
+        proposals.run_dispatch = _disp
+        chat.run_resume_spawn = lambda *a: (0, "Kicked off.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execdisp00001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(seen, [("arii/remote-server", "main",
+                                 "Implement X")])
+        self.assertIn("✓ dispatch started: session sess_abc123",
+                      body["text"])
+        self.assertEqual(body["executions"][0]["target"],
+                         "arii/remote-server@main")
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proposal_kind"], "dispatch")
+        self.assertIn("sess_abc123", rows[0]["detail"])
+
+    def test_chat_resume_approve_batch_and_reject_runs_nothing(self):
+        self._seed_pending("execbatch0001", [
+            {"kind": "issue", "title": "T", "body": "B"},
+            {"kind": "td", "command": "td doctor"}])
+        issue_seen = []
+        td_seen = []
+        proposals.run_gh_create_issue = \
+            lambda *a: issue_seen.append(a) or "http://x/1"
+        proposals.run_td_command = lambda *a: td_seen.append(a) or "ok"
+        chat.run_resume_spawn = lambda *a: (0, "Both queued.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execbatch0001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(len(issue_seen), 1)
+        self.assertEqual(len(td_seen), 1)
+        self.assertEqual(len(body["executions"]), 2)
+        self.assertIn("✓ issue filed", body["text"])
+        self.assertIn("✓ td `td doctor`", body["text"])
+        self.assertEqual(len(self._executed_rows()), 2)
+        # Reject path executes nothing.
+        self._seed_pending("execrej000001", [
+            {"kind": "issue", "title": "T", "body": "B"}])
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execrej000001",
+                                     "decision": "reject"})
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(len(issue_seen), 1)
+        self.assertEqual(len(self._executed_rows()), 2)
+
+    def test_chat_resume_approve_execution_failure_surfaced(self):
+        self._seed_pending("execfail00001", [
+            {"kind": "issue", "title": "T", "body": "B"}])
+
+        def _boom(*a):
+            raise RuntimeError("gh exploded")
+
+        proposals.run_gh_create_issue = _boom
+        chat.run_resume_spawn = lambda *a: (0, "Tried.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execfail00001",
+                                     "decision": "approve"})
+        # A spent approval still answers: failure is surfaced, not a 500.
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertIn("✗ issue failed", body["text"])
+        self.assertIn("gh exploded", body["text"])
+        self.assertFalse(body["executions"][0]["ok"])
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["ok"])
+
+    def test_chat_resume_followup_approval_executes_new_batch(self):
+        self._seed_pending("execfol000001", [
+            {"kind": "td", "command": "td doctor"}])
+        td_seen = []
+        issue_seen = []
+        proposals.run_td_command = lambda *a: td_seen.append(a) or "ok"
+        proposals.run_gh_create_issue = \
+            lambda *a: issue_seen.append(a) or "http://x/2"
+        new_value = {"action_requests": [
+            {"args": {"kind": "issue", "title": "T2", "body": "B2"}}]}
+        blob = json.dumps({"thread_id": "execfol000001",
+                           "interrupts": [{"id": "x", "value": new_value}]})
+        chat.run_resume_spawn = lambda *a: (
+            3, f"progress\nINTERRUPT: {blob}\n")
+        chat.validate_action_request = lambda args: (
+            True, "PROPOSE issue\nTITLE: T2\nEND PROPOSE")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execfol000001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertIn("approval", body)
+        self.assertIn("✓ td `td doctor`", body["text"])
+        self.assertEqual(len(td_seen), 1)
+        # Second approve runs the follow-up batch, not the first again.
+        chat.run_resume_spawn = lambda *a: (0, "Filed.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execfol000001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(len(td_seen), 1)
+        self.assertEqual(len(issue_seen), 1)
+        self.assertIn("http://x/2", resp.json()["text"])
+
+    def test_proposals_skip_invalid_shapes(self):
+        out = proposals.execute_proposals([
+            (0, {"kind": "issue", "title": "", "body": "b"}),
+            (1, {"kind": "td", "command": "td rm -rf /"}),
+            (2, {"kind": "td", "command": "td hi"}),
+            (3, {"kind": "pigeon"}),
+            (4, {"kind": "dispatch", "repo": "evil/x",
+                 "branch": "main", "task": "t"}),
+        ], "v0000000001", "arii/remote-server", "remote-server")
+        self.assertEqual(len(out), 5)
+        self.assertTrue(all(o["skipped"] for o in out))
+        self.assertEqual(proposals.format_suffix(out), "")
+
+    def test_proposals_dispatch_runs_worktree_then_session(self):
+        calls = []
+
+        def _fake_td_json(argv, timeout):
+            calls.append(argv)
+            if argv[2] == "worktree":
+                return {"status": "success", "worktreeId": "wt-1",
+                        "path": "/tmp/wt-1", "branch": "wt-1"}
+            return {"status": "success",
+                    "session": {"sessionId": "sess_9",
+                                "state": "running"}}
+
+        orig_json = proposals._run_td_json
+        orig_co = proposals.get_checkout_path
+        proposals._run_td_json = _fake_td_json
+        proposals.get_checkout_path = lambda repo: "/srv/repos/x"
+        try:
+            got = proposals.run_dispatch("arii/remote-server", "main",
+                                         "Do it")
+        finally:
+            proposals._run_td_json = orig_json
+            proposals.get_checkout_path = orig_co
+        self.assertEqual(got["session_id"], "sess_9")
+        self.assertEqual(got["worktree"], "/tmp/wt-1")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:4],
+                         ["td", "--json", "worktree", "create"])
+        self.assertIn("--base", calls[0])
+        self.assertIn("main", calls[0])
+        self.assertEqual(calls[1][:4], ["td", "--json", "agent", "run"])
+        self.assertIn("/tmp/wt-1", calls[1])
+        self.assertIn("--detach", calls[1])
+        self.assertIn("Do it", calls[1])
+
+    def test_proposals_issue_create_argv(self):
+        seen = {}
+
+        def _fake_run_gh(gh, argv, timeout=60):
+            seen["gh"] = gh
+            seen["argv"] = argv
+            return "https://github.com/arii/remote-server/issues/5\n"
+
+        orig = proposals.run_gh
+        proposals.run_gh = _fake_run_gh
+        try:
+            url = proposals.run_gh_create_issue("arii/remote-server",
+                                                "T", "B")
+        finally:
+            proposals.run_gh = orig
+        self.assertEqual(
+            url, "https://github.com/arii/remote-server/issues/5")
+        self.assertEqual(seen["argv"][:4],
+                         ["issue", "create", "--repo",
+                          "arii/remote-server"])
+        self.assertIn("T", seen["argv"])
+        self.assertIn("B", seen["argv"])
 
     def test_pi_progress(self):
         # No route can start a pi run since /api/ask + /api/suggest
