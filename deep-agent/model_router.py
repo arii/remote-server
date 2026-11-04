@@ -79,7 +79,9 @@ def _nebius_spec():
         )
     cap = pricing.spend_cap()
     if cap is not None:
-        # Single choke point: every metered path flows through here.
+        # Single choke point: every metered path flows through here
+        # (guarded by tests/test_nebius_choke.py — no direct Nebius
+        # ChatOpenAI construction outside router-backed builders).
         # Spend is recorded ledger cost (in-flight turns land at
         # turn end, so one turn may cross the line; the next blocks).
         total = runs.total_metered_spend()

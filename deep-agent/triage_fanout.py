@@ -17,6 +17,7 @@ from deepagents import create_deep_agent
 
 import cli
 import ledger
+import model_router
 import triage_common
 
 MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
@@ -43,12 +44,19 @@ def main() -> int:
     bad = [r for r in repos if not triage_common.valid_repo(r)]
     if bad:
         return cli.usage_error(f"bad repo(s): {bad}")
+    try:
+        spec = model_router.resolve_llm(prefer="nebius")
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    # Cap checked above; keep this entrypoint's pinned model/endpoint.
+    spec = dict(spec, model=MODEL_ID,
+                base_url="https://api.studio.nebius.com/v1")
+    kwargs = model_router.chat_kwargs(spec)
     model = ChatOpenAI(
-        model=MODEL_ID,
-        base_url="https://api.studio.nebius.com/v1",
         api_key=os.environ["NEBIUS_API_KEY"],
-        temperature=0,
         max_tokens=2000,
+        **kwargs,
     )
     repo_list = ", ".join(repos)
     agent = create_deep_agent(
