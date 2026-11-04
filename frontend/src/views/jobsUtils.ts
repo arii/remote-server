@@ -170,6 +170,45 @@ export function repairVerifyBlocksDispatch(preview: {
   return preview !== null && !preview.allowlisted && preview.command !== '';
 }
 
+// Auditable sites for the dispatched UX audit agent (#850).
+// The backend runner owns the crawl/file registry; this map only
+// routes the console's assign dispatch to the site's repo.
+export const UX_AUDIT_SITES = ['arii.github.io', 'boomtick.blog'] as const;
+
+export type UxAuditSite = (typeof UX_AUDIT_SITES)[number];
+
+const UX_AUDIT_SITE_REPOS: Record<string, string> = {
+  'arii.github.io': 'arii.github.io',
+  'boomtick.blog': 'boomtick',
+};
+
+export function uxAuditSiteRepo(site: string): string | null {
+  return UX_AUDIT_SITE_REPOS[site] ?? null;
+}
+
+// Filed-issue record from a finished audit run tail
+// ("AUDIT_DONE <repo>#<n> <url>"), or null when the run did not
+// file (failure, or a report-only invocation).
+export interface AuditDone {
+  repo: string;
+  number: number;
+  url: string;
+}
+
+export function auditDoneFromOutput(output: string): AuditDone | null {
+  const m = /^AUDIT_DONE (\S+)#(\d+) (\S+)\s*$/m.exec(output);
+  if (!m) return null;
+  return { repo: m[1], number: Number(m[2]), url: m[3] };
+}
+
+// Page cap for the audit picker: integer 1..200, default 25 on
+// anything unparseable (empty field, pasted text).
+export function uxAuditPagesFromInput(raw: string): number {
+  const n = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(n)) return 25;
+  return Math.min(200, Math.max(1, n));
+}
+
 // The settled outcome of a polled run: notice line plus the plan card
 // a create-plan run produced (if its result line names one).
 export interface CompletionInput {
@@ -199,6 +238,15 @@ export function completionOutcome(input: CompletionInput): CompletionOutcome {
   if (input.action === 'create-plan') {
     const name = planNameFromResult(result);
     if (name) planCard = { repo: input.repo, name };
+  }
+  if (input.action === 'ux-audit') {
+    const done = auditDoneFromOutput(input.output);
+    if (done) {
+      return {
+        notice: `Finished ${label}: filed ${done.repo}#${done.number} — ${done.url}`,
+        planCard,
+      };
+    }
   }
   return {
     notice: result ? `Finished ${label}: ${result}` : `Finished ${label}.`,
