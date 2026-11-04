@@ -208,9 +208,11 @@ export function fetchLedger(
   kind = 'all',
   limit = 50,
   since?: number,
+  source?: string,
 ): Promise<LedgerResponse> {
   const qs = `api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`
-    + (since !== undefined ? `&since=${since}` : '');
+    + (since !== undefined ? `&since=${since}` : '')
+    + (source !== undefined ? `&source=${encodeURIComponent(source)}` : '');
   return getJson<LedgerResponse>(qs);
 }
 

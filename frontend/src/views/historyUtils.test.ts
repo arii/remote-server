@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { historyRowMatches, sentenceCase, toHistoryRows } from './historyUtils';
+import { historyRowMatches, kindBadge, sentenceCase, toHistoryRows } from './historyUtils';
 import type { HistoryRow } from './historyUtils';
 
 const TURN_DETAIL = [
@@ -196,5 +196,50 @@ describe('history text search (issue #608)', () => {
   it('matches everything on empty query', () => {
     expect(historyRowMatches(mkRow(), '')).toBe(true);
     expect(historyRowMatches(mkRow(), '   ')).toBe(true);
+  });
+});
+
+describe('cli-turn rows (issue #590)', () => {
+  const cli = {
+    kind: 'cli-turn',
+    ts: 1700000000,
+    script: 'ask',
+    model: 'qwen',
+    thread_id: 't1',
+    duration_s: 12.5,
+    usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+    cost_usd: 0.0012,
+    metered: false,
+    tools: ['shell'],
+  };
+
+  it('badges cli-turn rows as cli, everything else verbatim', () => {
+    expect(kindBadge('cli-turn')).toBe('cli');
+    expect(kindBadge('run')).toBe('run');
+    expect(kindBadge('chat')).toBe('chat');
+  });
+
+  it('summarizes script, model, duration, tokens, and cost', () => {
+    const rows = toHistoryRows([], [cli]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].summary).toContain('Ask');
+    expect(rows[0].summary).toContain('qwen');
+    expect(rows[0].summary).toContain('12.5s');
+    expect(rows[0].summary).toContain('150 tok');
+    expect(rows[0].kind).toBe('cli-turn');
+  });
+
+  it('details thread, tools, and usage without failing the row', () => {
+    const rows = toHistoryRows([], [cli]);
+    expect(rows[0].detail).toContain('t1');
+    expect(rows[0].detail).toContain('shell');
+    expect(rows[0].detail).toContain('150');
+    expect(rows[0].tone).toBe('ok');
+  });
+
+  it('tolerates missing usage and cost', () => {
+    const rows = toHistoryRows([], [{ kind: 'cli-turn', ts: 1700000000 }]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tone).toBe('ok');
   });
 });

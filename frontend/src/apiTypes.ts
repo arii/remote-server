@@ -67,6 +67,15 @@ export interface LedgerEntry {
   command?: string;
   elapsed_s?: number;
   provider?: string;
+  // Normalized cli-turn fields from the deep-agent ledger (#590).
+  script?: string;
+  model?: string;
+  thread_id?: string;
+  duration_s?: number;
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null;
+  cost_usd?: number | null;
+  metered?: boolean | null;
+  tools?: string[];
 }
 
 export interface LedgerResponse {

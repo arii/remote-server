@@ -231,12 +231,14 @@ def status() -> dict:
 
 @router.get("/ledger", response_model=LedgerList)
 def ledger(kind: str = "all", limit: int = 50,
-           since: float = 0) -> dict:
+           since: float = 0, source: str = "all") -> dict:
     if kind != "all" and kind not in LEDGER_KINDS:
         raise HTTPException(status_code=400, detail="unknown kind")
+    if source not in ("all", "console", "cli"):
+        raise HTTPException(status_code=400, detail="unknown source")
     limit = max(1, min(200, limit))
     since = max(0.0, since)
-    return {"entries": ledger_read(kind, limit, since)}
+    return {"entries": ledger_read(kind, limit, since, source)}
 
 
 @router.post("/ledger/clear", response_model=LedgerClearResult)

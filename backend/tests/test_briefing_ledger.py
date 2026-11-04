@@ -303,5 +303,191 @@ class BriefingScriptSmokeTest(unittest.TestCase):
             run_mock.call_args.args[0][1].endswith("briefing_summary.py"))
 
 
+CLI_TURN = {
+    "kind": "deep-agent-run",
+    "ts": 1700000000.0,
+    "script": "ask",
+    "model": "qwen",
+    "thread_id": "t1",
+    "duration_s": 12.5,
+    "tool_calls": [{"name": "shell", "args": "ls"}],
+    "tool_results": [],
+    "usage": {"input_tokens": 100, "output_tokens": 50,
+              "total_tokens": 150},
+    "cost_usd": 0.0012,
+    "metered": False,
+    "final_preview": "done",
+    "extra": {},
+}
+
+
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class CliLedgerUnionTest(unittest.TestCase):
+    """CLI turns surface in console history (issue #590)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._old = {k: os.environ.get(k) for k in
+                     ("BUTTONS_LEDGER_PATH", "EVAL_LEDGER",
+                      "DEEP_AGENT_STATE_DIR")}
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp, "ledger.jsonl")
+        os.environ["EVAL_LEDGER"] = os.path.join(
+            self.tmp, "cli-ledger.jsonl")
+        os.environ.pop("DEEP_AGENT_STATE_DIR", None)
+        app = FastAPI()
+        app.include_router(briefing_router.router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        for k, v in self._old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _write_cli(self, rows):
+        with open(os.environ["EVAL_LEDGER"], "w") as fh:
+            for row in rows:
+                fh.write(row if isinstance(row, str)
+                         else json.dumps(row) + "\n")
+
+    def test_cli_turn_normalizes_to_cli_turn_kind(self):
+        self._write_cli([CLI_TURN])
+        resp = self.client.get("/api/ledger")
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        row = entries[0]
+        self.assertEqual(row["kind"], "cli-turn")
+        self.assertEqual(row["ts"], 1700000000.0)
+        self.assertEqual(row["script"], "ask")
+        self.assertEqual(row["model"], "qwen")
+        self.assertEqual(row["thread_id"], "t1")
+        self.assertEqual(row["duration_s"], 12.5)
+        self.assertEqual(row["usage"]["total_tokens"], 150)
+        self.assertEqual(row["cost_usd"], 0.0012)
+
+    def test_union_merges_newest_first_by_ts(self):
+        with open(os.environ["BUTTONS_LEDGER_PATH"], "w") as fh:
+            fh.write(json.dumps({"kind": "run", "event": "old",
+                                 "ts": 1600000000.0}) + "\n")
+        self._write_cli([CLI_TURN])
+        resp = self.client.get("/api/ledger")
+        kinds = [e["kind"] for e in resp.json()["entries"]]
+        self.assertEqual(kinds, ["cli-turn", "run"])
+
+    def test_limit_applies_after_merge(self):
+        with open(os.environ["BUTTONS_LEDGER_PATH"], "w") as fh:
+            for ts in (1600000001.0, 1600000002.0):
+                fh.write(json.dumps({"kind": "run", "ts": ts}) + "\n")
+        self._write_cli([CLI_TURN])
+        resp = self.client.get("/api/ledger", params={"limit": 2})
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["kind"], "cli-turn")
+
+    def test_source_console_excludes_cli(self):
+        self._write_cli([CLI_TURN])
+        ledger.append({"kind": "run", "action": "x"})
+        resp = self.client.get("/api/ledger",
+                               params={"source": "console"})
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "run")
+
+    def test_source_cli_returns_only_cli(self):
+        self._write_cli([CLI_TURN])
+        ledger.append({"kind": "run", "action": "x"})
+        resp = self.client.get("/api/ledger", params={"source": "cli"})
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "cli-turn")
+
+    def test_bad_source_is_400(self):
+        resp = self.client.get("/api/ledger", params={"source": "nope"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_kind_cli_turn_is_allowlisted(self):
+        self._write_cli([CLI_TURN])
+        ledger.append({"kind": "run", "action": "x"})
+        resp = self.client.get("/api/ledger",
+                               params={"kind": "cli-turn"})
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "cli-turn")
+
+    def test_missing_cli_file_yields_console_only(self):
+        ledger.append({"kind": "run", "action": "x"})
+        resp = self.client.get("/api/ledger")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["entries"]), 1)
+
+    def test_corrupt_cli_lines_are_skipped(self):
+        self._write_cli(["{not json\n", CLI_TURN, "[1, 2]\n",
+                         json.dumps({"kind": "other"}) + "\n"])
+        resp = self.client.get("/api/ledger")
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["kind"], "cli-turn")
+
+    def test_cli_since_filter(self):
+        now = time.time()
+        old = dict(CLI_TURN, ts=now - 90000)
+        new = dict(CLI_TURN, ts=now - 10)
+        self._write_cli([old, new])
+        resp = self.client.get("/api/ledger",
+                               params={"since": now - 3600})
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["ts"], now - 10)
+
+    def test_cli_path_parity_with_deep_agent(self):
+        # backend/ledger duplicates deep-agent/ledger.py's path
+        # resolution (hyphenated dir + sys.path games make the import
+        # awkward); pin the two to each other.
+        import importlib.util
+
+        here = os.path.abspath(ledger.__file__)
+        root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
+        deep_agent = os.path.join(root, "deep-agent")
+        sys.path.insert(0, deep_agent)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "cli_ledger_parity",
+                os.path.join(deep_agent, "ledger.py"))
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path.remove(deep_agent)
+
+        def cli_resolve():
+            return (os.environ.get("EVAL_LEDGER") or os.path.join(
+                mod.state_dir(), "ledger.jsonl"))
+
+        cases = [
+            {"EVAL_LEDGER": "/tmp/eval.jsonl",
+             "DEEP_AGENT_STATE_DIR": "/tmp/state"},
+            {"DEEP_AGENT_STATE_DIR": "/tmp/state"},
+            {},
+        ]
+        for case in cases:
+            for k in ("EVAL_LEDGER", "DEEP_AGENT_STATE_DIR"):
+                os.environ.pop(k, None)
+            os.environ.update(case)
+            # Re-exec so LEDGER rebinds (module constant); state_dir
+            # reads env dynamically.
+            spec.loader.exec_module(mod)
+            self.assertEqual(ledger.cli_ledger_path(), cli_resolve(),
+                             f"path drift for {case}")
+
+
 if __name__ == "__main__":
     unittest.main()
