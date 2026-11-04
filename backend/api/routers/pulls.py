@@ -316,8 +316,9 @@ def pr_diff(repo: str = "remote-server", pr: int = 0,
         gh = repo_gh(repo)
     except ValueError:
         raise HTTPException(status_code=400, detail="bad repo")
-    if not isinstance(pr, int) or pr <= 0:
-        raise HTTPException(status_code=400, detail="bad pr number")
+    if (isinstance(pr, bool) or not isinstance(pr, int)
+            or pr <= 0):
+        raise HTTPException(status_code=400, detail="invalid pr")
     try:
         raw = run_gh(gh, ["pr", "diff", str(pr), "--repo", gh],
                      timeout=60, runner=runner)

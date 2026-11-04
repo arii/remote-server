@@ -246,7 +246,20 @@ class PrDiffTest(unittest.TestCase):
             pulls_mod.pr_diff(repo="remote-server", pr=0,
                               runner=runner)
         self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail, "invalid pr")
         self.assertEqual(runner.calls, [])
+
+    def test_diff_rejects_bool_pr(self):
+        from fastapi import HTTPException
+
+        for bad in (True, False, -1):
+            runner = FakeRunner()
+            with self.assertRaises(HTTPException) as ctx:
+                pulls_mod.pr_diff(repo="remote-server", pr=bad,
+                                  runner=runner)
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertEqual(ctx.exception.detail, "invalid pr")
+            self.assertEqual(runner.calls, [], bad)
 
     def test_diff_gh_failure_is_500(self):
         from fastapi import HTTPException
