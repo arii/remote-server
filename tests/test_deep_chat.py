@@ -147,6 +147,73 @@ class TestProposalValidation(unittest.TestCase):
             self.assertFalse(ok, (field, bad))
             self.assertIn("REJECTED", text)
 
+    def test_comment_ok(self):
+        ok, text = deep_chat.validate_proposal(
+            {"kind": "comment", "repo": "arii/boomtick",
+             "pr_number": 12, "body": "Looks good."})
+        self.assertTrue(ok)
+        self.assertIn("PROPOSE comment", text)
+        self.assertIn("REPO: arii/boomtick", text)
+        self.assertIn("PR: 12", text)
+        self.assertIn("BODY:\nLooks good.", text)
+        self.assertIn("END PROPOSE", text)
+
+    def test_comment_rejects(self):
+        good = {"kind": "comment", "repo": "arii/boomtick",
+                "pr_number": 12, "body": "Looks good."}
+        for field, bad in (
+            ("repo", "noslash"),
+            ("repo", "a/b/c"),
+            ("repo", ""),
+            ("repo", 42),
+            ("pr_number", 0),
+            ("pr_number", -3),
+            ("pr_number", "12"),
+            ("pr_number", True),
+            ("pr_number", None),
+            ("body", ""),
+            ("body", "   "),
+            ("body", "x" * 4001),
+            ("body", 42),
+        ):
+            payload = dict(good, **{field: bad})
+            ok, text = deep_chat.validate_proposal(payload)
+            self.assertFalse(ok, (field, bad))
+            self.assertIn("REJECTED", text)
+
+    def test_review_ok(self):
+        for event in ("comment", "request-changes"):
+            ok, text = deep_chat.validate_proposal(
+                {"kind": "review", "repo": "arii/boomtick",
+                 "pr_number": 12, "review_event": event,
+                 "body": "Please fix."})
+            self.assertTrue(ok, event)
+            self.assertIn("PROPOSE review", text)
+            self.assertIn("REPO: arii/boomtick", text)
+            self.assertIn("PR: 12", text)
+            self.assertIn(f"EVENT: {event}", text)
+            self.assertIn("END PROPOSE", text)
+
+    def test_review_rejects(self):
+        good = {"kind": "review", "repo": "arii/boomtick",
+                "pr_number": 12, "review_event": "comment",
+                "body": "Please fix."}
+        for field, bad in (
+            ("repo", "noslash"),
+            ("pr_number", 0),
+            ("pr_number", "12"),
+            ("review_event", "approve"),
+            ("review_event", "APPROVE"),
+            ("review_event", ""),
+            ("review_event", None),
+            ("body", ""),
+            ("body", "x" * 4001),
+        ):
+            payload = dict(good, **{field: bad})
+            ok, text = deep_chat.validate_proposal(payload)
+            self.assertFalse(ok, (field, bad))
+            self.assertIn("REJECTED", text)
+
 
 class TestRecursionBudget(unittest.TestCase):
     def test_room_for_multi_tool_turns(self):
@@ -203,7 +270,8 @@ class TestApprovedProposalBlocks(unittest.TestCase):
     def test_skips_malformed(self):
         self.assertEqual(
             deep_chat.approved_proposal_blocks([None, "x", {}]),
-            ["REJECTED: kind must be 'issue', 'td', or 'dispatch'"])
+            ["REJECTED: kind must be 'issue', 'td', 'dispatch', "
+             "'comment', or 'review'"])
         self.assertEqual(deep_chat.approved_proposal_blocks([]), [])
         self.assertEqual(deep_chat.approved_proposal_blocks(None), [])
 

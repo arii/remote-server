@@ -3,13 +3,16 @@
 ``propose_action`` (deep-agent/deep_chat.py) only formats a proposal;
 the chat approve path validated it via ``--validate-proposal`` and
 dead-ended, so every approved proposal needed a human to retype the
-action by hand. This module runs the three kinds exactly once after
+action by hand. This module runs the five kinds exactly once after
 approval, on the existing resume path (no new endpoints):
 
 - issue:    ``gh issue create`` in the chat repo, returns the URL
 - td:       one allowlisted td command via ``s5tools.run``, returns output
 - dispatch: ``td worktree create`` + ``td agent run --detach``
   (the BoomTick local worktree session), returns the session id
+- comment:  ``gh pr comment`` on an arii PR, returns the URL
+- review:   ``gh pr review --comment|--request-changes`` (never
+  ``--approve``: unrepresentable by construction), returns the URL
 
 Validation mirrors ``deep_chat.validate_proposal`` — the
 approval-time gate, still authoritative — so the executor never runs
@@ -42,11 +45,14 @@ ISSUE_TITLE_LIMIT = 120
 ISSUE_BODY_LIMIT = 4000
 TD_COMMAND_LIMIT = 300
 DISPATCH_TASK_LIMIT = 4000
+COMMENT_BODY_LIMIT = 4000
+REVIEW_EVENTS = ("comment", "request-changes")
 # Cap on surfaced/ledgered execution detail (td output can be long).
 OUTCOME_DETAIL_LIMIT = 1000
 TD_RUN_TIMEOUT = 120
 WORKTREE_TIMEOUT = 120
 DISPATCH_TIMEOUT = 120
+GH_TIMEOUT = 120
 
 # Mirror of deep_chat._valid_branch (git-plausible branch names).
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
@@ -58,6 +64,30 @@ def _valid_branch(branch) -> bool:
             and bool(BRANCH_RE.match(branch))
             and ".." not in branch
             and branch[0] not in "/-.")
+
+
+def _valid_pr_number(value) -> bool:
+    """Mirror of deep_chat._valid_pr_number (kept local: backend
+    must not import the venv-only chat module)."""
+    return (isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0)
+
+
+def _valid_pr_repo(args: dict) -> str:
+    """arii/ owner/name for a PR-discussion proposal. Raises ValueError."""
+    repo = args.get("repo")
+    try:
+        gh = validate_gh(repo)
+    except (ValueError, AttributeError):
+        raise ValueError("needs a repo (owner/name)")
+    if not gh.startswith("arii/"):
+        raise ValueError("repo must be under arii/")
+    try:
+        validate_repo_name(gh.partition("/")[2])
+    except ValueError:
+        raise ValueError("needs a repo (owner/name)")
+    return gh
 
 
 def _capped(text, limit: int = OUTCOME_DETAIL_LIMIT) -> str:
@@ -132,6 +162,36 @@ def validate_dispatch(args: dict) -> tuple[str, str, str]:
     return gh, branch, task.strip()
 
 
+def validate_comment(args: dict) -> tuple:
+    """(gh, pr, body) for a comment proposal. Raises ValueError."""
+    gh = _valid_pr_repo(args)
+    pr = args.get("pr_number")
+    if not _valid_pr_number(pr):
+        raise ValueError("comment needs a PR number (positive int)")
+    body = args.get("body")
+    if (not isinstance(body, str) or not body.strip()
+            or len(body) > COMMENT_BODY_LIMIT):
+        raise ValueError("comment needs a body (1-4000 chars)")
+    return gh, pr, body.strip()
+
+
+def validate_review(args: dict) -> tuple:
+    """(gh, pr, event, body) for a review proposal. Raises ValueError."""
+    gh = _valid_pr_repo(args)
+    pr = args.get("pr_number")
+    if not _valid_pr_number(pr):
+        raise ValueError("review needs a PR number (positive int)")
+    event = args.get("review_event")
+    if event not in REVIEW_EVENTS:
+        raise ValueError("review event must be 'comment' "
+                         "or 'request-changes'")
+    body = args.get("body")
+    if (not isinstance(body, str) or not body.strip()
+            or len(body) > COMMENT_BODY_LIMIT):
+        raise ValueError("review needs a body (1-4000 chars)")
+    return gh, pr, event, body.strip()
+
+
 def run_gh_create_issue(gh: str, title: str, body: str) -> str:
     """File an issue; return its URL. Injectable for tests.
 
@@ -141,6 +201,31 @@ def run_gh_create_issue(gh: str, title: str, body: str) -> str:
     out = run_gh(gh, ["issue", "create", "--repo", gh,
                       "--title", title, "--body", body],
                  timeout=120)
+    lines = out.strip().splitlines()
+    return (lines[-1] if lines else "")[:500]
+
+
+def run_gh_pr_comment(gh: str, pr: int, body: str) -> str:
+    """Post a PR comment; return its URL. Injectable for tests."""
+    out = run_gh(gh, ["pr", "comment", str(pr), "--repo", gh,
+                      "--body", body],
+                 timeout=GH_TIMEOUT)
+    lines = out.strip().splitlines()
+    return (lines[-1] if lines else "")[:500]
+
+
+def run_gh_pr_review(gh: str, pr: int, event: str, body: str) -> str:
+    """Submit a PR review; return its URL. Injectable for tests.
+
+    event is allowlisted: only --comment/--request-changes argv can be
+    built here, so --approve is unrepresentable by construction.
+    """
+    if event not in REVIEW_EVENTS:
+        raise ValueError("review event must be 'comment' "
+                         "or 'request-changes'")
+    out = run_gh(gh, ["pr", "review", str(pr), "--repo", gh,
+                      f"--{event}", "--body", body],
+                 timeout=GH_TIMEOUT)
     lines = out.strip().splitlines()
     return (lines[-1] if lines else "")[:500]
 
@@ -282,9 +367,46 @@ def execute_proposal(args: dict, session_gh: str, session_repo: str,
                            f"on {started['branch']} "
                            f"({started['worktree']})"),
                 "skipped": False}
+    if kind == "comment":
+        try:
+            gh, pr, body = validate_comment(args)
+        except ValueError as exc:
+            return {"proposal_id": proposal_id, "kind": "comment",
+                    "target": "", "ok": False, "detail": f"skipped: {exc}",
+                    "skipped": True}
+        target = f"{gh}#{pr}"
+        try:
+            url = run_gh_pr_comment(gh, pr, body)
+        except Exception as exc:
+            return {"proposal_id": proposal_id, "kind": "comment",
+                    "target": target, "ok": False,
+                    "detail": _capped(f"comment failed: {exc}"),
+                    "skipped": False}
+        return {"proposal_id": proposal_id, "kind": "comment",
+                "target": target, "ok": True,
+                "detail": url or "(no url returned)", "skipped": False}
+    if kind == "review":
+        try:
+            gh, pr, event, body = validate_review(args)
+        except ValueError as exc:
+            return {"proposal_id": proposal_id, "kind": "review",
+                    "target": "", "ok": False, "detail": f"skipped: {exc}",
+                    "skipped": True}
+        target = f"{gh}#{pr} {event}"
+        try:
+            url = run_gh_pr_review(gh, pr, event, body)
+        except Exception as exc:
+            return {"proposal_id": proposal_id, "kind": "review",
+                    "target": target, "ok": False,
+                    "detail": _capped(f"review failed: {exc}"),
+                    "skipped": False}
+        return {"proposal_id": proposal_id, "kind": "review",
+                "target": target, "ok": True,
+                "detail": url or "(no url returned)", "skipped": False}
     return {"proposal_id": proposal_id, "kind": str(kind),
             "target": "", "ok": False,
-            "detail": "skipped: kind must be 'issue', 'td', or 'dispatch'",
+            "detail": "skipped: kind must be 'issue', 'td', 'dispatch', "
+                      "'comment', or 'review'",
             "skipped": True}
 
 
@@ -318,6 +440,12 @@ def format_suffix(outcomes: list) -> str:
             lines.append(f"✓ td `{o['target']}`:\n{o['detail']}"
                          if o["ok"]
                          else f"✗ td `{o['target']}` failed: {o['detail']}")
+        elif o["kind"] == "comment":
+            lines.append(f"✓ comment posted: {o['detail']}" if o["ok"]
+                         else f"✗ comment failed: {o['detail']}")
+        elif o["kind"] == "review":
+            lines.append(f"✓ review submitted: {o['detail']}" if o["ok"]
+                         else f"✗ review failed: {o['detail']}")
         else:
             lines.append(f"✓ dispatch started: {o['detail']}" if o["ok"]
                          else f"✗ dispatch failed: {o['detail']}")

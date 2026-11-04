@@ -96,6 +96,8 @@ class ChatOpsTest(unittest.TestCase):
         self._orig_gh_issue = proposals.run_gh_create_issue
         self._orig_td_run = proposals.run_td_command
         self._orig_dispatch = proposals.run_dispatch
+        self._orig_pr_comment = proposals.run_gh_pr_comment
+        self._orig_pr_review = proposals.run_gh_pr_review
         chat.get_repo_info = lambda repo: {"gh": "arii/remote-server",
                                            "td_cwd": "/srv/remote-server"}
         chat.deep_agent_python = lambda: os.path.abspath(chat.__file__)
@@ -125,6 +127,8 @@ class ChatOpsTest(unittest.TestCase):
         proposals.run_gh_create_issue = self._orig_gh_issue
         proposals.run_td_command = self._orig_td_run
         proposals.run_dispatch = self._orig_dispatch
+        proposals.run_gh_pr_comment = self._orig_pr_comment
+        proposals.run_gh_pr_review = self._orig_pr_review
         import backend.core as _core
         _core.get_repo_status = self._orig_status
         import backend.api.routers.ops as _opsmod
@@ -826,6 +830,79 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(len(self._executed_rows()), 1)
 
+    def test_chat_resume_approve_executes_comment_once(self):
+        self._seed_pending("execcomment001", [
+            {"kind": "comment", "repo": "arii/remote-server",
+             "pr_number": 12, "body": "Nice work."}])
+        seen = []
+        proposals.run_gh_pr_comment = lambda *a: seen.append(a) or \
+            "https://github.com/arii/remote-server/pull/12#issuecomment-1"
+        chat.run_resume_spawn = lambda *a: (0, "All done.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execcomment001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(seen, [("arii/remote-server", 12, "Nice work.")])
+        self.assertIn("✓ comment posted", body["text"])
+        self.assertIn("issuecomment-1", body["text"])
+        self.assertEqual(len(body["executions"]), 1)
+        self.assertTrue(body["executions"][0]["ok"])
+        self.assertEqual(body["executions"][0]["proposal_id"],
+                         "execcomment001:0")
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proposal_kind"], "comment")
+        self.assertIn("issuecomment-1", rows[0]["detail"])
+        # Double-approve: 409, no second execution.
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execcomment001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(self._executed_rows()), 1)
+
+    def test_chat_resume_approve_executes_review(self):
+        self._seed_pending("execreview0001", [
+            {"kind": "review", "repo": "arii/remote-server",
+             "pr_number": 12, "review_event": "request-changes",
+             "body": "Please fix the leak."}])
+        seen = []
+        proposals.run_gh_pr_review = lambda *a: seen.append(a) or \
+            "https://github.com/arii/remote-server/pull/12#pullrequestreview-2"
+        chat.run_resume_spawn = lambda *a: (0, "All done.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execreview0001",
+                                     "decision": "approve"})
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(seen, [("arii/remote-server", 12, "request-changes",
+                                 "Please fix the leak.")])
+        self.assertIn("✓ review submitted", body["text"])
+        self.assertIn("pullrequestreview-2", body["text"])
+        self.assertEqual(body["executions"][0]["target"],
+                         "arii/remote-server#12 request-changes")
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proposal_kind"], "review")
+
+    def test_chat_resume_reject_runs_no_comment_review(self):
+        self._seed_pending("execrej000002", [
+            {"kind": "comment", "repo": "arii/remote-server",
+             "pr_number": 12, "body": "B"},
+            {"kind": "review", "repo": "arii/remote-server",
+             "pr_number": 12, "review_event": "comment", "body": "B"}])
+        seen = []
+        proposals.run_gh_pr_comment = lambda *a: seen.append(a)
+        proposals.run_gh_pr_review = lambda *a: seen.append(a)
+        chat.run_resume_spawn = lambda *a: (0, "Declined.")
+        resp = self.client.post("/api/chat/resume",
+                               json={"session_id": "execrej000002",
+                                     "decision": "reject"})
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(seen, [])
+        self.assertEqual(len(self._executed_rows()), 0)
+
     def test_chat_resume_approve_executes_td(self):
         self._seed_pending("exectd0000001", [
             {"kind": "td", "command": "td doctor"}])
@@ -973,6 +1050,90 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(len(out), 5)
         self.assertTrue(all(o["skipped"] for o in out))
         self.assertEqual(proposals.format_suffix(out), "")
+
+    def test_proposals_comment_review_validation_matrix(self):
+        good_comment = {"kind": "comment", "repo": "arii/remote-server",
+                        "pr_number": 12, "body": "Nice."}
+        good_review = {"kind": "review", "repo": "arii/remote-server",
+                       "pr_number": 12, "review_event": "comment",
+                       "body": "Nice."}
+        bads = []
+        for field, bad in (
+            ("repo", "noslash"),
+            ("repo", "evil/x"),
+            ("repo", ""),
+            ("pr_number", 0),
+            ("pr_number", -1),
+            ("pr_number", "12"),
+            ("pr_number", True),
+            ("pr_number", None),
+            ("body", ""),
+            ("body", "   "),
+            ("body", "x" * 4001),
+        ):
+            bads.append((len(bads), dict(good_comment, **{field: bad})))
+            bads.append((len(bads), dict(good_review, **{field: bad})))
+        bads.append((len(bads), dict(good_review,
+                                     review_event="approve")))
+        bads.append((len(bads), dict(good_review,
+                                     review_event="APPROVE")))
+        bads.append((len(bads), dict(good_review, review_event="")))
+        out = proposals.execute_proposals(
+            bads, "v0000000002", "arii/remote-server", "remote-server")
+        self.assertEqual(len(out), len(bads))
+        self.assertTrue(all(o["skipped"] for o in out), out)
+        self.assertEqual(proposals.format_suffix(out), "")
+        self.assertTrue(all("skipped: " in o["detail"] for o in out))
+
+    def test_proposals_pr_comment_argv(self):
+        seen = {}
+
+        def _fake_run_gh(gh, argv, timeout=60):
+            seen["gh"] = gh
+            seen["argv"] = argv
+            return "https://github.com/arii/remote-server/pull/12#x\n"
+
+        orig = proposals.run_gh
+        proposals.run_gh = _fake_run_gh
+        try:
+            url = proposals.run_gh_pr_comment("arii/remote-server",
+                                              12, "Nice.")
+        finally:
+            proposals.run_gh = orig
+        self.assertEqual(
+            url, "https://github.com/arii/remote-server/pull/12#x")
+        self.assertEqual(
+            seen["argv"],
+            ["pr", "comment", "12", "--repo", "arii/remote-server",
+             "--body", "Nice."])
+
+    def test_proposals_pr_review_argv(self):
+        seen = []
+
+        def _fake_run_gh(gh, argv, timeout=60):
+            seen.append(argv)
+            return "https://github.com/arii/remote-server/pull/12#r\n"
+
+        orig = proposals.run_gh
+        proposals.run_gh = _fake_run_gh
+        try:
+            for event in ("comment", "request-changes"):
+                proposals.run_gh_pr_review("arii/remote-server", 12,
+                                           event, "B")
+        finally:
+            proposals.run_gh = orig
+        self.assertEqual(len(seen), 2)
+        for argv, event in zip(seen, ("comment", "request-changes")):
+            self.assertEqual(
+                argv,
+                ["pr", "review", "12", "--repo", "arii/remote-server",
+                 f"--{event}", "--body", "B"])
+            # --approve is unrepresentable: no event value can
+            # produce it, and direct calls with one raise.
+            self.assertNotIn("--approve", argv)
+        with self.assertRaises(ValueError):
+            proposals.run_gh_pr_review("arii/remote-server", 12,
+                                       "approve", "B")
 
     def test_proposals_dispatch_runs_worktree_then_session(self):
         calls = []
