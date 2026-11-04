@@ -13,6 +13,7 @@ ledger (`ledger.py`) own their own concerns.
 
 import os
 import re
+import shlex
 import subprocess
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -20,6 +21,67 @@ CHECKOUTS = {"arii/remote-server": "/srv/remote-server"}
 
 DEFAULT_TIMEOUT = 120
 MAX_OUT = 4000
+
+# Verify-command allowlist, shared by coder's run_check and the
+# chat/ask run_repo_command tool (#633). Moved verbatim from coder.py:
+# argv prefixes (pinned cwd, capped output).
+# NOTE: no ("npx", "tsc") — it fetches the `tsc` squat placeholder,
+# not TypeScript, so it stays rejected (see #517 for the twin fix).
+CHECK_PREFIXES = (
+    ("python3", "-m", "pytest"),
+    ("pytest",),
+    ("pnpm", "exec", "vitest"),
+    ("pnpm", "test"),
+    ("pnpm", "run", "lint"),
+    ("pnpm", "run", "type-check"),
+    ("npm", "test"),
+    ("go", "test"),
+    ("git", "diff"),
+    ("git", "status"),
+    ("git", "log"),
+)
+CHECK_TIMEOUT = 300
+CHECK_OUTPUT_LIMIT = 4000
+TEST_FILE_RE = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")
+
+
+def check_allowed(argv):
+    """True when argv starts with an allowlisted verify prefix, or
+    runs one repo test file directly (python3 tests/test_x.py)."""
+    tupled = tuple(argv)
+    if len(tupled) >= 2 and tupled[0] == "python3" \
+            and TEST_FILE_RE.match(tupled[1]):
+        return True
+    return any(tupled[:len(p)] == p for p in CHECK_PREFIXES)
+
+
+def allowed_commands_text():
+    """Human list of the allowlisted command heads (tool prompts)."""
+    return ", ".join(" ".join(p) for p in CHECK_PREFIXES)
+
+
+def run_repo_command(checkout, command):
+    """Run an allowlisted verification command in checkout. Never
+    raises: returns "exit=<n>\\n<tail>", "REJECTED: ...", "TIMEOUT
+    ...", or "exec failed: ...". argv is tupled from shlex — never
+    shell=True — so metachars are inert arg bytes, never control."""
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        return f"REJECTED: bad command line: {exc}"
+    if not argv or not check_allowed(argv):
+        return ("REJECTED: command must start with one of: "
+                + allowed_commands_text())
+    try:
+        proc = subprocess.run(
+            argv, cwd=checkout, capture_output=True, text=True,
+            timeout=CHECK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
+    except OSError as exc:
+        return f"exec failed: {exc}"
+    out = ((proc.stdout or "") + (proc.stderr or ""))[-CHECK_OUTPUT_LIMIT:]
+    return f"exit={proc.returncode}\n{out}"
 
 
 def valid_repo(repo):

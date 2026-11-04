@@ -25,7 +25,6 @@ import argparse
 import concurrent.futures
 import json
 import os
-import re
 import shlex
 import sys
 import time
@@ -34,31 +33,23 @@ import cli
 
 cli.bootstrap()
 
+# run_check allowlist lives in s5tools now, shared with the chat/ask
+# run_repo_command tool (#633); names re-exported here so existing
+# imports (coder.check_allowed, tests) keep working unchanged.
+from s5tools import (  # noqa: E402,F401
+    CHECK_OUTPUT_LIMIT,
+    CHECK_PREFIXES,
+    CHECK_TIMEOUT,
+    TEST_FILE_RE,
+    check_allowed,
+)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 
 # Coding needs more graph steps than chat turns (read/plan/edit/verify).
 RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
-CHECK_TIMEOUT = 300
-CHECK_OUTPUT_LIMIT = 4000
-
-# run_check allowlist: argv prefixes (pinned cwd, capped output).
-# NOTE: no ("npx", "tsc") — it fetches the `tsc` squat placeholder,
-# not TypeScript, so it stays rejected (see #517 for the twin fix).
-CHECK_PREFIXES = (
-    ("python3", "-m", "pytest"),
-    ("pytest",),
-    ("pnpm", "exec", "vitest"),
-    ("pnpm", "test"),
-    ("pnpm", "run", "lint"),
-    ("pnpm", "run", "type-check"),
-    ("npm", "test"),
-    ("go", "test"),
-    ("git", "diff"),
-    ("git", "status"),
-    ("git", "log"),
-)
 
 CODER_RULES = """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are relative to the worktree root: /x means {worktree}/x.
@@ -82,19 +73,6 @@ def parse_args(argv):
     if not args.brief:
         parser.error("BRIEF is required")
     return args
-
-
-TEST_FILE_RE = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")
-
-
-def check_allowed(argv):
-    """True when argv starts with an allowlisted run_check prefix, or
-    runs one repo test file directly (python3 tests/test_x.py)."""
-    tupled = tuple(argv)
-    if len(tupled) >= 2 and tupled[0] == "python3" \
-            and TEST_FILE_RE.match(tupled[1]):
-        return True
-    return any(tupled[:len(p)] == p for p in CHECK_PREFIXES)
 
 
 def build_system(worktree, context):

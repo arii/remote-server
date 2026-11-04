@@ -451,13 +451,13 @@ class TestTrivialTrace(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
-    def test_five_tools(self):
+    def test_six_tools(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 5)
+        self.assertEqual(len(tools), 6)
         self.assertEqual(
             {t.name for t in tools},
             {"read_repo_file", "grep_repo", "list_dir", "search_docs",
-             "propose_action"},
+             "propose_action", "run_repo_command"},
         )
 
     def test_read_grep_list_delegate(self):
@@ -507,10 +507,27 @@ class TestToolSurface(unittest.TestCase):
             {"kind": "td", "command": "td do-evil"})
         self.assertIn("REJECTED", out)
 
+    def test_run_repo_command_tool(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            probe = os.path.join(d, "tests", "test_x.py")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("print('X-MARKER')\n")
+            by_name = {t.name: t for t in deep_chat.build_tools(d)}
+            out = by_name["run_repo_command"].invoke(
+                {"command": "python3 tests/test_x.py"})
+            self.assertTrue(out.startswith("exit=0\n"), out[:200])
+            self.assertIn("X-MARKER", out)
+            out = by_name["run_repo_command"].invoke(
+                {"command": "npx tsc --noEmit"})
+            self.assertIn("REJECTED", out)
+
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestAgentMechanics(unittest.TestCase):
-    def _stub_agent(self, replies, thread="t-mech"):
+    def _stub_agent(self, replies, thread="t-mech", checkout="/tmp"):
         from langchain_core.language_models.chat_models import BaseChatModel
         from langchain_core.outputs import ChatGeneration, ChatResult
         from pydantic import Field
@@ -538,7 +555,7 @@ class TestAgentMechanics(unittest.TestCase):
 
         agent = create_deep_agent(
             model=QueueChatModel(replies=list(replies)),
-            tools=deep_chat.build_tools("/tmp"),
+            tools=deep_chat.build_tools(checkout),
             system_prompt="Repo: x. test",
             interrupt_on=dict(deep_chat.INTERRUPT_ON),
             checkpointer=InMemorySaver(),
@@ -552,6 +569,36 @@ class TestAgentMechanics(unittest.TestCase):
             {"name": "propose_action", "args": args, "id": call_id,
              "type": "tool_call"},
         ])
+
+    def test_verify_tool_runs_in_turn(self):
+        import tempfile
+
+        from langchain_core.messages import AIMessage
+
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tests"))
+            probe = os.path.join(d, "tests", "test_x.py")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("print('TURN-MARKER')\n")
+            call = AIMessage(content="", tool_calls=[{
+                "name": "run_repo_command",
+                "args": {"command": "python3 tests/test_x.py"},
+                "id": "call-verify", "type": "tool_call"}])
+            agent, config = self._stub_agent(
+                [call, AIMessage(content="exit was 0, tail shows TURN-MARKER")],
+                thread="t-verify", checkout=d)
+            done = agent.invoke(
+                {"messages": [{"role": "user",
+                               "content": "run the test to confirm"}]},
+                config)
+            joined = "\n".join(
+                str(m.content) for m in done["messages"]
+                if m.__class__.__name__ == "ToolMessage")
+            self.assertIn("exit=0", joined)
+            self.assertIn("TURN-MARKER", joined)
+            self.assertEqual(
+                done["messages"][-1].content,
+                "exit was 0, tail shows TURN-MARKER")
 
     def test_pause_then_approve_executes(self):
         from langchain_core.messages import AIMessage
