@@ -382,6 +382,98 @@ class RunTurnTest(unittest.TestCase):
     def test_abort_unknown_is_false(self):
         self.assertFalse(asyncio.run(self.mgr.abort("nope")))
 
+    def test_second_turn_aborts_first_and_owns_result(self):
+        # Single-flight (issue #441): a second turn on one session
+        # kills the in-flight CLI; the retired turn raises
+        # TurnSuperseded instead of storing, so pop_result returns
+        # the survivor's record.
+        async def go():
+            first = asyncio.create_task(self._agen(
+                session_id="s-race", argv=["/bin/sleep", "30"]))
+            await asyncio.sleep(0.3)
+            prior = self.mgr._running.get("s-race")
+            self.assertIsNotNone(prior)
+            chunks = [c async for c in self.mgr.run_turn(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-race", prompt="again",
+                continued=True, argv=["/bin/echo", "second"])]
+            with self.assertRaises(agent_turn.TurnSuperseded):
+                await first
+            return chunks, prior
+        chunks, prior = asyncio.run(go())
+        self.assertEqual("".join(chunks), "second\n")
+        self.assertIsNotNone(prior.poll())
+        result = self.mgr.pop_result("s-race")
+        self.assertEqual(result["exit"], 0)
+        self.assertIsNone(self.mgr.pop_result("s-race"))
+        self.assertNotIn("s-race", self.mgr._running)
+
+    def test_concurrent_starts_leave_one_owner(self):
+        # Two turns started together: exactly one streams to a
+        # stored result; the loser raises TurnSuperseded and the
+        # slot ends free.
+        async def go():
+            async def collect(tag):
+                return "".join([c async for c in self.mgr.run_turn(
+                    provider="muse", repo="r", cwd="/tmp",
+                    session_id="s-duo", prompt=tag,
+                    continued=False,
+                    argv=["/bin/sh", "-c",
+                         "sleep 0.2; echo %s" % tag])])
+            return await asyncio.gather(
+                collect("aaa"), collect("bbb"),
+                return_exceptions=True)
+        results = asyncio.run(go())
+        texts = sorted(r for r in results
+                       if not isinstance(r, Exception))
+        losers = [r for r in results
+                  if isinstance(r, agent_turn.TurnSuperseded)]
+        self.assertEqual(len(texts), 1)
+        self.assertEqual(len(losers), 1)
+        stored = self.mgr.pop_result("s-duo")
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["exit"], 0)
+        self.assertNotIn("s-duo", self.mgr._running)
+
+    def test_abandoned_superseded_turn_keeps_newer_result(self):
+        # Generation-guarded drop-on-abandon (issue #441): closing
+        # the retired turn's stream after its successor stored must
+        # not drop the newer turn's result.
+        async def go():
+            gen = self.mgr.run_turn(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-old-new", prompt="hi",
+                continued=False,
+                argv=["/bin/sh", "-c",
+                     "head -c 70000 /dev/zero | tr '\\0' 'y'; "
+                     "sleep 30"])
+            chunk = await gen.__anext__()
+            self.assertEqual(len(chunk), agent_turn.READ_CHUNK)
+            second = "".join([c async for c in self.mgr.run_turn(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-old-new", prompt="again",
+                continued=True, argv=["/bin/echo", "new"])])
+            self.assertEqual(second, "new\n")
+            await gen.aclose()
+        asyncio.run(go())
+        result = self.mgr.pop_result("s-old-new")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["exit"], 0)
+
+    def test_sequential_same_session_turns_each_store(self):
+        # Single-flight must not break back-to-back turns on one
+        # session: each completes, stores, and pops its own record.
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-seq", prompt="one",
+                      continued=False, argv=["/bin/echo", "one"])
+        first = self.mgr.pop_result("s-seq")
+        self.assertEqual(first["exit"], 0)
+        self._collect(provider="muse", repo="r", cwd="/tmp",
+                      session_id="s-seq", prompt="two",
+                      continued=True, argv=["/bin/echo", "two"])
+        second = self.mgr.pop_result("s-seq")
+        self.assertEqual(second["exit"], 0)
+
     def test_abandoned_generator_reaps_proc_and_frees_session(self):
         # Client disconnect (New session, navigate away, tab close)
         # closes the SSE generator mid-stream: the CLI must die
@@ -729,6 +821,27 @@ class AgentRouterTest(unittest.TestCase):
                                     json=TURN_BODY)
         self.assertIn("event: error", resp.text)
         self.assertIn("timed out after", resp.text)
+        self.assertNotIn("event: done", resp.text)
+
+    def test_superseded_turn_sends_error_event(self):
+        # Single-flight (issue #441): the retired turn's stream
+        # reports superseded without popping the owner's result.
+        async def _victim(*args, **kwargs):
+            yield "partial-"
+            raise agent_turn.TurnSuperseded("s-victim")
+            yield  # pragma: no cover - make this an async generator
+
+        with mock.patch.object(agent_turn.manager, "run_turn",
+                               _victim), \
+                mock.patch.object(
+                    agent_turn.manager, "pop_result",
+                    side_effect=AssertionError(
+                        "must not pop another turn's record")):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("event: error", resp.text)
+        self.assertIn("turn-superseded", resp.text)
+        self.assertIn("partial-", resp.text)
         self.assertNotIn("event: done", resp.text)
 
     def test_abort_requires_session(self):

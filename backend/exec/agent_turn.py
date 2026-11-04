@@ -278,6 +278,11 @@ async def provider_status(cwd: str) -> list:
         return [_probe_cache[p][1] for p in PROVIDERS]
 
 
+class TurnSuperseded(Exception):
+    """A newer turn claimed the session; this turn lost single-flight
+    (issue #441) and must not store a result or pop another turn's."""
+
+
 class AgentTurnManager:
     """Runs headless turns and aborts the in-flight one per session."""
 
@@ -285,6 +290,12 @@ class AgentTurnManager:
         self._lock = threading.Lock()
         self._running: dict[str, subprocess.Popen] = {}
         self._results: dict[str, dict] = {}
+        # Single-flight generation per session (issue #441): every
+        # run_turn bumps the counter under the lock, so at most one
+        # turn owns the session. Older generations raise
+        # TurnSuperseded instead of unregistering, storing, or
+        # popping a newer turn's record.
+        self._generation: dict[str, int] = {}
         # Sessions the server has run a turn for (issue #442). Only
         # these may skip the spawn confirm gate; a client-minted id
         # the server never issued must confirm like a new spawn.
@@ -297,9 +308,18 @@ class AgentTurnManager:
         with self._lock:
             self._running[session_id] = proc
 
-    def _unregister(self, session_id: str) -> None:
+    def _unregister(self, session_id: str,
+                    proc: subprocess.Popen) -> None:
+        # Identity-guarded (issue #441): a superseded turn finishing
+        # after its successor registered must not free the slot.
         with self._lock:
-            self._running.pop(session_id, None)
+            if self._running.get(session_id) is proc:
+                self._running.pop(session_id, None)
+
+    def _is_current(self, session_id: str,
+                    generation: int) -> bool:
+        with self._lock:
+            return self._generation.get(session_id) == generation
 
     def _remember(self, session_id: str) -> None:
         with self._lock:
@@ -317,7 +337,12 @@ class AgentTurnManager:
                        argv: list | None = None):
         """Yield stdout text chunks for one turn. Afterwards
         pop_result(session_id) holds {exit, stderr, truncated,
-        timed_out}. `argv` overrides the allowlist lookup (tests)."""
+        timed_out}. `argv` overrides the allowlist lookup (tests).
+
+        Single-flight per session (issue #441): claiming the
+        session aborts the registered prior turn, and the retired
+        turn raises TurnSuperseded instead of storing — so
+        pop_result never returns another turn's record."""
         cmd = list(argv) if argv is not None else turn_argv(
             provider, cwd, session_id, prompt, continued)
         started = time.time()
@@ -339,17 +364,47 @@ class AgentTurnManager:
             except Exception:
                 pass
             raise
+        # Claim after a successful spawn, so a turn that fails to
+        # start leaves the prior turn untouched. The bump retires
+        # the in-flight turn; its generator raises TurnSuperseded
+        # instead of storing over this turn's result.
+        with self._lock:
+            prior = self._running.get(session_id)
+            generation = self._generation.get(session_id, 0) + 1
+            self._generation[session_id] = generation
+        if prior is not None and prior.poll() is None:
+            await _stop_proc(prior)
+        if not self._is_current(session_id, generation):
+            # A third turn claimed the session while this one was
+            # stopping the prior: never register or stream — reap
+            # the just-spawned process and report like the victim.
+            await _stop_proc(proc)
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except Exception:
+                    pass
+            try:
+                err_file.close()
+            except Exception:
+                pass
+            raise TurnSuperseded(session_id)
         self._register(session_id, proc)
         self._remember(session_id)
         out_text: list[str] = []
         out_len = 0
         truncated = False
         timed_out = False
+        superseded = False
         err_tail = ""
         deadline = started + TURN_TIMEOUT
         try:
             assert proc.stdout is not None
             while True:
+                if not self._is_current(session_id, generation):
+                    superseded = True
+                    break
                 budget = deadline - time.time()
                 if budget <= 0:
                     timed_out = True
@@ -381,10 +436,13 @@ class AgentTurnManager:
             # must not leave a result behind for this session.
             # Sync-only (no yield/await) then re-raise, so the
             # finally below still reaps the process and closes
-            # the pipes.
+            # the pipes. Generation-guarded (issue #441): a
+            # superseded turn closed after its successor stored
+            # must not drop the newer turn's result.
             with self._lock:
-                self._results.pop(session_id, None)
-                self._result_at.pop(session_id, None)
+                if self._generation.get(session_id) == generation:
+                    self._results.pop(session_id, None)
+                    self._result_at.pop(session_id, None)
             raise
         finally:
             # Abandonment (GeneratorExit from a closed SSE stream, task
@@ -393,7 +451,7 @@ class AgentTurnManager:
             # the process already exited. Without this the CLI runs to
             # TURN_TIMEOUT with nobody reading (chat precedent: the
             # GeneratorExit kill, "SSE zombie, #294").
-            self._unregister(session_id)
+            self._unregister(session_id, proc)
             await _stop_proc(proc)
             for pipe in (proc.stdout, proc.stderr):
                 try:
@@ -405,6 +463,13 @@ class AgentTurnManager:
                 err_file.close()
             except Exception:
                 pass
+        if superseded or not self._is_current(session_id,
+                                                 generation):
+            # Retired while streaming (or while a successor claimed
+            # during teardown): no ledger, no store — the owning
+            # turn's record is authoritative, and raising here keeps
+            # this stream from popping it.
+            raise TurnSuperseded(session_id)
         code = proc.poll()
         tail = "".join(out_text)[-STDERR_TAIL:]
         detail, error = turn_decisions(
@@ -424,11 +489,18 @@ class AgentTurnManager:
         # takes the same (non-reentrant) lock itself.
         self._sweep_results()
         with self._lock:
-            self._results[session_id] = {"exit": code,
-                                         "stderr": err_tail,
-                                         "truncated": truncated,
-                                         "timed_out": timed_out}
-            self._result_at[session_id] = time.time()
+            current = (self._generation.get(session_id)
+                       == generation)
+            if current:
+                self._results[session_id] = {"exit": code,
+                                             "stderr": err_tail,
+                                             "truncated": truncated,
+                                             "timed_out": timed_out}
+                self._result_at[session_id] = time.time()
+        if not current:
+            # A successor claimed during the ledger write: the turn
+            # ran, but its record must not overwrite the owner's.
+            raise TurnSuperseded(session_id)
 
     def _sweep_results(self, now: float | None = None) -> None:
         """Drop result entries older than RESULT_TTL.
