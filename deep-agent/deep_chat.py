@@ -107,20 +107,16 @@ SUPERVISOR_BRIEF = (
 )
 EXIT_NEEDS_APPROVAL = 3
 
-# Mirror of the engine td allowlist (backend/exec/engine.py
-# ALLOWED_TD_COMMANDS, re-exported by ask_investigator.py #521).
-# "N" is a PR-number placeholder; otherwise match verbatim.
-# fix-ci was listed until #428 retired it (dead backend dispatch).
-ALLOWED_TD = [
-    "td gh read-pr-reviews --pr N",
-    "td gh read-pr-comments --pr N",
-    "td gh resolve-conflicts --pr N",
-    "td context-warm",
-    "td --json preflight",
-    "td --json agent list-sessions",
-    "td --json jules list-sessions",
-    "td --json agent run-feedback-check",
-]
+# Single-sourced from backend/exec/engine.py ALLOWED_TD_COMMANDS
+# (the truth): the hand mirror drifted — it accepted the
+# engine-rejected `td --json jules list-sessions` shape, so an
+# approved proposal could never run (#477). ALLOWED_TD is the
+# engine's list itself, never a copy (same pattern as
+# ask_investigator.py #521).
+# engine.py is stdlib-only, so the stdlib-only import contract holds.
+if cli.repo_root() not in sys.path:
+    sys.path.insert(0, cli.repo_root())
+from backend.exec.engine import ALLOWED_TD_COMMANDS as ALLOWED_TD  # noqa: E402
 
 # The buttons confirm pattern: Approve tap -> approve, Decline tap ->
 # reject. Batched mode (deepagents default): one interrupt per model
