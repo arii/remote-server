@@ -31,12 +31,12 @@ plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
 import argparse
-import concurrent.futures
 import json
 import os
 import re
 import shlex
 import sys
+import threading
 import time
 
 import cli
@@ -375,6 +375,39 @@ def trace_has_passing_check(trace_path):
     return False
 
 
+def run_bounded(fn, timeout):
+    """Run fn() on a daemon thread with a wall-clock timeout.
+
+    Replaces ThreadPoolExecutor + future.result(timeout) inside a
+    `with` block: on timeout that pattern's __exit__ calls
+    shutdown(wait=True), which blocks until the stuck worker
+    finishes — the TimeoutError handler never runs and the cap is
+    unenforceable exactly when it matters (#514). The daemon worker
+    here never blocks the caller or interpreter exit: on timeout
+    this raises TimeoutError immediately, the caller closes the
+    recorder/ledgers the error/Sorry-exits, and the process exits
+    even with the worker still stuck. A stuck worker may still race
+    the recorder close or the sqlite handle on its way out; those
+    errors die with the worker thread, never with the timeout path.
+    """
+    box = {}
+
+    def _target():
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 def run_with_verify(initial_invoke, reinvoke, has_passing_check,
                     max_rounds):
     """One invoke plus bounded verify re-invokes.
@@ -448,17 +481,16 @@ def run_coder(worktree, brief, system, thread, timeout):
 
     max_rounds = verify_rounds()
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            def _submit(msgs):
-                return pool.submit(_invoke, msgs).result(timeout=timeout)
-
-            result, rounds, verified = run_with_verify(
-                lambda: _submit([HumanMessage(content=brief)]),
-                lambda: _submit([HumanMessage(content=VERIFY_NUDGE)]),
-                lambda: trace_has_passing_check(recorder.path),
-                max_rounds,
-            )
-    except concurrent.futures.TimeoutError:
+        result, rounds, verified = run_with_verify(
+            lambda: run_bounded(
+                lambda: _invoke([HumanMessage(content=brief)]), timeout),
+            lambda: run_bounded(
+                lambda: _invoke([HumanMessage(content=VERIFY_NUDGE)]),
+                timeout),
+            lambda: trace_has_passing_check(recorder.path),
+            max_rounds,
+        )
+    except TimeoutError:
         recorder.run_end(False)
         recorder.close()
         raise RuntimeError(f"coder timed out after {timeout}s")
@@ -574,19 +606,15 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
             config={**config, "recursion_limit": RECURSION_LIMIT})
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(
-                _invoke,
-                [HumanMessage(
-                    content=PLAN_PROMPT.format(brief=brief))],
-            ).result(timeout=timeout)
+        run_bounded(lambda: _invoke(
+            [HumanMessage(
+                content=PLAN_PROMPT.format(brief=brief))]), timeout)
+        pending = deep_chat._pending_interrupts(agent, config)
+        if not pending:
+            run_bounded(lambda: _invoke(
+                [HumanMessage(content=PLAN_NUDGE)]), timeout)
             pending = deep_chat._pending_interrupts(agent, config)
-            if not pending:
-                pool.submit(
-                    _invoke, [HumanMessage(content=PLAN_NUDGE)],
-                ).result(timeout=timeout)
-                pending = deep_chat._pending_interrupts(agent, config)
-    except concurrent.futures.TimeoutError:
+    except TimeoutError:
         recorder.run_end(False)
         recorder.close()
         ledger.record(
@@ -776,13 +804,9 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
             config={**config, "recursion_limit": RECURSION_LIMIT})
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            pool.submit(
-                _invoke,
-                Command(resume=deep_chat.resume_payload(
-                    [deep_chat.decision_for_verdict("approve")] * count)),
-            ).result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
+        run_bounded(lambda: _invoke(Command(resume=deep_chat.resume_payload(
+            [deep_chat.decision_for_verdict("approve")] * count))), timeout)
+    except TimeoutError:
         recorder.run_end(False)
         recorder.close()
         ledger.record(
