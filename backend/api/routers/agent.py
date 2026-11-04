@@ -132,6 +132,14 @@ async def _turn_events(provider: str, repo: str, cwd: str,
     except OSError:
         yield sse_frame("error", {"error": "turn failed to start"})
         return
+    except agent_turn.TurnSuperseded:
+        # Single-flight (issue #441): a newer turn claimed the
+        # session, so this stream ends here without popping — the
+        # owning turn's stream reports its own result.
+        yield sse_frame("error", {"error": "turn superseded by a "
+                                           "newer turn",
+                                  "code": "turn-superseded"})
+        return
     result = agent_turn.manager.pop_result(session_id) or {}
     if result.get("timed_out"):
         yield sse_frame("error", {
