@@ -66,6 +66,12 @@ STDERR_READ_MAX = 65536
 TURN_TIMEOUT = 600
 KILL_GRACE = 5
 
+# A stored turn result must not live forever: entries that no route
+# ever pops (abandoned streams, issue #535) are swept past this age,
+# mirroring the pi_runs 3600s eviction in chat.py. The pop-on-complete
+# path runs milliseconds after the store, so the TTL never bites it.
+RESULT_TTL = 3600
+
 
 async def _stop_proc(proc: subprocess.Popen) -> None:
     """Terminate, escalate to kill, wait bounded. Never raises and
@@ -259,6 +265,7 @@ class AgentTurnManager:
         self._lock = threading.Lock()
         self._running: dict[str, subprocess.Popen] = {}
         self._results: dict[str, dict] = {}
+        self._result_at: dict[str, float] = {}
 
     def _register(self, session_id: str,
                   proc: subprocess.Popen) -> None:
@@ -323,6 +330,16 @@ class AgentTurnManager:
                     err_tail = (err or "")[-STDERR_TAIL:]
                 except Exception:
                     err_tail = ""
+        except GeneratorExit:
+            # Drop-on-abandon (issue #535): a closed SSE stream
+            # must not leave a result behind for this session.
+            # Sync-only (no yield/await) then re-raise, so the
+            # finally below still reaps the process and closes
+            # the pipes.
+            with self._lock:
+                self._results.pop(session_id, None)
+                self._result_at.pop(session_id, None)
+            raise
         finally:
             # Abandonment (GeneratorExit from a closed SSE stream, task
             # cancel) lands here too: the loop's _stop_proc runs only
@@ -353,15 +370,35 @@ class AgentTurnManager:
         if error is not None:
             record["error"] = error
         ledger_append(record)
+        # Sweep outside the store lock below: _sweep_results
+        # takes the same (non-reentrant) lock itself.
+        self._sweep_results()
         with self._lock:
             self._results[session_id] = {"exit": code,
                                          "stderr": err_tail,
                                          "truncated": truncated,
                                          "timed_out": timed_out}
+            self._result_at[session_id] = time.time()
+
+    def _sweep_results(self, now: float | None = None) -> None:
+        """Drop result entries older than RESULT_TTL.
+
+        Backstop for results no route ever pops (issue #535):
+        the store site sweeps opportunistically, so _results
+        stays bounded without a background thread.
+        """
+        at = time.time() if now is None else now
+        with self._lock:
+            stale = [sid for sid, ts in self._result_at.items()
+                     if at - ts > RESULT_TTL]
+            for sid in stale:
+                self._results.pop(sid, None)
+                self._result_at.pop(sid, None)
 
     def pop_result(self, session_id: str) -> dict | None:
         """Completion record for a finished turn, once."""
         with self._lock:
+            self._result_at.pop(session_id, None)
             return self._results.pop(session_id, None)
 
     async def abort(self, session_id: str) -> bool:
