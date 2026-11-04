@@ -69,6 +69,8 @@ ACTION_STEP_TIMEOUTS = {
     "triage-fanout": 1200,
     "ux-audit": 1200,
     "impact-pass": 1200,
+    "review-pr": 1200,
+    "supervise": 1200,
 }
 
 
@@ -100,6 +102,8 @@ ALLOWED_ACTIONS = (
     "autofile-scan",
     "ux-audit",
     "impact-pass",
+    "review-pr",
+    "supervise",
 )
 
 # Actions whose original has confirm: True. The router requires
@@ -125,6 +129,8 @@ REPO_SCOPED_ACTIONS = (
     "triage-fanout",
     "check-notifications",
     "autofile-scan",
+    "review-pr",
+    "supervise",
 )
 
 ENGINE_ROOT = os.path.dirname(
@@ -339,6 +345,28 @@ def validate_ux_audit_argv(tokens):
         return True
     return (tokens[2] == "--max-pages" and tokens[3].isdigit()
             and 1 <= int(tokens[3]) <= 200)
+
+
+def validate_review_pr_argv(tokens):
+    """True for builder-shaped review argv: ["review-pr", N] plus an
+    optional "--post" flag. Structural only (positive PR number,
+    exact flag spelling): the step builder maps the bare form to
+    --dry-run, so anything else could never post anyway.
+    """
+    if not isinstance(tokens, (list, tuple)):
+        return False
+    tokens = list(tokens)
+    if len(tokens) not in (2, 3):
+        return False
+    if not all(isinstance(t, str) for t in tokens):
+        return False
+    if tokens[0] != "review-pr":
+        return False
+    if not tokens[1].isdigit() or int(tokens[1]) <= 0:
+        return False
+    if len(tokens) == 2:
+        return True
+    return tokens[2] == "--post"
 
 
 def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
@@ -565,6 +593,38 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # not repo-scoped (like ux-audit); findings are data (exit
         # 0, ledgered), capture errors fail the run (job_fail push).
         return [[sys.executable, "-m", "core_cli.impact_pass"]], None
+    if action == "review-pr":
+        # Local-model PR review (#886): local -m exec (the
+        # merge-approved-gated shape) of core_cli.review. Read-only
+        # by default: the bare argv maps to --dry-run (plan only,
+        # prints, never posts); --post rides only when the attached
+        # argv explicitly carries it. review.py rejects --dry-run +
+        # --post together, so exactly one flag is ever attached.
+        if not gh:
+            return None, "review-pr needs a repo"
+        if not td_argv or not validate_review_pr_argv(td_argv):
+            return None, "review-pr needs attached [review-pr, N]"
+        argv = [sys.executable, "-m", "core_cli.review",
+               "--repo", gh, "--pr", td_argv[1]]
+        argv.append("--post" if len(td_argv) == 3 else "--dry-run")
+        return [argv], None
+    if action == "supervise":
+        # Propose-only maintainer sweep (#886): deep-agent
+        # --supervise mode for the run's repo (triage-fanout
+        # precedent: venv python + the repo's gh name). Findings
+        # surface as approval interrupts (exit 3, like a chat
+        # proposal awaiting verdict); all-clean exits 0.
+        if not gh:
+            return None, "supervise needs a repo"
+        python = deep_agent_python()
+        script = deep_agent_script("deep_chat.py")
+        if not os.path.isfile(python):
+            return (None, "deep-agent venv python not found at "
+                    f"{python} (set DEEP_AGENT_VENV)")
+        if not os.path.isfile(script):
+            return (None, "deep chat script not found at "
+                    f"{script}")
+        return [[python, script, gh, "--supervise"]], None
     return None, "unknown action"
 
 
