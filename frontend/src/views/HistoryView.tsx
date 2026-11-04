@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchJobRun, fetchJobs, fetchLedger } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
-import { jobPassesKindFilter, tailText, toHistoryRows } from './historyUtils';
+import { historyRowMatches, jobPassesKindFilter, tailText, toHistoryRows } from './historyUtils';
 import type { HistoryMember, HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
 
@@ -123,11 +123,11 @@ function MemberBlock({ member, grouped }: { member: HistoryMember; grouped: bool
   );
 }
 
-function RowsList({ rows }: { rows: HistoryRow[] }) {
+export function RowsList({ rows, filtering }: { rows: HistoryRow[]; filtering: boolean }) {
   if (rows.length === 0) {
     return (
       <p className="row-meta" data-testid="history-empty">
-        No history yet.
+        {filtering ? 'No matching rows.' : 'No history yet.'}
       </p>
     );
   }
@@ -174,11 +174,13 @@ export default function HistoryView({
 }) {
   const { jobs, entries, error, loading, load } = useHistoryData();
   const [kind, setKind] = useState('all');
+  const [query, setQuery] = useState('');
   const all = entries ?? [];
+  const filtering = query.trim().length > 0;
   const rows = toHistoryRows(
     (jobs ?? []).filter((j) => jobPassesKindFilter(j.kind, kind)),
     filterByKind(all, kind),
-  );
+  ).filter((r) => historyRowMatches(r, query));
 
   return (
     <div data-testid="history-view">
@@ -206,6 +208,16 @@ export default function HistoryView({
                 ))}
               </select>
             </label>
+            <label className="row-meta" htmlFor="history-search">
+              Search{' '}
+              <input
+                id="history-search"
+                data-testid="history-search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="summary, detail, or kind"
+              />
+            </label>
             <button type="button" data-testid="history-refresh" onClick={() => void load()}>
               Refresh
             </button>
@@ -218,7 +230,7 @@ export default function HistoryView({
           </div>
         )}
         {loading && <div data-testid="history-loading" role="status">Loading history…</div>}
-        {!loading && !error && <RowsList rows={rows} />}
+        {!loading && !error && <RowsList rows={rows} filtering={filtering} />}
       </section>
     </div>
   );

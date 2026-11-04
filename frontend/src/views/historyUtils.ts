@@ -228,6 +228,18 @@ export function jobPassesKindFilter(jobKind: string | undefined, filter: string)
   return (jobKind || 'job') === filter;
 }
 
+// Client-side text match over one collapsed row: summary, kind,
+// and every member's detail block (the expansion text). Mirrors
+// the Review row filter: case-insensitive substring, leading '#'
+// ignored, empty query matches all.
+export function historyRowMatches(row: HistoryRow, query: string): boolean {
+  const q = query.trim().replace(/^#+/, '').toLowerCase();
+  if (!q) return true;
+  if (row.summary.toLowerCase().includes(q)) return true;
+  if (row.kind.toLowerCase().includes(q)) return true;
+  return row.members.some((m) => m.detail.toLowerCase().includes(q));
+}
+
 // Keep run-output disclosures readable: show the last maxLines lines and
 // say how many earlier lines were hidden. Empty output stays empty.
 export function tailText(output: string, maxLines = 40): string {
