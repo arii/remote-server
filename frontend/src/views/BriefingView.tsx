@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationStatus, setDigestSchedule, triggerDigest } from '../apiClient';
-import type { DigestChannelResult, DigestSchedule, NotificationsStatus } from '../apiClient';
+import { useEffect, useRef, useState } from 'react';
+import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
+import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
@@ -188,6 +188,10 @@ export function digestResultLine(
   results: Record<string, DigestChannelResult>,
   sentAt: string,
 ): string {
+  const raw = (results ?? {}) as unknown as Record<string, unknown>;
+  if (typeof raw.suppressed === 'string') {
+    return `Digest not sent — ${raw.suppressed}.`;
+  }
   const entries = Object.entries(results ?? {});
   if (entries.length === 0) {
     return 'Digest built but delivered nowhere — no channel reported a send.';
@@ -213,11 +217,12 @@ export function digestScheduleLine(sched: DigestSchedule): string {
     ? `Next digest ${formatDigestStamp(sched.next_run)}`
     : 'Next digest not scheduled';
   const res = sched.last_result ?? {};
-  if (!res.at) return `${next}.`;
-  if (res.ok) return `${next} · last sent ${formatDigestStamp(res.at)}.`;
+  const held = sched.held_until ? ` · held until ${formatDigestStamp(sched.held_until)}` : '';
+  if (!res.at) return `${next}${held}.`;
+  if (res.ok) return `${next} · last sent ${formatDigestStamp(res.at)}${held}.`;
   const err = res.error || 'unknown error';
   const short = err.length > 120 ? `${err.slice(0, 120)}…` : err;
-  return `${next} · last scheduled send failed (${short}).`;
+  return `${next} · last scheduled send failed (${short})${held}.`;
 }
 
 export function DigestControlsView({
@@ -365,6 +370,194 @@ export function DigestControls() {
       schedErr={schedErr}
       schedBusy={schedBusy}
       onSetCadence={(c) => void setCadence(c)}
+    />
+  );
+}
+
+// Notification preferences + quiet hours (issue #615's digest
+// cluster, issue #656). One prefs object, one round trip.
+export function prefsStatusLine(prefs: NotificationPreferences): string {
+  const muted = prefs.muted_events.length > 0
+    ? `Muted: ${prefs.muted_events.join(', ')}`
+    : 'All events on';
+  const quiet = prefs.quiet_hours
+    ? `Quiet ${prefs.quiet_hours.start}–${prefs.quiet_hours.end}`
+    : 'No quiet hours';
+  const held = prefs.held_until
+    ? ` · Digest held until ${formatDigestStamp(prefs.held_until)}`
+    : '';
+  return `${muted} · ${quiet}${held}.`;
+}
+
+export function PrefsControlsView({
+  prefs,
+  prefsErr,
+  busy,
+  draftStart,
+  draftEnd,
+  onToggle,
+  onDraft,
+  onSaveQuiet,
+  onClearQuiet,
+}: {
+  prefs: NotificationPreferences | null;
+  prefsErr: string | null;
+  busy: boolean;
+  draftStart: string;
+  draftEnd: string;
+  onToggle: (event: string) => void;
+  onDraft: (start: string, end: string) => void;
+  onSaveQuiet: () => void;
+  onClearQuiet: () => void;
+}) {
+  const line = prefsErr
+    ? `Notification preferences unavailable — ${prefsErr}`
+    : !prefs
+      ? 'Notification preferences: checking…'
+      : prefsStatusLine(prefs);
+  return (
+    <section aria-label="Notification preferences">
+      <div
+        className="actions"
+        role="group"
+        aria-label="Muted events"
+        data-testid="briefing-prefs-events"
+      >
+        {(prefs?.events ?? []).map((e) => (
+          <button
+            key={e}
+            type="button"
+            data-testid={`briefing-prefs-mute-${e}`}
+            aria-pressed={(prefs?.muted_events ?? []).includes(e)}
+            disabled={busy || !prefs}
+            title={e === 'digest' ? 'Mute digest pushes (scheduled + manual)' : `Mute ${e} pushes`}
+            onClick={() => onToggle(e)}
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+      <div className="actions">
+        <label className="row-meta" htmlFor="briefing-quiet-start">
+          Quiet from{' '}
+          <input
+            id="briefing-quiet-start"
+            data-testid="briefing-quiet-start"
+            type="time"
+            value={draftStart}
+            disabled={busy || !prefs}
+            onChange={(ev) => onDraft(ev.target.value, draftEnd)}
+          />
+        </label>
+        <label className="row-meta" htmlFor="briefing-quiet-end">
+          to{' '}
+          <input
+            id="briefing-quiet-end"
+            data-testid="briefing-quiet-end"
+            type="time"
+            value={draftEnd}
+            disabled={busy || !prefs}
+            onChange={(ev) => onDraft(draftStart, ev.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          data-testid="briefing-quiet-save"
+          title="Save quiet hours (server-local time; overnight windows allowed)"
+          disabled={busy || !prefs}
+          onClick={onSaveQuiet}
+        >
+          Save quiet hours
+        </button>
+        <button
+          type="button"
+          data-testid="briefing-quiet-clear"
+          title="Clear quiet hours"
+          disabled={busy || !prefs || !prefs?.quiet_hours}
+          onClick={onClearQuiet}
+        >
+          Clear
+        </button>
+      </div>
+      <p className="row-meta" data-testid="briefing-prefs-status">
+        {line}
+      </p>
+    </section>
+  );
+}
+
+export function PrefsControls() {
+  const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
+  const [prefsErr, setPrefsErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [draftStart, setDraftStart] = useState('');
+  const [draftEnd, setDraftEnd] = useState('');
+  const draftsInit = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const live = await fetchNotificationPreferences();
+        if (!cancelled) setPrefs(live);
+      } catch (err) {
+        if (!cancelled) setPrefsErr(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Seed the time inputs from saved quiet hours once; later prefs
+  // refreshes (e.g. after a mute toggle) must not clobber typing.
+  useEffect(() => {
+    if (!draftsInit.current && prefs?.quiet_hours) {
+      setDraftStart(prefs.quiet_hours.start);
+      setDraftEnd(prefs.quiet_hours.end);
+      draftsInit.current = true;
+    }
+  }, [prefs]);
+
+  async function save(body: { muted_events?: string[]; quiet_hours?: { start: string; end: string } | null }) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      setPrefs(await saveNotificationPreferences(body));
+      setPrefsErr(null);
+    } catch (err) {
+      setPrefsErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggle(event: string) {
+    if (!prefs) return;
+    const muted = prefs.muted_events.includes(event)
+      ? prefs.muted_events.filter((e) => e !== event)
+      : [...prefs.muted_events, event];
+    void save({ muted_events: muted });
+  }
+
+  return (
+    <PrefsControlsView
+      prefs={prefs}
+      prefsErr={prefsErr}
+      busy={busy}
+      draftStart={draftStart}
+      draftEnd={draftEnd}
+      onToggle={(e) => toggle(e)}
+      onDraft={(s, e) => {
+        setDraftStart(s);
+        setDraftEnd(e);
+      }}
+      onSaveQuiet={() => void save({ quiet_hours: { start: draftStart, end: draftEnd } })}
+      onClearQuiet={() => {
+        setDraftStart('');
+        setDraftEnd('');
+        void save({ quiet_hours: null });
+      }}
     />
   );
 }
@@ -562,6 +755,7 @@ export default function BriefingView({
         )}
       </header>
       <DigestControls />
+      <PrefsControls />
       {error && (
         <div data-testid="briefing-error" role="alert">
           Briefing unavailable — {error}
