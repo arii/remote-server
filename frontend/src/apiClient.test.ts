@@ -22,10 +22,12 @@ import {
   invalidateViewCaches,
   postAgentTurn,
   requestPrChanges,
+  snoozeAttention,
   startJobRun,
   subscribeJobsPush,
   subscribeRunPush,
   triggerDigest,
+  unsnoozeAttention,
   warmViewCaches,
 } from './apiClient';
 
@@ -90,6 +92,32 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/notifications/trigger-digest',
       expect.objectContaining({ method: 'POST', body: '{}' }),
+    );
+  });
+
+  it('posts attention snoozes with id, minutes, repo (issue #614)', async () => {
+    const res = { ok: true, id: 'job-j1', snoozed_until: 9 };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await snoozeAttention('job-j1', 60, 'demo')).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/attention/snooze',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ id: 'job-j1', minutes: 60, repo: 'demo' }),
+      }),
+    );
+  });
+
+  it('posts attention unsnoozes with id (issue #614)', async () => {
+    const res = { ok: true, id: 'job-j1', snoozed: false };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await unsnoozeAttention('job-j1')).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/attention/unsnooze',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ id: 'job-j1' }),
+      }),
     );
   });
 

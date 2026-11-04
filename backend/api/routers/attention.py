@@ -10,11 +10,19 @@ Sources (existing helpers only, no new infra):
 
 Empty items = all-clear. All source readers are module-level
 functions so tests can monkeypatch them (injectable seams).
+
+Operators can snooze an item id for a preset duration (POST
+/attention/snooze, POST /attention/unsnooze): snoozed ids are
+filtered from the assembled list until expiry. The store is a small
+JSON file mirroring the deferred.py pattern.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import threading
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -52,6 +60,84 @@ class AttentionItem(BaseModel):
 class AttentionList(BaseModel):
     updated_at: float = 0.0
     items: list[AttentionItem] = Field(default_factory=list)
+
+
+class SnoozeRequest(BaseModel):
+    id: str = ""
+    minutes: int = 0
+    repo: str = "remote-server"
+
+
+class SnoozeResult(BaseModel):
+    ok: bool = True
+    id: str = ""
+    snoozed_until: float = 0.0
+
+
+class UnsnoozeRequest(BaseModel):
+    id: str = ""
+
+
+class UnsnoozeResult(BaseModel):
+    ok: bool = True
+    id: str = ""
+    snoozed: bool = False
+
+
+DEFAULT_SNOOZE_PATH = "/var/lib/buttons/attention_snooze.json"
+
+SNOOZE_PRESETS = (60, 480)
+
+_snooze_lock = threading.Lock()
+
+
+def snooze_path() -> str:
+    """Current snooze file path (env override read dynamically so
+    tests can point at a tmp dir without import tricks)."""
+    return os.environ.get("BUTTONS_SNOOZE_PATH",
+                          DEFAULT_SNOOZE_PATH)
+
+
+def _read_snooze() -> dict:
+    """Whole store {item_id: until_ts}. {} on any failure (missing or
+    corrupt file reads as empty; a write repairs it)."""
+    try:
+        with open(snooze_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items()
+            if isinstance(k, str) and isinstance(v, (int, float))
+            and not isinstance(v, bool)}
+
+
+def _write_snooze(store: dict) -> None:
+    path = snooze_path()
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(store, f, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _snooze_filter(items: list, now: float) -> list:
+    """Drop items snoozed past now; prune expired entries (persisted).
+
+    Applies to assembled items, so it runs after the workflow-health
+    TTL cache by construction — snooze never needs a cache bust.
+    Entries for vanished ids are left alone (a flaky source must not
+    eat a snooze); they self-clean at expiry.
+    """
+    with _snooze_lock:
+        store = _read_snooze()
+        live = {k: v for k, v in store.items() if v > now}
+        if live != store:
+            _write_snooze(live)
+        return [i for i in items if live.get(i.get("id", ""), 0) <= now]
 
 
 # TTL cache: the gh subprocess chain behind workflow-health takes
@@ -150,13 +236,9 @@ def list_pending_approvals() -> list:
     return out
 
 
-@router.get("/attention", response_model=AttentionList)
-def attention(repo: str = "remote-server") -> dict:
-    try:
-        name = validate_repo_name(repo)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    now = time.time()
+def _assemble_items(name: str, now: float) -> list[dict]:
+    """Derived queue without snooze filtering (injectable-source
+    assembly shared by the read path and the snooze 404 check)."""
     items: list[dict] = []
     try:
         health = get_workflow_health(name) or {}
@@ -250,4 +332,47 @@ def attention(repo: str = "remote-server") -> dict:
                        "destructive": False, "intent": ""},
             "created_at": float(e.get("ts", e.get("created_at", now)) or now),
         })
+    return items
+
+
+@router.get("/attention", response_model=AttentionList)
+def attention(repo: str = "remote-server") -> dict:
+    try:
+        name = validate_repo_name(repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    now = time.time()
+    items = _snooze_filter(_assemble_items(name, now), now)
     return {"updated_at": now, "items": items}
+
+
+@router.post("/attention/snooze", response_model=SnoozeResult)
+def snooze_attention(body: SnoozeRequest) -> dict:
+    if body.minutes not in SNOOZE_PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"minutes must be one of {list(SNOOZE_PRESETS)}")
+    try:
+        name = validate_repo_name(body.repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    now = time.time()
+    ids = {i.get("id", "") for i in _assemble_items(name, now)}
+    if body.id not in ids:
+        raise HTTPException(
+            status_code=404, detail=f"unknown attention id: {body.id}")
+    until = now + body.minutes * 60
+    with _snooze_lock:
+        store = _read_snooze()
+        store[body.id] = until
+        _write_snooze(store)
+    return {"ok": True, "id": body.id, "snoozed_until": until}
+
+
+@router.post("/attention/unsnooze", response_model=UnsnoozeResult)
+def unsnooze_attention(body: UnsnoozeRequest) -> dict:
+    with _snooze_lock:
+        store = _read_snooze()
+        store.pop(body.id, None)
+        _write_snooze(store)
+    return {"ok": True, "id": body.id, "snoozed": False}
