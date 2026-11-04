@@ -864,7 +864,7 @@ class NotificationsEndpointsTest(unittest.TestCase):
         self.assertFalse(body["webhook_configured"])
         self.assertEqual(body["digest_interval_hours"], 12.0)
         self.assertEqual(body["enabled_events"],
-                         ["ci_fail", "conflict"])
+                         ["ci_fail", "conflict", "job_fail"])
         self.assertIn("last_digest", body)
 
     def test_status_misconfig_surfaces(self):
@@ -1149,7 +1149,8 @@ class NotificationPrefsTest(unittest.TestCase):
     def test_defaults(self):
         body = self._prefs()
         self.assertEqual(body["muted_events"], [])
-        self.assertEqual(body["events"], ["ci_fail", "conflict", "digest"])
+        self.assertEqual(body["events"],
+                         ["ci_fail", "conflict", "digest", "job_fail"])
 
     def test_stale_retired_key_ignored(self):
         # A store written before the hold-window feature was retired
@@ -1709,6 +1710,113 @@ class NotifyCheckCliTest(unittest.TestCase):
         self.assertIn("notify-check repo=boomtick", out)
         self.assertIn("pushes=0", out)
         self.assertIn("last_digest=123.0", out)
+
+
+class JobFailLegTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_events = os.environ.get("NOTIFY_EVENTS")
+        os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict,job_fail"
+        self._old_runs = os.environ.get("BUTTONS_JOBS_RUNS_PATH")
+        os.environ["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
+            self.tmp, "runs.json")
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+        if self._old_events is None:
+            os.environ.pop("NOTIFY_EVENTS", None)
+        else:
+            os.environ["NOTIFY_EVENTS"] = self._old_events
+        if self._old_runs is None:
+            os.environ.pop("BUTTONS_JOBS_RUNS_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_RUNS_PATH"] = self._old_runs
+
+    def _run(self, **over):
+        run = {"id": "r1", "action": "check-notifications",
+               "repo": "r", "done": True, "exit_code": 1,
+               "finished_at": 100.0, "output": "line1\nboom\n"}
+        run.update(over)
+        return run
+
+    def _tick(self, runs):
+        sent = []
+
+        def sender(**kw):
+            sent.append(kw)
+            return {}
+
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {"r": {}}, sender=sender, now=1000.0,
+            runs_lister=lambda: runs)
+        return sent, state
+
+    def test_fresh_failure_pushes_once(self):
+        sent, state = self._tick([self._run()])
+        self.assertEqual(len(sent), 1)
+        push = sent[0]
+        self.assertEqual(push["event_type"], "job_fail")
+        self.assertIn("check-notifications", push["title"])
+        self.assertIn("exit 1", push["title"])
+        self.assertIn("r1", push["message"])
+        self.assertEqual(state["job_fail"]["r"]["check-notifications"],
+                         100.0)
+
+    def test_repeat_tick_silent(self):
+        runs = [self._run()]
+        sent, _ = self._tick(runs)
+        self.assertEqual(len(sent), 1)
+        sent, _ = self._tick(runs)
+        self.assertEqual(sent, [])
+
+    def test_watermark_survives_reload(self):
+        self._tick([self._run()])
+        with open(os.path.join(self.tmp, "state.json"),
+                  encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["job_fail"]["r"]["check-notifications"],
+                         100.0)
+        # A later failure for the same action pushes again.
+        sent, _ = self._tick(
+            [self._run(), self._run(id="r2", finished_at=200.0)])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("r2", sent[0]["message"])
+
+    def test_off_when_disabled(self):
+        os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict"
+        sent, state = self._tick([self._run()])
+        self.assertEqual(sent, [])
+        self.assertNotIn("job_fail", state)
+
+    def test_scopes_to_tick_repos(self):
+        sent, state = self._tick([self._run(repo="other")])
+        self.assertEqual(sent, [])
+        self.assertNotIn("other", state.get("job_fail", {}))
+
+    def test_skips_green_running_and_unstamped(self):
+        runs = [self._run(id="g", exit_code=0),
+                self._run(id="n", exit_code=None),
+                self._run(id="a", done=False),
+                self._run(id="u", finished_at=None)]
+        sent, state = self._tick(runs)
+        self.assertEqual(sent, [])
+        self.assertEqual(state.get("job_fail", {}).get("r", {}), {})
+
+    def test_default_reader_tolerates_missing_file(self):
+        sent = []
+
+        def sender(**kw):
+            sent.append(kw)
+            return {}
+
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {"r": {}}, sender=sender, now=1000.0)
+        self.assertEqual(sent, [])
+        self.assertEqual(state.get("job_fail", {}).get("r", {}), {})
 
 
 if __name__ == "__main__":
