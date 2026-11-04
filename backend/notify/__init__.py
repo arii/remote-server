@@ -77,7 +77,7 @@ def save_notifier_state(state: dict) -> None:
 # Operator-togglable event classes (#656). `test` always bypasses
 # (explicit tap) and `info` is an unused default, so neither is
 # mutable.
-MUTABLE_EVENTS = ("ci_fail", "conflict", "digest")
+MUTABLE_EVENTS = ("ci_fail", "conflict", "digest", "job_fail")
 
 
 def validate_muted_events(value) -> list:
@@ -208,7 +208,7 @@ def digest_interval_hours(default=12.0):
 
 def enabled_events():
     return [e.strip() for e in
-            os.environ.get("NOTIFY_EVENTS", "ci_fail,conflict")
+            os.environ.get("NOTIFY_EVENTS", "ci_fail,conflict,job_fail")
             .split(",") if e.strip()]
 
 
@@ -592,14 +592,32 @@ def delivered(results) -> bool:
     return any(r.get("ok") for r in targets)
 
 
+def _read_registry_runs() -> list:
+    """Finished-run records from the jobs run store (the same file
+    GET /api/jobs lists). [] on any failure. The engine import is
+    lazy so notify stays light for API/test importers; only the
+    store path helper is used, never the live registry (this tick
+    runs in a subprocess).
+    """
+    try:
+        from backend.exec.engine import runs_store_path
+        with open(runs_store_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        runs = data.get("runs", [])
+        return [r for r in runs if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
 def check_notifications_and_digest(fetcher=None, sender=None,
-                                   now=None):
+                                   now=None, runs_lister=None):
     """Port of _check_notifications_and_digest (CI-fail / conflict /
-    digest paths only).
+    job-fail / digest paths only).
 
     fetcher(repo_name) -> briefing dict (or None to skip); defaults to
     a skip (backend owns no briefing pipeline yet). sender defaults to
-    send_notification. Returns the persisted state dict.
+    send_notification. runs_lister defaults to the persisted jobs run
+    store (injectable for tests). Returns the persisted state dict.
     """
     sender = sender or send_notification
     with notifier_lock:
@@ -612,6 +630,13 @@ def check_notifications_and_digest(fetcher=None, sender=None,
             briefs = fetcher.briefs()  # type: ignore
         elif isinstance(repos, dict):
             briefs = repos
+        registry_runs = []
+        if "job_fail" in notify_events:
+            try:
+                lister = runs_lister or _read_registry_runs
+                registry_runs = lister() or []
+            except Exception:
+                registry_runs = []
 
         for repo_name, brief in briefs.items():
             if brief is None:
@@ -660,6 +685,46 @@ def check_notifications_and_digest(fetcher=None, sender=None,
                             event_type="conflict",
                         )
                 state.setdefault("conflicts", {})[repo_name] = current
+
+            if "job_fail" in notify_events:
+                # Engine runs that finished nonzero (#866). Scoped to
+                # this tick's repos (the schedule seeds one run per
+                # repo — scanning all repos here would push N times).
+                # Watermarked per repo+action: each failed run pushes
+                # once; the scan marks seen even when the send is
+                # suppressed, mirroring the ci/conflict legs.
+                wm = state.setdefault("job_fail", {}).setdefault(
+                    repo_name, {})
+                for run in registry_runs:
+                    if not isinstance(run, dict):
+                        continue
+                    if run.get("repo") != repo_name:
+                        continue
+                    if not run.get("done"):
+                        continue
+                    code = run.get("exit_code")
+                    if code in (None, 0):
+                        continue
+                    ts = run.get("finished_at") or 0
+                    if ts <= 0:
+                        continue
+                    action = run.get("action") or "run"
+                    if ts <= wm.get(action, 0):
+                        continue
+                    wm[action] = ts
+                    out = run.get("output")
+                    tail = out.strip().splitlines() \
+                        if isinstance(out, str) else []
+                    last = tail[-1][-300:] if tail else "no output"
+                    sender(
+                        title=(f"Job failed: {action} on {repo_name} "
+                               f"(exit {code})"),
+                        message=(f"Run {run.get('id', '?')} finished "
+                                 f"exit {code}.\nLast line: {last}"),
+                        priority="high",
+                        tags=["warning", "job"],
+                        event_type="job_fail",
+                    )
 
         interval = digest_interval_hours()
         if interval > 0:

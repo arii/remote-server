@@ -89,10 +89,12 @@ cadence via `DIGEST_INTERVAL_HOURS` / `POST /api/notifications/trigger-digest`;
 event set via `NOTIFY_EVENTS`. Unconfigured state surfaces in Briefing
 (`digestUnconfiguredReason`). The check loop (#822) is a `check-notifications`
 jobs action on a `quarter-hourly` schedule, one per checkout, seeded
-automatically — ci_fail/conflict pushes and the interval digest fire from
-the shared 60s tick with state dedup; failed fetches keep prior keys and
-failed digest sends never stamp (#532). Delete a schedule to stop its repo
-(deletes stick; new checkouts seed on a later tick).
+automatically — ci_fail/conflict/job_fail pushes and the interval digest fire
+from the shared 60s tick with state dedup (`job_fail` covers engine runs that
+finish nonzero, watermarked per repo+action so each red run pushes once);
+failed fetches keep prior keys and failed digest sends never stamp (#532).
+Delete a schedule to stop its repo (deletes stick; new checkouts seed on a
+later tick).
 
 ## Webhook auto-pull
 
