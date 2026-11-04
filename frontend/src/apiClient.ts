@@ -1115,16 +1115,26 @@ export interface RepairStatusResponse {
   log_buffer: string;
   issue: number | null;
   exit_code: number | null;
+  repo?: string | null;
   schedules?: RepairSchedule[];
 }
 
 export function dispatchRepair(
   issue: string,
   branch?: string,
-): Promise<{ ok: boolean; issue: number; status: string }> {
-  return postJson<{ ok: boolean; issue: number; status: string }>(
+  repo?: string,
+): Promise<{ ok: boolean; issue: number; status: string; repo: string }> {
+  return postJson<{ ok: boolean; issue: number; status: string; repo: string }>(
     'api/repair/dispatch',
-    withBranch({ issue }, branch),
+    withBranch(
+      {
+        issue,
+        ...(repo?.trim() ? { repo: repo.trim() } : {}),
+        intent: 'repair-dispatch',
+        confirmed: true,
+      },
+      branch,
+    ),
   );
 }
 
@@ -1154,9 +1164,10 @@ export interface RepairVerifyPreview {
   error: string;
 }
 
-export function fetchVerifyCommand(issue: string): Promise<RepairVerifyPreview> {
+export function fetchVerifyCommand(issue: string, repo?: string): Promise<RepairVerifyPreview> {
+  const query = `issue=${encodeURIComponent(issue)}${repo?.trim() ? `&repo=${encodeURIComponent(repo.trim())}` : ''}`;
   return getJson<RepairVerifyPreview>(
-    `api/repair/verify-command?issue=${encodeURIComponent(issue)}`,
+    `api/repair/verify-command?${query}`,
   );
 }
 

@@ -366,18 +366,15 @@ export function ActionControl({
 export default function NowView({
   repo,
   defaultBranch,
-  stackBranch,
   health,
   reportContext,
   onAskAgent,
   onOpenTab,
 }: {
   repo: string;
-  // Checkout branches seeding the Review/Jobs branch fields
-  // (#708): viewed repo for launches and merge/approve, stack
-  // repo for repair dispatch.
+  // Checkout branch of the viewed repo, seeding the Review/Jobs
+  // branch fields (#708).
   defaultBranch?: string;
-  stackBranch?: string;
   health: SystemHealthResponse | null;
   reportContext: string;
   onAskAgent: (seed: string) => void;
@@ -716,7 +713,7 @@ export default function NowView({
         </div>
       )}
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} />}
-          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} stackBranch={stackBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
+          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
         </>
       )}
     </section>

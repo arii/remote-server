@@ -15,9 +15,12 @@ this backend serves /api/* like its sibling routers):
 - GET  /api/repair/verify-command parsed verify cmd + allowlist verdict
 - POST /api/repair/schedule       set/clear a daily/weekly repair schedule
 
-Repair runs the worker the same way the legacy handler does: the
-same argv (python3 -m core_cli repair --issue N) with no new
-capabilities. No labeled-event wiring here (later follow-up, and
+Repair runs the worker like the legacy handler does (python3 -m
+core_cli repair --issue N --repo R). Dispatch is a confirmed
+(intent repair-dispatch + confirmed), single-flight (409 when a
+worker runs), repo-scoped action; a run holding the slot past
+REPAIR_WORKER_TIMEOUT is killed and records failed, never running
+forever. No labeled-event wiring here (later follow-up, and
 no notify.py changes in this port). No Jules dispatch surface.
 """
 
@@ -45,11 +48,18 @@ ISSUE_LIST_FIELDS = ("number,title,state,assignees,labels,updatedAt,"
                      "url,body")
 MAX_OUTPUT = 200_000
 
+REPAIR_WORKER_TIMEOUT = 1800  # seconds of wall clock for one repair
+# run (stdout drain + wait). The worker's own steps already bound
+# themselves (Ollama 300s/query, verify 300s); a run holding the
+# single-flight slot past this is stuck: it is terminated, then
+# killed, and records failed — never running forever.
+
 repair_state = {
     "status": "idle",
     "timestamp": None,
     "log_buffer": "",
     "issue": None,
+    "repo": None,
     "exit_code": None,
 }
 repair_state_lock = threading.Lock()
@@ -162,15 +172,23 @@ def parse_label_name(val) -> str | None:
 
 class RepairDispatchRequest(BaseModel):
     issue: object = None
+    # Repo scoping (#435): basename or arii/ path. The branch
+    # check, verify preview, and worker gh calls all target it.
+    repo: str = "remote-server"
     # Explicit branch for the dispatch (#708): validated against
-    # the stack checkout when present; blank behaves as today.
+    # the scoped repo checkout when present; blank behaves as today.
     branch: str = ""
+    # Confirm tap, same shape as pr-action: intent must be
+    # "repair-dispatch" with confirmed True.
+    intent: str = ""
+    confirmed: bool = False
 
 
 class RepairDispatchResult(BaseModel):
     ok: bool = True
     issue: int = 0
     status: str = "running"
+    repo: str = "remote-server"
 
 
 class RepairStatus(BaseModel):
@@ -178,6 +196,7 @@ class RepairStatus(BaseModel):
     timestamp: float | None = None
     log_buffer: str = ""
     issue: int | None = None
+    repo: str | None = None
     exit_code: int | None = None
     schedules: list = Field(default_factory=list)
 
@@ -199,22 +218,31 @@ class RepairScheduleResult(BaseModel):
     schedule: RepairSchedule | None = None
 
 
-def _repair_worker_thread(issue_number: int) -> None:
-    """Run the repair worker, same argv as the legacy handler, and
-    record state and logs. Never raises out."""
+def _repair_worker_thread(issue_number: int,
+                          repo: str = "remote-server") -> None:
+    """Run the repo-scoped repair worker and record state and logs.
+
+    Single-flight: dispatch claims the slot before spawning, and the
+    same values are re-written here (idempotent); schedules rely on
+    _claim_due_schedule. One deadline (REPAIR_WORKER_TIMEOUT) bounds
+    both blocking points — the stdout drain and the wait — so a
+    stuck run is killed and records failed. Never raises out.
+    """
     global _repair_proc, _repair_abort
     with repair_state_lock:
         repair_state["status"] = "running"
         repair_state["timestamp"] = time.time()
         repair_state["issue"] = issue_number
+        repair_state["repo"] = repo
         repair_state["log_buffer"] = (
-            f"Dispatched repair worker for issue #{issue_number}\n")
+            f"Dispatched repair worker for issue #{issue_number} "
+            f"({repo})\n")
         repair_state["exit_code"] = None
         _repair_proc = None
         _repair_abort = False
     run = _repair_runner or subprocess
     cmd = ["python3", "-m", "core_cli", "repair",
-           "--issue", str(issue_number)]
+           "--issue", str(issue_number), "--repo", repo]
     try:
         # cwd = live checkout: the worker path is repo-relative and the
         # image workdir (/app) has no scripts/ dir.
@@ -230,14 +258,58 @@ def _repair_worker_thread(issue_number: int) -> None:
                 proc.terminate()
             except Exception:
                 pass
-        if proc.stdout:
-            for line in proc.stdout:
-                with repair_state_lock:
-                    repair_state["log_buffer"] += line
-                    if len(repair_state["log_buffer"]) > MAX_OUTPUT:
-                        repair_state["log_buffer"] = \
-                            repair_state["log_buffer"][-MAX_OUTPUT:]
-        code = proc.wait()
+        started = time.monotonic()
+        timed_out = False
+
+        def _fire_timeout():
+            # Watchdog for a stdout-drain stuck on a silent worker:
+            # killing the proc drives the pipe to EOF so the drain
+            # ends and wait() returns. Escalates terminate -> kill
+            # like repair_abort (a SIGTERM-ignoring spewer must not
+            # hold the drain past the deadline).
+            nonlocal timed_out
+            with repair_state_lock:
+                if repair_state["status"] != "running":
+                    return
+                timed_out = True
+            try:
+                proc.terminate()
+                proc.wait(5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+        timer = threading.Timer(REPAIR_WORKER_TIMEOUT, _fire_timeout)
+        timer.daemon = True
+        timer.start()
+        try:
+            if proc.stdout:
+                for line in proc.stdout:
+                    with repair_state_lock:
+                        repair_state["log_buffer"] += line
+                        if len(repair_state["log_buffer"]) > MAX_OUTPUT:
+                            repair_state["log_buffer"] = \
+                                repair_state["log_buffer"][-MAX_OUTPUT:]
+            budget = REPAIR_WORKER_TIMEOUT - (time.monotonic() - started)
+            try:
+                code = proc.wait(timeout=max(1, budget))
+            except subprocess.TimeoutExpired:
+                # Wait-blocked past the deadline (the drain already
+                # ended): the watchdog may still be in its grace
+                # sleep, so kill here and reap.
+                timed_out = True
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    code = proc.wait()
+                except Exception:
+                    code = -9
+        finally:
+            timer.cancel()
         with repair_state_lock:
             _repair_proc = None
             if _repair_abort and code is not None and code < 0:
@@ -246,6 +318,15 @@ def _repair_worker_thread(issue_number: int) -> None:
                 repair_state["status"] = "aborted"
                 repair_state["exit_code"] = None
                 repair_state["log_buffer"] += "\nAborted by user.\n"
+            elif timed_out and code != 0:
+                # Timeout only counts when it killed the proc; a
+                # natural exit at the deadline stays done, same rule
+                # as the abort above.
+                repair_state["status"] = "failed"
+                repair_state["exit_code"] = code
+                repair_state["log_buffer"] += (
+                    "\nRepair worker timed out after "
+                    f"{REPAIR_WORKER_TIMEOUT}s and was killed.\n")
             else:
                 repair_state["status"] = "done" if code == 0 else "failed"
                 repair_state["exit_code"] = code
@@ -273,15 +354,16 @@ class RepairVerifyPreview(BaseModel):
     error: str = ""
 
 
-def _repair_verify_preview(issue_number: int) -> dict:
+def _repair_verify_preview(issue_number: int,
+                           repo: str = "remote-server") -> dict:
     """Parsed verification command + allowlist verdict for an issue.
 
     Shared by the preview endpoint (the confirmer sees the command)
-    and dispatch (refuse to spawn rejected commands). Repair targets
-    the stack repo only — same scope as the worker argv.
+    and dispatch (refuse to spawn rejected commands). Scoped to the
+    given repo; schedules pass the default (stack repo).
     """
     try:
-        gh = repo_gh("remote-server")
+        gh = repo_gh(repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
@@ -304,11 +386,19 @@ def _repair_verify_preview(issue_number: int) -> dict:
             "allowlisted": True, "error": ""}
 
 
-def trigger_repair(issue_number: int):
+def trigger_repair(issue_number: int, repo: str = "remote-server"):
     t = threading.Thread(target=_repair_worker_thread,
-                         args=(issue_number,), daemon=True)
+                         args=(issue_number, repo), daemon=True)
     t.start()
     return t
+
+
+def _ensure_repair_idle() -> None:
+    """Single-flight guard: 409 when a worker holds the slot."""
+    with repair_state_lock:
+        if repair_state["status"] == "running":
+            raise HTTPException(status_code=409,
+                                detail="repair worker busy")
 
 
 def _claim_due_schedule(now: float) -> int | None:
@@ -496,34 +586,63 @@ def issue_label(body: IssueLabelRequest) -> dict:
 
 @router.get("/repair/verify-command",
             response_model=RepairVerifyPreview)
-def repair_verify_command(issue: str = "") -> dict:
+def repair_verify_command(issue: str = "",
+                          repo: str = "remote-server") -> dict:
     issue_number = parse_issue_number(issue)
     if issue_number is None:
         raise HTTPException(
             status_code=400, detail="invalid issue number or url")
-    return _repair_verify_preview(issue_number)
+    return _repair_verify_preview(issue_number, repo)
 
 
 @router.post("/repair/dispatch", response_model=RepairDispatchResult)
 def repair_dispatch(body: RepairDispatchRequest) -> dict:
+    global _repair_proc, _repair_abort
+    from backend.core import require_confirm
+
+    require_confirm(body, "repair-dispatch")
     issue_number = parse_issue_number(body.issue)
     if issue_number is None:
         raise HTTPException(
             status_code=400, detail="invalid issue number or url")
-    from backend.core import validate_action_branch
-
-    # Stack scope, like the worker argv and the verify preview.
     try:
-        validate_action_branch("remote-server", body.branch)
+        gh = repo_gh(body.repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    preview = _repair_verify_preview(issue_number)
+    repo_name = gh.partition("/")[2]
+    from backend.core import validate_action_branch
+
+    try:
+        validate_action_branch(repo_name, body.branch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _ensure_repair_idle()
+    preview = _repair_verify_preview(issue_number, repo_name)
     if not preview["allowlisted"]:
         raise HTTPException(
             status_code=400,
             detail=preview["error"] or "verification command rejected")
-    trigger_repair(issue_number)
-    return {"ok": True, "issue": issue_number, "status": "running"}
+    with repair_state_lock:
+        # Atomic claim: a second dispatch landing between the idle
+        # check above and the worker thread's own running-write
+        # still 409s, so back-to-back double dispatch is safe. The
+        # thread re-writes the same values on start (idempotent).
+        if repair_state["status"] == "running":
+            raise HTTPException(status_code=409,
+                                detail="repair worker busy")
+        repair_state["status"] = "running"
+        repair_state["timestamp"] = time.time()
+        repair_state["issue"] = issue_number
+        repair_state["repo"] = repo_name
+        repair_state["log_buffer"] = (
+            f"Dispatched repair worker for issue #{issue_number} "
+            f"({repo_name})\n")
+        repair_state["exit_code"] = None
+        _repair_proc = None
+        _repair_abort = False
+    trigger_repair(issue_number, repo_name)
+    return {"ok": True, "issue": issue_number, "status": "running",
+            "repo": repo_name}
 
 
 @router.post("/repair/schedule",

@@ -496,17 +496,14 @@ function JobsListPanel({
 export default function JobsView({
   repo,
   defaultBranch,
-  stackBranch,
   triageSuspended = false,
   onAskAgent,
   initialPr = null,
 }: {
   repo: string;
   // Checkout branch of the viewed repo: seeds the launch branch
-  // field (#708). stackBranch seeds the repair dispatch instead —
-  // repair targets the stack checkout only.
+  // field and the repair dispatch (#708, #435).
   defaultBranch?: string;
-  stackBranch?: string;
   // Drawer-open flag: while true (agent drawer / PTY terminal open),
   // triage keys are disabled.
   triageSuspended?: boolean;
@@ -813,7 +810,7 @@ export default function JobsView({
         onToggle={() => void onTogglePlan()}
         onExecute={() => void onExecutePlan()}
       />
-      <RepairSection repo={repo} defaultBranch={stackBranch ?? defaultBranch} />
+      <RepairSection repo={repo} defaultBranch={defaultBranch} />
 
       <TriageFanoutSection
         repo={repo}

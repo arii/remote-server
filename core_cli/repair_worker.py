@@ -67,10 +67,37 @@ OLLAMA_TAGS_PATH = "/api/tags"
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 MAX_RETRIES = 3
 
+DEFAULT_REPO = "remote-server"
+
+REPO_BASENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def normalize_repo(repo: Optional[str]) -> str:
+    """Full owner/repo gh path for a --repo value.
+
+    Accepts a basename ("boomtick") or a full path
+    ("arii/boomtick"); basenames resolve under arii/, the same
+    convention as backend's repo_gh. Blank or None falls back to
+    the default repo. Raises ValueError when invalid.
+    """
+    if repo is None:
+        raw = ""
+    elif isinstance(repo, str):
+        raw = repo.strip()
+    else:
+        raise ValueError(f"invalid repo name: {repo!r}")
+    if not raw:
+        raw = DEFAULT_REPO
+    name = raw.removeprefix("arii/").strip("/")
+    if not name or "/" in name or not REPO_BASENAME_RE.match(name):
+        raise ValueError(f"invalid repo name: {repo!r}")
+    return f"arii/{name}"
+
 
 class AgentState(TypedDict):
     issue_number: int
     issue_body: str
+    repo: str
     target_files: List[str]
     verification_cmd: str
     file_contents: Dict[str, str]
@@ -232,9 +259,11 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
     """Fetch and parse task specification from GitHub issue."""
     issue_number = state.get("issue_number")
     issue_body = state.get("issue_body", "")
+    repo = normalize_repo(state.get("repo"))
 
     if not issue_body and issue_number:
-        cmd = ["gh", "issue", "view", str(issue_number), "--json", "body"]
+        cmd = ["gh", "issue", "view", str(issue_number), "--json", "body",
+               "--repo", repo]
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if proc.returncode == 0:
             try:
@@ -447,6 +476,7 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
     worktree_dir = state.get("worktree_dir", "")
     branch_name = state.get("branch_name", "")
     issue_number = state.get("issue_number", 0)
+    repo = normalize_repo(state.get("repo"))
 
     # Git add and commit
     subprocess.run(["git", "add", "-A"], cwd=worktree_dir, check=True)
@@ -463,7 +493,8 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
         f"Target Files: {', '.join(state.get('target_files', []))}\n"
         f"Verification Command: `{state.get('verification_cmd', '')}`\n"
     )
-    cmd = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body, "--head", branch_name]
+    cmd = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body, "--head", branch_name,
+           "--repo", repo]
     proc = subprocess.run(cmd, cwd=worktree_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to create PR: {proc.stderr.strip()}")
@@ -553,8 +584,15 @@ def build_repair_graph():
     return workflow.compile()
 
 
-def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
-    """Run the autonomous repair pipeline for a given issue."""
+def run_repair(issue_number: int, issue_body: Optional[str] = None,
+               repo: Optional[str] = None) -> bool:
+    """Run the autonomous repair pipeline for a given issue.
+
+    ``repo`` is a basename ("boomtick") or full path
+    ("arii/boomtick"); blank/None repairs the default repo.
+    Raises ValueError on an invalid repo name.
+    """
+    full_repo = normalize_repo(repo)
     graph = build_repair_graph()
     if graph is None:
         print(
@@ -570,6 +608,7 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None) -> bool:
     initial_state: AgentState = {
         "issue_number": issue_number,
         "issue_body": issue_body or "",
+        "repo": full_repo,
         "target_files": [],
         "verification_cmd": "",
         "file_contents": {},
@@ -593,9 +632,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Deterministic Autonomous Repair Worker")
     parser.add_argument("--issue", type=int, required=True, help="GitHub issue number to repair")
     parser.add_argument("--body", type=str, default="", help="Optional task specification markdown body")
+    parser.add_argument("--repo", type=str, default=DEFAULT_REPO,
+                        help="Repo basename (boomtick) or full path (arii/boomtick); "
+                             "scopes the gh issue/PR calls")
     args = parser.parse_args(argv)
 
-    success = run_repair(issue_number=args.issue, issue_body=args.body or None)
+    try:
+        repo = normalize_repo(args.repo)
+    except ValueError as exc:
+        parser.error(str(exc))
+    success = run_repair(issue_number=args.issue, issue_body=args.body or None, repo=repo)
     sys.exit(0 if success else 1)
 
 

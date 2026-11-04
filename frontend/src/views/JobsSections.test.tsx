@@ -32,6 +32,27 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(running).toContain('data-testid="repair-abort"');
   });
 
+  it('repair dispatch disables while running and shows the repo (issue #435)', () => {
+    const running = renderToStaticMarkup(
+      <RepairSection
+        repo="boomtick"
+        initialPicked="9"
+        initialPreview={{ ok: true, issue: 9, command: 'pytest', allowlisted: true, error: '' }}
+        initialStatus={{
+          status: 'running',
+          timestamp: null,
+          log_buffer: '',
+          issue: 9,
+          exit_code: null,
+          repo: 'boomtick',
+        }}
+      />,
+    );
+    expect(running).toContain('data-testid="repair-dispatch"');
+    expect(running).toContain('disabled');
+    expect(running).toContain('· boomtick');
+  });
+
   it('repair picker narrows options by filter text (issue #571)', () => {
     const cands = [
       { number: 12, title: 'Fix flaky CI' },

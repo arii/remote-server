@@ -58,7 +58,8 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
         self.assertEqual(updates["verification_cmd"], "pytest")
         self.assertIn("Target Files", updates["issue_body"])
         mock_run.assert_called_once_with(
-            ["gh", "issue", "view", "42", "--json", "body"],
+            ["gh", "issue", "view", "42", "--json", "body",
+             "--repo", "arii/remote-server"],
             stdout=rw.subprocess.PIPE,
             stderr=rw.subprocess.PIPE,
             text=True,
@@ -491,6 +492,8 @@ python3 -m unittest discover -s tests -p 'test_calc.py'
                     "Autonomous code repair resolved issue #7.\n\nTarget Files: foo.py\nVerification Command: `pytest`\n",
                     "--head",
                     "repair/issue-7",
+                    "--repo",
+                    "arii/remote-server",
                 ],
                 cwd="/tmp/worktree",
                 stdout=rw.subprocess.PIPE,
@@ -936,6 +939,124 @@ class TestEditFileNodeOllamaGuard(unittest.TestCase):
             updates = rw.edit_file_node(self._state())
         self.assertIn("Ollama query failed", updates["current_errors"])
         self.assertEqual(updates["retry_count"], 1)
+
+
+class TestRepairRepoScope(unittest.TestCase):
+    """--repo plumbing: dispatch body -> core_cli -> gh --repo (#435)."""
+
+    def test_normalize_repo(self):
+        self.assertEqual(rw.normalize_repo("boomtick"), "arii/boomtick")
+        self.assertEqual(rw.normalize_repo("arii/boomtick"), "arii/boomtick")
+        self.assertEqual(rw.normalize_repo("  boomtick  "), "arii/boomtick")
+        self.assertEqual(rw.normalize_repo(None), "arii/remote-server")
+        self.assertEqual(rw.normalize_repo(""), "arii/remote-server")
+        self.assertEqual(rw.normalize_repo("   "), "arii/remote-server")
+        for bad in ("../evil", "a/b", "arii/", "no spaces",
+                    "semi;colon", 7, True):
+            with self.assertRaises(ValueError, msg=bad):
+                rw.normalize_repo(bad)
+
+    @patch("subprocess.run")
+    def test_parse_issue_node_scopes_repo(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = '{"body": "## Target Files\\n- app.py\\n\\n## Verification Command\\n`pytest`"}'
+        mock_run.return_value = mock_proc
+
+        state: rw.AgentState = {
+            "issue_number": 42,
+            "issue_body": "",
+            "repo": "boomtick",
+            "target_files": [],
+            "verification_cmd": "",
+            "file_contents": {},
+            "current_errors": "",
+            "retry_count": 0,
+            "ast_valid": False,
+            "tests_passed": False,
+            "worktree_dir": "",
+            "branch_name": "",
+        }
+
+        updates = rw.parse_issue_node(state)
+        self.assertEqual(updates["verification_cmd"], "pytest")
+        mock_run.assert_called_once_with(
+            ["gh", "issue", "view", "42", "--json", "body",
+             "--repo", "arii/boomtick"],
+            stdout=rw.subprocess.PIPE,
+            stderr=rw.subprocess.PIPE,
+            text=True,
+        )
+
+    @patch("subprocess.run")
+    def test_create_pr_node_scopes_repo(self, mock_run):
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "https://github.com/arii/boomtick/pull/1"
+        mock_run.return_value = mock_proc
+
+        state: rw.AgentState = {
+            "issue_number": 7,
+            "issue_body": "",
+            "repo": "arii/boomtick",
+            "target_files": ["foo.py"],
+            "verification_cmd": "pytest",
+            "file_contents": {},
+            "current_errors": "",
+            "retry_count": 0,
+            "ast_valid": True,
+            "tests_passed": True,
+            "worktree_dir": "/tmp/worktree",
+            "branch_name": "repair/issue-7",
+        }
+
+        self.assertEqual(rw.create_pr_node(state), {})
+        pr_call = mock_run.call_args_list[-1]
+        self.assertEqual(pr_call.args[0][-2:], ["--repo", "arii/boomtick"])
+        self.assertEqual(pr_call.kwargs["cwd"], "/tmp/worktree")
+
+    def test_run_repair_routes_repo_into_state(self):
+        graph = MagicMock()
+        graph.invoke.return_value = {"tests_passed": True}
+        with patch("core_cli.repair_worker.build_repair_graph",
+                   return_value=graph):
+            with patch("core_cli.repair_worker.preflight_ollama",
+                       return_value=None):
+                self.assertTrue(rw.run_repair(issue_number=99,
+                                              repo="boomtick"))
+                self.assertTrue(rw.run_repair(issue_number=99))
+        first, second = graph.invoke.call_args_list
+        self.assertEqual(first.args[0]["repo"], "arii/boomtick")
+        self.assertEqual(second.args[0]["repo"], "arii/remote-server")
+
+    def test_run_repair_rejects_bad_repo(self):
+        with self.assertRaises(ValueError):
+            rw.run_repair(issue_number=99, repo="../evil")
+
+    def test_main_passes_repo(self):
+        with patch("core_cli.repair_worker.run_repair",
+                   return_value=True) as m:
+            with self.assertRaises(SystemExit) as ctx:
+                rw.main(["--issue", "7", "--repo", "boomtick"])
+        self.assertEqual(ctx.exception.code, 0)
+        m.assert_called_once_with(issue_number=7, issue_body=None,
+                                  repo="arii/boomtick")
+
+    def test_main_defaults_repo(self):
+        with patch("core_cli.repair_worker.run_repair",
+                   return_value=False) as m:
+            with self.assertRaises(SystemExit) as ctx:
+                rw.main(["--issue", "7"])
+        self.assertEqual(ctx.exception.code, 1)
+        m.assert_called_once_with(issue_number=7, issue_body=None,
+                                  repo="arii/remote-server")
+
+    def test_main_rejects_bad_repo(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            with self.assertRaises(SystemExit) as ctx:
+                rw.main(["--issue", "7", "--repo", "../evil"])
+        self.assertEqual(ctx.exception.code, 2)
 
 
 if __name__ == "__main__":
