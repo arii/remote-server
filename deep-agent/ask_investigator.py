@@ -21,7 +21,7 @@ import cli
 cli.bootstrap()
 
 from langchain.agents import create_agent  # noqa: E402
-from langchain_core.messages import ToolMessage  # noqa: E402
+from langchain_core.messages import HumanMessage, ToolMessage  # noqa: E402
 from langchain_core.tools import tool  # noqa: E402
 from langchain_ollama import ChatOllama  # noqa: E402
 
@@ -361,9 +361,20 @@ def main() -> int:
             # tool call, measured); preserves room for ~4 tool calls.
             config={"recursion_limit": 20},
         )
-    except Exception:
+    except Exception as exc:
         recorder.run_end(False)
         recorder.close()
+        _usage, _calls = recorder.totals()
+        ledger.record(
+            "ask_investigator.py",
+            f"ollama:{MODEL_ID}",
+            thread,
+            [HumanMessage(content=instruction)],
+            started,
+            extra={"trace": recorder.path, "error": str(exc)[:200]},
+            usage=_usage,
+            calls=_calls,
+        )
         raise
     recorder.run_end(True)
     recorder.close()

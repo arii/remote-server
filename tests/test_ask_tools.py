@@ -410,5 +410,62 @@ class TestAskProgressRun(unittest.TestCase):
         self.assertIn("FINAL: the router lives in model_router.py", out)
 
 
+class TestAskFailureLedger(unittest.TestCase):
+    """Failed ask runs must land in the ledger (#480)."""
+
+    def _run_failing_main(self, tmp):
+        b64 = base64.b64encode(b"Which file defines routing?").decode()
+        argv = ["ask_investigator.py", "arii/remote-server", b64]
+        trace = os.path.join(tmp.name, "trace.jsonl")
+        agent = SimpleNamespace(
+            invoke=mock.Mock(side_effect=RuntimeError("model exploded")))
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(sys, "argv", argv))
+        stack.enter_context(mock.patch.object(
+            ai.s5tools, "checkout_for", return_value=tmp.name))
+        stack.enter_context(mock.patch.object(
+            ai.observe, "default_trace_path", return_value=trace))
+        stack.enter_context(mock.patch.object(
+            ai, "create_agent", return_value=agent))
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        with self.assertRaises(RuntimeError):
+            ai.main()
+        return trace
+
+    def test_failure_records_error_trace_and_usage(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with mock.patch.object(ai.ledger, "record") as record:
+            trace = self._run_failing_main(tmp)
+        record.assert_called_once()
+        args, kwargs = record.call_args
+        self.assertEqual(args[0], "ask_investigator.py")
+        self.assertEqual(args[2], "ask-arii-remote-server")
+        extra = kwargs.get("extra", {})
+        self.assertIn("model exploded", extra.get("error", ""))
+        self.assertEqual(extra.get("trace"), trace)
+        self.assertIn("usage", kwargs)
+        self.assertIn("calls", kwargs)
+
+    def test_failed_run_visible_in_history_as_not_ok(self):
+        import runs
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ledger_path = os.path.join(tmp.name, "ledger.jsonl")
+        with mock.patch.object(ai.ledger, "LEDGER", ledger_path):
+            trace = self._run_failing_main(tmp)
+        with open(ledger_path) as f:
+            row = json.loads(f.read().strip().splitlines()[-1])
+        self.assertEqual(row["extra"].get("trace"), trace)
+        self.assertIn("error", row["extra"])
+        summaries = runs.list_runs(ledger_path=ledger_path)
+        self.assertEqual(len(summaries), 1)
+        self.assertFalse(summaries[0]["ok"])
+        self.assertEqual(summaries[0]["thread"], "ask-arii-remote-server")
+
+
 if __name__ == "__main__":
     unittest.main()
