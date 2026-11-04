@@ -1564,5 +1564,202 @@ class DigestStampGateTest(unittest.TestCase):
         self.assertTrue(N.delivered({"ntfy": {"ok": True}}))
 
 
+class NotifyLoopTest(unittest.TestCase):
+    """Scheduled check loop semantics (issue #822): fresh pushes
+    fire, quiet ticks stay silent, digest stamps only on delivery,
+    and unknown (failed-fetch) repos keep their stored keys."""
+
+    def setUp(self):
+        for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
+                  "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS"):
+            os.environ.pop(k, None)
+        os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict"
+        os.environ["DIGEST_INTERVAL_HOURS"] = "100000"
+        self.tmp = tempfile.mkdtemp()
+        self._old_state = N.NOTIFIER_STATE_PATH
+        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self.sent = []
+
+    def tearDown(self):
+        N.NOTIFIER_STATE_PATH = self._old_state
+        for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
+                  "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS"):
+            os.environ.pop(k, None)
+
+    def _sender(self, results=None):
+        def sender(**kw):
+            self.sent.append(kw)
+            return dict(results) if results is not None else {}
+        return sender
+
+    def _brief(self):
+        return {"arii/a": {
+            "failing_runs": [{"name": "ci", "branch": "main",
+                              "failed": "boom"}],
+            "prs": [{"number": 7, "title": "fix", "conflicted": True}],
+        }}
+
+    def test_fresh_ci_fail_and_conflict_push(self):
+        N.check_notifications_and_digest(
+            fetcher=self._brief, sender=self._sender(), now=1000.0)
+        kinds = sorted(s["event_type"] for s in self.sent)
+        self.assertEqual(kinds, ["ci_fail", "conflict"])
+
+    def test_quiet_second_tick_sends_nothing(self):
+        N.check_notifications_and_digest(
+            fetcher=self._brief, sender=self._sender(), now=1000.0)
+        self.sent.clear()
+        state = N.check_notifications_and_digest(
+            fetcher=self._brief, sender=self._sender(), now=1001.0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(
+            state["ci"]["arii/a"], {"ci:main": "boom"})
+        self.assertEqual(
+            state["conflicts"]["arii/a"], {"7": "fix"})
+
+    def test_digest_stamps_only_on_delivery(self):
+        os.environ["DIGEST_INTERVAL_HOURS"] = "1"
+        ok = {"ntfy": {"ok": True, "status": 200}}
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {}, sender=self._sender(ok),
+            now=10_000_000.0)
+        self.assertEqual(state["last_digest"], 10_000_000.0)
+        digest_sends = [s for s in self.sent
+                        if s["event_type"] == "digest"]
+        self.assertEqual(len(digest_sends), 1)
+
+    def test_digest_suppressed_or_failed_never_stamps(self):
+        os.environ["DIGEST_INTERVAL_HOURS"] = "1"
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {},
+            sender=self._sender({"suppressed": "muted"}),
+            now=10_000_000.0)
+        self.assertEqual(state.get("last_digest", 0), 0)
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {},
+            sender=self._sender(
+                {"ntfy": {"ok": False, "error": "boom"}}),
+            now=10_000_060.0)
+        self.assertEqual(state.get("last_digest", 0), 0)
+
+    def test_unknown_brief_skips_and_preserves_state(self):
+        N.check_notifications_and_digest(
+            fetcher=self._brief, sender=self._sender(), now=1000.0)
+        self.sent.clear()
+        # Fetch failure: None brief — no pushes, stored keys kept.
+        state = N.check_notifications_and_digest(
+            fetcher=lambda: {"arii/a": None},
+            sender=self._sender(), now=1001.0)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(state["ci"]["arii/a"], {"ci:main": "boom"})
+        self.assertEqual(state["conflicts"]["arii/a"], {"7": "fix"})
+        # Recovery with identical data: still quiet (no push storm).
+        state = N.check_notifications_and_digest(
+            fetcher=self._brief, sender=self._sender(), now=1002.0)
+        self.assertEqual(self.sent, [])
+        # Recovery with a genuinely new failure: pushes once.
+        def evolved():
+            brief = self._brief()
+            brief["arii/a"]["failing_runs"].append(
+                {"name": "lint", "branch": "main", "failed": "x"})
+            return brief
+        N.check_notifications_and_digest(
+            fetcher=evolved, sender=self._sender(), now=1003.0)
+        self.assertEqual(
+            [s["event_type"] for s in self.sent], ["ci_fail"])
+
+
+class CollectNotifyBriefTest(unittest.TestCase):
+    """gh brief collection for the scheduled check (issue #822)."""
+
+    def test_maps_runs_and_conflicts(self):
+        from backend.notify import collect_notify_brief
+
+        calls = []
+
+        class Runner:
+            def run(self, argv, **kw):
+                calls.append(list(argv))
+                out = ("[{\"name\": \"ci\", \"headBranch\": \"main\", "
+                       "\"conclusion\": \"failure\", \"event\": \"push\"}, "
+                       "{\"name\": \"ci\", \"headBranch\": \"dev\", "
+                       "\"conclusion\": \"success\", \"event\": \"push\"}]"
+                       if "run" in argv else
+                       "[{\"number\": 7, \"title\": \"fix\", "
+                       "\"mergeStateStatus\": \"DIRTY\"}, "
+                       "{\"number\": 8, \"title\": \"ok\", "
+                       "\"mergeStateStatus\": \"CLEAN\"}]")
+                return SimpleNamespace(returncode=0, stdout=out,
+                                       stderr="")
+        brief = collect_notify_brief("a", "arii/a", runner=Runner())
+        self.assertEqual(
+            brief["failing_runs"],
+            [{"name": "ci", "branch": "main", "failed": "failure"}])
+        self.assertEqual(
+            brief["prs"],
+            [{"number": 7, "title": "fix", "conflicted": True},
+             {"number": 8, "title": "ok", "conflicted": False}])
+        self.assertEqual(len(calls), 2)
+        for argv in calls:
+            self.assertIn("--repo", argv)
+
+    def test_gh_failure_returns_none(self):
+        from backend.notify import collect_notify_brief
+
+        class Failing:
+            def run(self, argv, **kw):
+                return SimpleNamespace(returncode=1, stdout="",
+                                       stderr="boom")
+        self.assertIsNone(
+            collect_notify_brief("a", "arii/a", runner=Failing()))
+
+    def test_non_list_payload_returns_none(self):
+        from backend.notify import collect_notify_brief
+
+        class Odd:
+            def run(self, argv, **kw):
+                return SimpleNamespace(returncode=0, stdout="{}",
+                                       stderr="")
+        self.assertIsNone(
+            collect_notify_brief("a", "arii/a", runner=Odd()))
+
+
+class NotifyCheckCliTest(unittest.TestCase):
+    """core_cli.notify_check runner (issue #822)."""
+
+    def test_main_runs_check_and_prints_summary(self):
+        import io
+        from contextlib import redirect_stdout
+
+        from core_cli import notify_check
+
+        seen = {}
+
+        def fake_collect(repo_name, gh, runner=None):
+            seen["repo"] = (repo_name, gh)
+            return {"failing_runs": [], "prs": []}
+
+        def fake_check(fetcher=None, sender=None, now=None):
+            briefs = fetcher()
+            self.assertIn("boomtick", briefs)
+            return {"ci": {"boomtick": {}}, "conflicts": {},
+                    "last_digest": 123.0}
+
+        buf = io.StringIO()
+        with mock.patch.object(N, "collect_notify_brief",
+                               side_effect=fake_collect), \
+                mock.patch.object(N, "check_notifications_and_digest",
+                                  side_effect=fake_check):
+            with redirect_stdout(buf):
+                code = notify_check.main(
+                    ["--repo", "boomtick", "--gh", "arii/boomtick"])
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["repo"], ("boomtick", "arii/boomtick"))
+        out = buf.getvalue()
+        self.assertIn("notify-check repo=boomtick", out)
+        self.assertIn("pushes=0", out)
+        self.assertIn("last_digest=123.0", out)
+
+
 if __name__ == "__main__":
     unittest.main()
