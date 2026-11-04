@@ -25,7 +25,10 @@ import ReviewView, {
   parseBulkSelection,
   revertOptimisticMerge,
   reviewColumnsClass,
+  compareReviewRows,
+  parseReviewSort,
   rowMatchesFilter,
+  sortReviewRows,
   toggleBulkSelectAll,
   toggleBulkSelected,
   validateRequestChangesBody,
@@ -643,5 +646,76 @@ describe('explicit branch field (issue #708)', () => {
     );
     expect(html).toContain('data-testid="review-branch"');
     expect(html).toContain('value=""');
+  });
+});
+
+describe('review list sort (issue #817)', () => {
+  const rows = [
+    { number: 1, title: 'old fix', updatedAt: '2026-10-01T00:00:00Z' },
+    { number: 2, title: 'new feat', updatedAt: '2026-11-04T00:00:00Z' },
+    { number: 3, title: 'mid chore', updatedAt: '2026-10-15T00:00:00Z' },
+  ];
+
+  it('parses the select value, defaulting to API order', () => {
+    expect(parseReviewSort('newest')).toBe('newest');
+    expect(parseReviewSort('oldest')).toBe('oldest');
+    expect(parseReviewSort('api')).toBe('api');
+    expect(parseReviewSort('bogus')).toBe('api');
+    expect(parseReviewSort('')).toBe('api');
+  });
+
+  it('leaves API order byte-identical by default', () => {
+    expect(sortReviewRows(rows, 'api')).toEqual(rows);
+  });
+
+  it('reorders newest and oldest by updatedAt', () => {
+    expect(sortReviewRows(rows, 'newest').map((r) => r.number)).toEqual([2, 3, 1]);
+    expect(sortReviewRows(rows, 'oldest').map((r) => r.number)).toEqual([1, 3, 2]);
+  });
+
+  it('keeps rows without timestamps in stable API order, never faked', () => {
+    const mixed = [
+      { number: 7, title: 'pr without stamp' },
+      { number: 8, title: 'stamped', updatedAt: '2026-11-01T00:00:00Z' },
+      { number: 9, title: 'another unstamped' },
+    ];
+    // Unstamped rows compare equal to everything: stable order kept.
+    expect(sortReviewRows(mixed, 'newest').map((r) => r.number)).toEqual([7, 8, 9]);
+    expect(sortReviewRows(mixed, 'oldest').map((r) => r.number)).toEqual([7, 8, 9]);
+    expect(compareReviewRows({ number: 1 }, { number: 2 }, 'newest')).toBe(0);
+  });
+
+  it('treats unparseable timestamps as missing', () => {
+    expect(
+      compareReviewRows(
+        { updatedAt: 'not-a-date' },
+        { updatedAt: '2026-11-01T00:00:00Z' },
+        'newest',
+      ),
+    ).toBe(0);
+  });
+
+  it('composes with the text filter', () => {
+    const filtered = rows.filter((r) => rowMatchesFilter(r, 'fix'));
+    expect(sortReviewRows(filtered, 'newest').map((r) => r.number)).toEqual([1]);
+    const all = rows.filter((r) => rowMatchesFilter(r, ''));
+    expect(sortReviewRows(all, 'oldest').map((r) => r.number)).toEqual([1, 3, 2]);
+  });
+
+  it('keeps bulk-selection keys order-independent', () => {
+    const keys = (rs: typeof rows) =>
+      rs.map((r) => bulkRowKey('issue', r.number)).sort();
+    expect(keys(sortReviewRows(rows, 'newest'))).toEqual(keys(sortReviewRows(rows, 'api')));
+    expect(keys(sortReviewRows(rows, 'oldest'))).toEqual(keys(sortReviewRows(rows, 'api')));
+  });
+
+  it('renders the sort select next to the filter, defaulting to API order', () => {
+    const html = renderToStaticMarkup(
+      <ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />,
+    );
+    expect(html).toContain('data-testid="review-sort"');
+    expect(html).toContain('data-testid="review-filter"');
+    expect(html).toContain('Newest first');
+    expect(html).toContain('Oldest first');
   });
 });

@@ -129,6 +129,38 @@ export function rowMatchesFilter(
   return labels.some((l) => labelOf(l).toLowerCase().includes(q));
 }
 
+// List sort (#817): API order (today's order, byte-identical) plus
+// newest/oldest over the rows' updatedAt. The comparator is stable
+// for rows without a parseable timestamp (compares equal), so PR
+// rows — which lack updatedAt until the backend follow-up lands —
+// hold API order either way. Order is never faked from numbers.
+export type ReviewSort = 'api' | 'newest' | 'oldest';
+
+export function parseReviewSort(value: string): ReviewSort {
+  return value === 'newest' || value === 'oldest' ? value : 'api';
+}
+
+function rowUpdatedAt(row: unknown): number {
+  if (!row || typeof row !== 'object') return NaN;
+  const v = (row as Record<string, unknown>).updatedAt;
+  if (typeof v !== 'string') return NaN;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? NaN : t;
+}
+
+export function compareReviewRows(a: unknown, b: unknown, sort: ReviewSort): number {
+  if (sort === 'api') return 0;
+  const ta = rowUpdatedAt(a);
+  const tb = rowUpdatedAt(b);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+  return sort === 'newest' ? tb - ta : ta - tb;
+}
+
+export function sortReviewRows<T>(rows: readonly T[], sort: ReviewSort): T[] {
+  if (sort === 'api') return [...rows];
+  return [...rows].sort((a, b) => compareReviewRows(a, b, sort));
+}
+
 function labelOf(v: unknown): string {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object') {
@@ -782,6 +814,7 @@ export default function ReviewView({
   const [requestChangesFor, setRequestChangesFor] = useState<number | null>(null);
   const [creatingIssue, setCreatingIssue] = useState(false);
   const [filter, setFilter] = useState('');
+  const [sort, setSort] = useState<ReviewSort>('api');
   const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkRestore, setBulkRestore] = useState<ReadonlySet<string>>(new Set());
@@ -797,12 +830,18 @@ export default function ReviewView({
   // cursor) and surface in the Deferred disclosure instead. The
   // text filter then narrows what's left; the cursor derives from
   // the same narrowed lists, so j/k/d follow the filter.
-  const visiblePrs = (prs ?? [])
-    .filter((p) => !isRowDeferred(deferred, 'pr', p.number))
-    .filter((p) => rowMatchesFilter(p, filter));
-  const visibleIssues = (issues ?? [])
-    .filter((i) => !isRowDeferred(deferred, 'issue', i.number))
-    .filter((i) => rowMatchesFilter(i, filter));
+  const visiblePrs = sortReviewRows(
+    (prs ?? [])
+      .filter((p) => !isRowDeferred(deferred, 'pr', p.number))
+      .filter((p) => rowMatchesFilter(p, filter)),
+    sort,
+  );
+  const visibleIssues = sortReviewRows(
+    (issues ?? [])
+      .filter((i) => !isRowDeferred(deferred, 'issue', i.number))
+      .filter((i) => rowMatchesFilter(i, filter)),
+    sort,
+  );
   const filtering = filter.trim().length > 0;
   const deferredKeys = deferred.map((d) => bulkRowKey(d.kind, d.number));
   // Bulk selection keys for the currently visible (filtered) rows;
@@ -1237,6 +1276,19 @@ export default function ReviewView({
           value={branch}
           onChange={setBranch}
         />
+        <label className="row-meta" htmlFor="review-sort">
+          Sort{' '}
+          <select
+            id="review-sort"
+            data-testid="review-sort"
+            value={sort}
+            onChange={(e) => setSort(parseReviewSort(e.target.value))}
+          >
+            <option value="api">API order</option>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </label>
       </div>
       {bulkSelected.size > 0 && (
         <BulkDeferBar count={bulkSelected.size} busy={bulkBusy} onDefer={() => void deferBulk()} />
