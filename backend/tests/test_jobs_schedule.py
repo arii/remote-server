@@ -292,6 +292,128 @@ class ActionScheduleStoreTest(unittest.TestCase):
             self.assertEqual(jobs_mod.fire_due_action_schedules(), 0)
 
 
+class PauseResumeTest(unittest.TestCase):
+    """Schedule pause/resume (issue #870): the enabled flag skips
+    ticks without advancing, and legacy rows without the flag read
+    enabled."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "sched.json")
+        self.old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+        os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.path
+        self.reg = _registry_snapshot()
+        self._seed_patch = patch.object(
+            jobs_mod, "_notify_seed_repos", return_value=[])
+        self._seed_patch.start()
+
+    def tearDown(self):
+        self._seed_patch.stop()
+        if self.old is None:
+            os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.old
+        _registry_restore(self.reg)
+        self.tmp.cleanup()
+
+    def _create(self, **kw):
+        body = {"action": "logs", "repo": "remote-server",
+                "cadence": "daily"}
+        body.update(kw)
+        with patch("backend.api.routers.issues._ensure_schedule_ticker"):
+            out = jobs_mod.create_action_schedule(
+                jobs_mod.ActionScheduleRequest(**body))
+        return out["schedule"]
+
+    def _due(self, sid):
+        with jobs_mod.action_schedule_lock:
+            state = jobs_mod.load_action_schedules()
+            state[sid]["next_run"] = time.time() - 1
+            jobs_mod.save_action_schedules(state)
+
+    def test_create_defaults_enabled(self):
+        self.assertTrue(self._create()["enabled"])
+
+    def test_create_can_start_paused(self):
+        sched = self._create(enabled=False)
+        self.assertFalse(sched["enabled"])
+        row = jobs_mod.list_action_schedules()["schedules"][0]
+        self.assertFalse(row["enabled"])
+
+    def test_pause_resume_roundtrip_preserves_history(self):
+        from fastapi import HTTPException
+
+        sched = self._create()
+        sid = sched["id"]
+        paused = jobs_mod.pause_action_schedule(sid)["schedule"]
+        self.assertFalse(paused["enabled"])
+        # Definition + history untouched by the flip.
+        for key in ("action", "td_argv", "repo", "cadence",
+                    "next_run", "last_run", "last_result"):
+            self.assertEqual(paused[key], sched[key])
+        resumed = jobs_mod.resume_action_schedule(sid)["schedule"]
+        self.assertTrue(resumed["enabled"])
+        self.assertEqual(resumed["next_run"], sched["next_run"])
+        for fn in (jobs_mod.pause_action_schedule,
+                   jobs_mod.resume_action_schedule):
+            with self.assertRaises(HTTPException) as ctx:
+                fn("nope-nope-nope")
+            self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_paused_tick_skips_without_advancing(self):
+        sched = self._create()
+        sid = sched["id"]
+        self._due(sid)
+        jobs_mod.pause_action_schedule(sid)
+        before = jobs_mod.load_action_schedules()[sid]
+        with patch.object(jobs_mod, "_launch") as launcher:
+            self.assertEqual(jobs_mod.fire_due_action_schedules(), 0)
+        launcher.assert_not_called()
+        after = jobs_mod.load_action_schedules()[sid]
+        self.assertFalse(after["enabled"])
+        self.assertEqual(after["next_run"], before["next_run"])
+        self.assertEqual(after["last_run"], before["last_run"])
+        self.assertEqual(after["last_result"], before["last_result"])
+
+    def test_resume_fires_on_cadence_no_burst(self):
+        sched = self._create()
+        sid = sched["id"]
+        self._due(sid)
+        jobs_mod.pause_action_schedule(sid)
+        jobs_mod.resume_action_schedule(sid)
+        launches = []
+        with patch.object(
+                jobs_mod, "_launch",
+                side_effect=lambda rid, a, r, td_argv=None: launches.append(
+                    (rid, a, r, td_argv))):
+            self.assertEqual(jobs_mod.fire_due_action_schedules(), 1)
+        self.assertEqual(len(launches), 1)
+        jobs_mod.registry.finish_run(launches[0][0], 0)
+        row = jobs_mod.list_action_schedules()["schedules"][0]
+        # One catch-up fire, then the original daily cadence.
+        self.assertGreater(row["next_run"], time.time())
+        self.assertLess(row["next_run"],
+                        time.time() + 24 * 3600 + 60)
+        with patch.object(jobs_mod, "_launch") as launcher:
+            self.assertEqual(jobs_mod.fire_due_action_schedules(), 0)
+        launcher.assert_not_called()
+
+    def test_legacy_row_without_flag_reads_enabled(self):
+        sched = self._create()
+        sid = sched["id"]
+        with jobs_mod.action_schedule_lock:
+            state = jobs_mod.load_action_schedules()
+            del state[sid]["enabled"]
+            state[sid]["next_run"] = time.time() - 1
+            jobs_mod.save_action_schedules(state)
+        # Pre-pause seeds fire with no operator migration.
+        claimed = jobs_mod._claim_due_action_schedules(time.time())
+        self.assertEqual([c[0] for c in claimed], [sid])
+        # And the response model fills the default for the UI.
+        row = jobs_mod.load_action_schedules()[sid]
+        self.assertTrue(jobs_mod.ActionSchedule(**row).enabled)
+
+
 class NotifySeedTest(unittest.TestCase):
     """Default notify-check seeds (issue #822). Discovery is
     stubbed; the store + sentinel live in tmp."""
