@@ -841,6 +841,102 @@ class RouteTableTest(unittest.TestCase):
         self.assertIn(("/api/repair/schedule", ("POST",)), issues_routes)
         self.assertIn(
             ("/api/repair/verify-command", ("GET",)), issues_routes)
+        self.assertIn(("/api/labels", ("GET",)), issues_routes)
+        self.assertIn(("/api/issue-label", ("POST",)), issues_routes)
+
+
+class RepoLabelsTest(unittest.TestCase):
+    def test_list_returns_sorted_names(self):
+        with patch.object(
+                issues_mod, "run_gh_json",
+                return_value=[{"name": "ready"}, {"name": "audit"},
+                              {"name": "  "}, {"nope": 1}]) as m:
+            out = issues_mod.repo_labels(repo="remote-server")
+        self.assertEqual(out, {"repo": "remote-server",
+                               "labels": ["audit", "ready"]})
+        argv = m.call_args[0][1]
+        self.assertEqual(argv[:2], ["label", "list"])
+        self.assertIn("--repo", argv)
+
+    def test_list_bad_repo(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            issues_mod.repo_labels(repo="nope/../evil")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_list_gh_failure_is_500(self):
+        from fastapi import HTTPException
+
+        with patch.object(issues_mod, "run_gh_json",
+                          side_effect=RuntimeError("boom")):
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.repo_labels(repo="remote-server")
+        self.assertEqual(ctx.exception.status_code, 500)
+
+
+class IssueLabelTest(unittest.TestCase):
+    def test_add_argv(self):
+        with patch.object(issues_mod, "run_gh",
+                          return_value="") as m:
+            out = issues_mod.issue_label(
+                issues_mod.IssueLabelRequest(repo="remote-server",
+                                             issue=7, label="audit",
+                                             op="add"))
+        self.assertEqual(out, {"ok": True, "issue": 7})
+        gh, argv = m.call_args[0][0], m.call_args[0][1]
+        self.assertEqual(argv, ["issue", "edit", "7", "--repo", gh,
+                                "--add-label", "audit"])
+
+    def test_remove_argv(self):
+        with patch.object(issues_mod, "run_gh",
+                          return_value="") as m:
+            out = issues_mod.issue_label(
+                issues_mod.IssueLabelRequest(repo="remote-server",
+                                             issue="#7", label="audit",
+                                             op="remove"))
+        self.assertEqual(out, {"ok": True, "issue": 7})
+        gh, argv = m.call_args[0][0], m.call_args[0][1]
+        self.assertEqual(argv, ["issue", "edit", "7", "--repo", gh,
+                                "--remove-label", "audit"])
+
+    def test_validation(self):
+        from fastapi import HTTPException
+
+        bad = [
+            {"issue": 7, "label": "audit", "op": "rename"},
+            {"issue": 7, "label": "", "op": "add"},
+            {"issue": 7, "label": "   ", "op": "add"},
+            {"issue": 7, "label": "x" * 101, "op": "add"},
+            {"issue": "nope", "label": "audit", "op": "add"},
+            {"issue": 0, "label": "audit", "op": "add"},
+            {"issue": True, "label": "audit", "op": "add"},
+        ]
+        for kw in bad:
+            with self.assertRaises(HTTPException, msg=kw) as ctx:
+                issues_mod.issue_label(
+                    issues_mod.IssueLabelRequest(repo="remote-server",
+                                                 **kw))
+            self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_bad_repo(self):
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as ctx:
+            issues_mod.issue_label(issues_mod.IssueLabelRequest(
+                repo="nope/../evil", issue=7, label="audit", op="add"))
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_gh_failure_is_500(self):
+        from fastapi import HTTPException
+
+        with patch.object(issues_mod, "run_gh",
+                          side_effect=RuntimeError("boom")):
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.issue_label(issues_mod.IssueLabelRequest(
+                    repo="remote-server", issue=7, label="audit",
+                    op="add"))
+        self.assertEqual(ctx.exception.status_code, 500)
 
 
 if __name__ == "__main__":

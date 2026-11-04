@@ -7,6 +7,8 @@ this backend serves /api/* like its sibling routers):
 - GET  /api/issues?repo=          open issues, body truncated
 - POST /api/create-issue          create an issue (confirm-tap shape)
 - POST /api/issue-draft           build a structured issue draft
+- GET  /api/labels?repo=           repo label names (typeahead source)
+- POST /api/issue-label            add/remove one label on an issue
 - POST /api/repair/dispatch       start the repair worker for an issue
 - GET  /api/repair/status         repair worker state (+ schedules)
 - POST /api/repair/abort          abort the in-flight repair worker
@@ -119,6 +121,43 @@ class IssueDraft(BaseModel):
     ok: bool = True
     title: str = ""
     body: str = ""
+
+
+class LabelList(BaseModel):
+    repo: str = ""
+    labels: list = Field(default_factory=list)
+
+
+class IssueLabelRequest(BaseModel):
+    repo: str = "remote-server"
+    issue: object = None
+    label: str = ""
+    op: str = ""
+
+
+class IssueLabelResult(BaseModel):
+    ok: bool = True
+    issue: int = 0
+
+
+LABEL_OPS = ("add", "remove")
+LABEL_NAME_MAX = 100
+
+
+def parse_label_name(val) -> str | None:
+    """Trimmed label name, or None when missing/blank/too long.
+
+    GitHub label names allow almost any characters, so only the
+    shape is validated here; gh enforces that the label exists
+    (unknown names fail the edit, surfaced as a 500 like other
+    gh failures in this router).
+    """
+    if not isinstance(val, str):
+        return None
+    name = val.strip()
+    if not name or len(name) > LABEL_NAME_MAX:
+        return None
+    return name
 
 
 class RepairDispatchRequest(BaseModel):
@@ -384,6 +423,49 @@ def issue_draft(body: IssueDraftRequest) -> dict:
            "- [ ] Apply automated or manual fix\n"
            "- [ ] Verify test suite passes\n")
     return {"ok": True, "title": body.title, "body": md}
+
+
+@router.get("/labels", response_model=LabelList)
+def repo_labels(repo: str = "remote-server") -> dict:
+    try:
+        gh = repo_gh(repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        rows = run_gh_json(gh, ["label", "list", "--repo", gh,
+                                "--limit", "100", "--json", "name"],
+                           timeout=60)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+    names = sorted({r.get("name", "") for r in rows
+                    if isinstance(r, dict)
+                    and isinstance(r.get("name"), str)
+                    and r.get("name", "").strip()})
+    return {"repo": repo, "labels": names}
+
+
+@router.post("/issue-label", response_model=IssueLabelResult)
+def issue_label(body: IssueLabelRequest) -> dict:
+    issue_number = parse_issue_number(body.issue)
+    if issue_number is None:
+        raise HTTPException(
+            status_code=400, detail="invalid issue number or url")
+    label = parse_label_name(body.label)
+    if body.op not in LABEL_OPS or label is None:
+        raise HTTPException(
+            status_code=400,
+            detail="op must be add or remove with a label name")
+    try:
+        gh = repo_gh(body.repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    flag = "--add-label" if body.op == "add" else "--remove-label"
+    try:
+        run_gh(gh, ["issue", "edit", str(issue_number),
+                    "--repo", gh, flag, label], timeout=60)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+    return {"ok": True, "issue": issue_number}
 
 
 @router.get("/repair/verify-command",
