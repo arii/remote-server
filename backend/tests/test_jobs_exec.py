@@ -1527,10 +1527,11 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
         real_pipe = engine.run_step_pipe
 
         def _spy(step, append, runner=None, timeout=None, on_proc=None,
-                 env=None):
+                 env=None, cwd=None):
             seen["timeout"] = timeout
             return real_pipe(step, append, runner=runner,
-                             timeout=timeout, on_proc=on_proc, env=env)
+                             timeout=timeout, on_proc=on_proc, env=env,
+                             cwd=cwd)
 
         with mock.patch.object(engine, "run_step_pipe",
                                side_effect=_spy):
@@ -2046,6 +2047,25 @@ class StepEnvTest(unittest.TestCase):
             out.append, env={"LANE_PROBE": "yes"})
         self.assertEqual(code, 0)
         self.assertIn("yes", "".join(out))
+
+    def test_python_m_steps_run_from_engine_root(self):
+        # cwd shadows PYTHONPATH for the top-level package: a stale
+        # stack_dir()/core_cli (no notify_check.py) wins over /app, so
+        # -m steps must execute FROM the deployed tree, not just see it.
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick", "arii/boomtick", "")
+        self.assertIsNone(err)
+        self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
+        self.assertIsNone(engine.step_cwd([["free", "-m"]]))
+        self.assertIsNone(engine.step_cwd([["td", "run", "x"]]))
+
+    def test_run_step_pipe_honors_cwd_override(self):
+        out = []
+        code = engine.run_step_pipe(
+            [sys.executable, "-c", "import os; print(os.getcwd())"],
+            out.append, cwd="/tmp")
+        self.assertEqual(code, 0)
+        self.assertIn("/tmp", "".join(out).strip().splitlines()[-1])
 
 
 if __name__ == "__main__":
