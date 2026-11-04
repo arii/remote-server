@@ -82,15 +82,19 @@ class TestSpendCap(unittest.TestCase):
                              {"NEBIUS_SPEND_CAP_USD": "5.50"}, clear=True):
             self.assertEqual(pricing.spend_cap(), 5.5)
 
-    def test_junk_means_uncapped(self):
-        for raw in ("", "  ", "free", "-3"):
+    def test_blank_means_uncapped(self):
+        for raw in ("", "  "):
             with mock.patch.dict(
                     os.environ, {"NEBIUS_SPEND_CAP_USD": raw},
                     clear=True):
-                if raw == "-3":
-                    self.assertEqual(pricing.spend_cap(), 0.0)
-                else:
-                    self.assertIsNone(pricing.spend_cap())
+                self.assertIsNone(pricing.spend_cap())
+
+    def test_junk_cap_blocks(self):
+        for raw in ("free", "-3"):
+            with mock.patch.dict(
+                    os.environ, {"NEBIUS_SPEND_CAP_USD": raw},
+                    clear=True):
+                self.assertEqual(pricing.spend_cap(), 0.0)
 
 
 if __name__ == "__main__":

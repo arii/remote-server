@@ -75,7 +75,9 @@ def agent_budget() -> dict:
     cap = pricing.spend_cap()
     total = runs.total_metered_spend()
     spent = total["spent"]
-    blocked = cap is not None and spent >= cap
+    # Mirror the router trip: unrated rows block when capped.
+    blocked = cap is not None and (
+        spent >= cap or total["unknown"] > 0)
     return {"cap_usd": cap, "spent_usd": spent,
             "remaining_usd": round(max(0.0, cap - spent), 6)
             if cap is not None else None,

@@ -82,7 +82,15 @@ def _nebius_spec():
         # Single choke point: every metered path flows through here.
         # Spend is recorded ledger cost (in-flight turns land at
         # turn end, so one turn may cross the line; the next blocks).
-        spent = runs.total_metered_spend()["spent"]
+        total = runs.total_metered_spend()
+        if total["unknown"] > 0:
+            # Fail closed: unrated spend is unbounded spend. Rate
+            # the models (card or METERED_RATE_* override) to lift.
+            raise RuntimeError(
+                f"Nebius spend cap unverifiable: {total['unknown']} "
+                "metered run(s) have no rate — add a rate card entry "
+                "or set METERED_RATE_IN_PER_1M/METERED_RATE_OUT_PER_1M")
+        spent = total["spent"]
         if spent >= cap:
             raise RuntimeError(
                 f"Nebius spend cap hit: ${spent:.4f} of ${cap:.4f} "

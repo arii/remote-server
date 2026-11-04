@@ -33,8 +33,9 @@ SPEND_CAP_ENV = "NEBIUS_SPEND_CAP_USD"
 def spend_cap():
     """Configured metered-spend cap in USD, or None when uncapped.
 
-    Unset/blank/unparseable means uncapped (status quo); 0 blocks
-    every metered call; negatives clamp to 0. Never raises.
+    Unset/blank means uncapped; 0 blocks every metered call;
+    negatives clamp to 0. Unparseable fails closed to 0 (a typo'd
+    cap must block, never silently uncap). Never raises.
     """
     try:
         raw = (os.environ.get(SPEND_CAP_ENV) or "").strip()
@@ -42,7 +43,7 @@ def spend_cap():
             return None
         return max(0.0, float(raw))
     except (TypeError, ValueError):
-        return None
+        return 0.0
 
 
 def _env_rates():

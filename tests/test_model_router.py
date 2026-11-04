@@ -104,6 +104,17 @@ def _spent_ledger(directory):
     return path
 
 
+def _unknown_ledger(directory):
+    path = os.path.join(directory, "ledger.jsonl")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(
+            {"kind": "deep-agent-run",
+             "model": "nebius:uncarded/future-9z",
+             "usage": {"input_tokens": 2000, "output_tokens": 1000,
+                       "total_tokens": 3000}}) + "\n")
+    return path
+
+
 class TestSpendCapGate(unittest.TestCase):
     def test_cap_zero_blocks_metered(self):
         with tempfile.TemporaryDirectory() as d:
@@ -147,6 +158,44 @@ class TestSpendCapGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(runs, "LEDGER",
                                    _spent_ledger(d)):
+                with env(NEBIUS_API_KEY="k"):
+                    with mock.patch.object(
+                            model_router, "ollama_reachable",
+                            return_value=False):
+                        spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "nebius")
+
+    def test_cap_blocks_on_unknown_rates(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(runs, "LEDGER",
+                                   _unknown_ledger(d)):
+                with env(NEBIUS_API_KEY="k",
+                         NEBIUS_SPEND_CAP_USD="5.00"):
+                    with mock.patch.object(
+                            model_router, "ollama_reachable",
+                            return_value=False):
+                        with self.assertRaises(RuntimeError) as ctx:
+                            model_router.resolve_llm()
+        self.assertIn("rate", str(ctx.exception).lower())
+
+    def test_unknown_allowed_with_env_rate_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(runs, "LEDGER",
+                                   _unknown_ledger(d)):
+                with env(NEBIUS_API_KEY="k",
+                         NEBIUS_SPEND_CAP_USD="5.00",
+                         METERED_RATE_IN_PER_1M="0.15",
+                         METERED_RATE_OUT_PER_1M="0.50"):
+                    with mock.patch.object(
+                            model_router, "ollama_reachable",
+                            return_value=False):
+                        spec = model_router.resolve_llm()
+        self.assertEqual(spec["provider"], "nebius")
+
+    def test_uncapped_ignores_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(runs, "LEDGER",
+                                   _unknown_ledger(d)):
                 with env(NEBIUS_API_KEY="k"):
                     with mock.patch.object(
                             model_router, "ollama_reachable",
