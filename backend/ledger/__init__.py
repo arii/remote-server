@@ -101,8 +101,9 @@ def read(kind: str = "all", limit: int = 50,
 
 def _read_console_rows(kind: str, since: float) -> list:
     try:
-        with open(ledger_path()) as f:
-            lines = f.readlines()
+        with ledger_lock:
+            with open(ledger_path()) as f:
+                lines = f.readlines()
     except Exception:
         return []
     entries = []
