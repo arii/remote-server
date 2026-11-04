@@ -13,7 +13,13 @@ import ReviewView, {
   REVIEW_REPLY_TEMPLATES,
   appendReplyTemplate,
   applyOptimisticMerge,
+  applyReviewDecision,
+  approveEach,
+  bulkApproveFailureText,
+  bulkApproveNotice,
+  bulkApproveSkippedNote,
   bulkDeferNotice,
+  planBulkApprove,
   bulkRestoreNotice,
   bulkRowKey,
   dropMergedPr,
@@ -38,6 +44,7 @@ import ReviewView, {
   validateRequestChangesBody,
 } from './ReviewView';
 import { approveBlockReason, isOwnPr, mergeBlockReason } from '../reviewTypes';
+import type { PrRow } from '../reviewTypes';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -929,5 +936,188 @@ describe('approve/merge gating for self-authored PRs (issue #848)', () => {
     );
     expect(html).not.toContain('approve-self-note-7');
     expect(html).not.toContain('disabled');
+  });
+});
+
+describe('bulk approve selected PRs (issue #890)', () => {
+  const SELF_REASON = 'you authored this PR — GitHub forbids self-approval';
+  function row(n: number, over: Partial<PrRow> = {}): PrRow {
+    return {
+      number: n,
+      title: `PR #${n}`,
+      author: 'teammate',
+      branch: 'b',
+      isDraft: false,
+      ciStatus: 'failing',
+      ciLabel: 'failing',
+      reviewDecision: '',
+      mergeable: 'UNKNOWN',
+      url: `https://example.invalid/${n}`,
+      ...over,
+    };
+  }
+  const prs = [row(1), row(2), row(3), row(4, { author: 'octo' })];
+
+  it('approves the eligible subset, excluding self-authored with the #852 reason', () => {
+    const plan = planBulkApprove(prs, new Set(['pr:1', 'pr:2', 'pr:3', 'pr:4']), 'octo');
+    expect(plan.eligible).toEqual([1, 2, 3]);
+    expect(plan.skipped).toEqual([{ number: 4, reason: SELF_REASON }]);
+    expect(plan.issueCount).toBe(0);
+  });
+
+  it('skips drafts, already-approved, unlisted, and issue rows — never silently', () => {
+    const mixed = [row(1), row(2, { isDraft: true }), row(3, { reviewDecision: 'APPROVED' })];
+    const plan = planBulkApprove(
+      mixed,
+      new Set(['pr:1', 'pr:2', 'pr:3', 'pr:99', 'issue:5', 'nope']),
+      'octo',
+    );
+    expect(plan.eligible).toEqual([1]);
+    expect(plan.skipped).toEqual([
+      { number: 2, reason: 'is a draft' },
+      { number: 3, reason: 'already approved' },
+      { number: 99, reason: 'not in the current list' },
+    ]);
+    expect(plan.issueCount).toBe(1);
+  });
+
+  it('stays legacy without a viewer: self-authored stays eligible, backend 400 is the fallback', () => {
+    // Same fail-open as #848: no viewer means the client cannot know
+    // authorship, so the row stays eligible and the backend #852 gate
+    // (backend/tests/test_pulls_issues.py) refuses any self-approval.
+    const plan = planBulkApprove(prs, new Set(['pr:4']), undefined);
+    expect(plan.eligible).toEqual([4]);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it('a self-only selection yields zero eligible, so the bar disables Approve', () => {
+    const plan = planBulkApprove(prs, new Set(['pr:4']), 'octo');
+    expect(plan.eligible).toEqual([]);
+    const html = renderToStaticMarkup(
+      <BulkDeferBar
+        count={1}
+        busy={false}
+        onDefer={() => {}}
+        approveCount={plan.eligible.length}
+        onApprove={() => {}}
+        skippedNote={bulkApproveSkippedNote(plan)}
+      />,
+    );
+    expect(html).toContain('data-testid="defer-bulk-approve"');
+    expect(html).toContain('>Approve 0<');
+    expect(html).toContain('title="No selected PR is approvable"');
+    expect(html).toContain('data-testid="defer-bulk-approve-skipped"');
+    expect(html).toContain(SELF_REASON);
+  });
+
+  it('stays quiet on a clean selection, groups skip counts otherwise', () => {
+    expect(bulkApproveSkippedNote({ eligible: [1], skipped: [], issueCount: 0 })).toBeNull();
+    expect(
+      bulkApproveSkippedNote({
+        eligible: [1],
+        skipped: [
+          { number: 2, reason: 'already approved' },
+          { number: 3, reason: 'already approved' },
+          { number: 4, reason: SELF_REASON },
+        ],
+        issueCount: 1,
+      }),
+    ).toBe(
+      '4 skipped: already approved (2); ' +
+        `${SELF_REASON} (1); issue rows are not approvable (1)`,
+    );
+  });
+
+  it('names the batch result: single mirrors the row notice, else counts', () => {
+    expect(bulkApproveNotice([7], 1)).toBe('Approved PR #7.');
+    expect(bulkApproveNotice([1, 2, 3], 3)).toBe('Approved 3 PRs.');
+    expect(bulkApproveNotice([1, 2], 3)).toBe('Approved 2 of 3 PRs.');
+    expect(bulkApproveNotice([], 3)).toBe('');
+  });
+
+  it('joins per-PR errors for partial and total failures', () => {
+    expect(
+      bulkApproveFailureText([
+        { number: 7, error: 'POST api/pr-action failed: 400' },
+        { number: 9, error: 'boom' },
+      ]),
+    ).toBe('PR #7: POST api/pr-action failed: 400; PR #9: boom');
+  });
+
+  it('fanout approves every number, collecting outcomes without aborting', async () => {
+    const seen: number[] = [];
+    const out = await approveEach(async (n) => {
+      seen.push(n);
+    }, [1, 2, 3]);
+    expect(seen).toEqual([1, 2, 3]);
+    expect(out).toEqual({ approved: [1, 2, 3], failed: [] });
+  });
+
+  it('fanout keeps successes when one PR fails, with per-PR errors', async () => {
+    const out = await approveEach(async (n) => {
+      if (n === 2) throw new Error('POST api/pr-action failed: 400');
+      if (n === 3) throw 'plain-string failure';
+    }, [1, 2, 3]);
+    expect(out.approved).toEqual([1]);
+    expect(out.failed).toEqual([
+      { number: 2, error: 'POST api/pr-action failed: 400' },
+      { number: 3, error: 'plain-string failure' },
+    ]);
+  });
+
+  it('patches the reviewed rows optimistically, leaving the rest alone', () => {
+    expect(applyReviewDecision(null, [7], 'APPROVED')).toBeNull();
+    const next = applyReviewDecision(prs, [1, 3], 'APPROVED');
+    expect(next?.map((r) => r.reviewDecision)).toEqual(['APPROVED', '', 'APPROVED', '']);
+    expect(prs[0].reviewDecision).toBe('');
+  });
+
+  it('renders Approve-n with the skip note next to Defer-n', () => {
+    const plan = planBulkApprove(prs, new Set(['pr:1', 'pr:2', 'pr:3', 'pr:4']), 'octo');
+    const html = renderToStaticMarkup(
+      <BulkDeferBar
+        count={4}
+        busy={false}
+        onDefer={() => {}}
+        approveCount={plan.eligible.length}
+        onApprove={() => {}}
+        skippedNote={bulkApproveSkippedNote(plan)}
+      />,
+    );
+    expect(html).toContain('4 selected');
+    expect(html).toContain('>Defer 4<');
+    expect(html).toContain('>Approve 3<');
+    expect(html).toContain('aria-label="Approve 3 selected PRs"');
+    expect(html).not.toContain('disabled');
+    expect(html).toContain('1 skipped:');
+    expect(html).toContain(SELF_REASON);
+  });
+
+  it('disables both bar actions while either request is in flight', () => {
+    const approving = renderToStaticMarkup(
+      <BulkDeferBar
+        count={3}
+        busy={false}
+        onDefer={() => {}}
+        approveCount={3}
+        approveBusy
+        onApprove={() => {}}
+      />,
+    );
+    expect(approving).toContain('>Approving…<');
+    expect(approving).toContain('>Defer 3<');
+    expect(approving.match(/disabled/g)?.length).toBe(2);
+    const deferring = renderToStaticMarkup(
+      <BulkDeferBar
+        count={3}
+        busy
+        onDefer={() => {}}
+        approveCount={3}
+        onApprove={() => {}}
+      />,
+    );
+    expect(deferring).toContain('>Deferring…<');
+    expect(deferring).toContain('>Approve 3<');
+    expect(deferring.match(/disabled/g)?.length).toBe(2);
   });
 });
