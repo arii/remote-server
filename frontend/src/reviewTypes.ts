@@ -20,11 +20,18 @@ export interface PrRow {
   reviewDecision: string;
   mergeable: string;
   url: string;
+  // #848: false when GitHub reports no review decision, meaning no
+  // required-review rule is in play — the merge gate must not demand
+  // an approval then. Missing (older payloads, fixtures) means strict.
+  reviewRequired?: boolean;
 }
 
 export interface PrListResponse {
   repo: string;
   prs: PrRow[];
+  // #848: login gh acts as; blank/unknown when the backend could not
+  // determine it (Approve stays enabled, endpoint 400 is fallback).
+  viewer?: string;
 }
 
 interface PrFileStat {
@@ -97,7 +104,18 @@ export interface DeferredListResponse {
 // sides — update the table with any semantic change.
 export function mergeBlockReason(p: PrRow): string | null {
   if (p.isDraft) return 'is a draft';
-  if (p.reviewDecision !== 'APPROVED') return `review is ${p.reviewDecision || 'unapproved'}`;
+  // #848: only demand an approval the target repo actually requires.
+  // A missing reviewRequired (fixtures, older payloads) stays strict
+  // so the #553 cross-language pin still holds; false with no
+  // negative review signal fails open. An explicit CHANGES_REQUESTED
+  // — or GitHub's own REVIEW_REQUIRED — still blocks either way.
+  const reviewRequired = p.reviewRequired ?? true;
+  if (p.reviewDecision !== 'APPROVED') {
+    if (reviewRequired) return `review is ${p.reviewDecision || 'unapproved'}`;
+    if (p.reviewDecision === 'CHANGES_REQUESTED' || p.reviewDecision === 'REVIEW_REQUIRED') {
+      return `review is ${p.reviewDecision}`;
+    }
+  }
   if (p.ciStatus !== 'passing') return `CI is ${p.ciStatus || 'unknown'}`;
   if (p.mergeable !== 'MERGEABLE') return `merge state is ${p.mergeable || 'unknown'}`;
   return null;
@@ -109,9 +127,19 @@ export function mergeBlockReason(p: PrRow): string | null {
 // noise). The CI and merge-state reasons do NOT apply — a review
 // is valid whatever the checks say. Request-changes is never
 // row-disabled: any open PR, draft or not, can take feedback.
-export function approveBlockReason(p: PrRow): string | null {
+// #848: the console user cannot approve their own PR (GitHub rejects
+// with "Can not approve your own pull request"). The backend reports
+// its gh login as PrListResponse.viewer; a matching author means the
+// Approve tap would fail, so the chip disables with the reason inline.
+export function isOwnPr(p: PrRow, viewer?: string): boolean {
+  if (!viewer || !p.author) return false;
+  return p.author.toLowerCase() === viewer.toLowerCase();
+}
+
+export function approveBlockReason(p: PrRow, viewer?: string): string | null {
   if (p.isDraft) return 'is a draft';
   if (p.reviewDecision === 'APPROVED') return 'already approved';
+  if (isOwnPr(p, viewer)) return 'you authored this PR — GitHub forbids self-approval';
   return null;
 }
 

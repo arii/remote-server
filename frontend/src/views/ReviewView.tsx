@@ -21,7 +21,7 @@ import {
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
-import { approveBlockReason, detailsMergeBlockReason, mergeBlockReason } from '../reviewTypes';
+import { approveBlockReason, detailsMergeBlockReason, isOwnPr, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
@@ -389,23 +389,35 @@ export function PrRowApprove({
   pr,
   busy,
   onApprove,
+  viewer,
 }: {
   pr: PrRow;
   busy: boolean;
   onApprove: (n: number) => void;
+  viewer?: string;
 }) {
-  const blocked = approveBlockReason(pr);
+  const blocked = approveBlockReason(pr, viewer);
+  // #848: an impossible approval (own PR) names its reason inline —
+  // a disabled chip alone reads as broken, a live chip 500s.
+  const showInline = isOwnPr(pr, viewer) && blocked !== null;
   return (
-    <button
-      type="button"
-      data-testid={`approve-pr-${pr.number}`}
-      aria-label={`Approve PR #${pr.number}`}
-      title={blocked ?? undefined}
-      disabled={blocked !== null || busy}
-      onClick={() => onApprove(pr.number)}
-    >
-      Approve
-    </button>
+    <>
+      <button
+        type="button"
+        data-testid={`approve-pr-${pr.number}`}
+        aria-label={`Approve PR #${pr.number}`}
+        title={blocked ?? undefined}
+        disabled={blocked !== null || busy}
+        onClick={() => onApprove(pr.number)}
+      >
+        Approve
+      </button>
+      {showInline && (
+        <span className="row-meta" data-testid={`approve-self-note-${pr.number}`}>
+          {blocked}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -898,6 +910,9 @@ export default function ReviewView({
   createRequest?: number;
 }) {
   const [prs, setPrs] = useState<PrRow[] | null>(null);
+  // #848: gh login for self-approval checks; undefined until the PR
+  // list loads (mocks never set it — Approve stays legacy there).
+  const [viewer, setViewer] = useState<string | undefined>(undefined);
   const [branch, setBranch] = useBranchField(repo, defaultBranch);
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
   const [deferred, setDeferred] = useState<DeferredRow[]>([]);
@@ -991,6 +1006,7 @@ export default function ReviewView({
   useEffect(() => {
     let cancelled = false;
     setPrs(null);
+    setViewer(undefined);
     setIssues(null);
     setDeferred([]);
     setSelected(null);
@@ -1007,6 +1023,7 @@ export default function ReviewView({
         const [p, i] = await Promise.all([fetchPrs(repo), fetchIssues(repo)]);
         if (!cancelled) {
           setPrs(p.prs);
+          setViewer(p.viewer || undefined);
           setIssues(i.issues);
         }
       } catch (err) {
@@ -1223,6 +1240,7 @@ export default function ReviewView({
     try {
       const p = await fetchPrs(repo);
       setPrs(p.prs);
+      setViewer(p.viewer || undefined);
     } catch {
       setPrs((prev) =>
         prev ? prev.map((r) => (r.number === n ? { ...r, reviewDecision: decision } : r)) : prev,
@@ -1480,7 +1498,7 @@ export default function ReviewView({
                     <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />
                     <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />
                     <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />
-                    <PrRowApprove pr={p} busy={reviewing.has(p.number)} onApprove={(n) => void onApprove(n)} />
+                    <PrRowApprove pr={p} busy={reviewing.has(p.number)} onApprove={(n) => void onApprove(n)} viewer={viewer} />
                     <PrRowRequestChanges
                       pr={p}
                       busy={reviewing.has(p.number)}
