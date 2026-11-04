@@ -893,6 +893,23 @@ export function triggerDigest(): Promise<DigestResult> {
   return postJson<DigestResult>('api/notifications/trigger-digest', {});
 }
 
+// Scheduled digest cadence (issue #636): daily/weekly/off plus
+// next-run and last-send bookkeeping from the tick-fired job.
+export interface DigestSchedule {
+  cadence: string;
+  next_run: number | null;
+  last_sent: number | null;
+  last_result: { ok?: boolean; at?: number; error?: string };
+}
+
+export function fetchDigestSchedule(): Promise<DigestSchedule> {
+  return getJson<DigestSchedule>('api/notifications/digest-schedule');
+}
+
+export function setDigestSchedule(cadence: string): Promise<DigestSchedule> {
+  return postJson<DigestSchedule>('api/notifications/digest-schedule', { cadence });
+}
+
 // Attention snooze (issue #614): hide a queue item id until expiry.
 export interface SnoozeResult {
   ok: boolean;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fetchBriefing, fetchLedger, fetchNotificationStatus, triggerDigest } from '../apiClient';
-import type { DigestChannelResult, NotificationsStatus } from '../apiClient';
+import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationStatus, setDigestSchedule, triggerDigest } from '../apiClient';
+import type { DigestChannelResult, DigestSchedule, NotificationsStatus } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
@@ -201,21 +201,53 @@ export function digestResultLine(
   return `Digest partially sent ${sentAt} — ${okNames.join(', ')} ok; ${bad.join('; ')}.`;
 }
 
+const DIGEST_CADENCES = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'off', label: 'Off' },
+] as const;
+
+export function digestScheduleLine(sched: DigestSchedule): string {
+  if (sched.cadence !== 'daily' && sched.cadence !== 'weekly') return 'Scheduled digests off.';
+  const next = sched.next_run
+    ? `Next digest ${formatDigestStamp(sched.next_run)}`
+    : 'Next digest not scheduled';
+  const res = sched.last_result ?? {};
+  if (!res.at) return `${next}.`;
+  if (res.ok) return `${next} · last sent ${formatDigestStamp(res.at)}.`;
+  const err = res.error || 'unknown error';
+  const short = err.length > 120 ? `${err.slice(0, 120)}…` : err;
+  return `${next} · last scheduled send failed (${short}).`;
+}
+
 export function DigestControlsView({
   status,
   statusErr,
   running,
   result,
   onRun,
+  sched = null,
+  schedErr = null,
+  schedBusy = false,
+  onSetCadence = () => {},
 }: {
   status: NotificationsStatus | null;
   statusErr: string | null;
   running: boolean;
   result: string | null;
   onRun: () => void;
+  sched?: DigestSchedule | null;
+  schedErr?: string | null;
+  schedBusy?: boolean;
+  onSetCadence?: (cadence: string) => void;
 }) {
   const reason = digestDisabledReason(status, statusErr, running);
   const line = statusErr ? `Digest status unavailable — ${statusErr}` : !status ? 'Digest: checking status…' : digestStatusLine(status);
+  const schedLine = schedErr
+    ? `Digest schedule unavailable — ${schedErr}`
+    : !sched
+      ? 'Digest schedule: checking…'
+      : digestScheduleLine(sched);
   return (
     <section aria-label="Briefing digest">
       <div className="actions">
@@ -227,10 +259,27 @@ export function DigestControlsView({
           onClick={onRun}
         >
           {running ? 'Sending…' : 'Run briefing now'}
-        </button>
+        </button>{' '}
+        <div className="actions" role="group" aria-label="Digest schedule" data-testid="briefing-digest-schedule">
+          {DIGEST_CADENCES.map((c) => (
+            <button
+              key={c.value}
+              type="button"
+              data-testid={`briefing-schedule-${c.value}`}
+              aria-pressed={sched?.cadence === c.value}
+              disabled={schedBusy}
+              onClick={() => onSetCadence(c.value)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
       </div>
       <p className="row-meta" data-testid="briefing-digest-status">
         {line}
+      </p>
+      <p className="row-meta" data-testid="briefing-digest-schedule-status">
+        {schedLine}
       </p>
       {result && (
         <p className="row-meta" data-testid="briefing-digest-result">
@@ -246,6 +295,9 @@ export function DigestControls() {
   const [statusErr, setStatusErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [sched, setSched] = useState<DigestSchedule | null>(null);
+  const [schedErr, setSchedErr] = useState<string | null>(null);
+  const [schedBusy, setSchedBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -255,6 +307,12 @@ export function DigestControls() {
         if (!cancelled) setStatus(live);
       } catch (err) {
         if (!cancelled) setStatusErr(err instanceof Error ? err.message : String(err));
+      }
+      try {
+        const liveSched = await fetchDigestSchedule();
+        if (!cancelled) setSched(liveSched);
+      } catch (err) {
+        if (!cancelled) setSchedErr(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
@@ -283,6 +341,19 @@ export function DigestControls() {
     }
   }
 
+  async function setCadence(cadence: string) {
+    if (schedBusy) return;
+    setSchedBusy(true);
+    try {
+      setSched(await setDigestSchedule(cadence));
+      setSchedErr(null);
+    } catch (err) {
+      setSchedErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSchedBusy(false);
+    }
+  }
+
   return (
     <DigestControlsView
       status={status}
@@ -290,6 +361,10 @@ export function DigestControls() {
       running={running}
       result={result}
       onRun={() => void runNow()}
+      sched={sched}
+      schedErr={schedErr}
+      schedBusy={schedBusy}
+      onSetCadence={(c) => void setCadence(c)}
     />
   );
 }

@@ -11,6 +11,7 @@ import {
   fetchBriefing,
   fetchInbox,
   fetchJobs,
+  fetchDigestSchedule,
   fetchLedger,
   fetchNotificationStatus,
   fetchPrDetails,
@@ -23,6 +24,7 @@ import {
   postAgentTurn,
   requestPrChanges,
   rerunJob,
+  setDigestSchedule,
   snoozeAttention,
   startJobRun,
   subscribeJobsPush,
@@ -93,6 +95,23 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/notifications/trigger-digest',
       expect.objectContaining({ method: 'POST', body: '{}' }),
+    );
+  });
+
+  it('fetches the digest schedule (issue #636)', async () => {
+    const sched = { cadence: 'daily', next_run: 9, last_sent: null, last_result: {} };
+    vi.stubGlobal('fetch', mockFetchJson(sched));
+    expect(await fetchDigestSchedule()).toEqual(sched);
+    expect(fetch).toHaveBeenCalledWith('/api/notifications/digest-schedule');
+  });
+
+  it('sets digest cadence (issue #636)', async () => {
+    const sched = { cadence: 'weekly', next_run: 9, last_sent: null, last_result: {} };
+    vi.stubGlobal('fetch', mockFetchJson(sched));
+    expect(await setDigestSchedule('weekly')).toEqual(sched);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/notifications/digest-schedule',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ cadence: 'weekly' }) }),
     );
   });
 
