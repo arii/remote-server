@@ -1526,10 +1526,11 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
         seen = {}
         real_pipe = engine.run_step_pipe
 
-        def _spy(step, append, runner=None, timeout=None, on_proc=None):
+        def _spy(step, append, runner=None, timeout=None, on_proc=None,
+                 env=None):
             seen["timeout"] = timeout
             return real_pipe(step, append, runner=runner,
-                             timeout=timeout, on_proc=on_proc)
+                             timeout=timeout, on_proc=on_proc, env=env)
 
         with mock.patch.object(engine, "run_step_pipe",
                                side_effect=_spy):
@@ -2019,6 +2020,32 @@ class CheckNotificationsActionTest(unittest.TestCase):
         self.assertIsNone(err)
         self.assertIsNotNone(rid)
         reg.finish_run(rid, 0)
+
+
+class StepEnvTest(unittest.TestCase):
+    def test_python_m_steps_get_engine_root_pythonpath(self):
+        # Steps run with cwd=stack_dir() (stale host bind-mount), so
+        # `python -m core_cli.*` must resolve from this backend's own
+        # tree or fail with No module named (live 2026-11-04).
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick", "arii/boomtick", "")
+        self.assertIsNone(err)
+        env = engine.step_env(steps)
+        self.assertEqual(env, {"PYTHONPATH": engine.ENGINE_ROOT})
+
+    def test_non_python_dash_m_is_untouched(self):
+        # `free -m` (megabytes) must not match the python -m rule.
+        self.assertIsNone(engine.step_env([["free", "-m"]]))
+        self.assertIsNone(engine.step_env([["td", "run", "x"]]))
+
+    def test_run_step_pipe_merges_env_into_child(self):
+        out = []
+        code = engine.run_step_pipe(
+            [sys.executable, "-c",
+             "import os; print(os.environ.get('LANE_PROBE'))"],
+            out.append, env={"LANE_PROBE": "yes"})
+        self.assertEqual(code, 0)
+        self.assertIn("yes", "".join(out))
 
 
 if __name__ == "__main__":
