@@ -5,7 +5,7 @@ backend's /api prefix convention (buttons serves /buttons/api/*;
 this backend serves /api/* like its sibling routers):
 
 - GET  /api/issues?repo=          open issues, body truncated
-- POST /api/create-issue          create an issue (confirm-tap shape)
+- POST /api/create-issue          create an issue with optional labels
 - POST /api/issue-draft           build a structured issue draft
 - GET  /api/labels?repo=           repo label names (typeahead source)
 - POST /api/issue-label            add/remove one label on an issue
@@ -112,6 +112,7 @@ class CreateIssueRequest(BaseModel):
     repo: str = "remote-server"
     title: str = ""
     body: str = ""
+    labels: list = Field(default_factory=list)
 
 
 class CreateIssueResult(BaseModel):
@@ -500,6 +501,52 @@ def issues(repo: str = "remote-server") -> dict:
     return {"repo": repo, "issues": rows}
 
 
+def _repo_label_names(gh: str) -> list:
+    """Sorted repo label names via gh (typeahead source)."""
+    rows = run_gh_json(gh, ["label", "list", "--repo", gh,
+                            "--limit", "100", "--json", "name"],
+                       timeout=60)
+    return sorted({r.get("name", "") for r in rows
+                   if isinstance(r, dict)
+                   and isinstance(r.get("name"), str)
+                   and r.get("name", "").strip()})
+
+
+def _validate_create_labels(labels, gh: str) -> list:
+    """Canonical label names for create-issue, or HTTP 400.
+
+    Each entry must be a well-formed name (same shape rule as
+    /api/issue-label) and must exist on the repo — the repo's own
+    label set is the allowlist, so unknown names fail here with a
+    400 instead of failing inside gh as a 500. Matching is
+    case-insensitive; the repo's canonical spelling is returned,
+    deduplicated, order-preserving.
+    """
+    if not labels:
+        return []
+    wanted = []
+    for item in labels:
+        name = parse_label_name(item)
+        if name is None:
+            raise HTTPException(status_code=400,
+                                detail="invalid label name")
+        wanted.append(name)
+    try:
+        repo_names = _repo_label_names(gh)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)[:500])
+    canonical = {n.lower(): n for n in repo_names}
+    out = []
+    for name in wanted:
+        hit = canonical.get(name.lower())
+        if hit is None:
+            raise HTTPException(status_code=400,
+                                detail=f"unknown label: {name[:100]}")
+        if hit not in out:
+            out.append(hit)
+    return out
+
+
 @router.post("/create-issue", response_model=CreateIssueResult)
 def create_issue(body: CreateIssueRequest) -> dict:
     try:
@@ -513,10 +560,14 @@ def create_issue(body: CreateIssueRequest) -> dict:
             or len(body.body) > 4000):
         raise HTTPException(
             status_code=400, detail="bad repo, title or body")
+    labels = _validate_create_labels(body.labels, gh)
+    argv = ["issue", "create", "--repo", gh,
+           "--title", body.title.strip(),
+           "--body", body.body.strip()]
+    for name in labels:
+        argv += ["--label", name]
     try:
-        out = run_gh(gh, ["issue", "create", "--repo", gh,
-                          "--title", body.title.strip(),
-                          "--body", body.body.strip()], timeout=120)
+        out = run_gh(gh, argv, timeout=120)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     lines = out.strip().splitlines()
@@ -548,15 +599,9 @@ def repo_labels(repo: str = "remote-server") -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        rows = run_gh_json(gh, ["label", "list", "--repo", gh,
-                                "--limit", "100", "--json", "name"],
-                           timeout=60)
+        names = _repo_label_names(gh)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
-    names = sorted({r.get("name", "") for r in rows
-                    if isinstance(r, dict)
-                    and isinstance(r.get("name"), str)
-                    and r.get("name", "").strip()})
     return {"repo": repo, "labels": names}
 
 

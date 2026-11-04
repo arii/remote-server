@@ -6,6 +6,7 @@ import {
   createIssue,
   fetchDeferred,
   fetchInbox,
+  fetchRepoLabels,
   postActionHref,
   snoozeAttention,
   unsnoozeAttention,
@@ -238,15 +239,21 @@ function sevClass(severity: string): string {
 
 export function ReportDialog({
   initialBody,
+  availableLabels = [],
   onSubmit,
   onCancel,
 }: {
   initialBody: string;
-  onSubmit: (title: string, body: string) => void;
+  availableLabels?: string[];
+  onSubmit: (title: string, body: string, labels: string[]) => void;
   onCancel: () => void;
 }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState(initialBody);
+  const [labels, setLabels] = useState<string[]>([]);
+  function toggleLabel(name: string) {
+    setLabels((prev) => (prev.includes(name) ? prev.filter((l) => l !== name) : [...prev, name]));
+  }
   // Inline (non-modal) dialog: labelled, Escape-dismissible, focus lands in
   // the title field on open. No focus trap: the page behind stays usable.
   return (
@@ -262,9 +269,25 @@ export function ReportDialog({
       }}
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit(title.trim(), body);
+        onSubmit(title.trim(), body, labels);
       }}
     >
+      {availableLabels.length > 0 && (
+        <fieldset data-testid="report-labels">
+          <legend className="row-meta">Labels (optional)</legend>
+          {availableLabels.map((name) => (
+            <label key={name} className="row-meta">
+              <input
+                type="checkbox"
+                data-testid={`report-label-${name}`}
+                checked={labels.includes(name)}
+                onChange={() => toggleLabel(name)}
+              />{' '}
+              {name}
+            </label>
+          ))}
+        </fieldset>
+      )}
       <label className="row-meta" htmlFor="report-title">
         Bug title (required){' '}
         <input
@@ -388,6 +411,10 @@ export default function NowView({
   const [fired, setFired] = useState<string | null>(null);
   const [reported, setReported] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Repo labels for the report dialog checkboxes (issue #436):
+  // fetched once when the dialog first opens, like ReviewView's
+  // typeahead suggestions; null until loaded.
+  const [reportLabels, setReportLabels] = useState<string[] | null>(null);
   // One section mounted at a time: Review and Jobs each bind window
   // triage keys, so mounting both would double-bind j/k/Enter.
   const [section, setSection] = useState<'review' | 'jobs' | null>(null);
@@ -538,12 +565,22 @@ export default function NowView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo, data, dialogOpen]);
 
-  async function onSubmitReport(title: string, body: string) {
+  async function ensureReportLabels() {
+    if (reportLabels !== null || useMock()) return;
+    try {
+      const r = await fetchRepoLabels(rollup ? 'remote-server' : repo);
+      setReportLabels(r.labels);
+    } catch {
+      setReportLabels([]);
+    }
+  }
+
+  async function onSubmitReport(title: string, body: string, labels: string[]) {
     setError(null);
     try {
       // Console bugs file against the console's own repo; the
       // rollup pseudo-repo is not a real checkout.
-      const result = await createIssue(rollup ? 'remote-server' : repo, title, body);
+      const result = await createIssue(rollup ? 'remote-server' : repo, title, body, labels);
       setReported(result.url || 'created');
       setDialogOpen(false);
     } catch (err) {
@@ -573,7 +610,7 @@ export default function NowView({
             )}
           </h2>
         </div>
-        <button type="button" data-testid="report-bug" onClick={() => setDialogOpen(true)}>
+        <button type="button" data-testid="report-bug" onClick={() => { setDialogOpen(true); void ensureReportLabels(); }}>
           Report a bug
         </button>
       </header>
@@ -588,7 +625,8 @@ export default function NowView({
       {dialogOpen && (
         <ReportDialog
           initialBody={reportContext}
-          onSubmit={(t, b) => void onSubmitReport(t, b)}
+          availableLabels={reportLabels ?? []}
+          onSubmit={(t, b, l) => void onSubmitReport(t, b, l)}
           onCancel={() => setDialogOpen(false)}
         />
       )}

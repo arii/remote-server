@@ -495,8 +495,8 @@ export function fetchInbox(repo: string): Promise<InboxFeed> {
   return getJson<InboxFeed>(`api/inbox?repo=${encodeURIComponent(repo)}`);
 }
 
-export async function createIssue(repo: string, title: string, body: string): Promise<{ ok: boolean; url: string }> {
-  return mutateWith('POST', 'api/create-issue', { repo, title, body }, async (resp) => {
+export async function createIssue(repo: string, title: string, body: string, labels?: string[]): Promise<{ ok: boolean; url: string }> {
+  return mutateWith('POST', 'api/create-issue', { repo, title, body, ...(labels?.length ? { labels } : {}) }, async (resp) => {
     if (!resp.ok) {
       notifyApiFailure();
       throw new Error(`POST /api/create-issue failed: ${resp.status}`);

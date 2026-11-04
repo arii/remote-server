@@ -563,6 +563,53 @@ class IssuesTest(unittest.TestCase):
             self.assertNotIn(";", " ".join(argv))
         self.assertTrue(out["url"].endswith("/issues/9"))
 
+    def test_create_labels_round_trip(self):
+        label_rows = [{"name": "ready"}, {"name": "bug"}]
+        with patch.object(issues_mod, "run_gh_json",
+                          return_value=label_rows):
+            with patch.object(
+                    issues_mod, "run_gh",
+                    return_value=("https://github.com/arii/remote-server"
+                                  "/issues/9\n")) as m:
+                out = issues_mod.create_issue(
+                    issues_mod.CreateIssueRequest(
+                        repo="remote-server", title="t", body="b",
+                        labels=["ready", "bug"]))
+        gh, argv = m.call_args[0][0], m.call_args[0][1]
+        self.assertEqual(gh, "arii/remote-server")
+        self.assertEqual(
+            argv,
+            ["issue", "create", "--repo", "arii/remote-server",
+             "--title", "t", "--body", "b",
+             "--label", "ready", "--label", "bug"])
+        self.assertTrue(out["url"].endswith("/issues/9"))
+
+    def test_create_labels_rejected_with_400(self):
+        from fastapi import HTTPException
+
+        with patch.object(issues_mod, "run_gh_json",
+                          return_value=[{"name": "ready"}]):
+            for bad in (["no-such-label"], ["  "], ["x" * 101],
+                        [7], ["ready", "no-such-label"]):
+                with self.assertRaises(HTTPException) as ctx:
+                    issues_mod.create_issue(
+                        issues_mod.CreateIssueRequest(
+                            repo="remote-server", title="t", body="b",
+                            labels=bad))
+                self.assertEqual(ctx.exception.status_code, 400, bad)
+
+    def test_create_labels_canonical_case_and_dedupe(self):
+        with patch.object(issues_mod, "run_gh_json",
+                          return_value=[{"name": "ready"}]):
+            with patch.object(issues_mod, "run_gh",
+                              return_value="u\n") as m:
+                issues_mod.create_issue(
+                    issues_mod.CreateIssueRequest(
+                        repo="remote-server", title="t", body="b",
+                        labels=["Ready", "ready "]))
+        argv = m.call_args[0][1]
+        self.assertEqual(argv[-2:], ["--label", "ready"])
+
     def test_issue_draft_shape(self):
         out = issues_mod.issue_draft(issues_mod.IssueDraftRequest(
             repo="remote-server", source="ci", title="T",
