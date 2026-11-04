@@ -312,9 +312,34 @@ def list_pending_approvals() -> list:
     return out
 
 
+def _event_repo(raw, name: str) -> str:
+    """Short repo name for a global source's repo field.
+
+    Ledger/jobs records carry `name` or `arii/name`; both normalize
+    to the short checkout name for comparison. Missing/blank (legacy
+    records with no repo) defaults to the queried repo so old items
+    stay visible; unparseable values pass through verbatim and so
+    filter out of every single-repo view.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return name
+    try:
+        return validate_repo_name(text)
+    except ValueError:
+        return text
+
+
 def _assemble_items(name: str, now: float) -> list[dict]:
     """Derived queue without snooze filtering (injectable-source
-    assembly shared by the read path and the snooze 404 check)."""
+    assembly shared by the read path and the snooze 404 check).
+
+    Single-repo contract (issue #723): the global sources (failed
+    jobs, failed/skipped webhooks, pending approvals) filter to the
+    queried repo — a single-repo feed carries only its own items.
+    The rollup path fans out per repo, so it still sees every item
+    exactly once.
+    """
     items: list[dict] = []
     try:
         health = get_workflow_health(name) or {}
@@ -350,13 +375,16 @@ def _assemble_items(name: str, now: float) -> list[dict]:
         if entry["runs"] > 1:
             entry["item"]["title"] += f" ×{entry['runs']}"
     for job in list_failed_jobs():
+        repo = _event_repo(job.get("repo"), name)
+        if repo != name:
+            continue
         jid = job.get("id", "?")
         items.append({
             "id": f"job-{jid}",
             "kind": "failed-job",
             "title": f"Failed job: {job.get('name', jid)}",
             "detail": str(job.get("error", job.get("detail", "job failed"))),
-            "repo": str(job.get("repo", name)),
+            "repo": repo,
             "severity": "warn",
             "action": {"label": "View jobs", "method": "GET",
                        "href": "api/jobs", "destructive": False, "intent": ""},
@@ -366,7 +394,9 @@ def _assemble_items(name: str, now: float) -> list[dict]:
     # collapse into a single item with a count (latest first).
     webhook_incidents: dict = {}
     for e in list_failed_webhooks():
-        repo = str(e.get("repo", name))
+        repo = _event_repo(e.get("repo"), name)
+        if repo != name:
+            continue
         detail = str(e.get("error") or e.get("detail") or e.get("event")
                      or "webhook failed")
         key = (repo, detail)
@@ -399,7 +429,9 @@ def _assemble_items(name: str, now: float) -> list[dict]:
     # construction). Skips never resolve failures — see
     # latest_webhook_success_ts.
     for e in list_skipped_webhooks():
-        repo = str(e.get("repo", name))
+        repo = _event_repo(e.get("repo"), name)
+        if repo != name:
+            continue
         detail = str(e.get("detail") or e.get("error") or e.get("event")
                      or "webhook pull skipped")
         eid = e.get("id", e.get("ts", "?"))
@@ -416,13 +448,16 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             "created_at": float(e.get("ts", now) or now),
         })
     for e in list_pending_approvals():
+        repo = _event_repo(e.get("repo"), name)
+        if repo != name:
+            continue
         eid = e.get("id", e.get("ts", "?"))
         items.append({
             "id": f"approval-{eid}",
             "kind": "pending-approval",
             "title": str(e.get("title", "Approval pending")),
             "detail": str(e.get("detail", e.get("event", "awaiting approval"))),
-            "repo": str(e.get("repo", name)),
+            "repo": repo,
             "severity": "info",
             "action": {"label": "Review", "method": "GET",
                        "href": "api/prs?repo=" + name,

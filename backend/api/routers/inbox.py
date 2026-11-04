@@ -114,10 +114,11 @@ class InboxFeed(BaseModel):
 
 def rollup_inbox() -> dict:
     """All-repos attention rollup (issue #610): fan out per repo,
-    dedup by item id (failed jobs/webhooks/approvals are global
-    sources, identical in every repo's list), keep repo order.
-    Merge-ready stays a per-repo concept: empty here by design
-    (rollup is Now attention only)."""
+    dedup by item id (legacy records without a repo default to
+    each queried repo, so they repeat across lists), keep repo
+    order. Each repo's list carries only its own items (issue
+    #723). Merge-ready stays a per-repo concept: empty here by
+    design (rollup is Now attention only)."""
     seen: set = set()
     items = []
     for name in list_repo_names():
