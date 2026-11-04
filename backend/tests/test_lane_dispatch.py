@@ -378,7 +378,7 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertFalse(ready["ready"])
         self.assertTrue(any("busy" in r for r in ready["reasons"]))
 
-    def test_rejected_verify_blocks_but_missing_command_passes(self):
+    def test_rejected_verify_blocks(self):
         def rejected(issue, repo="remote-server"):
             return {"ok": True, "issue": issue, "command": "rm -rf /",
                     "allowlisted": False, "error": "not allowlisted"}
@@ -387,12 +387,47 @@ class ReadinessTest(_QueueStoreTmpDir, unittest.TestCase):
         self.assertFalse(ready["ready"])
         self.assertTrue(any("allowlisted" in r for r in ready["reasons"]))
 
+    def test_unscaffolded_issue_blocks_with_actionable_reason(self):
+        # Gates predict worker success (#908): an unparseable body
+        # (empty command + parse error) fails the worker in
+        # seconds, so ready must be false with the scaffold reason
+        # — never green-gates-to-instant-fail.
         def missing(issue, repo="remote-server"):
             return {"ok": True, "issue": issue, "command": "",
-                    "allowlisted": False, "error": "no spec"}
+                    "allowlisted": False,
+                    "error": "Missing required section: 'Target Files'"}
 
         ready = self._ready(verify_preview=missing)
-        self.assertTrue(ready["ready"])
+        self.assertFalse(ready["ready"])
+        self.assertTrue(any("not scaffolded" in r
+                            for r in ready["reasons"]),
+                        ready["reasons"])
+        self.assertTrue(any("Target Files" in r
+                            for r in ready["reasons"]),
+                        ready["reasons"])
+        self.assertTrue(any("Deterministic Task" in r
+                            for r in ready["reasons"]),
+                        ready["reasons"])
+
+    def test_unscaffolded_dispatch_changes_nothing(self):
+        # The blocked dispatch returns the reason and never spawns.
+        def missing(issue, repo="remote-server"):
+            return {"ok": True, "issue": issue, "command": "",
+                    "allowlisted": False,
+                    "error": "Missing required section: 'Target Files'"}
+
+        launched = []
+        item, err = lane_dispatch.dispatch(
+            "remote-server", 1,
+            launcher=lambda i, r: launched.append((i, r)),
+            monitor=lambda r, i: None,
+            repo_status=_clean_status, verify_preview=missing,
+            worker_busy=lambda: False, gh_runner=_gh_ok())
+        self.assertIsNone(item)
+        self.assertIn("not scaffolded", err)
+        self.assertEqual(launched, [])
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertEqual(stored["state"], "queued")
 
     def test_unreadable_gates_block(self):
         gh = FakeGh().on("api repos/", RuntimeError("boom"))
@@ -496,11 +531,12 @@ class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
                 lane_dispatch.RUNNING
 
     def _worker(self, status, issue=1, repo="remote-server",
-                exit_code=None):
+                exit_code=None, failure_reason=None):
         with issues_mod.repair_state_lock:
             issues_mod.repair_state.update(
                 {"status": status, "issue": issue, "repo": repo,
-                 "exit_code": exit_code})
+                 "exit_code": exit_code,
+                 "failure_reason": failure_reason})
 
     def test_done_worker_marks_done(self):
         self._running_item()
@@ -524,6 +560,20 @@ class MonitorTest(_QueueStoreTmpDir, unittest.TestCase):
         stored = lane_dispatch.get_item("remote-server", 1)
         self.assertEqual(stored["state"], "failed")
         self.assertIn("exit 3", stored["detail"])
+
+    def test_titled_failure_beats_bare_exit_code(self):
+        # Unscaffolded runs (#908) surface the titled reason in
+        # the queue row instead of "exit 2".
+        self._running_item()
+        self._worker("failed", exit_code=1, failure_reason=(
+            "issue #380 is not scaffolded for repair: Missing "
+            "required section: 'Target Files'"))
+        lane_dispatch._monitor_item("remote-server", 1)
+        stored = lane_dispatch.get_item("remote-server", 1)
+        self.assertEqual(stored["state"], "failed")
+        self.assertIn("not scaffolded", stored["detail"])
+        self.assertIn("Target Files", stored["detail"])
+        self.assertNotIn("exit 1", stored["detail"])
 
     def test_worker_moved_on_marks_failed(self):
         self._running_item()

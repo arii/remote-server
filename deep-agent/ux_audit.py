@@ -14,8 +14,8 @@ assign -> PR -> merge flow (repair dispatch + Review pane).
 
 Site registry (single source of truth; the jobs router and the
 console read it through ``sites``/``groups``):
-  arii.github.io -> arii/arii.github.io, start https://arii.github.io/
-  boomtick.blog  -> arii/boomtick,      start https://boomtick.blog/
+  arii.github.io -> arii/portfolio,   start https://arii.github.io/
+  boomtick.blog  -> arii/tech-dancer, start https://boomtick.blog/
 
 Reuses, never replicates: ``impact.rank_findings`` + the shared
 finding shape {severity,title,route,viewport,evidence} (+ category
@@ -79,13 +79,13 @@ except ImportError:  # pragma: no cover - hermetic fallback
 SITES = {
     "arii.github.io": {
         "start_url": "https://arii.github.io/",
-        "repo": "arii/arii.github.io",
+        "repo": "arii/portfolio",
         "scope_host": "arii.github.io",
         "scope_prefix": "/",
     },
     "boomtick.blog": {
         "start_url": "https://boomtick.blog/",
-        "repo": "arii/boomtick",
+        "repo": "arii/tech-dancer",
         "scope_host": "boomtick.blog",
         "scope_prefix": "/",
     },

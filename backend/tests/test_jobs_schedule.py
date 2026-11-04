@@ -543,5 +543,165 @@ class NotifySeedTest(unittest.TestCase):
             self.assertIn(name, ctx.exception.detail)
 
 
+class ImpactSeedTest(unittest.TestCase):
+    """Singleton daily impact-pass seed (issue #886). Discovery is
+    stubbed; the store + sentinel live in tmp."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "sched.json")
+        self.old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+        os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.path
+        self.reg = _registry_snapshot()
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.old
+        _registry_restore(self.reg)
+        self.tmp.cleanup()
+
+    def _seeded(self, repos):
+        with patch.object(jobs_mod, "_notify_seed_repos",
+                          return_value=list(repos)):
+            return jobs_mod._ensure_default_impact_schedules(
+                now=10000.0)
+
+    def test_seed_singleton_daily_offset(self):
+        # Console-wide: N checkouts still seed exactly one row.
+        count = self._seeded(["remote-server", "boomtick"])
+        self.assertEqual(count, 1)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["action"], "impact-pass")
+        self.assertEqual(row["cadence"], "daily")
+        self.assertEqual(row["repo"], "remote-server")
+        self.assertEqual(row["td_argv"], [])
+        self.assertIsNone(row["last_run"])
+        self.assertEqual(row["next_run"],
+                         10000.0 + jobs_mod.IMPACT_SEED_OFFSET)
+
+    def test_seed_is_idempotent_and_deletes_stick(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 1)
+        jobs_mod.delete_action_schedule(rows[0]["id"])
+        # Deleted stays deleted: the sentinel remembers the seed.
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        self.assertEqual(
+            jobs_mod.list_action_schedules()["schedules"], [])
+
+    def test_seed_skips_live_manual_schedule_without_dup(self):
+        with patch("backend.api.routers.issues._ensure_schedule_ticker"):
+            jobs_mod.create_action_schedule(
+                jobs_mod.ActionScheduleRequest(
+                    action="impact-pass", repo="remote-server",
+                    cadence="daily"))
+        # Operator beat the seed: no dup, still marked seeded.
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 1)
+
+    def test_seed_uses_own_sentinel(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        with patch.object(
+                jobs_mod, "_notify_seed_repos",
+                return_value=["remote-server"]):
+            self.assertEqual(
+                jobs_mod._ensure_default_notify_schedules(
+                    now=10000.0), 1)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(
+            sorted(r["action"] for r in rows),
+            ["check-notifications", "impact-pass"])
+
+    def test_seed_nothing_without_repos(self):
+        self.assertEqual(self._seeded([]), 0)
+        self.assertFalse(os.path.exists(self.path))
+
+
+class SuperviseSeedTest(unittest.TestCase):
+    """Weekly per-checkout supervise seeds (issue #886).
+    Discovery is stubbed; the store + sentinel live in tmp."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "sched.json")
+        self.old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+        os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.path
+        self.reg = _registry_snapshot()
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.old
+        _registry_restore(self.reg)
+        self.tmp.cleanup()
+
+    def _seeded(self, repos):
+        with patch.object(jobs_mod, "_notify_seed_repos",
+                          return_value=list(repos)):
+            return jobs_mod._ensure_default_supervise_schedules(
+                now=10000.0)
+
+    def test_seed_one_per_repo_weekly_staggered_offset(self):
+        count = self._seeded(["remote-server", "boomtick"])
+        self.assertEqual(count, 2)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 2)
+        by_repo = {r["repo"]: r for r in rows}
+        for repo in ("remote-server", "boomtick"):
+            self.assertEqual(by_repo[repo]["action"], "supervise")
+            self.assertEqual(by_repo[repo]["cadence"], "weekly")
+            self.assertEqual(by_repo[repo]["td_argv"], [])
+            self.assertIsNone(by_repo[repo]["last_run"])
+        first = min(r["next_run"] for r in rows)
+        second = max(r["next_run"] for r in rows)
+        offset = jobs_mod.SUPERVISE_SEED_OFFSET
+        self.assertEqual(first, 10000.0 + offset)
+        self.assertEqual(second, 10000.0 + offset
+                         + jobs_mod.NOTIFY_SEED_STAGGER)
+
+    def test_seed_is_idempotent_and_deletes_stick(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(len(rows), 1)
+        jobs_mod.delete_action_schedule(rows[0]["id"])
+        self.assertEqual(self._seeded(["remote-server"]), 0)
+        self.assertEqual(
+            jobs_mod.list_action_schedules()["schedules"], [])
+
+    def test_seed_picks_up_new_checkouts_later(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        self.assertEqual(
+            self._seeded(["remote-server", "boomtick"]), 1)
+        repos = sorted(r["repo"] for r in
+                       jobs_mod.list_action_schedules()["schedules"])
+        self.assertEqual(repos, ["boomtick", "remote-server"])
+
+    def test_seed_uses_own_sentinel(self):
+        self.assertEqual(self._seeded(["remote-server"]), 1)
+        with patch.object(
+                jobs_mod, "_notify_seed_repos",
+                return_value=["remote-server"]):
+            self.assertEqual(
+                jobs_mod._ensure_default_autofile_schedules(
+                    now=10000.0), 1)
+        rows = jobs_mod.list_action_schedules()["schedules"]
+        self.assertEqual(
+            sorted(r["action"] for r in rows),
+            ["autofile-scan", "supervise"])
+
+    def test_seed_nothing_without_repos(self):
+        self.assertEqual(self._seeded([]), 0)
+        self.assertFalse(os.path.exists(
+            jobs_mod._supervise_seed_path()))
+
+
 if __name__ == "__main__":
     unittest.main()

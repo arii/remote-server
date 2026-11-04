@@ -13,6 +13,25 @@ import sys
 from typing import Any, Dict, List
 
 
+class TaskSpecError(ValueError):
+    """The issue body is not scaffolded for repair.
+
+    Subclasses ValueError so existing callers catching ValueError
+    keep working; the distinct type lets the repair worker and the
+    dispatch gates tell "issue lacks the scaffold" apart from other
+    failures and answer actionably instead of "exit 2".
+    """
+
+
+# Actionable tail for unscaffolded-issue failures (issue #908):
+# names the template that carries the required sections.
+SCAFFOLD_HINT = (
+    "add the missing section(s) from the Deterministic Task template "
+    "(.github/ISSUE_TEMPLATE/deterministic-task.md: 'Target Files' + "
+    "'Verification Command')"
+)
+
+
 def validate_target_path(path) -> bool:
     """True when a target entry stays inside the checkout.
 
@@ -98,8 +117,10 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
       - expected_output: str
 
     Raises:
-      ValueError: If required sections (Target Files or Verification Command)
-                  are missing or empty.
+      TaskSpecError: If required sections (Target Files or Verification
+                  Command) are missing or empty (a ValueError
+                  subclass, so ValueError catches still work).
+      ValueError: If markdown_body is not a string.
     """
     if not isinstance(markdown_body, str):
         raise ValueError("markdown_body must be a string")
@@ -144,7 +165,7 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
     expected_output_raw = find_section(["expected output", "expected output / constraints", "constraints"])
 
     if target_files_raw is None:
-        raise ValueError("Missing required section: 'Target Files'")
+        raise TaskSpecError("Missing required section: 'Target Files'")
 
     # Extract target files
     raw_files = _extract_list_items(target_files_raw)
@@ -158,20 +179,20 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
             cleaned_file = _clean_code_ticks(cleaned_file)
             if cleaned_file and cleaned_file not in ("-", "*", "+"):
                 if not validate_target_path(cleaned_file):
-                    raise ValueError(
+                    raise TaskSpecError(
                         "'Target Files' entry escapes the checkout: "
                         f"{cleaned_file[:200]!r}")
                 target_files.append(cleaned_file)
 
     if not target_files:
-        raise ValueError("'Target Files' section is empty or contains no valid file paths")
+        raise TaskSpecError("'Target Files' section is empty or contains no valid file paths")
 
     if verification_raw is None:
-        raise ValueError("Missing required section: 'Verification Command'")
+        raise TaskSpecError("Missing required section: 'Verification Command'")
 
     verification_command = _clean_command(verification_raw)
     if not verification_command:
-        raise ValueError("'Verification Command' section is empty or contains no valid command")
+        raise TaskSpecError("'Verification Command' section is empty or contains no valid command")
 
     required_changes: List[str] = []
     if required_changes_raw:
