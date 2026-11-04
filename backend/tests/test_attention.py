@@ -44,6 +44,7 @@ class AttentionShapeTest(unittest.TestCase):
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: [],
             list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
         )
         try:
             body = attention.attention("remote-server")
@@ -65,6 +66,7 @@ class AttentionShapeTest(unittest.TestCase):
             list_pending_approvals=lambda: [{
                 "id": "a1", "ts": 3.0, "title": "Approve?",
                 "event": "approval requested"}],
+            ollama_up=lambda: True,
         )
         try:
             body = attention.attention("remote-server")
@@ -95,6 +97,7 @@ class AttentionShapeTest(unittest.TestCase):
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: [],
             list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
         )
         try:
             body = attention.attention("remote-server")
@@ -137,6 +140,7 @@ class AttentionShapeTest(unittest.TestCase):
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: hooks,
             list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
         )
         try:
             body = attention.attention("remote-server")
@@ -160,6 +164,7 @@ class AttentionShapeTest(unittest.TestCase):
             list_failed_jobs=lambda: [],
             list_failed_webhooks=lambda: hooks,
             list_pending_approvals=lambda: [],
+            ollama_up=lambda: True,
         )
         try:
             body = attention.attention("remote-server")
@@ -186,6 +191,7 @@ class SnoozeAttentionTest(unittest.TestCase):
                  "created_at": 1.0}],
             "list_failed_webhooks": lambda: [],
             "list_pending_approvals": lambda: [],
+            "ollama_up": lambda: True,
         }.items():
             self._orig[k] = getattr(attention, k)
             setattr(attention, k, v)
@@ -294,6 +300,74 @@ class WorkflowHealthCacheTest(unittest.TestCase):
         finally:
             attention.ops.fetch_workflow_health = orig
             attention._WF_CACHE.clear()
+
+
+class OllamaOutageTest(unittest.TestCase):
+    def setUp(self):
+        self._orig = {}
+        for k, v in {
+            "get_workflow_health": lambda repo: {"workflows": []},
+            "list_failed_jobs": lambda: [],
+            "list_failed_webhooks": lambda: [],
+            "list_pending_approvals": lambda: [],
+        }.items():
+            self._orig[k] = getattr(attention, k)
+            setattr(attention, k, v)
+        self._orig_up = attention.ollama_up
+        attention._OLLAMA_CACHE.clear()
+
+    def tearDown(self):
+        for k, v in self._orig.items():
+            setattr(attention, k, v)
+        attention.ollama_up = self._orig_up
+        attention._OLLAMA_CACHE.clear()
+
+    def _outage_items(self):
+        return [i for i in attention.attention("remote-server")["items"]
+                if i["kind"] == "provider-outage"]
+
+    def test_outage_item_visible_while_down(self):
+        attention.ollama_up = lambda: False
+        items = self._outage_items()
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["id"], "ollama-outage")
+        self.assertIn("metered", item["title"])
+        self.assertIn("Ollama", item["detail"])
+        self.assertIn("metered", item["detail"])
+        self.assertEqual(item["severity"], "warn")
+        self.assertEqual(item["repo"], "remote-server")
+        for f in ("id", "kind", "title", "detail", "repo",
+                  "severity", "action", "created_at"):
+            self.assertIn(f, item)
+
+    def test_recovery_clears_item(self):
+        # Derived, not stored: one stable id while down, gone on
+        # recovery — no nag spam, no manual clear.
+        attention.ollama_up = lambda: False
+        self.assertEqual(len(self._outage_items()), 1)
+        attention.ollama_up = lambda: True
+        self.assertEqual(self._outage_items(), [])
+
+    def test_probe_error_hides_item(self):
+        def _boom():
+            raise RuntimeError("probe bug")
+        attention.ollama_up = _boom
+        self.assertEqual(self._outage_items(), [])
+
+    def test_probe_cached(self):
+        calls = []
+        orig = attention.model_router.ollama_reachable
+        attention.model_router.ollama_reachable = (
+            lambda timeout=5: calls.append(timeout) or False)
+        try:
+            self.assertFalse(attention.ollama_up())
+            self.assertFalse(attention.ollama_up())
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0], 2)
+        finally:
+            attention.model_router.ollama_reachable = orig
+            attention._OLLAMA_CACHE.clear()
 
 
 if __name__ == "__main__":

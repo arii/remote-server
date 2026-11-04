@@ -7,6 +7,8 @@ Sources (existing helpers only, no new infra):
 - failed jobs: jobs registry (non-ok/failed/terminal-error records)
 - failed webhooks: ledger kind-filtered reads
 - pending approvals: ledger + jobs-registry pending records
+- ollama outage: model_router.ollama_reachable probe (derived item —
+  present while local models are down, clears itself on recovery)
 
 Empty items = all-clear. All source readers are module-level
 functions so tests can monkeypatch them (injectable seams).
@@ -22,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 
@@ -34,6 +37,14 @@ from backend.api.routers.jobs import registry
 from backend.core import validate_repo_name
 
 logger = logging.getLogger(__name__)
+
+REPO_ROOT = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+sys.path.insert(0, os.path.join(REPO_ROOT, "deep-agent"))
+
+import model_router  # noqa: E402
 
 router = APIRouter(prefix="/api", tags=["attention"])
 
@@ -155,6 +166,23 @@ def get_workflow_health(repo: str) -> dict:
     data = ops.fetch_workflow_health(repo, f"arii/{repo}") or {}
     _WF_CACHE[repo] = (time.time(), data)
     return data
+
+
+# TTL cache: the Now queue polls this endpoint on every view; a
+# blackholed Ollama would otherwise stall each poll for the full
+# probe timeout. Tests reset _OLLAMA_CACHE directly.
+OLLAMA_CACHE_TTL = 60.0
+_OLLAMA_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def ollama_up() -> bool:
+    """Injectable seam: local-model health for the outage item."""
+    hit = _OLLAMA_CACHE.get("up")
+    if hit is not None and time.time() - hit[0] < OLLAMA_CACHE_TTL:
+        return hit[1]
+    up = model_router.ollama_reachable(timeout=2)
+    _OLLAMA_CACHE["up"] = (time.time(), up)
+    return up
 
 
 def list_failed_jobs() -> list:
@@ -331,6 +359,25 @@ def _assemble_items(name: str, now: float) -> list[dict]:
                        "href": "api/prs?repo=" + name,
                        "destructive": False, "intent": ""},
             "created_at": float(e.get("ts", e.get("created_at", now)) or now),
+        })
+    try:
+        local_up = ollama_up()
+    except Exception as exc:
+        logger.warning("attention: ollama probe failed: %s", exc)
+        local_up = True
+    if not local_up:
+        items.append({
+            "id": "ollama-outage",
+            "kind": "provider-outage",
+            "title": "Local models down \u2014 replies are metered",
+            "detail": ("Ollama is unreachable; default traffic falls back "
+                       "to metered Nebius until it recovers."),
+            "repo": name,
+            "severity": "warn",
+            "action": {"label": "View budget", "method": "GET",
+                       "href": "api/agents/budget",
+                       "destructive": False, "intent": ""},
+            "created_at": now,
         })
     return items
 
