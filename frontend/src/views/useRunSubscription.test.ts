@@ -40,10 +40,12 @@ function makeHarness() {
   const delays: number[] = [];
   let recovered = 0;
   let nextTimer = 1;
+  let visible = true;
   const pending = new Map<number, () => void>();
   const loop = createRunPollLoop({
     fetchRun,
     fetchPi,
+    isVisible: () => visible,
     schedule: (fn, ms) => {
       const id = nextTimer++;
       pending.set(id, fn);
@@ -77,6 +79,9 @@ function makeHarness() {
     delays,
     loop,
     recovered: () => recovered,
+    setVisible: (v: boolean) => {
+      visible = v;
+    },
     pendingCount: () => pending.size,
     fireNext: () => {
       const entry = [...pending.entries()][0];
@@ -209,6 +214,53 @@ describe('run fallback poll loop (issue #496)', () => {
     await settle();
     expect(h.delays).toEqual([]);
     expect(h.pendingCount()).toBe(0);
+  });
+
+  it('skips fetches while hidden, resumes within one interval (issue #401)', async () => {
+    const h = makeHarness();
+    h.fetchRun.mockResolvedValue(runProgress({ output: 'half' }));
+    h.fetchPi.mockRejectedValue(new Error('no pi'));
+    h.loop.start(RID);
+    await vi.waitFor(() => expect(h.outputs).toEqual(['half']));
+    await vi.waitFor(() => expect(h.delays).toEqual([2000]));
+    expect(h.fetchRun).toHaveBeenCalledTimes(1);
+    // Hidden ticks fire zero requests but keep the chain alive at
+    // base cadence, without touching failure state.
+    h.setVisible(false);
+    h.fireNext();
+    await vi.waitFor(() => expect(h.delays).toEqual([2000, 2000]));
+    await settle();
+    expect(h.fetchRun).toHaveBeenCalledTimes(1);
+    expect(h.fetchPi).not.toHaveBeenCalled();
+    expect(h.loop.consecutiveFailures()).toBe(0);
+    expect(h.stale).toEqual([]);
+    h.fireNext();
+    await vi.waitFor(() => expect(h.delays).toEqual([2000, 2000, 2000]));
+    await settle();
+    expect(h.fetchRun).toHaveBeenCalledTimes(1);
+    // Visible again: the very next tick fetches.
+    h.setVisible(true);
+    h.fetchRun.mockResolvedValueOnce(runProgress({ done: true, output: 'full', exit_code: 0 }));
+    h.fireNext();
+    await vi.waitFor(() => expect(h.done).toEqual([RID]));
+    expect(h.outputs).toEqual(['half', 'full']);
+    expect(h.fetchRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('hidden ticks preserve backoff instead of counting failures (issue #401)', async () => {
+    const h = makeHarness();
+    h.fetchRun.mockRejectedValue(new Error('down'));
+    h.fetchPi.mockRejectedValue(new Error('down'));
+    h.loop.start(RID);
+    await vi.waitFor(() => expect(h.delays).toEqual([4000]));
+    expect(h.loop.consecutiveFailures()).toBe(1);
+    h.setVisible(false);
+    h.fireNext();
+    await vi.waitFor(() => expect(h.delays).toEqual([4000, 2000]));
+    await settle();
+    expect(h.loop.consecutiveFailures()).toBe(1);
+    expect(h.stale).toEqual([]);
+    h.loop.stop();
   });
 
   it('keeps watching through pi fallback; pi-done finishes the watch', async () => {

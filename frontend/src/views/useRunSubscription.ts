@@ -6,7 +6,7 @@ import {
   subscribeRunPush,
 } from '../apiClient';
 import type { JobRunProgress, PiProgressResponse } from '../apiClient';
-import { completionOutcome } from './jobsUtils';
+import { completionOutcome, isTabVisible, onTabVisible } from './jobsUtils';
 
 // Tracks one run to completion: per-run SSE stream first, the
 // legacy 2s snapshot poll as silent fallback when the channel is
@@ -49,6 +49,10 @@ export function createRunPollLoop(deps: {
   onPiDone: (rid: string) => Promise<void>;
   onStale: (message: string) => void;
   onRecovered: () => void;
+  // Visibility gate (#401): ticks skip their fetch while hidden
+  // but keep the chain alive, so polling resumes within one
+  // interval on visible. Injectable to keep the loop DOM-free.
+  isVisible?: () => boolean;
 }): RunPollLoop {
   let timer: number | null = null;
   let active = false;
@@ -109,6 +113,14 @@ export function createRunPollLoop(deps: {
     const gen = generation;
     const tick = async () => {
       timer = null;
+      if (deps.isVisible && !deps.isVisible()) {
+        // Hidden tab: skip the fetch without touching the
+        // failure/backoff state, and re-arm at base cadence so
+        // the watch resumes within one interval on visible.
+        if (!active || gen !== generation) return;
+        timer = deps.schedule(() => void tick(), RUN_POLL_INTERVAL_MS);
+        return;
+      }
       await pollOnce(rid);
       if (!active || gen !== generation) return;
       timer = deps.schedule(() => void tick(), runPollDelayMs(failures));
@@ -149,6 +161,18 @@ export function useRunSubscription({
 
   useEffect(() => stop, []);
 
+  // Immediate resume (#401): a background-throttled chain can lag
+  // its cadence, so a returning tab polls once right away. The
+  // loop's in-flight guard absorbs a racing scheduled tick.
+  useEffect(
+    () =>
+      onTabVisible(() => {
+        const rid = ridRef.current;
+        if (rid !== null) void loopRef.current?.pollOnce(rid);
+      }),
+    [],
+  );
+
   async function complete(rid: string, r: JobRunProgress) {
     if (rid !== ridRef.current) return;
     setRunning(null);
@@ -185,6 +209,7 @@ export function useRunSubscription({
         },
         onStale: setNotice,
         onRecovered: () => setNotice(''),
+        isVisible: isTabVisible,
       });
     }
     return loopRef.current;
