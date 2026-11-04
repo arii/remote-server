@@ -43,11 +43,46 @@ class ContainersTest(unittest.TestCase):
             "health": "healthy",
         }])
 
-    def test_compose_failure_degrades_to_empty(self):
+    def test_compose_exit_failure_marks_error(self):
         body, _ = self._health(
             FakeProc(stderr="boom", returncode=1))
         self.assertEqual(body["containers"], [])
+        self.assertIn("exited 1", body["containers_error"])
+        self.assertIn("boom", body["containers_error"])
         self.assertIn("total_gb", body["disk"])
+
+    def test_compose_timeout_marks_error(self):
+        import subprocess
+
+        with mock.patch("subprocess.run",
+                        side_effect=subprocess.TimeoutExpired(
+                            cmd="docker", timeout=10)):
+            body = get_system_health()
+        self.assertEqual(body["containers"], [])
+        self.assertIn("timed out", body["containers_error"])
+
+    def test_compose_spawn_failure_marks_error(self):
+        with mock.patch("subprocess.run",
+                        side_effect=FileNotFoundError("docker")):
+            body = get_system_health()
+        self.assertEqual(body["containers"], [])
+        self.assertIn("failed", body["containers_error"])
+
+    def test_compose_unparseable_marks_error(self):
+        body, _ = self._health(FakeProc(stdout="not json at all\n"))
+        self.assertEqual(body["containers"], [])
+        self.assertIn("unparseable", body["containers_error"])
+
+    def test_empty_listing_has_no_error(self):
+        for stdout in ("", "[]"):
+            body, _ = self._health(FakeProc(stdout=stdout))
+            self.assertEqual(body["containers"], [])
+            self.assertIsNone(body["containers_error"])
+
+    def test_happy_path_has_no_error(self):
+        body, _ = self._health(FakeProc(stdout=COMPOSE_PS))
+        self.assertEqual(len(body["containers"]), 1)
+        self.assertIsNone(body["containers_error"])
 
 
 STATS_LINES = "\n".join([

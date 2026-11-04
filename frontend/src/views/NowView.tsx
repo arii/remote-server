@@ -185,7 +185,7 @@ export function StackSection({ health }: { health: SystemHealthResponse | null }
           All {health.containers.length} containers up — all clear.
         </p>
       ) : (
-        <ContainerPills containers={health.containers} />
+        <ContainerPills containers={health.containers} error={health.containers_error} />
       )}
     </section>
   );

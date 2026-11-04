@@ -212,6 +212,7 @@ class SystemHealth(BaseModel):
     disk: dict = Field(default_factory=dict)
     memory: dict = Field(default_factory=dict)
     containers: list = Field(default_factory=list)
+    containers_error: str | None = None
 
 
 @router.post("/terminal/takeover", response_model=TakeoverResult)

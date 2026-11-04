@@ -46,6 +46,7 @@ export function singleFlight(fn: () => Promise<void>): () => void {
 
 function healthSummary(health: SystemHealthResponse | null): string {
   if (!health) return 'Status: loading…';
+  if (health.containers_error) return 'Status: container list unavailable';
   const up = health.containers.filter((c) => c.state === 'running').length;
   return `Status: ${up}/${health.containers.length} containers up`;
 }

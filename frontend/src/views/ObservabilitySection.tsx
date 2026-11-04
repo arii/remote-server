@@ -8,7 +8,20 @@ import type {
 } from '../apiClient';
 import { loadWorkflowHealth, useMock } from './mockViews';
 
-export function ContainerPills({ containers }: { containers: ContainerStatus[] }) {
+export function ContainerPills({
+  containers,
+  error,
+}: {
+  containers: ContainerStatus[];
+  error?: string | null;
+}) {
+  if (error) {
+    return (
+      <p className="row-meta" data-testid="observability-containers-error" role="alert">
+        Container list unavailable: {error}
+      </p>
+    );
+  }
   if (containers.length === 0) {
     return (
       <p className="row-meta" data-testid="observability-containers-empty">
@@ -57,15 +70,18 @@ function HealthLine({
   const flowText = flow
     ? ` · automated runs: ${flow.status} (${flow.total_failing} failing)`
     : '';
+  const stackText = health.containers_error
+    ? 'Stack health: container list unavailable'
+    : `Stack health: ${up}/${health.containers.length} containers up`;
   return (
     <div data-testid="observability-health">
       <p className="row-meta">
-        Stack health: {up}/{health.containers.length} containers up
+        {stackText}
         {health.disk.summary ? ` · Disk: ${health.disk.summary}` : ''}
         {health.memory.summary ? ` · Mem: ${health.memory.summary}` : ''}
         {flowText}
       </p>
-      <ContainerPills containers={health.containers} />
+      <ContainerPills containers={health.containers} error={health.containers_error} />
     </div>
   );
 }
