@@ -57,6 +57,20 @@ PLAN_TIMEOUT = 300
 # single-flight engine forever.
 STEP_TIMEOUT = 300
 
+# Per-action step budgets (#670). CPU-local triage fanout runs take
+# 10+ min unbounded (cutoff audit observation), so the default 300s
+# watchdog would kill healthy runs; fanout gets a 20-minute budget.
+# Actions not listed here inherit STEP_TIMEOUT.
+ACTION_STEP_TIMEOUTS = {
+    "triage-fanout": 1200,
+}
+
+
+def step_timeout(action) -> int:
+    """Watchdog budget for one step of ``action`` (STEP_TIMEOUT
+    unless ACTION_STEP_TIMEOUTS overrides it)."""
+    return ACTION_STEP_TIMEOUTS.get(action, STEP_TIMEOUT)
+
 # Action names ported from buttons/server.py::ACTIONS (Jules actions
 # cut: sync-agents/nudge-agents are dead with Jules).
 ALLOWED_ACTIONS = (
@@ -72,6 +86,7 @@ ALLOWED_ACTIONS = (
     "create-plan",
     "run-td",
     "merge-approved",
+    "triage-fanout",
 )
 
 # Actions whose original has confirm: True. The router requires
@@ -85,7 +100,8 @@ DESTRUCTIVE_ACTIONS = (
 )
 
 # Actions scoped to the picked repo (original REPO_SCOPED_ACTIONS
-# plus run-td, minus the dead Jules pair).
+# plus run-td, minus the dead Jules pair). triage-fanout runs the
+# sweep for the run's repo only (one repo per run, #670).
 REPO_SCOPED_ACTIONS = (
     "briefing-td",
     "warm-context",
@@ -93,6 +109,7 @@ REPO_SCOPED_ACTIONS = (
     "create-plan",
     "merge-approved",
     "run-td",
+    "triage-fanout",
 )
 
 ENGINE_ROOT = os.path.dirname(
@@ -101,6 +118,25 @@ ENGINE_ROOT = os.path.dirname(
 
 def stack_dir() -> str:
     return os.environ.get("BUTTONS_STACK", ENGINE_ROOT)
+
+
+def deep_agent_dir() -> str:
+    """deep-agent checkout dir. Same DEEP_AGENT_DIR override the
+    chat router uses, so jobs and chat resolve one venv."""
+    return os.environ.get("DEEP_AGENT_DIR",
+                           os.path.join(ENGINE_ROOT, "deep-agent"))
+
+
+def deep_agent_python() -> str:
+    """Venv python for deep-agent scripts. Same DEEP_AGENT_VENV
+    override the chat router uses; never a hardcoded home path."""
+    return os.environ.get(
+        "DEEP_AGENT_VENV",
+        os.path.join(deep_agent_dir(), ".venv", "bin", "python"))
+
+
+def deep_agent_script(name: str) -> str:
+    return os.path.join(deep_agent_dir(), name)
 
 
 def compose_file() -> str:
@@ -369,6 +405,22 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             exec_argv(prefix + "td --json agent merge-approved -r "
                       f"{gh} --execute"),
         ], None
+    if action == "triage-fanout":
+        # One-repo sweep for the run's repo (#670). --prefer is
+        # omitted so the script's auto ladder applies (Nebius when
+        # keyed, else the local model). Progress lines + FINAL
+        # stream as text through the normal output path (#648); the
+        # step inherits single-flight, history, re-run, cancel, and
+        # the #655 schedule surface like every other action.
+        python = deep_agent_python()
+        script = deep_agent_script("triage_fanout.py")
+        if not os.path.isfile(python):
+            return (None, "deep-agent venv python not found at "
+                    f"{python} (set DEEP_AGENT_VENV)")
+        if not os.path.isfile(script):
+            return (None, "triage fanout script not found at "
+                    f"{script}")
+        return [[python, script, gh]], None
     return None, "unknown action"
 
 
@@ -518,6 +570,7 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
 
             try:
                 code = run_step_pipe(step, _cb, runner=runner,
+                                     timeout=step_timeout(action),
                                      on_proc=_track)
             except Exception as exc:
                 registry.append(run_id, f"error: {exc}\n")

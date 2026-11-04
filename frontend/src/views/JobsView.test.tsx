@@ -7,6 +7,7 @@ import {
   RunComparePanel,
   RunProgressPanel,
   SideBySideDiffView,
+  TriageFanoutSection,
   UnifiedDiffView,
 } from './JobsView';
 import type { JobRecord } from '../apiTypes';
@@ -183,5 +184,47 @@ describe('job schedule button (issue #655)', () => {
       />,
     );
     expect(td).toContain('data-testid="job-schedule"');
+  });
+});
+
+describe('triage fanout launcher (issue #670)', () => {
+  const noop = () => {};
+  it('offers a one-tap sweep for the current repo', () => {
+    const html = renderToStaticMarkup(
+      <TriageFanoutSection repo="boomtick" onDispatch={noop} />,
+    );
+    expect(html).toContain('data-testid="dispatch-triage-fanout"');
+    expect(html).toContain('>Run triage fanout<');
+    expect(html).toContain('boomtick');
+  });
+
+  it('finished fanout rows inherit re-run and scheduling', () => {
+    const html = renderToStaticMarkup(
+      <JobListItem
+        job={mkJob({ kind: 'triage-fanout', name: 'triage-fanout' })}
+        repo="boomtick"
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="job-rerun"');
+    expect(html).toContain('data-testid="job-schedule"');
+    expect(html).not.toContain('asks for confirmation');
+  });
+
+  it('active fanout rows offer cancel', () => {
+    const html = renderToStaticMarkup(
+      <JobListItem
+        job={mkJob({ kind: 'triage-fanout', name: 'triage-fanout', done: false })}
+        repo="boomtick"
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="job-cancel"');
   });
 });
