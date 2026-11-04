@@ -27,6 +27,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.gh import repo_gh, run_gh, run_gh_json
+from backend.pr_gates import (FAILING_CONCLUSIONS, ci_label,
+                              evaluate_merge_gates, merge_argv)
 from core_cli import context_filter
 
 router = APIRouter(prefix="/api", tags=["pulls"])
@@ -120,23 +122,9 @@ class PrActionResult(BaseModel):
     output: str = ""
 
 
-FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT",
-                         "ACTION_REQUIRED"}
-
-
-def ci_label(rollup) -> str:
-    """Port of core_cli/briefing_summary.py::ci_summary label."""
-    if rollup is None:
-        return "unknown"
-    if not rollup:
-        return "no checks"
-    if any(isinstance(c, dict) and c.get("conclusion")
-           in FAILING_CONCLUSIONS for c in rollup):
-        return "failing"
-    if any(isinstance(c, dict) and c.get("status") != "COMPLETED"
-           for c in rollup):
-        return "pending"
-    return "passing"
+# NOTE: FAILING_CONCLUSIONS + ci_label live in backend/pr_gates.py
+# (single-sourced with the scheduled gated-merge path) and are
+# imported above; list/details paths use them unchanged.
 
 
 def _gh(runner=None):
@@ -266,25 +254,29 @@ def _pr_action(gh: str, pr_number: int, action: str,
                      runner=run)
         return {"ok": True, "output": out[-2000:]}
     if action == "merge":
-        ci, merge, review = _pr_view(gh, pr_number, run)
-        if ci != "passing" or merge != "clean":
-            raise ValueError(f"not mergeable: CI {ci}, merge {merge}")
-        # #848: demand an approval only when the target repo does.
-        # REVIEW_REQUIRED is GitHub's own required-but-missing signal;
-        # CHANGES_REQUESTED is an explicit human veto. A blank decision
-        # means no required-review rule — fail open and let `gh pr
-        # merge` (which enforces the repo's real rules) decide.
-        if review == "REVIEW_REQUIRED":
-            raise ValueError(
-                "not mergeable: approval required by branch rules "
-                "(review is REVIEW_REQUIRED)")
-        if review == "CHANGES_REQUESTED":
+        view = run_gh_json(gh, ["pr", "view", str(pr_number),
+                                "--repo", gh,
+                                "--json", PR_VIEW_GATE_FIELDS],
+                           timeout=60, runner=run)
+        ok, fails, facts = evaluate_merge_gates(view)
+        if not ok:
+            gates = {gate for gate, _, _ in fails}
+            if gates & {"ci", "merge"}:
+                raise ValueError(
+                    f"not mergeable: CI {facts['ci']}, "
+                    f"merge {facts['merge']}")
+            # #848: demand an approval only when the target repo does.
+            # REVIEW_REQUIRED is GitHub's own required-but-missing signal;
+            # CHANGES_REQUESTED is an explicit human veto. A blank decision
+            # means no required-review rule — fail open and let `gh pr
+            # merge` (which enforces the repo's real rules) decide.
+            if facts["review"] == "REVIEW_REQUIRED":
+                raise ValueError(
+                    "not mergeable: approval required by branch rules "
+                    "(review is REVIEW_REQUIRED)")
             raise ValueError(
                 "not mergeable: changes were requested on this PR")
-        out = run_gh(gh, ["pr", "merge", str(pr_number),
-                          "--repo", gh,
-                          "--squash", "--delete-branch"],
-                     runner=run)
+        out = run_gh(gh, merge_argv(gh, pr_number), runner=run)
         return {"ok": True, "output": out[-2000:]}
     if action == "update":
         _ci, merge, _review = _pr_view(gh, pr_number, run)

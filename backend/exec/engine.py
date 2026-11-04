@@ -93,6 +93,7 @@ ALLOWED_ACTIONS = (
     "run-td",
     "run-plan",
     "merge-approved",
+    "merge-approved-gated",
     "triage-fanout",
     "check-notifications",
     "autofile-scan",
@@ -117,6 +118,7 @@ REPO_SCOPED_ACTIONS = (
     "preflight",
     "create-plan",
     "merge-approved",
+    "merge-approved-gated",
     "run-td",
     "triage-fanout",
     "check-notifications",
@@ -486,6 +488,18 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             exec_argv(prefix + "td --json agent merge-approved -r "
                       f"{gh} --execute"),
         ], None
+    if action == "merge-approved-gated":
+        # Scheduled-safe by construction (#867): every gate is
+        # re-checked at fire time and only approved-green PRs to the
+        # repo's default branch merge, capped per fire. Deliberately
+        # NOT in DESTRUCTIVE_ACTIONS (schedulable); the gates stand in
+        # for the human confirm. Manual merge-approved keeps confirm.
+        # Local -m exec (check-notifications precedent): step_env /
+        # step_cwd resolve the module from this backend's tree.
+        if not gh:
+            return None, "merge-approved-gated needs a repo"
+        return [[sys.executable, "-m", "core_cli.merge_gated",
+                 "--repo", repo, "--gh", gh]], None
     if action == "triage-fanout":
         # One-repo sweep for the run's repo (#670). --prefer is
         # omitted so the script's auto ladder applies (Nebius when

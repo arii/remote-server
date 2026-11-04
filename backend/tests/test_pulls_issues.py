@@ -21,6 +21,7 @@ from backend.api.routers.issues import (
     trigger_repair,
 )
 from backend.api.routers.pulls import _pr_action, ci_label
+from backend import pr_gates
 
 
 class FakeProc:
@@ -1793,6 +1794,223 @@ class ScheduleTickLoopTest(unittest.TestCase):
         self.assertEqual(len(ticks), 3)
         self.assertEqual(len(budget_calls), 2)
         self.assertEqual(len(actions_calls), 2)
+
+
+def _gate_view(**over):
+    view = {"number": 7, "baseRefName": "main",
+            "reviewDecision": "APPROVED",
+            "mergeStateStatus": "CLEAN",
+            "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS",
+                                   "status": "COMPLETED"}]}
+    view.update(over)
+    return view
+
+
+class GatedMergeTest(unittest.TestCase):
+    """Single-sourced merge gates (#867)."""
+
+    def test_strict_all_pass(self):
+        ok, fails, facts = pr_gates.evaluate_merge_gates(
+            _gate_view(), allowed_bases=["main"], require_approval=True,
+            allow_behind=True)
+        self.assertTrue(ok)
+        self.assertEqual(fails, [])
+        self.assertEqual(facts["ci"], "passing")
+
+    def test_strict_each_gate_blocks(self):
+        base = {"allowed_bases": ["main"], "require_approval": True,
+                "allow_behind": True}
+        cases = [
+            ({"reviewDecision": "REVIEW_REQUIRED"}, "review"),
+            ({"reviewDecision": "CHANGES_REQUESTED"}, "review"),
+            ({"reviewDecision": ""}, "review"),
+            ({"reviewDecision": None}, "review"),
+            ({"statusCheckRollup": [
+                {"conclusion": "FAILURE", "status": "COMPLETED"}]},
+             "ci"),
+            ({"statusCheckRollup": [
+                {"conclusion": "", "status": "IN_PROGRESS"}]},
+             "ci"),
+            ({"statusCheckRollup": []}, "ci"),
+            ({"mergeStateStatus": "DIRTY"}, "merge"),
+            ({"mergeStateStatus": "BLOCKED"}, "merge"),
+            ({"mergeStateStatus": None}, "merge"),
+            ({"baseRefName": "feature-x"}, "base"),
+        ]
+        for over, gate in cases:
+            ok, fails, _ = pr_gates.evaluate_merge_gates(
+                _gate_view(**over), **base)
+            self.assertFalse(ok, over)
+            self.assertEqual([g for g, _, _ in fails], [gate], over)
+
+    def test_strict_allows_behind(self):
+        ok, fails, _ = pr_gates.evaluate_merge_gates(
+            _gate_view(mergeStateStatus="BEHIND"),
+            allowed_bases=["main"], require_approval=True,
+            allow_behind=True)
+        self.assertTrue(ok, fails)
+
+    def test_manual_mode_preserves_legacy_semantics(self):
+        # Blank decision passes (fail-open, #848); vetoes fail.
+        ok, _, _ = pr_gates.evaluate_merge_gates(
+            _gate_view(reviewDecision=""))
+        self.assertTrue(ok)
+        ok, fails, _ = pr_gates.evaluate_merge_gates(
+            _gate_view(reviewDecision="REVIEW_REQUIRED"))
+        self.assertFalse(ok)
+        self.assertEqual([g for g, _, _ in fails], ["review"])
+        ok, fails, _ = pr_gates.evaluate_merge_gates(
+            _gate_view(reviewDecision="CHANGES_REQUESTED"))
+        self.assertFalse(ok)
+        self.assertEqual([g for g, _, _ in fails], ["review"])
+        # Manual mode has no base gate and no behind.
+        ok, _, _ = pr_gates.evaluate_merge_gates(
+            _gate_view(baseRefName="feature-x"))
+        self.assertTrue(ok)
+        ok, fails, _ = pr_gates.evaluate_merge_gates(
+            _gate_view(mergeStateStatus="BEHIND"))
+        self.assertFalse(ok)
+        self.assertEqual([g for g, _, _ in fails], ["merge"])
+
+    def test_merge_argv_shape(self):
+        self.assertEqual(
+            pr_gates.merge_argv("arii/remote-server", 7),
+            ["pr", "merge", "7", "--repo", "arii/remote-server",
+             "--squash", "--delete-branch"])
+
+    def test_default_branch(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=json.dumps(
+                {"default_branch": "leader"})))
+        self.assertEqual(
+            pr_gates.default_branch("arii/hrm", runner=runner),
+            "leader")
+        self.assertEqual(
+            runner.calls, [["gh", "api", "repos/arii/hrm"]])
+
+    def test_open_prs_oldest_first(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=json.dumps(
+                [{"number": 9}, {"number": 3}, {"number": 5}])))
+        prs = pr_gates.open_prs("arii/remote-server", runner=runner)
+        self.assertEqual([p["number"] for p in prs], [3, 5, 9])
+        self.assertIn("--repo", runner.calls[0])
+        self.assertIn("arii/remote-server", runner.calls[0])
+
+    def test_pr_gate_view_fields(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=json.dumps({"number": 7})))
+        pr_gates.pr_gate_view("arii/remote-server", 7, runner=runner)
+        self.assertEqual(
+            runner.calls,
+            [["gh", "pr", "view", "7", "--repo", "arii/remote-server",
+              "--json", pr_gates.GATE_VIEW_FIELDS]])
+
+    def test_merge_pr_uses_shared_argv(self):
+        runner = FakeRunner().on(["gh"], FakeProc(stdout="merged"))
+        out = pr_gates.merge_pr("arii/remote-server", 7, runner=runner)
+        self.assertEqual(out, "merged")
+        self.assertEqual(runner.calls[0][0], "gh")
+        self.assertEqual(
+            runner.calls[0][1:],
+            pr_gates.merge_argv("arii/remote-server", 7))
+
+
+class MergeGatedScriptTest(unittest.TestCase):
+    """core_cli/merge_gated.py: cap, reasons, exit codes (#867)."""
+
+    def _run_main(self, argv, fakes):
+        import io
+        import sys
+
+        import core_cli.merge_gated as script
+
+        saved = {}
+        for name, fake in fakes.items():
+            saved[name] = getattr(script, name)
+            setattr(script, name, fake)
+        out, err = io.StringIO(), io.StringIO()
+        old_out, old_err = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            code = script.main(argv)
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+            for name, orig in saved.items():
+                setattr(script, name, orig)
+        return code, out.getvalue(), err.getvalue()
+
+    def _fakes(self, prs, views, merged):
+        def _default_branch(gh, runner=None):
+            return "main"
+
+        def _open_prs(gh, limit=50, runner=None):
+            return prs
+
+        def _view(gh, number, runner=None):
+            return views[number]
+
+        def _merge(gh, number, runner=None):
+            merged.append(number)
+            return "merged"
+        return {"default_branch": _default_branch,
+                "open_prs": _open_prs, "pr_gate_view": _view,
+                "merge_pr": _merge}
+
+    def test_cap_and_oldest_first(self):
+        prs = [{"number": n} for n in (9, 3, 5, 1, 8, 2, 7)]
+        views = {p["number"]: _gate_view() for p in prs}
+        merged = []
+        code, out, _ = self._run_main(
+            ["merge_gated.py", "--repo", "remote-server",
+             "--gh", "arii/remote-server"],
+            self._fakes(prs, views, merged))
+        self.assertEqual(code, 0)
+        self.assertEqual(merged, [1, 2, 3, 5, 7])
+        self.assertIn("cap reached (5 merges)", out)
+        self.assertIn("merged=5", out)
+
+    def test_skips_print_reasons(self):
+        prs = [{"number": 1}, {"number": 2}]
+        views = {1: _gate_view(reviewDecision="REVIEW_REQUIRED"),
+                 2: _gate_view(mergeStateStatus="DIRTY")}
+        merged = []
+        code, out, _ = self._run_main(
+            ["merge_gated.py", "--repo", "r",
+             "--gh", "arii/remote-server"],
+            self._fakes(prs, views, merged))
+        self.assertEqual(code, 0)
+        self.assertEqual(merged, [])
+        self.assertIn("PR #1: skipped (review is REVIEW_REQUIRED", out)
+        self.assertIn("PR #2: skipped (merge is dirty", out)
+        self.assertIn("merged=0 skipped=2", out)
+
+    def test_no_prs_and_bad_argv(self):
+        merged = []
+        code, out, _ = self._run_main(
+            ["merge_gated.py", "--repo", "r",
+             "--gh", "arii/remote-server"],
+            self._fakes([], {}, merged))
+        self.assertEqual(code, 0)
+        self.assertIn("no open PRs", out)
+        code, _, err = self._run_main(["merge_gated.py"], {})
+        self.assertEqual(code, 2)
+        self.assertIn("usage:", err)
+        code, _, err = self._run_main(
+            ["merge_gated.py", "--repo", "r", "--gh", "noslash"], {})
+        self.assertEqual(code, 2)
+        self.assertIn("bad gh path", err)
+
+    def test_infra_failure_exits_1(self):
+        def _boom(gh, runner=None):
+            raise RuntimeError("gh auth failed")
+
+        code, _, err = self._run_main(
+            ["merge_gated.py", "--repo", "r",
+             "--gh", "arii/remote-server"],
+            {"default_branch": _boom})
+        self.assertEqual(code, 1)
+        self.assertIn("merged nothing", err)
 
 
 if __name__ == "__main__":
