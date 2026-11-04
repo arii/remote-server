@@ -13,19 +13,30 @@
 # probes (agy binary in terminal, Ollama /api/tags). No LLM spend.
 # --live additionally runs one real agy print-mode turn and one real
 # narrator call (metered/slow; needs the stack up with models pulled).
+# --proof (issue #889) is the CI keyless proof: --live plus a
+# credential scrub (NEBIUS_API_KEY, GEMINI_API_KEY, ...) asserted
+# absent, OLLAMA_STRICT=1, and skips treated as failures. The live
+# agy turn stays out of proof mode — it needs stack OAuth, which a
+# keyless CI job has no business holding; the argv+flip static proof
+# stands as the agy surface there. Run --proof locally with Ollama
+# up for the same proof CI runs.
 #
 # A FAIL means a hidden Muse dependency: file a follow-up issue per
 # red surface (do not fix it in the drill PR). Any tripwire hit —
 # a surface shelling out to `muse` — fails the drill outright.
 #
-# Usage: ./scripts/cutoff-drill.sh [--live]
+# Usage: ./scripts/cutoff-drill.sh [--live | --proof]
 set -euo pipefail
 
 LIVE=0
+PROOF=0
 if [[ "${1:-}" == "--live" ]]; then
   LIVE=1
+elif [[ "${1:-}" == "--proof" ]]; then
+  LIVE=1
+  PROOF=1
 elif [[ -n "${1:-}" ]]; then
-  echo "usage: $0 [--live]" >&2
+  echo "usage: $0 [--live | --proof]" >&2
   exit 2
 fi
 
@@ -39,8 +50,42 @@ report() { # <status> <surface> <detail...>
   printf '%-4s %-16s %s\n' "$status" "$surface" "$*"
 }
 ok() { report ok "$@"; }
-skip() { report SKIP "$@"; }
+skip() {
+  if [[ "$PROOF" == "1" ]]; then
+    report FAIL "$@"
+    FAIL=1
+  else
+    report SKIP "$@"
+  fi
+}
 fail() { report FAIL "$@"; FAIL=1; }
+
+# Proof mode runs every surface with cloud credentials stripped.
+# Scrub first so the surfaces inherit the keyless env, then assert
+# the vars are actually absent — the proof is the assertion, not
+# the assumption. OLLAMA_STRICT=1 refuses the Nebius fallback on
+# the default path, so an Ollama-only violation fails instead of
+# going metered. NEBIUS_ONLY is scrubbed too: it forces cloud.
+CUTOFF_SCRUB_VARS=(NEBIUS_API_KEY GEMINI_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY LANGSMITH_API_KEY NEBIUS_ONLY)
+if [[ "$PROOF" == "1" ]]; then
+  was_set=""
+  for v in "${CUTOFF_SCRUB_VARS[@]}"; do
+    if printenv "$v" >/dev/null 2>&1; then was_set="$was_set $v"; fi
+    unset "$v" 2>/dev/null || true
+  done
+  export OLLAMA_STRICT=1
+  still_set=""
+  for v in "${CUTOFF_SCRUB_VARS[@]}"; do
+    if printenv "$v" >/dev/null 2>&1; then still_set="$still_set $v"; fi
+  done
+  if [[ -n "$still_set" ]]; then
+    fail proof "credential env still set after scrub:$still_set"
+  elif [[ -n "$was_set" ]]; then
+    ok proof "scrubbed credential env:$was_set; OLLAMA_STRICT=1"
+  else
+    ok proof "env already keyless; OLLAMA_STRICT=1"
+  fi
+fi
 
 # Mask: a `muse` shim first on PATH that fails like a missing binary
 # and records any invocation. A surface that shells out to muse trips
@@ -85,13 +130,15 @@ else
   ok chat-turn-agy "argv muse-free; flip works ($(grep "^default-order:" <<<"$AGY_STATIC" | cut -d: -f2-) default)"
 fi
 
-if command -v docker >/dev/null 2>&1 && docker compose exec -T terminal command -v agy >/dev/null 2>&1; then
+if [[ "$PROOF" == "1" ]]; then
+  ok chat-turn-agy "proof mode: argv+flip static proof (live turn needs stack OAuth; run --live locally)"
+elif command -v docker >/dev/null 2>&1 && docker compose exec -T terminal command -v agy >/dev/null 2>&1; then
   ok chat-turn-agy "agy binary present in terminal"
 else
   skip chat-turn-agy "terminal/agy not reachable (stack down?)"
 fi
 
-if [[ "$LIVE" == "1" ]]; then
+if [[ "$LIVE" == "1" && "$PROOF" == "0" ]]; then
   if docker compose exec -T terminal agy --output-format stream-json -p "Reply with exactly: PONG" 2>/dev/null | grep -q "PONG"; then
     ok chat-turn-agy "live print-mode turn returned PONG"
   else
@@ -238,7 +285,11 @@ else
 fi
 
 if [[ "$FAIL" == "0" ]]; then
-  echo "cutoff drill: GREEN (muse masked, all surfaces ok/skipped)"
+  if [[ "$PROOF" == "1" ]]; then
+    echo "cutoff drill: GREEN (keyless proof: muse masked, credentials absent, all surfaces ok)"
+  else
+    echo "cutoff drill: GREEN (muse masked, all surfaces ok/skipped)"
+  fi
 else
   echo "cutoff drill: RED — file a follow-up per FAIL line above"
 fi

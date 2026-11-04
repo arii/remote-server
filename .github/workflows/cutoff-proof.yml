@@ -1,0 +1,76 @@
+# Keyless-Ollama cutoff proof (issue #889).
+#
+# Proves the console operates Ollama-only with cloud credentials
+# stripped: runs scripts/cutoff-drill.sh --proof (scrub + assert
+# absent + strict no-skip) against a local Ollama service with the
+# default model pulled. No metered spend: OLLAMA_STRICT=1 refuses
+# the Nebius fallback, and the drill pulls no cloud model.
+#
+# Deliberately NON-REQUIRED until three consecutive green runs
+# prove it stable (same rule as console-e2e); only then make it a
+# required context. (No branch-protection change ships with this
+# workflow.)
+name: cutoff-proof
+
+on:
+  pull_request:
+    paths:
+      - 'deep-agent/**'
+      - 'backend/exec/**'
+      - 'backend/api/routers/briefing.py'
+      - 'core_cli/briefing_summary.py'
+      - 'scripts/cutoff-drill.sh'
+      - 'tests/test_cutoff_drill.py'
+      - '.github/workflows/cutoff-proof.yml'
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: keyless-Ollama proof (non-required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      ollama:
+        # Same pin as docker-compose.yml (ollama 0.40.12) — bump
+        # tag+digest together per the compose comment.
+        image: ollama/ollama:0.40.12@sha256:20d1bbfbabe1c97ba4b16301f08a20d8484bcf77047742a3cb71c613d8e12d0b
+        env:
+          OLLAMA_HOST: 0.0.0.0:11434
+        ports:
+          - 11434:11434
+    env:
+      OLLAMA_URL: http://localhost:11434
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install backend deps
+        run: pip install -r backend/requirements.txt
+
+      - name: wait for Ollama + pull default model
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags >/dev/null && break
+            sleep 10
+          done
+          curl -sf http://localhost:11434/api/tags >/dev/null
+          curl -sf --max-time 1500 -X POST http://localhost:11434/api/pull \
+            -d '{"name":"qwen3:8b"}' >/dev/null
+          curl -sf http://localhost:11434/api/tags | grep -q qwen3
+
+      - name: static cutoff suite
+        run: python3 -m unittest tests.test_cutoff_drill
+
+      - name: keyless proof drill
+        run: |
+          env -u NEBIUS_API_KEY -u GEMINI_API_KEY -u ANTHROPIC_API_KEY \
+            -u OPENAI_API_KEY -u LANGSMITH_API_KEY -u NEBIUS_ONLY \
+            bash scripts/cutoff-drill.sh --proof
