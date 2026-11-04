@@ -220,6 +220,16 @@ def _valid_branch(branch):
             and branch[0] not in "/-.")
 
 
+def _valid_pr_number(value):
+    """Positive-int PR number (bools are not PRs)."""
+    return (isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0)
+
+
+REVIEW_EVENTS = ("comment", "request-changes")
+
+
 def validate_proposal(payload):
     """Validate a propose_action payload. Returns (ok, text).
 
@@ -276,7 +286,44 @@ def validate_proposal(payload):
             f"PROPOSE dispatch\nREPO: {repo}\nBRANCH: {branch}\n"
             f"TASK:\n{task.strip()}\nEND PROPOSE"
         )
-    return False, "REJECTED: kind must be 'issue', 'td', or 'dispatch'"
+    if kind == "comment":
+        repo = payload.get("repo")
+        pr = payload.get("pr_number")
+        body = payload.get("body")
+        if not s5tools.valid_repo(repo):
+            return False, "REJECTED: comment needs a repo (owner/name)"
+        if not _valid_pr_number(pr):
+            return False, ("REJECTED: comment needs a PR number "
+                           "(positive int)")
+        if not isinstance(body, str) or not body.strip() \
+                or len(body) > 4000:
+            return False, "REJECTED: comment needs a body (1-4000 chars)"
+        return True, (
+            f"PROPOSE comment\nREPO: {repo}\nPR: {pr}\n"
+            f"BODY:\n{body.strip()}\nEND PROPOSE"
+        )
+    if kind == "review":
+        repo = payload.get("repo")
+        pr = payload.get("pr_number")
+        event = payload.get("review_event")
+        body = payload.get("body")
+        if not s5tools.valid_repo(repo):
+            return False, "REJECTED: review needs a repo (owner/name)"
+        if not _valid_pr_number(pr):
+            return False, ("REJECTED: review needs a PR number "
+                           "(positive int)")
+        if event not in REVIEW_EVENTS:
+            return False, ("REJECTED: review event must be 'comment' "
+                           "or 'request-changes'")
+        if not isinstance(body, str) or not body.strip() \
+                or len(body) > 4000:
+            return False, "REJECTED: review needs a body (1-4000 chars)"
+        return True, (
+            f"PROPOSE review\nREPO: {repo}\nPR: {pr}\nEVENT: {event}\n"
+            f"BODY:\n{body.strip()}\nEND PROPOSE"
+        )
+    return False, ("REJECTED: kind must be 'issue', 'td', 'dispatch', "
+                   "'comment', or 'review'")
 
 
 def decision_for_verdict(verdict, message=""):
@@ -382,7 +429,8 @@ def build_tools(checkout, *, impact_tools=False):
     def propose_action(kind: str, title: str = "",
                        body: str = "", command: str = "",
                        repo: str = "", branch: str = "",
-                       task: str = "") -> str:
+                       task: str = "", pr_number: int = 0,
+                       review_event: str = "") -> str:
         """Propose the ONE write action this turn needs (human-approved).
 
         Call at most once per turn, after read-only investigation, then
@@ -392,20 +440,30 @@ def build_tools(checkout, *, impact_tools=False):
 
         Args:
             kind: 'issue' (file a GitHub issue), 'td' (run one
-                allowlisted td command), or 'dispatch' (implement via
-                a BoomTick worktree session).
+                allowlisted td command), 'dispatch' (implement via
+                a BoomTick worktree session), 'comment' (post a PR
+                comment), or 'review' (submit a PR review: comment
+                or request-changes only, never approve).
             title: Issue title (kind='issue').
-            body: Issue body markdown (kind='issue').
+            body: Issue body markdown (kind='issue'), PR comment
+                markdown (kind='comment'), or review body
+                (kind='review').
             command: Exact td command (kind='td'; allowlisted shapes
                 only, changing N to digits).
-            repo: Target repo owner/name (kind='dispatch').
+            repo: Target repo owner/name (kind='dispatch',
+                'comment', 'review').
             branch: Base branch to work from (kind='dispatch').
             task: Implementation brief (kind='dispatch').
+            pr_number: Target PR number, positive int
+                (kind='comment', 'review').
+            review_event: 'comment' or 'request-changes'
+                (kind='review').
         """
         ok, text = validate_proposal(
             {"kind": kind, "title": title, "body": body,
              "command": command, "repo": repo, "branch": branch,
-             "task": task}
+             "task": task, "pr_number": pr_number,
+             "review_event": review_event}
         )
         return text
 
