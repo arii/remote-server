@@ -1,6 +1,8 @@
 """Tests for workflow-health fan-out bounds + endpoint cache (#432)."""
 
 import json
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -150,6 +152,71 @@ class FetchParallelTest(unittest.TestCase):
         self.assertEqual(
             flow["diagnosed_cause"],
             "Job 'test-e2e' failed: run playwright test.")
+
+    def test_run_timestamps_pass_through(self):
+        """Failing entries keep the run's own timestamps (#455).
+
+        Both spellings read (gh REST is snake_case, gh run list is
+        camelCase); canonical snake_case keys emitted, like branch.
+        """
+        runs = json.dumps({"workflow_runs": [
+            {"id": 101, "name": "CI", "head_branch": "main",
+             "event": "push", "conclusion": "failure",
+             "html_url": "https://example.invalid/runs/101",
+             "created_at": "2026-11-04T10:54:51Z",
+             "updated_at": "2026-11-04T11:02:00Z"},
+            {"id": 102, "name": "CI", "headBranch": "main",
+             "event": "push", "conclusion": "failure",
+             "html_url": "https://example.invalid/runs/102",
+             "createdAt": "2026-11-03T09:00:00Z",
+             "updatedAt": "2026-11-03T09:05:00Z"},
+        ]})
+
+        def fake(cmd, timeout=None):
+            if "workflow-runs" in cmd:
+                return runs
+            return json.dumps([])
+
+        engine.td_run = fake
+        data = ops.fetch_workflow_health("remote-server",
+                                         "arii/remote-server")
+        first, second = data["workflows"]
+        self.assertEqual(first["created_at"], "2026-11-04T10:54:51Z")
+        self.assertEqual(first["updated_at"], "2026-11-04T11:02:00Z")
+        self.assertEqual(second["created_at"], "2026-11-03T09:00:00Z")
+        self.assertEqual(second["updated_at"], "2026-11-03T09:05:00Z")
+
+
+class FixtureTimestampsTest(unittest.TestCase):
+    def test_fixture_runs_carry_timestamps(self):
+        """The fixture path also plumbs timestamps through (#455)."""
+        fixture = {"failing_runs": [
+            {"name": "CI", "branch": "main", "event": "push",
+             "url": "https://example.invalid/1",
+             "created_at": "2026-11-04T10:54:51Z",
+             "updated_at": "2026-11-04T11:02:00Z"},
+            {"name": "Lint", "createdAt": "2026-11-03T09:00:00Z"},
+        ]}
+        with tempfile.NamedTemporaryFile("w", suffix=".json",
+                                         delete=False) as fh:
+            json.dump(fixture, fh)
+            path = fh.name
+        old = os.environ.get("BUTTONS_FIXTURE_BRIEFING")
+        os.environ["BUTTONS_FIXTURE_BRIEFING"] = path
+        try:
+            data = ops._fixture_workflow_health("remote-server")
+        finally:
+            if old is None:
+                del os.environ["BUTTONS_FIXTURE_BRIEFING"]
+            else:
+                os.environ["BUTTONS_FIXTURE_BRIEFING"] = old
+            os.remove(path)
+        self.assertIsNotNone(data)
+        first, second = data["workflows"]
+        self.assertEqual(first["created_at"], "2026-11-04T10:54:51Z")
+        self.assertEqual(first["updated_at"], "2026-11-04T11:02:00Z")
+        self.assertEqual(second["created_at"], "2026-11-03T09:00:00Z")
+        self.assertIsNone(second["updated_at"])
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")

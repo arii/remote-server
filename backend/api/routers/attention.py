@@ -28,6 +28,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -331,6 +332,35 @@ def _event_repo(raw, name: str) -> str:
         return text
 
 
+def _run_created_ts(wf: dict, now: float) -> float:
+    """Epoch stamp for a failing-run item: the run's own start time.
+
+    fetch_workflow_health passes the run timestamps through (gh
+    shape is an ISO string; fixtures may carry epoch numbers), so
+    every poll stamps the same value instead of re-stamping now
+    (#455). Missing or unparseable values fall back to poll time
+    so the item still renders.
+    """
+    raw = (wf.get("created_at") or wf.get("createdAt")
+           or wf.get("updated_at") or wf.get("updatedAt"))
+    if isinstance(raw, bool):
+        return now
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text:
+            try:
+                parsed = datetime.fromisoformat(
+                    text.replace("Z", "+00:00"))
+            except ValueError:
+                return now
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+    return now
+
+
 def _assemble_items(name: str, now: float) -> list[dict]:
     """Derived queue without snooze filtering (injectable-source
     assembly shared by the read path and the snooze 404 check).
@@ -368,7 +398,7 @@ def _assemble_items(name: str, now: float) -> list[dict]:
             "action": {"label": "View health", "method": "GET",
                        "href": f"api/workflow-health?repo={name}",
                        "destructive": False, "intent": ""},
-            "created_at": now,
+            "created_at": _run_created_ts(wf, now),
         }
         seen_runs[key] = {"item": item, "runs": 1}
         items.append(item)

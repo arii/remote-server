@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 
 from backend.core import require_confirm
 from backend.api.routers import attention
@@ -565,6 +566,81 @@ class OllamaOutageTest(unittest.TestCase):
         finally:
             attention.model_router.ollama_reachable = orig
             attention._OLLAMA_CACHE.clear()
+
+
+class FailingRunTimestampTest(unittest.TestCase):
+    """Failing-run items carry the run's own start time (#455)."""
+
+    def _assemble(self, wfs, now):
+        orig = {}
+        seams = {
+            "get_workflow_health": lambda repo: {"workflows": wfs},
+            "list_failed_jobs": lambda: [],
+            "list_failed_webhooks": lambda: [],
+            "list_skipped_webhooks": lambda: [],
+            "list_pending_approvals": lambda: [],
+            "ollama_up": lambda: True,
+        }
+        for k, v in seams.items():
+            orig[k] = getattr(attention, k)
+            setattr(attention, k, v)
+        try:
+            return attention._assemble_items("remote-server", now)
+        finally:
+            for k, v in orig.items():
+                setattr(attention, k, v)
+
+    def _run_item(self, items):
+        runs = [i for i in items if i["kind"] == "failing-run"]
+        self.assertEqual(len(runs), 1)
+        return runs[0]
+
+    def test_item_carries_run_created_at(self):
+        expected = datetime(2026, 11, 4, 10, 54, 51,
+                            tzinfo=timezone.utc).timestamp()
+        items = self._assemble(
+            [{"id": 1, "name": "CI", "diagnosed_cause": "boom",
+              "created_at": "2026-11-04T10:54:51Z",
+              "updated_at": "2026-11-04T11:02:00Z"}],
+            now=expected + 7200)
+        self.assertEqual(self._run_item(items)["created_at"], expected)
+
+    def test_restamp_stable_across_polls(self):
+        wf = {"id": 1, "name": "CI", "diagnosed_cause": "boom",
+              "created_at": "2026-11-04T10:54:51Z"}
+        first = self._run_item(self._assemble([dict(wf)], now=1793610000.0))
+        second = self._run_item(self._assemble([dict(wf)], now=1793613600.0))
+        self.assertEqual(first["created_at"], second["created_at"])
+
+    def test_camel_case_and_epoch_passthrough(self):
+        items = self._assemble(
+            [{"id": 1, "name": "CI", "diagnosed_cause": "boom",
+              "createdAt": "2026-11-03T09:00:00Z"}],
+            now=1793613600.0)
+        expected = datetime(2026, 11, 3, 9, 0, 0,
+                            tzinfo=timezone.utc).timestamp()
+        self.assertEqual(self._run_item(items)["created_at"], expected)
+        items = self._assemble(
+            [{"id": 2, "name": "CI", "diagnosed_cause": "other",
+              "created_at": 1793500000}],
+            now=1793613600.0)
+        self.assertEqual(self._run_item(items)["created_at"], 1793500000.0)
+
+    def test_updated_fallback_then_now(self):
+        expected = datetime(2026, 11, 4, 11, 2, 0,
+                            tzinfo=timezone.utc).timestamp()
+        items = self._assemble(
+            [{"id": 1, "name": "CI", "diagnosed_cause": "boom",
+              "updated_at": "2026-11-04T11:02:00Z"}],
+            now=expected + 60)
+        self.assertEqual(self._run_item(items)["created_at"], expected)
+        now = 1793613600.0
+        for wf in ({"id": 2, "name": "CI", "diagnosed_cause": "x"},
+                   {"id": 3, "name": "CI", "diagnosed_cause": "y",
+                    "created_at": "not-a-time",
+                    "updated_at": "still-not-a-time"}):
+            items = self._assemble([wf], now=now)
+            self.assertEqual(self._run_item(items)["created_at"], now)
 
 
 if __name__ == "__main__":

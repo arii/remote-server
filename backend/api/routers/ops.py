@@ -185,6 +185,8 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
             "event": fr.get("event", "?"),
             "conclusion": "failure",
             "url": fr.get("html_url") or fr.get("url"),
+            "created_at": fr.get("created_at") or fr.get("createdAt"),
+            "updated_at": fr.get("updated_at") or fr.get("updatedAt"),
             "diagnosed_cause": diagnosed,
             "annotations": annotations,
             "jobs": failed_jobs,
@@ -235,6 +237,8 @@ def _fixture_workflow_health(repo: str) -> dict | None:
             "conclusion": "failure",
             "url": r.get("url", "https://github.com/example/demo-app/"
                                 "actions/runs/101"),
+            "created_at": r.get("created_at") or r.get("createdAt"),
+            "updated_at": r.get("updated_at") or r.get("updatedAt"),
             "diagnosed_cause": "Browser context crashed during Playwright "
                                "launch in e2e-tests step.",
             "annotations": [{
