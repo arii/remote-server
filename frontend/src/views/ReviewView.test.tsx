@@ -6,6 +6,7 @@ import ReviewView, {
   applyOptimisticMerge,
   isRowDeferred,
   nextPrAfterMerge,
+  mergeBadge,
   openIssueUrl,
   revertOptimisticMerge,
   reviewColumnsClass,
@@ -140,6 +141,36 @@ describe('review list filter', () => {
     expect(rowMatchesFilter(pr, '')).toBe(true);
     expect(rowMatchesFilter(pr, '   ')).toBe(true);
     expect(rowMatchesFilter(issue, '')).toBe(true);
+  });
+});
+
+describe('merge badge', () => {
+  const clean = {
+    number: 1,
+    title: 't',
+    author: 'a',
+    branch: 'b',
+    isDraft: false,
+    ciStatus: 'passing',
+    ciLabel: 'passing',
+    reviewDecision: 'APPROVED',
+    mergeable: 'MERGEABLE',
+    url: 'https://example.invalid/1',
+  };
+
+  it('reads merge-clean when nothing blocks', () => {
+    expect(mergeBadge(clean)).toBe('merge-clean');
+  });
+
+  it('names the first block reason', () => {
+    expect(mergeBadge({ ...clean, isDraft: true })).toBe('Blocked: is a draft');
+    expect(mergeBadge({ ...clean, reviewDecision: 'CHANGES_REQUESTED' })).toBe(
+      'Blocked: review is CHANGES_REQUESTED',
+    );
+    expect(mergeBadge({ ...clean, ciStatus: 'failing' })).toBe('Blocked: CI is failing');
+    expect(mergeBadge({ ...clean, mergeable: 'CONFLICTING' })).toBe(
+      'Blocked: merge state is CONFLICTING',
+    );
   });
 });
 
