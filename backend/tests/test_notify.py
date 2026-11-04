@@ -205,6 +205,9 @@ class WebhookPullSkipTest(unittest.TestCase):
         finally:
             subprocess.run = orig
 
+    GIT = ["git", "-c", "safe.directory=/tmp", "-C", "/tmp",
+           "-c", "core.hooksPath=/dev/null"]
+
     def test_not_ancestor_skips_quietly(self):
         (ok, detail, advanced), calls = self._pull([
             (0, "aaa\n", ""),   # rev-parse HEAD
@@ -214,7 +217,13 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(detail, "skipped: tree not ff-able")
         self.assertFalse(advanced)
-        self.assertEqual(len(calls), 3)  # merge never attempted
+        # Merge never attempted.
+        self.assertEqual(
+            calls,
+            [self.GIT + ["rev-parse", "HEAD"],
+             self.GIT + ["fetch", "origin"],
+             self.GIT + ["merge-base", "--is-ancestor",
+                         "HEAD", "origin/main"]])
 
     def test_dirty_tree_skips_quietly(self):
         (ok, detail, _), calls = self._pull([
@@ -225,7 +234,13 @@ class WebhookPullSkipTest(unittest.TestCase):
         ])
         self.assertTrue(ok)
         self.assertEqual(detail, "skipped: tree dirty")
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(
+            calls,
+            [self.GIT + ["rev-parse", "HEAD"],
+             self.GIT + ["fetch", "origin"],
+             self.GIT + ["merge-base", "--is-ancestor",
+                         "HEAD", "origin/main"],
+             self.GIT + ["status", "--porcelain"]])
 
     def test_clean_ffable_merges(self):
         (ok, detail, advanced), calls = self._pull([
@@ -239,7 +254,15 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(detail, "Already up to date.")
         self.assertFalse(advanced)
-        self.assertTrue(any("merge" in c for c in calls))
+        self.assertEqual(
+            calls,
+            [self.GIT + ["rev-parse", "HEAD"],
+             self.GIT + ["fetch", "origin"],
+             self.GIT + ["merge-base", "--is-ancestor",
+                         "HEAD", "origin/main"],
+             self.GIT + ["status", "--porcelain"],
+             self.GIT + ["merge", "--ff-only", "origin/main"],
+             self.GIT + ["rev-parse", "HEAD"]])
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")

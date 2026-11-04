@@ -149,6 +149,18 @@ class ProbeTest(unittest.TestCase):
         m.stderr = stderr
         return m
 
+    def _check_probe_argv(self, run_mock, provider):
+        # exec_argv pins the middle (-f path, env file) per
+        # environment; head, exec tail, shell, and timeout are exact.
+        argv = run_mock.call_args[0][0]
+        self.assertEqual(argv[:2], ["docker", "compose"])
+        self.assertEqual(
+            argv[-6:],
+            ["exec", "-T", "terminal", "bash", "-c",
+             "command -v %s" % provider])
+        self.assertEqual(run_mock.call_args[1]["timeout"],
+                         agent_turn.PROBE_TIMEOUT)
+
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_probe_available_on_binary_present(self, run):
         run.return_value = self._completed()
@@ -158,6 +170,7 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(status["name"], "muse")
         self.assertGreater(status["checked_at"], 0)
         self.assertEqual(run.call_count, 1)
+        self._check_probe_argv(run, "muse")
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_probe_dead_when_binary_missing(self, run):
@@ -167,6 +180,7 @@ class ProbeTest(unittest.TestCase):
             agent_turn.probe_provider("muse", "/srv/remote-server"))
         self.assertFalse(status["available"])
         self.assertEqual(run.call_count, 1)
+        self._check_probe_argv(run, "muse")
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_probe_fires_no_live_turn(self, run):
@@ -178,9 +192,7 @@ class ProbeTest(unittest.TestCase):
                 agent_turn.probe_provider("agy", "/srv/remote-server"))
         self.assertTrue(status["available"])
         self.assertEqual(run.call_count, 1)
-        argv = run.call_args[0][0]
-        self.assertIn("command -v", " ".join(argv))
-        self.assertNotIn("Reply with exactly", " ".join(argv))
+        self._check_probe_argv(run, "agy")
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_probe_dead_on_binary_timeout(self, run):
@@ -191,6 +203,7 @@ class ProbeTest(unittest.TestCase):
             agent_turn.probe_provider("muse", "/srv/remote-server"))
         self.assertFalse(status["available"])
         self.assertIn("binary check failed", status["detail"])
+        self._check_probe_argv(run, "muse")
 
     @mock.patch("backend.exec.agent_turn.subprocess.run")
     def test_status_caches_within_ttl(self, run):
@@ -198,6 +211,10 @@ class ProbeTest(unittest.TestCase):
         asyncio.run(agent_turn.provider_status("/srv/remote-server"))
         asyncio.run(agent_turn.provider_status("/srv/remote-server"))
         self.assertEqual(run.call_count, 2)
+        # One binary check per provider; thread order is unsorted.
+        self.assertEqual(
+            sorted(c[0][0][-1] for c in run.call_args_list),
+            ["command -v agy", "command -v muse"])
 
     def test_probe_rejects_unknown(self):
         with self.assertRaises(ValueError):
