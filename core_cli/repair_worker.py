@@ -114,6 +114,23 @@ def _extract_code_from_llm_response(response: str) -> str:
 # Node implementations
 
 
+def _worktree_path(worktree_dir, rel_path):
+    """Joined target path, or None when it escapes the worktree.
+
+    realpath both sides (s5tools pattern): catches dotdot, absolute
+    entries, and symlink escapes. Falsy/non-str inputs reject.
+    """
+    if not isinstance(worktree_dir, str) or not worktree_dir:
+        return None
+    if not isinstance(rel_path, str) or not rel_path:
+        return None
+    root = os.path.realpath(worktree_dir)
+    full = os.path.realpath(os.path.join(worktree_dir, rel_path))
+    if full != root and not full.startswith(root + os.sep):
+        return None
+    return full
+
+
 def parse_issue_node(state: AgentState) -> Dict[str, Any]:
     """Fetch and parse task specification from GitHub issue."""
     issue_number = state.get("issue_number")
@@ -163,7 +180,10 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
     # Read target files from worktree
     file_contents: Dict[str, str] = {}
     for rel_path in state.get("target_files", []):
-        full_path = os.path.join(worktree_dir, rel_path)
+        full_path = _worktree_path(worktree_dir, rel_path)
+        if full_path is None:
+            raise RuntimeError(
+                f"target escapes the worktree: {rel_path[:200]!r}")
         if os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 file_contents[rel_path] = f.read()
@@ -241,7 +261,10 @@ def ast_check_node(state: AgentState) -> Dict[str, Any]:
 
     # AST is valid: write the validated code to the worktree files
     for file_path, code in file_contents.items():
-        full_path = os.path.join(worktree_dir, file_path)
+        full_path = _worktree_path(worktree_dir, file_path)
+        if full_path is None:
+            raise RuntimeError(
+                f"target escapes the worktree: {file_path[:200]!r}")
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(code)

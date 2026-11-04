@@ -7,9 +7,26 @@ and expected output/constraints.
 """
 
 import json
+import os
 import re
 import sys
 from typing import Any, Dict, List
+
+
+def validate_target_path(path) -> bool:
+    """True when a target entry stays inside the checkout.
+
+    Root-independent pre-worktree gate: absolute paths and dotdot
+    escapes reject; interior dotdot (pkg/../ok.py) is fine. The
+    worker re-checks the joined path with realpath, which additionally
+    catches symlink escapes this cannot see.
+    """
+    if not isinstance(path, str) or not path.strip():
+        return False
+    if os.path.isabs(path):
+        return False
+    norm = os.path.normpath(path)
+    return norm != ".." and not norm.startswith(".." + os.sep)
 
 
 def _clean_markdown_comments(text: str) -> str:
@@ -140,6 +157,10 @@ def parse_task_spec(markdown_body: str) -> Dict[str, Any]:
             cleaned_file = re.sub(r"^[-*+]\s+", "", cleaned_file).strip()
             cleaned_file = _clean_code_ticks(cleaned_file)
             if cleaned_file and cleaned_file not in ("-", "*", "+"):
+                if not validate_target_path(cleaned_file):
+                    raise ValueError(
+                        "'Target Files' entry escapes the checkout: "
+                        f"{cleaned_file[:200]!r}")
                 target_files.append(cleaned_file)
 
     if not target_files:
