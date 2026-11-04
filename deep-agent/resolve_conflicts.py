@@ -21,6 +21,7 @@ from deepagents.backends import FilesystemBackend
 
 import cli
 import ledger
+import model_router
 
 MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
 DEFAULT_BASE = "origin/main"
@@ -85,14 +86,21 @@ def main() -> int:
     ):
         print(f"not a worktree: {WORKTREE}", file=sys.stderr)
         return 1
+    try:
+        spec = model_router.resolve_llm(prefer="nebius")
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    # Cap checked above; keep this entrypoint's pinned model/endpoint.
+    spec = dict(spec, model=MODEL_ID,
+                base_url="https://api.studio.nebius.com/v1")
+    kwargs = model_router.chat_kwargs(spec)
     model = ChatOpenAI(
-        model=MODEL_ID,
-        base_url="https://api.studio.nebius.com/v1",
         api_key=os.environ["NEBIUS_API_KEY"],
-        temperature=0,
         # Reasoning model: needs headroom for hidden reasoning tokens
         # plus the visible reply + tool call.
         max_tokens=4000,
+        **kwargs,
     )
     agent = create_deep_agent(
         model=model,
