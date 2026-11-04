@@ -156,18 +156,20 @@ def read_repo_gates(repo: str, gh_runner=None) -> dict:
         return {"ok": False, "base": "", "required_checks": [],
                 "error": str(exc)}
     try:
+        # gh api (not repo view): neither subcommand accepts --repo
+        # (#865), and the repos/... URL satisfies the #544 guard.
+        # Full repo JSON (not --jq: that emits raw text, which the
+        # JSON loader cannot parse).
         info = run_gh_json(
-            gh, ["repo", "view", "--repo", gh, "--json",
-                 "defaultBranchRef"], timeout=30, runner=gh_runner)
-        base = ((info or {}).get("defaultBranchRef") or {}).get("name") \
-            or "main"
+            gh, ["api", f"repos/{gh}"], timeout=30, runner=gh_runner)
+        base = (info or {}).get("default_branch") or "main"
     except Exception as exc:
         return {"ok": False, "base": "", "required_checks": [],
                 "error": f"could not read default branch: {exc}"[:300]}
     try:
         prot = run_gh_json(
-            gh, ["api", f"repos/{gh}/branches/{base}/protection",
-                 "--repo", gh], timeout=30, runner=gh_runner)
+            gh, ["api", f"repos/{gh}/branches/{base}/protection"],
+            timeout=30, runner=gh_runner)
         checks = ((prot or {}).get("required_status_checks") or {}).get(
             "contexts") or []
         if not isinstance(checks, list):

@@ -46,10 +46,9 @@ class FakeGh:
 
 def _gh_ok():
     return (FakeGh()
-            .on("repo view", json.dumps(
-                {"defaultBranchRef": {"name": "main"}}))
             .on("/branches/main/protection", json.dumps(
-                {"required_status_checks": {"contexts": ["ci", "lint"]}})))
+                {"required_status_checks": {"contexts": ["ci", "lint"]}}))
+            .on("api repos/", json.dumps({"default_branch": "main"})))
 
 
 def _clean_status(repo):
@@ -136,7 +135,7 @@ class RepoGatesTest(unittest.TestCase):
         self.assertFalse(gates["ok"])
 
     def test_default_branch_failure_blocks(self):
-        gh = FakeGh().on("repo view", RuntimeError("boom"))
+        gh = FakeGh().on("api repos/", RuntimeError("boom"))
         gates = lane_dispatch.read_repo_gates("remote-server",
                                               gh_runner=gh)
         self.assertFalse(gates["ok"])
@@ -144,14 +143,35 @@ class RepoGatesTest(unittest.TestCase):
 
     def test_unprotected_branch_is_an_empty_bar(self):
         gh = (FakeGh()
-              .on("repo view", json.dumps(
-                  {"defaultBranchRef": {"name": "main"}}))
               .on("/branches/main/protection",
-                  RuntimeError("404 not found")))
+                  RuntimeError("404 not found"))
+              .on("api repos/", json.dumps({"default_branch": "main"})))
         gates = lane_dispatch.read_repo_gates("remote-server",
                                               gh_runner=gh)
         self.assertTrue(gates["ok"])
         self.assertEqual(gates["required_checks"], [])
+
+
+class GhArgvTest(unittest.TestCase):
+    def test_shipped_argv_passes_flag_and_guard_rules(self):
+        # Captures the argv read_repo_gates actually ships, then
+        # asserts the properties real gh enforces: repo-view/api
+        # subcommands reject --repo (unknown flag, #865), while the
+        # #544 guard still requires repo scoping per call.
+        gh = _gh_ok()
+        gates = lane_dispatch.read_repo_gates("remote-server",
+                                              gh_runner=gh)
+        self.assertTrue(gates["ok"])
+        self.assertEqual(len(gh.calls), 2)
+        for call in gh.calls:
+            self.assertEqual(call[0], "gh")
+            argv = call[1:]
+            if argv[0] in ("repo", "api"):
+                self.assertNotIn("--repo", argv)
+            self.assertTrue(
+                "--repo" in argv
+                or any(str(a).startswith("repos/") for a in argv),
+                f"unscoped gh argv breaks the #544 guard: {argv}")
 
 
 class ReadinessTest(unittest.TestCase):
@@ -229,7 +249,7 @@ class ReadinessTest(unittest.TestCase):
         self.assertTrue(ready["ready"])
 
     def test_unreadable_gates_block(self):
-        gh = FakeGh().on("repo view", RuntimeError("boom"))
+        gh = FakeGh().on("api repos/", RuntimeError("boom"))
         ready = self._ready(gh_runner=gh)
         self.assertFalse(ready["ready"])
 
