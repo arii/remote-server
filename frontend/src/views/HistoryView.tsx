@@ -88,12 +88,39 @@ function MemberBlock({ member, grouped }: { member: HistoryMember; grouped: bool
   );
 }
 
-export function RowsList({ rows, filtering }: { rows: HistoryRow[]; filtering: boolean }) {
+export function RowsList({
+  rows,
+  filtering,
+  onRefresh = () => {},
+}: {
+  rows: HistoryRow[];
+  filtering: boolean;
+  onRefresh?: () => void;
+}) {
   if (rows.length === 0) {
+    if (filtering) {
+      return (
+        <p className="row-meta" data-testid="history-empty">
+          No matching rows.
+        </p>
+      );
+    }
+    // Guided first-run state (issue #809): explainer plus a
+    // working first action (re-fetch; runs land here once
+    // dispatched from Now → Jobs).
     return (
-      <p className="row-meta" data-testid="history-empty">
-        {filtering ? 'No matching rows.' : 'No history yet.'}
-      </p>
+      <div data-testid="history-empty">
+        <h3>No history yet</h3>
+        <p className="row-meta">
+          Finished jobs and ledger events land here, newest first. Dispatch a run from Now →
+          Jobs to see it here.
+        </p>
+        <div className="actions">
+          <button type="button" data-testid="history-empty-refresh" onClick={onRefresh}>
+            Refresh
+          </button>
+        </div>
+      </div>
     );
   }
   // Identical recovery advice repeats across incidents; show each once.
@@ -198,7 +225,9 @@ export default function HistoryView({
           </div>
         )}
         {loading && <div data-testid="history-loading" role="status">Loading history…</div>}
-        {!loading && !error && <RowsList rows={rows} filtering={filtering} />}
+        {!loading && !error && (
+          <RowsList rows={rows} filtering={filtering} onRefresh={() => void load()} />
+        )}
       </section>
     </div>
   );
