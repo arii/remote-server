@@ -68,3 +68,28 @@ Expected disruption: each service drops for seconds during its recreate
 BrowserMCP pairing survives via the persisted daemon identity).
 Verify after: shell history present, `zellij attach` revives layout,
 `vim` jumps/registers intact, `/code` extensions and pairing work.
+
+## Cutoff fire-drill (issue #800)
+
+Proves the console survives the actual cutoff event (muse-data
+volume gone, Muse CLI failing) while we can still fix what it
+finds. Run from the repo checkout:
+
+```sh
+./scripts/cutoff-drill.sh          # static + presence probes, no LLM spend
+./scripts/cutoff-drill.sh --live   # plus one real agy turn + narration (metered/slow)
+python3 -m unittest tests.test_cutoff_drill  # offline static suite (same assertions)
+```
+
+The drill masks `muse` with a failing tripwire shim, then reports
+per-surface ok/FAIL/SKIP for: chat turn via agy, ask pipeline,
+briefing narrator, eval gate. SKIP means the live prerequisite was
+absent (stack down, Ollama unreachable) — rerun with the stack up
+before calling it green. Any tripwire hit (a surface shelling out
+to `muse`) fails the drill outright.
+
+On a FAIL line: file one follow-up issue per red surface with the
+failing check and the hidden dependency it names; do not fix it in
+the drill PR. On green: no action — the cutoff flip stays
+`AGENT_DEFAULT_PROVIDER=agy` on the buttons service (issue #399),
+and agy continuity evidence lives in `docs/agy-continuity.md`.

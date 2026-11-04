@@ -68,17 +68,48 @@ def _row_cost(row):
     return pricing.quote(row.get("model"), row.get("usage") or {})
 
 
+def _row_provider(model):
+    """Provider slot for one ledger row, or None when unknown.
+
+    Ledger model labels read `{provider}:{model}` and the router
+    emits only ollama + nebius, so only those prefixes count: a
+    bare `qwen3:8b` keeps its colon without minting a bogus
+    provider. Never raises."""
+    if isinstance(model, str):
+        for prefix in ("ollama:", "nebius:"):
+            if model.startswith(prefix):
+                return prefix[:-1]
+    return None
+
+
+def _row_latency(row):
+    """Turn latency in seconds, or None when unrecorded.
+
+    ledger.record stores -1 when the clock math fails, and old
+    rows predate duration tracking entirely; both render as
+    unknown, never as a bogus negative or zero. Never raises."""
+    value = row.get("duration_s")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value >= 0:
+        return value
+    return None
+
+
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
-    usage = row.get("usage") or {}
+    usage = row.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
     cost_usd, metered = _row_cost(row)
     return {
         "id": f"run-{index}",
-        "script": row.get("script", "?"),
-        "model": row.get("model", "?"),
-        "thread": row.get("thread_id", "?"),
+        "script": row.get("script") or "?",
+        "model": row.get("model") or "?",
+        "provider": _row_provider(row.get("model")),
+        "thread": row.get("thread_id") or "?",
         "started_ts": row.get("ts", 0),
-        "duration_s": row.get("duration_s", 0),
+        "duration_s": _row_latency(row),
         "ok": "error" not in extra,
         "tools": [c.get("name", "?")
                   for c in row.get("tool_calls", []) or []],
@@ -486,6 +517,12 @@ def resolve_run(ref, traces_dir=None, ledger_path=None):
     return _ledger_trace_for_thread(ref, ledger_path, base)
 
 
+def _dur_txt(summary):
+    """CLI latency slot: `12.5s`, or `?s` when unrecorded."""
+    dur = summary.get("duration_s")
+    return "%ss" % dur if isinstance(dur, (int, float)) else "?s"
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -496,7 +533,7 @@ def main(argv=None) -> int:
         for r in found:
             print(f"{r['id']} script={r['script']} "
                   f"thread={r['thread']} model={r['model']} "
-                  f"ok={r['ok']} dur={r['duration_s']}s "
+                  f"ok={r['ok']} dur={_dur_txt(r)} "
                   f"tools={len(r['tools'])}")
         return 0
     ref = argv[0]
@@ -510,7 +547,7 @@ def main(argv=None) -> int:
         for r in list_runs(limit=n):
             print(f"{r['id']} script={r['script']} "
                   f"thread={r['thread']} model={r['model']} "
-                  f"ok={r['ok']} dur={r['duration_s']}s "
+                  f"ok={r['ok']} dur={_dur_txt(r)} "
                   f"tools={len(r['tools'])}")
         return 0
     path = resolve_run(ref)
