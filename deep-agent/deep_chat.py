@@ -11,10 +11,11 @@ create_agent):
 - create_deep_agent with a persistent SqliteSaver checkpointer keyed
   by thread_id, so conversation memory AND HITL pause state survive
   across one-shot processes (the server spawns per turn / per tap).
-- 8 custom tools reusing the shared helpers (s5tools read-only file
+- 9 custom tools reusing the shared helpers (s5tools read-only file
   tools + retrieval RAG + one gated propose_action + one allowlisted
-  run_repo_command for verify-after-reason + one SSRF-guarded
-  fetch_url for upstream docs + one search_turns past-turn recall).
+  run_repo_command for verify-after-reason + one keyless search_web
+  for upstream discovery + one SSRF-guarded fetch_url for upstream
+  docs + one search_turns past-turn recall).
 - interrupt_on={"propose_action": approve/reject} mirrors the buttons
   Approve/Reject taps; resume is Command(resume={"decisions": [...]}).
 
@@ -313,7 +314,7 @@ def resume_payload(decisions):
 
 
 def build_tools(checkout):
-    """The 8 custom tools. Venv-only (imports langchain + retrieval)."""
+    """The 9 custom tools. Venv-only (imports langchain + retrieval)."""
     from langchain_core.tools import tool  # noqa: E402
 
     import retrieval  # noqa: E402
@@ -419,16 +420,32 @@ def build_tools(checkout):
     def fetch_url(url: str) -> str:
         """Fetch a URL's text: upstream docs, API references, changelogs.
 
-        Use when you have a URL in hand (never guess deep links).
-        Returns decoded text capped at 256KB with a truncation marker;
-        private/loopback/metadata addresses, non-http(s) schemes, and
-        failures come back as FETCH_ERROR text. No search, no JS
-        rendering, no auth, no POST.
+        Use when you have a URL in hand (never guess deep links;
+        use search_web to discover one). Returns decoded text capped
+        at 256KB with a truncation marker; private/loopback/metadata
+        addresses, non-http(s) schemes, and failures come back as
+        FETCH_ERROR text. No search, no JS rendering, no auth, no POST.
 
         Args:
             url: Full http(s) URL to GET.
         """
         return s5tools.fetch_url(url)
+
+    @tool
+    def search_web(query: str, limit: int = 5) -> str:
+        """Search the web for URLs about a topic (keyless discovery).
+
+        Use when you need upstream docs, changelogs, or references
+        you don't already have a URL for. Returns ranked
+        title/URL/snippet hits; then call fetch_url on a hit to read
+        it. Failures come back as SEARCH_ERROR text, no matches as
+        "no results".
+
+        Args:
+            query: Search keywords, e.g. "ollama changelog".
+            limit: Max hits, 1-10 (default 5).
+        """
+        return s5tools.search_web(query, limit=limit)
 
     @tool
     def search_turns(query: str, kind: str = "",
@@ -448,7 +465,8 @@ def build_tools(checkout):
         return runs.search_turns(query, kind=kind, limit=limit)
 
     return [read_repo_file, grep_repo, list_dir, search_docs,
-            propose_action, run_repo_command, fetch_url, search_turns]
+            propose_action, run_repo_command, fetch_url, search_web,
+            search_turns]
 
 
 def build_model(prefer=None):
