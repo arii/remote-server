@@ -18,6 +18,12 @@ export function attachIdFromConflict(message: string): string | null {
   return /already in progress: ([0-9a-f]{12})/.exec(message)?.[1] ?? null;
 }
 
+// Gone-record detection for re-run liveness: the registry is
+// in-memory, so a cleared/restarted-away run 404s on progress.
+export function isNotFoundError(message: string): boolean {
+  return /: 404\b/.test(message);
+}
+
 // Plan filename from a create-plan result line ("wrote <path>.md").
 export function planNameFromResult(result: string): string | null {
   const m = result.trim().match(/^wrote\s+(.+\.md)$/);

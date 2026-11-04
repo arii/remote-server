@@ -42,6 +42,14 @@ const DANGER: DangerAction[] = [
   },
 ];
 
+// Confirm metadata for destructive re-runs: the same challenge
+// text fresh launches show, so a repeated tap replays identically.
+// null = not a destructive action.
+export function dangerEntryFor(action: string): { confirm?: string } | null {
+  const found = DANGER.find((d) => d.action === action);
+  return found ? { confirm: found.confirm } : null;
+}
+
 export default function DangerZone({
   mergeReady,
   finishedCount,

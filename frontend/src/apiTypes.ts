@@ -37,6 +37,9 @@ export interface JobRecord {
   detail?: string;
   at?: number;
   created_at?: number;
+  // Recorded td argv for run-td rows ([] for plain-action rows):
+  // replay params for one-click re-run.
+  td_argv?: string[];
 }
 
 export interface JobsResponse {

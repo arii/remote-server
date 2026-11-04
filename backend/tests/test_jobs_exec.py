@@ -273,6 +273,39 @@ class RouterTest(unittest.TestCase):
         resp = self.client.get("/api/jobs/runs/aaaaaaaaaaaa")
         self.assertEqual(resp.status_code, 404)
 
+    def test_replay_fields_on_progress_and_rows_td(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        rid, err = jobs_router.registry.start_run(
+            "run-td", "remote-server", td_argv=["td", "context-warm"])
+        self.assertIsNone(err)
+        resp = self.client.get("/api/jobs")
+        rows = [j for j in resp.json()["jobs"] if j["id"] == rid]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["td_argv"], ["td", "context-warm"])
+        self.assertEqual(rows[0]["repo"], "remote-server")
+        resp = self.client.get(f"/api/jobs/runs/{rid}")
+        body = resp.json()
+        self.assertEqual(body["td_argv"], ["td", "context-warm"])
+        self.assertEqual(body["repo"], "remote-server")
+        self.assertEqual(body["action"], "run-td")
+        jobs_router.registry.finish_run(rid, 0)
+
+    def test_replay_fields_default_empty_for_plain(self):
+        import backend.api.routers.jobs as jobs_router
+
+        jobs_router.registry = RunRegistry()
+        rid, err = jobs_router.registry.start_run("logs")
+        self.assertIsNone(err)
+        resp = self.client.get("/api/jobs")
+        rows = [j for j in resp.json()["jobs"] if j["id"] == rid]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["td_argv"], [])
+        resp = self.client.get(f"/api/jobs/runs/{rid}")
+        self.assertEqual(resp.json()["td_argv"], [])
+        jobs_router.registry.finish_run(rid, 0)
+
     def test_plans_list_and_read(self):
         import tempfile
         from pathlib import Path

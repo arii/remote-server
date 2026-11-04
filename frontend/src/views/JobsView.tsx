@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
   clearJobs,
@@ -6,6 +7,7 @@ import {
   fetchJobs,
   fetchPlan,
   requestTakeover,
+  rerunJob,
   startJobRun,
   startTdRun,
 } from '../apiClient';
@@ -16,13 +18,14 @@ import {
   attachIdFromConflict,
   conflictBlockReason,
   fixCiBlockReason,
+  isNotFoundError,
   jobsListActive,
   planExecuteSeed,
   prFieldSeed,
   resultLine,
   shouldResetPaneOnClear,
 } from './jobsUtils';
-import DangerZone from './DangerZone';
+import DangerZone, { dangerEntryFor } from './DangerZone';
 import RepairSection from './RepairSection';
 import TdCommands from './TdCommands';
 import type { TdCommand } from './TdCommands';
@@ -34,17 +37,20 @@ function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
 }
 
-function JobListItem({
+export function JobListItem({
   job,
   repo,
   kbdFocus,
   onSelect,
+  onRerun,
 }: {
   job: JobRecord;
   repo: string;
   kbdFocus?: boolean;
   onSelect: (id: string) => void;
+  onRerun: (job: JobRecord, confirmed: boolean) => void;
 }) {
+  const danger = dangerEntryFor(job.kind || job.name || '');
   return (
     <li
       key={job.id}
@@ -60,7 +66,20 @@ function JobListItem({
       <div className="actions">
         <button type="button" onClick={() => onSelect(job.id)}>
           View output
-        </button>
+        </button>{' '}
+        {job.done &&
+          (danger ? (
+            <TapToFire
+              label="Re-run"
+              confirm={danger.confirm}
+              testid="job-rerun"
+              onFire={() => onRerun(job, true)}
+            />
+          ) : (
+            <button type="button" data-testid="job-rerun" onClick={() => onRerun(job, false)}>
+              Re-run
+            </button>
+          ))}
       </div>
     </li>
   );
@@ -156,11 +175,13 @@ function JobsListPanel({
   repo,
   cursor,
   onSelect,
+  onRerun,
 }: {
   list: JobRecord[];
   repo: string;
   cursor: number | null;
   onSelect: (id: string) => void;
+  onRerun: (job: JobRecord, confirmed: boolean) => void;
 }) {
   if (list.length === 0) {
     return (
@@ -181,6 +202,7 @@ function JobsListPanel({
           repo={repo}
           kbdFocus={cursor === ji}
           onSelect={onSelect}
+          onRerun={onRerun}
         />
       ))}
     </ul>
@@ -315,6 +337,28 @@ export default function JobsView({
     setTail(r.output || 'No output yet.');
   }
 
+  async function onRerun(job: JobRecord, confirmed: boolean) {
+    // Liveness gate: the registry is in-memory, so a run cleared
+    // or restarted away since the list snapshot 404s here instead
+    // of launching from a corpse. Params replay from the row, which
+    // carries them without a second fetch.
+    try {
+      await fetchJobRun(job.id);
+    } catch (err) {
+      if (isNotFoundError(err instanceof Error ? err.message : String(err))) {
+        setNotice(`Run ${job.id} is no longer available.`);
+        await load();
+        return;
+      }
+      throw err;
+    }
+    const action = job.kind || job.name || '';
+    const argv = job.td_argv ?? [];
+    await launch(`re-run ${job.id}`, () =>
+      rerunJob(action, job.repo || repo, argv, confirmed),
+    );
+  }
+
   async function launch(label: string, start: () => Promise<{ id: string }>) {
     setNotice(null);
     setTail('');
@@ -446,6 +490,7 @@ export default function JobsView({
         repo={repo}
         cursor={cursor}
         onSelect={(id) => void guarded(() => onSelectRun(id))}
+        onRerun={(job, confirmed) => void guarded(() => onRerun(job, confirmed))}
       />
     </section>
   );
