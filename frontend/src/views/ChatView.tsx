@@ -16,10 +16,20 @@ import type {
   AgentRunDetail,
   ApprovalPayload,
   BudgetStatus,
+  ChatBackend,
   TraceEvent,
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
 import AgentDrawer from './AgentDrawer';
+
+// Composer backend picker options: Auto keeps today's ladder,
+// Local only forces Ollama (fails instead of spending), Cloud
+// allowed forces Nebius for the turn.
+export const CHAT_BACKEND_OPTIONS: Array<{ value: ChatBackend; label: string }> = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'local', label: 'Local only' },
+  { value: 'cloud', label: 'Cloud allowed' },
+];
 
 // Streamed tokens carry raw agent stdout, which ends with the
 // INTERRUPT blob on approval turns. The backend strips markers
@@ -604,6 +614,10 @@ export default function ChatView({
   const [decided, setDecided] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [tokenCount, setTokenCount] = useState(0);
+  // Composer backend picker: per-turn override for the next reply.
+  // View-level state, so the choice persists across sends for this
+  // view session. Auto = today's ladder, untouched.
+  const [backend, setBackend] = useState<ChatBackend>('auto');
   const sessionRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const startRef = useRef(0);
@@ -717,7 +731,9 @@ export default function ChatView({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const resp = await fetch(chatStreamUrl(text, repo, sessionId), { signal: ctrl.signal });
+      const resp = await fetch(chatStreamUrl(text, repo, sessionId, backend), {
+        signal: ctrl.signal,
+      });
       if (!resp.ok || !resp.body) throw new Error(`Chat stream failed: ${resp.status}`);
       await pumpStream(
         resp.body.getReader(),
@@ -919,6 +935,20 @@ export default function ChatView({
             disabled={streaming}
           />
         </label>
+        <div className="actions" role="group" aria-label="Chat backend" data-testid="chat-backend-picker">
+          {CHAT_BACKEND_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              data-testid={`chat-backend-${o.value}`}
+              aria-pressed={backend === o.value}
+              disabled={streaming}
+              onClick={() => setBackend(o.value)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
         <div className="actions">
           <button type="submit" data-testid="chat-send" disabled={streaming || !prompt.trim()}>
             Send

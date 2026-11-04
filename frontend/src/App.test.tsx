@@ -16,8 +16,9 @@ import BriefingView, {
   cleanBriefingLine,
   dayTrend,
 } from './views/BriefingView';
-import {
+import ChatView, {
   ApprovalCard,
+  CHAT_BACKEND_OPTIONS,
   TraceTimeline,
   TypingIndicator,
   awaitingFirstToken,
@@ -551,6 +552,28 @@ describe('chat typing indicator', () => {
     expect(html).toContain('data-testid="chat-typing"');
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('typing-dots');
+  });
+});
+
+describe('chat backend picker', () => {
+  const noop = () => {};
+
+  it('offers Auto / Local only / Cloud allowed', () => {
+    expect(CHAT_BACKEND_OPTIONS.map((o) => o.value)).toEqual(['auto', 'local', 'cloud']);
+    expect(CHAT_BACKEND_OPTIONS.map((o) => o.label)).toEqual([
+      'Auto',
+      'Local only',
+      'Cloud allowed',
+    ]);
+  });
+
+  it('renders the picker with Auto pressed by default', () => {
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('data-testid="chat-backend-picker"');
+    expect(html).toContain('data-testid="chat-backend-auto"');
+    expect(html).toContain('data-testid="chat-backend-local"');
+    expect(html).toContain('data-testid="chat-backend-cloud"');
+    expect(html).toContain('aria-pressed="true"');
   });
 });
 
