@@ -134,6 +134,59 @@ class TestRuns(unittest.TestCase):
             self.assertTrue(out[1]["metered"])
             self.assertAlmostEqual(out[1]["cost_usd"], 0.0008)
 
+    def test_summary_provider_from_model_prefix(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="ollama:qwen3:8b"),
+                _row(model="nebius:zai-org/GLM-5.3-Flash"),
+            ])
+            out = runs.list_runs(ledger_path=path)
+            self.assertEqual(out[0]["provider"], "nebius")
+            self.assertEqual(out[1]["provider"], "ollama")
+
+    def test_summary_provider_none_without_known_prefix(self):
+        with tempfile.TemporaryDirectory() as d:
+            bare = _row(model="qwen3:8b")
+            absent = _row()
+            del absent["model"]
+            nulled = _row(model=None)
+            path = self._ledger(d, [bare, absent, nulled])
+            out = runs.list_runs(ledger_path=path)
+            # Bare `qwen3:8b` keeps its colon without minting a
+            # bogus provider; missing/null models fall back to ?.
+            self.assertIsNone(out[2]["provider"])
+            self.assertEqual(out[2]["model"], "qwen3:8b")
+            self.assertIsNone(out[1]["provider"])
+            self.assertEqual(out[1]["model"], "?")
+            self.assertIsNone(out[0]["provider"])
+            self.assertEqual(out[0]["model"], "?")
+
+    def test_summary_latency_null_safe(self):
+        with tempfile.TemporaryDirectory() as d:
+            missing = _row()
+            del missing["duration_s"]
+            path = self._ledger(d, [
+                _row(duration_s=12.5),
+                _row(duration_s=-1),
+                _row(duration_s=None),
+                _row(duration_s="12"),
+                missing,
+            ])
+            out = runs.list_runs(ledger_path=path)
+            self.assertIsNone(out[0]["duration_s"])
+            self.assertIsNone(out[1]["duration_s"])
+            self.assertIsNone(out[2]["duration_s"])
+            self.assertIsNone(out[3]["duration_s"])
+            self.assertEqual(out[4]["duration_s"], 12.5)
+
+    def test_summary_usage_non_dict_null_safe(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [_row(usage="junk")])
+            out = runs.list_runs(ledger_path=path)
+            self.assertEqual(out[0]["tokens"], 0)
+            self.assertFalse(out[0]["metered"])
+            self.assertEqual(out[0]["cost_usd"], 0.0)
+
     def test_total_metered_spend(self):
         usage = {"input_tokens": 2000, "output_tokens": 1000,
                  "total_tokens": 3000}

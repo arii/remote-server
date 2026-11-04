@@ -596,12 +596,30 @@ export function TraceTimeline({
   );
 }
 
-function runMeta(run: AgentRun): string {
+export function runMeta(run: AgentRun): string {
   const when = run.started_ts
     ? new Date(run.started_ts * 1000).toLocaleString()
     : 'unknown time';
   const tools = run.tools.length > 0 ? ` · tools ${run.tools.join(',')}` : '';
-  return `${run.script} · ${run.model} · ${run.ok ? 'ok' : 'FAILED'} · ${run.duration_s}s · ${run.tokens} tok · ${runCost(run)}${tools} · ${when}`;
+  return `${run.script} · ${modelSlot(run)} · ${run.ok ? 'ok' : 'FAILED'} · ${runLatency(run)} · ${run.tokens} tok · ${runCost(run)}${tools} · ${when}`;
+}
+
+// Latency slot: recorded turn seconds, or an em dash when the
+// ledger row predates duration tracking or the record failed.
+export function runLatency(run: AgentRun): string {
+  return typeof run.duration_s === 'number' ? `${run.duration_s}s` : '—';
+}
+
+// Model slot with a distinct provider lead: ledger labels read
+// `{provider}:{model}`, so `ollama:qwen3:8b` renders as
+// `ollama · qwen3:8b` instead of repeating the prefix. Rows
+// without a known prefix show the model verbatim, no slot.
+function modelSlot(run: AgentRun): string {
+  if (run.provider && run.model.startsWith(`${run.provider}:`)) {
+    const short = run.model.slice(run.provider.length + 1);
+    if (short) return `${run.provider} · ${short}`;
+  }
+  return run.provider ? `${run.provider} · ${run.model}` : run.model;
 }
 
 // Compact token count for spoken labels: 11089 -> 11k, 96 -> 96.
@@ -618,7 +636,7 @@ export function runButtonLabel(run: AgentRun): string {
   const when = run.started_ts
     ? new Date(run.started_ts * 1000).toISOString().slice(0, 10)
     : 'unknown time';
-  return `Run ${run.id}, ${run.ok ? 'ok' : 'failed'}, ${run.duration_s}s, ${compactTokens(run.tokens)} tokens, ${when}`;
+  return `Run ${run.id}, ${run.ok ? 'ok' : 'failed'}, ${runLatency(run)}, ${compactTokens(run.tokens)} tokens, ${when}`;
 }
 
 // Dollars trimmed for phone lines: $5 not $5.0000, $0.0008 kept.

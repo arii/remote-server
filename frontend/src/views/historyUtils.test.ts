@@ -44,6 +44,40 @@ describe('agent-turn decisions (issue #414)', () => {
   });
 });
 
+describe('agent-turn latency (issue #801)', () => {
+  it('details the recorded duration when present', () => {
+    const rows = toHistoryRows([], [
+      {
+        kind: 'agent-turn',
+        session_id: 's-lat',
+        provider: 'ollama',
+        duration_s: 12.5,
+        exit: 0,
+        detail: TURN_DETAIL,
+        ts: 1700000000,
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).toContain('duration: 12.5s');
+    expect(rows[0].tone).toBe('ok');
+  });
+
+  it('drops duration and cost when the turn records neither', () => {
+    const rows = toHistoryRows([], [
+      {
+        kind: 'agent-turn',
+        session_id: 's-bare',
+        exit: 0,
+        detail: TURN_DETAIL,
+        ts: 1700000000,
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].detail).not.toContain('duration:');
+    expect(rows[0].detail).not.toContain('cost:');
+  });
+});
+
 describe('collapsed outcome clauses (issue #423)', () => {
   it('shows the skipped reason on a repeated webhook row', () => {
     const rows = toHistoryRows(
