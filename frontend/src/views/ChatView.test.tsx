@@ -251,6 +251,29 @@ describe('past runs manage (issue #412)', () => {
   });
 });
 
+describe('run row action accessible names (issue #580)', () => {
+  it('names Continue/Delete with the run id', () => {
+    const html = paneHtml([pastRun({ id: 'run-7' })]);
+    expect(html).toContain('aria-label="Continue run-7"');
+    expect(html).toContain('aria-label="Delete run-7 (asks for confirmation)"');
+  });
+
+  it('keeps visible text as the bare verbs', () => {
+    const html = paneHtml([pastRun({ id: 'run-7' })]);
+    expect(html).toContain('>Continue</button>');
+    expect(html).toContain('>Delete</button>');
+    expect(html).not.toContain('>Continue run-7<');
+    expect(html).not.toContain('>Delete run-7<');
+  });
+
+  it('gives every repeated row action a unique name', () => {
+    const html = paneHtml([pastRun({ id: 'run-0' }), pastRun({ id: 'run-1' })]);
+    const names = [...html.matchAll(/aria-label="((?:Continue|Delete)[^"]+)"/g)].map((m) => m[1]);
+    expect(names).toHaveLength(4);
+    expect(new Set(names).size).toBe(4);
+  });
+});
+
 function detailWith(extra: Record<string, unknown>): AgentRunDetail {
   return { id: 'run-0', entry: { thread_id: 't', extra }, trace: [] };
 }

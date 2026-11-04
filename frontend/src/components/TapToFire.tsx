@@ -9,6 +9,10 @@ export interface TapToFireProps {
   confirm?: string;
   // Per-instance trigger testid for repeated rows; defaults to tap-fire.
   testid?: string;
+  // Accessible-name base for repeated rows (e.g. per-run Delete).
+  // Replaces `label` in the trigger/confirm/cancel names while the
+  // visible text stays `label`; defaults to `label`.
+  name?: string;
   onFire: () => void;
 }
 
@@ -19,7 +23,8 @@ export function confirmPrompt(label: string, consequence: string): string {
 
 // Tap fires. Replaces the press-and-hold arm gesture on Jobs and agent
 // surfaces, where timing gestures fail on flaky touch and some AT.
-export default function TapToFire({ label, disabled, confirm, testid = 'tap-fire', onFire }: TapToFireProps) {
+export default function TapToFire({ label, disabled, confirm, testid = 'tap-fire', name, onFire }: TapToFireProps) {
+  const spoken = name ?? label;
   const [asking, setAsking] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
@@ -47,12 +52,12 @@ export default function TapToFire({ label, disabled, confirm, testid = 'tap-fire
 
   if (asking && confirm !== undefined) {
     return (
-      <span role="group" aria-label={confirmPrompt(label, confirm)} data-testid="tap-confirm">
-        <span className="row-meta">{confirmPrompt(label, confirm)}</span>{' '}
+      <span role="group" aria-label={confirmPrompt(spoken, confirm)} data-testid="tap-confirm">
+        <span className="row-meta">{confirmPrompt(spoken, confirm)}</span>{' '}
         <button
           type="button"
           ref={confirmRef}
-          aria-label={`Confirm ${label}`}
+          aria-label={`Confirm ${spoken}`}
           onKeyDown={onConfirmKey}
           onClick={() => {
             setAsking(false);
@@ -61,7 +66,7 @@ export default function TapToFire({ label, disabled, confirm, testid = 'tap-fire
         >
           Confirm
         </button>{' '}
-        <button type="button" aria-label={`Cancel ${label}`} onKeyDown={onConfirmKey} onClick={cancel}>
+        <button type="button" aria-label={`Cancel ${spoken}`} onKeyDown={onConfirmKey} onClick={cancel}>
           Cancel
         </button>
       </span>
@@ -73,7 +78,7 @@ export default function TapToFire({ label, disabled, confirm, testid = 'tap-fire
       type="button"
       ref={triggerRef}
       disabled={disabled}
-      aria-label={confirm === undefined ? label : `${label} (asks for confirmation)`}
+      aria-label={confirm === undefined ? spoken : `${spoken} (asks for confirmation)`}
       data-testid={testid}
       onClick={() => {
         if (disabled) return;

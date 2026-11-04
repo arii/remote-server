@@ -550,12 +550,14 @@ export function RunsPane({
                   data-testid={`chat-run-continue-${r.id}`}
                   disabled={!r.has_prompt}
                   title={r.has_prompt ? undefined : 'No stored prompt for this run'}
+                  aria-label={`Continue ${r.id}`}
                   onClick={() => onContinue(r.id)}
                 >
                   Continue
                 </button>
                 <TapToFire
                   label="Delete"
+                  name={`Delete ${r.id}`}
                   confirm="This cannot be undone."
                   testid={`chat-run-delete-${r.id}`}
                   onFire={() => onDelete(r.id)}

@@ -45,4 +45,21 @@ describe('TapToFire', () => {
     const html = renderToStaticMarkup(<TapToFire label="Launch" disabled onFire={() => {}} />);
     expect(html).toContain('disabled');
   });
+
+  it('names the trigger with the per-row name when provided (issue #580)', () => {
+    const html = renderToStaticMarkup(
+      <TapToFire label="Delete" name="Delete run-0" confirm="This cannot be undone." onFire={() => {}} />,
+    );
+    expect(html).toContain('aria-label="Delete run-0 (asks for confirmation)"');
+    expect(html).toContain('>Delete</button>');
+  });
+
+  it('defaults the accessible name to the label', () => {
+    const html = renderToStaticMarkup(
+      <TapToFire label="Merge approved PR" confirm="This cannot be undone." onFire={() => {}} />,
+    );
+    expect(html).toContain('aria-label="Merge approved PR (asks for confirmation)"');
+    const direct = renderToStaticMarkup(<TapToFire label="Launch" onFire={() => {}} />);
+    expect(direct).toContain('aria-label="Launch"');
+  });
 });
