@@ -35,6 +35,8 @@ import {
 } from './jobsUtils';
 import type { DiffLineTone } from './jobsUtils';
 import DangerZone, { dangerEntryFor } from './DangerZone';
+import JobSchedulesSection from './JobSchedulesSection';
+import type { ScheduleDraft } from './JobSchedulesSection';
 import RepairSection from './RepairSection';
 import TdCommands from './TdCommands';
 import type { TdCommand } from './TdCommands';
@@ -53,6 +55,7 @@ export function JobListItem({
   onSelect,
   onRerun,
   onCancel,
+  onSchedule,
 }: {
   job: JobRecord;
   repo: string;
@@ -60,6 +63,7 @@ export function JobListItem({
   onSelect: (id: string) => void;
   onRerun: (job: JobRecord, confirmed: boolean) => void;
   onCancel: (job: JobRecord) => void;
+  onSchedule?: (job: JobRecord) => void;
 }) {
   const danger = dangerEntryFor(job.kind || job.name || '');
   return (
@@ -91,6 +95,11 @@ export function JobListItem({
               Re-run
             </button>
           ))}
+        {job.done && !danger && onSchedule && (
+          <button type="button" data-testid="job-schedule" onClick={() => onSchedule(job)}>
+            Schedule…
+          </button>
+        )}
         {!job.done && (
           <button type="button" data-testid="job-cancel" onClick={() => onCancel(job)}>
             Cancel
@@ -419,6 +428,7 @@ function JobsListPanel({
   onSelect,
   onRerun,
   onCancel,
+  onSchedule,
 }: {
   list: JobRecord[];
   repo: string;
@@ -426,6 +436,7 @@ function JobsListPanel({
   onSelect: (id: string) => void;
   onRerun: (job: JobRecord, confirmed: boolean) => void;
   onCancel: (job: JobRecord) => void;
+  onSchedule: (job: JobRecord) => void;
 }) {
   if (list.length === 0) {
     return (
@@ -448,6 +459,7 @@ function JobsListPanel({
           onSelect={onSelect}
           onRerun={onRerun}
           onCancel={onCancel}
+          onSchedule={onSchedule}
         />
       ))}
     </ul>
@@ -480,6 +492,9 @@ export default function JobsView({
   const mergeReady = useMergeReady(repo);
   const prState = usePrRefState(pr, repo);
   const [planCard, setPlanCard] = useState<{ repo: string; name: string } | null>(null);
+  // Prefill for the schedules section, carried from a finished
+  // run's Schedule control (same replay params as re-run).
+  const [schedDraft, setSchedDraft] = useState<ScheduleDraft | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [planContent, setPlanContent] = useState<string | null>(null);
   const progressRef = useRef<HTMLDivElement | null>(null);
@@ -602,6 +617,15 @@ export default function JobsView({
     await launch(`re-run ${job.id}`, () =>
       rerunJob(action, job.repo || repo, argv, confirmed),
     );
+  }
+
+  function onScheduleJob(job: JobRecord) {
+    setSchedDraft({
+      action: job.kind || job.name || '',
+      td_argv: job.td_argv ?? [],
+      repo: job.repo || repo,
+    });
+    setNotice(`Scheduling ${job.id} — pick a repeat below.`);
   }
 
   async function onCancelRun(job: JobRecord) {
@@ -741,6 +765,13 @@ export default function JobsView({
       />
       <RepairSection repo={repo} />
 
+      <JobSchedulesSection
+        repo={repo}
+        draft={schedDraft}
+        onScheduled={(s) => setNotice(`Scheduled ${s.action}: ${s.id}`)}
+        onClearDraft={() => setSchedDraft(null)}
+      />
+
       <TdCommands
         pr={pr}
         onPrChange={setPr}
@@ -768,6 +799,7 @@ export default function JobsView({
         onSelect={(id) => void guarded(() => onSelectRun(id))}
         onRerun={(job, confirmed) => void guarded(() => onRerun(job, confirmed))}
         onCancel={(job) => void guarded(() => onCancelRun(job))}
+        onSchedule={onScheduleJob}
       />
     </section>
   );

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import DangerZone from './DangerZone';
+import JobSchedulesSection, { draftLabel } from './JobSchedulesSection';
 import RepairSection, { RepairPicker } from './RepairSection';
 import TdCommands from './TdCommands';
 
@@ -169,6 +170,58 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).toContain('data-testid="danger-takeover"');
     expect(html).toContain('2 ready to merge.');
     expect(html).toContain('data-testid="tap-fire"');
+  });
+
+  it('schedules section renders empty state and draft form (issue #655)', () => {
+    const empty = renderToStaticMarkup(
+      <JobSchedulesSection repo="remote-server" draft={null} initialSchedules={[]} />,
+    );
+    expect(empty).toContain('data-testid="jobs-schedule-section"');
+    expect(empty).toContain('data-testid="jobs-schedule-empty"');
+    expect(empty).not.toContain('data-testid="jobs-schedule-confirm"');
+    const drafted = renderToStaticMarkup(
+      <JobSchedulesSection
+        repo="remote-server"
+        draft={null}
+        initialSchedules={[]}
+        initialDraft={{ action: 'run-td', td_argv: ['td', 'context-warm'], repo: 'remote-server' }}
+      />,
+    );
+    expect(drafted).toContain('data-testid="jobs-schedule-draft"');
+    expect(drafted).toContain('td context-warm');
+    expect(drafted).toContain('data-testid="jobs-schedule-cadence"');
+    expect(drafted).toContain('data-testid="jobs-schedule-confirm"');
+    expect(drafted).toContain('data-testid="jobs-schedule-cancel"');
+  });
+
+  it('schedules section lists cadence, next run and disable (issue #655)', () => {
+    const html = renderToStaticMarkup(
+      <JobSchedulesSection
+        repo="remote-server"
+        draft={null}
+        initialSchedules={[
+          {
+            id: 'abc123def456',
+            action: 'logs',
+            td_argv: [],
+            repo: 'remote-server',
+            cadence: 'daily',
+            next_run: 1790000000,
+            last_run: null,
+            last_result: {},
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain('data-testid="jobs-schedule-list"');
+    expect(html).toContain('data-testid="jobs-schedule-next"');
+    expect(html).toContain('data-testid="jobs-schedule-disable"');
+    expect(html).toContain('daily');
+    expect(html).toContain('logs');
+    expect(draftLabel({ action: 'logs', td_argv: [], repo: 'remote-server' })).toBe('logs');
+    expect(
+      draftLabel({ action: 'run-td', td_argv: ['td', 'doctor'], repo: 'remote-server' }),
+    ).toBe('td doctor');
   });
 
   it('danger zone reports zero merge-ready without the consequence line', () => {

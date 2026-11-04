@@ -368,6 +368,14 @@ def _schedule_tick_loop() -> None:
             fire_budget_watch()
         except Exception:
             pass
+        # Fourth job on the shared tick (#655): scheduled jobs
+        # actions ride this loop like digests — never a second ticker.
+        try:
+            from backend.api.routers.jobs import \
+                fire_due_action_schedules
+            fire_due_action_schedules()
+        except Exception:
+            pass
 
 
 def _ensure_schedule_ticker() -> None:

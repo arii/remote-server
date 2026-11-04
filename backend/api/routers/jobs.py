@@ -11,6 +11,9 @@ Ports of the buttons/server.py handlers:
 - GET  /api/jobs/runs/{rid}/stream (SSE per-run push; ends on done)
 - POST /api/jobs/runs/{rid}/cancel (cancel a running run: 202/404/409)
 - POST /api/jobs/run-plan (run one allowlisted td planning guide)
+- POST /api/jobs/schedule (schedule a non-destructive action/run-td)
+- GET  /api/jobs/schedule (list action schedules + next runs)
+- DELETE /api/jobs/schedule/{id} (delete one action schedule)
 
 No Jules dispatch surface exists here (cut). Execution goes through
 backend.exec.engine, which enforces the same allowlists, timeouts,
@@ -18,8 +21,12 @@ and output truncation as the original.
 """
 
 import difflib
+import json
+import os
 import re
 import threading
+import time
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -499,3 +506,228 @@ def read_plan(name: str, repo: str = "remote-server") -> dict:
     except OSError:
         raise HTTPException(status_code=404, detail="unknown plan")
     return {"repo": repo, "name": name, "content": content[:PLAN_READ_MAX]}
+
+
+# Scheduled jobs actions (#655). Any non-destructive action (plus
+# run-td argv) can carry a daily/weekly cadence; due runs fire
+# through the same registry internals as manual launches, so
+# single-flight applies and scheduled/manual runs are
+# indistinguishable downstream. The store is a JSON file beside the
+# digest schedule so cadences survive restarts; firing rides the
+# shared tick in backend/api/routers/issues.py (single ticker —
+# never add a second one here). Destructive actions are a hard
+# exclusion: confirm gates need a live operator.
+ACTION_SCHEDULE_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600}
+
+DEFAULT_ACTION_SCHEDULE_PATH = "/var/lib/buttons/jobs_schedules.json"
+
+action_schedule_lock = threading.Lock()
+
+
+def action_schedule_path() -> str:
+    """Current action-schedule file path (env override read
+    dynamically so tests can point it at tmp)."""
+    return os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH",
+                          DEFAULT_ACTION_SCHEDULE_PATH)
+
+
+def load_action_schedules() -> dict:
+    try:
+        with open(action_schedule_path(), encoding="utf-8") as f:
+            state = json.load(f)
+        if isinstance(state, dict):
+            return {k: v for k, v in state.items()
+                    if isinstance(v, dict)}
+    except Exception:
+        pass
+    return {}
+
+
+def save_action_schedules(state: dict) -> None:
+    path = action_schedule_path()
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp, path)
+
+
+class ActionSchedule(BaseModel):
+    id: str = ""
+    action: str = ""
+    td_argv: list[str] = Field(default_factory=list)
+    repo: str = ""
+    cadence: str = ""
+    next_run: float = 0.0
+    last_run: float | None = None
+    last_result: dict = Field(default_factory=dict)
+
+
+class ActionScheduleRequest(BaseModel):
+    action: str = ""
+    td_argv: list[str] = Field(default_factory=list)
+    repo: str = "remote-server"
+    cadence: str = ""
+
+
+class ActionScheduleResult(BaseModel):
+    ok: bool = True
+    schedule: ActionSchedule | None = None
+
+
+class ActionScheduleList(BaseModel):
+    schedules: list[ActionSchedule] = Field(default_factory=list)
+
+
+class ActionScheduleDeleted(BaseModel):
+    ok: bool = True
+
+
+@router.post("/schedule", response_model=ActionScheduleResult)
+def create_action_schedule(body: ActionScheduleRequest) -> dict:
+    cadence = (body.cadence or "").strip().lower()
+    if cadence not in ACTION_SCHEDULE_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail="cadence must be daily or weekly "
+                   "(delete the schedule to stop it)")
+    action = (body.action or "").strip()
+    if action not in ALLOWED_ACTIONS:
+        raise HTTPException(status_code=400, detail="unknown action")
+    if action in DESTRUCTIVE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"action '{action}' is destructive and cannot be "
+                   f"scheduled — confirm gates need a live operator; "
+                   f"launch it manually from Jobs")
+    td_argv = list(body.td_argv or [])
+    if td_argv:
+        if action != "run-td":
+            raise HTTPException(
+                status_code=400,
+                detail="td_argv is only valid with action run-td")
+        tokens = validate_td_command(" ".join(td_argv))
+        if tokens is None or tokens != td_argv:
+            raise HTTPException(
+                status_code=400, detail="bad td command")
+    elif action == "run-td":
+        raise HTTPException(
+            status_code=400, detail="run-td schedules need td_argv")
+    repo = (body.repo or "remote-server").strip() or "remote-server"
+    if action in REPO_SCOPED_ACTIONS:
+        try:
+            _repo_target(repo)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="unknown repo")
+    now = time.time()
+    sid = uuid.uuid4().hex[:12]
+    sched = {"action": action, "td_argv": td_argv, "repo": repo,
+             "cadence": cadence,
+             "next_run": now + ACTION_SCHEDULE_INTERVALS[cadence],
+             "last_run": None, "last_result": {}}
+    with action_schedule_lock:
+        state = load_action_schedules()
+        state[sid] = sched
+        save_action_schedules(state)
+    from backend.api.routers.issues import _ensure_schedule_ticker
+    _ensure_schedule_ticker()
+    return {"ok": True, "schedule": {"id": sid, **sched}}
+
+
+@router.get("/schedule", response_model=ActionScheduleList)
+def list_action_schedules() -> dict:
+    with action_schedule_lock:
+        state = load_action_schedules()
+    return {"schedules": [{"id": sid, **state[sid]}
+                          for sid in sorted(state)]}
+
+
+@router.delete("/schedule/{sid}", response_model=ActionScheduleDeleted)
+def delete_action_schedule(sid: str) -> dict:
+    with action_schedule_lock:
+        state = load_action_schedules()
+        if sid not in state:
+            raise HTTPException(
+                status_code=404, detail="unknown schedule")
+        del state[sid]
+        save_action_schedules(state)
+    return {"ok": True}
+
+
+def _claim_due_action_schedules(now: float) -> list:
+    """Claim every due schedule, advancing each next_run before
+    returning so a firing is never double-claimed. Returns
+    (id, schedule-snapshot) pairs, or []."""
+    claimed = []
+    with action_schedule_lock:
+        state = load_action_schedules()
+        changed = False
+        for sid in sorted(state):
+            sched = state[sid]
+            interval = ACTION_SCHEDULE_INTERVALS.get(
+                sched.get("cadence", ""))
+            if interval is None:
+                continue
+            if (sched.get("next_run") or 0) > now:
+                continue
+            sched["last_run"] = now
+            sched["next_run"] = now + interval
+            claimed.append((sid, dict(sched)))
+            changed = True
+        if changed:
+            save_action_schedules(state)
+    return claimed
+
+
+def _record_schedule_result(sid: str, result: dict) -> None:
+    with action_schedule_lock:
+        state = load_action_schedules()
+        if sid in state:
+            state[sid]["last_result"] = result
+            save_action_schedules(state)
+
+
+def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
+    """Fire one claimed schedule through the standard launch
+    internals (registry.single-flight + _launch), recording the run
+    id or the error back to the store. Scheduled actions are
+    non-destructive by construction, so no confirm gate applies."""
+    action = sched.get("action", "")
+    repo = sched.get("repo", "remote-server")
+    td_argv = sched.get("td_argv") or []
+    run_id, err = registry.start_run(
+        action, repo, td_argv=list(td_argv) if td_argv else None)
+    if err:
+        _record_schedule_result(
+            sid, {"ok": False, "at": now, "error": str(err)[:300]})
+        return
+    try:
+        _launch(run_id, action, repo, td_argv=list(td_argv) or None)
+    except Exception as exc:
+        # Same release as start_run: a failed launch must not wedge
+        # the single-flight engine.
+        registry.finish_run(run_id, 1)
+        _record_schedule_result(
+            sid, {"ok": False, "at": now, "error": str(exc)[:300]})
+        return
+    _record_schedule_result(
+        sid, {"ok": True, "at": now, "run_id": run_id})
+
+
+def fire_due_action_schedules(now: float | None = None) -> int:
+    """Fire every due action schedule. Returns the fired count.
+    Never raises: the shared tick must not die on a job failure."""
+    try:
+        at = time.time() if now is None else now
+        fired = 0
+        for sid, sched in _claim_due_action_schedules(at):
+            try:
+                _fire_action_schedule(sid, sched, at)
+                fired += 1
+            except Exception:
+                pass
+        return fired
+    except Exception:
+        return 0

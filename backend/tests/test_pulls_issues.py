@@ -942,6 +942,7 @@ class IssueLabelTest(unittest.TestCase):
 class ScheduleTickLoopTest(unittest.TestCase):
     def _run_ticks(self, ticks):
         import backend.notify as notify_mod
+        from backend.api.routers import jobs as jobs_mod
 
         calls = []
         sleeps = []
@@ -965,21 +966,25 @@ class ScheduleTickLoopTest(unittest.TestCase):
                                  "digest")), \
                 patch.object(notify_mod, "fire_budget_watch",
                              side_effect=lambda: calls.append(
-                                 "budget")):
+                                 "budget")), \
+                patch.object(jobs_mod, "fire_due_action_schedules",
+                             side_effect=lambda: calls.append(
+                                 "actions")):
             with self.assertRaises(Done):
                 issues_mod._schedule_tick_loop()
         return calls
 
-    def test_tick_runs_all_three_jobs(self):
+    def test_tick_runs_all_four_jobs(self):
         calls = self._run_ticks(2)
         self.assertEqual(
             calls,
-            ["sleep", "schedules", "digest", "budget",
-             "sleep", "schedules", "digest", "budget",
+            ["sleep", "schedules", "digest", "budget", "actions",
+             "sleep", "schedules", "digest", "budget", "actions",
              "sleep"])
 
     def test_tick_survives_job_errors(self):
         import backend.notify as notify_mod
+        from backend.api.routers import jobs as jobs_mod
 
         ticks = []
 
@@ -992,10 +997,15 @@ class ScheduleTickLoopTest(unittest.TestCase):
                 raise Done()
 
         budget_calls = []
+        actions_calls = []
 
         def boom_budget():
             budget_calls.append(1)
             raise RuntimeError("notify down")
+
+        def boom_actions():
+            actions_calls.append(1)
+            raise RuntimeError("jobs down")
 
         with patch.object(issues_mod.time, "sleep",
                           side_effect=fake_sleep), \
@@ -1004,11 +1014,14 @@ class ScheduleTickLoopTest(unittest.TestCase):
                 patch.object(notify_mod, "fire_due_digest",
                              return_value=False), \
                 patch.object(notify_mod, "fire_budget_watch",
-                             side_effect=boom_budget):
+                             side_effect=boom_budget), \
+                patch.object(jobs_mod, "fire_due_action_schedules",
+                             side_effect=boom_actions):
             with self.assertRaises(Done):
                 issues_mod._schedule_tick_loop()
         self.assertEqual(len(ticks), 3)
         self.assertEqual(len(budget_calls), 2)
+        self.assertEqual(len(actions_calls), 2)
 
 
 if __name__ == "__main__":
