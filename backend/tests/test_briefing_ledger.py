@@ -383,13 +383,40 @@ class BriefingLedgerTest(unittest.TestCase):
 
     def test_ledger_clear_semantics(self):
         ledger.append({"kind": "run", "action": "x"})
-        resp = self.client.post("/api/ledger/clear")
+        resp = self.client.post(
+            "/api/ledger/clear",
+            json={"intent": "ledger-clear", "confirmed": True})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ok": True})
         # Only the tombstone remains.
         entries = self.client.get("/api/ledger").json()["entries"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["kind"], "system")
+        self.assertEqual(entries[0]["event"], "ledger cleared")
+
+    def test_ledger_clear_requires_confirm(self):
+        # Same gate as jobs/clear (#454): no intent+confirmed, no
+        # erasure — and the audit trail stays intact on rejection.
+        ledger.append({"kind": "run", "action": "x"})
+        gate = {"intent": "ledger-clear", "confirmed": True}
+        for kwargs in ({"json": {}}, {"json": {"intent": "ledger-clear"}},
+                       {"json": {"intent": "ledger-clear",
+                                 "confirmed": False}},
+                       {"json": {"intent": "jobs-clear",
+                                 "confirmed": True}}):
+            resp = self.client.post("/api/ledger/clear", **kwargs)
+            self.assertEqual(resp.status_code, 400, kwargs)
+        # Bare POST with no body hits the same 400 gate (not 422).
+        resp = self.client.post("/api/ledger/clear")
+        self.assertEqual(resp.status_code, 400)
+        kept = self.client.get("/api/ledger").json()["entries"]
+        self.assertEqual(
+            [e.get("action") for e in kept], ["x"])
+        # Confirmed POST clears + tombstones as before.
+        resp = self.client.post("/api/ledger/clear", json=gate)
+        self.assertEqual(resp.status_code, 200)
+        entries = self.client.get("/api/ledger").json()["entries"]
+        self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["event"], "ledger cleared")
 
 
