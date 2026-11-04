@@ -115,13 +115,17 @@ export default function DangerZone({
           <div>
             <span className="row-title">Clear everything</span>
             <p className="row-meta">
-              {runCount === 0 ? 'No runs to clear.' : 'Drops all runs, including running ones.'}
+              {runCount === 0
+                ? 'No runs to clear.'
+                : finishedCount !== runCount
+                  ? 'A run is still active — cancel it first.'
+                  : 'Drops all runs.'}
             </p>
           </div>
           <TapToFire
             label="Clear everything"
-            confirm="Running runs will be killed."
-            disabled={runCount === 0}
+            confirm="All runs will be dropped."
+            disabled={runCount === 0 || finishedCount !== runCount}
             onFire={() => onClear(true)}
           />
         </li>
