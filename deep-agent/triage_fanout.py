@@ -20,7 +20,10 @@ import ledger
 import model_router
 import triage_common
 
-MODEL_ID = os.environ.get("NEBIUS_MODEL", "nvidia/Nemotron-3_5-Lightning")
+FANOUT_MODEL_PIN = "nvidia/Nemotron-3_5-Lightning"
+# Blank-tolerant: a set-but-empty NEBIUS_MODEL falls back to the pin
+# instead of sending model='' to the provider (#620).
+MODEL_ID = model_router._env("NEBIUS_MODEL", FANOUT_MODEL_PIN)
 DEFAULT_REPOS = ["arii/tech-dancer", "arii/boomtick"]
 
 
@@ -49,8 +52,16 @@ def main() -> int:
     except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 1
+    # Re-resolve after load_dotenv: the import-time MODEL_ID predates
+    # the dotenv load, and a blank NEBIUS_MODEL must fall back to the pin.
+    model_id = model_router._env("NEBIUS_MODEL", MODEL_ID)
+    if not model_id:
+        print("fanout: no model resolved "
+              "(NEBIUS_MODEL is blank and no default)",
+              file=sys.stderr)
+        return 1
     # Cap checked above; keep this entrypoint's pinned model/endpoint.
-    spec = dict(spec, model=MODEL_ID,
+    spec = dict(spec, model=model_id,
                 base_url="https://api.studio.nebius.com/v1")
     kwargs = model_router.chat_kwargs(spec)
     model = ChatOpenAI(
@@ -84,18 +95,30 @@ def main() -> int:
     # Unique per run: the constant "fanout-run" collided across runs
     # and repos in the ledger; each process is one checkpoint sequence.
     thread = "fanout-" + time.strftime("%Y%m%d-%H%M%S")
-    result = agent.invoke(
-        {
-            "messages": [
-                {"role": "user", "content": f"Triage {repo_list}."}
-            ]
-        },
-        config={"configurable": {"thread_id": thread}},
-    )
+    try:
+        result = agent.invoke(
+            {
+                "messages": [
+                    {"role": "user", "content": f"Triage {repo_list}."}
+                ]
+            },
+            config={"configurable": {"thread_id": thread}},
+        )
+    except Exception as exc:
+        # Provider 4xx/5xx (e.g. unknown model) surface as one line,
+        # never a LangChain traceback (#620).
+        code = getattr(exc, "status_code", None)
+        detail = str(exc).strip().split("\n", 1)[0] or type(exc).__name__
+        if code is not None:
+            print(f"fanout: Nebius error {code}: {detail}",
+                  file=sys.stderr)
+        else:
+            print(f"fanout: error: {detail}", file=sys.stderr)
+        return 1
     tasks = triage_common.count_tool_calls(result["messages"], "task")
     ledger.record(
         "triage_fanout.py",
-        f"nebius:{MODEL_ID}",
+        f"nebius:{model_id}",
         thread,
         result["messages"],
         started,
