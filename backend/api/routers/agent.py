@@ -3,6 +3,7 @@
 - POST /api/agent/turn   one headless turn, SSE (token/warning/done/error)
 - POST /api/agent/abort  kill the in-flight turn for a session
 - GET  /api/agent/providers  allowlisted providers
+- GET  /api/agent/session  reattach state for one session (issue #856)
 
 Turn framing (same shape as /api/chat/stream): ``event:
 <name>\\ndata: <json>\\n\\n`` with token {token}, done {text,
@@ -92,6 +93,15 @@ class ProviderList(BaseModel):
     status: list[ProviderStatus] = []
 
 
+class SessionSnapshot(BaseModel):
+    session_id: str = ""
+    known: bool = False
+    running: bool = False
+    transcript: str = ""
+    transcript_truncated: bool = False
+    finished: dict | None = None
+
+
 def _repo_target(repo: str) -> tuple[str, str]:
     """Validate a repo name; return (name, terminal-side cwd).
 
@@ -178,6 +188,10 @@ async def _turn_events(provider: str, repo: str, cwd: str,
         guidance = failure_guidance(provider, stderr)
         if guidance is not None:
             code, message = guidance
+            # The reattached console never sees this frame (issue
+            # #856), so the finish record carries the same guidance.
+            agent_turn.manager.note_guidance(
+                session_id, code, message, stderr[-1500:])
             yield sse_frame("error", {"error": message, "code": code,
                                       "detail": stderr[-1500:]})
             return
@@ -216,6 +230,21 @@ async def agent_turn_route(body: TurnRequest) -> StreamingResponse:
         _turn_events(body.provider, name, cwd, sid,
                      body.prompt.strip(), continued),
         media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+@router.get("/session", response_model=SessionSnapshot)
+async def agent_session(session_id: str = "") -> dict:
+    """Reattach state for one session (issue #856).
+
+    A reloaded console polls this to resume a live turn's text
+    (transcript grows while running) or learn the verdict
+    (finished) without firing a duplicate turn. Unknown ids
+    report known=False; the caller keeps its saved transcript.
+    """
+    if not session_id:
+        raise HTTPException(status_code=400,
+                            detail="invalid session_id")
+    return agent_turn.manager.session_snapshot(session_id)
 
 
 @router.post("/abort", response_model=AbortResult)

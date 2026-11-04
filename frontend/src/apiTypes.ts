@@ -54,6 +54,30 @@ export interface JobsResponse {
   jobs: JobRecord[];
 }
 
+// Cross-repo lane dispatch queue (issue #853): one item per
+// (repo, issue), mirroring the backend DispatchItem shape.
+export interface DispatchItem {
+  repo: string;
+  issue: number;
+  state: string;
+  added_at?: number | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+  detail?: string;
+}
+
+export interface DispatchQueueResponse {
+  items: DispatchItem[];
+}
+
+export interface DispatchGatesResponse {
+  repo: string;
+  issue: number;
+  ready: boolean;
+  reasons: string[];
+  gates: Record<string, unknown>;
+}
+
 export interface LedgerEntry {
   kind: string;
   repo?: string;
