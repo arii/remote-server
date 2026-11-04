@@ -315,27 +315,47 @@ class WebhookPullSkipTest(unittest.TestCase):
                 self.GIT + ["merge-base", "--is-ancestor",
                             "HEAD", "origin/main"]])
 
-    def test_dirty_tree_skips_quietly(self):
+    def test_dirty_tree_heals_via_stash_round_trip(self):
+        # #855 supersedes the quiet dirty skip: a dirty tree heals
+        # via stash-and-pull, unstash-or-hold. Local work is never
+        # reset away — the stash round-trips it around the pull.
         (ok, detail, advanced, observed), calls = self._pull(
             self.OBSERVE + [
                 (0, "", ""),        # merge-base: ff-able
                 (0, " M x\n", ""),  # status: dirty
+                (0, "", ""),        # stash list: none held
+                (0, "Saved\n", ""),  # stash push
+                (0, "stash@{0}: webhook-heal 1\n", ""),  # ours
+                (0, "Updating aaa..ooo\n", ""),  # merge --ff-only
+                (0, "ooo\n", ""),   # rev-parse HEAD
+                (0, "Dropped\n", ""),  # stash pop
             ])
         self.assertTrue(ok)
         self.assertEqual(
-            detail,
-            "skipped: tree dirty \u2014 behind by 3 (local changes)")
-        self.assertFalse(advanced)
+            detail, "healed: Updating aaa..ooo (stash round-trip)")
+        self.assertTrue(advanced)
         self.assertTrue(observed["ok"])
         self.assertEqual(observed["lag"], 3)
+        self.assertEqual(observed["skip_reason"], "dirty-tree")
+        self.assertEqual(observed["heal"], "stash-pull-pop")
         self.assertEqual(
             calls,
             [self.GIT + args for args in self.OBSERVE_CALLS] + [
                 self.GIT + ["merge-base", "--is-ancestor",
                             "HEAD", "origin/main"],
-                self.GIT + ["status", "--porcelain"]])
+                self.GIT + ["status", "--porcelain"],
+                self.GIT + ["stash", "list",
+                            "--format=%gd:%gs"],
+                self.GIT + ["stash", "push", "-m", mock.ANY],
+                self.GIT + ["stash", "list",
+                            "--format=%gd:%gs"],
+                self.GIT + ["merge", "--ff-only", "origin/main"],
+                self.GIT + ["rev-parse", "HEAD"],
+                self.GIT + ["stash", "pop", "stash@{0}"]])
 
     def test_skip_without_lag_falls_back_to_bare_reason(self):
+        # Dirty trees heal since #855, so the bare-reason fallback
+        # is pinned via the diverged path instead.
         (ok, detail, advanced, observed), _ = self._pull([
             (0, "aaa\n", ""),
             (0, "", ""),
@@ -344,11 +364,10 @@ class WebhookPullSkipTest(unittest.TestCase):
             (0, "ooo\n", ""),
             (1, "", "fatal: bad revision"),  # lag unresolvable
             (1, "", "fatal: bad revision"),  # ahead unresolvable
-            (0, "", ""),
-            (0, " M x\n", ""),
+            (1, "", ""),  # merge-base: not ff-able
         ])
         self.assertTrue(ok)
-        self.assertEqual(detail, "skipped: tree dirty")
+        self.assertEqual(detail, "skipped: tree not ff-able")
         self.assertFalse(advanced)
         self.assertTrue(observed["ok"])
         self.assertIsNone(observed["lag"])
@@ -386,8 +405,12 @@ class WebhookPullSkipTest(unittest.TestCase):
         ] + self.OBSERVE[2:] + [
             (1, "", ""),        # merge-base: not ff-able
         ]
+        # Jitter pinned to zero (#855): the sleep stays exactly the
+        # base delay; the jitter bounds live in test_webhook_heal.
         with mock.patch.object(N.time, "sleep",
-                               side_effect=sleeps.append):
+                               side_effect=sleeps.append), \
+                mock.patch.object(N.webhook_heal.random, "uniform",
+                                  return_value=0.0):
             (ok, detail, advanced, observed), calls = self._pull(script)
         self.assertTrue(ok)
         self.assertIn("skipped: tree not ff-able", detail)
@@ -406,7 +429,9 @@ class WebhookPullSkipTest(unittest.TestCase):
                     "update local ref")
         script = [(0, "aaa\n", "")] + [(1, "", lock_err)] * 3
         with mock.patch.object(N.time, "sleep",
-                               side_effect=sleeps.append):
+                               side_effect=sleeps.append), \
+                mock.patch.object(N.webhook_heal.random, "uniform",
+                                  return_value=0.0):
             (ok, detail, advanced, observed), calls = self._pull(script)
         self.assertFalse(ok)
         self.assertEqual(detail, lock_err)
@@ -606,11 +631,11 @@ class FetchLockContentionTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("git"), "git binary not available")
 class WebhookPullRealGitTest(unittest.TestCase):
-    """End-to-end pull behavior against fixture repos: dirty and
-    diverged checkouts observe fresh remote state without advancing,
-    clean checkouts fast-forward exactly as before. The dirt
-    byte-identity assert is the #715 zero-writes-to-dirty-trees
-    acceptance."""
+    """End-to-end pull behavior against fixture repos: dirty
+    checkouts heal via the stash-and-pull ladder with local bytes
+    preserved (#855), diverged checkouts observe fresh remote state
+    without advancing, clean checkouts fast-forward exactly as
+    before."""
 
     def _git(self, args, cwd):
         env = dict(os.environ)
@@ -638,7 +663,11 @@ class WebhookPullRealGitTest(unittest.TestCase):
         self._git(["checkout", "-b", "main"], cwd=seed)
         with open(os.path.join(seed, "file.txt"), "w") as f:
             f.write("v1\n")
-        self._git(["add", "file.txt"], cwd=seed)
+        # A second tracked file: dirt here never overlaps the
+        # remote's file.txt hunks, so the round-trip pop is clean.
+        with open(os.path.join(seed, "other.txt"), "w") as f:
+            f.write("o1\n")
+        self._git(["add", "file.txt", "other.txt"], cwd=seed)
         self._git(["commit", "-m", "v1"], cwd=seed)
         self._git(["push", "-u", "origin", "main"], cwd=seed)
         self.v1 = self._git(["rev-parse", "HEAD"], cwd=seed)
@@ -659,25 +688,30 @@ class WebhookPullRealGitTest(unittest.TestCase):
     def _head(self):
         return self._git(["rev-parse", "HEAD"], cwd=self.work)
 
-    def test_dirty_tree_observes_without_advancing(self):
-        target = os.path.join(self.work, "file.txt")
+    def test_dirty_tree_heals_and_preserves_work(self):
+        # #855 supersedes the #715 zero-writes acceptance for dirty
+        # trees: the ladder stashes local work (never resets it),
+        # pulls, and restores the stash. The dirt bytes survive in
+        # the file and no stash entry is left behind.
+        target = os.path.join(self.work, "other.txt")
         with open(target, "ab") as f:
             f.write(b"local-dirt\n")
-        with open(target, "rb") as f:
-            before = f.read()
         ok, detail, advanced, observed = N.webhook_pull(self.work)
         self.assertTrue(ok)
-        self.assertFalse(advanced)
+        self.assertTrue(advanced)
         self.assertTrue(observed["ok"])
         self.assertEqual(observed["origin"], self.v2)
         self.assertEqual(observed["head"], self.v1)
         self.assertEqual(observed["lag"], 1)
         self.assertEqual(observed["ahead"], 0)
-        self.assertTrue(detail.startswith("skipped: tree dirty"))
-        self.assertIn("behind by 1 (local changes)", detail)
+        self.assertTrue(detail.startswith("healed:"))
         with open(target, "rb") as f:
-            self.assertEqual(f.read(), before)
-        self.assertEqual(self._head(), self.v1)
+            self.assertIn(b"local-dirt\n", f.read())
+        with open(os.path.join(self.work, "file.txt"), "rb") as f:
+            self.assertIn(b"v2\n", f.read())
+        self.assertEqual(self._head(), self.v2)
+        self.assertEqual(
+            self._git(["stash", "list"], cwd=self.work), "")
 
     def test_diverged_tree_observes_without_advancing(self):
         with open(os.path.join(self.work, "file.txt"), "a") as f:
@@ -694,6 +728,7 @@ class WebhookPullRealGitTest(unittest.TestCase):
         self.assertTrue(
             detail.startswith("skipped: tree not ff-able"))
         self.assertIn("behind by 1 (local changes)", detail)
+        self.assertEqual(observed["skip_reason"], "diverged")
         self.assertEqual(self._head(), local)
 
     def test_clean_tree_still_fast_forwards(self):
