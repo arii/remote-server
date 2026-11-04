@@ -1,11 +1,16 @@
 """coder slice tests. Part A (system python, stdlib-only import):
-argv parsing, run_check allowlist, system prompt builder. Part B
-(deep-agent venv): FilesystemBackend root enforcement + tool wiring.
+argv parsing, run_check allowlist, system prompt builder, verify
+gate units (rounds env, trace predicate, re-invoke loop, marking).
+Part B (deep-agent venv): FilesystemBackend root enforcement +
+tool wiring, run_coder verify gate end-to-end with fakes.
 Run: python3 tests/test_coder.py  (A only under system python)
      deep-agent/.venv/bin/python tests/test_coder.py  (A + B)"""
+import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
@@ -120,6 +125,295 @@ class TestBackendRoot(unittest.TestCase):
                 d, "tmp", "coder-escape-probe.txt")))
             self.assertFalse(os.path.exists(
                 "/tmp/coder-escape-probe.txt"))
+
+
+class TestVerifyRounds(unittest.TestCase):
+    def _rounds(self, value):
+        with mock.patch.dict(os.environ):
+            if value is None:
+                os.environ.pop("CODER_VERIFY_ROUNDS", None)
+            else:
+                os.environ["CODER_VERIFY_ROUNDS"] = value
+            return coder.verify_rounds()
+
+    def test_default_two(self):
+        self.assertEqual(self._rounds(None), 2)
+
+    def test_zero_disables(self):
+        self.assertEqual(self._rounds("0"), 0)
+
+    def test_custom_bound(self):
+        self.assertEqual(self._rounds("5"), 5)
+
+    def test_negative_clamps_to_zero(self):
+        self.assertEqual(self._rounds("-3"), 0)
+
+    def test_invalid_falls_back_to_default(self):
+        self.assertEqual(self._rounds("many"), 2)
+
+
+class TestTraceHasPassingCheck(unittest.TestCase):
+    def _trace(self, lines):
+        fh = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8")
+        with fh:
+            for line in lines:
+                fh.write(line if isinstance(line, str)
+                         else json.dumps(line))
+                fh.write("\n")
+        self.addCleanup(os.unlink, fh.name)
+        return fh.name
+
+    def _call(self, name="run_check", preview="exit=0\nok"):
+        return {"type": "tool_call", "name": name,
+                "args_preview": "pytest", "duration_s": 0.1,
+                "ok": True, "result_preview": preview, "ts": 1.0}
+
+    def test_passing_check(self):
+        path = self._trace([
+            {"type": "run_start", "script": "coder.py", "ts": 1.0},
+            self._call(),
+        ])
+        self.assertTrue(coder.trace_has_passing_check(path))
+
+    def test_exact_exit_zero_no_output(self):
+        path = self._trace([self._call(preview="exit=0")])
+        self.assertTrue(coder.trace_has_passing_check(path))
+
+    def test_failing_exit_does_not_verify(self):
+        path = self._trace([self._call(preview="exit=1\nboom")])
+        self.assertFalse(coder.trace_has_passing_check(path))
+
+    def test_rejected_result_does_not_verify(self):
+        path = self._trace(
+            [self._call(preview="REJECTED: command must start with one of: x")])
+        self.assertFalse(coder.trace_has_passing_check(path))
+
+    def test_no_run_check_calls(self):
+        path = self._trace([
+            {"type": "run_start", "script": "coder.py", "ts": 1.0},
+            {"type": "run_end", "duration_s": 1.0, "ok": True, "ts": 2.0},
+        ])
+        self.assertFalse(coder.trace_has_passing_check(path))
+
+    def test_other_tool_exit_zero_ignored(self):
+        path = self._trace([self._call(name="write_file")])
+        self.assertFalse(coder.trace_has_passing_check(path))
+
+    def test_error_shape_event_ignored(self):
+        path = self._trace([{"type": "tool_call", "name": "run_check",
+                             "args_preview": "x", "duration_s": 0.1,
+                             "ok": False, "error": "boom", "ts": 1.0}])
+        self.assertFalse(coder.trace_has_passing_check(path))
+
+    def test_garbage_lines_skipped(self):
+        path = self._trace(["not json", "[1, 2]", "{oops",
+                            self._call()])
+        self.assertTrue(coder.trace_has_passing_check(path))
+
+    def test_only_garbage(self):
+        path = self._trace(["not json", ""])
+        self.assertFalse(coder.trace_has_passing_check(path))
+
+    def test_missing_file_is_unverified(self):
+        self.assertFalse(coder.trace_has_passing_check(
+            "/tmp/does-not-exist-646.jsonl"))
+
+    def test_none_path_is_unverified(self):
+        self.assertFalse(coder.trace_has_passing_check(None))
+
+
+class TestRunWithVerify(unittest.TestCase):
+    def test_pass_first_time_single_invoke(self):
+        calls = []
+
+        def initial():
+            calls.append("initial")
+            return "r1"
+
+        def reinvoke():
+            calls.append("re")
+            return "r2"
+
+        result, rounds, verified = coder.run_with_verify(
+            initial, reinvoke, lambda: True, 2)
+        self.assertEqual((result, rounds, verified), ("r1", 0, True))
+        self.assertEqual(calls, ["initial"])
+
+    def test_trip_then_pass_reinvokes_once(self):
+        calls = []
+        verdicts = [False, True]
+
+        def initial():
+            calls.append("initial")
+            return "r1"
+
+        def reinvoke():
+            calls.append("re")
+            return "r2"
+
+        result, rounds, verified = coder.run_with_verify(
+            initial, reinvoke, lambda: verdicts.pop(0), 2)
+        self.assertEqual((result, rounds, verified), ("r2", 1, True))
+        self.assertEqual(calls, ["initial", "re"])
+
+    def test_bounded_reinvoke(self):
+        calls = []
+
+        def reinvoke():
+            calls.append("re")
+            return "r%d" % len(calls)
+
+        result, rounds, verified = coder.run_with_verify(
+            lambda: "r0", reinvoke, lambda: False, 2)
+        self.assertEqual((result, rounds, verified), ("r2", 2, False))
+        self.assertEqual(calls, ["re", "re"])
+
+    def test_zero_rounds_never_reinvokes(self):
+        def reinvoke():
+            raise AssertionError("must not re-invoke when disabled")
+
+        result, rounds, verified = coder.run_with_verify(
+            lambda: "r0", reinvoke, lambda: False, 0)
+        self.assertEqual((result, rounds, verified), ("r0", 0, False))
+
+
+class TestVerifyMarking(unittest.TestCase):
+    def test_prefix(self):
+        self.assertEqual(coder.mark_unverified("did x"),
+                         "[unverified] did x")
+
+    def test_empty_summary(self):
+        self.assertEqual(coder.mark_unverified(""), "[unverified]")
+
+    def test_nudge_text(self):
+        self.assertIn("run_check", coder.VERIFY_NUDGE)
+        self.assertIn("do not finish without a passing run",
+                      coder.VERIFY_NUDGE)
+
+
+class TestExtractReply(unittest.TestCase):
+    class _Msg:
+        def __init__(self, content):
+            self.content = content
+
+    def test_last_message_content(self):
+        result = {"messages": [self._Msg("first"), self._Msg(" last ")]}
+        self.assertEqual(coder.extract_reply(result), "last")
+
+    def test_empty_result(self):
+        self.assertEqual(coder.extract_reply({}), "")
+        self.assertEqual(coder.extract_reply(None), "")
+
+    def test_non_string_content(self):
+        result = {"messages": [self._Msg({"text": "hi"})]}
+        self.assertIn("hi", coder.extract_reply(result))
+
+
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
+class TestRunCoderVerifyGate(unittest.TestCase):
+    """run_coder with a fake agent + real trace recorder (tmp trace)."""
+
+    def _run(self, script, env_value="unset"):
+        import deep_chat
+        import observe
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        box = []
+
+        class FakeMsg:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeAgent:
+            def __init__(self, recorder):
+                self.invokes = []
+                self.configs = []
+                self._recorder = recorder
+
+            def invoke(self, payload, config=None):
+                n = len(self.invokes)
+                self.invokes.append(payload)
+                self.configs.append(config)
+                if n < len(script) and script[n] is not None:
+                    self._recorder.tool_call(
+                        "run_check", "python3 -m pytest", 0.1, True,
+                        result=script[n])
+                return {"messages": [
+                    FakeMsg("summary after invoke %d" % (n + 1))]}
+
+        def fake_build_agent(worktree, system, model=None, recorder=None,
+                             checkpointer=None):
+            agent = FakeAgent(recorder)
+            box.append(agent)
+            return agent
+
+        with (mock.patch.object(
+                coder, "build_model",
+                return_value=(object(), {"provider": "fake",
+                                        "model": "fake"})),
+              mock.patch.object(coder, "build_agent",
+                                side_effect=fake_build_agent),
+              mock.patch.object(deep_chat, "open_checkpointer",
+                                return_value=(None, False, object())),
+              mock.patch.object(observe, "default_trace_path",
+                                return_value=tmp.name),
+              mock.patch.dict(os.environ)):
+            if env_value == "unset":
+                os.environ.pop("CODER_VERIFY_ROUNDS", None)
+            else:
+                os.environ["CODER_VERIFY_ROUNDS"] = env_value
+            out = coder.run_coder("/wt", "do the thing", "SYS",
+                                  "thread-1", 30)
+        return out, box[0]
+
+    def test_gate_pass_single_invoke(self):
+        (summary, _u, _c, _s, label, _t, verified, rounds), agent = \
+            self._run(["exit=0\nok"])
+        self.assertEqual(len(agent.invokes), 1)
+        self.assertTrue(verified)
+        self.assertEqual(rounds, 0)
+        self.assertNotIn("[unverified]", summary)
+        self.assertEqual(label, "fake:fake")
+
+    def test_gate_trip_reinvokes_with_nudge(self):
+        (summary, _u, _c, _s, _l, _t, verified, rounds), agent = \
+            self._run([None, "exit=0\nok"])
+        self.assertEqual(len(agent.invokes), 2)
+        self.assertTrue(verified)
+        self.assertEqual(rounds, 1)
+        first, second = agent.invokes
+        self.assertEqual(first["messages"][0].content, "do the thing")
+        self.assertEqual(second["messages"][0].content,
+                         coder.VERIFY_NUDGE)
+        tids = [c["configurable"]["thread_id"] for c in agent.configs]
+        self.assertEqual(tids, ["thread-1", "thread-1"])
+        self.assertNotIn("[unverified]", summary)
+
+    def test_give_up_marks_unverified(self):
+        (summary, _u, _c, _s, _l, _t, verified, rounds), agent = \
+            self._run([None, None, None])
+        self.assertEqual(len(agent.invokes), 3)
+        self.assertFalse(verified)
+        self.assertEqual(rounds, 2)
+        self.assertTrue(summary.startswith("[unverified] "))
+
+    def test_failing_check_never_verifies(self):
+        (_s, _u, _c, _st, _l, _t, verified, rounds), agent = \
+            self._run(["exit=1\nboom"] * 3)
+        self.assertEqual(len(agent.invokes), 3)
+        self.assertFalse(verified)
+        self.assertEqual(rounds, 2)
+
+    def test_zero_rounds_preserves_legacy(self):
+        (summary, _u, _c, _s, _l, _t, verified, rounds), agent = \
+            self._run([None], env_value="0")
+        self.assertEqual(len(agent.invokes), 1)
+        self.assertFalse(verified)
+        self.assertEqual(rounds, 0)
+        self.assertNotIn("[unverified]", summary)
 
 
 if __name__ == "__main__":

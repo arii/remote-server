@@ -17,8 +17,9 @@ summary only. Exit 0 on success, 1 with a Sorry line on failure.
 Every run is traced + ledgered (recorder totals, like deep_chat).
 
 Env: CODER_TIMEOUT (wall seconds, default 1800), CODER_MODEL
-(override), CODER_THINK=1 (Ollama thinking traces), plus the
-model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
+(override), CODER_THINK=1 (Ollama thinking traces),
+CODER_VERIFY_ROUNDS (verify re-prompts, default 2, 0 disables),
+plus the model_router knobs (ASK_MODEL, OLLAMA_URL, NEBIUS_*).
 """
 
 import argparse
@@ -50,6 +51,15 @@ CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 # Coding needs more graph steps than chat turns (read/plan/edit/verify).
 RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
+DEFAULT_VERIFY_ROUNDS = 2
+
+# Re-prompt sent when a coder turn finishes with no passing run_check
+# in the trace. Same thread, so the agent sees its own prior work.
+VERIFY_NUDGE = (
+    "No passing run_check was recorded for your edits. Run the "
+    "checks for your edits with run_check and fix any failures; "
+    "do not finish without a passing run."
+)
 
 CODER_RULES = """You are implementing the task below in the checkout at {worktree}. Rules:
 - File paths are relative to the worktree root: /x means {worktree}/x.
@@ -170,8 +180,97 @@ def _timeout():
         return DEFAULT_TIMEOUT
 
 
+def verify_rounds():
+    """Verify re-prompt bound from CODER_VERIFY_ROUNDS.
+
+    Default 2; 0 disables the gate (legacy single-invoke behavior).
+    """
+    try:
+        return max(0, int(os.environ.get("CODER_VERIFY_ROUNDS",
+                                         DEFAULT_VERIFY_ROUNDS)))
+    except ValueError:
+        return DEFAULT_VERIFY_ROUNDS
+
+
+def trace_has_passing_check(trace_path):
+    """True when the trace records a passing run_check verdict.
+
+    run_check returns exit=<n> TEXT and never raises, so a failing
+    suite still records ok=True: call presence proves nothing and the
+    gate matches the exit=0 prefix in result_preview instead. Never
+    raises: unreadable traces read as unverified (fail closed into a
+    verify re-prompt).
+    """
+    try:
+        with open(trace_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") != "tool_call":
+                    continue
+                if event.get("name") != "run_check":
+                    continue
+                preview = event.get("result_preview", "")
+                if preview == "exit=0" or preview.startswith("exit=0\n"):
+                    return True
+    except (OSError, TypeError):
+        return False
+    return False
+
+
+def run_with_verify(initial_invoke, reinvoke, has_passing_check,
+                    max_rounds):
+    """One invoke plus bounded verify re-invokes.
+
+    initial_invoke() runs first; while has_passing_check() is false,
+    reinvoke() runs up to max_rounds times. Returns
+    (result, verify_rounds, verified).
+    """
+    result = initial_invoke()
+    rounds = 0
+    verified = has_passing_check()
+    while not verified and rounds < max_rounds:
+        rounds += 1
+        result = reinvoke()
+        verified = has_passing_check()
+    return result, rounds, verified
+
+
+def extract_reply(result):
+    """Best-effort final-message text from an agent result. Never raises."""
+    try:
+        out_messages = result.get("messages", []) if result else []
+        if out_messages:
+            last = out_messages[-1]
+            content = getattr(last, "content", last)
+            text = (content if isinstance(content, str)
+                    else json.dumps(content)[:2000])
+            return text.strip()
+    except Exception:  # noqa: BLE001 - summary best effort
+        pass
+    return ""
+
+
+def mark_unverified(summary):
+    """Prefix a summary that exhausted the verify bound without a pass."""
+    if summary:
+        return "[unverified] " + summary
+    return "[unverified]"
+
+
 def run_coder(worktree, brief, system, thread, timeout):
-    """Invoke the coder; returns (summary, usage, calls). Venv-only."""
+    """Invoke the coder with a verify gate.
+
+    Returns (summary, usage, calls, started, label, trace, verified,
+    verify_rounds). Unless CODER_VERIFY_ROUNDS=0, a turn with no
+    passing run_check in the trace re-invokes (same thread) with the
+    verify nudge, up to the round bound; an exhausted bound prefixes
+    the summary with [unverified] and still exits clean. Venv-only.
+    """
     import observe  # noqa: E402
     from langchain_core.messages import HumanMessage  # noqa: E402
 
@@ -188,16 +287,24 @@ def run_coder(worktree, brief, system, thread, timeout):
     agent = build_agent(worktree, system, model=model, recorder=recorder,
                         checkpointer=saver)
     config = {"configurable": {"thread_id": thread}}
-    messages = [HumanMessage(content=brief)]
 
-    def _invoke():
+    def _invoke(msgs):
         return agent.invoke(
-            {"messages": messages},
+            {"messages": msgs},
             config={**config, "recursion_limit": RECURSION_LIMIT})
 
+    max_rounds = verify_rounds()
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            result = pool.submit(_invoke).result(timeout=timeout)
+            def _submit(msgs):
+                return pool.submit(_invoke, msgs).result(timeout=timeout)
+
+            result, rounds, verified = run_with_verify(
+                lambda: _submit([HumanMessage(content=brief)]),
+                lambda: _submit([HumanMessage(content=VERIFY_NUDGE)]),
+                lambda: trace_has_passing_check(recorder.path),
+                max_rounds,
+            )
     except concurrent.futures.TimeoutError:
         recorder.run_end(False)
         recorder.close()
@@ -209,21 +316,14 @@ def run_coder(worktree, brief, system, thread, timeout):
     # holder stays referenced (with saver + agent) until return, so the
     # DB connection outlives the run.
     _ = holder
-    reply = ""
-    try:
-        out_messages = result.get("messages", []) if result else []
-        if out_messages:
-            last = out_messages[-1]
-            content = getattr(last, "content", last)
-            reply = content if isinstance(content, str) else json.dumps(
-                content)[:2000]
-    except Exception:  # noqa: BLE001 - summary best effort
-        reply = ""
+    reply = extract_reply(result)
+    if not verified and max_rounds > 0:
+        reply = mark_unverified(reply)
     recorder.run_end(True)
     recorder.close()
     usage, calls = recorder.totals()
     print(f"trace: {recorder.path}", file=sys.stderr)
-    return reply.strip(), usage, calls, started, label, recorder.path
+    return reply, usage, calls, started, label, recorder.path, verified, rounds
 
 
 def main(argv=None) -> int:
@@ -240,7 +340,8 @@ def main(argv=None) -> int:
           file=sys.stderr, flush=True)
     label = "unknown"
     try:
-        summary, usage, calls, started, label, trace = run_coder(
+        (summary, usage, calls, started, label, trace, verified,
+         rounds) = run_coder(
             worktree, args.brief, system, thread, timeout)
     except Exception as exc:  # noqa: BLE001 - sorry contract
         ledger.record(
@@ -258,7 +359,8 @@ def main(argv=None) -> int:
         [HumanMessage(content=args.brief),
          AIMessage(content=summary)],
         started,
-        extra={"worktree": worktree, "trace": trace},
+        extra={"worktree": worktree, "trace": trace,
+               "verified": verified, "verify_rounds": rounds},
         usage=usage, calls=calls,
     )
     print(summary or "(empty summary)")
