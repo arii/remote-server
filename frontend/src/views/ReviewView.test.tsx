@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
+import ReviewView, {
   IssueRowTitle,
   RowActionButton,
   applyOptimisticMerge,
@@ -8,6 +8,7 @@ import {
   nextPrAfterMerge,
   openIssueUrl,
   revertOptimisticMerge,
+  reviewColumnsClass,
 } from './ReviewView';
 
 describe('optimistic merge row state', () => {
@@ -146,5 +147,23 @@ describe('row action accessible names (issue #569)', () => {
     const names = [...html.matchAll(/aria-label="([^"]+)"/g)].map((m) => m[1]);
     expect(names).toHaveLength(4);
     expect(new Set(names).size).toBe(4);
+  });
+});
+
+describe('review columns layout (issue #570)', () => {
+  it('keeps two columns when detail content exists', () => {
+    expect(reviewColumnsClass(true)).toBe('columns');
+  });
+
+  it('goes single column when the right side holds no detail', () => {
+    expect(reviewColumnsClass(false)).toBe('columns columns-single');
+  });
+
+  it('wires the loading state to two columns (details prompt shows)', () => {
+    const html = renderToStaticMarkup(
+      <ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />,
+    );
+    expect(html).toContain('class="columns"');
+    expect(html).not.toContain('columns-single');
   });
 });
