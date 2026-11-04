@@ -472,6 +472,7 @@ def reset_repair_state():
              "issue": None, "exit_code": None})
         issues_mod._repair_proc = None
         issues_mod._repair_abort = False
+        issues_mod.repair_schedules.clear()
 
 
 def wait_repair_status(want, timeout=5):
@@ -648,6 +649,180 @@ class RepairTest(unittest.TestCase):
             issues_mod._repair_runner = old
 
 
+class RepairScheduleTest(unittest.TestCase):
+    def test_set_daily_shows_next_run_24h_out(self):
+        reset_repair_state()
+        try:
+            before = time.time()
+            out = issues_mod.repair_schedule(
+                issues_mod.RepairScheduleRequest(
+                    issue="#11", cadence="daily"))
+            sched = out["schedule"]
+            self.assertTrue(out["ok"])
+            self.assertEqual(
+                (sched["issue"], sched["cadence"]), (11, "daily"))
+            self.assertGreaterEqual(sched["next_run"], before + 86300)
+            self.assertLessEqual(sched["next_run"], before + 86500)
+            status = issues_mod.repair_status()
+            self.assertEqual(len(status["schedules"]), 1)
+            self.assertEqual(status["schedules"][0]["issue"], 11)
+        finally:
+            reset_repair_state()
+
+    def test_set_weekly_and_disable(self):
+        reset_repair_state()
+        try:
+            before = time.time()
+            out = issues_mod.repair_schedule(
+                issues_mod.RepairScheduleRequest(
+                    issue=12, cadence="weekly"))
+            sched = out["schedule"]
+            self.assertGreaterEqual(
+                sched["next_run"], before + 7 * 86400 - 100)
+            out = issues_mod.repair_schedule(
+                issues_mod.RepairScheduleRequest(
+                    issue=12, cadence="off"))
+            self.assertEqual(
+                (out["ok"], out["schedule"]), (True, None))
+            self.assertEqual(
+                issues_mod.repair_status()["schedules"], [])
+        finally:
+            reset_repair_state()
+
+    def test_rejects_bad_issue_and_cadence(self):
+        from fastapi import HTTPException
+
+        reset_repair_state()
+        try:
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.repair_schedule(
+                    issues_mod.RepairScheduleRequest(
+                        issue="nope", cadence="daily"))
+            self.assertEqual(ctx.exception.status_code, 400)
+            with self.assertRaises(HTTPException) as ctx:
+                issues_mod.repair_schedule(
+                    issues_mod.RepairScheduleRequest(
+                        issue=9, cadence="hourly"))
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn("daily", ctx.exception.detail)
+        finally:
+            reset_repair_state()
+
+    def test_due_schedule_fires_worker_and_reschedules(self):
+        proc = FakeProc(stdout=iter(["line1\n"]), returncode=0)
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}):
+                issues_mod.repair_schedule(
+                    issues_mod.RepairScheduleRequest(
+                        issue=13, cadence="daily"))
+                with repair_state_lock:
+                    issues_mod.repair_schedules[13]["next_run"] = (
+                        time.time() - 1)
+                fired = issues_mod.fire_due_schedules()
+            self.assertEqual(fired, 13)
+            self.assertEqual(
+                wait_repair_status(("done", "failed", "aborted")),
+                "done")
+            status = issues_mod.repair_status()
+            self.assertEqual(status["issue"], 13)
+            self.assertIn("line1", status["log_buffer"])
+            sched = status["schedules"][0]
+            self.assertEqual(sched["issue"], 13)
+            self.assertGreater(sched["next_run"], time.time())
+            self.assertIsNotNone(sched["last_run"])
+            self.assertEqual(
+                runner.calls[0],
+                ["python3", "-m", "core_cli", "repair",
+                 "--issue", "13"])
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_due_schedule_skips_while_running(self):
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = FakeRunner()
+        reset_repair_state()
+        try:
+            issues_mod.repair_schedule(
+                issues_mod.RepairScheduleRequest(
+                    issue=14, cadence="daily"))
+            with repair_state_lock:
+                repair_state["status"] = "running"
+                issues_mod.repair_schedules[14]["next_run"] = (
+                    time.time() - 1)
+            self.assertIsNone(issues_mod.fire_due_schedules())
+            with repair_state_lock:
+                self.assertLessEqual(
+                    issues_mod.repair_schedules[14]["next_run"],
+                    time.time())
+                self.assertIsNone(
+                    issues_mod.repair_schedules[14]["last_run"])
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_due_schedule_skips_non_allowlisted(self):
+        runner = FakeRunner()
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_EVIL}):
+                issues_mod.repair_schedule(
+                    issues_mod.RepairScheduleRequest(
+                        issue=15, cadence="daily"))
+                with repair_state_lock:
+                    issues_mod.repair_schedules[15]["next_run"] = (
+                        time.time() - 1)
+                fired = issues_mod.fire_due_schedules()
+            self.assertIsNone(fired)
+            self.assertEqual(runner.calls, [])
+            with repair_state_lock:
+                self.assertGreater(
+                    issues_mod.repair_schedules[15]["next_run"],
+                    time.time())
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+    def test_disable_stops_runs_but_dispatch_still_works(self):
+        proc = FakeProc(stdout=iter(["line1\n"]), returncode=0)
+        runner = FakeRunner()
+        runner.handlers["popen"] = proc
+        old = issues_mod._repair_runner
+        issues_mod._repair_runner = runner
+        reset_repair_state()
+        try:
+            with patch.object(issues_mod, "run_gh_json",
+                              return_value={"body": _TASK_SPEC_PYTEST}):
+                issues_mod.repair_schedule(
+                    issues_mod.RepairScheduleRequest(
+                        issue=16, cadence="daily"))
+                issues_mod.repair_schedule(
+                    issues_mod.RepairScheduleRequest(
+                        issue=16, cadence="off"))
+                self.assertIsNone(issues_mod.fire_due_schedules())
+                self.assertEqual(runner.calls, [])
+                out = issues_mod.repair_dispatch(
+                    issues_mod.RepairDispatchRequest(issue="#16"))
+            self.assertEqual(
+                (out["ok"], out["issue"], out["status"]),
+                (True, 16, "running"))
+            self.assertEqual(
+                wait_repair_status(("done", "failed", "aborted")),
+                "done")
+        finally:
+            issues_mod._repair_runner = old
+            reset_repair_state()
+
+
 class RouteTableTest(unittest.TestCase):
     def test_routes_registered(self):
         pulls_routes = {(r.path, tuple(sorted(r.methods))) for r in
@@ -663,6 +838,7 @@ class RouteTableTest(unittest.TestCase):
         self.assertIn(("/api/issue-draft", ("POST",)), issues_routes)
         self.assertIn(("/api/repair/dispatch", ("POST",)), issues_routes)
         self.assertIn(("/api/repair/status", ("GET",)), issues_routes)
+        self.assertIn(("/api/repair/schedule", ("POST",)), issues_routes)
         self.assertIn(
             ("/api/repair/verify-command", ("GET",)), issues_routes)
 

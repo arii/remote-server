@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerifyCommand } from '../apiClient';
+import { abortRepair, dispatchRepair, fetchIssues, fetchRepairStatus, fetchVerifyCommand, setRepairSchedule } from '../apiClient';
 import type { RepairStatusResponse, RepairVerifyPreview } from '../apiClient';
 import type { IssueRow } from '../reviewTypes';
 import { useMock } from './mockViews';
@@ -70,13 +70,15 @@ export default function RepairSection({
   repo,
   initialStatus,
   initialPreview,
+  initialPicked,
 }: {
   repo: string;
   initialStatus?: RepairStatusResponse;
   initialPreview?: RepairVerifyPreview | null;
+  initialPicked?: string;
 }) {
   const [issues, setIssues] = useState<IssueRow[] | null>(null);
-  const [picked, setPicked] = useState('');
+  const [picked, setPicked] = useState(initialPicked ?? '');
   const [manual, setManual] = useState('');
   const [filter, setFilter] = useState('');
   const candidates = repairCandidates(issues ?? []);
@@ -114,7 +116,17 @@ export default function RepairSection({
     };
   }, [repo]);
 
+  useEffect(() => {
+    if (useMock()) return;
+    void loadSchedules();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
   const target = (picked || manual).trim();
+  const targetNumber = target.match(/\/issues\/(\d+)/)?.[1] ?? target.replace(/^#/, '');
+  const targetSchedule = (status.schedules ?? []).find(
+    (s) => String(s.issue) === targetNumber,
+  );
   useEffect(() => {
     let cancelled = false;
     if (useMock()) return;
@@ -150,6 +162,14 @@ export default function RepairSection({
     }
   }
 
+  async function loadSchedules() {
+    try {
+      setStatus(await fetchRepairStatus());
+    } catch {
+      // Schedules stay hidden when status is unreachable.
+    }
+  }
+
   async function onAbortRepair() {
     stopWatch();
     setError(null);
@@ -160,6 +180,19 @@ export default function RepairSection({
       }
       await abortRepair();
       await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onScheduleRepair(cadence: string) {
+    const target = (picked || manual).trim();
+    if (!target) return;
+    setError(null);
+    try {
+      if (useMock()) return;
+      await setRepairSchedule(target, cadence);
+      await loadSchedules();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -223,7 +256,35 @@ export default function RepairSection({
             Abort
           </button>
         )}
+        <label className="row-meta" htmlFor="repair-schedule-cadence">
+          Schedule{' '}
+          <select
+            id="repair-schedule-cadence"
+            data-testid="repair-schedule-cadence"
+            value={targetSchedule?.cadence ?? 'off'}
+            disabled={!target}
+            onChange={(e) => void onScheduleRepair(e.target.value)}
+          >
+            <option value="off">Off</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </label>
+        {targetSchedule && (
+          <button
+            type="button"
+            data-testid="repair-schedule-disable"
+            onClick={() => void onScheduleRepair('off')}
+          >
+            Disable schedule
+          </button>
+        )}
       </div>
+      {targetSchedule && (
+        <p className="row-meta" data-testid="repair-schedule-next">
+          Next run: {new Date(targetSchedule.next_run * 1000).toLocaleString()}
+        </p>
+      )}
       {issues && repairCandidates(issues).length === 0 && (
         <p className="row-meta" data-testid="repair-empty">
           {issues.length === 0
