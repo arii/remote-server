@@ -1615,6 +1615,42 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
                 else:
                     os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = old
 
+    def test_gated_merge_schedulable_merge_still_locked(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "sched.json")
+            old = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = path
+            try:
+                with mock.patch(
+                    "backend.api.routers.issues._ensure_schedule_ticker"
+                ), mock.patch(
+                    "backend.core.get_repo_status",
+                    return_value={"repo": "boomtick"},
+                ):
+                    resp = self.client.post(
+                        "/api/jobs/schedule",
+                        json={"action": "merge-approved-gated",
+                              "repo": "boomtick", "cadence": "daily"})
+                    self.assertEqual(resp.status_code, 200)
+                    self.assertEqual(
+                        resp.json()["schedule"]["action"],
+                        "merge-approved-gated")
+                    # Manual merge-approved keeps its confirm lock:
+                    # still unschedulable.
+                    resp = self.client.post(
+                        "/api/jobs/schedule",
+                        json={"action": "merge-approved",
+                              "repo": "boomtick", "cadence": "daily"})
+                    self.assertEqual(resp.status_code, 400)
+            finally:
+                if old is None:
+                    os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+                else:
+                    os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = old
+
 
 class RunStorePersistenceTest(unittest.TestCase):
     """Restart recovery: the run store rehydrates history (#461)."""
@@ -2018,6 +2054,41 @@ class CheckNotificationsActionTest(unittest.TestCase):
     def test_start_run_accepts_action(self):
         reg = RunRegistry()
         rid, err = reg.start_run("check-notifications", "boomtick")
+        self.assertIsNone(err)
+        self.assertIsNotNone(rid)
+        reg.finish_run(rid, 0)
+
+
+class GatedMergeActionTest(unittest.TestCase):
+    """merge-approved-gated action registration + step shape (#867)."""
+
+    def test_registered_repo_scoped_and_schedulable(self):
+        self.assertIn("merge-approved-gated", engine.ALLOWED_ACTIONS)
+        self.assertIn("merge-approved-gated",
+                      engine.REPO_SCOPED_ACTIONS)
+        self.assertNotIn("merge-approved-gated",
+                         engine.DESTRUCTIVE_ACTIONS)
+
+    def test_step_invokes_merge_gated_module(self):
+        import sys
+
+        steps, err = engine.action_steps(
+            "merge-approved-gated", "boomtick", "arii/boomtick",
+            "/srv/repos/boomtick")
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[sys.executable, "-m", "core_cli.merge_gated",
+                     "--repo", "boomtick", "--gh", "arii/boomtick"]])
+
+    def test_step_needs_a_repo(self):
+        steps, err = engine.action_steps(
+            "merge-approved-gated", "boomtick", "", "")
+        self.assertIsNone(steps)
+        self.assertIn("needs a repo", err)
+
+    def test_start_run_accepts_action(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("merge-approved-gated", "boomtick")
         self.assertIsNone(err)
         self.assertIsNotNone(rid)
         reg.finish_run(rid, 0)
