@@ -42,7 +42,11 @@
     "permissions:update": "bash scripts/update-permissions.sh"
   },
   "devDependencies": {
-    "fallow": "^3.35.0"
+    "@axe-core/playwright": "^4.11.3",
+    "@types/node": "^24.13.2",
+    "fallow": "^3.35.0",
+    "playwright": "1.61.1",
+    "tsx": "^4.21.0"
   },
   "version": "0.1.0"
 }

@@ -1,0 +1,16 @@
+{
+  "baseUrl": "http://caddy:8080/buttons",
+  "comment": "Console self-audit target (#880): Caddy strips /buttons and serves the SPA with the /buttons/ asset base. UX_BASE_URL env overrides (dev: http://localhost:5173). Viewport names must match td's --desktop/--mobile mapping exactly.",
+  "viewports": {
+    "desktop": [
+      { "name": "desktop-1280", "width": 1280, "height": 800 },
+      { "name": "desktop-1440", "width": 1440, "height": 900 }
+    ],
+    "mobile": [
+      { "name": "mobile-375", "width": 375, "height": 812 },
+      { "name": "mobile-390", "width": 390, "height": 844 },
+      { "name": "mobile-430", "width": 430, "height": 932 }
+    ]
+  },
+  "outputDir": "artifacts/ux-audit"
+}
