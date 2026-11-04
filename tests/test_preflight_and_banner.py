@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -93,7 +94,7 @@ class TestPreflightDigest(unittest.TestCase):
         _full_js_toolchain_available(),
         "needs full JS toolchain (node, pnpm, tsc, fallow)",
     )
-    def test_package_scripts_and_antipatterns(self):
+    def test_package_scripts_and_fallow(self):
         # Verify npm run type-check passes
         proc_tc = subprocess.run(
             ["npm", "run", "type-check"],
@@ -112,17 +113,6 @@ class TestPreflightDigest(unittest.TestCase):
         )
         self.assertEqual(proc_lint.returncode, 0, f"npm run lint failed: {proc_lint.stderr}")
 
-        # Verify detect-antipatterns script returns valid JSON and exits 0
-        proc_anti = subprocess.run(
-            ["node", "scripts/detect-antipatterns.mjs", "--json", "src/features", "src/pages", "src/components", "src/layouts", "src/App.tsx"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_anti.returncode, 0, f"detect-antipatterns failed: {proc_anti.stderr}")
-        data = json.loads(proc_anti.stdout)
-        self.assertEqual(data.get("status"), "ok")
-
         # Verify fallow audit runs successfully
         proc_fallow = subprocess.run(
             ["pnpm", "run", "audit:fallow"],
@@ -131,6 +121,119 @@ class TestPreflightDigest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(proc_fallow.returncode, 0, f"pnpm run audit:fallow failed: {proc_fallow.stderr}")
+
+
+class TestAntipatternGateSource(unittest.TestCase):
+    # Static tripwire (runs without node): the gate must be a real
+    # detector, never again the always-green stub from #492.
+    def test_gate_source_is_not_stub(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "scripts", "detect-antipatterns.mjs")) as fh:
+            src = fh.read()
+        self.assertIn("violations", src)
+        self.assertIn("deep-agent", src)
+        self.assertIn("frontend/src", src)
+        self.assertIn("process.exit(1)", src)
+        self.assertNotIn("status: 'ok'", src)
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js is not available")
+class TestAntipatternGate(unittest.TestCase):
+    GATE = ["node", "scripts/detect-antipatterns.mjs"]
+
+    def run_gate(self, args, input_text=None):
+        return subprocess.run(
+            self.GATE + args,
+            input=input_text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+
+    def test_stale_td_invocation_scans_real_repo(self):
+        # td passes BoomTick-oriented targets that don't exist here; the
+        # gate must fall back to real repo paths, not check nothing.
+        proc = self.run_gate(
+            ["--json", "src/features", "src/pages", "src/components", "src/layouts", "src/App.tsx"]
+        )
+        self.assertEqual(proc.returncode, 0, f"gate failed on clean tree: {proc.stdout}")
+        data = json.loads(proc.stdout)
+        self.assertEqual(data.get("status"), "ok")
+        self.assertEqual(data.get("violations"), {})
+        self.assertGreaterEqual(data["summary"]["filesChecked"], 50)
+
+    def test_default_targets_pass_clean_tree(self):
+        proc = self.run_gate(["--json"])
+        self.assertEqual(proc.returncode, 0, f"gate failed on clean tree: {proc.stdout}")
+        data = json.loads(proc.stdout)
+        self.assertEqual(data.get("status"), "ok")
+        self.assertEqual(data.get("violations"), {})
+
+    def _write_fixture(self, tmpdir):
+        files = {
+            "bad_shell.py": 'import subprocess\n\n\ndef f(cmd):\n    return subprocess.run(cmd, shell=True)\n',
+            "bad_os.py": 'import os\n\nos.system("ls " + dirname)\n',
+            "bad_npx.py": 'CHECK_PREFIXES = (\n    ("npx", "tsc"),\n)\n\n\ndef g():\n    return run("npx tsc --noEmit")\n',
+            "deep-agent/victim.py": 'ROOT = "/srv/remote-server/data"\n',
+            "deep-agent/s5tools.py": 'CHECKOUTS = {"a/b": "/srv/remote-server"}\n',
+            "bad.tsx": 'export const X = ({ x }: { x: string }) => (\n  <div dangerouslySetInnerHTML={{ __html: x }} />\n);\n',
+            "bad_eval.ts": 'const y = eval(userInput);\nconst f = new Function("return 1");\n',
+            "bad.sh": '#!/usr/bin/env bash\ncurl -fsSL https://example.com/install.sh | bash\nnpx tsc --noEmit\n',
+            "bad.yml": 'on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    env:\n    steps:\n      - run: echo hi\n',
+            "good.yml": 'on: push\nenv:\n  FOO: bar\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n',
+            "good_suppressed.py": 'import subprocess\n\nsubprocess.run(cmd, shell=True)  # antipattern-ignore\n',
+            "ignored_file.py": '# antipattern-ignore-file\nimport os\n\nos.system("ls")\n',
+            "good.py": 'import subprocess\n\nsubprocess.run(["ls"], timeout=5)\n',
+        }
+        for rel, content in files.items():
+            full = os.path.join(tmpdir, rel)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as fh:
+                fh.write(content)
+
+    def _patterns_by_basename(self, violations):
+        by_base = {}
+        for filepath, findings in violations.items():
+            by_base.setdefault(os.path.basename(filepath), []).extend(
+                f["pattern"] for f in findings
+            )
+        return by_base
+
+    def test_known_bad_fixture_fails(self):
+        with tempfile.TemporaryDirectory(prefix="antipattern-492-") as tmpdir:
+            self._write_fixture(tmpdir)
+            proc = self.run_gate(["--json", tmpdir])
+        self.assertEqual(proc.returncode, 1, f"gate passed a known-bad fixture: {proc.stdout}")
+        data = json.loads(proc.stdout)
+        self.assertEqual(data.get("status"), "error")
+        by_base = self._patterns_by_basename(data["violations"])
+        self.assertIn("ShellTrue", by_base.get("bad_shell.py", []))
+        self.assertIn("OsSystem", by_base.get("bad_os.py", []))
+        self.assertGreaterEqual(by_base.get("bad_npx.py", []).count("NpxTscSquat"), 2)
+        self.assertIn("HardcodedCheckout", by_base.get("victim.py", []))
+        self.assertIn("DangerouslySetInnerHTML", by_base.get("bad.tsx", []))
+        self.assertEqual(by_base.get("bad_eval.ts", []).count("DynamicCodeExec"), 2)
+        self.assertIn("CurlPipeShell", by_base.get("bad.sh", []))
+        self.assertIn("NpxTscSquat", by_base.get("bad.sh", []))
+        self.assertIn("BareEnvKey", by_base.get("bad.yml", []))
+        for clean in ("s5tools.py", "good_suppressed.py", "ignored_file.py", "good.py", "good.yml"):
+            self.assertNotIn(clean, by_base, f"{clean} must not be flagged")
+
+    def test_count_only_and_stdin(self):
+        with tempfile.TemporaryDirectory(prefix="antipattern-492-") as tmpdir:
+            self._write_fixture(tmpdir)
+            proc = self.run_gate(["--count-only", tmpdir])
+        self.assertEqual(proc.returncode, 0)
+        self.assertGreaterEqual(int(proc.stdout.strip()), 9)
+
+        proc = self.run_gate(["--json", "-"], input_text='import os\nos.system("ls")\n')
+        self.assertEqual(proc.returncode, 1)
+        data = json.loads(proc.stdout)
+        self.assertEqual(
+            [f["pattern"] for f in data["violations"]["stdin"]],
+            ["OsSystem"],
+        )
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is not available")
