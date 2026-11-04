@@ -607,12 +607,20 @@ export function requestTakeover(): Promise<{ ok: boolean; output: string }> {
   });
 }
 
+export interface RepairSchedule {
+  issue: number;
+  cadence: string;
+  next_run: number;
+  last_run: number | null;
+}
+
 export interface RepairStatusResponse {
   status: string;
   timestamp: number | null;
   log_buffer: string;
   issue: number | null;
   exit_code: number | null;
+  schedules?: RepairSchedule[];
 }
 
 export function dispatchRepair(issue: string): Promise<{ ok: boolean; issue: number; status: string }> {
@@ -627,6 +635,16 @@ export function fetchRepairStatus(): Promise<RepairStatusResponse> {
 
 export function abortRepair(): Promise<{ ok: boolean; killed: boolean }> {
   return postJson<{ ok: boolean; killed: boolean }>('api/repair/abort', {});
+}
+
+export function setRepairSchedule(
+  issue: string,
+  cadence: string,
+): Promise<{ ok: boolean; schedule: RepairSchedule | null }> {
+  return postJson<{ ok: boolean; schedule: RepairSchedule | null }>('api/repair/schedule', {
+    issue,
+    cadence,
+  });
 }
 
 export interface RepairVerifyPreview {

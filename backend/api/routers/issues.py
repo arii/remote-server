@@ -8,9 +8,10 @@ this backend serves /api/* like its sibling routers):
 - POST /api/create-issue          create an issue (confirm-tap shape)
 - POST /api/issue-draft           build a structured issue draft
 - POST /api/repair/dispatch       start the repair worker for an issue
-- GET  /api/repair/status         repair worker state
+- GET  /api/repair/status         repair worker state (+ schedules)
 - POST /api/repair/abort          abort the in-flight repair worker
 - GET  /api/repair/verify-command parsed verify cmd + allowlist verdict
+- POST /api/repair/schedule       set/clear a daily/weekly repair schedule
 
 Repair runs the worker the same way the legacy handler does: the
 same argv (python3 -m core_cli repair --issue N) with no new
@@ -55,6 +56,16 @@ _repair_runner = None
 # In-flight worker proc + abort flag, guarded by repair_state_lock.
 _repair_proc = None
 _repair_abort = False
+
+# Per-issue repair schedules: {issue_number: {"cadence": "daily"|"weekly",
+# "next_run": epoch_seconds, "last_run": epoch_seconds|None}}.
+# In-memory only (no new infra): schedules do not survive restarts.
+# Guarded by repair_state_lock. A daemon ticker fires due schedules
+# when the worker is idle; repair_status() also picks up due ones.
+SCHEDULE_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600}
+SCHEDULE_TICK_SECONDS = 60
+repair_schedules: dict = {}
+_schedule_ticker = None
 
 
 def parse_issue_number(val) -> int | None:
@@ -126,6 +137,24 @@ class RepairStatus(BaseModel):
     log_buffer: str = ""
     issue: int | None = None
     exit_code: int | None = None
+    schedules: list = Field(default_factory=list)
+
+
+class RepairSchedule(BaseModel):
+    issue: int = 0
+    cadence: str = ""
+    next_run: float = 0.0
+    last_run: float | None = None
+
+
+class RepairScheduleRequest(BaseModel):
+    issue: object = None
+    cadence: str = ""
+
+
+class RepairScheduleResult(BaseModel):
+    ok: bool = True
+    schedule: RepairSchedule | None = None
 
 
 def _repair_worker_thread(issue_number: int) -> None:
@@ -240,6 +269,63 @@ def trigger_repair(issue_number: int):
     return t
 
 
+def _claim_due_schedule(now: float) -> int | None:
+    """Claim one due schedule when the worker is idle.
+
+    Advances the claimed schedule's next_run before returning so a
+    firing is never double-claimed. Returns the issue number, or
+    None when nothing is due or the worker is busy.
+    """
+    with repair_state_lock:
+        if repair_state["status"] == "running":
+            return None
+        for issue_number in sorted(repair_schedules):
+            sched = repair_schedules[issue_number]
+            if sched["next_run"] <= now:
+                sched["last_run"] = now
+                sched["next_run"] = (
+                    now + SCHEDULE_INTERVALS[sched["cadence"]])
+                return issue_number
+    return None
+
+
+def fire_due_schedules(now: float | None = None) -> int | None:
+    """Fire one due schedule through the same gate as one-shot
+    dispatch. Never raises out of the ticker. Returns the fired
+    issue number, or None."""
+    claimed = _claim_due_schedule(now if now is not None
+                                  else time.time())
+    if claimed is None:
+        return None
+    try:
+        preview = _repair_verify_preview(claimed)
+    except Exception:
+        return None
+    if not preview["allowlisted"]:
+        return None
+    trigger_repair(claimed)
+    return claimed
+
+
+def _schedule_tick_loop() -> None:
+    while True:
+        time.sleep(SCHEDULE_TICK_SECONDS)
+        try:
+            fire_due_schedules()
+        except Exception:
+            pass
+
+
+def _ensure_schedule_ticker() -> None:
+    global _schedule_ticker
+    with repair_state_lock:
+        if _schedule_ticker is not None:
+            return
+        _schedule_ticker = threading.Thread(
+            target=_schedule_tick_loop, daemon=True)
+        _schedule_ticker.start()
+
+
 @router.get("/issues", response_model=IssueList)
 def issues(repo: str = "remote-server") -> dict:
     try:
@@ -325,10 +411,42 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
     return {"ok": True, "issue": issue_number, "status": "running"}
 
 
+@router.post("/repair/schedule",
+            response_model=RepairScheduleResult)
+def repair_schedule(body: RepairScheduleRequest) -> dict:
+    issue_number = parse_issue_number(body.issue)
+    if issue_number is None:
+        raise HTTPException(
+            status_code=400, detail="invalid issue number or url")
+    cadence = (body.cadence or "").strip().lower()
+    if cadence == "off":
+        with repair_state_lock:
+            repair_schedules.pop(issue_number, None)
+        return {"ok": True, "schedule": None}
+    if cadence not in SCHEDULE_INTERVALS:
+        raise HTTPException(
+            status_code=400,
+            detail="cadence must be daily, weekly, or off")
+    now = time.time()
+    with repair_state_lock:
+        prev = repair_schedules.get(issue_number, {})
+        sched = {"cadence": cadence,
+                 "next_run": now + SCHEDULE_INTERVALS[cadence],
+                 "last_run": prev.get("last_run")}
+        repair_schedules[issue_number] = sched
+    _ensure_schedule_ticker()
+    return {"ok": True, "schedule": {"issue": issue_number, **sched}}
+
+
 @router.get("/repair/status", response_model=RepairStatus)
 def repair_status() -> dict:
+    fire_due_schedules()
     with repair_state_lock:
-        return dict(repair_state)
+        out = dict(repair_state)
+        out["schedules"] = [
+            {"issue": n, **repair_schedules[n]}
+            for n in sorted(repair_schedules)]
+        return out
 
 
 @router.post("/repair/abort", response_model=RepairAbortResult)

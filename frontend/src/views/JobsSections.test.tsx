@@ -79,6 +79,54 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(none).not.toContain('data-testid="repair-verify"');
   });
 
+  it('repair schedule control renders cadence select (issue #611)', () => {
+    const html = renderToStaticMarkup(<RepairSection repo="remote-server" />);
+    expect(html).toContain('data-testid="repair-schedule-cadence"');
+    expect(html).toContain('>Daily</option>');
+    expect(html).toContain('>Weekly</option>');
+    expect(html).not.toContain('data-testid="repair-schedule-next"');
+    expect(html).not.toContain('data-testid="repair-schedule-disable"');
+  });
+
+  it('repair schedule shows next run and disable when set (issue #611)', () => {
+    const html = renderToStaticMarkup(
+      <RepairSection
+        repo="remote-server"
+        initialPicked="11"
+        initialStatus={{
+          status: 'idle',
+          timestamp: null,
+          log_buffer: '',
+          issue: null,
+          exit_code: null,
+          schedules: [{ issue: 11, cadence: 'daily', next_run: 1790000000, last_run: null }],
+        }}
+      />,
+    );
+    expect(html).toContain('data-testid="repair-schedule-next"');
+    expect(html).toContain('Next run:');
+    expect(html).toContain('data-testid="repair-schedule-disable"');
+  });
+
+  it('repair schedule line hides for other issues (issue #611)', () => {
+    const html = renderToStaticMarkup(
+      <RepairSection
+        repo="remote-server"
+        initialPicked="11"
+        initialStatus={{
+          status: 'idle',
+          timestamp: null,
+          log_buffer: '',
+          issue: null,
+          exit_code: null,
+          schedules: [{ issue: 12, cadence: 'weekly', next_run: 1790000000, last_run: null }],
+        }}
+      />,
+    );
+    expect(html).not.toContain('data-testid="repair-schedule-next"');
+    expect(html).not.toContain('data-testid="repair-schedule-disable"');
+  });
+
   it('td commands render pr and whole-repo groups', () => {
     const html = renderToStaticMarkup(
       <TdCommands
