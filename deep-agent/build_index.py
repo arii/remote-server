@@ -1,9 +1,11 @@
 """Build the shared S5 RAG index (Chroma, local embeddings).
 
 Usage: build_index.py
-Indexes repo docs + source code + GitHub issues/PRs into
-deep-agent/chroma_db with `repo`, `kind` (doc|code|issue|pr), and
-`language` metadata so per-repo agents filter to their own slice.
+Indexes docs + source code + GitHub issues/PRs from EVERY discovered
+console checkout (the stack checkout plus each repos-dir checkout
+with a .git) into deep-agent/chroma_db with `repo` (full
+owner/name), `kind` (doc|code|issue|pr), and `language` metadata so
+search can filter to one repo or rank all repos mixed.
 Purely local (Ollama nomic-embed-text); no hosted calls, except the
 gh-sourced pass which shells out to `gh issue/pr list` (bodies only,
 no comments, v1). Re-run after docs or code change or whenever
@@ -11,12 +13,15 @@ chroma_db is wiped. Each run clears the collection first, so re-runs
 never stack stale duplicates. Embedding model/URL come from
 retrieval.get_embeddings() (S5_EMBED_MODEL / OLLAMA_URL overrides);
 S5_CHROMA_DIR / S5_COLLECTION override the target, S5_GH_INDEX=0
-skips the GitHub pass (offline builds).
+skips the GitHub pass (offline builds). New checkouts join the next
+rebuild with zero config; one repo's gh failure degrades that repo
+to file-only (warn-and-continue) instead of nuking the index.
 """
 
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -90,9 +95,10 @@ def _walk_code(root, base, recursive, extensions):
 def collect_source_files(root):
     """Sorted [(relpath, kind, language)] for docs + code under root.
 
-    Stdlib only: system-python tests import this module (langchain
-    imports live in build()). Docs keep their historical per-pattern
-    order; code is appended after.
+    The stack-checkout (remote-server) layout. Stdlib only:
+    system-python tests import this module (langchain imports live
+    in build()). Docs keep their historical per-pattern order; code
+    is appended after.
     """
     found = []
     for pattern in SOURCES:
@@ -107,11 +113,70 @@ def collect_source_files(root):
     return found
 
 
-def doc_metadata(relpath, kind, language):
-    """Chunk metadata: path attribution + kind/language tags."""
+# Generic per-checkout passes (#840): other repos (portfolio,
+# tech-dancer, ...) don't share the stack layout, so they get root
+# READMEs + recursive docs + a whole-tree code walk honoring the
+# same SKIP_DIRS.
+GENERIC_CODE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx")
+
+
+def _generic_language(filename):
+    if filename.endswith(".py"):
+        return "python"
+    if filename.endswith((".ts", ".tsx")):
+        return "typescript"
+    return "javascript"
+
+
+def collect_generic_files(root):
+    """Sorted [(relpath, kind, language)] for a non-stack checkout.
+
+    Docs: root *.md (READMEs, AGENTS.md) then recursive docs/**/*.md.
+    Code: whole-tree walk for GENERIC_CODE_EXTENSIONS honoring
+    SKIP_DIRS + _skip_file, appended after docs. Stdlib-only.
+    """
+    docs = []
+    for path in sorted(glob.glob(os.path.join(root, "*.md"))):
+        if _skip_file(os.path.basename(path)):
+            continue
+        docs.append(
+            (os.path.relpath(path, root), "doc", "markdown"))
+    docs_dir = os.path.join(root, "docs")
+    if os.path.isdir(docs_dir):
+        nested = []
+        for dirpath, dirnames, filenames in os.walk(docs_dir):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for name in filenames:
+                if not name.endswith(".md") or _skip_file(name):
+                    continue
+                nested.append(
+                    os.path.relpath(
+                        os.path.join(dirpath, name), root))
+        docs.extend(
+            (rel, "doc", "markdown") for rel in sorted(nested))
+    code = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            if (not name.endswith(GENERIC_CODE_EXTENSIONS)
+                    or _skip_file(name)):
+                continue
+            code.append(
+                os.path.relpath(os.path.join(dirpath, name), root))
+    return docs + [
+        (rel, "code", _generic_language(rel)) for rel in sorted(code)
+    ]
+
+
+def doc_metadata(relpath, kind, language, repo):
+    """Chunk metadata: path attribution + kind/language/repo tags.
+
+    `repo` is the full owner/name (arii/<name>); every chunk kind
+    carries it so search can filter per repo.
+    """
     return {
         "source": relpath,
-        "repo": "remote-server",
+        "repo": repo,
         "kind": kind,
         "language": language,
     }
@@ -178,16 +243,16 @@ def gh_labels(item):
     )
 
 
-def gh_metadata(item, kind):
+def gh_metadata(item, kind, repo):
     """Chunk metadata: kind/number/state/url + doc-style attribution.
 
     `source` carries the kind prefix (issue#N / pr#N) so the generic
     `[repo/source]` rendering in search_docs/format_hits surfaces the
-    kind with no query-side change.
+    kind with no query-side change. `repo` is the full owner/name.
     """
     return {
         "source": f"{kind}#{item.get('number')}",
-        "repo": "remote-server",
+        "repo": repo,
         "kind": kind,
         "language": "markdown",
         "number": item.get("number"),
@@ -222,8 +287,102 @@ def collect_gh_documents(fetcher=None, cap=GH_CAP, repo=None):
     for kind in ("issue", "pr"):
         for item in fetch(kind, target, cap):
             out.append(
-                (gh_page_content(item, kind), gh_metadata(item, kind)))
+                (gh_page_content(item, kind),
+                 gh_metadata(item, kind, target)))
     return out
+
+
+REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def get_repos_dir():
+    """Repos root (stdlib port of backend.core.get_repos_dir).
+
+    Env override BUTTONS_REPOS_DIR, then /home/ari/repos, then the
+    container bind path /srv/repos. build_index stays stdlib-only at
+    import, so the backend helper (a fastapi import) is mirrored
+    here instead of imported.
+    """
+    configured = os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos")
+    if os.path.isdir(configured):
+        return configured
+    if os.path.isdir("/srv/repos"):
+        return "/srv/repos"
+    return configured
+
+
+def parse_gh_remote(url):
+    """owner/repo from a git remote URL, or None (stdlib port of
+    backend.core._parse_gh_remote: https, ssh, and scp-like github
+    URLs, optional .git suffix)."""
+    if not url:
+        return None
+    url = url.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+    m = re.match(r"^(?:git@github\.com:|https://github\.com/|"
+                 r"ssh://git@github\.com/)(.+)$", url)
+    if not m or "/" not in m.group(1):
+        return None
+    owner, _, repo_part = m.group(1).partition("/")
+    if (not owner or not repo_part or "/" in repo_part
+            or not REPO_NAME_RE.match(owner)
+            or not REPO_NAME_RE.match(repo_part)):
+        return None
+    return f"{owner}/{repo_part}"
+
+
+def _git_origin(path, run=None):
+    """GitHub owner/repo for a checkout, or None when unavailable.
+
+    `run` is the injectable subprocess.run seam (tests stub it).
+    """
+    run = run or subprocess.run
+    try:
+        proc = run(
+            ["git", "-c", f"safe.directory={path}", "-C", str(path),
+             "config", "--get", "remote.origin.url"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=30, text=True,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_gh_remote((proc.stdout or "").strip())
+
+
+def discover_repos(stack_root, repos_dir=None, run=None):
+    """[(name, full, path)] for the stack + repos-dir checkouts.
+
+    The stack checkout (remote-server) is always first, even without
+    a .git (hermetic tmp roots in tests). Every other entry needs a
+    .git (dir or worktree file) plus a valid checkout name; origin
+    failures fall back to arii/<name> (the gh pass then degrades to
+    file-only for that repo via warn-and-continue). Sorted by name
+    after the stack entry, so rebuilds are deterministic and new
+    checkouts join with zero config.
+    """
+    repos = [(
+        "remote-server",
+        _git_origin(stack_root, run=run) or GH_REPO,
+        stack_root,
+    )]
+    root = repos_dir if repos_dir is not None else get_repos_dir()
+    try:
+        entries = sorted(os.listdir(root))
+    except Exception:
+        entries = []
+    for name in entries:
+        if name == "remote-server" or not REPO_NAME_RE.match(name):
+            continue
+        path = os.path.join(root, name)
+        git_path = os.path.join(path, ".git")
+        if not (os.path.isdir(git_path) or os.path.isfile(git_path)):
+            continue
+        full = _git_origin(path, run=run) or f"arii/{name}"
+        repos.append((name, full, path))
+    return repos
 
 
 def _is_missing_collection_error(exc: BaseException) -> bool:
@@ -247,46 +406,69 @@ def _is_missing_collection_error(exc: BaseException) -> bool:
 
 
 def build(root, db_dir, collection, embeddings,
-          gh_fetcher=None, gh_cap=GH_CAP):
-    """Read, split, embed, upsert. Returns (n_docs, counts).
+          gh_fetcher=None, gh_cap=GH_CAP, repos=None):
+    """Read, split, embed, upsert across every checkout.
 
-    Clears the collection first (#542: re-runs never stack stale
-    duplicates). Raises RuntimeError when nothing matches, leaving
-    the index untouched.
+    Returns (n_docs, counts). Clears the collection first (#542:
+    re-runs never stack stale duplicates). Raises RuntimeError when
+    nothing matches, leaving the index untouched.
 
-    gh_fetcher=None skips the GitHub pass (hermetic tests); main()
-    passes the real fetcher. A failing gh pass warns on stderr and
-    the build continues file-only — a gh auth hiccup must never nuke
-    doc search. counts always carries all four kinds.
+    repos=None auto-discovers (stack checkout + repos dir); tests
+    pass an explicit [(name, full, path)] list for hermetic builds.
+    remote-server contributes the stack globs, every other checkout
+    the generic passes. gh_fetcher=None skips the GitHub pass
+    (hermetic tests); main() passes the real fetcher. A failing gh
+    pass warns on stderr and that repo degrades to file-only — one
+    bad checkout never nukes the index. counts always carries all
+    four kinds.
     """
     from langchain_chroma import Chroma
     from langchain_core.documents import Document
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-    infos = collect_source_files(root)
-    gh_texts = []
-    if gh_fetcher is not None and gh_cap is not None and gh_cap > 0:
-        try:
-            gh_texts = collect_gh_documents(
-                fetcher=gh_fetcher, cap=gh_cap)
-        except Exception as exc:
-            print(f"warning: GitHub pass skipped ({exc})",
-                  file=sys.stderr)
-    if not infos and not gh_texts:
-        raise RuntimeError(
-            "no source documents matched; index left untouched")
+    targets = repos if repos is not None else discover_repos(root)
     docs = []
-    for relpath, kind, language in infos:
-        with open(os.path.join(root, relpath), encoding="utf-8") as f:
+    for name, full, path in targets:
+        try:
+            if name == "remote-server":
+                infos = collect_source_files(path)
+            else:
+                infos = collect_generic_files(path)
+        except Exception as exc:
+            print(f"warning: {full}: file pass skipped ({exc})",
+                  file=sys.stderr)
+            continue
+        for relpath, kind, language in infos:
+            try:
+                with open(os.path.join(path, relpath),
+                          encoding="utf-8") as f:
+                    content = f.read()
+            except Exception as exc:
+                print(f"warning: {full}: unreadable {relpath} ({exc})",
+                      file=sys.stderr)
+                continue
             docs.append(
                 Document(
-                    page_content=f.read(),
-                    metadata=doc_metadata(relpath, kind, language),
+                    page_content=content,
+                    metadata=doc_metadata(
+                        relpath, kind, language, full),
                 )
             )
-    for page_content, metadata in gh_texts:
-        docs.append(
-            Document(page_content=page_content, metadata=metadata))
+        if gh_fetcher is not None and gh_cap is not None and gh_cap > 0:
+            try:
+                gh_texts = collect_gh_documents(
+                    fetcher=gh_fetcher, cap=gh_cap, repo=full)
+            except Exception as exc:
+                print(f"warning: {full}: GitHub pass skipped ({exc})",
+                      file=sys.stderr)
+                continue
+            for page_content, metadata in gh_texts:
+                docs.append(
+                    Document(page_content=page_content,
+                             metadata=metadata))
+    if not docs:
+        raise RuntimeError(
+            "no source documents matched; index left untouched")
     splits = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=200
     ).split_documents(docs)
@@ -326,17 +508,19 @@ def main() -> int:
     print(f"embeddings: model={getattr(embeddings, 'model', '?')} "
           f"base_url={getattr(embeddings, 'base_url', '?')}")
     print(f"target: {db_dir} [{collection}]")
+    repos = discover_repos(ROOT)
+    print(f"repos: {', '.join(full for _, full, _ in repos)}")
     gh_fetcher = None
     if os.environ.get("S5_GH_INDEX") != "0":
         gh_fetcher = fetch_gh_items
-        print(f"github: {GH_REPO} (cap {GH_CAP} per kind, "
-              f"most-recently-updated first)")
+        print(f"github: {len(repos)} repos (cap {GH_CAP} per kind "
+              f"per repo, most-recently-updated first)")
     else:
         print("github: skipped (S5_GH_INDEX=0)")
     try:
         n_docs, counts = build(
             ROOT, db_dir, collection, embeddings,
-            gh_fetcher=gh_fetcher)
+            gh_fetcher=gh_fetcher, repos=repos)
     except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 1
