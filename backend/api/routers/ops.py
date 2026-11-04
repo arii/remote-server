@@ -20,6 +20,8 @@ import json
 import os
 import shlex
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -49,6 +51,47 @@ def run_takeover() -> str:
     return proc.stdout
 
 
+def _fetch_run_jobs(gh: str, run_id) -> list | None:
+    """Jobs payload for one failing run; None when the call fails."""
+    from backend.exec.engine import td_run
+
+    try:
+        jobs_out = td_run(
+            f"gh api repos/{shlex.quote(gh)}/actions/runs/"
+            f"{run_id}/jobs", timeout=30)
+        jobs = json.loads(jobs_out).get("jobs", [])
+        return jobs if isinstance(jobs, list) else []
+    except Exception:
+        return None
+
+
+def _fetch_annotations(gh: str, check_id) -> list:
+    """First-5 mapped annotations for one check run; [] on any failure.
+
+    Partial results are kept when a malformed entry aborts the loop,
+    matching the historical inline behavior.
+    """
+    from backend.exec.engine import td_run
+
+    out: list = []
+    try:
+        ann_out = td_run(
+            f"gh api repos/{shlex.quote(gh)}/check-runs/"
+            f"{check_id}/annotations", timeout=20)
+        ann_list = json.loads(ann_out)
+        if isinstance(ann_list, list):
+            for a in ann_list[:5]:
+                out.append({
+                    "path": a.get("path"),
+                    "start_line": a.get("start_line"),
+                    "annotation_level": a.get("annotation_level"),
+                    "message": a.get("message"),
+                    "title": a.get("title")})
+    except Exception:
+        pass
+    return out
+
+
 def fetch_workflow_health(repo: str, gh: str) -> dict:
     """Live workflow-health analysis via td/gh. Injectable for tests.
 
@@ -56,6 +99,12 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
     then per failing run (max 5) collect failed jobs/steps and
     check-run annotations, diagnosing the cause from the first
     annotation or the first failed job.
+
+    The per-run jobs calls and the per-job annotation calls run
+    concurrently on a shared pool (assembly stays ordered), so a
+    5-failure load costs ~3 GH round trips instead of ~11 sequential
+    subprocess calls (#432). Content and error semantics match the
+    previous sequential version exactly.
     """
     from backend.exec.engine import td_run
 
@@ -66,19 +115,36 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
     failing = [r for r in runs_list
                if r.get("conclusion") == "failure"
                or (r.get("conclusion") is None
-                   and r.get("status") == "failure")]
+                   and r.get("status") == "failure")][:5]
+    run_ids = [fr.get("id") for fr in failing]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        jobs_futs = [pool.submit(_fetch_run_jobs, gh, rid)
+                     if rid else None for rid in run_ids]
+        jobs_payloads = [f.result() if f is not None else None
+                         for f in jobs_futs]
+        ann_futs: dict[tuple[int, int], object] = {}
+        for idx, jobs in enumerate(jobs_payloads):
+            if not jobs:
+                continue
+            for pos, job in enumerate(jobs):
+                try:
+                    failed = job.get("conclusion") == "failure"
+                    check_id = job.get("id") if failed else None
+                except Exception:
+                    break
+                if check_id:
+                    ann_futs[(idx, pos)] = pool.submit(
+                        _fetch_annotations, gh, check_id)
+        ann_payloads = {k: f.result() for k, f in ann_futs.items()}
     workflows = []
-    for fr in failing[:5]:
-        run_id = fr.get("id")
+    for idx, fr in enumerate(failing):
         failed_jobs: list = []
         annotations: list = []
         diagnosed = "Workflow failed."
-        if run_id:
-            try:
-                jobs_out = td_run(
-                    f"gh api repos/{shlex.quote(gh)}/actions/runs/"
-                    f"{run_id}/jobs", timeout=30)
-                for job in json.loads(jobs_out).get("jobs", []):
+        jobs = jobs_payloads[idx]
+        if jobs:
+            for pos, job in enumerate(jobs):
+                try:
                     if job.get("conclusion") != "failure":
                         continue
                     steps = [s.get("name", "?")
@@ -87,26 +153,11 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
                     failed_jobs.append({"name": job.get("name", "?"),
                                         "conclusion": "failure",
                                         "failed_steps": steps})
-                    check_id = job.get("id")
-                    if check_id:
-                        try:
-                            ann_out = td_run(
-                                f"gh api repos/{shlex.quote(gh)}/check-runs/"
-                                f"{check_id}/annotations", timeout=20)
-                            ann_list = json.loads(ann_out)
-                            if isinstance(ann_list, list):
-                                for a in ann_list[:5]:
-                                    annotations.append({
-                                        "path": a.get("path"),
-                                        "start_line": a.get("start_line"),
-                                        "annotation_level": a.get(
-                                            "annotation_level"),
-                                        "message": a.get("message"),
-                                        "title": a.get("title")})
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+                    if job.get("id"):
+                        annotations.extend(
+                            ann_payloads.get((idx, pos), []))
+                except Exception:
+                    break
         if annotations:
             first = annotations[0]
             diagnosed = (f"[{first.get('path', 'unknown')}:"
@@ -118,7 +169,7 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
                      if first["failed_steps"] else "")
             diagnosed = f"Job '{first['name']}' failed{steps}."
         workflows.append({
-            "id": run_id,
+            "id": run_ids[idx],
             "name": fr.get("name", "Workflow"),
             "branch": fr.get("head_branch") or fr.get("headBranch") or "?",
             "event": fr.get("event", "?"),
@@ -227,6 +278,15 @@ def takeover(body: TakeoverRequest) -> dict:
     return {"ok": True, "output": out}
 
 
+# TTL cache: the gh subprocess chain behind this endpoint fans out per
+# failing run; the History view fetches it on every visit. Freshness of
+# a minute is plenty for a diagnosis list. Only successful live fetches
+# are cached (never fixtures, never errors). Tests reset the cache
+# directly.
+WORKFLOW_HEALTH_CACHE_TTL = 60.0
+_WORKFLOW_HEALTH_CACHE: dict[str, tuple[float, dict]] = {}
+
+
 @router.get("/workflow-health", response_model=WorkflowHealth)
 def workflow_health(repo: str = "remote-server") -> dict:
     try:
@@ -242,10 +302,15 @@ def workflow_health(repo: str = "remote-server") -> dict:
     fixture = _fixture_workflow_health(name)
     if fixture is not None:
         return fixture
+    hit = _WORKFLOW_HEALTH_CACHE.get(name)
+    if hit is not None and time.time() - hit[0] < WORKFLOW_HEALTH_CACHE_TTL:
+        return hit[1]
     try:
-        return fetch_workflow_health(name, f"arii/{name}")
+        data = fetch_workflow_health(name, f"arii/{name}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
+    _WORKFLOW_HEALTH_CACHE[name] = (time.time(), data)
+    return data
 
 
 @router.post("/clear", response_model=ClearResult)
