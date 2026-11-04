@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1364,5 +1364,169 @@ describe('chat draft autosave (issue #402)', () => {
     expect(loadChatDraft()).toBe('');
     expect(() => saveChatDraft('x')).not.toThrow();
     expect(() => clearChatDraft()).not.toThrow();
+  });
+});
+
+describe('saved prompt templates (issue #807)', () => {
+  function stubLocalStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('seeds three starters demonstrating the text slot', () => {
+    expect(SEED_TEMPLATES).toHaveLength(3);
+    for (const t of SEED_TEMPLATES) {
+      expect(t.id.length).toBeGreaterThan(0);
+      expect(t.label.length).toBeGreaterThan(0);
+      expect(t.text).toContain(TEMPLATE_TEXT_SLOT);
+    }
+    expect(new Set(SEED_TEMPLATES.map((t) => t.id)).size).toBe(3);
+  });
+
+  it('loads seeds on first run, stored templates after', () => {
+    stubLocalStorage();
+    expect(loadPromptTemplates()).toEqual([...SEED_TEMPLATES]);
+    const mine = [{ id: 't1', label: 'Mine', text: 'hello' }];
+    stubLocalStorage({ [CHAT_TEMPLATES_KEY]: JSON.stringify(mine) });
+    expect(loadPromptTemplates()).toEqual(mine);
+  });
+
+  it('heals corrupt or misshapen stores to seeds, keeps an emptied store empty', () => {
+    stubLocalStorage({ [CHAT_TEMPLATES_KEY]: 'not-json{{' });
+    expect(loadPromptTemplates()).toEqual([...SEED_TEMPLATES]);
+    stubLocalStorage({ [CHAT_TEMPLATES_KEY]: JSON.stringify({ id: 'x' }) });
+    expect(loadPromptTemplates()).toEqual([...SEED_TEMPLATES]);
+    stubLocalStorage({ [CHAT_TEMPLATES_KEY]: JSON.stringify([{ id: 't1' }]) });
+    expect(loadPromptTemplates()).toEqual([]);
+    stubLocalStorage({ [CHAT_TEMPLATES_KEY]: JSON.stringify([]) });
+    expect(loadPromptTemplates()).toEqual([]);
+  });
+
+  it('round-trips templates through localStorage under the templates key', () => {
+    const store = stubLocalStorage();
+    const templates = [
+      ...SEED_TEMPLATES,
+      { id: 't9', label: 'Deploy', text: 'deploy now' },
+    ];
+    savePromptTemplates(templates);
+    expect(store.get(CHAT_TEMPLATES_KEY)).toBe(JSON.stringify(templates));
+    expect(loadPromptTemplates()).toEqual(templates);
+  });
+
+  it('treats missing localStorage as seeds without throwing', () => {
+    vi.stubGlobal('localStorage', undefined);
+    expect(loadPromptTemplates()).toEqual([...SEED_TEMPLATES]);
+    expect(() => savePromptTemplates([])).not.toThrow();
+  });
+
+  it('derives the label from the first draft line', () => {
+    expect(templateLabelForDraft('hello world')).toBe('hello world');
+    expect(templateLabelForDraft('  first line\nsecond line  ')).toBe('first line');
+    expect(templateLabelForDraft('   ')).toBeNull();
+    expect(templateLabelForDraft('')).toBeNull();
+    const label = templateLabelForDraft('x'.repeat(100));
+    expect(label?.length).toBe(40);
+    expect(label?.endsWith('…')).toBe(true);
+  });
+
+  it('makes a template from a non-blank draft only', () => {
+    expect(makeTemplateFromDraft('   ')).toBeNull();
+    const made = makeTemplateFromDraft('Ship it\nsecond line');
+    expect(made).not.toBeNull();
+    expect(made?.label).toBe('Ship it');
+    expect(made?.text).toBe('Ship it\nsecond line');
+    expect(made?.id).toMatch(/^t[0-9a-z]+$/);
+    expect(makeTemplateFromDraft('one')?.id).not.toBe(makeTemplateFromDraft('one')?.id);
+  });
+
+  it('inserts at the caret, past the end when no slot', () => {
+    expect(insertTemplateAt('', 0, 'hi')).toEqual({ text: 'hi', caret: 2 });
+    expect(insertTemplateAt('ab', 1, 'X')).toEqual({ text: 'aXb', caret: 2 });
+    expect(insertTemplateAt('ab', 99, 'X')).toEqual({ text: 'abX', caret: 3 });
+    expect(insertTemplateAt('ab', -4, 'X')).toEqual({ text: 'Xab', caret: 1 });
+  });
+
+  it('consumes text slots and lands the caret at the first', () => {
+    expect(insertTemplateAt('', 0, 'Explain {text} now')).toEqual({
+      text: 'Explain  now',
+      caret: 8,
+    });
+    expect(insertTemplateAt('> ', 2, 'A {text} B {text}')).toEqual({
+      text: '> A  B ',
+      caret: 4,
+    });
+  });
+
+  it('renders the panel with save, insert, and delete affordances', () => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      <TemplatePanel
+        templates={[
+          { id: 'standup', label: 'Standup', text: 'sum now' },
+          { id: 't9', label: 'Deploy', text: 'deploy' },
+        ]}
+        canSave
+        disabled={false}
+        onSave={noop}
+        onInsert={noop}
+        onDelete={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="chat-templates-panel"');
+    expect(html).toContain('data-testid="chat-template-save"');
+    expect(html).toContain('data-testid="chat-template-insert-standup"');
+    expect(html).toContain('data-testid="chat-template-delete-t9"');
+    expect(html).toContain('Insert template: Standup');
+    expect(html).toContain('Delete template: Deploy');
+    expect(html).toContain('role="group"');
+  });
+
+  it('disables save on an empty draft and everything while streaming', () => {
+    const noop = () => {};
+    const empty = renderToStaticMarkup(
+      <TemplatePanel
+        templates={[]}
+        canSave={false}
+        disabled={false}
+        onSave={noop}
+        onInsert={noop}
+        onDelete={noop}
+      />,
+    );
+    expect(empty).toContain('disabled');
+    expect(empty).toContain('No templates yet');
+    const busy = renderToStaticMarkup(
+      <TemplatePanel
+        templates={[{ id: 't1', label: 'A', text: 'a' }]}
+        canSave
+        disabled
+        onSave={noop}
+        onInsert={noop}
+        onDelete={noop}
+      />,
+    );
+    // save + insert + delete all disabled
+    expect(busy.match(/disabled/g)?.length).toBe(3);
+  });
+
+  it('shows the templates toggle in the composer actions', () => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('data-testid="chat-templates"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain('data-testid="chat-templates-panel"');
   });
 });
