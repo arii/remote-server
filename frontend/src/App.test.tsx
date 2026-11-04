@@ -736,6 +736,7 @@ describe('chat composer order', () => {
     id: `run-${i}`,
     script: 'deep_chat.py',
     model: 'ollama:qwen3:8b',
+    provider: 'ollama',
     thread: `t${i}`,
     started_ts: 1793745700,
     duration_s: 9.8,
@@ -794,6 +795,7 @@ describe('past-run button names', () => {
     id: 'run-7',
     script: 'deep_chat.py',
     model: 'ollama:qwen3:8b',
+    provider: 'ollama',
     thread: 't7',
     started_ts: 1793745700,
     duration_s: 156,
@@ -811,6 +813,12 @@ describe('past-run button names', () => {
     expect(
       runButtonLabel({ ...run, ok: false, tokens: 96, started_ts: 0 }),
     ).toBe('Run run-7, failed, 156s, 96 tokens, unknown time');
+  });
+
+  it('dashes unknown latency (issue #801)', () => {
+    expect(runButtonLabel({ ...run, duration_s: null })).toBe(
+      'Run run-7, ok, —, 11k tokens, 2026-11-03',
+    );
   });
 
   it('keeps the Tab-stop name short while the card text stays visible', () => {

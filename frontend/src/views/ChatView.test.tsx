@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -186,6 +186,7 @@ function pastRun(over: Partial<AgentRun> = {}): AgentRun {
     id: 'run-0',
     script: 'deep_chat.py',
     model: 'm',
+    provider: null,
     thread: 't',
     started_ts: 0,
     duration_s: 1,
@@ -456,6 +457,74 @@ describe('run cost (issue #398)', () => {
     ]);
     expect(html).toContain('metered');
     expect(html).toContain('(+1 unknown rate)');
+  });
+});
+
+describe('run provider/latency slots (issue #801)', () => {
+  it('formats recorded latency, dashes the unknown', () => {
+    expect(runLatency(pastRun({ duration_s: 12.5 }))).toBe('12.5s');
+    expect(runLatency(pastRun({ duration_s: null }))).toBe('—');
+  });
+
+  it('shows provider, latency, and cost on metered rows', () => {
+    const meta = runMeta(
+      pastRun({
+        model: 'nebius:zai-org/GLM-5.3-Flash',
+        provider: 'nebius',
+        duration_s: 12.5,
+        tokens: 3000,
+        metered: true,
+        cost_usd: 0.0008,
+      }),
+    );
+    expect(meta).toContain('nebius · zai-org/GLM-5.3-Flash');
+    expect(meta).not.toContain('nebius:zai-org');
+    expect(meta).toContain('12.5s');
+    expect(meta).toContain('3000 tok');
+    expect(meta).toContain('$0.0008');
+  });
+
+  it('stays null-safe on local rows with unknown latency', () => {
+    const meta = runMeta(
+      pastRun({
+        model: 'ollama:qwen3:8b',
+        provider: 'ollama',
+        duration_s: null,
+        metered: false,
+        cost_usd: 0.0,
+      }),
+    );
+    expect(meta).toContain('ollama · qwen3:8b');
+    expect(meta).toContain('—');
+    expect(meta).toContain('free');
+    expect(meta).not.toContain('null');
+  });
+
+  it('shows bare models verbatim without a provider slot', () => {
+    const meta = runMeta(pastRun({ model: 'qwen3:8b', provider: null }));
+    expect(meta).toContain('deep_chat.py · qwen3:8b · ok');
+  });
+
+  it('renders the slots in the pane', () => {
+    const html = paneHtml([
+      pastRun({
+        model: 'nebius:zai-org/GLM-5.3-Flash',
+        provider: 'nebius',
+        duration_s: 12.5,
+        metered: true,
+        cost_usd: 0.0008,
+      }),
+      pastRun({
+        id: 'run-1',
+        model: 'ollama:qwen3:8b',
+        provider: 'ollama',
+        duration_s: null,
+        metered: false,
+        cost_usd: 0.0,
+      }),
+    ]);
+    expect(html).toContain('nebius · zai-org/GLM-5.3-Flash');
+    expect(html).toContain('ollama · qwen3:8b');
   });
 });
 

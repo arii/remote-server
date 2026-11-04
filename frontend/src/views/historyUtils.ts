@@ -258,6 +258,12 @@ function ledgerToEntry(e: LedgerEntry): FlatEntry {
   if (typeof e.exit === 'number') lines.push(`exit: ${e.exit}`);
   const elapsed = e.elapsed ?? e.elapsed_s;
   if (typeof elapsed === 'number') lines.push(`elapsed: ${elapsed}s`);
+  // agent-turn rows record wall-clock latency in duration_s (the
+  // cli-turn builder above renders its own); cost rides along when
+  // present. Both drop out when absent — local turns show neither.
+  if (typeof e.duration_s === 'number') lines.push(`duration: ${e.duration_s}s`);
+  const cost = cliCost(e);
+  if (cost) lines.push(`cost: ${cost}`);
   return {
     kind: e.kind,
     summary,

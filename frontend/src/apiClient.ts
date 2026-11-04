@@ -1188,9 +1188,10 @@ export interface AgentRun {
   id: string;
   script: string;
   model: string;
+  provider: string | null;
   thread: string;
   started_ts: number;
-  duration_s: number;
+  duration_s: number | null;
   ok: boolean;
   tools: string[];
   tokens: number;
