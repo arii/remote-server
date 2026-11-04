@@ -1075,38 +1075,44 @@ export default function NowView({
       setDeployAt(lastDeployAt(loadJobs().jobs));
       return;
     }
+    // First fetch runs parallel (#897): inbox, deferred, PRs, and
+    // jobs are independent reads; per-fetch errors keep the exact
+    // semantics of the old sequential chain.
     (async () => {
-      try {
-        const live = await fetchInbox(repo);
-        if (!cancelled) setData(live);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      const [inboxResult, deferredResult, prsResult, jobsResult] =
+        await Promise.allSettled([
+          fetchInbox(repo),
+          rollup ? Promise.resolve(null) : fetchDeferred(repo),
+          rollup ? Promise.resolve(null) : fetchPrs(repo),
+          fetchJobs(),
+        ]);
+      if (cancelled) return;
+      if (inboxResult.status === 'fulfilled') {
+        setData(inboxResult.value);
+      } else {
+        const err = inboxResult.reason;
+        setError(err instanceof Error ? err.message : String(err));
       }
       if (!rollup) {
-        try {
-          const d = await fetchDeferred(repo);
-          if (!cancelled) setDeferred(d.deferred);
-        } catch {
+        if (deferredResult.status === 'fulfilled' && deferredResult.value) {
+          setDeferred(deferredResult.value.deferred);
+        } else {
           // Deferred flags load independently: strips stay empty.
-          if (!cancelled) setDeferred([]);
+          setDeferred([]);
         }
       }
       if (!rollup) {
-        try {
-          const prs = await fetchPrs(repo);
-          if (!cancelled) setPrCount(prs.prs.length);
-        } catch {
-          // Hero hides a never-loaded PR count; Review shows errors.
+        if (prsResult.status === 'fulfilled' && prsResult.value) {
+          setPrCount(prsResult.value.prs.length);
         }
-      } else if (!cancelled) {
+        // Hero hides a never-loaded PR count; Review shows errors.
+      } else {
         setPrCount(null);
       }
-      try {
-        const jobs = await fetchJobs();
-        if (!cancelled) setDeployAt(lastDeployAt(jobs.jobs));
-      } catch {
-        // Hero shows no deploy age until a poll lands one.
+      if (jobsResult.status === 'fulfilled') {
+        setDeployAt(lastDeployAt(jobsResult.value.jobs));
       }
+      // Hero shows no deploy age until a poll lands one.
     })();
     return () => {
       cancelled = true;
@@ -1114,17 +1120,13 @@ export default function NowView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
-  // Warm slow view reads on idle so first Briefing/Jobs visits land
-  // instantly instead of generating on click.
+  // Warm slow view reads on mount (#897, was idle): first
+  // Briefing/Jobs visits land instantly instead of generating on
+  // click. Fires alongside the mount fetch; cache dedup is shared,
+  // so the extra call costs nothing on revisit.
   useEffect(() => {
     if (useMock() || rollup) return;
-    const warm = () => void warmViewCaches(repo);
-    if (typeof window.requestIdleCallback === 'function') {
-      const id = window.requestIdleCallback(warm);
-      return () => window.cancelIdleCallback(id);
-    }
-    const t = window.setTimeout(warm, 0);
-    return () => window.clearTimeout(t);
+    void warmViewCaches(repo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
@@ -1165,7 +1167,16 @@ export default function NowView({
     }
   }
 
-  if (!data && !error) return <section data-testid="now-loading" role="status">Loading…</section>;
+  // Oriented loading skeleton (#897): same testid + role as the
+  // old bare loader, but the first paint already reads as Now
+  // (title + what is loading) instead of a naked ellipsis.
+  if (!data && !error)
+    return (
+      <section data-testid="now-loading" role="status">
+        <p className="row-title">Now</p>
+        <p className="row-meta">Loading attention, pull requests, and jobs…</p>
+      </section>
+    );
 
   async function onRetry() {
     setError(null);

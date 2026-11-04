@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
+import NowView, {
   ActionControl,
   askAgentSeed,
   AttentionBulkBar,
@@ -558,5 +558,24 @@ describe('attention grouping (issue #839)', () => {
     expect(html).toContain('data-testid="now-bulk-snooze-60"');
     expect(html).toContain('data-testid="now-bulk-snooze-480"');
     expect(html).toContain('data-testid="now-bulk-clear"');
+  });
+});
+
+describe('now loading skeleton (issue #897)', () => {
+  it('reads as Now while the first fetch lands', () => {
+    const html = renderToStaticMarkup(
+      <NowView
+        repo="r"
+        health={null}
+        reportContext="c"
+        onAskAgent={() => {}}
+        onOpenTab={() => {}}
+        onSectionChange={() => {}}
+        onOpenStats={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="now-loading"');
+    expect(html).toContain('>Now<');
+    expect(html).toContain('Loading attention, pull requests, and jobs…');
   });
 });

@@ -8,6 +8,7 @@ import {
   boardStatusForBranch,
   BriefingBody,
   briefingActions,
+  briefingFreshness,
   briefingAllClear,
   dayTrend,
   DigestControlsView,
@@ -781,5 +782,38 @@ describe('prChecksUrl (issue #902)', () => {
     );
     expect(prChecksUrl('')).toBe('');
     expect(prChecksUrl('   ')).toBe('');
+  });
+});
+
+describe('briefing freshness line (issue #897)', () => {
+  const base = {
+    repo: 'r',
+    attention: [],
+    prs: [],
+    prs_err: '',
+    reviews_lines: [],
+    reviews_err: {},
+    board: [],
+    board_lines: [],
+    board_err: '',
+    conflicts_lines: [],
+    conf_err: '',
+    overlaps_lines: [],
+    failing_runs: [],
+    workflow_lines: [],
+    runs_err: '',
+  };
+
+  it('stays silent on fresh payloads, shows age on cached ones', () => {
+    expect(briefingFreshness({ ...base, cached: false, stale: false })).toBeNull();
+    expect(
+      briefingFreshness({ ...base, cached: true, stale: false, generated_at: 1000 }, 1900000),
+    ).toBe('Updated 15m ago');
+  });
+
+  it('marks stale payloads as refreshing', () => {
+    expect(
+      briefingFreshness({ ...base, cached: true, stale: true, generated_at: 1000 }, 1030000),
+    ).toBe('Updated 30s ago · refreshing…');
   });
 });

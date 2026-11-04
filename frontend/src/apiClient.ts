@@ -582,6 +582,40 @@ export function fetchRepoDiff(repo: string): Promise<RepoDiffResponse> {
   return getJson<RepoDiffResponse>(`api/repo/diff?repo=${encodeURIComponent(repo)}`);
 }
 
+// Worklist metrics for the prefetch strip (issue #897): short TTL,
+// local reads, zero model turns. Warmed on repo select so the Chat
+// strip renders from cache.
+export interface RepoMetricsTodoHit {
+  file: string;
+  line: number;
+  text: string;
+}
+
+export interface RepoMetricsResponse {
+  repo: string;
+  branch: string;
+  clean: boolean;
+  status_count: number;
+  todo_count: number;
+  todo_hits: RepoMetricsTodoHit[];
+  diff_stat: string;
+  diff_files: number;
+}
+
+export function fetchRepoMetrics(repo: string): Promise<RepoMetricsResponse> {
+  const path = `api/repo/metrics?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<RepoMetricsResponse>(path, VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<RepoMetricsResponse>(path),
+  );
+}
+
+export function warmRepoMetrics(repo: string): Promise<void> {
+  return fetchRepoMetrics(repo).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 // Repo file paths for @-mention completion in the chat composer
 // (#653). Prefix-filtered server-side; truncated means "refine
 // the prefix". Paths only, never contents.

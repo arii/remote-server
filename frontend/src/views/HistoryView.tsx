@@ -237,10 +237,14 @@ export default function HistoryView({
   repo,
   health,
   onOpenStats,
+  active = true,
 }: {
   repo: string;
   health: import('../apiClient').SystemHealthResponse | null;
   onOpenStats?: () => void;
+  // Keep-alive visibility (issue #897): the timeline poll pauses
+  // while the tab is hidden.
+  active?: boolean;
 }) {
   const { data, error, loading, load } = useSnapshotData(loadHistorySnapshot, EMPTY_HISTORY);
   const { jobs, entries } = data;
@@ -284,7 +288,7 @@ export default function HistoryView({
     <div data-testid="history-view">
       <ObservabilitySection repo={repo} health={health} onOpenStats={onOpenStats} />
 
-      <ActivityTimeline />
+      <ActivityTimeline active={active} />
 
       <section aria-label="History">
         <div className="page-head">

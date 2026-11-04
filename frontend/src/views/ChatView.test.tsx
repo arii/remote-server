@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1574,5 +1574,80 @@ describe('split console layout (issue #839)', () => {
     const threaded = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
     expect(threaded).toContain('data-testid="chat-history"');
     expect(threaded).not.toContain('data-testid="chat-prompt-chips"');
+  });
+});
+
+describe('repo metrics strip (issue #897)', () => {
+  const metrics = {
+    repo: 'r',
+    branch: 'main',
+    clean: false,
+    status_count: 3,
+    todo_count: 12,
+    todo_hits: [],
+    diff_stat: ' a.py | 2 +-\n 1 file changed\n',
+    diff_files: 1,
+  };
+
+  it('formats the one-line strip', () => {
+    expect(repoMetricsLine(metrics)).toBe('3 uncommitted · 12 TODOs · 1 file changed');
+    expect(repoMetricsLine({ ...metrics, status_count: 0, todo_count: 0, diff_files: 0 })).toBe(
+      'Clean · 0 TODOs · no diff',
+    );
+    expect(repoMetricsLine({ ...metrics, todo_count: 1 })).toContain('1 TODO ·');
+  });
+
+  it('renders the strip with the diff stat as hover detail', () => {
+    const html = renderToStaticMarkup(<RepoMetricsStrip metrics={metrics} />);
+    expect(html).toContain('data-testid="chat-metrics-strip"');
+    expect(html).toContain('3 uncommitted · 12 TODOs · 1 file changed');
+    expect(html).toContain('title="');
+    expect(html).toContain('a.py');
+  });
+});
+
+describe('composer control grouping (issue #897)', () => {
+  it('groups session utilities behind Send with pills first', () => {
+    const noop = () => {};
+    // The dictate button only renders where the SpeechRecognition API
+    // exists; enable it so the full utility row is asserted.
+    setDictationWindow({
+      SpeechRecognition: fakeDictationCtor,
+      location: { search: '' },
+      localStorage: {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+      },
+    });
+    let html: string;
+    try {
+      html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    } finally {
+      dictationGlobals.window = dictationSavedWindow;
+    }
+    const utilsIdx = html.indexOf('data-testid="chat-utils"');
+    expect(utilsIdx).toBeGreaterThan(0);
+    const tail = html.slice(utilsIdx);
+    expect(tail).toContain('data-testid="chat-dictate"');
+    expect(tail).toContain('data-testid="chat-clear"');
+    expect(tail).toContain('data-testid="chat-export"');
+    expect(tail).toContain('data-testid="chat-templates"');
+    expect(html.indexOf('data-testid="chat-backend-picker"')).toBeLessThan(utilsIdx);
+    expect(html.indexOf('data-testid="chat-send"')).toBeLessThan(utilsIdx);
+  });
+});
+
+describe('rail modules (issue #897)', () => {
+  it('past runs renders as a distinct module', () => {
+    expect(paneHtml([pastRun()])).toContain('class="chat-module"');
+  });
+
+  it('single continue/delete control per run (no duplicates)', () => {
+    const html = paneHtml([pastRun(), pastRun({ id: 'run-1' })]);
+    for (const id of ['run-0', 'run-1']) {
+      expect(html.split(`data-testid="chat-run-delete-${id}"`).length - 1).toBe(1);
+      expect(html.split(`data-testid="chat-run-continue-${id}"`).length - 1).toBe(1);
+    }
   });
 });
