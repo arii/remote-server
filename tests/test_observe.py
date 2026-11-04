@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
@@ -68,6 +69,56 @@ class TestRecorder(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.dirname(path)))
         evil = observe.default_trace_path("s", "../../etc/x")
         self.assertNotIn("..", evil)
+
+
+class TestUniqueTracePath(unittest.TestCase):
+    def test_same_second_calls_produce_distinct_paths(self):
+        paths = {observe.default_trace_path("ask", "ask-repo")
+                 for _ in range(50)}
+        self.assertEqual(len(paths), 50)
+
+    def test_suffix_carries_pid_and_random(self):
+        path = observe.default_trace_path("ask", "ask-repo")
+        name = os.path.basename(path)
+        self.assertRegex(
+            name,
+            r"^ask_ask-repo_\d{8}T\d{6}_%d-[0-9a-f]{8}\.jsonl$"
+            % os.getpid())
+
+    def test_timestamp_keeps_position_for_sortability(self):
+        first = os.path.basename(
+            observe.default_trace_path("ask", "ask-repo"))
+        stamp = first.split("_")[2]
+        self.assertRegex(stamp, r"^\d{8}T\d{6}$")
+
+    def test_concurrent_same_thread_runs_do_not_interleave(self):
+        import ledger
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(ledger, "state_dir",
+                                   return_value=d):
+                p1 = observe.default_trace_path("ask", "ask-repo")
+                p2 = observe.default_trace_path("ask", "ask-repo")
+            self.assertNotEqual(p1, p2)
+            r1 = observe.TraceRecorder(p1)
+            r2 = observe.TraceRecorder(p2)
+            r1.run_start("ask", "ask-repo", "m")
+            r2.run_start("ask", "ask-repo", "m")
+            r1.tool_call("t", {"i": 1}, 0.1, True, result="one")
+            r2.tool_call("t", {"i": 2}, 0.1, True, result="two")
+            r1.run_end(True)
+            r2.run_end(True)
+            r1.close()
+            r2.close()
+            e1 = [json.loads(line) for line in open(p1)]
+            e2 = [json.loads(line) for line in open(p2)]
+            for events in (e1, e2):
+                self.assertEqual([e["type"] for e in events],
+                                 ["run_start", "tool_call", "run_end"])
+            self.assertIn("one", e1[1]["result_preview"])
+            self.assertIn("two", e2[1]["result_preview"])
+            self.assertNotIn("two", e1[1]["result_preview"])
+            self.assertNotIn("one", e2[1]["result_preview"])
 
 
 class TestTotals(unittest.TestCase):
