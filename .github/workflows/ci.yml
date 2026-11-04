@@ -144,6 +144,8 @@ jobs:
           python-version: '3.11'
       - name: install backend deps
         run: pip install -r backend/requirements.txt
+      - name: install root-suite deps
+        run: pip install "pytest==9.1.1"
       - name: type-check backend tree
         run: npm run type-check
       - name: backend unit tests
