@@ -266,6 +266,46 @@ class RunTurnTest(unittest.TestCase):
         self.assertEqual(result["exit"], 3)
         self.assertIn("oops", result["stderr"])
 
+    def test_verbose_stderr_does_not_stall_turn(self):
+        # Issue #439: stderr past the ~64KB pipe buffer used to
+        # deadlock the turn until TURN_TIMEOUT. Stderr now lands in
+        # a temp file, so the turn completes fast with stdout
+        # intact. TURN_TIMEOUT is patched down so a regression
+        # fails in seconds, not after the 600s production budget.
+        with mock.patch.object(agent_turn, "TURN_TIMEOUT", 10), \
+                mock.patch.object(agent_turn, "KILL_GRACE", 1):
+            started = time.time()
+            chunks = self._collect(
+                provider="muse", repo="r", cwd="/tmp",
+                session_id="s-stderr-flood", prompt="hi",
+                continued=False,
+                argv=["/bin/sh", "-c",
+                      "head -c 204800 /dev/zero | "
+                      "tr '\\0' 'e' >&2; echo hi"])
+            elapsed = time.time() - started
+        self.assertEqual("".join(chunks), "hi\n")
+        self.assertLess(elapsed, 5)
+        result = self.mgr.pop_result("s-stderr-flood")
+        self.assertEqual(result["exit"], 0)
+        self.assertFalse(result["timed_out"])
+
+    def test_failed_verbose_stderr_keeps_final_detail(self):
+        # A verbose failing CLI still shows its final error detail:
+        # the tail is read from the end of the capture.
+        chunks = self._collect(
+            provider="muse", repo="r", cwd="/tmp",
+            session_id="s-stderr-fail", prompt="hi",
+            continued=False,
+            argv=["/bin/sh", "-c",
+                  "head -c 204800 /dev/zero | "
+                  "tr '\\0' 'e' >&2; echo boom >&2; exit 3"])
+        self.assertEqual(chunks, [])
+        result = self.mgr.pop_result("s-stderr-fail")
+        self.assertEqual(result["exit"], 3)
+        self.assertIn("boom", result["stderr"])
+        self.assertLessEqual(len(result["stderr"]),
+                             agent_turn.STDERR_TAIL)
+
     def test_run_turn_marks_session_known(self):
         # Issue #442: only sessions the server ran a turn for may
         # skip the spawn gate. Popping the result must not un-know
