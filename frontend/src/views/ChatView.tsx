@@ -670,6 +670,27 @@ export function shouldShowChatRetry(
   );
 }
 
+// Retry reuses the pending exchange: drop the trailing failed pair
+// (the last user message equal to lastSent plus its assistant entry,
+// empty or partial) so the resend appends exactly one fresh pair.
+// Anything else returns untouched — retry then falls back to a
+// plain append rather than deleting the wrong messages.
+export function stripFailedRetryExchange(
+  messages: ChatMessage[],
+  lastSent: string,
+): ChatMessage[] {
+  const n = messages.length;
+  if (
+    n >= 2 &&
+    messages[n - 2].role === 'user' &&
+    messages[n - 2].text === lastSent &&
+    messages[n - 1].role === 'assistant'
+  ) {
+    return messages.slice(0, n - 2);
+  }
+  return messages;
+}
+
 // Edit recalls a sent prompt into the composer for fix-and-resend.
 // Available on every user bubble once the stream settles.
 export function shouldShowChatEdit(streaming: boolean): boolean {
@@ -1181,6 +1202,10 @@ export default function ChatView({
 
   function onRetry() {
     if (!lastSent.trim() || streaming) return;
+    // Reuse the pending exchange: strip the failed pair first so
+    // the resend below appends exactly one fresh pair. Functional
+    // updates queue in order, so the strip lands before the appends.
+    setMessages((m) => stripFailedRetryExchange(m, lastSent));
     void sendText(lastSent);
   }
 
