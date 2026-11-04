@@ -4,7 +4,6 @@ import App, { HEALTH_POLL_MS, RollupGate, singleFlight } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
-import HoldToConfirm from './components/HoldToConfirm';
 import TriageHint from './components/TriageHint';
 import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
 import BriefingView, {
@@ -1131,13 +1130,14 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('autofocus');
   });
 
-  it('hold-to-confirm renders a polite live region for arm state', () => {
+  it('approval Approve uses tap-to-fire with an inline confirm, not hold-to-arm (issue #508)', () => {
     const html = renderToStaticMarkup(
-      <HoldToConfirm label="Merge it" onFire={() => {}} />,
+      <ApprovalCard approval={{ session_id: 's' }} decided={null} onDecide={() => {}} />,
     );
-    expect(html).toContain('data-testid="hold-disarmed"');
-    expect(html).toContain('data-testid="hold-notice"');
-    expect(html).toContain('role="status"');
+    expect(html).toContain('data-testid="chat-approve"');
+    expect(html).toContain('asks for confirmation');
+    expect(html).not.toContain('hold-disarmed');
+    expect(html).not.toContain('Hold to arm');
   });
 
   it('PR details keep heading order (h3 title, h4 prompts, no h2)', () => {

@@ -44,7 +44,7 @@ Machine work (zero UI, scheduled/evented, visible in History): briefing refresh,
 ## 5. Functional requirements
 
 - F1. Repo picker lists all discovered checkouts (`GET /api/repos`, **to land**); selection drives every view and survives tab switches; each action group restates its repo.
-- F2. Now queue items carry exactly one primary action; destructive actions render `HoldToConfirm` (press-hold to arm, tap to fire; instant-arm under `prefers-reduced-motion`) and POST `{intent, confirmed: true}`; server rejects anything else with 400 (shipped #226).
+- F2. Now queue items carry exactly one primary action; destructive actions render `TapToFire` (tap, then inline confirm with consequence text) and POST `{intent, confirmed: true}`; server rejects anything else with 400 (shipped #226, migrated #508).
 - F3. Identical failing runs collapse to one `×N` row (shipped #233); repeat ledger failures collapse to incident rows; chat lifecycle chatter collapses to activity rows; recovery text appears only on failures.
 - F4. History rows show real timestamps (ledger `ts`), newest first; raw stderr is never rendered.
 - F5. Report-bug exists exactly once (Now header), files a GitHub issue via `POST /api/create-issue` with context auto-attached (repo, view, recent errors).

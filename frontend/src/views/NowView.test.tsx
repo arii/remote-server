@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  ActionControl,
   askAgentSeed,
   reconcileSnoozed,
   RepoTag,
@@ -130,6 +131,47 @@ describe('single-repo scoping (issue #723)', () => {
     expect(askAgentSeed(item)).toBe(
       'Webhook pull skipped — checkout lagging (remote-server): skipped: tree not ff-able',
     );
+  });
+});
+
+describe('destructive POST actions (issue #508)', () => {
+  const noop = () => {};
+  function item(overrides: Partial<AttentionItem['action']>): AttentionItem {
+    return {
+      id: 'job-j1',
+      kind: 'failed-job',
+      title: 'Failed job',
+      detail: 'd',
+      repo: 'remote-server',
+      severity: 'crit',
+      action: { label: 'Cancel run', method: 'POST', href: 'api/jobs/j1/cancel', destructive: true, intent: 'cancel', ...overrides },
+      created_at: 1,
+    };
+  }
+  const handlers = { onDone: noop, onError: noop, onSection: noop, onTab: noop };
+
+  it('uses tap-to-fire with an inline confirm, not hold-to-arm', () => {
+    const html = renderToStaticMarkup(<ActionControl item={item({})} {...handlers} />);
+    expect(html).toContain('data-testid="now-action-job-j1"');
+    expect(html).toContain('asks for confirmation');
+    expect(html).not.toContain('hold-disarmed');
+    expect(html).not.toContain('Hold to arm');
+  });
+
+  it('keeps non-destructive POST actions as plain buttons', () => {
+    const html = renderToStaticMarkup(
+      <ActionControl item={item({ destructive: false })} {...handlers} />,
+    );
+    expect(html).not.toContain('tap-fire');
+    expect(html).not.toContain('hold-disarmed');
+  });
+
+  it('keeps GET actions as plain buttons', () => {
+    const html = renderToStaticMarkup(
+      <ActionControl item={item({ method: 'GET', destructive: true })} {...handlers} />,
+    );
+    expect(html).not.toContain('tap-fire');
+    expect(html).not.toContain('hold-disarmed');
   });
 });
 

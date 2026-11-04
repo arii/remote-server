@@ -1,5 +1,4 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import HoldToConfirm from '../components/HoldToConfirm';
 import TapToFire from '../components/TapToFire';
 import {
   abortChat,
@@ -884,7 +883,12 @@ export function ApprovalCard({
         </p>
       ) : (
         <div className="actions">
-          <HoldToConfirm label="Approve" onFire={() => onDecide('approve')} />
+          <TapToFire
+            label="Approve"
+            confirm="The proposed actions will run."
+            testid="chat-approve"
+            onFire={() => onDecide('approve')}
+          />
           <button type="button" data-testid="chat-reject" onClick={() => onDecide('reject')}>
             Reject
           </button>
