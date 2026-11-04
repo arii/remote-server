@@ -233,19 +233,27 @@ def build_check_tool(worktree):
 
 def build_agent(worktree, system, model=None, recorder=None,
                 checkpointer=None, tools=None, interrupt_on=None,
-                permissions=None):
+                permissions=None, spec=None):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
     tools defaults to [run_check]; interrupt_on/permissions pass
     through to create_deep_agent (the plan agent denies writes and
     pauses on propose_plan; the implement agent leaves all three
-    defaulted, exactly as before).
+    defaulted, exactly as before). spec is the model_router spec the
+    model was built from: when given, the default general-purpose
+    subagent is disabled for it, so the read-only-until-submit
+    contract holds for the whole harness (no task hop with ungated
+    file tools around the submit scope gate). (#539)
     """
     from deepagents import create_deep_agent  # noqa: E402
     from deepagents.backends import FilesystemBackend  # noqa: E402
 
+    import model_router  # noqa: E402
+
     if model is None:
         model, _ = build_model()
+    if spec is not None:
+        model_router.disable_general_purpose(spec)
     kwargs = {}
     if recorder is not None:
         import observe  # noqa: E402
@@ -298,12 +306,13 @@ def build_plan_tool():
 
 
 def build_plan_agent(worktree, system, model=None, recorder=None,
-                     checkpointer=None):
+                     checkpointer=None, spec=None):
     """Planning agent: propose_plan only, writes denied, pauses on it.
 
     Same model/backend/threading as the implement agent; the write
     deny (FilesystemPermission, like deep_chat's harness gate) is
-    what guarantees zero file writes before approval. Venv-only.
+    what guarantees zero file writes before approval. spec passes
+    through to build_agent for the general-purpose disable. Venv-only.
     """
     from deepagents.middleware.filesystem import (  # noqa: E402
         FilesystemPermission)
@@ -313,7 +322,8 @@ def build_plan_agent(worktree, system, model=None, recorder=None,
         checkpointer=checkpointer, tools=[build_plan_tool()],
         interrupt_on=dict(CODER_INTERRUPT_ON),
         permissions=[FilesystemPermission(operations=["write"],
-                                          paths=["/**"], mode="deny")])
+                                          paths=["/**"], mode="deny")],
+        spec=spec)
 
 
 def _timeout():
@@ -428,7 +438,7 @@ def run_coder(worktree, brief, system, thread, timeout):
     recorder.run_start("coder.py", thread, label)
     saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
     agent = build_agent(worktree, system, model=model, recorder=recorder,
-                        checkpointer=saver)
+                        checkpointer=saver, spec=spec)
     config = {"configurable": {"thread_id": thread}}
 
     def _invoke(msgs):
@@ -554,7 +564,8 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
     recorder.run_start("coder.py", thread, label)
     saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
     agent = build_plan_agent(worktree, system, model=model,
-                             recorder=recorder, checkpointer=saver)
+                             recorder=recorder, checkpointer=saver,
+                             spec=spec)
     config = {"configurable": {"thread_id": thread}}
 
     def _invoke(msgs):
@@ -746,7 +757,8 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
     recorder.run_start("coder.py", thread, label)
     saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
     agent = build_plan_agent(worktree, system, model=model,
-                             recorder=recorder, checkpointer=saver)
+                             recorder=recorder, checkpointer=saver,
+                             spec=spec)
     config = {"configurable": {"thread_id": thread}}
     pending = deep_chat._pending_interrupts(agent, config)
     if not pending:

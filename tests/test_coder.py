@@ -351,7 +351,7 @@ class TestRunCoderVerifyGate(unittest.TestCase):
                     FakeMsg("summary after invoke %d" % (n + 1))]}
 
         def fake_build_agent(worktree, system, model=None, recorder=None,
-                             checkpointer=None):
+                             checkpointer=None, spec=None):
             agent = FakeAgent(recorder)
             box.append(agent)
             return agent

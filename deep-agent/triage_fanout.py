@@ -191,6 +191,44 @@ def extract_prefer(argv):
     return "auto"
 
 
+def build_agent(model, repos, spec, recorder=None):
+    """create_deep_agent fanout: orchestrator + one scout per repo.
+
+    Delegation stays exactly the deliberate repo_scout pattern: the
+    default general-purpose subagent is disabled for spec, so task
+    lists only repo_scout (no unconstrained second agent on the
+    metered model). (#539)
+    """
+    model_router.disable_general_purpose(spec)
+    repo_list = ", ".join(repos)
+    middleware = list(scout_progress_middleware(repos))
+    if recorder is not None:
+        middleware = [*observe.trace_middleware(recorder), *middleware]
+    return create_deep_agent(
+        model=model,
+        middleware=middleware,
+        system_prompt=(
+            "You coordinate per-repo triage scouts. Delegate with the "
+            f"task tool: one call each for {repo_list}, each "
+            "instructing the scout to return the raw triage_counts "
+            "output plus one line naming the top action. Subagents are "
+            "stateless: put complete instructions in each call. Then "
+            "merge the reports into at most 2 lines per repo."
+        ),
+        subagents=[
+            {
+                "name": "repo_scout",
+                "description": "Gather triage counts for exactly one repo",
+                "system_prompt": "Call triage_counts once for the repo "
+                "named in your instructions. Return its raw output, then "
+                "one line TOP ACTION: <the single next action>.",
+                "tools": [triage_counts],
+            }
+        ],
+        checkpointer=MemorySaver(),
+    )
+
+
 def main() -> int:
     started = time.time()
     load_dotenv(os.path.join(cli.repo_root(), ".env"))
@@ -258,30 +296,7 @@ def main() -> int:
         observe.default_trace_path("triage_fanout", thread))
     recorder.run_start("triage_fanout.py", thread,
                        f"{provider}:{model_id}")
-    agent = create_deep_agent(
-        model=model,
-        middleware=[*observe.trace_middleware(recorder),
-                    *scout_progress_middleware(repos)],
-        system_prompt=(
-            "You coordinate per-repo triage scouts. Delegate with the "
-            f"task tool: one call each for {repo_list}, each "
-            "instructing the scout to return the raw triage_counts "
-            "output plus one line naming the top action. Subagents are "
-            "stateless: put complete instructions in each call. Then "
-            "merge the reports into at most 2 lines per repo."
-        ),
-        subagents=[
-            {
-                "name": "repo_scout",
-                "description": "Gather triage counts for exactly one repo",
-                "system_prompt": "Call triage_counts once for the repo "
-                "named in your instructions. Return its raw output, then "
-                "one line TOP ACTION: <the single next action>.",
-                "tools": [triage_counts],
-            }
-        ],
-        checkpointer=MemorySaver(),
-    )
+    agent = build_agent(model, repos, spec, recorder=recorder)
     try:
         result = agent.invoke(
             {

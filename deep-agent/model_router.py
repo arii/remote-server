@@ -281,3 +281,36 @@ def chat_kwargs(spec):
             "stream_usage": True,
         }
     raise ValueError(f"bad spec provider: {spec.get('provider')!r}")
+
+
+# deepagents resolves harness profiles by the BUILT instance's
+# (provider, identifier): ChatOllama -> ollama:<model>, ChatOpenAI
+# (our Nebius path) -> openai:<model>. Translate our spec provider
+# names; anything else passes through for custom model classes.
+# (Mirrors deep_chat.PROFILE_PROVIDERS for the chat gate.)
+PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
+
+
+def disable_general_purpose(spec):
+    """Disable the auto-added general-purpose subagent for one model.
+
+    Venv-only (imports deepagents). Registers an exact
+    provider:model harness profile with the default general-purpose
+    subagent disabled, so create_deep_agent skips the auto-add: with
+    no other sync subagents the task tool is not exposed at all;
+    callers passing subagents= (triage scouts) keep task with only
+    their own types. No delegation hop, no second model spend, no
+    ungated file tools outside the builder's own contract. (#539)
+    """
+    from deepagents import (  # noqa: E402
+        GeneralPurposeSubagentProfile,
+        HarnessProfileConfig,
+        register_harness_profile,
+    )
+
+    provider = PROFILE_PROVIDERS.get(spec["provider"], spec["provider"])
+    register_harness_profile(
+        f"{provider}:{spec['model']}",
+        HarnessProfileConfig(
+            general_purpose_subagent=GeneralPurposeSubagentProfile(
+                enabled=False)))

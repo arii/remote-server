@@ -48,6 +48,11 @@ def _install_stubs():
         after_model=lambda f: f,
         wrap_tool_call=lambda f: f,
     )
+
+    class _Profile:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
     return {
         "dotenv": _stub_module(
             "dotenv", load_dotenv=lambda *a, **k: None),
@@ -62,7 +67,10 @@ def _install_stubs():
             "langgraph.checkpoint.memory", MemorySaver=_Dummy),
         "deepagents": _stub_module(
             "deepagents",
-            create_deep_agent=lambda *a, **k: None),
+            create_deep_agent=lambda *a, **k: None,
+            HarnessProfileConfig=_Profile,
+            GeneralPurposeSubagentProfile=_Profile,
+            register_harness_profile=lambda *a, **k: None),
         "deepagents.backends": _stub_module(
             "deepagents.backends", FilesystemBackend=_Dummy),
         "langchain": langchain,
@@ -87,11 +95,15 @@ import observe
 
 
 def _runtime_stubs():
-    """langchain middleware stubs, needed when main() runs."""
+    """langchain middleware + deepagents stubs, needed when main() runs.
+
+    deepagents covers build_agent's general-purpose disable (#539);
+    create_deep_agent itself stays patched on the module.
+    """
     full = _install_stubs()
     return {k: full[k] for k in (
         "langchain", "langchain.agents",
-        "langchain.agents.middleware")}
+        "langchain.agents.middleware", "deepagents")}
 
 
 class _FakeMsg:
