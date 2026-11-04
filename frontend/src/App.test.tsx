@@ -17,6 +17,8 @@ import BriefingView, {
   truncateChip,
 } from './views/BriefingView';
 import RepoLabel, { repoLabelText } from './components/RepoLabel';
+import { ShortcutCheatsheet, ShortcutHint } from './components/ShortcutCheatsheet';
+import { APP_SHORTCUTS } from './shortcuts';
 import ChatView, {
   ApprovalCard,
   CHAT_BACKEND_OPTIONS,
@@ -971,6 +973,44 @@ describe('app', () => {
     expect(html).toContain('aria-label="Secondary views"');
     expect(html).not.toContain('>Review</button>');
     expect(html).not.toContain('>Jobs</button>');
+  });
+});
+
+describe('keyboard shortcuts (issue #808)', () => {
+  it('App shows the hint bar and keeps the cheatsheet closed', () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('data-testid="shortcut-hint"');
+    expect(html).toContain('for keyboard shortcuts');
+    expect(html).not.toContain('data-testid="shortcut-cheatsheet"');
+  });
+
+  it('App advertises digit shortcuts on the tab buttons', () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('aria-keyshortcuts="1"');
+    expect(html).toContain('aria-keyshortcuts="2"');
+    expect(html).toContain('aria-keyshortcuts="3"');
+    expect(html).toContain('aria-keyshortcuts="4"');
+  });
+
+  it('hint names the ? entry', () => {
+    const html = renderToStaticMarkup(<ShortcutHint />);
+    expect(html).toContain('<kbd>?</kbd>');
+  });
+
+  it('open cheatsheet lists every table row with dialog semantics', () => {
+    const html = renderToStaticMarkup(<ShortcutCheatsheet open={true} onClose={() => {}} />);
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-label="Keyboard shortcuts"');
+    expect(html).toContain('data-testid="shortcut-cheatsheet-close"');
+    for (const s of APP_SHORTCUTS) {
+      expect(html).toContain(`<kbd>${s.key}</kbd>`);
+      expect(html).toContain(s.label);
+    }
+    expect(html.match(/data-testid="shortcut-row"/g)).toHaveLength(APP_SHORTCUTS.length);
+  });
+
+  it('closed cheatsheet renders nothing', () => {
+    expect(renderToStaticMarkup(<ShortcutCheatsheet open={false} onClose={() => {}} />)).toBe('');
   });
 });
 

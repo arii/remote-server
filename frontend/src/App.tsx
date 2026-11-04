@@ -21,6 +21,8 @@ import { loadContainerStats, loadRepoDiff, loadRepos, loadSystemHealth, useMock 
 import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer from './views/ContainerDrawer';
+import { clickChatSend, useAppShortcuts } from './shortcuts';
+import { ShortcutCheatsheet, ShortcutHint } from './components/ShortcutCheatsheet';
 
 // Stack root for Terminal/Code links: relative in production (same host),
 // VITE_STACK_URL override for `vite dev` on a port without those routes.
@@ -58,14 +60,14 @@ type Tab = 'now' | 'chat' | 'briefing' | 'history';
 
 // Now is the triage inbox (attention + Review/Jobs sections); History
 // is the secondary trail. Review/Jobs live inside Now, not as routes.
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'now', label: 'Now' },
-  { id: 'chat', label: 'Chat' },
-  { id: 'briefing', label: 'Briefing' },
+const TABS: Array<{ id: Tab; label: string; key: string }> = [
+  { id: 'now', label: 'Now', key: '1' },
+  { id: 'chat', label: 'Chat', key: '2' },
+  { id: 'briefing', label: 'Briefing', key: '3' },
 ];
 
-const SECONDARY_TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'history', label: 'History' },
+const SECONDARY_TABS: Array<{ id: Tab; label: string; key: string }> = [
+  { id: 'history', label: 'History', key: '4' },
 ];
 
 const FALLBACK_REPOS: RepoInfo[] = [
@@ -114,6 +116,19 @@ export default function App() {
   const [reportRequest, setReportRequest] = useState(0);
   const [chatFocusRequest, setChatFocusRequest] = useState(0);
   const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
+
+  // Cheatsheet visibility for the app-level shortcuts (#808). Tab/send
+  // shortcuts suspend while a modal/drawer owns the screen; the
+  // cheatsheet itself stays reachable.
+  const [helpOpen, setHelpOpen] = useState(false);
+  useAppShortcuts({
+    suspended: diffRepo !== null || statsOpen,
+    helpOpen,
+    onTab: setTab,
+    onSend: () => clickChatSend(),
+    onToggleHelp: () => setHelpOpen((v) => !v),
+    onCloseHelp: () => setHelpOpen(false),
+  });
 
   function askAgent(seed: string) {
     setChatSeed(seed);
@@ -369,6 +384,8 @@ export default function App() {
             key={t.id}
             type="button"
             aria-pressed={tab === t.id}
+            aria-keyshortcuts={t.key}
+            title={`${t.label} (${t.key})`}
             onClick={() => setTab(t.id)}
           >
             {t.label}
@@ -381,12 +398,15 @@ export default function App() {
             key={t.id}
             type="button"
             aria-pressed={tab === t.id}
+            aria-keyshortcuts={t.key}
+            title={`${t.label} (${t.key})`}
             onClick={() => setTab(t.id)}
           >
             {t.label}
           </button>
         ))}
       </nav>
+      <ShortcutHint />
       {tab === 'now' && (
         <NowView
           repo={repo}
@@ -427,6 +447,7 @@ export default function App() {
         ) : (
           <HistoryView repo={repo} health={health} />
         ))}
+      <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
     </main>
   );
 }
