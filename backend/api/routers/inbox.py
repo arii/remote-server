@@ -25,12 +25,23 @@ from pydantic import BaseModel, Field
 from backend.api.routers import attention, pulls
 from backend.api.routers.attention import AttentionItem
 from backend.api.routers.jobs import registry
-from backend.core import validate_repo_name
+from backend.core import list_repos, validate_repo_name
 
 router = APIRouter(prefix="/api", tags=["inbox"])
 
 RECENT_RUNS_LIMIT = 5
 MERGE_READY_TOP = 3
+
+# Rollup pseudo-repo: GET /api/inbox?repo=all aggregates the
+# attention queue across every known checkout (issue #610).
+# Every other endpoint still treats its repo param as one checkout.
+ALL_REPOS = "all"
+
+
+def list_repo_names() -> list:
+    """Injectable seam: known checkout names in picker order."""
+    return [r.get("name", "") for r in list_repos()
+            if isinstance(r, dict) and r.get("name")]
 
 
 def list_attention_items(repo: str) -> list:
@@ -98,8 +109,47 @@ class InboxFeed(BaseModel):
     runs: RunsSummary = Field(default_factory=RunsSummary)
 
 
+def rollup_inbox() -> dict:
+    """All-repos attention rollup (issue #610): fan out per repo,
+    dedup by item id (failed jobs/webhooks/approvals are global
+    sources, identical in every repo's list), keep repo order.
+    Merge-ready stays a per-repo concept: empty here by design
+    (rollup is Now attention only)."""
+    seen: set = set()
+    items = []
+    for name in list_repo_names():
+        for item in list_attention_items(name):
+            if not isinstance(item, dict):
+                continue
+            iid = item.get("id", "")
+            if iid in seen:
+                continue
+            seen.add(iid)
+            items.append(item)
+    runs = [r for r in list_runs() if isinstance(r, dict)]
+    active = None
+    for r in runs:
+        if not r.get("done"):
+            active = {"id": r.get("id", ""),
+                      "action": r.get("action", ""),
+                      "started": r.get("started_at")}
+            break
+    recent = [{"id": r.get("id", ""), "action": r.get("action", ""),
+               "exit": r.get("exit_code")}
+              for r in runs if r.get("done")][:RECENT_RUNS_LIMIT]
+    return {
+        "repo": ALL_REPOS,
+        "updated_at": time.time(),
+        "attention": items,
+        "merge_ready": {"count": 0, "top": []},
+        "runs": {"active": active, "recent": recent},
+    }
+
+
 @router.get("/inbox", response_model=InboxFeed)
 def inbox(repo: str = "remote-server") -> dict:
+    if repo == ALL_REPOS:
+        return rollup_inbox()
     try:
         name = validate_repo_name(repo)
     except ValueError as exc:

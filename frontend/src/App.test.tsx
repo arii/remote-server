@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import App from './App';
+import App, { RollupGate } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
@@ -1153,6 +1153,25 @@ describe('repo picker labels', () => {
       <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
     );
     expect(html).toContain('title="arii/remote-server');
+  });
+  it('offers All repos first (issue #610)', () => {
+    const html = renderToStaticMarkup(
+      <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
+    );
+    expect(html).toContain('value="all"');
+    expect(html).toContain('All repos');
+    expect(html.indexOf('value="all"')).toBeLessThan(html.indexOf('value="remote-server"'));
+  });
+  it('selects All repos when it is the value', () => {
+    const html = renderToStaticMarkup(
+      <RepoPicker repos={[dirty]} value="all" onChange={() => {}} />,
+    );
+    expect(html).toContain('selected="">All repos');
+  });
+  it('RollupGate names the gated view (issue #610)', () => {
+    const html = renderToStaticMarkup(<RollupGate view="Chat" />);
+    expect(html).toContain('data-testid="rollup-gate"');
+    expect(html).toContain('Chat needs one repo');
   });
 });
 

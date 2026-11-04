@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
+import { isRollupRepo } from '../components/RepoPicker';
 import {
   apiUrl,
   createIssue,
@@ -188,6 +189,16 @@ export function StackSection({ health }: { health: SystemHealthResponse | null }
   );
 }
 
+// Rollup-only repo tag (issue #610): single-repo rows render no
+// tag, so single-repo mode stays pixel-identical.
+export function RepoTag({ repo }: { repo: string }) {
+  return (
+    <span className="repo-chip" data-testid={`now-repo-${repo}`}>
+      {repo}
+    </span>
+  );
+}
+
 function sevClass(severity: string): string {
   const s = severity.toLowerCase();
   if (s === 'crit' || s === 'critical') return 'sev sev-crit';
@@ -324,9 +335,13 @@ export default function NowView({
   // instantly; refresh() reconciles against the server list.
   const [snoozed, setSnoozed] = useState<Record<string, SnoozedEntry>>({});
   const [snoozeBusy, setSnoozeBusy] = useState<string | null>(null);
+  const rollup = isRollupRepo(repo);
 
   useEffect(() => {
     setLastPr(null);
+    // Review/Jobs are per-repo sections; a repo switch (in or out
+    // of the rollup) closes whichever is open.
+    setSection(null);
   }, [repo]);
 
   async function refresh() {
@@ -361,7 +376,10 @@ export default function NowView({
     setSnoozed((prev) => ({ ...prev, [item.id]: { until: optimisticUntil, title: item.title } }));
     setSnoozeBusy(item.id);
     try {
-      const res = await snoozeAttention(item.id, minutes, repo);
+      // Snooze against the row's own repo: the view repo is the
+      // rollup pseudo-repo in All repos mode, and cross-repo rows
+      // (failed jobs, webhooks) already carry a foreign repo.
+      const res = await snoozeAttention(item.id, minutes, item.repo);
       // Re-assert with the server timestamp: a poll refresh may have
       // dropped the optimistic stub mid-flight.
       setSnoozed((prev) => ({ ...prev, [item.id]: { until: res.snoozed_until, title: item.title } }));
@@ -414,7 +432,7 @@ export default function NowView({
   // Warm slow view reads on idle so first Briefing/Jobs visits land
   // instantly instead of generating on click.
   useEffect(() => {
-    if (useMock()) return;
+    if (useMock() || rollup) return;
     const warm = () => void warmViewCaches(repo);
     if (typeof window.requestIdleCallback === 'function') {
       const id = window.requestIdleCallback(warm);
@@ -442,7 +460,9 @@ export default function NowView({
   async function onSubmitReport(title: string, body: string) {
     setError(null);
     try {
-      const result = await createIssue(repo, title, body);
+      // Console bugs file against the console's own repo; the
+      // rollup pseudo-repo is not a real checkout.
+      const result = await createIssue(rollup ? 'remote-server' : repo, title, body);
       setReported(result.url || 'created');
       setDialogOpen(false);
     } catch (err) {
@@ -504,11 +524,13 @@ export default function NowView({
       <StackSection health={health} />
       {data && (
         <>
-          <InboxStrips
-            feed={data}
-            onOpenReview={() => setSection('review')}
-            onOpenJobs={() => setSection('jobs')}
-          />
+          {!rollup && (
+            <InboxStrips
+              feed={data}
+              onOpenReview={() => setSection('review')}
+              onOpenJobs={() => setSection('jobs')}
+            />
+          )}
           {stubRows.length > 0 && (
             <ul className="session-list" data-testid="now-snoozed">
               {stubRows.map(([id, entry]) => (
@@ -542,7 +564,13 @@ export default function NowView({
               />
             ) : (
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
-              <span className="row-title">{item.title}</span>
+              {rollup ? (
+                <span className="row-title">
+                  <RepoTag repo={item.repo} /> {item.title}
+                </span>
+              ) : (
+                <span className="row-title">{item.title}</span>
+              )}
               <p className="row-meta">
                 {item.kind} · <span className={sevClass(item.severity)}>{item.severity}</span>
                 {' · '}
@@ -580,24 +608,26 @@ export default function NowView({
           )}
         </ul>
       )}
-      <div className="actions" data-testid="inbox-sections">
-        <button
-          type="button"
-          data-testid="inbox-open-review"
-          aria-pressed={section === 'review'}
-          onClick={() => setSection((s) => (s === 'review' ? null : 'review'))}
-        >
-          Review
-        </button>
-        <button
-          type="button"
-          data-testid="inbox-open-jobs"
-          aria-pressed={section === 'jobs'}
-          onClick={() => setSection((s) => (s === 'jobs' ? null : 'jobs'))}
-        >
-          Jobs{data.runs.active ? ' •' : ''}
-        </button>
-      </div>
+      {!rollup && (
+        <div className="actions" data-testid="inbox-sections">
+          <button
+            type="button"
+            data-testid="inbox-open-review"
+            aria-pressed={section === 'review'}
+            onClick={() => setSection((s) => (s === 'review' ? null : 'review'))}
+          >
+            Review
+          </button>
+          <button
+            type="button"
+            data-testid="inbox-open-jobs"
+            aria-pressed={section === 'jobs'}
+            onClick={() => setSection((s) => (s === 'jobs' ? null : 'jobs'))}
+          >
+            Jobs{data.runs.active ? ' •' : ''}
+          </button>
+        </div>
+      )}
           {section === 'review' && <ReviewView repo={repo} onAskAgent={onAskAgent} onSelectPr={setLastPr} />}
           {section === 'jobs' && <JobsView repo={repo} onAskAgent={onAskAgent} initialPr={lastPr} />}
         </>

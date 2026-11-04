@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   reconcileSnoozed,
+  RepoTag,
   SnoozedStub,
   SNOOZE_PRESETS,
   SnoozeButtons,
   snoozedRows,
   snoozePresetLabel,
 } from './NowView';
+import { ALL_REPOS, isRollupRepo } from '../components/RepoPicker';
 
 describe('snooze presets (issue #614)', () => {
   it('offers 1h and 8h', () => {
@@ -83,5 +85,21 @@ describe('SnoozedStub (issue #614)', () => {
     );
     expect(html).toContain('disabled');
     expect(html).toContain('Unsnoozing…');
+  });
+});
+
+describe('rollup repo (issue #610)', () => {
+  it('recognizes only the All repos pseudo-repo', () => {
+    expect(ALL_REPOS).toBe('all');
+    expect(isRollupRepo('all')).toBe(true);
+    expect(isRollupRepo('remote-server')).toBe(false);
+    expect(isRollupRepo('')).toBe(false);
+  });
+
+  it('RepoTag renders a stable per-repo chip', () => {
+    const html = renderToStaticMarkup(<RepoTag repo="boomtick" />);
+    expect(html).toContain('data-testid="now-repo-boomtick"');
+    expect(html).toContain('repo-chip');
+    expect(html).toContain('boomtick');
   });
 });
