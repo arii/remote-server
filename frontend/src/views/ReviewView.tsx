@@ -69,6 +69,14 @@ export function IssueRowTitle({ issue }: { issue: IssueRow }) {
   );
 }
 
+// Post-merge list refresh (#472): the merged PR is closed, so it
+// leaves the open-PR list instead of lingering with a stuck
+// "Merging…" flag. Null-safe: a list that never loaded stays null.
+export function dropMergedPr(prs: readonly PrRow[] | null, n: number): PrRow[] | null {
+  if (!prs) return prs;
+  return prs.filter((r) => r.number !== n);
+}
+
 // Next PR row to auto-advance to after a successful merge, in current
 // list order. Skips the merged row; wraps to the first row when the
 // merged one was last. Returns null when there is no other PR (single
@@ -1025,8 +1033,31 @@ export default function ReviewView({
       setNotice(`Merged PR #${n}.`);
       const numbers = visiblePrs.map((p) => p.number);
       const next = nextPrAfterMerge(numbers, n);
+      // The merge landed: clear the optimistic flag and drop the row
+      // from the list as part of the same transaction (#472), so the
+      // merged PR never lingers with "Merging…" and disabled controls.
+      setMerging((prev) => revertOptimisticMerge(prev, n));
+      setPrs((prev) => dropMergedPr(prev, n));
+      // A merged row leaves the visible list: clear selection like
+      // deferSelected does so the details pane never shows a closed
+      // PR with a re-enabled Merge button. The advance below
+      // re-selects when another PR remains.
+      if (selected === n) {
+        setSelected(null);
+        onSelectPr(null);
+        setDetails(null);
+      }
+      // A merged row leaves the visible list; drop its checkbox so
+      // the bulk count never names an already-merged row.
+      setBulkSelected((prev) => {
+        const key = bulkRowKey('pr', n);
+        if (!prev.has(key)) return prev;
+        const nextKeys = new Set(prev);
+        nextKeys.delete(key);
+        return nextKeys;
+      });
       if (next !== null) {
-        const at = numbers.indexOf(next);
+        const at = numbers.filter((x) => x !== n).indexOf(next);
         if (at !== -1) setCursor(at);
         void selectPr(next);
       }
