@@ -1005,6 +1005,41 @@ export function saveChatMessages(messages: ChatMessage[]): void {
   }
 }
 
+// Conversation thread id (issue #467): the deep_chat thread behind
+// the visible log. Persisted beside the #573 message snapshot so a
+// tab-switch remount restores the same thread instead of silently
+// opening a cold one under the old log. Mock mode neither reads nor
+// writes, matching the message snapshot.
+export const CHAT_SESSION_KEY = 'buttons.chat.session.v1';
+
+export function loadChatSessionId(): string | null {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    const raw = sessionStorage.getItem(CHAT_SESSION_KEY);
+    return raw && raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveChatSessionId(sessionId: string): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(CHAT_SESSION_KEY, sessionId);
+  } catch {
+    // Persistence is best-effort; the live conversation still works.
+  }
+}
+
+export function clearChatSessionId(): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.removeItem(CHAT_SESSION_KEY);
+  } catch {
+    // Persistence is best-effort; the live conversation still works.
+  }
+}
+
 // Persisted snapshots hold the settled conversation only: a trailing
 // empty assistant entry is the live typing placeholder (meaningless
 // once streaming stops), so it never reaches sessionStorage. The live
@@ -1134,6 +1169,21 @@ function newSessionId(): string {
     return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
   }
   return Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+}
+
+// One thread per conversation (issue #467): every send used to mint
+// a fresh session id, so each message opened a cold deep_chat thread
+// while the log implied one conversation. Sends now reuse the live
+// id (restored from the session snapshot across remounts); only New
+// chat resets it. Mirrors the AgentDrawer sidRef reuse pattern.
+export function resolveChatSessionId(
+  current: string | null,
+  stored: string | null,
+  mint: () => string,
+): string {
+  if (current) return current;
+  if (stored) return stored;
+  return mint();
 }
 
 interface SseEvent {
@@ -1298,6 +1348,9 @@ export default function ChatView({
   // shows under a new selection. Mock mode uses a canned local
   // hint (no network, deterministic ?mock=1).
   const [hint, setHint] = useState<RouteHintResponse | null>(null);
+  // Conversation thread id (#467): one id spans the whole visible
+  // conversation; aborts reuse it because only one turn streams at a
+  // time. New chat resets it (see onClearChat).
   const sessionRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1552,8 +1605,15 @@ export default function ChatView({
     setApproval(null);
     setDecided(null);
     setLastSent(text);
-    const sessionId = newSessionId();
+    // Reuse the conversation thread (#467): the stored snapshot
+    // covers tab-switch remounts; mock mode skips storage (pure mint).
+    const sessionId = resolveChatSessionId(
+      sessionRef.current,
+      useMock() ? null : loadChatSessionId(),
+      newSessionId,
+    );
     sessionRef.current = sessionId;
+    if (!useMock()) saveChatSessionId(sessionId);
     setMessages((m) => [...m, { role: 'user', text }]);
     setPrompt('');
     if (useMock()) {
@@ -1604,7 +1664,10 @@ export default function ChatView({
   }
 
   // New-chat reset (#669): drops the visible conversation and its
-  // pending state. Past runs on the backend are untouched.
+  // pending state. Past runs on the backend are untouched. The
+  // conversation thread resets too (#467), so the next send mints a
+  // fresh session id: a new conversation explicitly starts a new
+  // thread.
   function onClearChat() {
     if (streaming) return;
     setMessages([]);
@@ -1614,6 +1677,8 @@ export default function ChatView({
     setApproval(null);
     setDecided(null);
     setPhase(null);
+    sessionRef.current = null;
+    if (!useMock()) clearChatSessionId();
     promptRef.current?.focus();
   }
 
