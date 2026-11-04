@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { budgetLine, isStalled, meteredTotal, runCost, runDecisions, RunsPane, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
+import { budgetLine, isStalled, meteredTotal, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatRetry, STALL_SECONDS, StreamProgress, streamProgress } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
 
@@ -229,6 +229,26 @@ describe('selected past run (issue #567)', () => {
     const html = selectedPaneHtml(runs, 'run-0', null);
     expect(html.match(/class="detail selected"/g)).toHaveLength(1);
     expect(html).not.toContain('data-testid="chat-run-detail"');
+  });
+});
+
+describe('past runs refresh after send (issue #568)', () => {
+  it('replaces the list with the fresh fetch (no duplicate rows)', async () => {
+    const fresh = [pastRun({ id: 'run-8' }), pastRun({ id: 'run-7' })];
+    const setRuns = vi.fn();
+    await refreshRunsQuiet(async () => ({ runs: fresh }), setRuns);
+    expect(setRuns).toHaveBeenCalledTimes(1);
+    expect(setRuns).toHaveBeenCalledWith(fresh);
+  });
+
+  it('leaves the list unchanged when the refetch fails', async () => {
+    const setRuns = vi.fn();
+    await expect(
+      refreshRunsQuiet(async () => {
+        throw new Error('network down');
+      }, setRuns),
+    ).resolves.toBeUndefined();
+    expect(setRuns).not.toHaveBeenCalled();
   });
 });
 
