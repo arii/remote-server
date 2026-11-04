@@ -23,6 +23,7 @@ import type {
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
 import AgentDrawer from './AgentDrawer';
+import RepoLabel from '../components/RepoLabel';
 
 // Standard chat send: Ctrl+Enter / Cmd+Enter sends from the
 // prompt box; plain Enter keeps its newline.
@@ -635,11 +636,13 @@ async function pumpStream(
 
 export default function ChatView({
   repo,
+  branch,
   seed,
   onSeedUsed,
   initialRuns,
 }: {
   repo: string;
+  branch?: string;
   seed: string | null;
   onSeedUsed: () => void;
   // Test seam (drawer-precedented): pins the composer-above-runs
@@ -986,7 +989,7 @@ export default function ChatView({
       <header className="page-head">
         <div>
           <h2>Chat</h2>
-          <p className="row-meta">{repo}</p>
+          <RepoLabel repo={repo} branch={branch} />
         </div>
         {streaming && (
           <button type="button" data-testid="chat-abort" onClick={() => void onAbort()}>
