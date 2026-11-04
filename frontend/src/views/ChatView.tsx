@@ -3,7 +3,6 @@ import HoldToConfirm from '../components/HoldToConfirm';
 import TapToFire from '../components/TapToFire';
 import {
   abortChat,
-  chatStreamUrl,
   clearAgentRuns,
   deleteAgentRun,
   fetchAgentRun,
@@ -11,6 +10,7 @@ import {
   fetchBudget,
   fetchRepoFiles,
   fetchRouteHint,
+  postChatStream,
   resumeChat,
 } from '../apiClient';
 import type {
@@ -1570,9 +1570,7 @@ export default function ChatView({
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const resp = await fetch(chatStreamUrl(text, repo, sessionId, backend), {
-        signal: ctrl.signal,
-      });
+      const resp = await postChatStream(text, repo, sessionId, backend, ctrl.signal);
       if (!resp.ok || !resp.body) throw new Error(`Chat stream failed: ${resp.status}`);
       await pumpStream(
         resp.body.getReader(),
