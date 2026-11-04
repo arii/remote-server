@@ -11,9 +11,12 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import eval_ask
 import eval_lib
+import deep_chat
+from backend.exec.engine import ALLOWED_TD_COMMANDS, validate_td_command
 
 
 def case(**over):
@@ -292,10 +295,11 @@ class TestEvalLib(unittest.TestCase):
 
 
 class TestAllowlistSync(unittest.TestCase):
-    # ask_investigator.ALLOWED_TD is single-sourced from
-    # backend/exec/engine.py ALLOWED_TD_COMMANDS via import (#521):
-    # a reintroduced hand mirror must fail loudly. Parsed via ast
-    # (no imports: ask_investigator pulls langchain deps).
+    # ALLOWED_TD is single-sourced from backend/exec/engine.py
+    # ALLOWED_TD_COMMANDS via import (ask_investigator.py #521,
+    # deep_chat.py #477): a reintroduced hand mirror must fail
+    # loudly. Parsed via ast (no imports: ask_investigator pulls
+    # langchain deps).
     def load_list(self, path, var):
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
@@ -308,32 +312,34 @@ class TestAllowlistSync(unittest.TestCase):
 
     def test_allowlist_single_sourced_from_truth(self):
         root = os.path.join(os.path.dirname(__file__), "..")
-        with open(os.path.join(root, "deep-agent",
-                               "ask_investigator.py"),
-                  encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-        # No hand mirror: ALLOWED_TD must not be a local Assign.
-        assigns = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            and any(getattr(t, "id", "") == "ALLOWED_TD"
-                    for t in node.targets)
-        ]
-        self.assertEqual(
-            assigns, [],
-            "ask_investigator.py hand-mirrors ALLOWED_TD again")
-        # The name must bind the engine truth via import.
-        imports = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            and node.module == "backend.exec.engine"
-            for a in node.names
-            if a.name == "ALLOWED_TD_COMMANDS"
-            and a.asname == "ALLOWED_TD"
-        ]
-        self.assertEqual(
-            len(imports), 1,
-            "ALLOWED_TD not imported from backend.exec.engine")
+        for name in ("ask_investigator.py", "deep_chat.py"):
+            with self.subTest(name), open(os.path.join(
+                    root, "deep-agent", name),
+                    encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+            # No hand mirror: ALLOWED_TD must not be a local Assign.
+            assigns = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Assign)
+                and any(getattr(t, "id", "") == "ALLOWED_TD"
+                        for t in node.targets)
+            ]
+            self.assertEqual(
+                assigns, [],
+                f"{name} hand-mirrors ALLOWED_TD again")
+            # The name must bind the engine truth via import.
+            imports = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+                and node.module == "backend.exec.engine"
+                for a in node.names
+                if a.name == "ALLOWED_TD_COMMANDS"
+                and a.asname == "ALLOWED_TD"
+            ]
+            self.assertEqual(
+                len(imports), 1,
+                f"{name}: ALLOWED_TD not imported from "
+                "backend.exec.engine")
         # The truth itself still carries the propose-td shape the
         # eval case anchors on, so a truth edit that drops it fails
         # here instead of silently stranding the eval.
@@ -342,6 +348,25 @@ class TestAllowlistSync(unittest.TestCase):
             os.path.join(root, "backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
         self.assertIn("td gh read-pr-reviews --pr N", truth)
+
+    def test_chat_accepts_only_runnable_shapes(self):
+        # #477 DoD: no shape validatable-but-unrunnable. deep_chat
+        # is the engine's list itself, every chat-accepted shape
+        # runs, and the drift shape is rejected on both sides.
+        # (deep_chat + engine are stdlib-only: safe to import here.)
+        self.assertIs(deep_chat.ALLOWED_TD, ALLOWED_TD_COMMANDS)
+        for shape in ALLOWED_TD_COMMANDS:
+            cmd = shape.replace("N", "153")
+            ok, _ = deep_chat.validate_proposal(
+                {"kind": "td", "command": cmd})
+            self.assertTrue(ok, cmd)
+            self.assertIsNotNone(validate_td_command(cmd), cmd)
+        for bad in ("td --json jules list-sessions",
+                    "td --json agent fix-ci --pr 153 --execute"):
+            ok, _ = deep_chat.validate_proposal(
+                {"kind": "td", "command": bad})
+            self.assertFalse(ok, bad)
+            self.assertIsNone(validate_td_command(bad), bad)
 
     def test_propose_td_case_uses_allowlisted_shape(self):
         root = os.path.join(os.path.dirname(__file__), "..")
