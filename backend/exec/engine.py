@@ -333,21 +333,20 @@ async def td_run_async(cmd, timeout=TD_RUN_TIMEOUT):
     """Async td_run: same command shape and error contract, but the
     wait happens on the event loop instead of blocking a sync worker
     thread, so concurrent plan runs overlap instead of starving
-    FastAPI's sync pool (#294)."""
+    FastAPI's sync pool (#294). Runs in its own session so a
+    timeout kills the whole tree, not just the bash child (#445)."""
     proc = await asyncio.create_subprocess_exec(
         "bash", "-c", cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=stack_dir(),
+        start_new_session=True,
     )
     assert proc.stdout is not None and proc.stderr is not None
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        _kill_tree(proc)
         await proc.wait()
         raise RuntimeError(f"command timed out after {timeout}s")
     if proc.returncode != 0:
@@ -478,8 +477,10 @@ def run_step_pipe(step, append, runner=None, timeout=None,
 
     Output drains on a reader thread while the caller waits with a
     watchdog: a step running past ``timeout`` (default STEP_TIMEOUT)
-    is killed and returns 124 with a note, so a hung step fails its
-    run instead of wedging the single-flight engine (#288).
+    has its whole process group killed and returns 124 with a note,
+    so a hung step fails its run instead of wedging the
+    single-flight engine (#288) and no orphaned grandchild survives
+    to fight a retry (#445).
 
     ``on_proc`` reports the live child for cancellation (#589):
     called with the Popen right after spawn and with None once the
@@ -521,7 +522,7 @@ def run_step_pipe(step, append, runner=None, timeout=None,
     try:
         code = proc.wait(timeout=limit)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _kill_tree(proc)
         code = 124
         append(f"\nnote: step killed after {limit}s without finishing "
                f"(watchdog; exit 124)\n")
@@ -539,6 +540,34 @@ def run_step_pipe(step, append, runner=None, timeout=None,
     if errors:
         raise errors[0]
     return code
+
+
+def _kill_tree(proc):
+    """SIGKILL a step's whole process group (watchdog path).
+
+    Steps run in their own session (start_new_session), so the
+    group is exactly the step's tree: killing it takes pipeline
+    grandchildren down with the child instead of orphaning them
+    to fight a later retry (#445). The budget is already spent,
+    so there is no SIGTERM grace (unlike the cancel path in
+    _terminate_tree). Falls back to killing the child alone when
+    the group is already gone. Works for Popen and asyncio
+    subprocess handles alike (both expose pid + kill).
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except Exception:
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 def _terminate_tree(proc, grace=3.0):

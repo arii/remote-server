@@ -6,6 +6,8 @@ real hung process (a short python sleep) to prove the kill.
 
 import asyncio
 import inspect
+import os
+import signal
 import sys
 import time
 import unittest
@@ -1025,6 +1027,55 @@ def _sleep_step(seconds):
             f"import time;time.sleep({seconds})"]
 
 
+def _spawner_step(pidfile):
+    """A step whose child spawns a grandchild sleeper, records its
+    pid in ``pidfile``, then sleeps itself: the watchdog must kill
+    both (#445)."""
+    prog = (
+        "import subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c',"
+        "'import time;time.sleep(30)']);"
+        f"open({pidfile!r},'w').write(str(p.pid));"
+        "time.sleep(30)"
+    )
+    return [sys.executable, "-c", prog]
+
+
+def _pid_alive(pid):
+    """True while ``pid`` is a live (non-zombie) process."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # A zombie still answers signal 0 but is already dead; its
+    # parent is gone so init reaps it — treat it as gone.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            state = f.read().rsplit(")", 1)[1].split()[0]
+        return state != "Z"
+    except OSError:
+        return False
+
+
+def _assert_pid_dead(testcase, pid, grace=5.0):
+    """Fail unless ``pid`` dies within ``grace`` seconds; never leak
+    the sleeper on failure."""
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.05)
+    if not _pid_alive(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    testcase.fail(f"grandchild pid {pid} survived watchdog kill")
+
+
 class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
     def setUp(self):
         self._ledger_setup()
@@ -1065,6 +1116,22 @@ class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
             [sys.executable, "-c", "print('hi')"], chunks.append)
         self.assertEqual(code, 0)
         self.assertIn("hi", "".join(chunks))
+
+    def test_watchdog_kills_grandchildren(self):
+        # #445: the step's child spawns a grandchild sleeper; the
+        # watchdog must take the whole tree down, not just the
+        # child, so a retry never fights an orphan.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = os.path.join(tmp, "grandchild.pid")
+            chunks = []
+            code = engine.run_step_pipe(
+                _spawner_step(pidfile), chunks.append, timeout=0.5)
+            self.assertEqual(code, 124)
+            with open(pidfile) as f:
+                grandchild = int(f.read().strip())
+            _assert_pid_dead(self, grandchild)
 
 
 class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
@@ -1143,6 +1210,23 @@ class AsyncPlanTest(unittest.TestCase):
             asyncio.run(engine.td_run_async("sleep 5", timeout=0.2))
         self.assertIn("timed out", str(ctx.exception))
         self.assertLess(time.time() - start, 5)
+
+    def test_td_run_async_timeout_kills_grandchildren(self):
+        # #445: same whole-tree kill for the async path — the
+        # bash child's grandchild must not survive the timeout.
+        import shlex
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = os.path.join(tmp, "grandchild.pid")
+            cmd = " ".join(
+                shlex.quote(a) for a in _spawner_step(pidfile))
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(engine.td_run_async(cmd, timeout=0.5))
+            self.assertIn("timed out", str(ctx.exception))
+            with open(pidfile) as f:
+                grandchild = int(f.read().strip())
+            _assert_pid_dead(self, grandchild)
 
     def test_td_run_async_overlaps(self):
         async def _two():
