@@ -6,7 +6,9 @@ complete instructions go in its single task call. auto (the default)
 uses Nebius when keyed, else the local model.
 """
 
+import json
 import os
+import re
 import sys
 import time
 
@@ -19,6 +21,7 @@ from deepagents import create_deep_agent
 import cli
 import ledger
 import model_router
+import observe
 import triage_common
 
 FANOUT_MODEL_PIN = "nvidia/Nemotron-3_5-Lightning"
@@ -36,6 +39,137 @@ def triage_counts(repo: str) -> str:
         repo: Repository in owner/name format.
     """
     return triage_common.fetch_triage_counts(repo)
+
+
+# One line naming the top action, per the scout system prompt
+# ("one line TOP ACTION: <the single next action>"). Case- and
+# whitespace-tolerant; first match wins, multi-line bodies ignored.
+TOP_ACTION_RE = re.compile(r"^\s*top action\s*:\s*(.+?)\s*$",
+                           re.IGNORECASE | re.MULTILINE)
+
+
+def parse_top_action(text):
+    """Best-effort TOP ACTION extraction; None when missing/malformed."""
+    if not isinstance(text, str):
+        return None
+    match = TOP_ACTION_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def scout_repo_from_args(args, repos):
+    """Which known repo a task call targets (substring over the
+    instructions); "unknown" when none is named. Never raises."""
+    try:
+        blob = args if isinstance(args, str) else json.dumps(
+            args, default=str)
+    except (TypeError, ValueError):
+        return "unknown"
+    for repo in repos or []:
+        if repo and repo in blob:
+            return repo
+    return "unknown"
+
+
+def _msg_field(message, field, default=None):
+    if isinstance(message, dict):
+        return message.get(field, default)
+    return getattr(message, field, default)
+
+
+def scout_results_from_messages(messages, repos):
+    """Per-repo {top_action, ok} joined from task calls to their
+    results by tool_call_id. A call with no matching result reads as
+    not-ok (called but never answered); unparseable repos fall back
+    to "unknown". Never raises: observability must not break runs."""
+    try:
+        return _scout_results(messages, repos)
+    except Exception:
+        return {}
+
+
+def _scout_results(messages, repos):
+    calls = {}
+    for message in messages or []:
+        for call in _msg_field(message, "tool_calls", None) or []:
+            if not isinstance(call, dict):
+                continue
+            if call.get("name") != "task":
+                continue
+            call_id = call.get("id")
+            if call_id is None:
+                continue
+            calls[call_id] = scout_repo_from_args(
+                call.get("args"), repos)
+    results = {}
+    for message in messages or []:
+        call_id = _msg_field(message, "tool_call_id", None)
+        if call_id is None or call_id not in calls:
+            continue
+        results[call_id] = message
+    out = {}
+    for call_id, repo in calls.items():
+        message = results.get(call_id)
+        if message is None:
+            out[repo] = {"top_action": None, "ok": False}
+            continue
+        content = _msg_field(message, "content", "")
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, default=str)
+            except (TypeError, ValueError):
+                content = ""
+        status = _msg_field(message, "status", None)
+        out[repo] = {"top_action": parse_top_action(content),
+                     "ok": status != "error"}
+    return out
+
+
+def scout_progress_middleware(repos):
+    """wrap_tool_call narrating each scout delegation to stdout.
+
+    The task tool blocks on its subagent, so this brackets the whole
+    scout run: a started line before the handler, a done line with
+    elapsed + outcome after. Non-task calls pass through silently.
+    Stdout (not stderr), same contract as ask's step lines."""
+    from langchain.agents.middleware import (  # noqa: E402
+        wrap_tool_call,
+    )
+
+    @wrap_tool_call
+    def _progress(request, handler):
+        call = getattr(request, "tool_call", None) or {}
+        if not isinstance(call, dict):
+            try:
+                call = dict(call)
+            except TypeError:
+                call = {}
+        if call.get("name") != "task":
+            return handler(request)
+        repo = scout_repo_from_args(call.get("args"), repos)
+        try:
+            print(f"fanout: scout {repo} started", flush=True)
+        except (OSError, ValueError):
+            pass
+        t0 = time.time()
+        try:
+            result = handler(request)
+        except Exception:
+            try:
+                print(f"fanout: scout {repo} done "
+                      f"{time.time() - t0:.1f}s error", flush=True)
+            except (OSError, ValueError):
+                pass
+            raise
+        try:
+            print(f"fanout: scout {repo} done "
+                  f"{time.time() - t0:.1f}s ok", flush=True)
+        except (OSError, ValueError):
+            pass
+        return result
+
+    return [_progress]
 
 
 def extract_prefer(argv):
@@ -117,8 +251,17 @@ def main() -> int:
             **kwargs,
         )
     repo_list = ", ".join(repos)
+    # Unique per run: the constant "fanout-run" collided across runs
+    # and repos in the ledger; each process is one checkpoint sequence.
+    thread = "fanout-" + time.strftime("%Y%m%d-%H%M%S")
+    recorder = observe.TraceRecorder(
+        observe.default_trace_path("triage_fanout", thread))
+    recorder.run_start("triage_fanout.py", thread,
+                       f"{provider}:{model_id}")
     agent = create_deep_agent(
         model=model,
+        middleware=[*observe.trace_middleware(recorder),
+                    *scout_progress_middleware(repos)],
         system_prompt=(
             "You coordinate per-repo triage scouts. Delegate with the "
             f"task tool: one call each for {repo_list}, each "
@@ -139,9 +282,6 @@ def main() -> int:
         ],
         checkpointer=MemorySaver(),
     )
-    # Unique per run: the constant "fanout-run" collided across runs
-    # and repos in the ledger; each process is one checkpoint sequence.
-    thread = "fanout-" + time.strftime("%Y%m%d-%H%M%S")
     try:
         result = agent.invoke(
             {
@@ -154,6 +294,8 @@ def main() -> int:
     except Exception as exc:
         # Provider 4xx/5xx (e.g. unknown model) surface as one line,
         # never a LangChain traceback (#620).
+        recorder.run_end(False)
+        recorder.close()
         code = getattr(exc, "status_code", None)
         detail = str(exc).strip().split("\n", 1)[0] or type(exc).__name__
         if code is not None:
@@ -163,6 +305,9 @@ def main() -> int:
         else:
             print(f"fanout: error: {detail}", file=sys.stderr)
         return 1
+    recorder.run_end(True)
+    recorder.close()
+    print(f"trace: {recorder.path}", file=sys.stderr)
     tasks = triage_common.count_tool_calls(result["messages"], "task")
     ledger.record(
         "triage_fanout.py",
@@ -170,7 +315,9 @@ def main() -> int:
         thread,
         result["messages"],
         started,
-        extra={"task_delegations": tasks, "repos": repos},
+        extra={"task_delegations": tasks, "repos": repos,
+               "scout_results": scout_results_from_messages(
+                   result["messages"], repos)},
     )
     print(f"task_delegations: {tasks}")
     print("FINAL:", result["messages"][-1].content)
