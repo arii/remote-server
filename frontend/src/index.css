@@ -103,6 +103,10 @@ h1, h2, h3 { text-wrap: balance; }
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
 .row-title { display: block; font-weight: 650; font-size: 1rem; }
 
+/* AI-written briefing lede (issue #671): full-size prose above the
+   rows, not muted metadata — it is the first thing the eye reads. */
+.briefing-narrative { font-size: 1rem; line-height: 1.55; margin: 0.25rem 0 0.75rem; max-width: 70ch; }
+
 .repo-chip {
   background: var(--surface-2);
   border: 1px solid var(--border);

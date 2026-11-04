@@ -21,6 +21,8 @@ export interface BriefingResponse {
   cached?: boolean;
   stale?: boolean;
   generated_at?: number;
+  narrative?: string | null;
+  narrative_at?: number | null;
 }
 
 export interface JobRecord {
