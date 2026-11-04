@@ -9,6 +9,10 @@ export interface BriefingResponse {
   attention: string[];
   prs: Array<Record<string, unknown>>;
   prs_err: string;
+  enrichment_note?: string;
+  enrichment_total?: number;
+  enrichment_shown?: number;
+  enrichment_truncated?: boolean;
   reviews_lines: string[];
   reviews_err: Record<string, string>;
   board: BoardItem[];

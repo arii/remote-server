@@ -881,6 +881,11 @@ export function BriefingBody({
                   <PrRow key={i} pr={pr} />
                 ))}
               </ul>
+              {typeof data.enrichment_note === 'string' && data.enrichment_note.trim() !== '' && (
+                <p className="row-meta" data-testid="briefing-enrichment-note">
+                  Note: {data.enrichment_note}.
+                </p>
+              )}
             </section>
           )}
           <Section title="Reviews" lines={data.reviews_lines} err={reviewsErrText(data.reviews_err)} />

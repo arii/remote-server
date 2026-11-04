@@ -94,6 +94,10 @@ class Briefing(BaseModel):
     attention_with_markers: list = Field(default_factory=list)
     prs: list = Field(default_factory=list)
     prs_err: str = ""
+    enrichment_note: str = ""
+    enrichment_total: int = 0
+    enrichment_shown: int = 0
+    enrichment_truncated: bool = False
     reviews_lines: list = Field(default_factory=list)
     reviews_err: dict = Field(default_factory=dict)
     board: list = Field(default_factory=list)
