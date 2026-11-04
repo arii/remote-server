@@ -15,6 +15,8 @@ Briefing reads are NOT ledgered: reads are not actions.
 import json
 import os
 import subprocess
+import threading
+import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -87,6 +89,74 @@ class LedgerClearResult(BaseModel):
     ok: bool = True
 
 
+# TTL cache with stale-while-revalidate: the gh fan-out behind
+# briefing_summary takes ~6s and every uncached visit blocks on it.
+# Fresh entries serve instantly; stale entries serve instantly and
+# refresh on a daemon thread; entries past MAX_STALE recompute
+# synchronously so a broken refresher can never pin ancient data.
+# Tests reset _BRIEFING_CACHE/_BRIEFING_REFRESHING directly.
+BRIEFING_CACHE_TTL = 60.0
+BRIEFING_CACHE_MAX_STALE = 1800.0
+_BRIEFING_CACHE: dict[str, tuple[float, dict]] = {}
+_BRIEFING_REFRESHING: set[str] = set()
+_BRIEFING_LOCK = threading.Lock()
+
+
+def _store_briefing(repo: str, data: dict) -> float:
+    ts = time.time()
+    with _BRIEFING_LOCK:
+        _BRIEFING_CACHE[repo] = (ts, data)
+        _BRIEFING_REFRESHING.discard(repo)
+    return ts
+
+
+def _refresh_briefing(repo: str, gh: str) -> None:
+    """Background SWR refresh: failures keep the stale entry."""
+    try:
+        data = _run_briefing(repo, gh)
+    except Exception:
+        with _BRIEFING_LOCK:
+            _BRIEFING_REFRESHING.discard(repo)
+        return
+    _store_briefing(repo, data)
+
+
+def _revalidate_briefing(repo: str, gh: str) -> None:
+    with _BRIEFING_LOCK:
+        if repo in _BRIEFING_REFRESHING:
+            return
+        _BRIEFING_REFRESHING.add(repo)
+    thread = threading.Thread(
+        target=_refresh_briefing, args=(repo, gh), daemon=True)
+    thread.start()
+
+
+def get_briefing(name: str, gh: str) -> dict:
+    """Injectable seam: briefing payload with SWR caching.
+
+    Every response carries freshness markers (cached/stale/
+    generated_at) that the Briefing model passes through via
+    extra="allow" so the view can show a refresh indicator.
+    Copies annotate per-request markers; the cached entry itself
+    is never mutated.
+    """
+    now = time.time()
+    hit = _BRIEFING_CACHE.get(name)
+    if hit is not None:
+        age = now - hit[0]
+        if age < BRIEFING_CACHE_TTL:
+            return {**hit[1], "cached": True, "stale": False,
+                    "generated_at": hit[0]}
+        if age < BRIEFING_CACHE_MAX_STALE:
+            _revalidate_briefing(name, gh)
+            return {**hit[1], "cached": True, "stale": True,
+                    "generated_at": hit[0]}
+    data = _run_briefing(name, gh)
+    ts = _store_briefing(name, data)
+    return {**data, "cached": False, "stale": False,
+            "generated_at": ts}
+
+
 def _run_briefing(repo: str, gh: str) -> dict:
     script = os.path.join(os.path.dirname(__file__),
                           "..", "..", "..", "core_cli",
@@ -136,6 +206,11 @@ def briefing(repo: str = "remote-server") -> dict:
                 data = json.load(fh)
             if isinstance(data, dict):
                 data["repo"] = name
+                # Fixtures bypass the cache (fast already) but carry
+                # the same freshness markers for a uniform contract.
+                data["cached"] = False
+                data["stale"] = False
+                data["generated_at"] = time.time()
             return data
         except Exception as exc:
             raise HTTPException(
@@ -143,7 +218,7 @@ def briefing(repo: str = "remote-server") -> dict:
                 detail=f"fixture briefing failed: {exc}")
 
     try:
-        return _run_briefing(name, f"arii/{name}")
+        return get_briefing(name, f"arii/{name}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
 

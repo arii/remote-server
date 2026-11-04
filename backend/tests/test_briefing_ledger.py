@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -25,6 +26,18 @@ except ImportError:
     HAS_CLIENT = False
 
 
+class _SyncThread:
+    """Thread fake: runs the target inline on start() for
+    deterministic stale-while-revalidate tests (no real threads)."""
+
+    def __init__(self, target=None, args=(), daemon=None):
+        self._target = target
+        self._args = args
+
+    def start(self):
+        self._target(*self._args)
+
+
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class BriefingLedgerTest(unittest.TestCase):
     def setUp(self):
@@ -34,10 +47,14 @@ class BriefingLedgerTest(unittest.TestCase):
         app = FastAPI()
         app.include_router(briefing_router.router)
         self.client = TestClient(app)
+        briefing_router._BRIEFING_CACHE.clear()
+        briefing_router._BRIEFING_REFRESHING.clear()
 
     def tearDown(self):
         os.environ.pop("BUTTONS_LEDGER_PATH", None)
         os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+        briefing_router._BRIEFING_CACHE.clear()
+        briefing_router._BRIEFING_REFRESHING.clear()
 
     def _write_fixture(self, payload):
         path = os.path.join(self.tmp, "briefing.json")
@@ -92,6 +109,85 @@ class BriefingLedgerTest(unittest.TestCase):
                                    params={"repo": "remote-server"})
         self.assertEqual(resp.status_code, 500)
         self.assertIn("boom", resp.json()["detail"])
+
+    def test_briefing_caches_within_ttl(self):
+        payload = {"repo": "remote-server", "prs": [],
+                   "attention": []}
+        with self._fake_run(0, json.dumps(payload)) as run_mock:
+            first = self.client.get(
+                "/api/briefing", params={"repo": "remote-server"})
+            second = self.client.get(
+                "/api/briefing", params={"repo": "remote-server"})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertFalse(first.json()["cached"])
+        self.assertTrue(second.json()["cached"])
+        self.assertFalse(second.json()["stale"])
+        self.assertIn("generated_at", second.json())
+
+    def test_briefing_serves_stale_and_revalidates(self):
+        stale_payload = {"repo": "remote-server", "prs": [],
+                         "attention": ["old"]}
+        briefing_router._BRIEFING_CACHE["remote-server"] = (
+            time.time() - 120, stale_payload)
+        fresh = {"repo": "remote-server", "prs": [],
+                 "attention": ["new"]}
+        fake_threading = mock.Mock()
+        fake_threading.Thread = _SyncThread
+        with self._fake_run(0, json.dumps(fresh)), \
+                mock.patch.object(briefing_router, "threading",
+                                  fake_threading):
+            resp = self.client.get(
+                "/api/briefing", params={"repo": "remote-server"})
+        body = resp.json()
+        self.assertEqual(resp.status_code, 200)
+        # Served the stale entry immediately...
+        self.assertTrue(body["cached"])
+        self.assertTrue(body["stale"])
+        self.assertEqual(body["attention"], ["old"])
+        # ...and the background refresh stored the fresh payload.
+        self.assertEqual(
+            briefing_router._BRIEFING_CACHE[
+                "remote-server"][1]["attention"],
+            ["new"])
+        self.assertNotIn("remote-server",
+                         briefing_router._BRIEFING_REFRESHING)
+
+    def test_briefing_recomputes_past_max_stale(self):
+        ancient = {"repo": "remote-server", "prs": [],
+                   "attention": ["old"]}
+        briefing_router._BRIEFING_CACHE["remote-server"] = (
+            time.time()
+            - briefing_router.BRIEFING_CACHE_MAX_STALE - 1,
+            ancient)
+        fresh = {"repo": "remote-server", "prs": [],
+                 "attention": ["new"]}
+        with self._fake_run(0, json.dumps(fresh)) as run_mock:
+            resp = self.client.get(
+                "/api/briefing", params={"repo": "remote-server"})
+        body = resp.json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertFalse(body["cached"])
+        self.assertFalse(body["stale"])
+        self.assertEqual(body["attention"], ["new"])
+
+    def test_briefing_refresh_failure_keeps_stale(self):
+        briefing_router._BRIEFING_CACHE["remote-server"] = (
+            time.time() - 120, {"attention": ["old"]})
+        briefing_router._BRIEFING_REFRESHING.add("remote-server")
+        with mock.patch.object(
+                briefing_router, "_run_briefing",
+                side_effect=RuntimeError("gh down")):
+            briefing_router._refresh_briefing(
+                "remote-server", "arii/remote-server")
+        self.assertEqual(
+            briefing_router._BRIEFING_CACHE[
+                "remote-server"][1]["attention"],
+            ["old"])
+        self.assertNotIn("remote-server",
+                         briefing_router._BRIEFING_REFRESHING)
 
     def test_status_shape(self):
         resp = self.client.get("/api/status")

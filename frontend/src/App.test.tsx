@@ -11,6 +11,7 @@ import BriefingView, {
   BriefingBody,
   briefingActions,
   briefingAllClear,
+  briefingFreshness,
   briefingSummary,
   cleanBriefingLine,
   dayTrend,
@@ -387,6 +388,32 @@ describe('briefing substance', () => {
     );
     expect(html).toContain('data-testid="briefing-highlights"');
     expect(html).toContain('data-testid="briefing-summary"');
+  });
+  it('freshness line stays hidden for live payloads', () => {
+    expect(briefingFreshness(empty, 1793745800000)).toBe(null);
+    const html = renderToStaticMarkup(
+      <BriefingBody data={empty} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+    );
+    expect(html).not.toContain('data-testid="briefing-freshness"');
+  });
+  it('freshness line shows age and refresh state for cached payloads', () => {
+    const now = 1793745800000;
+    expect(briefingFreshness({ ...empty, cached: true, generated_at: now / 1000 - 45 }, now)).toBe(
+      'Updated 45s ago',
+    );
+    expect(
+      briefingFreshness({ ...empty, cached: true, stale: true, generated_at: now / 1000 - 90 }, now),
+    ).toBe('Updated 1m ago · refreshing…');
+    const html = renderToStaticMarkup(
+      <BriefingBody
+        data={{ ...empty, cached: true, stale: true, generated_at: now / 1000 - 90 }}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="briefing-freshness"');
+    expect(html).toContain('refreshing…');
   });
 });
 
