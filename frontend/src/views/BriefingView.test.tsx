@@ -703,6 +703,8 @@ describe('actionable briefing (issue #839)', () => {
     expect(html).toContain('data-testid="briefing-lead-action"');
     expect(html).toContain('Explain the failures');
     expect(html).toContain('View failures in History');
+    expect(html).toContain('class="btn-primary"');
+    expect(html).toContain('class="btn-secondary"');
     expect(html).toContain('data-testid="briefing-pipeline"');
     expect(html).toContain('CI failing');
     expect(html).toContain('merge blocked');

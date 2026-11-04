@@ -57,19 +57,37 @@ function healthSummary(health: SystemHealthResponse | null): string {
   return `Status: ${up}/${health.containers.length} containers up`;
 }
 
-type Tab = 'now' | 'chat' | 'briefing' | 'history';
+export type Tab = 'now' | 'chat' | 'briefing' | 'history';
 
-// Now is the triage inbox (attention + Review/Jobs sections); History
-// is the secondary trail. Review/Jobs live inside Now, not as routes.
-const TABS: Array<{ id: Tab; label: string; key: string }> = [
-  { id: 'now', label: 'Now', key: '1' },
-  { id: 'chat', label: 'Chat', key: '2' },
-  { id: 'briefing', label: 'Briefing', key: '3' },
+// Persistent console nav (#896): one bar, six destinations. Review
+// and Jobs live inside Now as sections (not routes); the nav reaches
+// them through the palette's section-request path.
+export type NavEntry =
+  | { kind: 'tab'; id: Tab; label: string; key: string }
+  | { kind: 'section'; id: 'review' | 'jobs'; label: string };
+
+export const NAV_ENTRIES: NavEntry[] = [
+  { kind: 'tab', id: 'now', label: 'Now', key: '1' },
+  { kind: 'tab', id: 'chat', label: 'Chat', key: '2' },
+  { kind: 'tab', id: 'briefing', label: 'Briefing', key: '3' },
+  { kind: 'tab', id: 'history', label: 'History', key: '4' },
+  { kind: 'section', id: 'review', label: 'Review' },
+  { kind: 'section', id: 'jobs', label: 'Jobs' },
 ];
 
-const SECONDARY_TABS: Array<{ id: Tab; label: string; key: string }> = [
-  { id: 'history', label: 'History', key: '4' },
-];
+export type NowSection = 'review' | 'jobs' | 'queue' | null;
+
+// Pressed rule for the unified nav: tabs light on tab match, except
+// Now yields to an open Review/Jobs section; Now stays lit for the
+// inbox and for sections without an entry (Queue).
+export function navPressed(tab: Tab, section: NowSection, entry: NavEntry): boolean {
+  if (entry.kind === 'tab') {
+    if (tab !== entry.id) return false;
+    if (entry.id !== 'now') return true;
+    return section !== 'review' && section !== 'jobs';
+  }
+  return tab === 'now' && section === entry.id;
+}
 
 const FALLBACK_REPOS: RepoInfo[] = [
   { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: true },
@@ -111,9 +129,12 @@ export default function App() {
   // already mounted (or mounts fresh on the tab switch).
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sectionRequest, setSectionRequest] = useState<{
-    section: 'review' | 'jobs';
+    section: 'review' | 'jobs' | null;
     nonce: number;
   } | null>(null);
+  // Open Now section mirrored up from NowView (#896): drives the
+  // nav pressed state for the Review/Jobs entries.
+  const [nowSection, setNowSection] = useState<NowSection>(null);
   const [reportRequest, setReportRequest] = useState(0);
   const [chatFocusRequest, setChatFocusRequest] = useState(0);
   const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
@@ -135,6 +156,25 @@ export default function App() {
   function askAgent(seed: string) {
     setChatSeed(seed);
     setTab('chat');
+  }
+
+  // Leaving Now unmounts it (its section resets to the inbox on
+  // return); mirror that here so the pressed state never goes stale.
+  useEffect(() => {
+    if (tab !== 'now') setNowSection(null);
+  }, [tab]);
+
+  // Unified nav handler (#896): tabs switch; Now also closes any
+  // open section (inbox home); Review/Jobs ride the section-request
+  // path like their palette commands.
+  function goNav(entry: NavEntry) {
+    if (entry.kind === 'tab' && entry.id !== 'now') {
+      setTab(entry.id);
+      return;
+    }
+    setTab('now');
+    const section = entry.kind === 'section' ? entry.id : null;
+    setSectionRequest((r) => ({ section, nonce: (r?.nonce ?? 0) + 1 }));
   }
 
   // Ctrl+K / Cmd+K toggles the palette from anywhere. The chord
@@ -384,29 +424,15 @@ export default function App() {
           onClose={closeStats}
         />
       )}
-      <nav className="actions" aria-label="Views">
-        {TABS.map((t) => (
+      <nav className="topnav" aria-label="Views">
+        {NAV_ENTRIES.map((t) => (
           <button
             key={t.id}
             type="button"
-            aria-pressed={tab === t.id}
-            aria-keyshortcuts={t.key}
-            title={`${t.label} (${t.key})`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-      <nav className="actions secondary" aria-label="Secondary views">
-        {SECONDARY_TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            aria-pressed={tab === t.id}
-            aria-keyshortcuts={t.key}
-            title={`${t.label} (${t.key})`}
-            onClick={() => setTab(t.id)}
+            aria-pressed={navPressed(tab, nowSection, t)}
+            aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
+            title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
+            onClick={() => goNav(t)}
           >
             {t.label}
           </button>
@@ -424,6 +450,8 @@ export default function App() {
           sectionRequest={sectionRequest}
           reportRequest={reportRequest}
           createRequest={createRequest}
+          onSectionChange={setNowSection}
+          onOpenStats={() => setStatsOpen(true)}
         />
       )}
       {tab === 'chat' &&
@@ -452,7 +480,7 @@ export default function App() {
         (isRollupRepo(repo) ? (
           <RollupGate view="History" />
         ) : (
-          <HistoryView repo={repo} health={health} />
+          <HistoryView repo={repo} health={health} onOpenStats={() => setStatsOpen(true)} />
         ))}
       <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
     </main>

@@ -18,6 +18,7 @@ import {
   NowHero,
   reconcileSnoozed,
   RepoTag,
+  SourceDestination,
   resolveAttentionTarget,
   showRepoTag,
   SnoozedStub,
@@ -174,20 +175,55 @@ describe('destructive POST actions (issue #508)', () => {
     expect(html).not.toContain('Hold to arm');
   });
 
-  it('keeps non-destructive POST actions as plain buttons', () => {
+  it('keeps non-destructive POST actions as primary buttons (issue #896)', () => {
     const html = renderToStaticMarkup(
       <ActionControl item={item({ destructive: false })} {...handlers} />,
     );
     expect(html).not.toContain('tap-fire');
     expect(html).not.toContain('hold-disarmed');
+    expect(html).toContain('class="btn-primary"');
   });
 
-  it('keeps GET actions as plain buttons', () => {
+  it('keeps GET actions as primary buttons (issue #896)', () => {
     const html = renderToStaticMarkup(
       <ActionControl item={item({ method: 'GET', destructive: true })} {...handlers} />,
     );
     expect(html).not.toContain('tap-fire');
     expect(html).not.toContain('hold-disarmed');
+    expect(html).toContain('class="btn-primary"');
+  });
+});
+
+describe('source destination links (issue #896)', () => {
+  function item(href: string): AttentionItem {
+    return {
+      id: 'a1',
+      kind: 'failed-job',
+      title: 'Failed job',
+      detail: 'd',
+      repo: 'remote-server',
+      severity: 'warn',
+      action: { label: 'Open', method: 'GET', href, destructive: false, intent: '' },
+      created_at: 1,
+    };
+  }
+  const noop = () => {};
+
+  it('renders in-app targets as buttons', () => {
+    const html = renderToStaticMarkup(
+      <SourceDestination item={item('api/jobs')} onSection={noop} onTab={noop} />,
+    );
+    expect(html).toContain('data-testid="now-source-open-a1"');
+    expect(html).toContain('class="btn-link"');
+    expect(html).toContain('>Jobs</button>');
+  });
+
+  it('keeps fetch-only actions as plain text', () => {
+    const html = renderToStaticMarkup(
+      <SourceDestination item={item('api/unknown')} onSection={noop} onTab={noop} />,
+    );
+    expect(html).not.toContain('<button');
+    expect(html).toContain('action');
   });
 });
 
@@ -487,8 +523,11 @@ describe('attention grouping (issue #839)', () => {
     expect(html).toContain('data-testid="now-item-job-j1"');
     expect(html).toContain('data-testid="now-select-job-j1"');
     expect(html).toContain('data-testid="now-source-job-j1"');
-    expect(html).toContain('source: remote-server · opens Jobs');
+    expect(html).toContain('source: remote-server · opens');
+    expect(html).toContain('data-testid="now-source-open-job-j1"');
+    expect(html).toContain('>Jobs</button>');
     expect(html).toContain('data-testid="ask-agent-job-j1"');
+    expect(html).toContain('class="btn-secondary"');
     expect(html).toContain('data-testid="now-more-job-j1"');
     expect(html).toContain('data-testid="snooze-job-j1-60"');
     expect(html).toContain('data-testid="snooze-job-j1-480"');

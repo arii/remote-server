@@ -920,11 +920,11 @@ export function BriefingBody({
           (#839) instead of waiting in Next actions below. */}
       {showLead && (
         <div className="actions" data-testid="briefing-lead-action">
-          <button type="button" onClick={() => onAskAgent(actions[0].seed)}>
+          <button type="button" className="btn-primary" onClick={() => onAskAgent(actions[0].seed)}>
             {actions[0].label}
           </button>
           {data.workflow_lines.length > 0 && (
-            <button type="button" onClick={onOpenHistory}>
+            <button type="button" className="btn-secondary" onClick={onOpenHistory}>
               View failures in History
             </button>
           )}
@@ -985,8 +985,13 @@ export function BriefingBody({
           <p className="row-meta">The top action is above, beside the summary.</p>
         ) : (
           <div className="actions" data-testid="briefing-actions">
-            {(showLead ? actions.slice(1) : actions).map((a) => (
-              <button key={a.label} type="button" onClick={() => onAskAgent(a.seed)}>
+            {(showLead ? actions.slice(1) : actions).map((a, i) => (
+              <button
+                key={a.label}
+                type="button"
+                className={showLead || i > 0 ? 'btn-secondary' : 'btn-primary'}
+                onClick={() => onAskAgent(a.seed)}
+              >
                 {a.label}
               </button>
             ))}

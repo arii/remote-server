@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import App, { HEALTH_POLL_MS, RollupGate, singleFlight } from './App';
+import App, { HEALTH_POLL_MS, NAV_ENTRIES, navPressed, RollupGate, singleFlight } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
@@ -967,12 +967,34 @@ describe('app', () => {
     expect(html).not.toContain('briefing');
   });
 
-  it('App folds Review/Jobs into Now and demotes History', () => {
+  it('App unifies all six destinations in one nav bar (issue #896)', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('aria-label="Views"');
-    expect(html).toContain('aria-label="Secondary views"');
-    expect(html).not.toContain('>Review</button>');
-    expect(html).not.toContain('>Jobs</button>');
+    expect(html).not.toContain('aria-label="Secondary views"');
+    for (const label of ['Now', 'Chat', 'Briefing', 'History', 'Review', 'Jobs']) {
+      expect(html).toContain(`>${label}</button>`);
+    }
+    expect(html).toContain('aria-keyshortcuts="1"');
+    expect(html).toContain('aria-keyshortcuts="4"');
+  });
+
+  it('navPressed lights exactly the visible destination (issue #896)', () => {
+    const entry = (id: string) => NAV_ENTRIES.find((e) => e.id === id)!;
+    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['now', 'chat', 'briefing', 'history', 'review', 'jobs']);
+    // Tabs light on tab match.
+    expect(navPressed('chat', null, entry('chat'))).toBe(true);
+    expect(navPressed('chat', null, entry('now'))).toBe(false);
+    expect(navPressed('briefing', null, entry('briefing'))).toBe(true);
+    // Now yields to an open Review/Jobs section.
+    expect(navPressed('now', null, entry('now'))).toBe(true);
+    expect(navPressed('now', 'review', entry('now'))).toBe(false);
+    expect(navPressed('now', 'review', entry('review'))).toBe(true);
+    expect(navPressed('now', 'jobs', entry('jobs'))).toBe(true);
+    expect(navPressed('now', 'jobs', entry('review'))).toBe(false);
+    // Sections without an entry keep the Now tab lit.
+    expect(navPressed('now', 'queue', entry('now'))).toBe(true);
+    // Section entries never light off the Now tab.
+    expect(navPressed('chat', 'review', entry('review'))).toBe(false);
   });
 });
 
