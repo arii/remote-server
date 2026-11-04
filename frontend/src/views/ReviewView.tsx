@@ -672,6 +672,10 @@ export function bulkDeferNotice(count: number): string {
   return `Deferred ${count} row${count === 1 ? '' : 's'}.`;
 }
 
+export function bulkRestoreNotice(count: number): string {
+  return `Restored ${count} row${count === 1 ? '' : 's'}.`;
+}
+
 // Bulk bar: rendered only while rows are selected. One Defer-n action;
 // single-row Defer/Restore buttons keep their own shapes.
 export function BulkDeferBar({
@@ -694,6 +698,34 @@ export function BulkDeferBar({
         onClick={onDefer}
       >
         {busy ? 'Deferring…' : `Defer ${count}`}
+      </button>
+    </div>
+  );
+}
+
+// Bulk bar for the Deferred disclosure: same shape as BulkDeferBar,
+// one Restore-n action. Separate selection from the defer bar so each
+// count names only the rows its action applies to.
+export function BulkRestoreBar({
+  count,
+  busy,
+  onRestore,
+}: {
+  count: number;
+  busy: boolean;
+  onRestore: () => void;
+}) {
+  return (
+    <div className="actions" data-testid="restore-bulk-bar" role="status">
+      {count} selected{' '}
+      <button
+        type="button"
+        data-testid="restore-bulk-restore"
+        aria-label={`Restore ${count} selected row${count === 1 ? '' : 's'}`}
+        disabled={busy}
+        onClick={onRestore}
+      >
+        {busy ? 'Restoring…' : `Restore ${count}`}
       </button>
     </div>
   );
@@ -731,6 +763,8 @@ export default function ReviewView({
   const [filter, setFilter] = useState('');
   const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkRestore, setBulkRestore] = useState<ReadonlySet<string>>(new Set());
+  const [bulkRestoreBusy, setBulkRestoreBusy] = useState(false);
   // Inline issue labels (#612): repo labels load lazily on first
   // editor open; per-row pending/error/failed-op keyed by number.
   const [repoLabels, setRepoLabels] = useState<string[] | null>(null);
@@ -749,6 +783,7 @@ export default function ReviewView({
     .filter((i) => !isRowDeferred(deferred, 'issue', i.number))
     .filter((i) => rowMatchesFilter(i, filter));
   const filtering = filter.trim().length > 0;
+  const deferredKeys = deferred.map((d) => bulkRowKey(d.kind, d.number));
   // Bulk selection keys for the currently visible (filtered) rows;
   // select-all toggles exactly this set per list.
   const visiblePrKeys = visiblePrs.map((p) => bulkRowKey('pr', p.number));
@@ -934,7 +969,43 @@ export default function ReviewView({
         return;
       }
     }
+    // A singly-restored row leaves the disclosure; drop its checkbox
+    // so the bulk count never names an already-restored row.
+    setBulkRestore((prev) => {
+      const key = bulkRowKey(kind, n);
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
     setNotice(`Restored ${kind === 'pr' ? 'PR' : 'issue'} #${n}.`);
+  }
+
+  // One request restores every checked deferred row; the response
+  // refreshes the disclosure and the selection clears. Mirrors
+  // deferBulk; single-row Restore keeps its own shape.
+  async function restoreBulk() {
+    const rows = [...bulkRestore]
+      .map(parseBulkRowKey)
+      .filter((r): r is { kind: 'pr' | 'issue'; number: number } => r !== null);
+    if (rows.length === 0) return;
+    setError(null);
+    setBulkRestoreBusy(true);
+    try {
+      if (useMock()) {
+        const drop = new Set(rows.map((r) => bulkRowKey(r.kind, r.number)));
+        setDeferred((prev) => prev.filter((d) => !drop.has(bulkRowKey(d.kind, d.number))));
+      } else {
+        const r = await deferRowsBulk(repo, 'restore', rows);
+        setDeferred(r.deferred);
+      }
+      setBulkRestore(new Set());
+      setNotice(bulkRestoreNotice(rows.length));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkRestoreBusy(false);
+    }
   }
 
   async function onMerge(n: number) {
@@ -1256,6 +1327,19 @@ export default function ReviewView({
           {deferred.length > 0 && (
             <details data-testid="review-deferred-disclosure">
               <summary className="details-title">Deferred ({deferred.length})</summary>
+              <label className="row-meta">
+                <input
+                  type="checkbox"
+                  data-testid="restore-select-all"
+                  aria-label="Select all deferred rows"
+                  checked={deferredKeys.every((k) => bulkRestore.has(k))}
+                  onChange={() => setBulkRestore((prev) => toggleBulkSelectAll(prev, deferredKeys))}
+                />{' '}
+                all
+              </label>
+              {bulkRestore.size > 0 && (
+                <BulkRestoreBar count={bulkRestore.size} busy={bulkRestoreBusy} onRestore={() => void restoreBulk()} />
+              )}
               <ul className="session-list" data-testid="review-deferred-list">
                 {deferred.map((d) => {
                   const title = d.kind === 'pr'
@@ -1266,6 +1350,13 @@ export default function ReviewView({
                       key={`${d.kind}-${d.number}`}
                       data-testid={`review-deferred-${d.kind}-${d.number}`}
                     >
+                      <input
+                        type="checkbox"
+                        data-testid={`restore-row-check-${d.kind}-${d.number}`}
+                        aria-label={`Select ${d.kind} #${d.number}`}
+                        checked={bulkRestore.has(bulkRowKey(d.kind, d.number))}
+                        onChange={() => setBulkRestore((prev) => toggleBulkSelected(prev, bulkRowKey(d.kind, d.number)))}
+                      />{' '}
                       <span className="row-title">#{d.number} {title ?? d.kind}</span>
                       <p className="row-meta">{d.kind === 'pr' ? 'pull request' : 'issue'}</p>
                       <RowActionButton action="Restore" kind={d.kind} num={d.number} testid={`restore-deferred-${d.kind}-${d.number}`} onClick={() => void restoreSelected(d.kind, d.number)} />
