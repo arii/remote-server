@@ -238,6 +238,30 @@ export function PrRowMerge({
   );
 }
 
+// One plain row action (Open/Defer/Restore). The accessible name
+// carries kind + number so 50 repeated buttons stay distinct for
+// screen-reader users; visible text stays the bare verb.
+export function RowActionButton({
+  action,
+  kind,
+  num,
+  testid,
+  onClick,
+}: {
+  action: 'Open' | 'Defer' | 'Restore';
+  kind: 'pr' | 'issue';
+  num: number;
+  testid?: string;
+  onClick: () => void;
+}) {
+  const what = kind === 'pr' ? 'PR' : 'issue';
+  return (
+    <button type="button" data-testid={testid} aria-label={`${action} ${what} #${num}`} onClick={onClick}>
+      {action}
+    </button>
+  );
+}
+
 export default function ReviewView({
   repo,
   onAskAgent,
@@ -499,12 +523,8 @@ export default function ReviewView({
                     {p.isDraft ? ' · draft' : ''}
                     {merging.has(p.number) ? ' · Merging…' : ''}
                   </p>
-                  <button type="button" onClick={() => void selectPr(p.number)}>
-                    Open
-                  </button>{' '}
-                  <button type="button" data-testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)}>
-                    Defer
-                  </button>{' '}
+                  <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />{' '}
+                  <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />{' '}
                   <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />
                 </li>
               ))}
@@ -529,9 +549,7 @@ export default function ReviewView({
                   <p className="row-meta">
                     {(iss.labels || []).map(labelOf).filter(Boolean).join(', ') || 'no labels'}
                   </p>
-                  <button type="button" data-testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)}>
-                    Defer
-                  </button>
+                  <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)} />
                 </li>
               ))}
             </ul>
@@ -551,13 +569,7 @@ export default function ReviewView({
                     >
                       <span className="row-title">#{d.number} {title ?? d.kind}</span>
                       <p className="row-meta">{d.kind === 'pr' ? 'pull request' : 'issue'}</p>
-                      <button
-                        type="button"
-                        data-testid={`restore-deferred-${d.kind}-${d.number}`}
-                        onClick={() => void restoreSelected(d.kind, d.number)}
-                      >
-                        Restore
-                      </button>
+                      <RowActionButton action="Restore" kind={d.kind} num={d.number} testid={`restore-deferred-${d.kind}-${d.number}`} onClick={() => void restoreSelected(d.kind, d.number)} />
                     </li>
                   );
                 })}
