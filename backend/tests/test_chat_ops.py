@@ -30,8 +30,10 @@ class FakeStdout(io.StringIO):
 
 
 class FakeProc:
-    def __init__(self, text="", block=None, code=0):
+    def __init__(self, text="", block=None, code=0, err=None):
         self.stdout = FakeStdout(text, block)
+        if err is not None:
+            self.stderr = io.StringIO(err)
         self.returncode = code
         self.terminated = False
         self._block = block
@@ -646,6 +648,147 @@ class ChatOpsTest(unittest.TestCase):
         self.assertIn("disk", body)
         self.assertIn("memory", body)
         self.assertIn("containers", body)
+
+
+@unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
+class ChatStderrTailTest(unittest.TestCase):
+    """Spawned agent stderr is drained to a bounded tail (#534)."""
+
+    TRACEBACK = ("Traceback (most recent call last):\n"
+                 '  File "deep_chat.py", line 9, in <module>\n'
+                 "RuntimeError: deep boom\n")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
+            self.tmp, "ledger.jsonl")
+        self.client = make_client()
+        self._orig_repo = chat.get_repo_info
+        self._orig_spawn = chat.spawn_chat_process
+        self._orig_venv = chat.deep_agent_python
+        self._orig_script = chat.deep_agent_script
+        chat.get_repo_info = lambda repo: {"gh": "arii/remote-server",
+                                           "td_cwd": "/srv/remote-server"}
+        chat.deep_agent_python = lambda: os.path.abspath(chat.__file__)
+        chat.deep_agent_script = lambda name: os.path.abspath(chat.__file__)
+
+    def tearDown(self):
+        if self._orig_ledger is None:
+            os.environ.pop("BUTTONS_LEDGER_PATH", None)
+        else:
+            os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
+        chat.get_repo_info = self._orig_repo
+        chat.spawn_chat_process = self._orig_spawn
+        chat.deep_agent_python = self._orig_venv
+        chat.deep_agent_script = self._orig_script
+
+    def _ledger(self):
+        with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def _sse_events(self, resp):
+        events = []
+        cur = None
+        data = []
+        for line in resp.text.splitlines():
+            if line.startswith("event:"):
+                cur = line[len("event:"):].strip()
+                data = []
+            elif line.startswith("data:"):
+                data.append(line[len("data:"):].strip())
+            elif line == "" and cur is not None:
+                events.append((cur, json.loads("".join(data))))
+                cur = None
+        return events
+
+    def test_spawn_pipes_stderr(self):
+        import sys
+        proc = chat.spawn_chat_process([sys.executable, "-c", "pass"])
+        try:
+            self.assertIsNotNone(proc.stderr)
+            proc.wait(timeout=30)
+        finally:
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except Exception:
+                    pass
+
+    def test_stderr_flood_does_not_deadlock(self):
+        import subprocess
+        import sys
+        child = ("import sys; [sys.stderr.write('e' * 1000 + '\\n') "
+                 "for _ in range(300)]; sys.stderr.write('END-MARKER\\n'); "
+                 "print('FINAL: ok'); sys.stdout.flush()")
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", child],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            drained = chat.StderrTail(proc)
+            out = proc.stdout.read()
+            proc.wait(timeout=30)
+            tail = drained.tail(timeout=30)
+        finally:
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except Exception:
+                    pass
+        self.assertIn("FINAL: ok", out)
+        self.assertLessEqual(len(tail), chat.SPAWN_STDERR_TAIL)
+        self.assertIn("END-MARKER", tail)
+
+    def test_chat_crash_records_stderr_tokens_clean(self):
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            "partial", code=1, err=self.TRACEBACK)
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={"prompt": "hi", "repo": "remote-server",
+                  "session_id": "crash0000001"})
+        events = self._sse_events(resp)
+        tokens = "".join(p["token"] for e, p in events if e == "token")
+        self.assertEqual(tokens, "partial")
+        self.assertNotIn("Traceback", resp.text)
+        finished = [e for e in self._ledger()
+                    if e.get("event") == "chat finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["exit"], 1)
+        self.assertIn("Traceback (most recent call last)",
+                      finished[0]["stderr"])
+        self.assertIn("RuntimeError: deep boom", finished[0]["stderr"])
+
+    def test_chat_exit2_records_stderr_client_text_unchanged(self):
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            "nope", code=2, err=self.TRACEBACK)
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={"prompt": "hi", "repo": "remote-server",
+                  "session_id": "exit20000std"})
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertEqual(events[-1][1]["error"],
+                         "agent runtime misconfigured (exit 2)")
+        self.assertNotIn("Traceback", resp.text)
+        failed = [e for e in self._ledger()
+                  if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("RuntimeError: deep boom", failed[0]["stderr"])
+
+    def test_chat_success_record_has_no_stderr(self):
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            "hello", err="banner noise\n")
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={"prompt": "hi", "repo": "remote-server",
+                  "session_id": "oksess000001"})
+        self.assertEqual(resp.status_code, 200)
+        finished = [e for e in self._ledger()
+                    if e.get("event") == "chat finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertNotIn("stderr", finished[0])
 
 
 if __name__ == "__main__":

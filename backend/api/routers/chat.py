@@ -55,6 +55,11 @@ router = APIRouter(prefix="/api", tags=["chat"])
 
 CHAT_MAX_PROMPT = 3000
 PI_PROGRESS_TAIL = 6000
+# Bounded stderr tail kept per spawned agent child (#534), mirroring
+# agent_turn.STDERR_TAIL. Crash tracebacks survive in server-side
+# records; the tail never streams to clients (see #449).
+SPAWN_STDERR_TAIL = 4000
+SPAWN_STDERR_CHUNK = 65536
 RID_RE = re.compile(r"^[0-9a-f]{12}$")
 TOOL_HINTS = ("read", "find", "grep", "search", "list", "check",
               "file", "code", "where", "log")
@@ -115,17 +120,63 @@ def get_repo_info(repo: str) -> dict:
 def spawn_chat_process(argv: list):
     """Spawn the chat agent subprocess. Injectable for tests.
 
-    Stdout only: the agent contract keeps banners and trace paths
-    on stderr, and merging them would leak machine lines into the
-    streamed reply tokens.
+    Stdout streams to the client; stderr is piped (never merged)
+    and drained by StderrTail into a bounded server-side tail, so
+    crash tracebacks survive in records without leaking machine
+    lines into the streamed reply tokens.
     """
     return subprocess.Popen(
         argv,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
     )
+
+
+class StderrTail:
+    """Drain a child stderr pipe on a daemon thread; keep a tail.
+
+    Started right after spawn while the caller consumes stdout, so
+    a chatty child can never fill the pipe and stall the parent
+    (the #439 fill-then-hang class). tail() joins the drainer and
+    returns the last SPAWN_STDERR_TAIL chars ("" when the child
+    exposes no stderr pipe, e.g. test fakes).
+    """
+
+    def __init__(self, proc, limit: int = SPAWN_STDERR_TAIL) -> None:
+        self._limit = limit
+        self._tail = ""
+        self._lock = threading.Lock()
+        err = getattr(proc, "stderr", None)
+        if err is None:
+            self._thread = None
+        else:
+            self._thread = threading.Thread(
+                target=self._drain, args=(err,), daemon=True)
+            self._thread.start()
+
+    def _drain(self, err) -> None:
+        try:
+            while True:
+                chunk = err.read(SPAWN_STDERR_CHUNK)
+                if not chunk:
+                    break
+                with self._lock:
+                    self._tail = (self._tail + chunk)[-self._limit:]
+        except Exception:
+            pass
+        finally:
+            try:
+                err.close()
+            except Exception:
+                pass
+
+    def tail(self, timeout: float | None = None) -> str:
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        with self._lock:
+            return self._tail
 
 
 def validate_action_request(args: dict) -> tuple[bool, str]:
@@ -547,9 +598,11 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                        "repo": repo, "event": "chat failed",
                        "error": str(exc)[:500]})
         return
+    drained = StderrTail(proc)
     full_response: list[str] = []
     is_aborted = False
     code = 0
+    err_tail = ""
     try:
         yield sse_frame("phase", {"phase": "generating",
                                   "message": "Streaming response from model..."})
@@ -568,6 +621,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                 yield sse_frame("token", {"token": chunk})
         proc.wait()
         code = proc.returncode
+        err_tail = drained.tail()
     except GeneratorExit:
         # Client disconnected mid-stream: GeneratorExit is not an
         # Exception, so without this the LLM child keeps running
@@ -607,10 +661,13 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                                   "elapsed": elapsed})
         yield sse_frame("error",
                         {"error": "agent runtime misconfigured (exit 2)"})
-        ledger_append({"kind": "chat", "session_id": session_id,
-                       "repo": repo, "event": "chat failed",
-                       "error": "agent runtime misconfigured (exit 2)",
-                       "exit": 2, "elapsed": elapsed})
+        record = {"kind": "chat", "session_id": session_id,
+                  "repo": repo, "event": "chat failed",
+                  "error": "agent runtime misconfigured (exit 2)",
+                  "exit": 2, "elapsed": elapsed}
+        if err_tail:
+            record["stderr"] = err_tail
+        ledger_append(record)
         return
     if code == 3:
         yield from _approval_events(session_id, repo, info,
@@ -622,9 +679,12 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                                   "elapsed": elapsed})
         yield sse_frame("done", {"text": "".join(full_response),
                                  "aborted": False, "elapsed": elapsed})
-        ledger_append({"kind": "chat", "session_id": session_id,
-                       "repo": repo, "event": "chat finished",
-                       "exit": code, "elapsed": elapsed})
+        record = {"kind": "chat", "session_id": session_id,
+                  "repo": repo, "event": "chat finished",
+                  "exit": code, "elapsed": elapsed}
+        if code != 0 and err_tail:
+            record["stderr"] = err_tail
+        ledger_append(record)
 
 
 class ChatStreamRequest(BaseModel):
