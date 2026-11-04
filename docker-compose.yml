@@ -162,7 +162,11 @@ services:
   # Local LLM inference, CPU-only. Loopback-published only.
   # Active since 2026-10-27 for Pi (see docs/pi-setup.md).
   ollama:
-    image: ollama/ollama:latest # pin tag at deploy
+    # Pinned 2026-11-04 (#478): digest of ollama 0.40.12, the version
+    # running in prod at pin time (was :latest) — byte-identical, no upgrade.
+    # Upgrade: run the candidate, smoke `ollama list` + one chat completion,
+    # then bump tag+digest together and note old/new versions in the PR.
+    image: ollama/ollama:0.40.12@sha256:20d1bbfbabe1c97ba4b16301f08a20d8484bcf77047742a3cb71c613d8e12d0b
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
@@ -186,7 +190,11 @@ services:
   # VPN mesh for admin access (SSH, future services). Outbound only.
   # Terminal access does NOT go through Tailscale — it uses the public DDNS URL.
   tailscale:
-    image: tailscale/tailscale:stable # pin to a tested tag at deploy
+    # Pinned 2026-11-04 (#478): digest of tailscale v1.104.2, the version
+    # running in prod at pin time (was :stable) — byte-identical, no upgrade.
+    # Upgrade: run the candidate, smoke `tailscale status` on the box,
+    # then bump tag+digest together and note old/new versions in the PR.
+    image: tailscale/tailscale:v1.104.2@sha256:b11583ad2e93e4671128538c88cf11f460444a5d7e449311dd1933a400ab849d
     network_mode: host
     cap_add:
       - NET_ADMIN
@@ -326,7 +334,11 @@ services:
   # --auth none: the GitHub OAuth gate is the boundary, same as ttyd.
   # Mounts repos checkouts, stack checkout, and persistent config/extensions volumes.
   code-server:
-    image: codercom/code-server:latest
+    # Pinned 2026-11-04 (#478): digest of code-server 4.144.0, the version
+    # running in prod at pin time (was :latest) — byte-identical, no upgrade.
+    # Upgrade: run the candidate, smoke opening /code in a browser,
+    # then bump tag+digest together and note old/new versions in the PR.
+    image: codercom/code-server:4.144.0@sha256:b9e8056bb74bd0c4f90284c7559eddeccd38400cfedc28e64c9d3ca50fef1f83
     command:
       - --auth
       - none

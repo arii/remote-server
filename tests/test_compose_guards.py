@@ -32,6 +32,41 @@ class TestComposeGuards(unittest.TestCase):
             "GITHUB_USER interpolation must use the :? fail-closed guard",
         )
 
+    def test_pinned_service_images(self):
+        """ollama/tailscale/code-server images must be digest-pinned.
+
+        These three floated on :latest/:stable with unhonored "pin at
+        deploy" comments; any recreate could silently jump versions
+        (issue #478). Each ref must carry an @sha256: digest so a
+        recreate pulls identical bytes.
+        """
+        with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        images = {}
+        service = None
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#") or not stripped:
+                continue
+            top = re.match(r"^(\S[^:]*):\s*(#.*)?$", line)
+            if top and not line.startswith((" ", "\t")):
+                service = None
+                continue
+            svc = re.match(r"^  ([A-Za-z0-9_.-]+):\s*(#.*)?$", line)
+            if svc:
+                service = svc.group(1)
+                continue
+            m = re.match(r"^\s+image:\s*(\S+)", line)
+            if m and service:
+                images.setdefault(service, m.group(1))
+        for svc in ("ollama", "tailscale", "code-server"):
+            self.assertIn(svc, images, f"no image ref found for {svc}")
+            self.assertRegex(
+                images[svc],
+                r"^[^@\s]+@sha256:[0-9a-f]{64}$",
+                f"{svc} image must be pinned by digest (got {images[svc]})",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
