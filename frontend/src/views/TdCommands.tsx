@@ -10,13 +10,8 @@ export interface TdCommand {
 }
 
 const TD_COMMANDS: TdCommand[] = [
-  {
-    slug: 'fix-ci',
-    label: 'Fix CI failures',
-    desc: 'Pushes automated CI fixes to the PR branch.',
-    needsPr: true,
-    build: (pr) => `td --json agent fix-ci --pr ${pr} --execute`,
-  },
+  // fix-ci was the first entry until #428 retired it: `td agent
+  // fix-ci --execute` dispatches to a dead backend.
   {
     slug: 'read-reviews',
     label: 'Read PR reviews',
@@ -87,7 +82,6 @@ export default function TdCommands({
   onPrChange,
   prStateCurrent,
   prOk,
-  fixCiBlock,
   conflictBlock,
   onDispatch,
 }: {
@@ -95,7 +89,6 @@ export default function TdCommands({
   onPrChange: (value: string) => void;
   prStateCurrent: PrRefState | null;
   prOk: boolean;
-  fixCiBlock: string | null;
   conflictBlock: string | null;
   onDispatch: (cmd: TdCommand) => void;
 }) {
@@ -137,9 +130,9 @@ export default function TdCommands({
             </button>
           ))}
         </div>
-        {(fixCiBlock || conflictBlock) && (
+        {conflictBlock && (
           <p className="row-meta" data-testid="td-change-block">
-            {[fixCiBlock, conflictBlock].filter(Boolean).join(' ')}
+            {conflictBlock}
           </p>
         )}
       </div>

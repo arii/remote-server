@@ -71,18 +71,21 @@ class TestProposalValidation(unittest.TestCase):
     def test_td_n_to_digits(self):
         ok, text = deep_chat.validate_proposal(
             {"kind": "td",
-             "command": "td --json agent fix-ci --pr 153 --execute"})
+             "command": "td gh resolve-conflicts --pr 153"})
         self.assertTrue(ok)
-        self.assertIn("--pr 153 --execute", text)
+        self.assertIn("--pr 153", text)
         ok, _ = deep_chat.validate_proposal(
             {"kind": "td", "command": "td gh read-pr-reviews --pr 7"})
         self.assertTrue(ok)
 
     def test_td_rejects(self):
         for bad in (
-            "td --json agent fix-ci --pr 0 --execute",  # N must be > 0
-            "td --json agent fix-ci --pr abc --execute",
-            "td --json agent fix-ci --pr 15a --execute",
+            "td gh read-pr-reviews --pr 0",  # N must be > 0
+            "td gh read-pr-reviews --pr abc",
+            "td gh read-pr-reviews --pr 15a",
+            # Retired shape (#428): valid N, but fix-ci dispatches
+            # to a dead backend, so it is no longer allowlisted.
+            "td --json agent fix-ci --pr 153 --execute",
             "td gh read-pr-reviews",  # missing N
             "td rm -rf /",  # invented subcommand
             "td --json preflight --force",  # invented flag

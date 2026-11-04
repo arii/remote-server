@@ -191,8 +191,8 @@ class TestPromptsSchema(unittest.TestCase):
             "pr-state": "PR 153 is open, review requested, checks pass.",
             "propose-issue": "PROPOSE issue\nTITLE: Buttons crash on "
                              "load\nBODY:\ntap Run\nEND PROPOSE",
-            "propose-td": "PROPOSE td\nCOMMAND: td --json agent fix-ci "
-                          "--pr 153 --execute\nEND PROPOSE",
+            "propose-td": "PROPOSE td\nCOMMAND: td gh read-pr-reviews "
+                          "--pr 153\nEND PROPOSE",
         }
         for c in eval_ask.PROMPTS:
             if c["name"] in goldens:
@@ -337,10 +337,11 @@ class TestAllowlistSync(unittest.TestCase):
         # The truth itself still carries the propose-td shape the
         # eval case anchors on, so a truth edit that drops it fails
         # here instead of silently stranding the eval.
+        # (read-pr-reviews since #428 retired the fix-ci anchor.)
         truth = self.load_list(
             os.path.join(root, "backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
-        self.assertIn("td --json agent fix-ci --pr N --execute", truth)
+        self.assertIn("td gh read-pr-reviews --pr N", truth)
 
     def test_propose_td_case_uses_allowlisted_shape(self):
         root = os.path.join(os.path.dirname(__file__), "..")
@@ -352,10 +353,10 @@ class TestAllowlistSync(unittest.TestCase):
         pattern = td_case["anchor"].pattern.replace("\\\\", "\\")
         # The anchored command text must be one allowlisted shape with
         # N substituted (modulo regex escaping of spaces/dashes).
-        needle = "td --json agent fix-ci --pr 153 --execute"
+        needle = "td gh read-pr-reviews --pr 153"
         shapes = [s.replace("N", "153") for s in truth]
         self.assertIn(needle, shapes)
-        self.assertIn("td --json agent fix-ci ", pattern)
+        self.assertIn("td gh read-pr-reviews ", pattern)
 
 
 if __name__ == "__main__":

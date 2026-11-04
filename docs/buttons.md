@@ -52,8 +52,8 @@ Routes by router (verbs + paths; see router files for shapes):
 - `attention.py`, `inbox.py` — `GET /api/attention`,
   `POST /api/attention/snooze|unsnooze`, `GET /api/inbox?repo=`.
 - `pulls.py` — `GET /api/prs|pr-details|pr-diff`, `POST /api/pr-action`
-  (merge / update / fix-ci / approve / request-changes, server re-checks
-  fresh PR state at tap time).
+  (merge / update / approve / request-changes, server re-checks
+  fresh PR state at tap time; fix-ci retired, #428).
 - `issues.py` — `GET /api/issues|labels`, `POST /api/create-issue`,
   `POST /api/issue-draft|issue-label`, repair worker
   (`POST /api/repair/dispatch|abort|schedule`,

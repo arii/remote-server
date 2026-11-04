@@ -24,7 +24,6 @@ import {
   defaultComparePair,
   diffLineTone,
   filterOutputLines,
-  fixCiBlockReason,
   isConflictError,
   isNotFoundError,
   isTabVisible,
@@ -777,7 +776,6 @@ export default function JobsView({
   const prStateCurrent = prState && String(prState.n) === pr.trim() ? prState : null;
   const list = jobs ?? [];
   const finishedCount = list.filter((j) => j.done).length;
-  const fixCiBlock = fixCiBlockReason(prStateCurrent);
   const conflictBlock = conflictBlockReason(prStateCurrent);
 
   return (
@@ -837,7 +835,6 @@ export default function JobsView({
         onPrChange={setPr}
         prStateCurrent={prStateCurrent}
         prOk={prOk}
-        fixCiBlock={fixCiBlock}
         conflictBlock={conflictBlock}
         onDispatch={onDispatchTd}
       />

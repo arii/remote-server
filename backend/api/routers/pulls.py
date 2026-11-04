@@ -7,8 +7,9 @@ this backend serves /api/* like its sibling routers):
 - GET  /api/prs?repo=            open PRs, shaped rows
 - GET  /api/pr-details?repo=&pr= enriched details + AI prompts
 - GET  /api/pr-diff?repo=&pr=    filtered unified diff, truncated
-- POST /api/pr-action             merge / update / fix-ci /
-                                  approve / request-changes with gating
+- POST /api/pr-action             merge / update / approve /
+                                  request-changes with gating
+                                  (fix-ci retired, #428)
 
 Note: the legacy /buttons/api/prs handler calls _format_ci_status
 and _format_review_decision, which are not defined anywhere in
@@ -36,7 +37,9 @@ PR_VIEW_FIELDS = ("number,title,headRefName,baseRefName,mergeable,"
                   "mergeStateStatus,reviewDecision,statusCheckRollup,"
                   "updatedAt,author,isDraft,url,files")
 
-PR_ACTIONS = ("merge", "update", "fix-ci", "approve",
+# fix-ci was a fifth member until #428: it shelled to
+# `td agent fix-ci --execute`, a dead backend dispatch.
+PR_ACTIONS = ("merge", "update", "approve",
               "request-changes")
 
 # Max chars for a request-changes review body (#616).
@@ -215,18 +218,9 @@ def _pr_action(gh: str, pr_number: int, action: str,
                           f"repos/{gh}/pulls/{pr_number}/update-branch",
                           "--method", "PUT"], runner=run)
         return {"ok": True, "output": out[-2000:]}
-    ci, _merge = _pr_view(gh, pr_number, run)
-    if ci != "failing":
-        raise ValueError(f"CI is {ci}, not failing — nothing to fix")
-    proc = run.run(["td", "--json", "agent", "fix-ci",
-                    "--pr", str(pr_number), "--execute"],
-                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                   timeout=120, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            (proc.stderr or "").strip().splitlines()[-1]
-            if (proc.stderr or "").strip() else "fix-ci failed")
-    return {"ok": True, "output": proc.stdout[-2000:]}
+    # pr_action allowlists before calling; direct callers with any
+    # other action (including retired fix-ci, #428) fail here.
+    raise ValueError(f"unknown action: {action}")
 
 
 @router.get("/pr-details", response_model=PrDetails)
@@ -338,6 +332,16 @@ def pr_diff(repo: str = "remote-server", pr: int = 0,
 def pr_action(body: PrActionRequest) -> dict:
     from backend.core import require_confirm
 
+    # Retired (#428): fix-ci shelled to `td agent fix-ci
+    # --execute`, whose backend is dead. Named explicitly (not
+    # folded into the generic bad action error) so stale consoles
+    # learn why the tap fails.
+    if body.action == "fix-ci":
+        raise HTTPException(
+            status_code=400,
+            detail=("fix-ci was retired (#428): the CI-fix backend "
+                    "is dead; file an issue and dispatch the repair "
+                    "worker from Jobs, or push a fix to the branch"))
     if body.action == "merge":
         require_confirm(body, "pr-merge")
     elif body.action == "approve":

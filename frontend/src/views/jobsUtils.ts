@@ -112,18 +112,14 @@ export interface PrRefState {
   conflicted: boolean;
 }
 
-// Relevance gates: fix-ci only makes sense on a failing PR,
-// resolve-conflicts only on a conflicted one.
-export function fixCiBlockReason(pr: PrRefState | null): string | null {
-  return pr && pr.ci !== 'failing' ? `CI is ${pr.ci} — nothing to fix.` : null;
-}
-
+// Relevance gate: resolve-conflicts only makes sense on a
+// conflicted PR. (fix-ci had a failing-CI gate until #428
+// retired the command.)
 export function conflictBlockReason(pr: PrRefState | null): string | null {
   return pr && !pr.conflicted ? 'No conflicts on this PR.' : null;
 }
 
 export function tdBlockReason(slug: string, pr: PrRefState | null): string | null {
-  if (slug === 'fix-ci') return fixCiBlockReason(pr);
   if (slug === 'resolve-conflicts') return conflictBlockReason(pr);
   return null;
 }
