@@ -32,7 +32,7 @@ from core_cli import context_filter
 router = APIRouter(prefix="/api", tags=["pulls"])
 
 PR_LIST_FIELDS = ("number,title,isDraft,mergeable,reviewDecision,"
-                  "headRefName,statusCheckRollup,url,author")
+                  "headRefName,statusCheckRollup,url,author,updatedAt")
 PR_VIEW_FIELDS = ("number,title,headRefName,baseRefName,mergeable,"
                   "mergeStateStatus,reviewDecision,statusCheckRollup,"
                   "updatedAt,author,isDraft,url,files")
@@ -59,6 +59,10 @@ class PrRow(BaseModel):
     reviewDecision: str = ""
     mergeable: str = "UNKNOWN"
     url: str = ""
+    # Backend follow-up for #817: the Review sort control orders rows
+    # by updatedAt; extra="allow" would pass it through undeclared,
+    # but the named field documents the contract the UI relies on.
+    updatedAt: str = ""
 
 
 class PrList(BaseModel):
@@ -162,6 +166,7 @@ def prs(repo: str = "remote-server", runner=None) -> dict:
             "reviewDecision": str(pr.get("reviewDecision") or ""),
             "mergeable": str(pr.get("mergeable") or "UNKNOWN").upper(),
             "url": pr.get("url", ""),
+            "updatedAt": pr.get("updatedAt") or "",
         })
     return {"repo": repo, "prs": rows}
 

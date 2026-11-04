@@ -1987,5 +1987,39 @@ class CompletedRunEvictionTest(unittest.TestCase):
             self.assertEqual(boot.runs, {})
 
 
+class CheckNotificationsActionTest(unittest.TestCase):
+    """check-notifications action registration + step shape (#822)."""
+
+    def test_registered_repo_scoped_and_schedulable(self):
+        self.assertIn("check-notifications", engine.ALLOWED_ACTIONS)
+        self.assertIn("check-notifications", engine.REPO_SCOPED_ACTIONS)
+        self.assertNotIn("check-notifications",
+                         engine.DESTRUCTIVE_ACTIONS)
+
+    def test_step_invokes_notify_check_module(self):
+        import sys
+
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick", "arii/boomtick",
+            "/srv/repos/boomtick")
+        self.assertIsNone(err)
+        self.assertEqual(
+            steps, [[sys.executable, "-m", "core_cli.notify_check",
+                     "--repo", "boomtick", "--gh", "arii/boomtick"]])
+
+    def test_step_needs_a_repo(self):
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick", "", "")
+        self.assertIsNone(steps)
+        self.assertIn("needs a repo", err)
+
+    def test_start_run_accepts_action(self):
+        reg = RunRegistry()
+        rid, err = reg.start_run("check-notifications", "boomtick")
+        self.assertIsNone(err)
+        self.assertIsNotNone(rid)
+        reg.finish_run(rid, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

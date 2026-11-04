@@ -145,6 +145,31 @@ class PrsTest(unittest.TestCase):
             (7, "Fix thing", "octo", "fix-thing", "passing", "passing",
              "APPROVED", "MERGEABLE"))
 
+    def test_list_rows_carry_updated_at(self):
+        # Backend follow-up for #817: Review sort orders by updatedAt.
+        import json as _json
+
+        payload = _json.dumps([{
+            "number": 7, "title": "Fix thing", "isDraft": False,
+            "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
+            "headRefName": "fix-thing", "statusCheckRollup": [],
+            "url": "https://github.com/arii/remote-server/pull/7",
+            "author": {"login": "octo"},
+            "updatedAt": "2026-11-03T10:00:00Z",
+        }])
+        runner = FakeRunner().on(["gh"], FakeProc(stdout=payload))
+        out = pulls_mod.prs(repo="remote-server", runner=runner)
+        row = out["prs"][0]
+        self.assertEqual(row["updatedAt"], "2026-11-03T10:00:00Z")
+        self.assertEqual(
+            pulls_mod.PrRow(**row).updatedAt, "2026-11-03T10:00:00Z")
+
+    def test_list_updated_at_defaults_empty(self):
+        runner = FakeRunner().on(
+            ["gh"], FakeProc(stdout=gh_list_prs()))
+        out = pulls_mod.prs(repo="remote-server", runner=runner)
+        self.assertEqual(out["prs"][0]["updatedAt"], "")
+
     def test_list_bad_repo(self):
         from fastapi import HTTPException
 

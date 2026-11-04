@@ -2,6 +2,7 @@
 
 import os
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +14,26 @@ _DEEP_AGENT = os.path.join(REPO_ROOT, "deep-agent")
 if _DEEP_AGENT not in sys.path:
     sys.path.insert(0, _DEEP_AGENT)
 
-app = FastAPI(title="remote-server backend")
+
+@asynccontextmanager
+async def _lifespan(app):
+    """Start the shared schedule tick on boot (#822).
+
+    Repair/action/digest/budget jobs all ride one 60s ticker, which
+    used to start lazily on the first schedule creation — so a fresh
+    server (or one that only ever consumed defaults) never fired
+    anything, including the notify seeds. Starting it here makes the
+    tick unconditional; _ensure_schedule_ticker stays idempotent so
+    the lazy call sites remain harmless.
+    """
+    try:
+        issues._ensure_schedule_ticker()
+    except Exception:
+        pass
+    yield
+
+
+app = FastAPI(title="remote-server backend", lifespan=_lifespan)
 
 app.include_router(agent.router)
 app.include_router(agents.router)

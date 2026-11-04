@@ -93,7 +93,8 @@ export default function JobSchedulesSection({
     <section data-testid="jobs-schedule-section" aria-label="Scheduled runs">
       <h3>Scheduled runs</h3>
       <p className="row-meta">
-        Non-destructive actions repeat daily or weekly on the shared tick.
+        Non-destructive actions repeat on the shared tick: daily, weekly,
+        or every 15 minutes.
       </p>
       {activeDraft && (
         <div className="actions">
@@ -110,6 +111,7 @@ export default function JobSchedulesSection({
             >
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
+              <option value="quarter-hourly">Every 15 minutes</option>
             </select>
           </label>{' '}
           <button

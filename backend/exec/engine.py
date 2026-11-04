@@ -18,6 +18,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -92,6 +93,7 @@ ALLOWED_ACTIONS = (
     "run-plan",
     "merge-approved",
     "triage-fanout",
+    "check-notifications",
 )
 
 # Actions whose original has confirm: True. The router requires
@@ -114,6 +116,7 @@ REPO_SCOPED_ACTIONS = (
     "merge-approved",
     "run-td",
     "triage-fanout",
+    "check-notifications",
 )
 
 ENGINE_ROOT = os.path.dirname(
@@ -467,6 +470,15 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             return (None, "triage fanout script not found at "
                     f"{script}")
         return [[python, script, gh]], None
+    if action == "check-notifications":
+        # One-repo notify scan (#822): local exec (like run-plan, not
+        # exec_argv into terminal) so the check reads/writes the same
+        # notifier state file the API serves. Steps run with
+        # cwd=stack_dir, so -m resolves core_cli from the checkout.
+        if not gh:
+            return None, "check-notifications needs a repo"
+        return [[sys.executable, "-m", "core_cli.notify_check",
+                 "--repo", repo, "--gh", gh]], None
     return None, "unknown action"
 
 
