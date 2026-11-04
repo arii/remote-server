@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import HoldToConfirm from '../components/HoldToConfirm';
-import { apiUrl, createIssue, fetchInbox, warmViewCaches } from '../apiClient';
+import {
+  apiUrl,
+  createIssue,
+  fetchInbox,
+  snoozeAttention,
+  unsnoozeAttention,
+  warmViewCaches,
+} from '../apiClient';
 import type { InboxFeed, SystemHealthResponse } from '../apiClient';
 import type { AttentionItem } from '../attentionTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
@@ -61,6 +68,99 @@ function relativeStamp(epochSeconds: number): string {
 // back off to a slow heartbeat when the queue is clear.
 export function nowPollMs(itemCount: number): number {
   return itemCount > 0 ? 15000 : 60000;
+}
+
+// Attention snooze presets (issue #614), minutes. Server validates.
+export const SNOOZE_PRESETS = [60, 480];
+
+export function snoozePresetLabel(minutes: number): string {
+  return minutes >= 60 ? `Snooze ${minutes / 60}h` : `Snooze ${minutes}m`;
+}
+
+export interface SnoozedEntry {
+  until: number;
+  title: string;
+}
+
+// Drop stubs that no longer apply: expired ones (the item resurfaces
+// on its own) and stubs whose item is back in the list (server truth
+// wins over optimism).
+export function reconcileSnoozed(
+  prev: Record<string, SnoozedEntry>,
+  liveIds: string[],
+  nowSec: number,
+): Record<string, SnoozedEntry> {
+  const next: Record<string, SnoozedEntry> = {};
+  for (const [id, entry] of Object.entries(prev)) {
+    if (entry.until > nowSec && !liveIds.includes(id)) next[id] = entry;
+  }
+  return next;
+}
+
+// Stubs for snoozed ids missing from the live list (the undo row);
+// present ids render their stub inline instead.
+export function snoozedRows(
+  snoozed: Record<string, SnoozedEntry>,
+  liveIds: string[],
+): Array<[string, SnoozedEntry]> {
+  return Object.entries(snoozed).filter(([id]) => !liveIds.includes(id));
+}
+
+export function SnoozeButtons({
+  itemId,
+  busy,
+  onSnooze,
+}: {
+  itemId: string;
+  busy: boolean;
+  onSnooze: (minutes: number) => void;
+}) {
+  return (
+    <>
+      {SNOOZE_PRESETS.map((m) => (
+        <button
+          key={m}
+          type="button"
+          data-testid={`snooze-${itemId}-${m}`}
+          disabled={busy}
+          onClick={() => onSnooze(m)}
+        >
+          {snoozePresetLabel(m)}
+        </button>
+      ))}
+    </>
+  );
+}
+
+export function SnoozedStub({
+  itemId,
+  title,
+  until,
+  busy,
+  onUnsnooze,
+}: {
+  itemId: string;
+  title: string;
+  until: number;
+  busy: boolean;
+  onUnsnooze: () => void;
+}) {
+  return (
+    <li className="detail" data-testid={`now-snoozed-${itemId}`}>
+      <span className="row-title">Snoozed: {title}</span>
+      <p className="row-meta">Hidden until {formatStamp(until)}</p>
+      <div className="actions">
+        <button
+          type="button"
+          data-testid={`unsnooze-${itemId}`}
+          disabled={busy}
+          onClick={onUnsnooze}
+        >
+          {busy ? 'Unsnoozing…' : 'Unsnooze'}
+        </button>
+      </div>
+    </li>
+  );
 }
 
 export function StackSection({ health }: { health: SystemHealthResponse | null }) {
@@ -220,6 +320,10 @@ export default function NowView({
   // Last Review row selection, surviving section switches so Jobs can
   // prefill its PR field from row context. Reset on repo change.
   const [lastPr, setLastPr] = useState<number | null>(null);
+  // Optimistic snooze stubs by item id. A stub collapses its card
+  // instantly; refresh() reconciles against the server list.
+  const [snoozed, setSnoozed] = useState<Record<string, SnoozedEntry>>({});
+  const [snoozeBusy, setSnoozeBusy] = useState<string | null>(null);
 
   useEffect(() => {
     setLastPr(null);
@@ -229,9 +333,59 @@ export default function NowView({
     try {
       const live = await fetchInbox(repo);
       setData(live);
+      setSnoozed((prev) =>
+        reconcileSnoozed(
+          prev,
+          live.attention.map((i) => i.id),
+          Date.now() / 1000,
+        ),
+      );
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function dropStub(id: string) {
+    setSnoozed((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  async function onSnooze(item: AttentionItem, minutes: number) {
+    if (snoozeBusy !== null) return;
+    const optimisticUntil = Date.now() / 1000 + minutes * 60;
+    setSnoozed((prev) => ({ ...prev, [item.id]: { until: optimisticUntil, title: item.title } }));
+    setSnoozeBusy(item.id);
+    try {
+      const res = await snoozeAttention(item.id, minutes, repo);
+      // Re-assert with the server timestamp: a poll refresh may have
+      // dropped the optimistic stub mid-flight.
+      setSnoozed((prev) => ({ ...prev, [item.id]: { until: res.snoozed_until, title: item.title } }));
+      setFired(`Snoozed: ${item.title} until ${formatStamp(res.snoozed_until)}`);
+      await refresh();
+    } catch (err) {
+      dropStub(item.id);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSnoozeBusy(null);
+    }
+  }
+
+  async function onUnsnooze(id: string) {
+    if (snoozeBusy !== null) return;
+    setSnoozeBusy(id);
+    try {
+      await unsnoozeAttention(id);
+      dropStub(id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSnoozeBusy(null);
     }
   }
 
@@ -303,6 +457,8 @@ export default function NowView({
     await refresh();
   }
 
+  const stubRows = data ? snoozedRows(snoozed, data.attention.map((i) => i.id)) : [];
+
   return (
     <section data-testid="now-view">
       <header className="page-head">
@@ -353,6 +509,20 @@ export default function NowView({
             onOpenReview={() => setSection('review')}
             onOpenJobs={() => setSection('jobs')}
           />
+          {stubRows.length > 0 && (
+            <ul className="session-list" data-testid="now-snoozed">
+              {stubRows.map(([id, entry]) => (
+                <SnoozedStub
+                  key={id}
+                  itemId={id}
+                  title={entry.title}
+                  until={entry.until}
+                  busy={snoozeBusy === id}
+                  onUnsnooze={() => void onUnsnooze(id)}
+                />
+              ))}
+            </ul>
+          )}
       {data.attention.length === 0 ? (
         <div data-testid="now-empty">
           <h3>Nothing needs you right now</h3>
@@ -360,7 +530,17 @@ export default function NowView({
         </div>
       ) : (
         <ul className="session-list" data-testid="now-list">
-          {data.attention.map((item) => (
+          {data.attention.map((item) =>
+            snoozed[item.id] ? (
+              <SnoozedStub
+                key={item.id}
+                itemId={item.id}
+                title={item.title}
+                until={snoozed[item.id].until}
+                busy={snoozeBusy === item.id}
+                onUnsnooze={() => void onUnsnooze(item.id)}
+              />
+            ) : (
             <li key={item.id} className="detail" data-testid={`now-item-${item.id}`}>
               <span className="row-title">{item.title}</span>
               <p className="row-meta">
@@ -389,9 +569,15 @@ export default function NowView({
                 >
                   Ask agent
                 </button>
+                <SnoozeButtons
+                  itemId={item.id}
+                  busy={snoozeBusy !== null}
+                  onSnooze={(m) => void onSnooze(item, m)}
+                />
               </div>
             </li>
-          ))}
+            ),
+          )}
         </ul>
       )}
       <div className="actions" data-testid="inbox-sections">

@@ -819,3 +819,28 @@ export function fetchNotificationStatus(): Promise<NotificationsStatus> {
 export function triggerDigest(): Promise<DigestResult> {
   return postJson<DigestResult>('api/notifications/trigger-digest', {});
 }
+
+// Attention snooze (issue #614): hide a queue item id until expiry.
+export interface SnoozeResult {
+  ok: boolean;
+  id: string;
+  snoozed_until: number;
+}
+
+export interface UnsnoozeResult {
+  ok: boolean;
+  id: string;
+  snoozed: boolean;
+}
+
+export function snoozeAttention(
+  id: string,
+  minutes: number,
+  repo = 'remote-server',
+): Promise<SnoozeResult> {
+  return postJson<SnoozeResult>('api/attention/snooze', { id, minutes, repo });
+}
+
+export function unsnoozeAttention(id: string): Promise<UnsnoozeResult> {
+  return postJson<UnsnoozeResult>('api/attention/unsnooze', { id });
+}

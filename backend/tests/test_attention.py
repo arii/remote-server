@@ -1,5 +1,9 @@
 """Tests for the attention queue + confirm helper (stdlib unittest)."""
 
+import json
+import os
+import tempfile
+import time
 import unittest
 
 from backend.core import require_confirm
@@ -166,6 +170,112 @@ class AttentionShapeTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["detail"],
                          "fatal: not possible to fast-forward")
+
+
+class SnoozeAttentionTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self._old_path = os.environ.get("BUTTONS_SNOOZE_PATH")
+        os.environ["BUTTONS_SNOOZE_PATH"] = os.path.join(
+            self._tmp, "snooze.json")
+        self._orig = {}
+        for k, v in {
+            "get_workflow_health": lambda repo: {"workflows": []},
+            "list_failed_jobs": lambda: [
+                {"id": "j1", "name": "n", "state": "failed",
+                 "created_at": 1.0}],
+            "list_failed_webhooks": lambda: [],
+            "list_pending_approvals": lambda: [],
+        }.items():
+            self._orig[k] = getattr(attention, k)
+            setattr(attention, k, v)
+
+    def tearDown(self):
+        for k, v in self._orig.items():
+            setattr(attention, k, v)
+        if self._old_path is None:
+            os.environ.pop("BUTTONS_SNOOZE_PATH", None)
+        else:
+            os.environ["BUTTONS_SNOOZE_PATH"] = self._old_path
+
+    def _ids(self):
+        return [i["id"] for i in
+                attention.attention("remote-server")["items"]]
+
+    def _store_file(self):
+        with open(os.environ["BUTTONS_SNOOZE_PATH"],
+                  encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_snooze_hides_immediately(self):
+        self.assertEqual(self._ids(), ["job-j1"])
+        res = attention.snooze_attention(
+            attention.SnoozeRequest(id="job-j1", minutes=60))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["id"], "job-j1")
+        self.assertGreater(res["snoozed_until"], time.time())
+        self.assertEqual(self._ids(), [])
+
+    def test_unknown_id_404s(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            attention.snooze_attention(
+                attention.SnoozeRequest(id="job-nope", minutes=60))
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_invalid_minutes_400s(self):
+        from fastapi import HTTPException
+        for minutes in (0, 30, -60):
+            with self.assertRaises(HTTPException) as ctx:
+                attention.snooze_attention(
+                    attention.SnoozeRequest(id="job-j1",
+                                           minutes=minutes))
+            self.assertEqual(ctx.exception.status_code, 400)
+        # Both presets accepted.
+        for minutes in (60, 480):
+            res = attention.snooze_attention(
+                attention.SnoozeRequest(id="job-j1", minutes=minutes))
+            self.assertTrue(res["ok"])
+
+    def test_unsnooze_restores_and_is_idempotent(self):
+        attention.snooze_attention(
+            attention.SnoozeRequest(id="job-j1", minutes=60))
+        self.assertEqual(self._ids(), [])
+        res = attention.unsnooze_attention(
+            attention.UnsnoozeRequest(id="job-j1"))
+        self.assertTrue(res["ok"])
+        self.assertFalse(res["snoozed"])
+        self.assertEqual(self._ids(), ["job-j1"])
+        # Second unsnooze of a non-snoozed id still succeeds.
+        res = attention.unsnooze_attention(
+            attention.UnsnoozeRequest(id="job-j1"))
+        self.assertTrue(res["ok"])
+        self.assertEqual(self._ids(), ["job-j1"])
+
+    def test_expiry_resurfaces_and_prunes(self):
+        attention.snooze_attention(
+            attention.SnoozeRequest(id="job-j1", minutes=60))
+        self.assertEqual(self._ids(), [])
+        # Time-travel: rewrite the entry as expired.
+        with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
+                  encoding="utf-8") as f:
+            json.dump({"job-j1": time.time() - 1}, f)
+        self.assertEqual(self._ids(), ["job-j1"])
+        self.assertNotIn("job-j1", self._store_file())
+
+    def test_store_survives_reread(self):
+        until = time.time() + 3600
+        with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
+                  encoding="utf-8") as f:
+            json.dump({"job-j1": until}, f)
+        # A fresh read (as after a restart) still filters the id.
+        self.assertEqual(self._ids(), [])
+
+    def test_corrupt_store_reads_empty(self):
+        with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
+                  encoding="utf-8") as f:
+            f.write("not json{{{")
+        self.assertEqual(self._ids(), ["job-j1"])
 
 
 class WorkflowHealthCacheTest(unittest.TestCase):
