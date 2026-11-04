@@ -17,6 +17,7 @@ functions so tests never touch docker or the network.
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -27,10 +28,18 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.core import get_system_health, require_confirm, validate_repo_name
+from backend.core import (
+    briefing_fixture_candidate,
+    get_system_health,
+    require_confirm,
+    resolve_briefing_fixture_path,
+    validate_repo_name,
+)
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["ops"])
+
+logger = logging.getLogger(__name__)
 
 
 def run_takeover() -> str:
@@ -187,17 +196,29 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
 
 
 def _fixture_workflow_health(repo: str) -> dict | None:
-    """Fixture override for preview/seed environments, same rule as
-    buttons: BUTTONS_FIXTURE_BRIEFING or a fixture-briefing.json next
-    to the repo checkouts. None when no fixture applies."""
-    fixture_path = os.environ.get("BUTTONS_FIXTURE_BRIEFING", "")
+    """Fixture override for preview/seed environments (#453).
+
+    Same rule as the briefing route: the explicit
+    BUTTONS_FIXTURE_BRIEFING path always wins; a
+    fixture-briefing.json next to the checkouts only applies with
+    the BUTTONS_FIXTURE_AUTO_DISCOVER opt-in. None when no fixture
+    applies (live serves). Fixture serves are marked and logged —
+    never silent.
+    """
+    fixture_path = resolve_briefing_fixture_path()
+    if fixture_path and not os.path.exists(fixture_path):
+        logger.warning(
+            "workflow-health: fixture %s for repo %s missing; "
+            "serving live", fixture_path, repo)
+        return None
     if not fixture_path:
-        candidate = os.path.join(
-            os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos"),
-            "fixture-briefing.json")
-        if os.path.exists(candidate):
-            fixture_path = candidate
-    if not (fixture_path and os.path.exists(fixture_path)):
+        stray = briefing_fixture_candidate()
+        if os.path.exists(stray):
+            logger.warning(
+                "workflow-health: ignoring stray fixture %s for repo %s "
+                "(set BUTTONS_FIXTURE_BRIEFING or "
+                "BUTTONS_FIXTURE_AUTO_DISCOVER=1 to serve fixtures)",
+                stray, repo)
         return None
     try:
         with open(fixture_path, encoding="utf-8") as fh:
@@ -226,10 +247,15 @@ def _fixture_workflow_health(repo: str) -> dict | None:
             "jobs": [{"name": "test-e2e", "conclusion": "failure",
                       "failed_steps": ["run playwright test"]}],
         })
+    logger.warning(
+        "workflow-health: serving fixture %s for repo %s",
+        fixture_path, repo)
     return {"repo": repo,
             "status": "failing" if items else "healthy",
             "total_failing": len(items),
-            "workflows": items}
+            "workflows": items,
+            "fixture": True,
+            "fixture_source": fixture_path}
 
 
 class TakeoverResult(BaseModel):
@@ -243,6 +269,10 @@ class WorkflowHealth(BaseModel):
     status: str = ""
     total_failing: int = 0
     workflows: list = Field(default_factory=list)
+    # Fixture marker (#453): True + source path when canned data
+    # serves. Live responses carry the False default.
+    fixture: bool = False
+    fixture_source: str = ""
 
 
 class ClearRequest(BaseModel):

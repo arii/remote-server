@@ -6,6 +6,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 try:
     from fastapi import FastAPI
@@ -621,8 +622,9 @@ class ChatOpsTest(unittest.TestCase):
         old = os.environ.get("BUTTONS_FIXTURE_BRIEFING")
         os.environ["BUTTONS_FIXTURE_BRIEFING"] = path
         try:
-            resp = self.client.get("/api/workflow-health",
-                                   params={"repo": "remote-server"})
+            with mock.patch.object(ops.logger, "warning") as warn:
+                resp = self.client.get("/api/workflow-health",
+                                       params={"repo": "remote-server"})
         finally:
             if old is None:
                 del os.environ["BUTTONS_FIXTURE_BRIEFING"]
@@ -634,6 +636,83 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(body["status"], "failing")
         self.assertEqual(body["total_failing"], 1)
         self.assertIn("diagnosed_cause", body["workflows"][0])
+        # Fixture marker (#453): canned responses say so + name the
+        # source file; every fixture serve logs at warning.
+        self.assertTrue(body["fixture"])
+        self.assertEqual(body["fixture_source"], path)
+        self.assertTrue(warn.called)
+        logged = " ".join(str(a) for call in warn.call_args_list
+                          for a in call[0])
+        self.assertIn(path, logged)
+
+    def _write_stray_briefing_fixture(self, payload):
+        """A fixture-briefing.json next to the checkouts with no
+        explicit env var: the stray-file setup (#453). Returns
+        (stray_path, restore) where restore() resets the env."""
+        stray = os.path.join(self.tmp, "fixture-briefing.json")
+        with open(stray, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        olds = {key: os.environ.get(key) for key in
+                ("BUTTONS_REPOS_DIR", "BUTTONS_FIXTURE_BRIEFING",
+                 "BUTTONS_FIXTURE_AUTO_DISCOVER")}
+        os.environ["BUTTONS_REPOS_DIR"] = self.tmp
+        os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+        os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
+
+        def _restore():
+            for key, val in olds.items():
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
+            ops._WORKFLOW_HEALTH_CACHE.clear()
+
+        ops._WORKFLOW_HEALTH_CACHE.clear()
+        return stray, _restore
+
+    def test_workflow_health_stray_fixture_ignored(self):
+        """A stray next-to-checkouts file alone cannot shadow live."""
+        stray, restore = self._write_stray_briefing_fixture(
+            {"failing_runs": [{"name": "STRAY"}]})
+        ops.fetch_workflow_health = lambda repo, gh: {
+            "repo": repo, "status": "healthy", "total_failing": 0,
+            "workflows": []}
+        try:
+            with mock.patch.object(ops.logger, "warning") as warn:
+                resp = self.client.get("/api/workflow-health",
+                                       params={"repo": "remote-server"})
+        finally:
+            restore()
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "healthy")
+        self.assertEqual(body["total_failing"], 0)
+        self.assertFalse(body["fixture"])
+        self.assertEqual(body["fixture_source"], "")
+        logged = " ".join(str(a) for call in warn.call_args_list
+                          for a in call[0])
+        self.assertIn("stray", logged)
+        self.assertIn(stray, logged)
+
+    def test_workflow_health_auto_discover_opt_in(self):
+        _, restore = self._write_stray_briefing_fixture(
+            {"failing_runs": [{"name": "CI", "branch": "main",
+                               "event": "push",
+                               "url": "https://example.invalid/1"}]})
+        os.environ["BUTTONS_FIXTURE_AUTO_DISCOVER"] = "1"
+        ops.fetch_workflow_health = mock.Mock(
+            side_effect=AssertionError("live must not run"))
+        try:
+            resp = self.client.get("/api/workflow-health",
+                                   params={"repo": "remote-server"})
+        finally:
+            restore()
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "failing")
+        self.assertEqual(body["total_failing"], 1)
+        self.assertTrue(body["fixture"])
+        ops.fetch_workflow_health.assert_not_called()
 
     def test_clear(self):
         resp = self.client.post("/api/clear", json={})

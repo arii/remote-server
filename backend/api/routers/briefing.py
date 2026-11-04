@@ -23,7 +23,12 @@ import urllib.request
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.core import get_system_health, validate_repo_name
+from backend.core import (
+    briefing_fixture_candidate,
+    get_system_health,
+    resolve_briefing_fixture_path,
+    validate_repo_name,
+)
 from backend.exec.engine import stack_dir
 from backend.ledger import LEDGER_KINDS, clear as ledger_clear
 from backend.ledger import read as ledger_read
@@ -105,6 +110,11 @@ class Briefing(BaseModel):
     jules_lines: list = Field(default_factory=list)
     narrative: str | None = None
     narrative_at: float | None = None
+    # Fixture marker (#453): True + source path when canned data
+    # serves instead of the live subprocess, so operators can tell
+    # fixture from live. Live responses carry the False default.
+    fixture: bool = False
+    fixture_source: str = ""
 
 
 class BackendStatus(BaseModel):
@@ -449,26 +459,40 @@ def briefing(repo: str = "remote-server") -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # Fixture override, same as buttons: BUTTONS_FIXTURE_BRIEFING or a
-    # fixture-briefing.json next to the repo checkouts.
-    fixture_path = os.environ.get("BUTTONS_FIXTURE_BRIEFING", "")
+    # Fixture override (#453): the explicit env var always wins; a
+    # fixture-briefing.json next to the checkouts only applies with
+    # the BUTTONS_FIXTURE_AUTO_DISCOVER opt-in. Fixture serves are
+    # marked and logged — never silent.
+    fixture_path = resolve_briefing_fixture_path()
+    if fixture_path and not os.path.exists(fixture_path):
+        logger.warning(
+            "briefing: fixture %s for repo %s missing; serving live",
+            fixture_path, name)
+        fixture_path = ""
     if not fixture_path:
-        candidate = os.path.join(
-            os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos"),
-            "fixture-briefing.json")
-        if os.path.exists(candidate):
-            fixture_path = candidate
-    if fixture_path and os.path.exists(fixture_path):
+        stray = briefing_fixture_candidate()
+        if os.path.exists(stray):
+            logger.warning(
+                "briefing: ignoring stray fixture %s for repo %s "
+                "(set BUTTONS_FIXTURE_BRIEFING or "
+                "BUTTONS_FIXTURE_AUTO_DISCOVER=1 to serve fixtures)",
+                stray, name)
+    if fixture_path:
         try:
             with open(fixture_path, encoding="utf-8") as fh:
                 data = json.load(fh)
             if isinstance(data, dict):
                 data["repo"] = name
+                data["fixture"] = True
+                data["fixture_source"] = fixture_path
                 # Fixtures bypass the cache (fast already) but carry
                 # the same freshness markers for a uniform contract.
                 data["cached"] = False
                 data["stale"] = False
                 data["generated_at"] = time.time()
+            logger.warning(
+                "briefing: serving fixture %s for repo %s",
+                fixture_path, name)
             return data
         except Exception as exc:
             raise HTTPException(

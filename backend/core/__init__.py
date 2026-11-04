@@ -41,6 +41,48 @@ def resolve_repo_path(repo: str) -> Path:
     return get_repos_dir() / name
 
 
+# Briefing fixture override (#453): tests and preview environments
+# serve canned briefing JSON instead of shelling out. The explicit
+# path env var always wins; a fixture-briefing.json sitting next to
+# the checkouts is only honored with the auto-discovery opt-in — a
+# stray file must never silently shadow live data.
+FIXTURE_BRIEFING_ENV = "BUTTONS_FIXTURE_BRIEFING"
+FIXTURE_AUTO_DISCOVER_ENV = "BUTTONS_FIXTURE_AUTO_DISCOVER"
+FIXTURE_FILENAME = "fixture-briefing.json"
+_FIXTURE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def fixture_auto_discover_enabled() -> bool:
+    """Whether a stray next-to-checkouts fixture may shadow live."""
+    return os.environ.get(
+        FIXTURE_AUTO_DISCOVER_ENV, "").strip().lower() in _FIXTURE_TRUTHY
+
+
+def briefing_fixture_candidate() -> str:
+    """Implicit fixture path next to the repo checkouts."""
+    return os.path.join(
+        os.environ.get("BUTTONS_REPOS_DIR", "/home/ari/repos"),
+        FIXTURE_FILENAME)
+
+
+def resolve_briefing_fixture_path() -> str:
+    """Configured fixture path, or "" when live should serve.
+
+    The explicit env var always applies (callers check existence so
+    a missing file falls through to live with a warning); the
+    implicit next-to-checkouts candidate only applies with the
+    auto-discovery opt-in.
+    """
+    explicit = os.environ.get(FIXTURE_BRIEFING_ENV, "").strip()
+    if explicit:
+        return explicit
+    if fixture_auto_discover_enabled():
+        candidate = briefing_fixture_candidate()
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
 def to_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, default=str)
 

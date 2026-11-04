@@ -59,6 +59,11 @@ class BriefingLedgerTest(unittest.TestCase):
         # its own suite (test_briefing_narrative.py).
         self._old_narrator = os.environ.get("BRIEFING_NARRATOR")
         os.environ["BRIEFING_NARRATOR"] = "off"
+        # Fixture env isolated: ambient opt-ins must not leak into
+        # stray/auto-discovery assertions (#453).
+        self._old_auto = os.environ.get("BUTTONS_FIXTURE_AUTO_DISCOVER")
+        self._old_repos = os.environ.get("BUTTONS_REPOS_DIR")
+        os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
         app = FastAPI()
         app.include_router(briefing_router.router)
         self.client = TestClient(app)
@@ -72,6 +77,14 @@ class BriefingLedgerTest(unittest.TestCase):
             os.environ.pop("BRIEFING_NARRATOR", None)
         else:
             os.environ["BRIEFING_NARRATOR"] = self._old_narrator
+        if self._old_auto is None:
+            os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
+        else:
+            os.environ["BUTTONS_FIXTURE_AUTO_DISCOVER"] = self._old_auto
+        if self._old_repos is None:
+            os.environ.pop("BUTTONS_REPOS_DIR", None)
+        else:
+            os.environ["BUTTONS_REPOS_DIR"] = self._old_repos
         briefing_router._BRIEFING_CACHE.clear()
         briefing_router._BRIEFING_REFRESHING.clear()
 
@@ -83,7 +96,7 @@ class BriefingLedgerTest(unittest.TestCase):
         return path
 
     def test_briefing_shape(self):
-        self._write_fixture({
+        path = self._write_fixture({
             "repo": "other",
             "attention": ["#1 — CI failing"],
             "prs": [{"number": 1, "title": "t"}],
@@ -99,6 +112,95 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(body["attention"], ["#1 — CI failing"])
         self.assertEqual(len(body["prs"]), 1)
         self.assertEqual(len(body["failing_runs"]), 1)
+        # Fixture marker (#453): canned responses say so + name the
+        # source file, so operators can tell fixture from live.
+        self.assertTrue(body["fixture"])
+        self.assertEqual(body["fixture_source"], path)
+
+    def _write_stray(self, payload):
+        """A fixture-briefing.json next to the checkouts with no
+        explicit env var: the stray-file setup (#453)."""
+        stray = os.path.join(self.tmp, "fixture-briefing.json")
+        with open(stray, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.environ["BUTTONS_REPOS_DIR"] = self.tmp
+        os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+        os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
+        return stray
+
+    def _warn_text(self, warn_mock):
+        return " ".join(str(a) for call in warn_mock.call_args_list
+                        for a in call[0])
+
+    def test_fixture_serve_logs_warning(self):
+        path = self._write_fixture({"repo": "other", "prs": []})
+        with mock.patch.object(briefing_router.logger,
+                               "warning") as warn:
+            resp = self.client.get("/api/briefing",
+                                   params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["fixture"])
+        self.assertTrue(warn.called)
+        logged = self._warn_text(warn)
+        self.assertIn(path, logged)
+        self.assertIn("remote-server", logged)
+
+    def test_stray_fixture_ignored_without_opt_in(self):
+        """A stray next-to-checkouts file alone cannot shadow live."""
+        stray = self._write_stray({"repo": "other", "prs": [{"n": 1}],
+                                   "attention": ["STRAY"]})
+        live = {"repo": "remote-server", "prs": [], "attention": []}
+        with mock.patch.object(briefing_router, "_run_briefing",
+                               return_value=dict(live)) as run_mock, \
+                mock.patch.object(briefing_router.logger,
+                                  "warning") as warn:
+            resp = self.client.get("/api/briefing",
+                                   params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["prs"], [])
+        self.assertEqual(body["attention"], [])
+        self.assertFalse(body["fixture"])
+        self.assertEqual(body["fixture_source"], "")
+        run_mock.assert_called_once_with("remote-server",
+                                         "arii/remote-server")
+        self.assertTrue(warn.called)
+        logged = self._warn_text(warn)
+        self.assertIn("stray", logged)
+        self.assertIn(stray, logged)
+
+    def test_auto_discover_opt_in_serves_stray_fixture(self):
+        stray = self._write_stray({"repo": "other",
+                                   "attention": ["STRAY"]})
+        os.environ["BUTTONS_FIXTURE_AUTO_DISCOVER"] = "1"
+        with mock.patch.object(briefing_router, "_run_briefing") \
+                as run_mock, \
+                mock.patch.object(briefing_router.logger,
+                                  "warning") as warn:
+            resp = self.client.get("/api/briefing",
+                                   params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["attention"], ["STRAY"])
+        self.assertTrue(body["fixture"])
+        self.assertEqual(body["fixture_source"], stray)
+        run_mock.assert_not_called()
+        self.assertIn("serving fixture", self._warn_text(warn))
+
+    def test_missing_explicit_fixture_falls_through_to_live(self):
+        os.environ["BUTTONS_FIXTURE_BRIEFING"] = os.path.join(
+            self.tmp, "no-such-fixture.json")
+        live = {"repo": "remote-server", "prs": []}
+        with mock.patch.object(briefing_router, "_run_briefing",
+                               return_value=dict(live)) as run_mock, \
+                mock.patch.object(briefing_router.logger,
+                                  "warning") as warn:
+            resp = self.client.get("/api/briefing",
+                                   params={"repo": "remote-server"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()["fixture"])
+        run_mock.assert_called_once()
+        self.assertIn("missing", self._warn_text(warn))
 
     def test_briefing_bad_repo(self):
         resp = self.client.get("/api/briefing", params={"repo": "a/b/c"})
@@ -289,6 +391,66 @@ class BriefingLedgerTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["kind"], "system")
         self.assertEqual(entries[0]["event"], "ledger cleared")
+
+
+class FixtureResolveTest(unittest.TestCase):
+    """Resolver rules for the briefing fixture override (#453)."""
+
+    def test_explicit_env_wins_without_opt_in(self):
+        from backend.core import resolve_briefing_fixture_path
+
+        with mock.patch.dict(os.environ, {
+                "BUTTONS_FIXTURE_BRIEFING": " /x/y.json ",
+        }):
+            os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
+            # Stripped, verbatim, no existence check here — the
+            # caller falls through to live with a warning.
+            self.assertEqual(resolve_briefing_fixture_path(),
+                             "/x/y.json")
+
+    def test_candidate_gated_behind_opt_in(self):
+        from backend.core import (
+            briefing_fixture_candidate,
+            resolve_briefing_fixture_path,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stray = os.path.join(tmp, "fixture-briefing.json")
+            with open(stray, "w", encoding="utf-8") as fh:
+                json.dump({"prs": []}, fh)
+            with mock.patch.dict(os.environ,
+                                 {"BUTTONS_REPOS_DIR": tmp}):
+                os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+                os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
+                self.assertEqual(briefing_fixture_candidate(), stray)
+                self.assertEqual(resolve_briefing_fixture_path(), "")
+                os.environ["BUTTONS_FIXTURE_AUTO_DISCOVER"] = "true"
+                self.assertEqual(resolve_briefing_fixture_path(),
+                                 stray)
+
+    def test_opt_in_truthy_values(self):
+        from backend.core import fixture_auto_discover_enabled
+
+        for value in ("1", "true", "TRUE", "yes", "on", " On "):
+            with mock.patch.dict(os.environ, {
+                    "BUTTONS_FIXTURE_AUTO_DISCOVER": value}):
+                self.assertTrue(fixture_auto_discover_enabled(),
+                                value)
+        for value in ("", "0", "false", "no", "off", "maybe"):
+            with mock.patch.dict(os.environ, {
+                    "BUTTONS_FIXTURE_AUTO_DISCOVER": value}):
+                self.assertFalse(fixture_auto_discover_enabled(),
+                                 value)
+
+    def test_nothing_configured_resolves_empty(self):
+        from backend.core import resolve_briefing_fixture_path
+
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+            os.environ.pop("BUTTONS_FIXTURE_AUTO_DISCOVER", None)
+            os.environ["BUTTONS_REPOS_DIR"] = os.path.join(
+                tempfile.mkdtemp(), "no-such-dir")
+            self.assertEqual(resolve_briefing_fixture_path(), "")
 
 
 class BriefingScriptSmokeTest(unittest.TestCase):
