@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { appendDictationText, applyDictationResult, budgetLine, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isStalled, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_MESSAGES_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatMessages, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, refreshRunsQuiet, runCost, runDecisions, RunsPane, saveChatMessages, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, StreamProgress, streamProgress, stripFailedRetryExchange, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -929,5 +929,109 @@ describe('voice dictation error hints (issue #659)', () => {
     expect(html).toContain('data-testid="chat-dictate-hint"');
     expect(html).toContain('role="status"');
     expect(html).toContain('No speech heard');
+  });
+});
+
+describe('live conversation persistence (issue #573)', () => {
+  const noop = () => {};
+
+  function stubSessionStorage(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed));
+    vi.stubGlobal('sessionStorage', {
+      getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    return store;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('round-trips the exchange through sessionStorage under the chat key', () => {
+    const store = stubSessionStorage();
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'ping' },
+      { role: 'assistant', text: 'pong' },
+    ];
+    saveChatMessages(messages);
+    expect(store.get(CHAT_MESSAGES_KEY)).toBe(JSON.stringify(messages));
+    expect(loadChatMessages()).toEqual(messages);
+  });
+
+  it('restores the conversation on mount instead of the empty prompt', () => {
+    stubSessionStorage({
+      [CHAT_MESSAGES_KEY]: JSON.stringify([
+        { role: 'user', text: 'ping' },
+        { role: 'assistant', text: 'pong' },
+      ]),
+    });
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('data-testid="chat-msg-user-0"');
+    expect(html).toContain('ping');
+    expect(html).toContain('pong');
+    expect(html).not.toContain('data-testid="chat-empty"');
+  });
+
+  it('starts empty with no snapshot stored', () => {
+    stubSessionStorage();
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('data-testid="chat-empty"');
+    expect(html).toContain('Ask anything about this repo.');
+  });
+
+  it('starts empty on a corrupt or misshapen snapshot', () => {
+    stubSessionStorage({ [CHAT_MESSAGES_KEY]: 'not-json{{' });
+    expect(loadChatMessages()).toEqual([]);
+    stubSessionStorage({ [CHAT_MESSAGES_KEY]: JSON.stringify({ role: 'user' }) });
+    expect(loadChatMessages()).toEqual([]);
+    stubSessionStorage({
+      [CHAT_MESSAGES_KEY]: JSON.stringify([
+        { role: 'user', text: 'kept' },
+        { role: 'system', text: 'dropped' },
+        { role: 'assistant' },
+        null,
+      ]),
+    });
+    expect(loadChatMessages()).toEqual([{ role: 'user', text: 'kept' }]);
+  });
+
+  it('validates stored entries by role and text', () => {
+    expect(isChatMessage({ role: 'user', text: 'hi' })).toBe(true);
+    expect(isChatMessage({ role: 'assistant', text: '' })).toBe(true);
+    expect(isChatMessage({ role: 'system', text: 'hi' })).toBe(false);
+    expect(isChatMessage({ role: 'user' })).toBe(false);
+    expect(isChatMessage(null)).toBe(false);
+    expect(isChatMessage('hi')).toBe(false);
+  });
+
+  it('trims the trailing typing placeholder from snapshots only', () => {
+    const live: ChatMessage[] = [
+      { role: 'user', text: 'ping' },
+      { role: 'assistant', text: '' },
+    ];
+    expect(settledChatMessages(live)).toEqual([{ role: 'user', text: 'ping' }]);
+    // The live state keeps the placeholder for the typing indicator.
+    expect(live).toHaveLength(2);
+    const settled: ChatMessage[] = [
+      { role: 'user', text: 'ping' },
+      { role: 'assistant', text: 'pong' },
+    ];
+    expect(settledChatMessages(settled)).toBe(settled);
+    expect(settledChatMessages([])).toEqual([]);
+  });
+
+  it('persists the cleared (empty) conversation, resetting the store', () => {
+    const store = stubSessionStorage({
+      [CHAT_MESSAGES_KEY]: JSON.stringify([{ role: 'user', text: 'ping' }]),
+    });
+    saveChatMessages(settledChatMessages([]));
+    expect(store.get(CHAT_MESSAGES_KEY)).toBe('[]');
+    expect(loadChatMessages()).toEqual([]);
   });
 });

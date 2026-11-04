@@ -966,6 +966,57 @@ export function stripFailedRetryExchange(
   return messages;
 }
 
+// Live-conversation persistence (issue #573): App renders one tab
+// at a time, so ChatView unmounts on every tab switch — messages
+// used to die with it. The settled exchange persists to
+// sessionStorage on every change and restores on mount, so
+// Chat->Now->Chat keeps the conversation within the session. Past
+// runs stay the archive; the /clear path empties the store along
+// with the state. Mock mode neither reads nor writes, so ?mock=1
+// demos never touch the real session. Storage failures (private
+// mode) only drop persistence — the live conversation still works.
+export const CHAT_MESSAGES_KEY = 'buttons.chat.messages.v1';
+
+export function isChatMessage(value: unknown): value is ChatMessage {
+  if (!value || typeof value !== 'object') return false;
+  const m = value as Record<string, unknown>;
+  return (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string';
+}
+
+export function loadChatMessages(): ChatMessage[] {
+  try {
+    if (typeof sessionStorage === 'undefined') return [];
+    const raw = sessionStorage.getItem(CHAT_MESSAGES_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isChatMessage);
+  } catch {
+    return [];
+  }
+}
+
+export function saveChatMessages(messages: ChatMessage[]): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    sessionStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(messages));
+  } catch {
+    // Persistence is best-effort; the live conversation still works.
+  }
+}
+
+// Persisted snapshots hold the settled conversation only: a trailing
+// empty assistant entry is the live typing placeholder (meaningless
+// once streaming stops), so it never reaches sessionStorage. The live
+// state keeps it — only the snapshot is trimmed.
+export function settledChatMessages(messages: ChatMessage[]): ChatMessage[] {
+  const n = messages.length;
+  if (n === 0) return messages;
+  const last = messages[n - 1];
+  if (last.role === 'assistant' && last.text === '') return messages.slice(0, n - 1);
+  return messages;
+}
+
 // Edit recalls a sent prompt into the composer for fix-and-resend.
 // Available on every user bubble once the stream settles.
 export function shouldShowChatEdit(streaming: boolean): boolean {
@@ -1167,7 +1218,13 @@ export default function ChatView({
   // order without waiting on the runs fetch.
   initialRuns?: AgentRun[];
 }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Restored live exchange (#573): the initializer replays the
+  // sessionStorage snapshot, so a tab switch (unmount/remount) keeps
+  // the conversation. Mock mode starts empty; its effect below loads
+  // the canned fixture instead.
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    useMock() ? [] : loadChatMessages(),
+  );
   const [prompt, setPrompt] = useState(seed ?? '');
   // One tap on Ask agent anywhere lands here with a seed and the agent
   // starts working immediately; the ref survives StrictMode's double
@@ -1362,6 +1419,15 @@ export default function ChatView({
       }
     })();
   }, []);
+
+  // Persist the live exchange across tab switches (#573): the view
+  // unmounts whenever the tab changes, so every settled change lands
+  // in sessionStorage for the initializer above. Clearing the chat
+  // persists the empty list, which resets the store.
+  useEffect(() => {
+    if (useMock()) return;
+    saveChatMessages(settledChatMessages(messages));
+  }, [messages]);
 
   async function onSelectRun(id: string) {
     setSelected(id);
