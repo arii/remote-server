@@ -736,8 +736,10 @@ export default function JobsView({
   }
 
   async function onTakeover() {
-    await requestTakeover();
-    setNotice('Takeover requested.');
+    const r = await requestTakeover();
+    setNotice(r.matched === false
+      ? 'No active client to take over from.'
+      : 'Takeover requested.');
   }
 
   function onDangerAction(action: string, label: string) {

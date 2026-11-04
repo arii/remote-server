@@ -551,8 +551,27 @@ class ChatOpsTest(unittest.TestCase):
             "/api/terminal/takeover",
             json={"intent": "terminal-takeover", "confirmed": True})
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"ok": True,
+        self.assertEqual(resp.json(), {"ok": True, "matched": True,
                                        "output": "takeover ok\n"})
+
+    def test_takeover_no_client_matched(self):
+        # hup_exit=1: pkill signaled nobody — must not report ok (#431).
+        ops.run_takeover = lambda: "hup_exit=1\n"
+        resp = self.client.post(
+            "/api/terminal/takeover",
+            json={"intent": "terminal-takeover", "confirmed": True})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": False, "matched": False,
+                                       "output": "hup_exit=1\n"})
+
+    def test_takeover_client_matched(self):
+        ops.run_takeover = lambda: "hup_exit=0\n"
+        resp = self.client.post(
+            "/api/terminal/takeover",
+            json={"intent": "terminal-takeover", "confirmed": True})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True, "matched": True,
+                                       "output": "hup_exit=0\n"})
 
     def test_takeover_hups_inside_terminal_container(self):
         import subprocess as sp

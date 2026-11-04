@@ -753,8 +753,8 @@ export function abortChat(sessionId: string): Promise<{ ok: boolean; session_id:
   });
 }
 
-export function requestTakeover(): Promise<{ ok: boolean; output: string }> {
-  return postJson<{ ok: boolean; output: string }>('api/terminal/takeover', {
+export function requestTakeover(): Promise<{ ok: boolean; matched: boolean; output: string }> {
+  return postJson<{ ok: boolean; matched: boolean; output: string }>('api/terminal/takeover', {
     intent: 'terminal-takeover',
     confirmed: true,
   });
