@@ -30,11 +30,28 @@ class TestValidateVerifyCommand(unittest.TestCase):
 
     def test_tsc_and_vitest(self):
         self.assertEqual(
-            validate_verify_command("npx tsc --noEmit"),
-            ["npx", "tsc", "--noEmit"])
+            validate_verify_command("tsc --noEmit"),
+            ["tsc", "--noEmit"])
         self.assertEqual(
             validate_verify_command("npx vitest run"),
             ["npx", "vitest", "run"])
+
+    def test_npx_tsc_squat_rejected(self):
+        # `npx tsc` resolves the literal `tsc` package (a placeholder
+        # squat), not TypeScript — so the shape stays rejected even
+        # though plain `tsc` is allowlisted for PATH toolchains.
+        self.assertIsNone(validate_verify_command("npx tsc"))
+        self.assertIsNone(
+            validate_verify_command("npx tsc --noEmit"))
+
+    def test_npx_shapes_pinned_to_real_packages(self):
+        # Each allowlisted npx shape must name the real package that
+        # npx resolves — no squat names, no -p smuggling.
+        self.assertEqual(
+            validate_verify_command("npx vitest run"),
+            ["npx", "vitest", "run"])
+        self.assertIsNone(
+            validate_verify_command("npx -p typescript tsc"))
 
     def test_shell_injection_rejected(self):
         self.assertIsNone(

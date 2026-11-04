@@ -18,6 +18,9 @@ VERIFY_TIMEOUT = 300
 # tsc/vitest the typecheck/frontend suite — the only commands a
 # repair verification needs. npm/pnpm scripts are excluded: script
 # indirection would smuggle unvetted commands past the verb check.
+# npx single-name forms must match the REAL package npx resolves:
+# `npx tsc` fetches the `tsc` squat placeholder, not TypeScript, so
+# it stays rejected (plain `tsc` covers PATH-installed toolchains).
 VERIFY_VERBS = (
     ("pytest",),
     ("python", "-m", "pytest"),
@@ -25,13 +28,12 @@ VERIFY_VERBS = (
     ("python", "-m", "unittest"),
     ("python3", "-m", "unittest"),
     ("tsc",),
-    ("npx", "tsc"),
     ("vitest",),
     ("npx", "vitest"),
 )
 
 VERIFY_VERB_HELP = ("pytest, python[3] -m pytest/unittest, "
-                    "tsc, npx tsc, vitest, npx vitest")
+                    "tsc, vitest, npx vitest")
 
 
 def validate_verify_command(text) -> list | None:
