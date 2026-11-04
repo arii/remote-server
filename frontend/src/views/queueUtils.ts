@@ -43,6 +43,19 @@ export function nextDispatchable(group: DispatchRepoGroup): DispatchItem | null 
   return group.items.find((i) => i.state === 'queued') ?? null;
 }
 
+// Cross-group sweep for Dispatch-all: every queued row across
+// every group, in group/item order. Gates stay server-side (each
+// start re-checks live; 409s report per item), so the sweep needs
+// no gate snapshot to be correct.
+export function allQueuedAcrossGroups(groups: DispatchRepoGroup[]): DispatchItem[] {
+  return groups.flatMap((g) => g.items.filter((i) => i.state === 'queued'));
+}
+
+// Stable key for one queue row, shared by gates/ready state.
+export function queueItemKey(repo: string, issue: number): string {
+  return `${repo}#${issue}`;
+}
+
 // Human state line for a queue row. Terminal rows surface the
 // recorded detail; live rows stay terse.
 export function queueRowMeta(item: DispatchItem): string {
