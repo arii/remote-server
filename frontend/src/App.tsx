@@ -83,13 +83,6 @@ export default function App() {
       <h1 className="sr-only">Operator console</h1>
       <header className="toolbar">
         <RepoPicker repos={repos} value={repo} onChange={setRepo} />
-        <span
-          data-testid="repo-chip"
-          className="repo-chip"
-          aria-label={`Active repo: ${repo}`}
-        >
-          {repo}
-        </span>
         <span data-testid="stack-status" className="row-meta">
           {healthSummary(health)}
         </span>
@@ -134,10 +127,20 @@ export default function App() {
         />
       )}
       {tab === 'chat' && (
-        <ChatView repo={repo} seed={chatSeed} onSeedUsed={() => setChatSeed(null)} />
+        <ChatView
+          repo={repo}
+          branch={repos.find((r) => r.name === repo)?.branch}
+          seed={chatSeed}
+          onSeedUsed={() => setChatSeed(null)}
+        />
       )}
       {tab === 'briefing' && (
-        <BriefingView repo={repo} onAskAgent={askAgent} onOpenHistory={() => setTab('history')} />
+        <BriefingView
+          repo={repo}
+          branch={repos.find((r) => r.name === repo)?.branch}
+          onAskAgent={askAgent}
+          onOpenHistory={() => setTab('history')}
+        />
       )}
       {tab === 'history' && <HistoryView repo={repo} health={health} />}
     </main>

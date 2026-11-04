@@ -15,7 +15,9 @@ import BriefingView, {
   briefingSummary,
   cleanBriefingLine,
   dayTrend,
+  truncateChip,
 } from './views/BriefingView';
+import RepoLabel, { repoLabelText } from './components/RepoLabel';
 import ChatView, {
   ApprovalCard,
   CHAT_BACKEND_OPTIONS,
@@ -840,10 +842,13 @@ describe('merge relevance', () => {
 });
 
 describe('app', () => {
-  it('App renders Now nav, repo chip, and Now loading state', () => {
+  it('App renders Now nav, one repo readout, and Now loading state', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('data-testid="now-loading"');
-    expect(html).toContain('data-testid="repo-chip"');
+    expect(html).toContain('data-testid="repo-picker"');
+    expect(html).toContain('for="repo-picker"');
+    expect(html).not.toContain('data-testid="repo-chip"');
+    expect(html).not.toContain('Active repo');
     expect(html).toContain('History');
   });
 
@@ -1080,6 +1085,55 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('data-testid="tap-fire"');
     expect(html).toContain('asks for confirmation');
     expect(html).not.toContain('hold-disarmed');
+  });
+});
+
+describe('repo label', () => {
+  const noop = () => {};
+
+  it('reads name and branch, bare name without a branch', () => {
+    expect(repoLabelText('r', 'main')).toBe('r · main');
+    expect(repoLabelText('r')).toBe('r');
+    expect(repoLabelText('r', '')).toBe('r');
+  });
+
+  it('shares one header format across Chat and Briefing', () => {
+    const chat = renderToStaticMarkup(
+      <ChatView repo="r" branch="main" seed={null} onSeedUsed={noop} />,
+    );
+    expect(chat).toContain('data-testid="repo-label"');
+    expect(chat).toContain('r · main');
+    const bare = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(bare).toContain('data-testid="repo-label"');
+    expect(bare).not.toContain('r · ');
+    expect(renderToStaticMarkup(<RepoLabel repo="r" branch="main" />)).toContain('r · main');
+  });
+
+  it('truncates long board chips with the full name on hover', () => {
+    expect(truncateChip('main')).toBe('main');
+    expect(truncateChip('x'.repeat(32))).toBe('x'.repeat(32));
+    const long = 'feat/a-very-long-branch-name-that-keeps-going-12345';
+    expect(truncateChip(long)).toBe(`${long.slice(0, 31)}…`);
+    const data = {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      board: [{ branch: long, issue: '', status: 'Open' }],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+    };
+    const html = renderToStaticMarkup(
+      <BriefingBody data={data} ledger={[]} onAskAgent={noop} onOpenHistory={noop} />,
+    );
+    expect(html).toContain(`title="${long}"`);
+    expect(html).toContain(`${long.slice(0, 31)}…`);
   });
 });
 

@@ -3,6 +3,7 @@ import { fetchBriefing, fetchLedger } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
+import RepoLabel from '../components/RepoLabel';
 
 // Briefing lines come from the legacy briefing_summary passthrough and may
 // carry reviewer HTML-comment markers, markdown list markers, or run long.
@@ -80,8 +81,8 @@ function BoardSection({
             <li key={i} className="detail">
               <div className="chip-row">
                 {chips.map((c) => (
-                  <span key={c} className="repo-chip">
-                    {c}
+                  <span key={c} className="repo-chip" title={c.length > 32 ? c : undefined}>
+                    {truncateChip(c)}
                   </span>
                 ))}
               </div>
@@ -91,6 +92,13 @@ function BoardSection({
       </ul>
     </section>
   );
+}
+
+// Board chip text: branch names run to 50+ chars and wrap the
+// chip row, so over-long chips truncate with the full text kept
+// in the title. Short chips render verbatim (no title needed).
+export function truncateChip(text: string, max: number = 32): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 // One-line condensation of briefing state, always visible.
@@ -210,10 +218,12 @@ function PrRow({ pr }: { pr: Record<string, unknown> }) {
 
 export default function BriefingView({
   repo,
+  branch,
   onAskAgent,
   onOpenHistory,
 }: {
   repo: string;
+  branch?: string;
   onAskAgent: (seed: string) => void;
   onOpenHistory: () => void;
 }) {
@@ -271,7 +281,7 @@ export default function BriefingView({
       <header className="page-head">
         <div>
           <h2>Briefing</h2>
-          <p className="row-meta">Repo: {data?.repo || repo}</p>
+          <RepoLabel repo={data?.repo || repo} branch={branch} />
         </div>
         {error && (
           <div className="actions">
