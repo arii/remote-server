@@ -364,6 +364,8 @@ def build_tools(checkout):
         """
         try:
             hits = retrieval.get_retriever(k=3).invoke(query)
+        except retrieval.IndexNotReadyError as exc:
+            return str(exc)
         except Exception as exc:
             return f"doc search unavailable: {exc}"
         return retrieval.format_hits(hits)

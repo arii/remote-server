@@ -89,15 +89,18 @@ duplicates. `S5_CHROMA_DIR` / `S5_COLLECTION` / `S5_EMBED_MODEL` /
 the same overrides — index and query can never fork). The index is a
 local runtime artifact: gitignored, never baked into images.
 
-Buttons containers build the index at startup (#562): the image
-carries no `chroma_db/` (dockerignored), and
-`scripts/buttons-entrypoint.sh` builds it from the baked code when
-missing or empty (~4 min first boot on the S5; plain restarts skip
-via the present-index fast path). If Ollama stays unreachable or
-the build fails, the entrypoint exits 1 instead of serving empty
-retrieval — compose's restart policy retries the sequence.
-`SKIP_INDEX_BUILD=1` skips the check for one-off
-`docker compose run` shells.
+Buttons containers build the index at startup (#562, #699): the
+image carries no `chroma_db/` (dockerignored), and
+`scripts/buttons-entrypoint.sh` builds it from the baked code in the
+background when missing or empty, while the server already serves
+(plain restarts skip via the present-index fast path). Queries
+served before the build finishes get a "warming, retry shortly"
+degraded message instead of empty-silent answers; /health reports
+the index state (`ready`/`warming`/`failed`/`missing`). If Ollama
+stays unreachable or the build fails, the failure is recorded in
+`.index_failed` (transcript in `index_build.log`) and queries keep
+degrading until the index is rebuilt. `SKIP_INDEX_BUILD=1` skips
+the check for one-off `docker compose run` shells.
 
 ## Doc map
 

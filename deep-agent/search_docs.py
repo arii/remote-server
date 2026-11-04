@@ -26,6 +26,9 @@ def main() -> int:
         retriever = retrieval.get_retriever(k)
     except ValueError:
         return cli.usage_error("k must be a positive integer")
+    except retrieval.IndexNotReadyError as exc:
+        print(exc)
+        return 1
     except Exception as exc:
         print(f"error: cannot open index: {exc}", file=sys.stderr)
         return 1

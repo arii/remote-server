@@ -16,6 +16,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 import cli
 import ledger
+import retrieval
 import triage_common
 
 DB_DIR = str(Path(__file__).resolve().parent / "chroma_db")
@@ -53,6 +54,10 @@ def search_docs(query: str) -> str:
     Args:
         query: Short question about triage process or commands.
     """
+    try:
+        retrieval.require_ready()
+    except retrieval.IndexNotReadyError as exc:
+        return str(exc)
     hits = _retriever.invoke(query)
     parts = [
         f"[{h.metadata.get('source')}] {h.page_content[:700]}" for h in hits

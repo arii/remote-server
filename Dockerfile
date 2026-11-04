@@ -84,7 +84,8 @@ ENV DEEP_AGENT_VENV=/opt/venvs/td/bin/python \
     DEEP_AGENT_STATE_DIR=/var/lib/buttons/deep-agent
 EXPOSE 8000
 # Fresh RAG index at startup (#562): the image carries no chroma_db
-# (dockerignored); the entrypoint builds it when missing/empty and
-# refuses to serve an empty index. CMD becomes the entrypoint's args.
+# (dockerignored); the entrypoint builds it in the background when
+# missing/empty (#699) while the server already serves. CMD becomes
+# the entrypoint's args.
 ENTRYPOINT ["/usr/local/bin/buttons-entrypoint.sh"]
 CMD ["/opt/venvs/td/bin/python", "-m", "uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]
