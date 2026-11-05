@@ -274,10 +274,10 @@ Consolidate all vector indexing and querying into `boomtick` (`td init` and `td 
    - Both hooks simply execute `td init --repo-root "$(git rev-parse --show-toplevel)" --json`.
 
 ## Acceptance Criteria
-- [ ] `remote-server/deep-agent/build_index.py`, `search_docs.py`, and `hooks/post-merge-tech-dancer` are deleted.
-- [ ] `td init --json` updates `main`, verifies dependency lockfile caches, and incrementally updates the vector index by commit SHA.
-- [ ] `td worktree create --issue <id> --json` provisions a worktree with ready-to-run dependencies (`pytest` and `pnpm test` work immediately inside `.worktrees/issue-<id>`).
-- [ ] Tests in `test_td_worktree.py`, `test_retrieval.py`, and `test_post_merge_hook.py` pass.
+- [x] `remote-server/deep-agent/build_index.py`, `search_docs.py`, and `hooks/post-merge-tech-dancer` are deleted.
+- [x] `td init --json` updates `main`, verifies dependency lockfile caches, and incrementally updates the vector index by commit SHA.
+- [x] `td worktree create --issue <id> --json` provisions a worktree with ready-to-run dependencies (`pytest` and `pnpm test` work immediately inside `.worktrees/issue-<id>`).
+- [x] Tests in `test_td_worktree.py`, `test_retrieval.py`, and `test_post_merge_hook.py` pass.
 
 ## Verification Commands
 ```bash
