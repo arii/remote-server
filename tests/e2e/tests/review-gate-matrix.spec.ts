@@ -12,7 +12,7 @@ import { expect, test } from '@playwright/test';
 test.describe('review approve/merge gate matrix', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await page.getByTestId('inbox-open-review').click();
+    await page.getByTestId('nav-review').click();
     await expect(page.getByTestId('review-pr-list')).toBeVisible();
   });
 

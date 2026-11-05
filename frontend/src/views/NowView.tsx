@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import TapToFire from '../components/TapToFire';
 import { isRollupRepo } from '../components/RepoPicker';
+import type { RepoInfo } from '../reviewTypes';
 import {
   apiUrl,
   createIssue,
@@ -415,8 +416,11 @@ export function ActionControl({
 // Status hero (issue #811): one glanceable strip atop Now answering
 // "is everything fine?". Every count comes from a live fetch —
 // inbox, PRs, jobs, system health — never invented. Worst status
-// wins: a sick container or crit item reads crit, a warn item or
-// silent stack reads warn, otherwise all clear.
+// wins: a sick container or crit item reads crit, any queued item
+// or a silent stack reads warn, otherwise all clear. All clear is
+// reserved for a truly empty queue (issue #930): even an info-only
+// item keeps the banner amber, so the dot never contradicts the
+// "N needing attention" count beside it.
 export type HeroStatus = 'loading' | 'ok' | 'warn' | 'crit';
 
 export function heroStatus(
@@ -433,7 +437,7 @@ export function heroStatus(
   if (stackBad) return 'crit';
   const sevs = new Set(attention.map((i) => i.severity.toLowerCase()));
   if (sevs.has('crit') || sevs.has('critical')) return 'crit';
-  if (sevs.has('warn') || sevs.has('warning')) return 'warn';
+  if (attention.length > 0) return 'warn';
   if (health.containers.length === 0) return 'warn';
   return 'ok';
 }
@@ -534,26 +538,66 @@ export function lastDeployAt(jobs: JobRecord[]): number | null {
   return best;
 }
 
-export function heroCountsText({
-  attentionOpen,
-  runsActive,
-  prCount,
-  deployAt,
-}: {
+export interface HeroCounts {
   attentionOpen: number;
   runsActive: boolean;
   // Null in the rollup: open PRs are a per-repo count.
   prCount: number | null;
   // Null when no deploy run is on record.
   deployAt: number | null;
-}): string {
-  const parts = [
-    `${attentionOpen} needing attention`,
-    runsActive ? '1 active run' : 'no active runs',
+}
+
+// Banner deep links (issue #930): every count segment navigates
+// somewhere useful — the queue count to the inbox home, PRs to
+// the Review section, runs to Jobs, deploys to History.
+export type HeroSegmentTarget = 'attention' | 'review' | 'jobs' | 'history';
+
+export interface HeroSegment {
+  key: 'attention' | 'runs' | 'prs' | 'deploys';
+  text: string;
+  target: HeroSegmentTarget;
+}
+
+export function heroSegments({
+  attentionOpen,
+  runsActive,
+  prCount,
+  deployAt,
+}: HeroCounts): HeroSegment[] {
+  const segments: HeroSegment[] = [
+    { key: 'attention', text: `${attentionOpen} needing attention`, target: 'attention' },
+    { key: 'runs', text: runsActive ? '1 active run' : 'no active runs', target: 'jobs' },
   ];
-  if (prCount !== null) parts.push(`${prCount} PR${prCount === 1 ? '' : 's'} open`);
-  parts.push(deployAt ? `deploy ${relativeStamp(deployAt)}` : 'no recent deploys');
-  return parts.join(' · ');
+  if (prCount !== null) {
+    segments.push({
+      key: 'prs',
+      text: `${prCount} PR${prCount === 1 ? '' : 's'} open`,
+      target: 'review',
+    });
+  }
+  segments.push({
+    key: 'deploys',
+    text: deployAt ? `deploy ${relativeStamp(deployAt)}` : 'no recent deploys',
+    target: 'history',
+  });
+  return segments;
+}
+
+export function heroCountsText(counts: HeroCounts): string {
+  return heroSegments(counts).map((s) => s.text).join(' · ');
+}
+
+export function fireHeroSegment(
+  target: HeroSegmentTarget,
+  cbs: {
+    onAttention: () => void;
+    onSection: (section: 'review' | 'jobs') => void;
+    onHistoryDeploys: () => void;
+  },
+): void {
+  if (target === 'attention') cbs.onAttention();
+  else if (target === 'history') cbs.onHistoryDeploys();
+  else cbs.onSection(target);
 }
 
 const HERO_DOT: Record<HeroStatus, string> = {
@@ -563,12 +607,15 @@ const HERO_DOT: Record<HeroStatus, string> = {
   crit: 'dot dot-bad',
 };
 
-const HERO_LABEL: Record<HeroStatus, string> = {
-  loading: 'Loading status…',
-  ok: 'All clear',
-  warn: 'Needs attention',
-  crit: 'Action needed',
-};
+// Dynamic status label (issue #930): a non-empty queue always
+// reads its depth ("N needing attention") with the dot carrying
+// the severity; an empty queue names the stack state instead.
+export function heroLabel(status: HeroStatus, attentionOpen: number): string {
+  if (status === 'loading') return 'Loading status…';
+  if (status === 'ok') return 'All clear';
+  if (attentionOpen > 0) return `${attentionOpen} needing attention`;
+  return status === 'crit' ? 'Action needed' : 'Needs attention';
+}
 
 export function NowHero({
   health,
@@ -579,6 +626,8 @@ export function NowHero({
   onError,
   onSection,
   onTab,
+  onAttention,
+  onHistoryDeploys,
 }: {
   health: SystemHealthResponse | null;
   feed: InboxFeed;
@@ -588,10 +637,12 @@ export function NowHero({
   onError: (message: string) => void;
   onSection: (section: 'review' | 'jobs') => void;
   onTab: (tab: AttentionNavTab) => void;
+  onAttention: () => void;
+  onHistoryDeploys: () => void;
 }) {
   const status = heroStatus(health, feed.attention);
   const top = topUrgent(feed.attention);
-  const counts = heroCountsText({
+  const segments = heroSegments({
     attentionOpen: feed.attention.length,
     runsActive: feed.runs.active !== null,
     prCount,
@@ -600,9 +651,21 @@ export function NowHero({
   return (
     <section data-testid="now-hero" aria-label="Status summary" className="health now-hero">
       <span aria-hidden="true" data-testid="now-hero-dot" className={HERO_DOT[status]} />
-      <strong data-testid="now-hero-status">{HERO_LABEL[status]}</strong>
+      <strong data-testid="now-hero-status">{heroLabel(status, feed.attention.length)}</strong>
       <span className="row-meta" data-testid="now-hero-counts">
-        {counts}
+        {segments.map((seg, i) => (
+          <Fragment key={seg.key}>
+            {i > 0 && <span aria-hidden="true"> · </span>}
+            <button
+              type="button"
+              className="btn-link"
+              data-testid={`now-hero-seg-${seg.key}`}
+              onClick={() => fireHeroSegment(seg.target, { onAttention, onSection, onHistoryDeploys })}
+            >
+              {seg.text}
+            </button>
+          </Fragment>
+        ))}
       </span>
       <span className="spacer" aria-hidden="true" />
       {top ? (
@@ -642,7 +705,9 @@ export interface AttentionRowCallbacks {
 
 // Source-line destination (#896): when the action resolves to an
 // in-app target, the "opens X" run navigates there (same dispatch
-// as ActionControl); fetch-only actions keep plain text.
+// as ActionControl). Fetch-only actions render nothing (issue
+// #930): the old "opens action" read as routing debug text, and
+// the action button below the line already says what it does.
 export function SourceDestination({
   item,
   onSection,
@@ -654,7 +719,7 @@ export function SourceDestination({
 }) {
   const target = resolveAttentionTarget(item.action.href);
   const name = attentionTargetName(item.action.href);
-  if (target === null) return <>{name}</>;
+  if (target === null) return null;
   return (
     <button
       type="button"
@@ -670,14 +735,26 @@ export function SourceDestination({
   );
 }
 
+// Concrete repo context for the source line (issue #930): the
+// row's repo plus its checkout branch and a dirty-worktree flag
+// when known. Unknown repos degrade to the bare name; clean
+// checkouts stay quiet (clean is the default, not news).
+export function repoContextText(repo: string, info: RepoInfo | null | undefined): string {
+  const branch = info?.branch ? ` (${info.branch})` : '';
+  const dirty = info && !info.clean ? ' · dirty worktree' : '';
+  return `repo: ${repo}${branch}${dirty}`;
+}
+
 // One attention row (issue #839): the primary action + Ask agent
 // stay visible; snooze presets collapse into a More overflow so a
 // queued item costs one line of buttons, not four. The source line
-// names the row's repo and the action's in-app destination.
+// names the row's repo context and, when the action resolves to
+// an in-app surface, its destination.
 export function AttentionRow({
   item,
   viewRepo,
   rollup,
+  repoInfo,
   selected,
   busy,
   onToggleSelect,
@@ -691,6 +768,7 @@ export function AttentionRow({
   item: AttentionItem;
   viewRepo: string;
   rollup: boolean;
+  repoInfo?: RepoInfo | null;
   selected: boolean;
   busy: boolean;
   onToggleSelect: () => void;
@@ -719,7 +797,13 @@ export function AttentionRow({
         </span>
       </p>
       <p className="row-meta" data-testid={`now-source-${item.id}`}>
-        source: {item.repo} · opens <SourceDestination item={item} onSection={onSection} onTab={onTab} />
+        {repoContextText(item.repo, repoInfo)}
+        {resolveAttentionTarget(item.action.href) !== null && (
+          <>
+            {' · opens '}
+            <SourceDestination item={item} onSection={onSection} onTab={onTab} />
+          </>
+        )}
       </p>
       <p>{item.detail}</p>
       <div className="actions">
@@ -822,10 +906,12 @@ export function AttentionBulkBar({
 export default function NowView({
   repo,
   defaultBranch,
+  repos = [],
   health,
   reportContext,
   onAskAgent,
   onOpenTab,
+  onOpenHistoryQuery,
   sectionRequest = null,
   reportRequest = 0,
   createRequest = 0,
@@ -836,16 +922,24 @@ export default function NowView({
   // Checkout branch of the viewed repo, seeding the Review/Jobs
   // branch fields (#708).
   defaultBranch?: string;
+  // Known checkouts, backing the attention rows' repo context
+  // (issue #930). Rows look up their own repo by name, so rollup
+  // rows resolve as well as single-repo ones.
+  repos?: RepoInfo[];
   health: SystemHealthResponse | null;
   reportContext: string;
   onAskAgent: (seed: string) => void;
   onOpenTab: (tab: AttentionNavTab) => void;
+  // History deep link (issue #930): opens History with its search
+  // seeded. Absent (older callers, tests), the deploy segment
+  // falls back to a plain History tab switch.
+  onOpenHistoryQuery?: (query: string) => void;
   // Command-palette requests (issue #810): nonce bumps from App that
   // open a section or the report dialog, including on a fresh mount
   // after the palette navigates here from another tab. The nav bar
-  // (#896) reuses the same path; a null section closes whichever is
-  // open (Now = inbox home).
-  sectionRequest?: { section: 'review' | 'jobs' | null; nonce: number } | null;
+  // (#896, Queue joins in #930) reuses the same path; a null
+  // section closes whichever is open (Now = inbox home).
+  sectionRequest?: { section: 'review' | 'jobs' | 'queue' | null; nonce: number } | null;
   reportRequest?: number;
   // Palette request (issue #839): a nonce bump opens the Review
   // section's New-issue form (threaded through to ReviewView).
@@ -1207,6 +1301,7 @@ export default function NowView({
         item={item}
         viewRepo={repo}
         rollup={rollup}
+        repoInfo={repos.find((r) => r.name === item.repo) ?? null}
         selected={bulkSelected.has(item.id)}
         busy={snoozeBusy !== null}
         onToggleSelect={() => toggleBulkSelect(item.id)}
@@ -1253,6 +1348,11 @@ export default function NowView({
           onError={setError}
           onSection={(s) => setSection(s)}
           onTab={(t) => onOpenTab(t)}
+          onAttention={() => setSection(null)}
+          onHistoryDeploys={() => {
+            if (onOpenHistoryQuery) onOpenHistoryQuery('deploy');
+            else onOpenTab('history');
+          }}
         />
       )}
       {error && (
@@ -1333,34 +1433,9 @@ export default function NowView({
           </ul>
         </>
       )}
-      {!rollup && (
-        <div className="actions" data-testid="inbox-sections">
-          <button
-            type="button"
-            data-testid="inbox-open-review"
-            aria-pressed={section === 'review'}
-            onClick={() => setSection((s) => (s === 'review' ? null : 'review'))}
-          >
-            Review
-          </button>
-          <button
-            type="button"
-            data-testid="inbox-open-jobs"
-            aria-pressed={section === 'jobs'}
-            onClick={() => setSection((s) => (s === 'jobs' ? null : 'jobs'))}
-          >
-            Jobs{data.runs.active ? ' •' : ''}
-          </button>
-          <button
-            type="button"
-            data-testid="inbox-open-queue"
-            aria-pressed={section === 'queue'}
-            onClick={() => setSection((s) => (s === 'queue' ? null : 'queue'))}
-          >
-            Queue
-          </button>
-        </div>
-      )}
+          {/* Sections open from the top nav, the hero counts, the
+              strips, or the palette (issue #930 removed the duplicate
+              Review/Jobs/Queue toggle row that used to sit here). */}
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
           {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
           {section === 'queue' && <QueueView repo={repo} />}
