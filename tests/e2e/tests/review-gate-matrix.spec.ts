@@ -28,11 +28,15 @@ test.describe('review approve/merge gate matrix', () => {
     await expect(page.getByTestId('merge-pr-101')).toBeEnabled();
   });
 
-  test('foreign unapproved PR: merge blocked, approve live', async ({ page }) => {
+  test('foreign unapproved PR: one-tap Approve & Merge replaces the pair', async ({ page }) => {
+    // Issue #932: approval is the sole blocker, so the compound
+    // replaces the merge+approve pair (Merge would sit disabled
+    // naming that same blocker).
     const row = page.getByTestId('review-pr-102');
     await expect(row).toContainText('Blocked: review is REVIEW_REQUIRED');
-    await expect(page.getByTestId('approve-pr-102')).toBeEnabled();
-    await expect(page.getByTestId('merge-pr-102')).toBeDisabled();
+    await expect(page.getByTestId('approve-merge-pr-102')).toBeEnabled();
+    await expect(page.getByTestId('approve-pr-102')).toBeHidden();
+    await expect(page.getByTestId('merge-pr-102')).toBeHidden();
   });
 
   test('#848 lock: approving your own PR is a readable 400, never a 500', async ({
@@ -62,15 +66,13 @@ test.describe('review approve/merge gate matrix', () => {
     await expect(page.getByTestId('review-pr-101')).toBeHidden();
   });
 
-  test('foreign PR approves then merges', async ({ page }) => {
+  test('foreign PR approves and merges in one tap', async ({ page }) => {
+    // Issue #932: the compound approves first, then rides the full
+    // merge transaction — one inline confirm, one notice, row gone.
     await page.getByTestId('review-branch').fill('');
-    await page.getByTestId('approve-pr-102').click();
-    await expect(page.getByTestId('review-notice')).toContainText('Approved PR #102.');
-    // The list re-reads after the review: the row flips merge-clean.
-    await expect(page.getByTestId('review-pr-102')).toContainText('merge-clean');
-    await page.getByTestId('merge-pr-102').click();
-    await page.getByRole('button', { name: 'Confirm Merge' }).click();
-    await expect(page.getByTestId('review-notice')).toContainText('Merged PR #102.');
+    await page.getByTestId('approve-merge-pr-102').click();
+    await page.getByRole('button', { name: 'Confirm Approve & Merge' }).click();
+    await expect(page.getByTestId('review-notice')).toContainText('Approved and merged PR #102.');
     await expect(page.getByTestId('review-pr-102')).toBeHidden();
     // The untouched failing PR is still triageable.
     await expect(page.getByTestId('review-pr-103')).toBeVisible();

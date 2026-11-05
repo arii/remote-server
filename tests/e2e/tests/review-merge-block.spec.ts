@@ -12,7 +12,8 @@ test.describe('review merge-block context', () => {
     await page.getByTestId('nav-review').click();
     await expect(page.getByTestId('review-pr-list')).toBeVisible();
 
-    await page.getByTestId('open-pr-103').click();
+    // Issue #932 renamed the details link with an explicit label.
+    await page.getByTestId('open-github-pr-103').click();
     await expect(page.getByTestId('review-details')).toBeVisible();
     await expect(page.getByTestId('review-merge-block')).toContainText(
       'Not mergeable: CI failing, merge blocked.',
