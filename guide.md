@@ -440,7 +440,7 @@ Refactor `deep-agent/coder.py` into `InitCoderGraph` with hard `td` worktree iso
 - [x] `InitCoderGraph` provisions worktrees exclusively via `td worktree create --json` and blocks any file access outside `worktree_root`.
 - [x] `td_deterministic_gate_node` enforces `td verify-scope`, `td audit-code`, and issue `verification_commands` on every turn.
 - [x] Repeated deterministic failures trigger `validated_replanner_node`, updating and validating the plan in `decisions.py`.
-- [ ] All tests in `tests/test_coder.py` pass.
+- [x] All tests in `tests/test_coder.py` pass.
 
 ## Verification Commands
 ```bash
