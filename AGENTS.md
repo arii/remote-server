@@ -33,8 +33,8 @@ When using BoomTick MCP tools:
 
 ## Code Map
 
-- `backend` — application source
-- `core_cli` — unified repo tooling CLI (`python3 -m core_cli …`)
+- `backend` — application source (incl. relocated tooling: `python3 -m backend.repair_worker …`, `python3 -m backend.impact_pass …`)
+- `deep-agent` — LangGraph agents + evals (tracked files only; see `.gitignore` allowlist)
 - `tests` — automated tests
 - `docs` — project documentation
 - `config` — project configuration
