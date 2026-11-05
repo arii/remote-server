@@ -26,13 +26,11 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-# Pinned to the version running in prod at pin time (npm latest was 0.10.0,
-# deliberately not taken). Bump: install the candidate, exercise the MCP
-# tools, then bump this default.
-ARG BOOMTICK_MCP_VERSION=0.8.0
-# Release tag, not main: every rebuild used to pull unaudited upstream.
-# Bump: take the newest cli-vX.Y.Z tag and smoke td in the built image.
-ARG BOOMTICK_CLI_REF=cli-v0.19.1
+# Tracks boomtick main: every rebuild pulls the latest td gates +
+# MCP tools (user decision 2026-11-05; a floating ref means rebuilds
+# can pull unaudited upstream — pin to a cli-vX.Y.Z tag or full SHA
+# to freeze).
+ARG BOOMTICK_CLI_REF=main
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -73,9 +71,22 @@ RUN apt-get update \
  && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version \
  && gh --version \
- && npm install -g "pnpm@10.28.2" "@arii/boomtick-mcp@${BOOMTICK_MCP_VERSION}" \
+ && npm install -g "pnpm@10.28.2" \
  && pnpm --version \
+ && python3 --version \
+ && python3 -m venv /opt/venvs/td \
+ && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
+ && /opt/venvs/td/bin/td --help > /dev/null \
+ && git clone --depth 1 --branch "${BOOMTICK_CLI_REF}" https://github.com/arii/boomtick.git /tmp/boomtick \
+ && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
+ && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
+ && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
+ && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 27 \
+ && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
+ && npm install -g /tmp/*.tgz \
+ && rm -rf /tmp/boomtick /tmp/*.tgz \
  && test -x /usr/local/bin/boomtick-mcp \
+ && command -v boomtick-mcp > /dev/null \
  && MUSE_NO_MODIFY_PATH=1 bash /tmp/muse-install.sh \
  && rm -f /tmp/muse-install.sh \
  && test -x /root/.local/bin/muse \
@@ -84,9 +95,7 @@ RUN apt-get update \
  && python3 -m venv /tmp/venv-smoke \
  && /tmp/venv-smoke/bin/python --version \
  && rm -rf /tmp/venv-smoke \
- && python3 -m venv /opt/venvs/td \
- && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
- && /opt/venvs/td/bin/td --help > /dev/null \
+ && /opt/venvs/td/bin/td audit-impact --help > /dev/null \
  && mkdir -p /home/ari && ln -sfn /srv/remote-server /home/ari/remote-server \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \

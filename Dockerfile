@@ -25,6 +25,9 @@ RUN mkdir -p /tscheck && cp -rL /build/frontend/node_modules/typescript/lib /tsc
 
 # ---- Runtime ----
 FROM python:3.11-slim
+# Tracks boomtick main together with terminal/Dockerfile
+# BOOMTICK_CLI_REF (user decision 2026-11-05). Pin both to a
+# cli-vX.Y.Z tag or full SHA to freeze.
 ARG BOOMTICK_CLI_REF=main
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
