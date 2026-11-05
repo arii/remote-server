@@ -1,4 +1,4 @@
-"""GET /api/repo/diff: status + diff stat + truncated full diff (#663)."""
+"""GET /api/repo/diff: status + diff stat + truncated full diff (#663, #927)."""
 
 import os
 import subprocess
@@ -10,7 +10,8 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from backend.core import DIFF_CAP, get_repo_diff
+from backend.core import (DIFF_CAP, DIFF_FILES_SHOWN,
+                          STATUS_SHORT_LINES_CAP, get_repo_diff)
 
 
 def _proc(rc=0, out="", err=""):
@@ -95,6 +96,106 @@ class RepoDiffCoreTest(unittest.TestCase):
                     get_repo_diff("demo", run=failing)
 
 
+def _head_aware_fake(branch="main", short="", stat="", diff="",
+                     numstat="", head_born=True):
+    """Fake git honoring the diff HEAD argv (#927)."""
+    calls = []
+
+    def fake(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["--verify", "HEAD"] or \
+                ("--verify" in cmd and "HEAD" in cmd):
+            return _proc(rc=0 if head_born else 1, out="")
+        if "rev-parse" in cmd:
+            return _proc(out=branch + "\n")
+        if "status" in cmd:
+            return _proc(out=short)
+        if "diff" in cmd and "--stat" in cmd:
+            return _proc(out=stat)
+        if "diff" in cmd and "--numstat" in cmd:
+            return _proc(out=numstat)
+        if "diff" in cmd:
+            if "HEAD" in cmd and not head_born:
+                return _proc(rc=128, err="fatal: bad revision 'HEAD'")
+            return _proc(out=diff)
+        raise AssertionError(f"unexpected git call: {cmd}")
+
+    fake.calls = calls
+    return fake
+
+
+class RepoDiffFilesTest(unittest.TestCase):
+    def _diff(self, tmp, **kwargs):
+        path = os.path.join(tmp, "demo")
+        os.makedirs(os.path.join(path, ".git"))
+        fake = _head_aware_fake(**kwargs)
+        with mock.patch(
+                "backend.core.get_repos_dir", return_value=Path(tmp)):
+            body = get_repo_diff("demo", run=fake)
+        return body, fake
+
+    def test_diff_goes_against_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, fake = self._diff(tmp, short=" M a.py\n")
+        diff_calls = [c for c in fake.calls if "diff" in c]
+        self.assertTrue(diff_calls)
+        for call in diff_calls:
+            self.assertIn("HEAD", call)
+
+    def test_files_carry_status_and_numstat_counts(self):
+        short = "M  staged.py\n M work.py\n?? new.txt\n"
+        numstat = "3\t1\tstaged.py\n10\t0\twork.py\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            body, _ = self._diff(tmp, short=short, numstat=numstat)
+        self.assertFalse(body["files_truncated"])
+        self.assertFalse(body["status_truncated"])
+        by_path = {f["path"]: f for f in body["files"]}
+        self.assertEqual(by_path["staged.py"]["status"], "M")
+        self.assertTrue(by_path["staged.py"]["staged"])
+        self.assertFalse(by_path["staged.py"]["unstaged"])
+        self.assertEqual(
+            (by_path["staged.py"]["additions"],
+             by_path["staged.py"]["deletions"]), (3, 1))
+        self.assertEqual(by_path["work.py"]["status"], "M")
+        self.assertFalse(by_path["work.py"]["staged"])
+        self.assertTrue(by_path["work.py"]["unstaged"])
+        self.assertEqual(by_path["new.txt"]["status"], "??")
+        self.assertEqual(
+            (by_path["new.txt"]["additions"],
+             by_path["new.txt"]["deletions"]), (0, 0))
+
+    def test_files_truncate_with_flag(self):
+        short = "".join(f" M f{i:04d}.py\n" for i in range(250))
+        with tempfile.TemporaryDirectory() as tmp:
+            body, _ = self._diff(tmp, short=short)
+        self.assertEqual(len(body["files"]), DIFF_FILES_SHOWN)
+        self.assertTrue(body["files_truncated"])
+        self.assertFalse(body["clean"])
+
+    def test_status_truncates_but_clean_stays_honest(self):
+        short = "".join(f" M f{i:04d}.py\n"
+                        for i in range(STATUS_SHORT_LINES_CAP + 50))
+        with tempfile.TemporaryDirectory() as tmp:
+            body, _ = self._diff(tmp, short=short)
+        self.assertTrue(body["status_truncated"])
+        self.assertEqual(len(body["status_short"].splitlines()),
+                         STATUS_SHORT_LINES_CAP)
+        self.assertFalse(body["clean"])
+
+    def test_unborn_head_falls_back_to_plain_diff(self):
+        short = "A  first.py\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            body, fake = self._diff(
+                tmp, short=short, stat=" first.py | 1 +\n",
+                diff="diff --git a/first.py b/first.py\n",
+                head_born=False)
+        self.assertEqual(body["diff_stat"], " first.py | 1 +\n")
+        self.assertIn("first.py", body["diff"])
+        plain = [c for c in fake.calls
+                 if "diff" in c and "HEAD" not in c]
+        self.assertTrue(plain)
+
+
 class RepoDiffRealGitTest(unittest.TestCase):
     def test_real_checkout_reports_real_diff(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,10 +263,35 @@ class RepoDiffEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         for key in ("repo", "branch", "clean", "status_short",
-                    "diff_stat", "diff", "truncated"):
+                    "status_truncated", "diff_stat", "diff",
+                    "truncated", "files", "files_truncated"):
             self.assertIn(key, body)
         self.assertEqual(body["repo"], "demo")
         self.assertTrue(body["clean"])
+
+
+class RepoDiffUnbornHeadTest(unittest.TestCase):
+    def test_fresh_repo_without_commits_stays_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "demo")
+            os.makedirs(path)
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                   "GIT_COMMITTER_NAME": "t",
+                   "GIT_COMMITTER_EMAIL": "t@t"}
+            subprocess.run(["git", "init", "-q"], cwd=path, env=env,
+                           check=True)
+            with open(os.path.join(path, "first.py"), "w") as fh:
+                fh.write("x = 1\n")
+            subprocess.run(["git", "add", "."], cwd=path, env=env,
+                           check=True)
+            with mock.patch(
+                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                body = get_repo_diff("demo")
+        self.assertFalse(body["clean"])
+        self.assertIn("first.py", body["status_short"])
+        self.assertEqual(len(body["files"]), 1)
+        self.assertEqual(body["files"][0]["path"], "first.py")
 
 
 if __name__ == "__main__":

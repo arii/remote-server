@@ -41,6 +41,7 @@ import {
   mergePr,
   postAgentTurn,
   postChatStream,
+  repoAction,
   requestPrChanges,
   rerunJob,
   restoreRow,
@@ -136,6 +137,23 @@ describe('apiClient (fetch with inline shapes)', () => {
       '/api/repo/diff?repo=demo',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it('posts repo actions with the confirm intent (issue #927)', async () => {
+    const res = { ok: true, repo: 'demo', action: 'stash', clean: true, detail: 'changes stashed' };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await repoAction('demo', 'stash')).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith('/api/repo/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
+      body: JSON.stringify({
+        repo: 'demo',
+        action: 'stash',
+        intent: 'repo-action',
+        confirmed: true,
+      }),
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it('fetches container stats (issue #663)', async () => {

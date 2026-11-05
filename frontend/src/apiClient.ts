@@ -568,18 +568,53 @@ export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
 }
 
 // Status + diff for one checkout, backing the dirty-repo modal (#663).
+export interface RepoDiffFile {
+  path: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  additions: number;
+  deletions: number;
+}
+
 export interface RepoDiffResponse {
   repo: string;
   branch: string;
   clean: boolean;
   status_short: string;
+  status_truncated: boolean;
   diff_stat: string;
   diff: string;
   truncated: boolean;
+  files: RepoDiffFile[];
+  files_truncated: boolean;
 }
 
 export function fetchRepoDiff(repo: string): Promise<RepoDiffResponse> {
   return getJson<RepoDiffResponse>(`api/repo/diff?repo=${encodeURIComponent(repo)}`);
+}
+
+// One-click git actions for the dirty-repo modal (#927): stash,
+// discard-untracked, and sync (fetch + rebase onto origin/main).
+// Confirmed taps — the modal owns any extra arming for the
+// destructive one.
+export type RepoAction = 'stash' | 'discard-untracked' | 'sync';
+
+export interface RepoActionResponse {
+  ok: boolean;
+  repo: string;
+  action: string;
+  clean: boolean;
+  detail: string;
+}
+
+export function repoAction(repo: string, action: RepoAction): Promise<RepoActionResponse> {
+  return postJson<RepoActionResponse>('api/repo/action', {
+    repo,
+    action,
+    intent: 'repo-action',
+    confirmed: true,
+  });
 }
 
 // Worklist metrics for the prefetch strip (issue #897): short TTL,
