@@ -269,6 +269,10 @@ services:
       GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       # Metered-spend cap (gate + budget UI). Empty/unset = uncapped.
       NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
+      # Ollama on the compose network (repair worker, narrators).
+      # localhost is this container itself — the reachable default is
+      # the ollama service alias (issue #966). Host override wins.
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
     # init reaps the entrypoint's background index build (#699).
