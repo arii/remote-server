@@ -9,10 +9,16 @@ import CommandPalette from './components/CommandPalette';
 import { buildCommands, type PaletteCommand } from './components/commandRegistry';
 import {
   fetchContainerStats,
+  fetchDispatchQueue,
+  fetchInbox,
+  fetchJobs,
+  fetchLedger,
+  fetchPrs,
   fetchRepoDiff,
   fetchRepos,
   fetchSystemHealth,
   flushOutbox,
+  prefetchTabPayloads,
   repoAction,
   restartContainer,
   startJobRun,
@@ -21,7 +27,28 @@ import {
 } from './apiClient';
 import type { ContainerStatsRow, RepoAction, RepoActionResponse, SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
-import { loadContainerStats, loadRepoDiff, loadRepos, loadSystemHealth, useMock } from './views/mockViews';
+import {
+  loadContainerStats,
+  loadDispatchQueue,
+  loadHistory,
+  loadJobs,
+  loadPrs,
+  loadRepoDiff,
+  loadRepos,
+  loadSystemHealth,
+  useMock,
+} from './views/mockViews';
+import { loadInbox } from './mocks/inbox';
+import {
+  EMPTY_BADGE_COUNTS,
+  historyErrorCount,
+  jobsActiveCount,
+  navBadge,
+  nowBadgeCount,
+  queueActiveCount,
+  reviewBadgeCount,
+} from './tabBadges';
+import type { NavBadgeCounts } from './tabBadges';
 import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
@@ -442,6 +469,62 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
+  // Live nav badges + background precache (issue #936): every
+  // counter derives from the same payload its destination renders,
+  // refreshed on boot and repo switch. Null means not loaded yet —
+  // the pill stays hidden instead of flashing a wrong zero, and a
+  // failed refresh keeps the last good counts. The precache run is
+  // fire-and-forget and rides the same view cache, so badge reads
+  // and tab payloads cost one request per endpoint.
+  const [badgeCounts, setBadgeCounts] = useState<NavBadgeCounts>(EMPTY_BADGE_COUNTS);
+  useEffect(() => {
+    if (useMock()) {
+      const feed = loadInbox();
+      const jobs = loadJobs().jobs;
+      const history = loadHistory();
+      setBadgeCounts({
+        now: nowBadgeCount(feed),
+        review: reviewBadgeCount(loadPrs()),
+        history: historyErrorCount(history.jobs, history.entries),
+        jobs: jobsActiveCount(jobs),
+        queue: queueActiveCount(loadDispatchQueue().items),
+      });
+      return;
+    }
+    let cancelled = false;
+    void prefetchTabPayloads(repo);
+    (async () => {
+      const rollup = isRollupRepo(repo);
+      const [inboxRes, prsRes, jobsRes, ledgerRes, queueRes] = await Promise.allSettled([
+        fetchInbox(repo),
+        rollup ? Promise.resolve(null) : fetchPrs(repo),
+        fetchJobs(),
+        fetchLedger('all', 100),
+        fetchDispatchQueue(),
+      ]);
+      if (cancelled) return;
+      setBadgeCounts((prev) => ({
+        now: inboxRes.status === 'fulfilled' && inboxRes.value
+          ? nowBadgeCount(inboxRes.value)
+          : prev.now,
+        review: prsRes.status === 'fulfilled'
+          ? (prsRes.value ? reviewBadgeCount(prsRes.value.prs) : null)
+          : prev.review,
+        history: jobsRes.status === 'fulfilled' && ledgerRes.status === 'fulfilled'
+          ? historyErrorCount(jobsRes.value.jobs, ledgerRes.value.entries)
+          : prev.history,
+        jobs: jobsRes.status === 'fulfilled' ? jobsActiveCount(jobsRes.value.jobs) : prev.jobs,
+        queue: queueRes.status === 'fulfilled'
+          ? queueActiveCount(queueRes.value.items)
+          : prev.queue,
+      }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
   // Keep-alive tabs (issue #897): Briefing + History mount on
   // first visit and stay mounted hidden afterwards, so warm
   // switches render with zero remount and zero network. Now keeps
@@ -558,19 +641,35 @@ export default function App() {
         />
       )}
       <nav className="topnav" aria-label="Views">
-        {NAV_ENTRIES.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            data-testid={`nav-${t.id}`}
-            aria-pressed={navPressed(tab, nowSection, t)}
-            aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
-            title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
-            onClick={() => goNav(t)}
-          >
-            {t.label}
-          </button>
-        ))}
+        {NAV_ENTRIES.map((t) => {
+          // Live count pill (issue #936): hidden until the first
+          // refresh lands and whenever the count is zero, so the bar
+          // only speaks up when a destination needs the operator.
+          const badge = navBadge(t.id, badgeCounts);
+          return (
+            <button
+              key={t.id}
+              type="button"
+              data-testid={`nav-${t.id}`}
+              aria-pressed={navPressed(tab, nowSection, t)}
+              aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
+              title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
+              onClick={() => goNav(t)}
+            >
+              {t.label}
+              {badge && (
+                <span
+                  className="nav-badge"
+                  data-testid={`nav-badge-${t.id}`}
+                  title={badge.label}
+                  aria-label={badge.label}
+                >
+                  {badge.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </nav>
       <ShortcutHint />
       {tab === 'now' && (
