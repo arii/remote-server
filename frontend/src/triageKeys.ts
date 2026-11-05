@@ -52,8 +52,25 @@ export interface TriageKeysOptions {
   // Optional defer binding (Review only): d defers the cursor row.
   // Reversible by design, so it needs no hold-to-confirm.
   onDefer?: (index: number) => void;
+  // Optional agent binding: c seeds the agent from the cursor row.
+  onAgent?: (index: number) => void;
   // Optional row locator for scrolling the cursor into view.
   rowTestId?: (index: number) => string;
+}
+
+export type TriageAction = 'open' | 'defer' | 'agent';
+
+// Letter-key triage (#962): o opens like Enter, D defers like d,
+// c asks the agent. Pure so the matrix stays unit-tested; the hook
+// below only adds focus guards and cursor bounds.
+export function resolveTriageKey(
+  key: string,
+  wired: { defer: boolean; agent: boolean },
+): TriageAction | null {
+  if (key === 'o' || key === 'O') return 'open';
+  if (key === 'd' || key === 'D') return wired.defer ? 'defer' : null;
+  if (key === 'c' || key === 'C') return wired.agent ? 'agent' : null;
+  return null;
 }
 
 // j/k moves a cursor over `count` rows, Enter opens the cursor row,
@@ -65,6 +82,7 @@ export function useTriageKeys({
   suspended = false,
   onOpen,
   onDefer,
+  onAgent,
   rowTestId,
 }: TriageKeysOptions): [number | null, (c: number | null) => void] {
   const [cursor, setCursor] = useState<number | null>(null);
@@ -72,6 +90,8 @@ export function useTriageKeys({
   openRef.current = onOpen;
   const deferRef = useRef(onDefer);
   deferRef.current = onDefer;
+  const agentRef = useRef(onAgent);
+  agentRef.current = onAgent;
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
   const countRef = useRef(count);
@@ -124,15 +144,27 @@ export function useTriageKeys({
         openRef.current(at);
         return;
       }
-      if (e.key === 'd') {
+      if (
+        e.key === 'd' ||
+        e.key === 'D' ||
+        e.key === 'o' ||
+        e.key === 'O' ||
+        e.key === 'c' ||
+        e.key === 'C'
+      ) {
         // Same guards as j/k: no modifiers (checked above), suspended
         // flag, and never while typing in an editable control.
         if (isEditableFocus(active)) return;
-        const defer = deferRef.current;
+        const action = resolveTriageKey(e.key, {
+          defer: !!deferRef.current,
+          agent: !!agentRef.current,
+        });
         const at = cursorRef.current;
-        if (!defer || at === null || at >= countRef.current) return;
+        if (!action || at === null || at >= countRef.current) return;
         e.preventDefault();
-        defer(at);
+        if (action === 'open') openRef.current(at);
+        else if (action === 'defer') deferRef.current?.(at);
+        else agentRef.current?.(at);
       }
     }
     window.addEventListener('keydown', onKey);

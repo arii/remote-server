@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { isActivationFocus, isEditableFocus, moveSelection } from './triageKeys';
+import { isActivationFocus, isEditableFocus, moveSelection, resolveTriageKey } from './triageKeys';
+
+describe('resolveTriageKey', () => {
+  it('opens on o, defers on d/D only when wired, agents on c only when wired', () => {
+    expect(resolveTriageKey('o', { defer: true, agent: true })).toBe('open');
+    expect(resolveTriageKey('O', { defer: false, agent: false })).toBe('open');
+    expect(resolveTriageKey('d', { defer: true, agent: false })).toBe('defer');
+    expect(resolveTriageKey('D', { defer: true, agent: false })).toBe('defer');
+    expect(resolveTriageKey('d', { defer: false, agent: false })).toBeNull();
+    expect(resolveTriageKey('c', { defer: false, agent: true })).toBe('agent');
+    expect(resolveTriageKey('C', { defer: false, agent: true })).toBe('agent');
+    expect(resolveTriageKey('c', { defer: false, agent: false })).toBeNull();
+  });
+
+  it('ignores other keys', () => {
+    expect(resolveTriageKey('x', { defer: true, agent: true })).toBeNull();
+    expect(resolveTriageKey('Enter', { defer: true, agent: true })).toBeNull();
+    expect(resolveTriageKey('', { defer: true, agent: true })).toBeNull();
+  });
+});
 
 describe('moveSelection', () => {
   it('returns null for an empty list', () => {

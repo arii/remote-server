@@ -905,7 +905,7 @@ export function RowActionButton({
   testid,
   onClick,
 }: {
-  action: 'Details' | 'Defer' | 'Restore';
+  action: 'Details' | 'Defer' | 'Restore' | 'Open';
   kind: 'pr' | 'issue';
   num: number;
   testid?: string;
@@ -923,6 +923,59 @@ export function RowActionButton({
 // fixtures and optimistic patches may use bare strings.
 export function issueLabelNames(labels: IssueRow['labels']): string[] {
   return (labels ?? []).map(labelOf).filter(Boolean);
+}
+
+// Issues quick-filter tabs (#962): Bugs and Enhancements read the
+// row labels; Needs Triage is unlabeled rows plus triage-flagged ones.
+export type IssueTab = 'all' | 'bugs' | 'enhancements' | 'needs-triage';
+
+export const ISSUE_TABS: Array<{ id: IssueTab; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'bugs', label: 'Bugs' },
+  { id: 'enhancements', label: 'Enhancements' },
+  { id: 'needs-triage', label: 'Needs Triage' },
+];
+
+export function issueInTab(issue: IssueRow, tab: IssueTab): boolean {
+  if (tab === 'all') return true;
+  const names = issueLabelNames(issue.labels);
+  const text = names.join(' ').toLowerCase();
+  if (tab === 'bugs') return /\bbug/.test(text);
+  if (tab === 'enhancements') return text.includes('enhancement') || text.includes('feature');
+  return names.length === 0 || /triage/i.test(text);
+}
+
+// Inline severity from labels (#962): critical/high/medium/low
+// keywords, else null (no badge). Reuses the Now severity palette.
+export type IssueSeverity = 'critical' | 'high' | 'medium' | 'low';
+
+export function issueSeverity(labels: IssueRow['labels']): IssueSeverity | null {
+  const text = issueLabelNames(labels).join(' ').toLowerCase();
+  if (/\bcritical\b|\bp0\b|severity:\s*critical/.test(text)) return 'critical';
+  if (/\bhigh\b|\bp1\b|severity:\s*high/.test(text)) return 'high';
+  if (/\bmedium\b|\bp2\b|severity:\s*medium/.test(text)) return 'medium';
+  if (/\blow\b|\bp3\b|severity:\s*low/.test(text)) return 'low';
+  return null;
+}
+
+export function issueSeverityClass(sev: IssueSeverity | null): string {
+  if (sev === 'critical') return 'sev sev-crit';
+  if (sev === 'high' || sev === 'medium') return 'sev sev-warn';
+  return 'sev sev-info';
+}
+
+// Per-row agent actions (#962): seeds for the agent drawer, same
+// shape as the PR ask-agent seeds.
+export function repairIssueSeed(repo: string, issue: IssueRow): string {
+  return `In ${repo}, fix issue #${issue.number} (${issue.title}): investigate the cause, implement the fix, and verify with the repo's tests.`;
+}
+
+export function feedbackIssueSeed(repo: string, issue: IssueRow): string {
+  return `In ${repo}, read the latest comments on issue #${issue.number} (${issue.title}) and address the feedback, then report what changed.`;
+}
+
+export function rebaseIssueSeed(repo: string, issue: IssueRow, branch: string): string {
+  return `In ${repo}, rebase the working branch for issue #${issue.number} (${issue.title}) onto the latest ${branch} and resolve any conflicts.`;
 }
 
 // In-flight (or last failed) label op for one issue row.
@@ -1428,6 +1481,9 @@ export default function ReviewView({
   const [requestChangesFor, setRequestChangesFor] = useState<number | null>(null);
   const [creatingIssue, setCreatingIssue] = useState(false);
   const [filter, setFilter] = useState('');
+  // Issues quick-filter tab (#962): narrows the issue list (and the
+  // triage cursor, which derives from it) by label family.
+  const [issueTab, setIssueTab] = useState<IssueTab>('all');
   const [sort, setSort] = useState<ReviewSort>('api');
   const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -1464,10 +1520,13 @@ export default function ReviewView({
       .filter((p) => rowMatchesFilter(p, filter)),
     sort,
   );
+  const issueTabCounts = (issues ?? []).filter(
+    (i) => !isRowDeferred(deferred, 'issue', i.number),
+  );
   const visibleIssues = sortReviewRows(
-    (issues ?? [])
-      .filter((i) => !isRowDeferred(deferred, 'issue', i.number))
-      .filter((i) => rowMatchesFilter(i, filter)),
+    issueTabCounts
+      .filter((i) => rowMatchesFilter(i, filter))
+      .filter((i) => issueInTab(i, issueTab)),
     sort,
   );
   const filtering = filter.trim().length > 0;
@@ -1506,6 +1565,23 @@ export default function ReviewView({
     onDefer: (i) => {
       const r = rows[i];
       if (r) void deferSelected(r.kind, r.number);
+    },
+    // c seeds the agent from the cursor row (#962): the row's
+    // repair seed for issues, the ask-agent seed for PRs.
+    onAgent: (i) => {
+      const r = rows[i];
+      if (!r) return;
+      if (r.kind === 'issue') {
+        const iss = visibleIssues.find((v) => v.number === r.number);
+        if (iss) onAskAgent(repairIssueSeed(repo, iss));
+        return;
+      }
+      const p = visiblePrs.find((v) => v.number === r.number);
+      if (p) {
+        onAskAgent(
+          `PR #${p.number} ${p.title} (${repo}): review the diff and implement the needed changes.`,
+        );
+      }
     },
     rowTestId: (i) => {
       const r = rows[i];
@@ -2197,6 +2273,22 @@ export default function ReviewView({
               </label>
             )}
           </h3>
+          <div className="actions" data-testid="issue-filter-tabs" role="group" aria-label="Filter issues">
+            {ISSUE_TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                data-testid={`issue-tab-${t.id}`}
+                aria-pressed={issueTab === t.id}
+                onClick={() => setIssueTab(t.id)}
+              >
+                {t.label} ({issueTabCounts.filter((i) => issueInTab(i, t.id)).length})
+              </button>
+            ))}
+            <span className="row-meta" data-testid="issue-triage-hint">
+              j/k move · Enter/O opens · d/D defers · c asks agent
+            </span>
+          </div>
           {!issues ? (
             <p className="row-meta" data-testid="review-issues-loading" role="status">Loading issues…</p>
           ) : visibleIssues.length === 0 ? (
@@ -2208,7 +2300,9 @@ export default function ReviewView({
             />
           ) : (
             <ul className="session-list" data-testid="review-issue-list">
-              {visibleIssues.map((iss, ii) => (
+              {visibleIssues.map((iss, ii) => {
+                const sev = issueSeverity(iss.labels);
+                return (
                 <li
                   key={iss.number}
                   className={`detail${cursor === prCount + ii ? ' kbd-focus' : ''}`}
@@ -2223,6 +2317,14 @@ export default function ReviewView({
                   />{' '}
                   <span className="row-title">
                     <IssueRowTitle issue={iss} />
+                    {sev && (
+                      <span
+                        className={issueSeverityClass(sev)}
+                        data-testid={`issue-severity-${iss.number}`}
+                      >
+                        {sev}
+                      </span>
+                    )}
                   </span>
                   <IssueRowLabels
                     issue={iss}
@@ -2252,9 +2354,37 @@ export default function ReviewView({
                       ))}
                     </p>
                   )}
-                  <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)} />
+                  <div className="actions">
+                    <RowActionButton action="Open" kind="issue" num={iss.number} testid={`open-issue-${iss.number}`} onClick={() => openIssueUrl(iss.url)} />
+                    <RowActionButton action="Defer" kind="issue" num={iss.number} testid={`defer-issue-${iss.number}`} onClick={() => void deferSelected('issue', iss.number)} />
+                    <button
+                      type="button"
+                      data-testid={`repair-issue-${iss.number}`}
+                      title="Ask the agent to fix this issue"
+                      onClick={() => onAskAgent(repairIssueSeed(repo, iss))}
+                    >
+                      Repair
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`feedback-issue-${iss.number}`}
+                      title="Ask the agent to address the latest feedback on this issue"
+                      onClick={() => onAskAgent(feedbackIssueSeed(repo, iss))}
+                    >
+                      Feedback
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`rebase-issue-${iss.number}`}
+                      title="Ask the agent to rebase the working branch onto the latest base"
+                      onClick={() => onAskAgent(rebaseIssueSeed(repo, iss, branch))}
+                    >
+                      Rebase
+                    </button>
+                  </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
           {deferred.length > 0 && (
