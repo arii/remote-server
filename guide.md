@@ -437,9 +437,9 @@ Refactor `deep-agent/coder.py` into `InitCoderGraph` with hard `td` worktree iso
    - Test 3: Verifies 2 consecutive test failures route to `validated_replanner_node`, which persists a revised validated plan to `decisions.py` and succeeds on the next coding turn.
 
 ## Acceptance Criteria
-- [ ] `InitCoderGraph` provisions worktrees exclusively via `td worktree create --json` and blocks any file access outside `worktree_root`.
-- [ ] `td_deterministic_gate_node` enforces `td verify-scope`, `td audit-code`, and issue `verification_commands` on every turn.
-- [ ] Repeated deterministic failures trigger `validated_replanner_node`, updating and validating the plan in `decisions.py`.
+- [x] `InitCoderGraph` provisions worktrees exclusively via `td worktree create --json` and blocks any file access outside `worktree_root`.
+- [x] `td_deterministic_gate_node` enforces `td verify-scope`, `td audit-code`, and issue `verification_commands` on every turn.
+- [x] Repeated deterministic failures trigger `validated_replanner_node`, updating and validating the plan in `decisions.py`.
 - [ ] All tests in `tests/test_coder.py` pass.
 
 ## Verification Commands

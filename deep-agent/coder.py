@@ -875,3 +875,364 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ---------------------------------------------------------------------------
+# InitCoderGraph: worktree-isolated coding loop (deterministic gates).
+#
+# init -> plan -> plan_review (HITL) -> implement -> deterministic_gate -+
+#   gate pass -> persist -> END                                          |
+#   gate fail -> fix (implement with errors) or validated_replanner -----+
+#   replan -> plan_review (re-validate) -> implement ...
+#
+# Only stdlib at module top (langgraph lazy). File access outside the
+# provisioned worktree is rejected by assert_inside(); provisioning and
+# every gate run through `td` (never raw git), injectable for tests.
+# ---------------------------------------------------------------------------
+
+
+def assert_inside(worktree_root, path):
+    """Real path inside worktree_root, else ValueError (escape blocked)."""
+    root = os.path.realpath(worktree_root)
+    full = os.path.realpath(os.path.join(root, path))
+    if full != root and not full.startswith(root + os.sep):
+        raise ValueError(f"path escapes worktree: {path!r}")
+    return full
+
+
+def read_worktree_file(worktree_root, path, limit=20000):
+    """Read a file inside the worktree; escapes raise ValueError."""
+    full = assert_inside(worktree_root, path)
+    with open(full, encoding="utf-8", errors="ignore") as handle:
+        return handle.read(limit)
+
+
+def gate_spec_markdown(brief, allowed_files):
+    """Minimal verify-scope spec from a brief + allowed file list."""
+    lines = ["# Task", "", "## Problem Statement", brief.strip(), "",
+             "## Goal", brief.strip(), "", "## Scope", "", "## Definition of Done",
+             "done.", "", "## Scope & File Boundaries", "### Allowed Files"]
+    for path in allowed_files or []:
+        lines.append(f"- `{path}`")
+    lines += ["### Forbidden Files", "- (none declared)", "",
+              "## Acceptance Criteria", "- [ ] Gates pass", ""]
+    return "\n".join(lines)
+
+
+class InitCoderGraph:
+    """Worktree-isolated implement loop. Inject fakes for tests.
+
+    plan_fn(brief, worktree_root, context) -> {"plan": str,
+        "allowed_files": [...], "verification_commands": [...]}
+    implement_fn(brief, plan, worktree_root, errors) -> notes str
+    td_runner(args, cwd) -> (returncode, stdout-json)
+    cmd_runner(checkout, command) -> s5tools.run_repo_command-shaped str
+    """
+
+    def __init__(self, repo, issue_id, brief, plan_fn=None,
+                 implement_fn=None, td_runner=None, cmd_runner=None,
+                 max_fix_loops=3, max_replans=1, thread_id=None):
+        import s5tools  # noqa: E402  (stdlib-only module)
+        self.repo = repo
+        self.issue_id = issue_id
+        self.brief = brief
+        self.plan_fn = plan_fn
+        self.implement_fn = implement_fn
+        self.td_runner = (td_runner if td_runner is not None
+                          else self._default_td_runner)
+        self.cmd_runner = (cmd_runner if cmd_runner is not None
+                           else s5tools.run_repo_command)
+        self.max_fix_loops = max_fix_loops
+        self.max_replans = max_replans
+        self.thread_id = thread_id or f"coder-{issue_id}-{int(time.time())}"
+
+    @staticmethod
+    def _default_td_runner(args, cwd):
+        import s5tools
+        out = s5tools.td(["--json"] + list(args), cwd)
+        return 0, out
+
+    # -- deterministic pieces -------------------------------------------
+
+    def provision_worktree(self):
+        """td worktree create --issue; returns (root, error-or-None)."""
+        try:
+            code, out = self.td_runner(
+                ["worktree", "create", "--issue", str(self.issue_id)],
+                self.repo)
+        except Exception as exc:
+            return None, f"td worktree create failed: {exc}"
+        try:
+            payload = json.loads(out) if out else {}
+        except ValueError:
+            return None, f"td returned non-JSON: {out[:200]}"
+        if code != 0 or not isinstance(payload, dict):
+            return None, (f"td worktree create exited {code}: "
+                           f"{out[:200]}")
+        root = payload.get("path")
+        if not root or not os.path.isdir(root):
+            return None, f"td returned no worktree path: {out[:200]}"
+        return root, None
+
+    def run_gate(self, worktree_root, allowed_files, verification_commands):
+        """td verify-scope + td audit-code + verify commands in root.
+
+        Returns {"passed": bool, "scope": {...}, "audit": {...},
+        "commands": [{command, exit}], "errors": [...]}.
+        """
+        import tempfile
+        errors = []
+        spec_text = gate_spec_markdown(self.brief, allowed_files)
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8")
+        commands_out = []
+        try:
+            handle.write(spec_text)
+            handle.close()
+            try:
+                code, out = self.td_runner(
+                    ["verify-scope", "--spec-file", handle.name,
+                     "--worktree", worktree_root], worktree_root)
+            except Exception as exc:
+                return {"passed": False, "scope": {}, "audit": {},
+                        "commands": [],
+                        "errors": [f"verify-scope failed: {exc}"]}
+            try:
+                scope = json.loads(out) if out else {}
+            except ValueError:
+                scope = {}
+            if code != 0 or not scope.get("passed", False):
+                for violation in scope.get("violations", []):
+                    errors.append(f"scope violation: {violation}")
+                if not errors:
+                    errors.append(f"verify-scope exited {code}")
+            try:
+                code, out = self.td_runner(
+                    ["audit-code", "--worktree", worktree_root],
+                    worktree_root)
+            except Exception as exc:
+                return {"passed": False, "scope": scope, "audit": {},
+                        "commands": [],
+                        "errors": errors + [f"audit-code failed: {exc}"]}
+            try:
+                audit = json.loads(out) if out else {}
+            except ValueError:
+                audit = {}
+            if code != 0 or not audit.get("passed", False):
+                for item in audit.get("ast_violations", []):
+                    errors.append(
+                        f"audit: {item.get('file')}:{item.get('line')}: "
+                        f"{item.get('rule')}: {item.get('message')}")
+                for item in audit.get("slop_findings", []):
+                    errors.append(
+                        f"slop: {item.get('script')}: "
+                        f"{str(item.get('summary', ''))[:200]}")
+                if code != 0 and not errors:
+                    errors.append(f"audit-code exited {code}")
+            for command in verification_commands or []:
+                result = self.cmd_runner(worktree_root, command)
+                match = re.match(r"exit=(\d+)", result or "")
+                exit_code = int(match.group(1)) if match else -1
+                commands_out.append({"command": command,
+                                     "exit": exit_code})
+                if exit_code != 0:
+                    errors.append(
+                        f"command failed (exit={exit_code}): {command} "
+                        f"{result[-300:]}")
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+        return {"passed": not errors, "scope": scope, "audit": audit,
+                "commands": commands_out, "errors": errors}
+
+    # -- graph ------------------------------------------------------------
+
+    def build_graph(self):
+        """Compile the coding loop (needs langgraph)."""
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.types import Command, interrupt
+        from typing_extensions import TypedDict
+
+        if getattr(self, "_checkpointer", None) is None:
+            self._checkpointer = InMemorySaver()
+        outer = self
+
+        class CoderState(TypedDict, total=False):
+            worktree_root: str
+            plan: str
+            allowed_files: list
+            verification_commands: list
+            implementation_notes: str
+            gate: dict
+            errors: list
+            fix_attempts: int
+            replans: int
+            plan_attempts: int
+            approved: bool
+            valid: bool
+            persisted: bool
+            fatal: str
+
+        def init_node(state):
+            if state.get("worktree_root"):
+                return {}
+            root, error = outer.provision_worktree()
+            if error:
+                return {"fatal": error}
+            return {"worktree_root": root, "fix_attempts": 0,
+                    "replans": 0, "plan_attempts": 0, "errors": [],
+                    "valid": False}
+
+        def plan_node(state):
+            if state.get("plan") and not state.get("errors"):
+                return {}
+            if outer.plan_fn is None:
+                return {"fatal": "plan_fn is required"}
+            result = outer.plan_fn(
+                outer.brief, state.get("worktree_root", ""),
+                {"errors": state.get("errors", [])})
+            allowed = list(result.get("allowed_files", []))
+            commands = list(result.get("verification_commands", []))
+            return {"plan": result.get("plan", ""),
+                    "allowed_files": allowed,
+                    "verification_commands": commands,
+                    "approved": False}
+
+        def plan_review_node(state):
+            if state.get("approved"):
+                return {}
+            if state.get("plan_attempts", 0) >= 3:
+                return {"fatal": "plan rejected too many times"}
+            reply = interrupt({"plan": state.get("plan", ""),
+                               "issue_id": outer.issue_id})
+            decision = (reply or {}).get("decision", "approve")
+            if decision == "approve":
+                return {"approved": True,
+                        "plan_attempts": state.get("plan_attempts", 0) + 1}
+            notes = (reply or {}).get("notes", "")
+            errors = list(state.get("errors", []))
+            if notes:
+                errors.append(f"plan revision requested: {notes}")
+            return {"approved": False, "errors": errors,
+                    "plan_attempts": state.get("plan_attempts", 0) + 1}
+
+        def implement_node(state):
+            if (state.get("implementation_notes")
+                    and not state.get("errors")):
+                return {}
+            if outer.implement_fn is None:
+                return {"fatal": "implement_fn is required"}
+            notes = outer.implement_fn(
+                outer.brief, state.get("plan", ""),
+                state.get("worktree_root", ""),
+                state.get("errors", []))
+            return {"implementation_notes": notes}
+
+        def gate_node(state):
+            gate = outer.run_gate(
+                state.get("worktree_root", ""),
+                state.get("allowed_files", []),
+                state.get("verification_commands", []))
+            update = {"gate": gate, "errors": gate["errors"],
+                      "valid": gate["passed"]}
+            if gate["passed"]:
+                return update
+            return update
+
+        def route_after_gate(state):
+            if state.get("fatal"):
+                return END
+            if state.get("valid"):
+                return "persist"
+            if state.get("fix_attempts", 0) < outer.max_fix_loops:
+                return "implement"
+            if state.get("replans", 0) < outer.max_replans:
+                return "replan"
+            return END
+
+        def fix_bookkeeping(state):
+            return {"fix_attempts": state.get("fix_attempts", 0) + 1}
+
+        def replan_node(state):
+            if outer.plan_fn is None:
+                return {"fatal": "plan_fn is required"}
+            result = outer.plan_fn(
+                outer.brief, state.get("worktree_root", ""),
+                {"errors": state.get("errors", []),
+                 "gate": state.get("gate", {}),
+                 "replan": True})
+            return {"plan": result.get("plan", ""),
+                    "allowed_files": list(result.get("allowed_files", [])),
+                    "verification_commands": list(
+                        result.get("verification_commands", [])),
+                    "approved": False,
+                    "implementation_notes": "",
+                    "errors": [],
+                    "replans": state.get("replans", 0) + 1,
+                    "fix_attempts": 0}
+
+        def persist_node(state):
+            import decisions
+            import ledger
+            calls = [{"name": "td worktree create",
+                      "args": f"--issue {outer.issue_id}"},
+                     {"name": "td verify-scope + td audit-code",
+                      "args": f"attempts={state.get('fix_attempts', 0)}"}]
+            lines = decisions.build_decisions(
+                calls, [f"valid={state.get('valid')}"],
+                (state.get("implementation_notes", "") or "")[:500],
+                reason="coder loop closed")
+            ledger.record(
+                "coder.py", os.environ.get("S5_CODER_MODEL", "qwen3:8b"),
+                outer.thread_id, [], time.time(),
+                extra={"valid": state.get("valid"),
+                       "issue_id": outer.issue_id,
+                       "worktree_root": state.get("worktree_root", ""),
+                       "decisions": lines})
+            return {"persisted": True}
+
+        builder = StateGraph(CoderState)
+        builder.add_node("init", init_node)
+        builder.add_node("plan", plan_node)
+        builder.add_node("plan_review", plan_review_node)
+        builder.add_node("implement", implement_node)
+        builder.add_node("deterministic_gate", gate_node)
+        builder.add_node("fix_loop", fix_bookkeeping)
+        builder.add_node("validated_replanner", replan_node)
+        builder.add_node("persist", persist_node)
+        builder.add_edge(START, "init")
+        builder.add_conditional_edges(
+            "init", lambda s: END if s.get("fatal") else "plan",
+            {"plan": "plan", END: END})
+        builder.add_conditional_edges(
+            "plan", lambda s: END if s.get("fatal") else "plan_review",
+            {"plan_review": "plan_review", END: END})
+        builder.add_conditional_edges(
+            "plan_review",
+            lambda s: END if s.get("fatal")
+            else ("implement" if s.get("approved") else "plan"),
+            {"implement": "implement", "plan": "plan", END: END})
+        builder.add_conditional_edges(
+            "implement",
+            lambda s: END if s.get("fatal") else "deterministic_gate",
+            {"deterministic_gate": "deterministic_gate", END: END})
+        builder.add_conditional_edges("deterministic_gate", route_after_gate,
+                                      {"persist": "persist",
+                                       "implement": "fix_loop", "replan": "validated_replanner",
+                                       END: END})
+        builder.add_edge("fix_loop", "implement")
+        builder.add_edge("validated_replanner", "plan_review")
+        builder.add_edge("persist", END)
+        return builder.compile(checkpointer=self._checkpointer)
+
+    def run(self, resume=None):
+        """Invoke to completion (or interrupt); resume via Command."""
+        from langgraph.types import Command
+        graph = self.build_graph()
+        config = {"configurable": {"thread_id": self.thread_id}}
+        if resume is None:
+            return graph.invoke({}, config)
+        return graph.invoke(Command(resume=resume), config)
