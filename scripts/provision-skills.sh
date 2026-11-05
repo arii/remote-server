@@ -6,6 +6,13 @@
 # it from the lock: shallow-clone each locked source repo, copy the skill
 # dir into place, then run verify-skills.sh to prove hashes match.
 #
+# NOTE: this deliberately does NOT use `npx skills experimental_install`.
+# That tool computes directory digests and refuses our lock ("swarm has
+# changed since skills-lock.json was written") even though
+# verify-skills.sh --check-upstream proves all 26 hashes match upstream
+# HEAD. Our lock pins raw SKILL.md SHA-256 (written by `muse skills`);
+# the npx tool uses incompatible lock semantics and would rewrite it.
+#
 #   provision-skills.sh [--fail-open]
 #
 # --fail-open  warn instead of exiting nonzero (for container bring-up:

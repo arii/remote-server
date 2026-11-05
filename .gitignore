@@ -77,11 +77,21 @@ deep-agent/*
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),
-# absent from git. Re-provision by reinstalling from
-# langchain-ai/langchain-skills (see docs/deepagents.md). Note: plain
-# `git clean -fd` preserves these; `git clean -fdx` would remove them.
+# absent from git. Recreated at bring-up by the skills-provisioner
+# service (scripts/provision-skills.sh from skills-lock.json), or
+# manually via `npm run skills:install`. Note: plain `git clean -fd`
+# preserves these; `git clean -fdx` would remove them.
 .agents/
 skills-lock.json
+!skills-lock.json
+
+# Agent harnesses & runtime caches (Untracked) — local coding-agent
+# workspaces (Muse, AGY, LangGraph API) must never dirty git status.
+.muse/
+.agy_cache/
+.langgraph_api/
+.mda/
+sandbox/output/
 
 # Vite build output (regenerate with pnpm build)
 frontend/dist/
