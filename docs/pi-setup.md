@@ -134,8 +134,8 @@ Pi flags can also override tool visibility on demand:
 
 ## BoomTick MCP tools (active 2026-10-27)
 
-Pi also loads the BoomTick MCP server (built from the pinned boomtick
-git SHA in `terminal/Dockerfile` via `BOOMTICK_CLI_REF` and run from
+Pi also loads the BoomTick MCP server (built from boomtick main in
+`terminal/Dockerfile` via `BOOMTICK_CLI_REF=main` and run from
 the baked `/usr/local/bin/boomtick-mcp` binary declared in
 `terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
 `"toolExposure": {"*.*": "hidden"}` so the 27 underscore-named tools are
@@ -172,9 +172,10 @@ server entry with its own `GITHUB_REPO` / `BOOMTICK_REPO_PATH`.
   check; if `td` isn't resolvable, startup fails with
   `spawnSync td ENOENT` and the connection closes. `td` is baked
   into the terminal image (venv `/opt/venvs/td`, `boomtick-cli`
-  from the pinned boomtick git SHA `BOOMTICK_CLI_REF` — on `PATH`) —
-  no manual install. Bump the SHA (or a newer `cli-vX.Y.Z` tag) in
-  both `terminal/Dockerfile` and `Dockerfile` together.
+  from boomtick main (`BOOMTICK_CLI_REF=main` — tracks main so both
+  stay current on every rebuild; pin to a `cli-vX.Y.Z` tag or SHA
+  in both `terminal/Dockerfile` and `Dockerfile` to freeze) —
+  on `PATH`) — no manual install.
 - **Git safe.directory:** `terminal/gitconfig` (`safe.directory = *` +
   user identity) is baked into `/etc/gitconfig` and bind-mounted by
   compose so bind-mounted host checkouts pass `td doctor` and git
@@ -262,8 +263,8 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (CI smoke-tested; versions pinned except `td`, `boomtick-mcp` and Muse, which track latest):
-  Node 24.16.0 + npm, pnpm 10.28.2, `boomtick-mcp` (built from the pinned boomtick SHA), Muse CLI,
-  Python 3 + venv/pip, `td` (`boomtick-cli` from the pinned boomtick SHA in venv
+  Node 24.16.0 + npm, pnpm 10.28.2, `boomtick-mcp` (built from boomtick main), Muse CLI,
+  Python 3 + venv/pip, `td` (`boomtick-cli` from boomtick main in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
   `safe.directory = *`), Docker CLI, `tmux`, `vim`. This covers the
   interpreters and package managers every repo needs before its own setup can run.

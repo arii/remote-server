@@ -26,12 +26,11 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-# Git SHA pinned to boomtick origin/main at pin time (no release tag
-# exists yet containing the td JSON gates + MCP tool pruning; a full SHA
-# is immutable and therefore as deterministic as a tag).
-# Bump: take the newest cli-vX.Y.Z tag (or newer main SHA) and smoke td
-# + boomtick-mcp in the built image.
-ARG BOOMTICK_CLI_REF=3e9c5c2f8b604e38d8d0d76944d5c03e9d5c656e
+# Tracks boomtick main: every rebuild pulls the latest td gates +
+# MCP tools (user decision 2026-11-05; a floating ref means rebuilds
+# can pull unaudited upstream — pin to a cli-vX.Y.Z tag or full SHA
+# to freeze).
+ARG BOOMTICK_CLI_REF=main
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -78,9 +77,7 @@ RUN apt-get update \
  && python3 -m venv /opt/venvs/td \
  && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
  && /opt/venvs/td/bin/td --help > /dev/null \
- && git clone https://github.com/arii/boomtick.git /tmp/boomtick \
- && git -C /tmp/boomtick checkout "${BOOMTICK_CLI_REF}" \
- && test "$(git -C /tmp/boomtick rev-parse HEAD)" = "${BOOMTICK_CLI_REF}" \
+ && git clone --depth 1 --branch "${BOOMTICK_CLI_REF}" https://github.com/arii/boomtick.git /tmp/boomtick \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
