@@ -51,7 +51,7 @@ dispatching.
 ## Execution + monitoring
 
 Dispatch launches the repo-scoped repair worker
-(`python3 -m core_cli repair --issue N --repo R`) — the same
+(`python3 -m backend.repair_worker --issue N --repo R`) — the same
 branch/PR flow the single-repo console runs. A monitor watches the
 worker and records the item `done`/`failed` when it settles
 (timeout: 35 minutes, then failed). Terminal items stay in the
@@ -79,4 +79,4 @@ The queue owns only: `backend/lane_dispatch.py`,
 `backend/api/routers/dispatch.py`, the Queue console view
 (`QueueView`, `queueUtils`, dispatch API client calls), this
 runbook, and their tests. It must not touch Review/pulls, notify,
-`core_cli/review.py`, AgentDrawer, e2e, or the webhook pull path.
+`backend/review.py`, AgentDrawer, e2e, or the webhook pull path.

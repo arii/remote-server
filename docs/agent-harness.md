@@ -69,32 +69,22 @@ and promote to gating once green on both Ollama and cloud.
 
 ## RAG index
 
-`search_docs` (tool + `deep-agent/search_docs.py`) reads the `s5-docs`
-Chroma collection at `deep-agent/chroma_db/`, built by
-`deep-agent/build_index.py` with local `nomic-embed-text` embeddings.
-The index covers repo docs plus Python/TS/TSX sources
-(`backend/`, `deep-agent/` top level, `frontend/src/`, `core_cli/`;
-tests, fixtures, venvs, `node_modules/`, and `dist/` are skipped),
-plus GitHub issues and PRs from `gh issue/pr list` (open + closed +
-merged, title + body + state + labels; bodies only, no comments in
-v1), tagged with `kind` (`doc`|`code`|`issue`|`pr`) and `language`
-metadata. Issue/PR chunks carry `number`, `state`, `url`, and
-`labels` metadata; the gh pass is capped at 500 per kind,
-most-recently-updated first, and a failed gh fetch warns and leaves
-a file-only index rather than failing the build. `S5_GH_INDEX=0`
-skips the GitHub pass (offline builds).
+`td rag query` reads the repo vector index; `deep-agent/retrieval.py`
+(`query_td_repo` / `search_td`) delegates to it, and the
+`search_docs` agent tool goes through the same path. The index is
+built and incrementally updated by commit SHA via `td rag index`
+(markdown-aware chunking), and `td init` refreshes it as part of
+worktree provisioning. The index covers repo docs plus
+Python/TS/TSX sources (`backend/`, tracked `deep-agent/` files,
+`frontend/src/`; tests, fixtures, venvs, `node_modules/`, `dist/`,
+`.td_rag/`, and `.worktrees/` are skipped). The index is a local
+runtime artifact: gitignored, never baked into images.
 
-Rebuild after docs or code change, or whenever `chroma_db/` is wiped:
+Rebuild after docs or code change:
 
 ```
-deep-agent/.venv/bin/python deep-agent/build_index.py
+td rag index --repo-root /srv/remote-server --json
 ```
-
-Each run clears the collection first, so re-runs never stack stale
-duplicates. `S5_CHROMA_DIR` / `S5_COLLECTION` / `S5_EMBED_MODEL` /
-`OLLAMA_URL` override the target and embeddings (query side resolves
-the same overrides — index and query can never fork). The index is a
-local runtime artifact: gitignored, never baked into images.
 
 Buttons containers build the index at startup (#562, #699): the
 image carries no `chroma_db/` (dockerignored), and

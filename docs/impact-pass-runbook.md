@@ -77,7 +77,7 @@ vision model via `NEBIUS_MODEL`).
 `diff_versions` returns `{"findings": [...], "summary": {...},
 "compared": n, "added": [...], "removed": [...]}` with findings of
 `{"severity", "title", "route", "viewport", "evidence"}`. The #845
-`core_cli` review synthesis owns posting-shaped output; this tool
+`backend/review.py` synthesis owns posting-shaped output; this tool
 returns data, consumers post. Keep the shapes aligned, don't merge
 them.
 
@@ -117,7 +117,7 @@ curl -s -X POST localhost:8000/api/jobs/schedule \
 - Where it runs (#881): the step executes INSIDE the buttons image
   (local `-m`, same snapshot + ledger state the API serves), and
   the image bakes the toolchain (node 22, pnpm, root ux deps,
-  chromium). `python -m core_cli.impact_pass --check` reports the
+  chromium). `python -m backend.impact_pass --check` reports the
   probe without capturing; the pass itself preflights it and fails
   with a named missing dep instead of a cryptic td error. The
   image build runs `--check` as a smoke, so a regressed dep fails

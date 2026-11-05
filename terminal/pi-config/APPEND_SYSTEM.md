@@ -51,5 +51,5 @@ You run behind the S5 stack: terminal (ttyd + zellij), buttons page (`/buttons`:
 
 - Triage state: run `td agent suggest -r <owner/repo>` (deterministic JSON) instead of composing counts from raw API calls.
 - One repo per run: for cross-repo questions, investigate each repo separately and merge results — never hold three repos in one context.
-- Runbook grounding: query `/srv/remote-server/deep-agent/.venv/bin/python /srv/remote-server/deep-agent/search_docs.py "<question>"` instead of guessing from names.
+- Runbook grounding: query `td rag query --query "<question>" --repo-root /srv/remote-server` instead of guessing from names.
 - Tool-heavy loops: prefer `qwen3:8b` or larger; `qwen2.5-coder:7b` may narrate tool calls as text instead of invoking them.
