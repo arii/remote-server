@@ -14,7 +14,12 @@
       "ciLabel": "passing",
       "reviewDecision": "APPROVED",
       "mergeable": "MERGEABLE",
-      "url": "https://example.invalid/pr/42"
+      "url": "https://example.invalid/pr/42",
+      "additions": 42,
+      "deletions": 3,
+      "changedFiles": 2,
+      "riskSummary": "Moderate change · 2 files changed (+42/-3)\nLow risk; 0 breaking changes detected; CI green",
+      "riskLevel": "low"
     },
     {
       "number": 43,
@@ -26,7 +31,12 @@
       "ciLabel": "pending",
       "reviewDecision": "",
       "mergeable": "UNKNOWN",
-      "url": "https://example.invalid/pr/43"
+      "url": "https://example.invalid/pr/43",
+      "additions": 10,
+      "deletions": 2,
+      "changedFiles": 1,
+      "riskSummary": "Small change · 1 file changed (+10/-2)\nDraft — not ready to merge; CI pending",
+      "riskLevel": "high"
     }
   ],
   "details": {
@@ -49,7 +59,9 @@
     "ai_prompts": [
       { "id": "security", "label": "Security Audit", "prompt": "Audit PR #42 for security vulnerabilities." },
       { "id": "summary", "label": "Review Comments", "prompt": "Synthesize line-level findings for PR #42." }
-    ]
+    ],
+    "risk_summary": "Moderate change · 2 files changed (+42/-3)\nLow risk; 0 breaking changes detected; CI green",
+    "risk_level": "low"
   },
   "issues": [
     {

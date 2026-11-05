@@ -119,6 +119,13 @@ h1, h2, h3 { text-wrap: balance; }
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
 .row-title { display: block; font-weight: 650; font-size: 1rem; }
 
+/* #938: 2-line risk summary on each Review card (+ details pane). */
+.risk-summary { display: grid; gap: 0.1rem; margin: 0.35rem 0; font-size: 0.85rem; line-height: 1.4; }
+.risk-summary .risk-line { display: block; overflow-wrap: anywhere; }
+.risk-low { color: var(--muted); }
+.risk-medium { color: var(--muted); }
+.risk-high { color: var(--muted); }
+
 /* AI-written briefing lede (issue #671): full-size prose above the
    rows, not muted metadata — it is the first thing the eye reads. */
 .briefing-narrative { font-size: 1rem; line-height: 1.55; margin: 0.25rem 0 0.75rem; max-width: 70ch; }

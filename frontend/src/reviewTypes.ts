@@ -29,6 +29,14 @@ export interface PrRow {
   // required-review rule is in play — the merge gate must not demand
   // an approval then. Missing (older payloads, fixtures) means strict.
   reviewRequired?: boolean;
+  // #938: diff size + 2-line risk summary from the backend list.
+  // Optional so older payloads/fixtures still render (the card
+  // falls back to the client mirror of the same heuristic).
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
+  riskSummary?: string;
+  riskLevel?: 'low' | 'medium' | 'high' | string;
 }
 
 export interface PrListResponse {
@@ -67,6 +75,10 @@ export interface PrDetailsResponse {
   files: PrFileStat[];
   stats: { total_files: number; additions: number; deletions: number };
   ai_prompts: AiPrompt[];
+  // #938: 2-line risk summary for the details pane (snake to match
+  // ai_prompts); optional for older backends/fixtures.
+  risk_summary?: string;
+  risk_level?: string;
 }
 
 export interface IssueRow {
