@@ -1473,6 +1473,26 @@ export function fetchVerifyCommand(issue: string, repo?: string): Promise<Repair
   );
 }
 
+export interface PlanListRow {
+  name: string;
+  size: number;
+  mtime: number;
+}
+
+export interface PlanListResponse {
+  repo: string;
+  plans: PlanListRow[];
+}
+
+// Plan index for the Briefing plans section (issue #963):
+// names + mtime only, content loads lazily per plan.
+export function fetchPlans(repo: string): Promise<PlanListResponse> {
+  return getJson<PlanListResponse>(
+    `api/jobs/plans?repo=${encodeURIComponent(repo)}`,
+    API_SLOW_TIMEOUT_MS,
+  );
+}
+
 export interface PlanReadResponse {
   repo: string;
   name: string;

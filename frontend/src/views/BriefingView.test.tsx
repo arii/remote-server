@@ -17,14 +17,22 @@ import {
   digestResultLine,
   digestScheduleLine,
   digestStatusLine,
+  boardIssueNumber,
   GroupedLines,
   groupBriefingLines,
   inActivityWindow,
+  PlansSection,
+  PlanStepsView,
+  planProgressLine,
+  planSteps,
   PrefsControlsView,
   prefsStatusLine,
+  prAskSeed,
   prChecksUrl,
+  prRepairSeed,
   prReviewNote,
   prReviewVerdict,
+  RepairPicker,
   reviewsErrText,
   visibleBoardItems,
 } from './BriefingView';
@@ -882,6 +890,137 @@ describe('briefing empty-state generate (issue #929)', () => {
   it('hides the generate action when content exists', () => {
     const html = renderBody(briefing({ attention: ['#1 do the thing'] }));
     expect(html).not.toContain('data-testid="briefing-generate"');
+  });
+});
+
+describe('briefing actionability (issue #963)', () => {
+  function briefing(over: Record<string, unknown> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      reviews_err: {},
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      conf_err: '',
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function renderBody(data: BriefingResponse): string {
+    const noop = () => {};
+    return renderToStaticMarkup(
+      <BriefingBody
+        data={data}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+        onOpenReview={noop}
+      />,
+    );
+  }
+
+  it('seeds row-level agent actions in the Review-card shape', () => {
+    expect(prAskSeed('r', '12', 'Fix it')).toBe(
+      'PR #12 Fix it (r): review the diff and implement the needed changes.',
+    );
+    expect(prRepairSeed('r', '12', 'Fix it')).toBe(
+      "In r, repair PR #12 (Fix it): investigate the cause, implement the fix, and verify with the repo's tests.",
+    );
+  });
+
+  it('links PR rows to Review and carries an Ask agent action', () => {
+    const html = renderBody(
+      briefing({ prs: [{ number: 12, title: 'Fix it', ci: 'passing', merge: 'clean' }] }),
+    );
+    expect(html).toContain('data-testid="briefing-pr-row"');
+    expect(html).toMatch(/<button[^>]*data-testid="briefing-pr-open"/);
+    expect(html).toContain('Open #12 in Review');
+    expect(html).toContain('data-testid="briefing-ask-agent"');
+    expect(html).toContain('>Ask agent</button>');
+  });
+
+  it('hops board issue chips to Review, leaving branches static', () => {
+    expect(boardIssueNumber('issue #5')).toBe('5');
+    expect(boardIssueNumber('issue 42')).toBe('42');
+    expect(boardIssueNumber('feat/branch')).toBe('');
+    expect(boardIssueNumber('Doing')).toBe('');
+    const html = renderBody(
+      briefing({ board: [{ branch: 'feat/x', issue: '#5', status: 'Doing' }] }),
+    );
+    expect(html).toContain('data-testid="board-chips"');
+    expect(html).toMatch(/<button[^>]*data-testid="briefing-board-issue"/);
+    expect(html).toContain('Open issue #5 in Review');
+  });
+
+  it('parses plan checkboxes, never prose', () => {
+    expect(planSteps('- [ ] first\n- [x] done\n- [X] also done\nnote line\n* [ ] starred')).toEqual([
+      { text: 'first', checked: false },
+      { text: 'done', checked: true },
+      { text: 'also done', checked: true },
+      { text: 'starred', checked: false },
+    ]);
+    expect(planProgressLine(planSteps('- [ ] a\n- [x] b'))).toBe('1/2 steps done.');
+    expect(planProgressLine([])).toBe('No checkable steps.');
+  });
+
+  it('renders plan steps with progress and an overflow note', () => {
+    const html = renderToStaticMarkup(
+      <PlanStepsView steps={[{ text: 'a', checked: true }, { text: 'b', checked: false }]} />,
+    );
+    expect(html).toContain('data-testid="briefing-plan-progress"');
+    expect(html).toContain('1/2 steps done.');
+    expect(html).toContain('[x] a');
+    expect(html).toContain('[ ] b');
+    const long = renderToStaticMarkup(
+      <PlanStepsView steps={Array.from({ length: 25 }, (_, i) => ({ text: `s${i}`, checked: false }))} limit={20} />,
+    );
+    expect(long).toContain('+5 more steps.');
+  });
+
+  it('loads the plans index with loading, empty, and error states', () => {
+    // Effects never run under renderToStaticMarkup: the section
+    // starts in its loading state.
+    const loading = renderToStaticMarkup(<PlansSection repo="r" onAskAgent={() => {}} />);
+    expect(loading).toContain('Checking plans…');
+  });
+
+  it('lists open PRs with titles in the repair picker, never a number input', () => {
+    const html = renderToStaticMarkup(
+      <RepairPicker
+        repo="r"
+        prs={[
+          { number: 12, title: 'Fix it' },
+          { number: 13, title: 'Second' },
+        ]}
+        onAskAgent={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="briefing-repair-picker"');
+    expect(html).toContain('#12 Fix it');
+    expect(html).toContain('#13 Second');
+    expect(html).toContain('data-testid="briefing-repair-run"');
+    // Nothing picked yet: the Repair button stays disabled.
+    expect(html).toMatch(/<button[^>]*data-testid="briefing-repair-run"[^>]*disabled/);
+    expect(html).not.toContain('type="number"');
+    const empty = renderToStaticMarkup(<RepairPicker repo="r" prs={[]} onAskAgent={() => {}} />);
+    expect(empty).toContain('data-testid="briefing-repair-empty"');
+    expect(empty).toContain('No open PRs to repair.');
+  });
+
+  it('surfaces the picker inside the briefing body', () => {
+    const html = renderBody(
+      briefing({ prs: [{ number: 12, title: 'Fix it', ci: 'passing', merge: 'clean' }] }),
+    );
+    expect(html).toContain('data-testid="briefing-repair-picker"');
   });
 });
 
