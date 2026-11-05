@@ -21,6 +21,42 @@ function clearAllRow(html: string): string {
   return html.slice(start, html.indexOf('</li>', start));
 }
 
+describe('danger / system operations separation (issue #934)', () => {
+  it('labels the section Danger / System Operations with disruptive copy', () => {
+    const html = render(0, 0);
+    expect(html).toContain('Danger / System Operations');
+    expect(html).toContain('Disruptive');
+    expect(html).toContain('data-testid="jobs-danger"');
+    expect(html).toContain('aria-label="Danger / System Operations"');
+  });
+
+  it('contains only system ops, not agent workflows', () => {
+    const html = render(2, 1);
+    expect(html).toContain('data-testid="danger-deploy-buttons"');
+    expect(html).toContain('Redeploy this console');
+    expect(html).toContain('data-testid="danger-recreate-code"');
+    expect(html).toContain('Restart code editor');
+    expect(html).toContain('data-testid="danger-takeover"');
+    expect(html).toContain('Take over terminal');
+    // Write briefing plan is an agent workflow (#934) — not in danger.
+    expect(html).not.toContain('data-testid="danger-create-plan"');
+    expect(html).not.toContain('Write briefing plan');
+    // Agent workflow launchers never appear in the danger section.
+    expect(html).not.toContain('Repair worker');
+    expect(html).not.toContain('Triage fanout');
+    expect(html).not.toContain('UX audit');
+  });
+
+  it('guards every disruptive action with a confirmation', () => {
+    const html = render(2, 1);
+    // TapToFire marks confirm-backed triggers in the accessible name.
+    expect(html).toContain('Redeploy this console (asks for confirmation)');
+    expect(html).toContain('Restart code editor (asks for confirmation)');
+    expect(html).toContain('Take over terminal (asks for confirmation)');
+    expect(html).toContain('Merge approved PR (asks for confirmation)');
+  });
+});
+
 describe('danger zone clear-all (issue #512)', () => {
   it('disables clear-all and says so while a run is active', () => {
     const row = clearAllRow(render(2, 1));

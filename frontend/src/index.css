@@ -295,14 +295,34 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
 [data-testid="jobs-view"] > .detail { margin-top: 0.75rem; }
 [data-testid="jobs-view"] > section { margin-top: 1rem; }
 
-.danger-zone {
-  background: rgba(239, 68, 68, 0.06);
+/* Jobs separation (#934): safe workflows vs disruptive system ops
+   read differently at a glance — accent left rule for workflows,
+   red tint + stronger border for danger. */
+.jobs-workflows {
+  background: var(--surface);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: 12px;
   padding: 0 0.9rem 0.9rem;
   margin-top: 1.25rem;
 }
-.danger-zone > h3 { margin-top: 0.9rem; }
+.jobs-workflows > h3 { margin-top: 0.9rem; }
+.jobs-workflows > section { margin-top: 1rem; }
+.jobs-workflows > section:first-of-type { margin-top: 0.75rem; }
+
+.jobs-live {
+  border-left: 3px solid var(--warn);
+}
+.jobs-live .dot { display: inline-block; vertical-align: middle; margin-right: 0.35rem; }
+
+.danger-zone {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 12px;
+  padding: 0 0.9rem 0.9rem;
+  margin-top: 1.25rem;
+}
+.danger-zone > h3 { margin-top: 0.9rem; color: #fca5a5; }
 .danger-zone .session-list { gap: 0; }
 .danger-row {
   display: flex;
