@@ -83,11 +83,12 @@ RUN apt-get update \
  && test "$(git -C /tmp/boomtick rev-parse HEAD)" = "${BOOMTICK_CLI_REF}" \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
+ && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
+ && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 27 \
  && npm install -g /tmp/boomtick/mcp \
  && rm -rf /tmp/boomtick \
  && test -x /usr/local/bin/boomtick-mcp \
- && test -f "$(npm root -g)/@arii/boomtick-mcp/dist/mcp/server.js" \
- && test "$(find "$(npm root -g)/@arii/boomtick-mcp/.mcp/schemas" -name '*.json' | wc -l)" -ge 27 \
+ && command -v boomtick-mcp > /dev/null \
  && MUSE_NO_MODIFY_PATH=1 bash /tmp/muse-install.sh \
  && rm -f /tmp/muse-install.sh \
  && test -x /root/.local/bin/muse \
