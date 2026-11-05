@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import NowView, {
   ActionControl,
+  AskAgentControl,
+  askAgentPrompt,
   askAgentSeed,
   AttentionBulkBar,
   AttentionGroupRow,
   AttentionRow,
+  AttentionSelectAll,
   attentionGroupKey,
   attentionTargetName,
   DEPLOY_ACTION,
@@ -22,6 +25,8 @@ import NowView, {
   reconcileSnoozed,
   repoContextText,
   RepoTag,
+  retryBlock,
+  retryBlocked,
   SourceDestination,
   resolveAttentionTarget,
   showRepoTag,
@@ -595,7 +600,7 @@ describe('attention grouping (issue #839)', () => {
     expect(attentionTargetName('api/unknown')).toBe('action');
   });
 
-  it('AttentionRow keeps the primary actions visible with snooze in overflow', () => {
+  it('AttentionRow surfaces snooze and dismiss inline, 8h in overflow (issue #935)', () => {
     const noop = () => {};
     const html = renderToStaticMarkup(
       <AttentionRow
@@ -615,6 +620,7 @@ describe('attention grouping (issue #839)', () => {
     );
     expect(html).toContain('data-testid="now-item-job-j1"');
     expect(html).toContain('data-testid="now-select-job-j1"');
+    expect(html).toContain('class="attention-head"');
     expect(html).toContain('data-testid="now-source-job-j1"');
     expect(html).toContain('repo: remote-server');
     expect(html).toContain('· opens');
@@ -625,6 +631,14 @@ describe('attention grouping (issue #839)', () => {
     expect(html).toContain('data-testid="now-more-job-j1"');
     expect(html).toContain('data-testid="snooze-job-j1-60"');
     expect(html).toContain('data-testid="snooze-job-j1-480"');
+    expect(html).toContain('data-testid="dismiss-job-j1"');
+    // Snooze 1h and Dismiss render before the More overflow.
+    expect(html.indexOf('snooze-job-j1-60')).toBeLessThan(html.indexOf('now-more-job-j1'));
+    expect(html.indexOf('dismiss-job-j1')).toBeLessThan(html.indexOf('now-more-job-j1'));
+    // The overflow never carries Review/Jobs nav links.
+    const overflow = html.slice(html.indexOf('now-more-job-j1'));
+    expect(overflow).not.toContain('>Jobs<');
+    expect(overflow).not.toContain('>Review<');
   });
 
   it('AttentionRow shows repo context without an opens run for fetch-only actions (issue #930)', () => {
@@ -698,5 +712,228 @@ describe('now loading skeleton (issue #897)', () => {
     expect(html).toContain('data-testid="now-loading"');
     expect(html).toContain('>Now<');
     expect(html).toContain('Loading attention, pull requests, and jobs…');
+  });
+});
+
+describe('triage card CTAs (issue #935)', () => {
+  const noop = () => {};
+  const rowHandlers = {
+    onToggleSelect: noop,
+    onDone: noop,
+    onError: noop,
+    onSection: noop,
+    onTab: noop,
+    onAskAgent: noop,
+    onSnooze: noop,
+  };
+
+  function skip(overrides: Partial<AttentionItem> = {}): AttentionItem {
+    return {
+      id: 'webhook-skip-1',
+      kind: 'skipped-webhook',
+      title: 'Webhook pull skipped — checkout lagging',
+      detail: 'skipped: tree not ff-able — behind by 264 (local changes)',
+      repo: 'remote-server',
+      severity: 'info',
+      action: {
+        label: 'Retry pull',
+        method: 'POST',
+        href: 'api/webhook/retry?repo=remote-server',
+        destructive: false,
+        intent: '',
+      },
+      created_at: 1,
+      ...overrides,
+    };
+  }
+
+  function renderRow(itemToRender: AttentionItem, extra: Record<string, unknown> = {}): string {
+    return renderToStaticMarkup(
+      <AttentionRow
+        item={itemToRender}
+        viewRepo="remote-server"
+        rollup={false}
+        selected={false}
+        busy={false}
+        {...rowHandlers}
+        {...(extra as object)}
+      />,
+    );
+  }
+
+  it('classifies blocked retries from the skip detail', () => {
+    expect(retryBlock(skip())).toBe('diverged');
+    expect(retryBlock(skip({ detail: 'skipped: tree dirty — behind by 3' }))).toBe('dirty');
+    expect(retryBlock(skip({ detail: 'skipped: tree not ff-able' }))).toBe('diverged');
+    expect(retryBlock(skip({ detail: 'skipped: fetch did not complete' }))).toBeNull();
+    expect(retryBlock(skip({ kind: 'failed-job' }))).toBeNull();
+  });
+
+  it('blocks retry while the checkout is dirty even without a reason in the detail', () => {
+    const vague = skip({ detail: 'skipped: pull skipped' });
+    expect(retryBlocked(vague, null)).toBeNull();
+    expect(
+      retryBlocked(vague, {
+        name: 'remote-server',
+        full: 'arii/remote-server',
+        branch: 'main',
+        clean: false,
+      }),
+    ).toBe('dirty');
+    expect(
+      retryBlocked(vague, {
+        name: 'remote-server',
+        full: 'arii/remote-server',
+        branch: 'main',
+        clean: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('demotes Retry pull and promotes Ask agent on a diverged card', () => {
+    const html = renderRow(skip());
+    expect(html).toContain('Ask agent to inspect &amp; rebase');
+    expect(html).toContain('data-testid="now-retry-webhook-skip-1"');
+    expect(html).toContain('disabled');
+    expect(html).toContain('Retry will fail until the local commits are rebased');
+    expect(html).not.toContain('class="btn-primary">Retry pull');
+    expect(html).not.toContain('class="btn-primary">');
+  });
+
+  it('demotes Retry pull on a dirty checkout flagged by repo info', () => {
+    const html = renderRow(skip({ detail: 'skipped: pull skipped' }), {
+      repoInfo: {
+        name: 'remote-server',
+        full: 'arii/remote-server',
+        branch: 'main',
+        clean: false,
+      },
+    });
+    expect(html).toContain('data-testid="now-retry-webhook-skip-1"');
+    expect(html).toContain('Retry will fail until the local changes are stashed or committed');
+    expect(html).not.toContain('class="btn-primary">Retry pull');
+  });
+
+  it('keeps Retry pull primary when the skip can succeed', () => {
+    const html = renderRow(skip({ detail: 'skipped: a racing git op held the ref lock' }));
+    expect(html).toContain('>Retry pull</button>');
+    expect(html).toContain('class="btn-primary"');
+    expect(html).not.toContain('now-retry-webhook-skip-1');
+    expect(html).not.toContain('Ask agent to inspect');
+  });
+
+  it('builds exact ask-agent prompts per mode from the row seed', () => {
+    const itemToSend = skip();
+    expect(askAgentPrompt(itemToSend, 'diagnose')).toBe(
+      `Read-only diagnosis — do not modify any files. Inspect and explain: ${askAgentSeed(itemToSend)}`,
+    );
+    expect(askAgentPrompt(itemToSend, 'fix')).toBe(
+      `Auto-fix in a worktree — inspect, fix, and verify: ${askAgentSeed(itemToSend)}`,
+    );
+  });
+
+  it('AskAgentControl previews the prompt and context with the mode split', () => {
+    const html = renderToStaticMarkup(<AskAgentControl item={skip()} onAskAgent={noop} />);
+    expect(html).toContain('data-testid="ask-agent-webhook-skip-1"');
+    expect(html).toContain('data-testid="ask-agent-preview-webhook-skip-1"');
+    expect(html).toContain('data-testid="ask-agent-context-webhook-skip-1"');
+    expect(html).toContain(askAgentSeed(skip()));
+    expect(html).toContain('data-testid="ask-agent-prompt-diagnose-webhook-skip-1"');
+    expect(html).toContain('Read-only diagnosis — do not modify any files.');
+    expect(html).toContain('data-testid="ask-agent-prompt-fix-webhook-skip-1"');
+    expect(html).toContain('Auto-fix in a worktree — inspect, fix, and verify:');
+    expect(html).toContain('data-testid="ask-agent-diagnose-webhook-skip-1"');
+    expect(html).toContain('>Read-Only Diagnosis</button>');
+    expect(html).toContain('data-testid="ask-agent-fix-webhook-skip-1"');
+    expect(html).toContain('>Auto-Fix in Worktree</button>');
+  });
+
+  it('hides the card checkbox when the list opts out of bulk selection', () => {
+    expect(renderRow(skip(), { showSelect: false })).not.toContain('now-select-webhook-skip-1');
+    expect(renderRow(skip())).toContain('data-testid="now-select-webhook-skip-1"');
+    expect(renderRow(skip())).toContain('class="attention-head"');
+  });
+
+  it('AttentionSelectAll reflects the selection state', () => {
+    const none = renderToStaticMarkup(
+      <AttentionSelectAll total={3} selectedCount={0} onToggle={noop} />,
+    );
+    expect(none).toContain('data-testid="now-select-all"');
+    expect(none).toContain('Select all');
+    expect(none).not.toContain('checked');
+    const all = renderToStaticMarkup(
+      <AttentionSelectAll total={3} selectedCount={3} onToggle={noop} />,
+    );
+    expect(all).toContain('checked');
+  });
+
+  function heroHealth(): SystemHealthResponse {
+    return {
+      disk: {},
+      memory: {},
+      containers: [{ name: 'c', service: 'c', state: 'running', status: 'up', health: 'healthy' }],
+      containers_error: null,
+    };
+  }
+
+  function heroFeed(attention: AttentionItem[]): InboxFeed {
+    return {
+      repo: 'remote-server',
+      updated_at: 1,
+      attention,
+      merge_ready: { count: 0, top: [] },
+      runs: { active: null, recent: [] },
+    };
+  }
+
+  it('hides the hero Retry pull when the same card renders first below', () => {
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={heroHealth()}
+        feed={heroFeed([skip()])}
+        prCount={0}
+        deployAt={null}
+        onDone={noop}
+        onError={noop}
+        onSection={noop}
+        onTab={noop}
+        onAttention={noop}
+        onHistoryDeploys={noop}
+      />,
+    );
+    expect(html).toContain('Top: Webhook pull skipped — checkout lagging');
+    expect(html).not.toContain('>Retry pull<');
+    expect(html).not.toContain('now-hero-retry');
+  });
+
+  it('demotes the hero Retry pull for a blocked card that is not first', () => {
+    const first: AttentionItem = {
+      id: 'other-1',
+      kind: 'failed-job',
+      title: 'Failed job: nightly',
+      detail: 'd',
+      repo: 'remote-server',
+      severity: 'info',
+      action: { label: 'View jobs', method: 'GET', href: 'api/jobs', destructive: false, intent: '' },
+      created_at: 1,
+    };
+    const blocked = skip({ severity: 'crit' as AttentionItem['severity'] });
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={heroHealth()}
+        feed={heroFeed([first, blocked])}
+        prCount={0}
+        deployAt={null}
+        onDone={noop}
+        onError={noop}
+        onSection={noop}
+        onTab={noop}
+        onAttention={noop}
+        onHistoryDeploys={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="now-hero-retry"');
+    expect(html).toContain('disabled');
+    expect(html).not.toContain('class="btn-primary">Retry pull');
   });
 });
