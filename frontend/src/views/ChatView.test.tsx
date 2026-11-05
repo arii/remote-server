@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1649,5 +1649,48 @@ describe('rail modules (issue #897)', () => {
       expect(html.split(`data-testid="chat-run-delete-${id}"`).length - 1).toBe(1);
       expect(html.split(`data-testid="chat-run-continue-${id}"`).length - 1).toBe(1);
     }
+  });
+});
+
+describe('chat actionable rows (issue #907)', () => {
+  const metrics = {
+    repo: 'demo',
+    branch: 'main',
+    clean: false,
+    status_count: 3,
+    todo_count: 0,
+    todo_hits: [],
+    diff_stat: ' a.py | 2 +-\n',
+    diff_files: 1,
+  };
+
+  it('opens the diff modal from a dirty metrics strip', () => {
+    const html = renderToStaticMarkup(
+      <RepoMetricsStrip metrics={metrics} onOpenDiff={() => {}} />,
+    );
+    expect(html).toContain('data-testid="chat-metrics-diff"');
+    expect(html).toContain('View diff');
+  });
+
+  it('hides the diff action on a clean tree', () => {
+    const html = renderToStaticMarkup(
+      <RepoMetricsStrip
+        metrics={{ ...metrics, clean: true, status_count: 0, diff_files: 0, diff_stat: '' }}
+        onOpenDiff={() => {}}
+      />,
+    );
+    expect(html).not.toContain('chat-metrics-diff');
+  });
+
+  it('offers copy on run traces', () => {
+    const html = renderToStaticMarkup(
+      <TraceTimeline
+        trace={[{ type: 'run_start', ts: 100, script: 's', thread: 't', model: 'm' }] as never}
+        t0={100}
+        narrow={false}
+      />,
+    );
+    expect(html).toContain('data-testid="chat-trace-copy"');
+    expect(html).toContain('Copy trace');
   });
 });

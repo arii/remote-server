@@ -679,7 +679,13 @@ export function groupBriefingLines(lines: readonly string[]): BriefingLineGroup[
   return groups;
 }
 
-export function GroupedLines({ lines }: { lines: string[] }) {
+export function GroupedLines({
+  lines,
+  onInvestigate,
+}: {
+  lines: string[];
+  onInvestigate?: (group: BriefingLineGroup) => void;
+}) {
   return (
     <ul className="session-list">
       {groupBriefingLines(lines).map((g, i) => (
@@ -691,6 +697,18 @@ export function GroupedLines({ lines }: { lines: string[] }) {
           </p>
           {g.count > 1 && (
             <p className="row-meta">Same failure repeated {g.count} times.</p>
+          )}
+          {onInvestigate && (
+            <div className="actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                data-testid={`briefing-investigate-${i}`}
+                onClick={() => onInvestigate(g)}
+              >
+                Investigate
+              </button>
+            </div>
           )}
         </li>
       ))}
@@ -1197,7 +1215,14 @@ export function BriefingBody({
                   {data.runs_err}
                 </p>
               )}
-              <GroupedLines lines={data.workflow_lines} />
+              <GroupedLines
+                lines={data.workflow_lines}
+                onInvestigate={(g) =>
+                  onAskAgent(
+                    `Investigate this repeated console failure (${g.count}×) in ${data.repo}: ${cleanBriefingLine(g.text)}`,
+                  )
+                }
+              />
             </section>
           )}
         </>

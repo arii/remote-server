@@ -1362,7 +1362,7 @@ export default function NowView({
         </div>
       )}
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
-          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
+          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} onOpenChat={() => onOpenTab('chat')} />}
           {section === 'queue' && <QueueView repo={repo} />}
         </>
       )}

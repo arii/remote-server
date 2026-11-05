@@ -102,6 +102,11 @@ describe('queue view loading (issue #853)', () => {
     const loading = renderToStaticMarkup(<QueueView repo="remote-server" />);
     expect(loading).toContain('data-testid="queue-loading"');
   });
+
+  it('names the wait (issue #907)', () => {
+    const loading = renderToStaticMarkup(<QueueView repo="remote-server" />);
+    expect(loading).toContain('Loading dispatch queue…');
+  });
 });
 
 describe('queue titles and gate badges (issue #882)', () => {

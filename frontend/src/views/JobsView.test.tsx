@@ -4,6 +4,8 @@ import { dangerEntryFor } from './DangerZone';
 import {
   HighlightedLine,
   JobListItem,
+  JobsListPanel,
+  PlanCardPanel,
   RunComparePanel,
   RunProgressPanel,
   SideBySideDiffView,
@@ -281,5 +283,62 @@ describe('ux audit launcher (issue #850)', () => {
       />,
     );
     expect(html).toContain('data-testid="job-cancel"');
+  });
+});
+
+describe('jobs actionable rows (issue #907)', () => {
+  const noop = () => {};
+
+  it('collapses run output and offers copy', () => {
+    const html = renderToStaticMarkup(
+      <RunProgressPanel tail={'line one\nline two\n'} runId="abc" running={null} panelRef={{ current: null }} />,
+    );
+    expect(html).toContain('data-testid="jobs-output-wrap"');
+    expect(html).toContain('<details');
+    expect(html).toContain('data-testid="jobs-output-copy"');
+    expect(html).toContain('Copy output');
+  });
+
+  it('offers copy on unified diffs', () => {
+    const html = renderToStaticMarkup(<UnifiedDiffView diff={'-old\n+new\n'} />);
+    expect(html).toContain('data-testid="run-compare-copy"');
+    expect(html).toContain('Copy diff');
+  });
+
+  it('offers copy on open plans', () => {
+    const html = renderToStaticMarkup(
+      <PlanCardPanel
+        card={{ repo: 'demo', name: 'plan.md' }}
+        open
+        content={'# plan\n'}
+        onToggle={noop}
+        onExecute={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="jobs-plan-copy"');
+    expect(html).toContain('Copy plan');
+  });
+
+  it('links the empty state to Chat past runs', () => {
+    const html = renderToStaticMarkup(
+      <JobsListPanel
+        list={[]}
+        repo="demo"
+        cursor={null}
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+        onOpenChat={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="jobs-empty-chat"');
+    expect(html).toContain('Open Chat past runs');
+  });
+
+  it('shows a loading indicator while findings load', () => {
+    const html = renderToStaticMarkup(<UxAuditGroups site="buttons" />);
+    expect(html).toContain('data-testid="ux-audit-groups-loading"');
+    expect(html).toContain('Loading findings…');
   });
 });

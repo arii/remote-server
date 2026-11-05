@@ -4,7 +4,7 @@ import type { AgentRun } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
 import { isTabVisible, onTabVisible } from './jobsUtils';
-import { useSnapshotData } from './useSnapshotData';
+import { shouldShowSnapshotContent, useSnapshotData } from './useSnapshotData';
 import { StatusIcon } from './StatusIcon';
 import { toTimelineItems } from './timelineUtils';
 import type { TimelineItem } from './timelineUtils';
@@ -91,6 +91,10 @@ export default function ActivityTimeline({ active = true }: { active?: boolean }
   }, [load, active]);
 
   const items = toTimelineItems(feeds.jobs, feeds.turns, feeds.pulls, feeds.merges);
+  // Stale-first (#907): the poll must not flash the list away —
+  // rows persist with a Refreshing note while reloading.
+  const initial = items.length === 0;
+  const showContent = shouldShowSnapshotContent(initial, loading);
 
   return (
     <section aria-label="Activity" data-testid="timeline-view">
@@ -111,8 +115,13 @@ export default function ActivityTimeline({ active = true }: { active?: boolean }
           Activity unavailable: {error}
         </div>
       )}
-      {loading && <div data-testid="timeline-loading" role="status">Loading activity…</div>}
-      {!loading && !error && <TimelineList items={items} />}
+      {loading && initial && <div data-testid="timeline-loading" role="status">Loading activity…</div>}
+      {loading && !initial && (
+        <div data-testid="timeline-refreshing" role="status" className="row-meta">
+          Refreshing…
+        </div>
+      )}
+      {showContent && <TimelineList items={items} />}
     </section>
   );
 }

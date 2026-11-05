@@ -884,3 +884,24 @@ describe('briefing empty-state generate (issue #929)', () => {
     expect(html).not.toContain('data-testid="briefing-generate"');
   });
 });
+
+describe('briefing failure investigation (issue #907)', () => {
+  it('offers Investigate per failure group', () => {
+    const html = renderToStaticMarkup(
+      <GroupedLines
+        lines={['same failure', 'same failure', 'solo']}
+        onInvestigate={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="briefing-investigate-0"');
+    expect(html).toContain('data-testid="briefing-investigate-1"');
+    expect(html).toContain('>Investigate</button>');
+  });
+
+  it('renders bare groups without a handler', () => {
+    const html = renderToStaticMarkup(
+      <GroupedLines lines={['same failure']} />,
+    );
+    expect(html).not.toContain('briefing-investigate-');
+  });
+});

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import CopyButton from '../components/CopyButton';
+import RetryableError from '../components/RetryableError';
 import { fetchJobRun, fetchJobs, fetchLedger, rerunJob } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
@@ -15,7 +17,7 @@ import {
 import type { HistoryFacet, HistoryMember, HistoryRow } from './historyUtils';
 import ObservabilitySection from './ObservabilitySection';
 import ActivityTimeline from './ActivityTimeline';
-import { useSnapshotData } from './useSnapshotData';
+import { shouldShowSnapshotContent, useSnapshotData } from './useSnapshotData';
 import { StatusIcon } from './StatusIcon';
 
 interface HistorySnapshot {
@@ -46,19 +48,23 @@ function filterByKind(entries: LedgerEntry[], kind: string): LedgerEntry[] {
 // Lazy run-output disclosure, same onToggle pattern as the review diff:
 // fetch only when opened. The runs registry is in-memory, so output for
 // old runs 404s — surfaced as a plain note, not a crash.
-function RunOutput({ runId }: { runId: string }) {
+export function RunOutput({ runId }: { runId: string }) {
   const [output, setOutput] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mock = useMock();
 
-  async function load() {
-    if (output !== null || error || mock) return;
+  async function fetchOutput() {
     try {
       const p = await fetchJobRun(runId);
       setOutput(p.output || '');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function load() {
+    if (output !== null || error || mock) return;
+    await fetchOutput();
   }
 
   return (
@@ -72,25 +78,48 @@ function RunOutput({ runId }: { runId: string }) {
       <summary className="row-meta">Run output</summary>
       {mock && <p className="row-meta">Run output is unavailable in preview mode.</p>}
       {!mock && error && (
-        <p className="row-meta" role="alert">
-          Couldn&apos;t load run output: {error}
-        </p>
+        <RetryableError
+          testid={`history-run-output-error-${runId}`}
+          message={`Couldn't load run output: ${error}`}
+          retryTestid={`history-run-output-retry-${runId}`}
+          onRetry={() => {
+            setError(null);
+            void fetchOutput();
+          }}
+        />
       )}
       {!mock && !error && output !== null && (
-        <pre className="row-meta" data-testid={`history-run-output-body-${runId}`}>
-          {tailText(output) || 'No output recorded.'}
-        </pre>
+        <>
+          <div className="actions">
+            <CopyButton
+              text={output}
+              testid={`history-run-output-copy-${runId}`}
+              label="Copy output"
+            />
+          </div>
+          <pre className="row-meta" data-testid={`history-run-output-body-${runId}`}>
+            {tailText(output) || 'No output recorded.'}
+          </pre>
+        </>
       )}
-      {!mock && !error && output === null && <p className="row-meta">Loading…</p>}
+      {!mock && !error && output === null && (
+        <p className="row-meta" data-testid={`history-run-output-loading-${runId}`} role="status">
+          Loading run output…
+        </p>
+      )}
     </details>
   );
 }
 
-function MemberBlock({ member, grouped }: { member: HistoryMember; grouped: boolean }) {
+export function MemberBlock({ member, grouped }: { member: HistoryMember; grouped: boolean }) {
+  const text = grouped ? `${member.at}\n${member.detail}` : member.detail;
   return (
     <>
+      <div className="actions">
+        <CopyButton text={text} testid="history-group-copy" label="Copy entry" />
+      </div>
       <pre className="row-meta" data-testid="history-group-entry">
-        {grouped ? `${member.at}\n${member.detail}` : member.detail}
+        {text}
       </pre>
       {member.runId && <RunOutput runId={member.runId} />}
     </>
@@ -165,18 +194,23 @@ export function RowsList({
   selectedKey = null,
   onSelect = () => {},
   onRefresh = () => {},
+  onClearFilters = () => {},
 }: {
   rows: HistoryRow[];
   filtering: boolean;
   selectedKey?: string | null;
   onSelect?: (row: HistoryRow) => void;
   onRefresh?: () => void;
+  onClearFilters?: () => void;
 }) {
   if (rows.length === 0) {
     if (filtering) {
       return (
         <p className="row-meta" data-testid="history-empty">
-          No matching rows.
+          No matching rows.{' '}
+          <button type="button" data-testid="history-clear-filters" onClick={onClearFilters}>
+            Clear search &amp; filters
+          </button>
         </p>
       );
     }
@@ -284,9 +318,26 @@ export default function HistoryView({
     }
   }
 
+  // Stale-first (#907): rows stay visible during reloads with
+  // an inline Refreshing note; the full loader shows only when
+  // nothing has rendered yet. Errors never hide stale rows.
+  const initial = jobs.length === 0 && entries.length === 0;
+  const showContent = shouldShowSnapshotContent(initial, loading);
+
+  function clearFilters() {
+    setQuery('');
+    setFacet('all');
+    setKind('all');
+  }
+
   return (
     <div data-testid="history-view">
-      <ObservabilitySection repo={repo} health={health} onOpenStats={onOpenStats} />
+      <ObservabilitySection
+        repo={repo}
+        health={health}
+        onOpenStats={onOpenStats}
+        onFindInFeed={(text) => setQuery(text)}
+      />
 
       <ActivityTimeline active={active} />
 
@@ -333,8 +384,13 @@ export default function HistoryView({
             History unavailable: {error}
           </div>
         )}
-        {loading && <div data-testid="history-loading" role="status">Loading history…</div>}
-        {!loading && !error && (
+        {loading && initial && <div data-testid="history-loading" role="status">Loading history…</div>}
+        {loading && !initial && (
+          <div data-testid="history-refreshing" role="status" className="row-meta">
+            Refreshing…
+          </div>
+        )}
+        {showContent && (
           <>
             <div
               className="facet-row"
@@ -362,6 +418,7 @@ export default function HistoryView({
                   selectedKey={inspected?.key ?? null}
                   onSelect={(r) => setSelectedKey(r.key)}
                   onRefresh={() => void load()}
+                  onClearFilters={clearFilters}
                 />
               </div>
               <aside className="inspector" aria-label="Row inspector">

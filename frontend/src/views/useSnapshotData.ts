@@ -28,3 +28,14 @@ export function useSnapshotData<T>(loadSnapshot: () => Promise<T>, initial: T) {
 
   return { data, error, loading, load };
 }
+
+// Stale-first display rule (#907): cached rows stay visible
+// during a reload (with a Refreshing indicator); the full loader
+// shows only when there is nothing to show yet. Errors never
+// hide rows that already rendered.
+export function shouldShowSnapshotContent(
+  isEmpty: boolean,
+  loading: boolean,
+): boolean {
+  return !loading || !isEmpty;
+}

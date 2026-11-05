@@ -584,6 +584,7 @@ export default function App() {
             seed={chatSeed}
             onSeedUsed={() => setChatSeed(null)}
             focusRequest={chatFocusRequest}
+            onOpenDiff={() => setDiffRepo(repo)}
           />
         ))}
       {tab === 'briefing' && isRollupRepo(repo) && <RollupGate view="Briefing" />}
