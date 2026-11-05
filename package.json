@@ -39,7 +39,10 @@
     "setup:boomtick-mcp": "bash scripts/setup-boomtick-mcp.sh",
     "setup:browser-mcp": "bash scripts/setup-browser-mcp.sh",
     "setup:gh-auth": "bash scripts/setup-gh-auth.sh",
-    "permissions:update": "bash scripts/update-permissions.sh"
+    "permissions:update": "bash scripts/update-permissions.sh",
+    "skills:install": "bash scripts/provision-skills.sh && bash scripts/verify-skills.sh",
+    "skills:verify": "bash scripts/verify-skills.sh",
+    "skills:repin": "bash scripts/verify-skills.sh --repin"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",

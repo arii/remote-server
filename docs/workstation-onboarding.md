@@ -406,3 +406,32 @@ cd ~/portfolio
 pnpm run verify
 pnpm run build:media
 ```
+
+## 10. Fresh-Server Reinstall
+
+Everything the stack needs is either in git or recreated at bring-up.
+Only two items live outside revision control — back these up:
+
+| Item | Location | Why not in git |
+|---|---|---|
+| Secrets | `.env` (copy of `.env.example` with real values) | Credentials — never commit |
+| Named volumes | `pi-data`, `ollama-data`, `local-data`, `muse-data`, `gh-data`, `code-server-*`, `tailscale-state` | Runtime state (sessions, auth, models); recreated empty if lost |
+
+Reinstall procedure:
+
+```bash
+# 1. Clone and configure secrets (the ONLY manual step).
+git clone git@github.com:arii/remote-server.git /srv/remote-server
+cd /srv/remote-server
+cp .env.example .env   # then fill in real values
+# Host checkouts the terminal mounts (see § repos in docs/pi-setup.md):
+#   ${HOST_HOME}/repos, ${HOST_HOME}/.ssh (ro), ${LE_DIR:-/etc/letsencrypt} (ro)
+
+# 2. Bring up. The skills-provisioner one-shot installs .agents/skills
+#    from skills-lock.json automatically (idempotent, fail-open);
+#    pi skills bake into the terminal image via terminal/pi-config/skills.
+docker compose up -d --build buttons
+
+# 3. Verify skills resolved (or run manually: bash scripts/provision-skills.sh).
+bash scripts/verify-skills.sh
+```
