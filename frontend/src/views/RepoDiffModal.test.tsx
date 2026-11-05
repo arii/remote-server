@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import RepoDiffModal, { splitDiffByFile } from './RepoDiffModal';
+import RepoDiffModal, {
+  diffLineKind,
+  fileStatusLabel,
+  groupDiffFiles,
+  nextChangeIndex,
+  splitDiffByFile,
+} from './RepoDiffModal';
 
 const data = {
   statusShort: ' M a.py\n?? b.py\n',
@@ -106,6 +112,108 @@ describe('repo diff modal actions (issue #927)', () => {
       />,
     );
     expect(html).toContain('showing first');
+  });
+});
+
+describe('repo diff modal polish (issue #942)', () => {
+  it('renders as a real modal dialog on an overlay', () => {
+    const html = renderToStaticMarkup(<RepoDiffModal {...props} data={data} error={null} />);
+    expect(html).toContain('data-testid="repo-diff-overlay"');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
+  });
+
+  it('colors diff lines and keeps the full hunk header in its title', () => {
+    const hunk = '@@ -1,2 +1,2 @@ export function orchestratorSession(see DiscussionThread)';
+    const colored = {
+      ...data,
+      diff: [
+        'diff --git a/a.py b/a.py',
+        '--- a/a.py',
+        '+++ b/a.py',
+        hunk,
+        ' context line',
+        '+added line',
+        '-removed line',
+        '',
+      ].join('\n'),
+    };
+    const html = renderToStaticMarkup(<RepoDiffModal {...props} data={colored} error={null} />);
+    expect(html).toContain('diff-add');
+    expect(html).toContain('diff-del');
+    expect(html).toContain('diff-ctx');
+    expect(html).toContain('diff-hunk');
+    expect(html).toContain(`title="${hunk}"`);
+  });
+
+  it('groups the file list with human status labels', () => {
+    const html = renderToStaticMarkup(<RepoDiffModal {...props} data={data} error={null} />);
+    expect(html).toContain('data-testid="repo-diff-group-modified"');
+    expect(html).toContain('data-testid="repo-diff-group-untracked"');
+    expect(html).toContain('data-testid="repo-diff-file-jump"');
+    expect(html).toContain('>Untracked<');
+  });
+
+  it('offers expand-all and collapse-all for per-file diffs', () => {
+    const html = renderToStaticMarkup(<RepoDiffModal {...props} data={data} error={null} />);
+    expect(html).toContain('data-testid="repo-diff-expand-all"');
+    expect(html).toContain('data-testid="repo-diff-collapse-all"');
+  });
+
+  it('caps a long diff behind an explicit show-more', () => {
+    const lines = ['diff --git a/a.py b/a.py', '@@ -0,0 +1,150 @@'];
+    for (let i = 0; i < 150; i += 1) lines.push(`+line-${i}`);
+    const long = { ...data, diff: lines.join('\n') };
+    const html = renderToStaticMarkup(<RepoDiffModal {...props} data={long} error={null} />);
+    expect(html).toContain('+line-0');
+    expect(html).not.toContain('+line-140');
+    expect(html).toContain('Show more');
+    expect(html).toContain('more lines');
+  });
+
+  it('styles destructive actions as danger and names the agent flow', () => {
+    const html = renderToStaticMarkup(<RepoDiffModal {...props} data={data} error={null} />);
+    expect(html).toContain('btn-danger');
+    expect(html).toContain('data-testid="repo-diff-discard"');
+    expect(html).toContain('data-testid="repo-diff-sync"');
+    expect(html).toContain('Chat agent');
+    expect(html).toContain('commit message');
+  });
+});
+
+describe('diffLineKind', () => {
+  it('classifies unified-diff lines', () => {
+    expect(diffLineKind('+added')).toBe('add');
+    expect(diffLineKind('-removed')).toBe('del');
+    expect(diffLineKind('@@ -1 +1 @@ fn')).toBe('hunk');
+    expect(diffLineKind('diff --git a/x b/x')).toBe('meta');
+    expect(diffLineKind('+++ b/x')).toBe('meta');
+    expect(diffLineKind('--- a/x')).toBe('meta');
+    expect(diffLineKind(' context')).toBe('ctx');
+  });
+});
+
+describe('file status helpers', () => {
+  it('labels porcelain codes for humans', () => {
+    expect(fileStatusLabel({ status: '??' })).toBe('Untracked');
+    expect(fileStatusLabel({ status: 'M' })).toBe('Modified');
+    expect(fileStatusLabel({ status: 'A' })).toBe('Added');
+    expect(fileStatusLabel({ status: 'D' })).toBe('Deleted');
+  });
+
+  it('groups modified before untracked, dropping empty groups', () => {
+    const groups = groupDiffFiles(data.files);
+    expect(groups.map((g) => g.key)).toEqual(['modified', 'untracked']);
+    expect(groups[0].files.map((f) => f.path)).toEqual(['a.py']);
+    expect(groups[1].files.map((f) => f.path)).toEqual(['b.py']);
+    expect(groupDiffFiles([data.files[0]]).map((g) => g.key)).toEqual(['modified']);
+  });
+
+  it('cycles change positions with wraparound', () => {
+    expect(nextChangeIndex([2, 5, 9], -1)).toBe(2);
+    expect(nextChangeIndex([2, 5, 9], 2)).toBe(5);
+    expect(nextChangeIndex([2, 5, 9], 9)).toBe(2);
+    expect(nextChangeIndex([], 0)).toBe(-1);
   });
 });
 
