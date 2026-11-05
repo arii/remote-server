@@ -1,7 +1,7 @@
 {
   "repos": [
-    { "name": "remote-server", "full": "arii/remote-server", "branch": "main", "clean": true },
-    { "name": "tech-dancer", "full": "arii/tech-dancer", "branch": "main", "clean": false }
+    { "name": "remote-server", "full": "arii/remote-server", "branch": "main", "clean": true, "ahead": 0, "behind": 0, "status_count": 0 },
+    { "name": "tech-dancer", "full": "arii/tech-dancer", "branch": "main", "clean": false, "ahead": 0, "behind": 2, "status_count": 2 }
   ],
   "prs": [
     {

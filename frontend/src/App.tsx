@@ -332,6 +332,31 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [diffRepo, diffSeq]);
 
+  // Per-repo git action for the dirty-repos strip (#937): the row's
+  // repo rides the request, so the global picker never moves first.
+  // Refreshes the header snapshot so every strip row re-reads.
+  async function onRepoActionFor(
+    name: string,
+    action: RepoAction,
+  ): Promise<RepoActionResponse> {
+    const r = await repoAction(name, action);
+    try {
+      const live = await fetchRepos();
+      if (live.repos.length > 0) setRepos(live.repos);
+    } catch {
+      // Strip keeps its prior rows; the row shows the result.
+    }
+    return r;
+  }
+
+  // Open in Chat from the strip (#937): the one strip action that
+  // navigates — it selects the row's repo and opens Chat there.
+  function openRepoInChat(name: string) {
+    setRepo(name);
+    setChatSeed(null);
+    setTab('chat');
+  }
+
   // One-click git action from the diff modal (#927): run it, then
   // refresh the modal payload and the header dirty pill.
   async function onRepoAction(action: RepoAction): Promise<RepoActionResponse> {
@@ -591,6 +616,9 @@ export default function App() {
           createRequest={createRequest}
           onSectionChange={setNowSection}
           onOpenStats={openStats}
+          onViewDiff={(name) => setDiffRepo(name)}
+          onRepoAction={(name, action) => onRepoActionFor(name, action)}
+          onOpenChat={openRepoInChat}
         />
       )}
       {tab === 'chat' &&

@@ -3,6 +3,11 @@ export interface RepoInfo {
   full: string;
   branch: string;
   clean: boolean;
+  // Workspace lag overview (#937): optional on older payloads and
+  // fixtures; missing reads as 0 / unknown.
+  ahead?: number;
+  behind?: number;
+  status_count?: number;
 }
 
 export interface ReposResponse {
