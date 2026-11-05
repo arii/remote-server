@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, invalidateViewCaches, refreshBriefing, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
-import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
+import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, fetchPlan, fetchPlans, invalidateViewCaches, refreshBriefing, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
+import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus, PlanListRow } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { isHistoryFailure, toHistoryRows } from './historyUtils';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
@@ -103,14 +103,25 @@ export function boardStatusForBranch(branch: string, board: BoardItem[]): string
   return status === '?' ? '' : status;
 }
 
+// Issue-chip hop (issue #963): a board `issue N` chip jumps to
+// the in-app Review section, where the issues list lives.
+// Branches stay static text — no branch view exists, and a
+// button to nowhere would be a dead control.
+export function boardIssueNumber(chip: string): string {
+  const m = chip.match(/issue\s+#?(\d+)/i);
+  return m ? m[1] : '';
+}
+
 function BoardSection({
   board,
   lines,
   err,
+  onOpenReview,
 }: {
   board: BoardItem[];
   lines: string[];
   err?: string;
+  onOpenReview?: (prNumber: string) => void;
 }) {
   if (board.length === 0) {
     return <Section title="Board" lines={lines} err={err} />;
@@ -132,11 +143,28 @@ function BoardSection({
           return (
             <li key={i} className="detail">
               <div className="chip-row">
-                {chips.map((c) => (
-                  <span key={c} className="repo-chip" title={c.length > 32 ? c : undefined}>
-                    {truncateChip(c)}
-                  </span>
-                ))}
+                {chips.map((c) => {
+                  const issueNum = boardIssueNumber(c);
+                  if (issueNum && onOpenReview) {
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        className="repo-chip link-chip"
+                        data-testid="briefing-board-issue"
+                        onClick={() => onOpenReview(issueNum)}
+                        title={`Open issue #${issueNum} in Review`}
+                      >
+                        {truncateChip(c)}
+                      </button>
+                    );
+                  }
+                  return (
+                    <span key={c} className="repo-chip" title={c.length > 32 ? c : undefined}>
+                      {truncateChip(c)}
+                    </span>
+                  );
+                })}
               </div>
             </li>
           );
@@ -716,6 +744,226 @@ export function GroupedLines({
   );
 }
 
+// Plans (issue #963): the .agents/plans index with per-plan
+// step progress and one-tap Execute. Content loads lazily per
+// plan, so a long index never fetches every file up front.
+export function PlanStepsView({ steps, limit = 20 }: { steps: PlanStep[]; limit?: number }) {
+  const shown = steps.slice(0, limit);
+  return (
+    <>
+      <p className="row-meta" data-testid="briefing-plan-progress">
+        {planProgressLine(steps)}
+      </p>
+      {steps.length > 0 && (
+        <ul className="session-list">
+          {shown.map((s, i) => (
+            // eslint-disable-next-line react/no-array-index-key
+            <li key={i} className="detail">
+              <span className="row-title">
+                [{s.checked ? 'x' : ' '}] {s.text || '(empty step)'}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {steps.length > limit && <p className="row-meta">+{steps.length - limit} more steps.</p>}
+    </>
+  );
+}
+
+function PlanRow({
+  repo,
+  plan,
+  onAskAgent,
+}: {
+  repo: string;
+  plan: PlanListRow;
+  onAskAgent: (seed: string) => void;
+}) {
+  const [content, setContent] = useState<string | null>(null);
+  const [contentErr, setContentErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function ensureContent() {
+    if (content !== null || loading || useMock()) return;
+    setLoading(true);
+    try {
+      const p = await fetchPlan(repo, plan.name);
+      setContent(p.content);
+      setContentErr(null);
+    } catch (err) {
+      setContentErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const steps = content === null ? null : planSteps(content);
+  return (
+    <li className="detail" data-testid="briefing-plan-row">
+      <span className="row-title">{plan.name}</span>
+      <p className="row-meta pipeline-meta">{plan.size} bytes</p>
+      <div className="actions">
+        <button
+          type="button"
+          data-testid="briefing-plan-execute"
+          onClick={() =>
+            onAskAgent(
+              `Execute the plan in ${plan.name} for ${repo}: read .agents/plans/${plan.name} and carry out each unchecked step, verifying with the repo's tests.`,
+            )
+          }
+        >
+          Execute
+        </button>
+      </div>
+      <details
+        onToggle={(e) => {
+          if ((e.target as HTMLDetailsElement).open) void ensureContent();
+        }}
+      >
+        <summary className="row-meta" data-testid="briefing-plan-steps-toggle">
+          Steps{steps ? ` · ${planProgressLine(steps)}` : ''}
+        </summary>
+        {loading && (
+          <p className="row-meta" role="status">
+            Loading plan…
+          </p>
+        )}
+        {contentErr && (
+          <p className="row-meta" role="alert">
+            Couldn&apos;t load plan: {contentErr}
+          </p>
+        )}
+        {steps && <PlanStepsView steps={steps} />}
+      </details>
+    </li>
+  );
+}
+
+export function PlansSection({
+  repo,
+  onAskAgent,
+}: {
+  repo: string;
+  onAskAgent: (seed: string) => void;
+}) {
+  const [plans, setPlans] = useState<PlanListRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (useMock()) {
+      setPlans([]);
+      return;
+    }
+    (async () => {
+      try {
+        const live = await fetchPlans(repo);
+        if (!cancelled) {
+          setPlans(live.plans);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setPlans([]);
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
+  return (
+    <section aria-label="Plans">
+      <h3>Plans</h3>
+      {error && (
+        <p className="row-meta" role="alert" data-testid="briefing-plans-error">
+          Couldn&apos;t load plans: {error}
+        </p>
+      )}
+      {plans === null ? (
+        <p className="row-meta" role="status">
+          Checking plans…
+        </p>
+      ) : plans.length === 0 && !error ? (
+        <p className="row-meta" data-testid="briefing-plans-empty">
+          No plans in .agents/plans.
+        </p>
+      ) : (
+        <ul className="session-list" data-testid="briefing-plans">
+          {plans.map((p) => (
+            <PlanRow key={p.name} repo={repo} plan={p} onAskAgent={onAskAgent} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// Repair picker (issue #963): open PRs listed with titles for
+// the repair seed — a picker, never a blind number input.
+export function RepairPicker({
+  repo,
+  prs,
+  onAskAgent,
+}: {
+  repo: string;
+  prs: Array<Record<string, unknown>>;
+  onAskAgent: (seed: string) => void;
+}) {
+  const options = prs
+    .map((pr) => ({
+      number: String(pr.number ?? '').trim(),
+      title: String(pr.title ?? 'Untitled'),
+    }))
+    .filter((o) => /^\d+$/.test(o.number));
+  const [picked, setPicked] = useState(options.length === 1 ? options[0].number : '');
+
+  return (
+    <section aria-label="Repair a pull request">
+      <h3>Repair</h3>
+      {options.length === 0 ? (
+        <p className="row-meta" data-testid="briefing-repair-empty">
+          No open PRs to repair.
+        </p>
+      ) : (
+        <div className="actions">
+          <label className="row-meta" htmlFor="briefing-repair-pick">
+            Pull request{' '}
+            <select
+              id="briefing-repair-pick"
+              data-testid="briefing-repair-picker"
+              value={picked}
+              onChange={(e) => setPicked(e.target.value)}
+            >
+              <option value="">Select…</option>
+              {options.map((o) => (
+                <option key={o.number} value={o.number}>
+                  #{o.number} {o.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            data-testid="briefing-repair-run"
+            disabled={!picked}
+            onClick={() => {
+              const o = options.find((x) => x.number === picked);
+              if (o) onAskAgent(prRepairSeed(repo, o.number, o.title));
+            }}
+          >
+            Repair
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // Checks tab for a PR web URL: trailing slashes trimmed so the
 // suffix never doubles. Empty in, empty out (older payloads carry
 // no URL; those pills fall back to the in-app Review section).
@@ -767,18 +1015,56 @@ function PrPill({
   );
 }
 
+// Row-level agent seeds (issue #963): the same shape as the
+// Review-card seeds (#962) so a briefing row hands the agent
+// the same context the Review view would.
+export function prAskSeed(repo: string, number: string, title: string): string {
+  return `PR #${number} ${title} (${repo}): review the diff and implement the needed changes.`;
+}
+
+export function prRepairSeed(repo: string, number: string, title: string): string {
+  return `In ${repo}, repair PR #${number} (${title}): investigate the cause, implement the fix, and verify with the repo's tests.`;
+}
+
+// Executable-plan steps (issue #963): checkbox lines are steps,
+// `[x]`/`[X]` done. Anything else is prose, never a step.
+export interface PlanStep {
+  text: string;
+  checked: boolean;
+}
+
+export function planSteps(content: string): PlanStep[] {
+  const steps: PlanStep[] = [];
+  for (const line of content.split('\n')) {
+    const m = line.match(/^\s*[-*]\s+\[([ xX])\]\s*(.*)$/);
+    if (m) steps.push({ text: m[2].trim(), checked: m[1].toLowerCase() === 'x' });
+  }
+  return steps;
+}
+
+export function planProgressLine(steps: readonly PlanStep[]): string {
+  if (steps.length === 0) return 'No checkable steps.';
+  const done = steps.filter((s) => s.checked).length;
+  return `${done}/${steps.length} steps done.`;
+}
+
 function PrRow({
   pr,
+  repo,
   board,
   reviewsLines,
   onOpenReview,
+  onAskAgent,
 }: {
   pr: Record<string, unknown>;
+  repo: string;
   board: BoardItem[];
   reviewsLines: string[];
   onOpenReview: (prNumber: string) => void;
+  onAskAgent: (seed: string) => void;
 }) {
   const number = String(pr.number ?? '?');
+  const title = String(pr.title ?? 'Untitled');
   const branch = String(pr.branch ?? '').trim();
   // Briefing PRs carry ci/merge/draft/stale (the Review list shape
   // uses ciLabel/ciStatus instead); read both, briefing first.
@@ -801,9 +1087,15 @@ function PrRow({
   const openReview = () => onOpenReview(number);
   return (
     <li className="detail" data-testid="briefing-pr-row">
-      <span className="row-title">
-        #{number} {String(pr.title ?? 'Untitled')}
-      </span>
+      <button
+        type="button"
+        className="row-title link-chip"
+        data-testid="briefing-pr-open"
+        onClick={openReview}
+        title={`Open #${number} in Review`}
+      >
+        #{number} {title}
+      </button>
       {meta.length > 0 && <p className="row-meta pipeline-meta">{meta.join(' · ')}</p>}
       {(ci || verdict) && (
         <p className="row-meta chip-row">
@@ -828,6 +1120,11 @@ function PrRow({
         </p>
       )}
       {note && <p className="row-meta">Review: {note}</p>}
+      <div className="actions">
+        <button type="button" data-testid="briefing-ask-agent" onClick={() => onAskAgent(prAskSeed(repo, number, title))}>
+          Ask agent
+        </button>
+      </div>
     </li>
   );
 }
@@ -1190,9 +1487,11 @@ export function BriefingBody({
                   <PrRow
                     key={i}
                     pr={pr}
+                    repo={data.repo}
                     board={data.board ?? []}
                     reviewsLines={data.reviews_lines}
                     onOpenReview={onOpenReview}
+                    onAskAgent={onAskAgent}
                   />
                 ))}
               </ul>
@@ -1204,9 +1503,10 @@ export function BriefingBody({
             </section>
           )}
           <Section title="Reviews" lines={data.reviews_lines} err={reviewsErrText(data.reviews_err)} />
-          <BoardSection board={board} lines={data.board_lines} err={data.board_err} />
+          <BoardSection board={board} lines={data.board_lines} err={data.board_err} onOpenReview={onOpenReview} />
           <Section title="Conflicts" lines={data.conflicts_lines} err={data.conf_err} />
           <Section title="Overlaps" lines={data.overlaps_lines} />
+          <RepairPicker repo={data.repo} prs={data.prs} onAskAgent={onAskAgent} />
           {(data.workflow_lines.length > 0 || data.runs_err) && (
             <section>
               <h3>Failing runs</h3>
@@ -1227,6 +1527,7 @@ export function BriefingBody({
           )}
         </>
       )}
+      <PlansSection repo={data.repo} onAskAgent={onAskAgent} />
       <section aria-label="Next actions">
         <h3>Next actions</h3>
         {/* The top action already rides inline under the lead; the
