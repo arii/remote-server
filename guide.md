@@ -367,10 +367,10 @@ Create `deep-agent/issue_generator.py` implementing the `Init -> Investigate -> 
    - Test 2: Validator loop recovery—simulate a first draft containing a non-existent file path and missing `Verification Commands`; assert `td_validate_spec_node` rejects it, feeds errors back to `draft_spec_node`, and succeeds on attempt 2.
 
 ## Acceptance Criteria
-- [ ] `IssueGeneratorGraph` runs `td init --json` before investigating and validates all specs exclusively via `td validate-issue --json`.
-- [ ] Invalid specs (hallucinated file paths, missing sections, vague placeholders) automatically loop back to `draft_spec_node` with exact error feedback.
-- [ ] Validated specs and Q&A context are persisted in `decisions.py` and `ledger.py`.
-- [ ] All tests in `tests/test_issue_generator.py` and `tests/test_cli.py` pass.
+- [x] `IssueGeneratorGraph` runs `td init --json` before investigating and validates all specs exclusively via `td validate-issue --json`.
+- [x] Invalid specs (hallucinated file paths, missing sections, vague placeholders) automatically loop back to `draft_spec_node` with exact error feedback.
+- [x] Validated specs and Q&A context are persisted in `decisions.py` and `ledger.py`.
+- [x] All tests in `tests/test_issue_generator.py` and `tests/test_cli.py` pass.
 
 ## Verification Commands
 ```bash
