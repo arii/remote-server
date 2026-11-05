@@ -442,6 +442,21 @@ a.link-chip:hover { border-color: var(--accent); }
 .row-overflow > summary:hover { border-color: var(--accent); }
 .row-overflow .actions { margin-top: 0.5rem; }
 
+/* Triage card header (issue #935): the bulk checkbox rides the
+   title line instead of floating above the card. */
+.attention-head { display: flex; align-items: flex-start; gap: 0.5rem; }
+.attention-head .row-title { flex: 1 1 auto; min-width: 0; }
+.attention-check { flex: none; width: 1.15rem; height: 1.15rem; margin-top: 0.15rem; cursor: pointer; }
+.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
+.attention-select-all input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
+
+/* Ask-agent preview (issue #935): the disclosure summary carries
+   the button hierarchy; the panel shows the exact sends. */
+.ask-agent > summary.btn-primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 650; }
+.ask-agent > summary.btn-secondary { background: var(--surface-2); color: var(--text); }
+.ask-preview { margin-top: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); padding: 0.6rem 0.75rem; }
+.ask-preview pre { margin: 0.25rem 0 0.5rem; }
+
 .turns { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.75rem; }
 .turn { border-top: 2px solid var(--border); padding-top: 0.5rem; }
 .turn-assistant { border-top-color: var(--accent); }

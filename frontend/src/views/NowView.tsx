@@ -257,6 +257,51 @@ export function askAgentSeed(item: AttentionItem): string {
   return `${item.title} (${item.repo}): ${item.detail}`;
 }
 
+// Retry pre-flight (issue #935): a skipped pull whose checkout is
+// diverged or dirty fails again deterministically, so Retry pull
+// must not sit in the primary slot for those rows. The block is
+// read off the skip detail (the same text the operator sees) plus
+// the checkout's dirty flag when known.
+export type RetryBlock = 'diverged' | 'dirty';
+
+export function retryBlock(item: AttentionItem): RetryBlock | null {
+  if (item.kind !== 'skipped-webhook') return null;
+  const detail = item.detail.toLowerCase();
+  if (detail.includes('not ff-able') || detail.includes('diverg')) return 'diverged';
+  if (detail.includes('dirty') || detail.includes('local changes')) return 'dirty';
+  return null;
+}
+
+export function retryBlocked(
+  item: AttentionItem,
+  repoInfo?: RepoInfo | null,
+): RetryBlock | null {
+  const block = retryBlock(item);
+  if (block) return block;
+  if (item.kind === 'skipped-webhook' && repoInfo && repoInfo.clean === false) {
+    return 'dirty';
+  }
+  return null;
+}
+
+export function retryBlockWarning(block: RetryBlock): string {
+  return block === 'diverged'
+    ? 'Retry will fail until the local commits are rebased onto the remote default.'
+    : 'Retry will fail until the local changes are stashed or committed.';
+}
+
+// Ask-agent modes (issue #935): the operator picks read-only
+// diagnosis or an auto-fix in a worktree; both send the row seed
+// with the mode as an explicit instruction prefix.
+export type AskAgentMode = 'diagnose' | 'fix';
+
+export function askAgentPrompt(item: AttentionItem, mode: AskAgentMode): string {
+  const seed = askAgentSeed(item);
+  return mode === 'diagnose'
+    ? `Read-only diagnosis — do not modify any files. Inspect and explain: ${seed}`
+    : `Auto-fix in a worktree — inspect, fix, and verify: ${seed}`;
+}
+
 function sevClass(severity: string): string {
   const s = severity.toLowerCase();
   if (s === 'crit' || s === 'critical') return 'sev sev-crit';
@@ -628,6 +673,7 @@ export function NowHero({
   onTab,
   onAttention,
   onHistoryDeploys,
+  onAskAgent,
 }: {
   health: SystemHealthResponse | null;
   feed: InboxFeed;
@@ -639,9 +685,15 @@ export function NowHero({
   onTab: (tab: AttentionNavTab) => void;
   onAttention: () => void;
   onHistoryDeploys: () => void;
+  onAskAgent?: (seed: string) => void;
 }) {
   const status = heroStatus(health, feed.attention);
   const top = topUrgent(feed.attention);
+  const topBlock = top ? retryBlocked(top) : null;
+  // Banner dedup (issue #935): never repeat the first card's Retry
+  // pull in the hero — the card directly below owns that action.
+  const dupFirst =
+    top !== null && feed.attention[0]?.id === top.id && top.action.label === 'Retry pull';
   const segments = heroSegments({
     attentionOpen: feed.attention.length,
     runsActive: feed.runs.active !== null,
@@ -671,13 +723,37 @@ export function NowHero({
       {top ? (
         <span data-testid="now-hero-urgent">
           <span className="row-meta">Top: {top.title} </span>
-          <ActionControl
-            item={top}
-            onDone={onDone}
-            onError={onError}
-            onSection={onSection}
-            onTab={onTab}
-          />
+          {dupFirst ? null : topBlock ? (
+            <>
+              {onAskAgent && (
+                <button
+                  type="button"
+                  className="btn-primary"
+                  data-testid="now-hero-ask-agent"
+                  onClick={() => onAskAgent(askAgentPrompt(top, 'fix'))}
+                >
+                  Ask agent to inspect &amp; rebase
+                </button>
+              )}{' '}
+              <button
+                type="button"
+                className="btn-secondary"
+                data-testid="now-hero-retry"
+                disabled
+                title={retryBlockWarning(topBlock)}
+              >
+                {top.action.label}
+              </button>
+            </>
+          ) : (
+            <ActionControl
+              item={top}
+              onDone={onDone}
+              onError={onError}
+              onSection={onSection}
+              onTab={onTab}
+            />
+          )}
         </span>
       ) : (
         <span className="row-meta" data-testid="now-hero-urgent">
@@ -745,11 +821,97 @@ export function repoContextText(repo: string, info: RepoInfo | null | undefined)
   return `repo: ${repo}${branch}${dirty}`;
 }
 
-// One attention row (issue #839): the primary action + Ask agent
-// stay visible; snooze presets collapse into a More overflow so a
-// queued item costs one line of buttons, not four. The source line
-// names the row's repo context and, when the action resolves to
-// an in-app surface, its destination.
+// Ask-agent disclosure (issue #935): the summary never sends
+// blind — expanding shows the exact prompt and context payload,
+// then the operator picks Read-Only Diagnosis or Auto-Fix in
+// Worktree. In the primary slot (blocked-retry cards) the summary
+// carries the promoted CTA label and primary styling.
+export function AskAgentControl({
+  item,
+  primary = false,
+  label,
+  onAskAgent,
+}: {
+  item: AttentionItem;
+  primary?: boolean;
+  label?: string;
+  onAskAgent: (seed: string) => void;
+}) {
+  return (
+    <details className="row-overflow ask-agent" data-testid={`ask-agent-box-${item.id}`}>
+      <summary
+        data-testid={`ask-agent-${item.id}`}
+        className={primary ? 'btn-primary' : 'btn-secondary'}
+        title="Preview the exact prompt and context before sending"
+      >
+        {label ?? 'Ask agent'}
+      </summary>
+      <div className="ask-preview" data-testid={`ask-agent-preview-${item.id}`}>
+        <p className="row-meta">Context</p>
+        <pre data-testid={`ask-agent-context-${item.id}`}>{askAgentSeed(item)}</pre>
+        <p className="row-meta">Read-Only Diagnosis sends</p>
+        <pre data-testid={`ask-agent-prompt-diagnose-${item.id}`}>
+          {askAgentPrompt(item, 'diagnose')}
+        </pre>
+        <p className="row-meta">Auto-Fix in Worktree sends</p>
+        <pre data-testid={`ask-agent-prompt-fix-${item.id}`}>{askAgentPrompt(item, 'fix')}</pre>
+        <div className="actions">
+          <button
+            type="button"
+            data-testid={`ask-agent-diagnose-${item.id}`}
+            onClick={() => onAskAgent(askAgentPrompt(item, 'diagnose'))}
+          >
+            Read-Only Diagnosis
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            data-testid={`ask-agent-fix-${item.id}`}
+            onClick={() => onAskAgent(askAgentPrompt(item, 'fix'))}
+          >
+            Auto-Fix in Worktree
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+// Select-all header toggle (issue #935): bulk selection reads as
+// a designed affordance from the first paint, not a toolbar that
+// materialises after the first checkbox click.
+export function AttentionSelectAll({
+  total,
+  selectedCount,
+  onToggle,
+}: {
+  total: number;
+  selectedCount: number;
+  onToggle: () => void;
+}) {
+  return (
+    <label className="row-meta attention-select-all">
+      <input
+        type="checkbox"
+        data-testid="now-select-all"
+        aria-label="Select all attention items"
+        checked={total > 0 && selectedCount >= total}
+        onChange={onToggle}
+      />{' '}
+      Select all
+    </label>
+  );
+}
+
+// One attention row (issue #839, #935): the primary action, Ask
+// agent, Snooze 1h, and Dismiss stay inline; only the 8h snooze
+// sits in the More overflow, which never carries Review/Jobs nav
+// links. A blocked Retry pull (diverged/dirty checkout) demotes
+// to a disabled secondary while Ask agent takes the primary slot.
+// The bulk checkbox rides the title line; single-item lists hide
+// it (the parent passes showSelect). The source line names the
+// row's repo context and, when the action resolves to an in-app
+// surface, its destination.
 export function AttentionRow({
   item,
   viewRepo,
@@ -757,6 +919,7 @@ export function AttentionRow({
   repoInfo,
   selected,
   busy,
+  showSelect = true,
   onToggleSelect,
   onDone,
   onError,
@@ -771,24 +934,31 @@ export function AttentionRow({
   repoInfo?: RepoInfo | null;
   selected: boolean;
   busy: boolean;
+  showSelect?: boolean;
   onToggleSelect: () => void;
 }) {
+  const block = retryBlocked(item, repoInfo);
   return (
     <li className="detail" data-testid={`now-item-${item.id}`}>
-      <input
-        type="checkbox"
-        data-testid={`now-select-${item.id}`}
-        aria-label={`Select ${item.title}`}
-        checked={selected}
-        onChange={onToggleSelect}
-      />{' '}
-      {showRepoTag(rollup, item.repo, viewRepo) ? (
-        <span className="row-title">
-          <RepoTag repo={item.repo} /> {item.title}
-        </span>
-      ) : (
-        <span className="row-title">{item.title}</span>
-      )}
+      <div className="attention-head">
+        {showSelect && (
+          <input
+            type="checkbox"
+            className="attention-check"
+            data-testid={`now-select-${item.id}`}
+            aria-label={`Select ${item.title}`}
+            checked={selected}
+            onChange={onToggleSelect}
+          />
+        )}
+        {showRepoTag(rollup, item.repo, viewRepo) ? (
+          <span className="row-title">
+            <RepoTag repo={item.repo} /> {item.title}
+          </span>
+        ) : (
+          <span className="row-title">{item.title}</span>
+        )}
+      </div>
       <p className="row-meta">
         {item.kind} · <span className={sevClass(item.severity)}>{item.severity}</span>
         {' · '}
@@ -807,29 +977,64 @@ export function AttentionRow({
       </p>
       <p>{item.detail}</p>
       <div className="actions">
-        <ActionControl
-          item={item}
-          onDone={onDone}
-          onError={onError}
-          onSection={onSection}
-          onTab={onTab}
-        />
+        {block ? (
+          <>
+            <AskAgentControl
+              item={item}
+              primary
+              label="Ask agent to inspect & rebase"
+              onAskAgent={onAskAgent}
+            />
+            <button
+              type="button"
+              className="btn-secondary"
+              data-testid={`now-retry-${item.id}`}
+              disabled
+              title={retryBlockWarning(block)}
+            >
+              {item.action.label}
+            </button>
+          </>
+        ) : (
+          <>
+            <ActionControl
+              item={item}
+              onDone={onDone}
+              onError={onError}
+              onSection={onSection}
+              onTab={onTab}
+            />
+            <AskAgentControl item={item} onAskAgent={onAskAgent} />
+          </>
+        )}
         <button
           type="button"
-          className="btn-secondary"
-          data-testid={`ask-agent-${item.id}`}
-          onClick={() => onAskAgent(askAgentSeed(item))}
+          data-testid={`snooze-${item.id}-60`}
+          disabled={busy}
+          onClick={() => onSnooze(item, 60)}
         >
-          Ask agent
+          {snoozePresetLabel(60)}
+        </button>
+        <button
+          type="button"
+          data-testid={`dismiss-${item.id}`}
+          disabled={busy}
+          title="Dismiss for 8 hours"
+          onClick={() => onSnooze(item, 480)}
+        >
+          Dismiss
         </button>
         <details className="row-overflow" data-testid={`now-more-${item.id}`}>
           <summary>More</summary>
           <div className="actions">
-            <SnoozeButtons
-              itemId={item.id}
-              busy={busy}
-              onSnooze={(m) => onSnooze(item, m)}
-            />
+            <button
+              type="button"
+              data-testid={`snooze-${item.id}-480`}
+              disabled={busy}
+              onClick={() => onSnooze(item, 480)}
+            >
+              {snoozePresetLabel(480)}
+            </button>
           </div>
         </details>
       </div>
@@ -1158,6 +1363,13 @@ export default function NowView({
     });
   }
 
+  function toggleSelectAll() {
+    if (!data) return;
+    const ids = data.attention.map((i) => i.id);
+    const all = ids.length > 0 && ids.every((id) => bulkSelected.has(id));
+    setBulkSelected(all ? new Set() : new Set(ids));
+  }
+
   useEffect(() => {
     let cancelled = false;
     if (useMock()) {
@@ -1278,6 +1490,10 @@ export default function NowView({
   }
 
   const stubRows = data ? snoozedRows(snoozed, data.attention.map((i) => i.id)) : [];
+  // Bulk checkboxes only earn their place with a real choice
+  // (issue #935): a lone card hides them, longer lists pair them
+  // with the Select all header toggle.
+  const selectable = (data?.attention.length ?? 0) > 1;
 
   // One group member: its snoozed stub while snoozed, else the row.
   // Shared by singleton groups and accordion members so a repeat
@@ -1304,6 +1520,7 @@ export default function NowView({
         repoInfo={repos.find((r) => r.name === item.repo) ?? null}
         selected={bulkSelected.has(item.id)}
         busy={snoozeBusy !== null}
+        showSelect={selectable}
         onToggleSelect={() => toggleBulkSelect(item.id)}
         onDone={(title) => {
           setFired(title);
@@ -1349,6 +1566,7 @@ export default function NowView({
           onSection={(s) => setSection(s)}
           onTab={(t) => onOpenTab(t)}
           onAttention={() => setSection(null)}
+          onAskAgent={onAskAgent}
           onHistoryDeploys={() => {
             if (onOpenHistoryQuery) onOpenHistoryQuery('deploy');
             else onOpenTab('history');
@@ -1412,6 +1630,13 @@ export default function NowView({
         <NowEmptyState onRunCheck={() => setSection('jobs')} />
       ) : (
         <>
+          {selectable && (
+            <AttentionSelectAll
+              total={data.attention.length}
+              selectedCount={bulkSelected.size}
+              onToggle={toggleSelectAll}
+            />
+          )}
           {bulkSelected.size > 0 && (
             <AttentionBulkBar
               count={bulkSelected.size}
