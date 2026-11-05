@@ -43,7 +43,7 @@ import {
   repairCandidates,
   resultLine,
 } from './views/jobsUtils';
-import NowView, { ReportDialog, StackSection, nowPollMs } from './views/NowView';
+import NowView, { ContainersSection, ReportDialog, nowPollMs } from './views/NowView';
 import ReviewView, { PrDetails, PrRowMerge, detailsPromptVisible } from './views/ReviewView';
 import { loadBriefing, loadContainerStats, loadHistory, loadPrDetails, loadRepoDiff, loadWorkflowHealth } from './views/mockViews';
 import { jobPassesKindFilter, plainLanguage, tailText, toHistoryRows } from './views/historyUtils';
@@ -1207,7 +1207,7 @@ describe('p2 a11y batch', () => {
     expect(renderToStaticMarkup(<JobsView repo="r" onAskAgent={noop} />)).toContain(
       'data-testid="jobs-loading" role="status"',
     );
-    expect(renderToStaticMarkup(<HistoryView repo="r" health={null} />)).toContain(
+    expect(renderToStaticMarkup(<HistoryView repo="r" />)).toContain(
       'data-testid="history-loading" role="status"',
     );
   });
@@ -1394,27 +1394,45 @@ describe('repo picker labels', () => {
   });
 });
 
-describe('now stack condense', () => {
+describe('now containers section (issue #931)', () => {
   const healthy = (n: number): SystemHealthResponse => ({
-    disk: {},
-    memory: {},
+    disk: { summary: '12G free' },
+    memory: { summary: '4G free' },
     containers: Array.from({ length: n }, (_, i) => ({
       service: `svc-${i}`,
       state: 'running',
     })),
   });
-  it('collapses to one line when every container is up', () => {
-    const html = renderToStaticMarkup(<StackSection health={healthy(8)} />);
-    // Stack-scoped copy (#839): the hero owns the global verdict, so
-    // this line must never read as its own "all clear".
-    expect(html).toContain('Stack: all 8 containers up.');
+  it('renders nothing when every container is up: the header pill owns healthy', () => {
+    const html = renderToStaticMarkup(<ContainersSection health={healthy(8)} />);
+    expect(html).not.toContain('now-containers');
+    expect(html).not.toContain('containers up.');
     expect(html).not.toContain('container-pill');
+    expect(html).not.toContain('host-telemetry');
   });
-  it('keeps pills when a container is down', () => {
+  it('renders nothing while the snapshot loads: the header pill loads too', () => {
+    expect(renderToStaticMarkup(<ContainersSection health={null} />)).toBe('');
+  });
+  it('shows telemetry + pills when a container is down', () => {
     const h = healthy(2);
     h.containers[1] = { service: 'svc-1', state: 'exited' };
-    const html = renderToStaticMarkup(<StackSection health={h} />);
+    const html = renderToStaticMarkup(
+      <ContainersSection health={h} onOpenStats={() => {}} onFilterHistory={() => {}} />,
+    );
+    expect(html).toContain('data-testid="now-containers"');
+    expect(html).toContain('>Containers</h2>');
+    expect(html).toContain('Disk: 12G free');
+    expect(html).toContain('Mem: 4G free');
     expect(html).toContain('container-pill');
+    expect(html).toContain('data-testid="container-history-svc-1"');
+  });
+  it('shows the list error distinctly when the snapshot carries one', () => {
+    const h = healthy(0);
+    h.containers_error = 'docker compose ps timed out after 10s';
+    const html = renderToStaticMarkup(<ContainersSection health={h} />);
+    expect(html).toContain('data-testid="now-containers"');
+    expect(html).toContain('container-pills-error');
+    expect(html).toContain('Container list unavailable: docker compose ps timed out after 10s');
   });
 });
 

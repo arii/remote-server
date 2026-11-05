@@ -5,6 +5,7 @@ import { fetchJobRun, fetchJobs, fetchLedger, rerunJob } from '../apiClient';
 import type { JobRecord, LedgerEntry } from '../apiTypes';
 import { loadHistory, useMock } from './mockViews';
 import {
+  HISTORY_FACETS,
   facetCounts,
   historyRowMatches,
   jobPassesKindFilter,
@@ -15,7 +16,7 @@ import {
   visibleFacets,
 } from './historyUtils';
 import type { HistoryFacet, HistoryMember, HistoryRow } from './historyUtils';
-import ObservabilitySection from './ObservabilitySection';
+import { WorkflowRunsSection } from './ObservabilitySection';
 import ActivityTimeline from './ActivityTimeline';
 import { shouldShowSnapshotContent, useSnapshotData } from './useSnapshotData';
 import { StatusIcon } from './StatusIcon';
@@ -267,16 +268,50 @@ export function RowsList({
   );
 }
 
+// Cross-tab feed filter (issue #931): a container pill in Now or
+// the Status drawer navigates here pre-filtered to that service.
+// Each nonce applies once, including on a fresh mount after the
+// tab switch (same path as Now's palette section requests).
+export interface HistoryFilterRequest {
+  query?: string;
+  facet?: HistoryFacet;
+  nonce: number;
+}
+
+// Active-filter chip: names the query + facet narrowing the feed
+// with one tap to clear both. Null when the feed is unfiltered.
+export function HistoryFilterChip({
+  query,
+  facet,
+  onClear,
+}: {
+  query: string;
+  facet: HistoryFacet;
+  onClear: () => void;
+}) {
+  if (!query.trim() && facet === 'all') return null;
+  const parts: string[] = [];
+  if (query.trim()) parts.push(`\u201c${query.trim()}\u201d`);
+  if (facet !== 'all') {
+    parts.push(HISTORY_FACETS.find((f) => f.id === facet)?.label ?? facet);
+  }
+  return (
+    <div className="actions" data-testid="history-filter-chip" role="status">
+      <span className="row-meta">Filter: {parts.join(' · ')}</span>{' '}
+      <button type="button" data-testid="history-filter-clear" onClick={onClear}>
+        Clear
+      </button>
+    </div>
+  );
+}
+
 export default function HistoryView({
   repo,
-  health,
-  onOpenStats,
   active = true,
   queryRequest = null,
+  filterRequest = null,
 }: {
   repo: string;
-  health: import('../apiClient').SystemHealthResponse | null;
-  onOpenStats?: (service?: string) => void;
   // Keep-alive visibility (issue #897): the timeline poll pauses
   // while the tab is hidden.
   active?: boolean;
@@ -284,6 +319,9 @@ export default function HistoryView({
   // re-seeds the search box — the Now hero's deploy segment lands
   // here filtered to deploy runs.
   queryRequest?: { query: string; nonce: number } | null;
+  // Cross-tab feed filter (issue #931): a nonce bump from a Now
+  // container pill or the Status drawer pre-filters the feed.
+  filterRequest?: HistoryFilterRequest | null;
 }) {
   const { data, error, loading, load } = useSnapshotData(loadHistorySnapshot, EMPTY_HISTORY);
   const { jobs, entries } = data;
@@ -306,6 +344,15 @@ export default function HistoryView({
   }, [queryRequest]);
   const [rerunBusy, setRerunBusy] = useState<string | null>(null);
   const [rerunNote, setRerunNote] = useState<string | null>(null);
+
+  const handledFilterNonce = useRef(0);
+  useEffect(() => {
+    if (filterRequest && filterRequest.nonce !== handledFilterNonce.current) {
+      handledFilterNonce.current = filterRequest.nonce;
+      if (filterRequest.query !== undefined) setQuery(filterRequest.query);
+      if (filterRequest.facet !== undefined) setFacet(filterRequest.facet);
+    }
+  }, [filterRequest]);
   const all = entries;
   const filtering = query.trim().length > 0 || facet !== 'all';
   const scoped = toHistoryRows(
@@ -350,12 +397,7 @@ export default function HistoryView({
 
   return (
     <div data-testid="history-view">
-      <ObservabilitySection
-        repo={repo}
-        health={health}
-        onOpenStats={onOpenStats}
-        onFindInFeed={(text) => setQuery(text)}
-      />
+      <WorkflowRunsSection repo={repo} onFindInFeed={(text) => setQuery(text)} />
 
       <ActivityTimeline active={active} />
 
@@ -410,6 +452,14 @@ export default function HistoryView({
         )}
         {showContent && (
           <>
+            <HistoryFilterChip
+              query={query}
+              facet={facet}
+              onClear={() => {
+                setQuery('');
+                setFacet('all');
+              }}
+            />
             <div
               className="facet-row"
               role="group"

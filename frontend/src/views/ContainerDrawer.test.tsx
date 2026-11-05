@@ -245,3 +245,38 @@ describe('container drawer logs + restart per row (issue #928)', () => {
   });
 
 });
+
+describe('container drawer telemetry + history filter (issue #931)', () => {
+  it('carries the host Disk/Mem line as the inspecting path', () => {
+    const html = renderDrawer({ diskSummary: '151.0 / 456.3 GB (33%)', memSummary: '14.0 / 26.8 GB (52%)' });
+    expect(html).toContain('data-testid="container-host-telemetry"');
+    expect(html).toContain('Disk: 151.0 / 456.3 GB (33%)');
+    expect(html).toContain('Mem: 14.0 / 26.8 GB (52%)');
+  });
+
+  it('omits the host line when summaries are missing', () => {
+    expect(renderDrawer({})).not.toContain('container-host-telemetry');
+    const half = renderDrawer({ diskSummary: '151.0 GB free', memSummary: null });
+    expect(half).toContain('Disk: 151.0 GB free');
+    expect(half).not.toContain('Mem:');
+  });
+
+  it('offers a History filter per row that names the service', () => {
+    const html = renderDrawer({
+      rows: [
+        row(),
+        row({ name: 'remote-ollama-1', service: 'ollama' }),
+      ],
+      onFilterHistory: () => {},
+    });
+    expect(html).toContain('data-testid="container-history-terminal"');
+    expect(html).toContain('data-testid="container-history-ollama"');
+    expect(html).toContain('aria-label="Filter history to ollama"');
+    expect(html).toContain('>History</button>');
+    expect(html).toContain('data-testid="container-logs-terminal"');
+  });
+
+  it('renders no History filter without a handler', () => {
+    expect(renderDrawer({})).not.toContain('container-history-');
+  });
+});

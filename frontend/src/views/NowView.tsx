@@ -20,7 +20,7 @@ import type { JobRecord } from '../apiTypes';
 import type { AttentionItem } from '../attentionTypes';
 import type { DeferredRow } from '../reviewTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
-import { ContainerPills } from './ObservabilitySection';
+import { ContainerPills, HostTelemetry } from './ObservabilitySection';
 import DirtyReposStrip from './DirtyReposStrip';
 import type { RepoAction, RepoActionResponse } from '../apiClient';
 import InboxStrips from './InboxStrips';
@@ -189,12 +189,18 @@ export function SnoozedStub({
   );
 }
 
-export function StackSection({
+// Live infra state (issue #931): the Containers section renders
+// only when the stack is degraded — a healthy stack collapses
+// into the header status pill, and the Status drawer is the
+// inspecting path for host telemetry + per-container logs.
+export function ContainersSection({
   health,
   onOpenStats,
+  onFilterHistory,
 }: {
   health: SystemHealthResponse | null;
   onOpenStats?: (service?: string) => void;
+  onFilterHistory?: (service: string) => void;
 }) {
   const allUp =
     health !== null &&
@@ -204,18 +210,17 @@ export function StackSection({
         (c.state ?? '').toLowerCase() === 'running' &&
         (c.health ?? '').toLowerCase() !== 'unhealthy',
     );
+  if (!health || allUp) return null;
   return (
-    <section data-testid="now-stack" aria-label="Stack">
-      <h2>Stack</h2>
-      {!health ? (
-        <p className="row-meta" role="status">Stack status: loading…</p>
-      ) : allUp ? (
-        <p className="row-meta" data-testid="now-stack-clear" role="status">
-          Stack: all {health.containers.length} containers up.
-        </p>
-      ) : (
-        <ContainerPills containers={health.containers} error={health.containers_error} onOpenStats={onOpenStats} />
-      )}
+    <section data-testid="now-containers" aria-label="Containers">
+      <h2>Containers</h2>
+      <HostTelemetry health={health} />
+      <ContainerPills
+        containers={health.containers}
+        error={health.containers_error}
+        onOpenStats={onOpenStats}
+        onFilterHistory={onFilterHistory}
+      />
     </section>
   );
 }
@@ -1127,6 +1132,7 @@ export default function NowView({
   onViewDiff,
   onRepoAction,
   onOpenChat,
+  onFilterHistory,
 }: {
   repo: string;
   // Checkout branch of the viewed repo, seeding the Review/Jobs
@@ -1158,7 +1164,7 @@ export default function NowView({
   // every section change (including mount and repo-switch resets),
   // so App never shows a stale entry pressed.
   onSectionChange?: (section: 'review' | 'jobs' | 'queue' | null) => void;
-  // Opens the container stats drawer (#896): Stack pills navigate.
+  // Opens the container stats drawer (#896): Containers pills navigate.
   onOpenStats?: (service?: string) => void;
   // Dirty-repos strip (#937): per-row actions carry the row's repo
   // so the global picker never moves first. Absent (older callers,
@@ -1167,6 +1173,9 @@ export default function NowView({
   onViewDiff?: (repo: string) => void;
   onRepoAction?: (repo: string, action: RepoAction) => Promise<RepoActionResponse>;
   onOpenChat?: (repo: string) => void;
+  // Filters the History feed to one container (#931): the pill's
+  // History action navigates to the feed, pre-filtered.
+  onFilterHistory?: (service: string) => void;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The
@@ -1626,7 +1635,7 @@ export default function NowView({
         onAskAgent={onAskAgent}
         onOpenChat={onOpenChat ?? (() => onOpenTab('chat'))}
       />
-      <StackSection health={health} onOpenStats={onOpenStats} />
+      <ContainersSection health={health} onOpenStats={onOpenStats} onFilterHistory={onFilterHistory} />
       {data && (
         <>
           {!rollup && (
@@ -1639,6 +1648,8 @@ export default function NowView({
               onOpenJobs={() => setSection('jobs')}
             />
           )}
+          <section aria-label="Attention" data-testid="now-attention">
+            <h2>Attention</h2>
           {stubRows.length > 0 && (
             <ul className="session-list" data-testid="now-snoozed">
               {stubRows.map(([id, entry]) => (
@@ -1685,9 +1696,7 @@ export default function NowView({
           </ul>
         </>
       )}
-          {/* Sections open from the top nav, the hero counts, the
-              strips, or the palette (issue #930 removed the duplicate
-              Review/Jobs/Queue toggle row that used to sit here). */}
+          </section>
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
           {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} onOpenChat={() => onOpenTab('chat')} />}
           {section === 'queue' && <QueueView repo={repo} />}
