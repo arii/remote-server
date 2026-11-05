@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import HistoryView, { HistoryFilterChip, HistoryInspector, MemberBlock, RowsList, RunOutput } from './HistoryView';
+import HistoryView, { HistoryFilterChip, HistoryInspector, MemberBlock, RowsList, RunOutput, isSkipRow, rowToneClass } from './HistoryView';
+import { toHistoryRows } from './historyUtils';
 import type { HistoryRow } from './historyUtils';
 
 describe('history search input (issue #608)', () => {
@@ -188,5 +189,59 @@ describe('history actionable rows (issue #907)', () => {
     expect(html).toContain('data-testid="history-group-copy"');
     expect(html).toContain('Copy entry');
     expect(html).toContain('boom x1');
+  });
+});
+
+describe('ledger noise filter and inline status (issue #964)', () => {
+  const skip: HistoryRow = {
+    key: 'webhook-a', kind: 'webhook', summary: 'Skipped: tree not ff-able',
+    at: 'now', repeat: 1, recovery: '', tone: 'ok', detail: 'd', members: [],
+  };
+  const failedSkip: HistoryRow = { ...skip, key: 'webhook-b', tone: 'bad' };
+  const good: HistoryRow = { ...skip, key: 'job-a', kind: 'job', summary: 'deployed', tone: 'ok' };
+  const muted: HistoryRow = { ...skip, key: 'chat-a', kind: 'chat', summary: 'Chat session activity', tone: 'muted' };
+
+  it('flags non-failure skips, never failures', () => {
+    expect(isSkipRow(skip)).toBe(true);
+    expect(isSkipRow({ ...skip, tone: 'muted' })).toBe(true);
+    expect(isSkipRow(failedSkip)).toBe(false);
+    expect(isSkipRow(good)).toBe(false);
+  });
+
+  it('maps tones to edge classes, muted to none', () => {
+    expect(rowToneClass('bad')).toBe(' tone-bad');
+    expect(rowToneClass('ok')).toBe(' tone-ok');
+    expect(rowToneClass('muted')).toBe('');
+  });
+
+  it('paints green/red edges on rows without expanding', () => {
+    const html = renderToStaticMarkup(
+      <RowsList rows={[failedSkip, good, muted]} filtering={false} />,
+    );
+    expect(html).toContain('class="history-row tone-bad"');
+    expect(html).toContain('class="history-row tone-ok"');
+    expect(html).toContain('class="history-row"');
+    expect(html).not.toContain('history-row tone-muted');
+  });
+
+  it('hides skips behind an unchecked toggle by default', () => {
+    const html = renderToStaticMarkup(<HistoryView repo="r" />);
+    expect(html).toContain('data-testid="history-show-skips"');
+    expect(html).not.toContain('data-testid="history-skips-note"');
+  });
+
+  it('folds identical consecutive skips into one expandable row', () => {
+    const entry = (ts: number) => ({
+      kind: 'webhook', repo: 'r', ok: true,
+      detail: 'skipped: tree not ff-able', ts,
+    });
+    const folded = toHistoryRows([], [entry(3), entry(2)]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0].repeat).toBe(2);
+    expect(folded[0].members).toHaveLength(2);
+    expect(isSkipRow(folded[0])).toBe(true);
+    const html = renderToStaticMarkup(<RowsList rows={folded} filtering={false} />);
+    expect(html).toContain('data-testid="history-incident"');
+    expect(html).toContain('×2');
   });
 });

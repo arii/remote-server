@@ -46,6 +46,20 @@ function filterByKind(entries: LedgerEntry[], kind: string): LedgerEntry[] {
   return entries.filter((e) => e.kind === kind);
 }
 
+// Skipped-webhook noise filter (#964): non-failure rows whose
+// summary names a skip hide by default behind a toggle. Failed
+// rows never count as skips — they always stay visible.
+export function isSkipRow(r: HistoryRow): boolean {
+  return r.tone !== 'bad' && /skipped/i.test(r.summary);
+}
+
+// Inline status edge (#964): green/red left edge per row, readable
+// without expanding. Muted rows carry no edge.
+export function rowToneClass(tone: HistoryRow['tone']): string {
+  if (tone === 'bad' || tone === 'ok') return ` tone-${tone}`;
+  return '';
+}
+
 // Lazy run-output disclosure, same onToggle pattern as the review diff:
 // fetch only when opened. The runs registry is in-memory, so output for
 // old runs 404s — surfaced as a plain note, not a crash.
@@ -243,7 +257,7 @@ export function RowsList({
         return (
           <li
             key={r.key}
-            className={`history-row${selectedKey === r.key ? ' selected' : ''}`}
+            className={`history-row${selectedKey === r.key ? ' selected' : ''}${rowToneClass(r.tone)}`}
             data-testid={r.repeat > 1 ? 'history-incident' : 'history-row'}
             aria-current={selectedKey === r.key ? true : undefined}
           >
@@ -328,6 +342,9 @@ export default function HistoryView({
   const [kind, setKind] = useState('all');
   const [query, setQuery] = useState('');
   const [facet, setFacet] = useState<HistoryFacet>('all');
+  // Skipped webhooks hide by default (#964): the feed buries
+  // signal in repeated low-value skip rows.
+  const [showSkips, setShowSkips] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // Deep-link seeds land even on a live view (keepalive): each
   // nonce applies once and resets the other filters, so the link
@@ -361,9 +378,15 @@ export default function HistoryView({
   ).filter((r) => historyRowMatches(r, query));
   const counts = facetCounts(scoped);
   const rows = scoped.filter((r) => rowInFacet(r, facet));
+  // Identical consecutive skips already fold into one expandable ×N
+  // row upstream (#855); here they hide behind the toggle instead
+  // of burying the feed. Failures never hide (see isSkipRow).
+  const visibleRows = showSkips ? rows : rows.filter((r) => !isSkipRow(r));
+  const hiddenSkips = rows.length - visibleRows.length;
   // The inspector follows the selection, defaulting to the newest
   // row; a selection that filters out falls back the same way.
-  const inspected = rows.find((r) => r.key === selectedKey) ?? rows[0] ?? null;
+  const inspected =
+    visibleRows.find((r) => r.key === selectedKey) ?? visibleRows[0] ?? null;
 
   async function onRerun(runId: string) {
     if (rerunBusy !== null) return;
@@ -393,6 +416,7 @@ export default function HistoryView({
     setQuery('');
     setFacet('all');
     setKind('all');
+    setShowSkips(true);
   }
 
   return (
@@ -432,6 +456,16 @@ export default function HistoryView({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="summary, detail, or kind"
               />
+            </label>
+            <label className="row-meta" htmlFor="history-show-skips">
+              <input
+                id="history-show-skips"
+                type="checkbox"
+                data-testid="history-show-skips"
+                checked={showSkips}
+                onChange={(e) => setShowSkips(e.target.checked)}
+              />{' '}
+              Skips
             </label>
             <button type="button" data-testid="history-refresh" onClick={() => void load()}>
               Refresh
@@ -478,11 +512,19 @@ export default function HistoryView({
                 </button>
               ))}
             </div>
+            {hiddenSkips > 0 && (
+              <p className="row-meta" data-testid="history-skips-note">
+                {hiddenSkips} skipped webhook{hiddenSkips === 1 ? '' : 's'} hidden.{' '}
+                <button type="button" data-testid="history-skips-show" onClick={() => setShowSkips(true)}>
+                  Show
+                </button>
+              </p>
+            )}
             <div className="split">
               <div>
                 <RowsList
-                  rows={rows}
-                  filtering={filtering}
+                  rows={visibleRows}
+                  filtering={filtering || hiddenSkips > 0}
                   selectedKey={inspected?.key ?? null}
                   onSelect={(r) => setSelectedKey(r.key)}
                   onRefresh={() => void load()}
