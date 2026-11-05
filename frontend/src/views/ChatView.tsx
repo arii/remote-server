@@ -881,6 +881,32 @@ export function runDecisions(entry: Record<string, unknown>): RunDecision[] {
     .map((d) => ({ what: d.what as string, why: d.why as string }));
 }
 
+// Repo scope for Past runs (issue #933): ledger rows record the
+// turn repo as "owner/name" while the chat view's repo is the
+// short name, so badges show and matching compares the short
+// name. Rows without a recorded repo (older turns, non-chat
+// scripts) stay visible in the scoped view — unattributed, never
+// hidden: absence of a tag must not strand history.
+export function shortRunRepo(repo: string | null | undefined): string | null {
+  if (!repo) return null;
+  const short = repo.includes('/') ? repo.slice(repo.lastIndexOf('/') + 1) : repo;
+  return short || null;
+}
+
+export function runMatchesRepo(run: AgentRun, repo: string): boolean {
+  const short = shortRunRepo(run.repo);
+  return short === null || short === repo;
+}
+
+export function filterRunsByRepo(
+  runs: AgentRun[],
+  repo: string,
+  showAll: boolean,
+): AgentRun[] {
+  if (showAll) return runs;
+  return runs.filter((r) => runMatchesRepo(r, repo));
+}
+
 // Expanded detail for one past run: decisions + full trace.
 // Rendered as the list item right after its row so the trace lands
 // adjacent to the click target instead of below the whole list.
@@ -908,6 +934,9 @@ function RunDetail({ detail, t0 }: { detail: AgentRunDetail; t0: number }) {
 
 export function RunsPane({
   runs,
+  repo,
+  showAllRepos,
+  onToggleScope,
   selected,
   detail,
   onSelect,
@@ -918,6 +947,9 @@ export function RunsPane({
   budget,
 }: {
   runs: AgentRun[];
+  repo: string;
+  showAllRepos: boolean;
+  onToggleScope: () => void;
   selected: string | null;
   detail: AgentRunDetail | null;
   onSelect: (id: string) => void;
@@ -928,8 +960,10 @@ export function RunsPane({
   budget: BudgetStatus | null;
 }) {
   if (runs.length === 0) return null;
+  const visible = filterRunsByRepo(runs, repo, showAllRepos);
+  const hidden = runs.length - visible.length;
   const t0 = detail && detail.trace.length > 0 ? num(detail.trace[0].ts) : 0;
-  const metered = meteredTotal(runs);
+  const metered = meteredTotal(visible);
   return (
     <section data-testid="chat-runs" className="chat-module">
       <h3>Past runs</h3>
@@ -944,6 +978,19 @@ export function RunsPane({
         </p>
       )}
       <div className="actions">
+        <button
+          type="button"
+          data-testid="chat-runs-scope"
+          aria-pressed={showAllRepos}
+          title={
+            showAllRepos
+              ? `Show only ${repo} runs`
+              : 'Show runs from all repos'
+          }
+          onClick={() => onToggleScope()}
+        >
+          All repos
+        </button>
         <TapToFire
           label="Clear finished"
           confirm="This clears all finished runs."
@@ -951,13 +998,23 @@ export function RunsPane({
           onFire={onClearFinished}
         />
       </div>
+      {!showAllRepos && hidden > 0 && (
+        <p className="row-meta" data-testid="chat-runs-scope-note">
+          Scoped to {repo} · {hidden} other-repo run{hidden === 1 ? '' : 's'} hidden
+        </p>
+      )}
       {notice && (
         <p className="row-meta" data-testid="chat-runs-notice" role="status">
           {notice}
         </p>
       )}
+      {visible.length === 0 ? (
+        <p className="row-meta" data-testid="chat-runs-empty-scope">
+          No runs for {repo} yet.
+        </p>
+      ) : (
       <ul className="session-list">
-        {runs.map((r) => (
+        {visible.map((r) => (
           <Fragment key={r.id}>
             <li className={`detail${selected === r.id ? ' selected' : ''}`}>
               <button
@@ -967,7 +1024,14 @@ export function RunsPane({
                 aria-pressed={selected === r.id}
                 onClick={() => onSelect(r.id)}
               >
-                <span className="row-title">{r.preview || r.id}</span>{' '}
+                <span className="row-title">
+                  {shortRunRepo(r.repo) && (
+                    <span className="repo-chip" data-testid={`chat-run-repo-${r.id}`}>
+                      {shortRunRepo(r.repo)}
+                    </span>
+                  )}{' '}
+                  {r.preview || r.id}
+                </span>{' '}
                 <span className="row-meta">
                   {r.id} · {runMeta(r)}
                 </span>
@@ -996,6 +1060,7 @@ export function RunsPane({
           </Fragment>
         ))}
       </ul>
+      )}
     </section>
   );
 }
@@ -1647,6 +1712,9 @@ export default function ChatView({
   }, [repo]);
   const [lastSent, setLastSent] = useState('');
   const [runs, setRuns] = useState<AgentRun[]>(initialRuns ?? []);
+  // Past-runs repo scope (issue #933): scoped to the selected repo
+  // by default, one tap on All repos to widen.
+  const [showAllRepos, setShowAllRepos] = useState(false);
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
@@ -2421,7 +2489,14 @@ export default function ChatView({
             onDelete={(id) => onDeleteTemplate(id)}
           />
         )}
-        <p className="row-meta" data-testid="chat-route-hint" role="status">
+        {/* Auto resolves the backend per turn, so the model + cost
+            line is the send decision and reads at full weight (#933).
+            Explicit picks already name the backend on the pill. */}
+        <p
+          className={backend === 'auto' ? 'chat-route-auto' : 'row-meta'}
+          data-testid="chat-route-hint"
+          role="status"
+        >
           {hint ? hintLine(hint) : 'Next reply via …'}
         </p>
         {dictationHint && <DictationHint text={dictationHint} />}
@@ -2504,6 +2579,9 @@ export default function ChatView({
       <aside className="chat-side" aria-label="Past runs and agent launcher">
       <RunsPane
         runs={runs}
+        repo={repo}
+        showAllRepos={showAllRepos}
+        onToggleScope={() => setShowAllRepos((s) => !s)}
         selected={selected}
         detail={detail}
         onSelect={(id) => void onSelectRun(id)}

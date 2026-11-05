@@ -102,12 +102,14 @@ def _entry_summary(index, row):
     if not isinstance(usage, dict):
         usage = {}
     cost_usd, metered = _row_cost(row)
+    repo = extra.get("repo") if isinstance(extra, dict) else None
     return {
         "id": f"run-{index}",
         "script": row.get("script") or "?",
         "model": row.get("model") or "?",
         "provider": _row_provider(row.get("model")),
         "thread": row.get("thread_id") or "?",
+        "repo": repo if isinstance(repo, str) and repo else None,
         "started_ts": row.get("ts", 0),
         "duration_s": _row_latency(row),
         "ok": "error" not in extra,

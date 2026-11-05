@@ -17,6 +17,7 @@ describe('activity timeline (issue #812)', () => {
       [{ id: 'r1', title: 'briefing', status: 'done', done: true, at: 100 }],
       [{
         id: 't1', script: 'muse', model: 'qwen3:8b', provider: 'ollama', thread: 'th1',
+        repo: 'arii/boomtick',
         started_ts: 300, duration_s: 12, ok: true, tools: [], tokens: 1500,
         preview: 'did the thing', has_prompt: true, cost_usd: null, metered: false,
       }],

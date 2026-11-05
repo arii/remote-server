@@ -2,8 +2,8 @@
 
 Runs shape: {"runs": [<runs.py summaries>]}, newest first, stable
 run-<ledger-line> ids. Run detail adds the ledger entry plus its
-trace events. Summaries carry provider + latency + cost slots,
-null-safe for local/unmetered turns.
+trace events. Summaries carry provider + latency + cost + repo
+slots, null-safe for local/unmetered turns and pre-repo rows.
 """
 
 import os
