@@ -84,7 +84,19 @@ def health() -> dict:
 _DIST = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "frontend", "dist")
+
+
+def mount_spa(target, dist_dir=_DIST):
+    """Serve the built SPA under every non-API path (#959).
+
+    Extracted so tests mount a fixture dist through the same call
+    the production image uses: StaticFiles with html=True serves
+    manifest.json/icons by mimetype and falls back to index.html.
+    """
+    target.mount("/", StaticFiles(directory=dist_dir, html=True), name="spa")
+
+
 if os.path.isdir(_DIST):
-    # Production image: serve the built SPA under every non-API path.
-    # Dev checkouts have no dist/ (untracked build output) and skip this.
-    app.mount("/", StaticFiles(directory=_DIST, html=True), name="spa")
+    # Production image only. Dev checkouts have no dist/ (untracked
+    # build output) and skip this.
+    mount_spa(app)
