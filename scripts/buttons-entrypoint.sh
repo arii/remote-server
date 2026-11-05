@@ -17,14 +17,13 @@
 # .index_building (container killed mid-build, then `restart`) forces
 # a background rebuild — the on-disk sqlite may be partial.
 #
-# Env (all optional): APP_ROOT (/app), DEEP_AGENT_VENV (agent python),
+# Env (all optional): APP_ROOT (/app),
 # S5_CHROMA_DIR (index dir), OLLAMA_URL, OLLAMA_WAIT_SECS (5; sleep
 # between Ollama readiness probes), OLLAMA_TRIES (36 probes),
 # SKIP_INDEX_BUILD=1 (one-off shells via `docker compose run`).
 set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/app}"
-VENV="${DEEP_AGENT_VENV:-/opt/venvs/td/bin/python}"
 INDEX_DIR="${S5_CHROMA_DIR:-$APP_ROOT/deep-agent/chroma_db}"
 OLLAMA="${OLLAMA_URL:-http://ollama:11434}"
 WAIT_SECS="${OLLAMA_WAIT_SECS:-5}"
@@ -65,7 +64,7 @@ echo "started $(date -u +%FT%TZ)" > "$BUILDING"
     fi
     sleep "$WAIT_SECS"
   done
-  if ! "$VENV" "$APP_ROOT/deep-agent/build_index.py"; then
+  if ! td rag index --repo-root "$APP_ROOT"; then
     echo "buttons-entrypoint: ERROR: index build failed; queries degrade until the index is rebuilt" >&2
     echo "index build failed (see $LOG)" > "$FAILED"
     rm -f "$BUILDING"

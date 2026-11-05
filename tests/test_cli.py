@@ -121,30 +121,6 @@ class TestB64Decode(unittest.TestCase):
         self.assertIsNone(cli.b64decode(123))
 
 
-class TestSearchDocsArgv(unittest.TestCase):
-    def test_no_args_usage(self):
-        p = run_script("search_docs.py")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(
-            p.stderr, 'usage: search_docs.py "<question>" [k] [repo]\n')
-        self.assertEqual(p.stdout, "")
-
-    def test_bad_k(self):
-        p = run_script("search_docs.py", "some question", "x")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "k must be an integer\n")
-
-    def test_zero_k(self):
-        p = run_script("search_docs.py", "some question", "0")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "k must be a positive integer\n")
-
-    def test_bad_repo(self):
-        p = run_script("search_docs.py", "some question", "3", "??")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "repo must look like owner/name\n")
-
-
 class TestLedgerArgv(unittest.TestCase):
     def test_bad_n(self):
         p = run_script("ledger.py", "abc")
