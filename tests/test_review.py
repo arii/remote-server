@@ -283,7 +283,10 @@ class TestMain(unittest.TestCase):
             sorted(envelope["findings"][0]),
             ["claim", "file", "line", "severity", "suggestion"])
 
-    def test_post_argv_never_executes(self):
+    def test_post_argv_uses_body_not_file(self):
+        # --file is dead: td's sanitize_path rewrites any absolute
+        # path outside its cwd to the bare basename, so temp-file
+        # posts always failed with "File not found" (#899).
         model = FakeModel(MODEL_JSON)
         factory = lambda name: (model, {"provider": "ollama",
                                         "model": "qwen3:8b"})
@@ -303,8 +306,10 @@ class TestMain(unittest.TestCase):
         self.assertEqual(argv[:7],
                          ["td", "gh", "post-comment", "--pr", "7",
                           "--repo", "arii/remote-server"])
-        self.assertEqual(argv[7], "--file")
-        self.assertTrue(argv[8].endswith(".md"))
+        self.assertEqual(argv[7], "--body")
+        self.assertIn("## Summary", argv[8])
+        self.assertIn("## Verdict", argv[8])
+        self.assertNotIn("--file", argv)
         self.assertIn("## Summary", out)
         self.assertIn("posted to", err)
 
@@ -348,6 +353,94 @@ class TestMain(unittest.TestCase):
         blurb, func = dispatcher.COMMANDS["review"]
         self.assertTrue(blurb)
         self.assertIs(func, review.main)
+
+
+class TestPostBody(unittest.TestCase):
+    def test_real_body_posted_verbatim(self):
+        # Regression (#899): a realistic rendered review body must
+        # reach td's --body arg byte-for-byte through post_body.
+        findings = review.normalize_findings(json.loads(MODEL_JSON), [])
+        body = review.render_markdown(
+            "arii/remote-server", 7, dict(PR_VIEW_PAYLOAD), findings,
+            "Adds y alongside x with a test.", "Needs attention: unused y.",
+            "ollama:qwen3:8b")
+        with mock.patch.object(review.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="ok",
+                                         stderr="")
+            review.post_body("arii/remote-server", 7, body)
+        self.assertEqual(run.call_count, 1)
+        argv = run.call_args[0][0]
+        self.assertEqual(argv[:8],
+                         ["td", "gh", "post-comment", "--pr", "7",
+                          "--repo", "arii/remote-server", "--body"])
+        self.assertEqual(argv[8], body)
+
+    def test_long_body_posts_numbered_chunks(self):
+        body = "\n\n".join(f"paragraph {i} " + "x" * 500
+                           for i in range(200))
+        self.assertGreater(len(body), review.BODY_CHUNK_LIMIT)
+        with mock.patch.object(review.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="ok",
+                                         stderr="")
+            review.post_body("arii/remote-server", 7, body)
+        parts = review.split_body(body)
+        self.assertEqual(run.call_count, len(parts))
+        self.assertGreater(len(parts), 1)
+        total = len(parts)
+        for num, (call, part) in enumerate(
+                zip(run.call_args_list, parts), 1):
+            argv = call[0][0]
+            self.assertEqual(
+                argv[:8],
+                ["td", "gh", "post-comment", "--pr", "7",
+                 "--repo", "arii/remote-server", "--body"])
+            self.assertEqual(
+                argv[8],
+                f"{part.rstrip()}\n\n_(review part {num} of {total})_\n")
+            self.assertLessEqual(len(argv[8]),
+                                 review.BODY_CHUNK_LIMIT + 100)
+
+    def test_failure_keeps_full_output(self):
+        stderr = ("Traceback (most recent call last):\n"
+                  '  File "cli.py", line 1, in f\n'
+                  "CLIError: File not found: /tmp/x.md")
+        with mock.patch.object(review.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=1, stdout="",
+                                         stderr=stderr)
+            with self.assertRaises(review.ReviewError) as ctx:
+                review.post_body("arii/remote-server", 7, "# body\n")
+        message = str(ctx.exception)
+        for line in stderr.splitlines():
+            self.assertIn(line, message)
+
+    def test_empty_body_refused_without_subprocess(self):
+        with mock.patch.object(review.subprocess, "run") as run:
+            with self.assertRaises(review.ReviewError):
+                review.post_body("arii/remote-server", 7, "  \n ")
+        run.assert_not_called()
+
+
+class TestSplitBody(unittest.TestCase):
+    def test_fitting_body_untouched(self):
+        body = "# title\n\nshort body\n"
+        self.assertEqual(review.split_body(body), [body])
+
+    def test_paragraph_packing_and_reconstruction(self):
+        paras = [f"p{i} " + "y" * 90 for i in range(10)]
+        body = "\n\n".join(paras)
+        parts = review.split_body(body, limit=250)
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertLessEqual(len(part), 250)
+        self.assertEqual("".join(parts), body)
+
+    def test_oversized_paragraph_hard_split(self):
+        body = "z" * 1000
+        parts = review.split_body(body, limit=300)
+        self.assertEqual(len(parts), 4)
+        for part in parts:
+            self.assertLessEqual(len(part), 300)
+        self.assertEqual("".join(parts), body)
 
 
 class TestTdCwd(unittest.TestCase):
