@@ -516,10 +516,10 @@ Expose `td audit-impact --json` in `boomtick` and implement the two-phase gated 
    - Test 3 (Unmet Requirement Rejection): When an acceptance criterion lacks evidence in the diff, assert `status == "CHANGES_REQUESTED"` with specific repair instructions.
 
 ## Acceptance Criteria
-- [ ] `remote-server/deep-agent/impact.py` and `ux_audit.py` are deleted; all impact and visual diffing runs via `td audit-impact --json`.
-- [ ] `AuditorGraph` strictly gates Node 2 and Node 3 behind `hard_deterministic_gate_node`.
-- [ ] `AuditVerdict` verifies every issue Acceptance Criterion with `file:line` evidence, dependency impact, visual impact, and anti-slop rules.
-- [ ] All tests in `remote-server/tests/test_auditor.py` and `boomtick/cli/tests/test_ast_audit.py` pass.
+- [ ] `remote-server/deep-agent/impact.py` and `ux_audit.py` are deleted; all impact and visual diffing runs via `td audit-impact --json`. (NOT done — live callers: `backend/api/routers/jobs.py` ux-audit endpoints + `deep-agent/deep_chat.py` import `impact`; committed `test_jobs_exec.py` covers them. Deletion would break shipped features.)
+- [x] `AuditorGraph` strictly gates Node 2 and Node 3 behind `hard_deterministic_gate_node`.
+- [x] `AuditVerdict` verifies every issue Acceptance Criterion with `file:line` evidence, dependency impact, visual impact, and anti-slop rules.
+- [x] All tests in `remote-server/tests/test_auditor.py` and `boomtick/cli/tests/test_ast_audit.py` pass.
 
 ## Verification Commands
 ```bash
