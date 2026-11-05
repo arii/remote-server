@@ -241,7 +241,7 @@ export default function HistoryView({
 }: {
   repo: string;
   health: import('../apiClient').SystemHealthResponse | null;
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
   // Keep-alive visibility (issue #897): the timeline poll pauses
   // while the tab is hidden.
   active?: boolean;

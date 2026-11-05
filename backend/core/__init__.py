@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +152,16 @@ def get_system_health() -> dict[str, Any]:
             "containers_error": containers_error}
 
 
+def _compose_argv() -> list[str]:
+    """`docker compose -f <stack>/docker-compose.yml` prefix (#928).
+
+    One canonical stack prefix for every compose call in this
+    module (ps, restart); BACKEND_STACK_DIR override preserved.
+    """
+    stack = os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server")
+    return ["docker", "compose", "-f", f"{stack}/docker-compose.yml"]
+
+
 def _compose_containers_result(run=None) -> tuple[list[dict[str, Any]], str | None]:
     """Stack containers from `docker compose ps` (read-only).
 
@@ -162,8 +173,7 @@ def _compose_containers_result(run=None) -> tuple[list[dict[str, Any]], str | No
     import subprocess
 
     run = run or subprocess.run
-    stack = os.environ.get("BACKEND_STACK_DIR", "/home/ari/remote-server")
-    compose = ["docker", "compose", "-f", f"{stack}/docker-compose.yml"]
+    compose = _compose_argv()
     # Inherit env: the compose plugin lives under the runtime
     # user's ~/.docker, and a HOME override blinds plugin
     # discovery (surfaces as an exit-code error below).
@@ -272,7 +282,8 @@ def get_container_stats(run=None) -> dict[str, Any]:
         pass
     rows = [{
         "name": c["name"], "service": c["service"],
-        "state": c["state"],
+        "state": c["state"], "status": c.get("status", ""),
+        "health": c.get("health", ""),
         "cpu_pct": usage.get(c["name"], {}).get("cpu_pct"),
         "mem_used": usage.get(c["name"], {}).get("mem_used"),
         "mem_limit": usage.get(c["name"], {}).get("mem_limit"),
@@ -292,6 +303,126 @@ def _parse_mem_half(raw: Any, half: int) -> str | None:
         return None
     parts = [p.strip() for p in raw.split("/", 1)]
     return parts[half] if len(parts) == 2 and parts[half] else None
+
+
+CONTAINER_SERVICE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+CONTAINER_LOGS_TAIL_MAX = 500
+
+RESTART_TIMEOUT = 120
+
+LOGS_TIMEOUT = 15
+
+
+def _validate_service_name(service: str) -> str:
+    """Compose service name; raises ValueError when malformed."""
+    if not isinstance(service, str) \
+            or not CONTAINER_SERVICE_RE.match(service):
+        raise ValueError(f"invalid container service: {service!r}")
+    return service
+
+
+def _service_container_names(run=None) -> dict[str, str]:
+    """Live service -> container Name map from `docker compose ps`.
+
+    The authoritative allowlist for per-container reads and
+    restarts: only stack members resolve, so callers can never
+    address an arbitrary container. A compose failure degrades to
+    {} (callers then report unknown service).
+    """
+    containers, _ = _compose_containers_result(run=run)
+    names: dict[str, str] = {}
+    for c in containers:
+        service = c.get("service") or ""
+        name = c.get("name") or ""
+        if service and name:
+            names.setdefault(service, name)
+    return names
+
+
+def get_container_logs(service: str, tail: int = 100,
+                       run=None) -> dict[str, Any]:
+    """Last ``tail`` lines of `docker logs` for one stack container.
+
+    Powers the Status log slide-over (#928): read-only, one-shot
+    (never a streaming daemon), stderr merged into the same lines.
+    Raises ValueError on a malformed name or tail, KeyError on an
+    unknown service, RuntimeError on docker failures.
+    ``run`` injects tests (defaults to subprocess.run).
+    """
+    import subprocess
+
+    run = run or subprocess.run
+    _validate_service_name(service)
+    if not isinstance(tail, int) \
+            or not 1 <= tail <= CONTAINER_LOGS_TAIL_MAX:
+        raise ValueError(
+            f"invalid tail: {tail!r} (1-{CONTAINER_LOGS_TAIL_MAX})")
+    names = _service_container_names(run=run)
+    if service not in names:
+        raise KeyError(service)
+    try:
+        proc = run(
+            ["docker", "logs", "--tail", str(tail), names[service]],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=LOGS_TIMEOUT, text=True,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"docker logs timed out after {LOGS_TIMEOUT}s")
+    except Exception as exc:
+        raise RuntimeError(f"docker logs failed: {exc}")
+    if proc.returncode != 0:
+        err = (proc.stdout or "").strip()
+        if "no such container" in err.lower():
+            raise KeyError(service)
+        tail_line = err.splitlines()[-1] if err else "unknown error"
+        raise RuntimeError(
+            f"docker logs exited {proc.returncode}: {tail_line}")
+    lines = (proc.stdout or "").splitlines()
+    return {"service": service, "name": names[service],
+            "lines": lines, "truncated": len(lines) >= tail}
+
+
+def restart_container(service: str, run=None) -> dict[str, Any]:
+    """`docker compose restart` for one stack container (#928).
+
+    The plain restart path for services without a jobs-engine
+    action (buttons/code-server keep their engine actions).
+    Terminal is refused: recreating it drops live agent sessions
+    with no resume path (#444). Raises ValueError on a malformed
+    name or terminal, KeyError on an unknown service,
+    RuntimeError on docker failures. ``run`` injects tests.
+    """
+    import subprocess
+
+    run = run or subprocess.run
+    _validate_service_name(service)
+    if service == "terminal":
+        raise ValueError(
+            "terminal restart is not offered: live agent sessions "
+            "cannot survive it (#444)")
+    if service not in _service_container_names(run=run):
+        raise KeyError(service)
+    try:
+        proc = run(
+            _compose_argv() + ["restart", service],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=RESTART_TIMEOUT, text=True,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"docker compose restart timed out after "
+            f"{RESTART_TIMEOUT}s")
+    except Exception as exc:
+        raise RuntimeError(f"docker compose restart failed: {exc}")
+    if proc.returncode != 0:
+        err = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+        tail_line = err.splitlines()[-1] if err else "unknown error"
+        raise RuntimeError(
+            f"docker compose restart exited {proc.returncode}: "
+            f"{tail_line}")
+    return {"ok": True, "service": service}
 
 
 REPO_NAME_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")

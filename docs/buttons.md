@@ -47,7 +47,9 @@ liveness probe.
 
 Routes by router (verbs + paths; see router files for shapes):
 
-- `system.py` — `GET /api/system/health`, `GET /api/system/stats`.
+- `system.py` — `GET /api/system/health`, `GET /api/system/stats`,
+  `GET /api/system/containers/{service}/logs`,
+  `POST /api/system/containers/{service}/restart`.
 - `repo.py` — `GET /api/repos`, `GET /api/repo/status|diff|files|health`.
 - `attention.py`, `inbox.py` — `GET /api/attention`,
   `POST /api/attention/snooze|unsnooze`, `GET /api/inbox?repo=`.

@@ -14,6 +14,7 @@ import {
   fetchSystemHealth,
   flushOutbox,
   repoAction,
+  restartContainer,
   startJobRun,
   subscribeApiFailures,
   warmRepoMetrics,
@@ -23,7 +24,9 @@ import type { RepoInfo } from './reviewTypes';
 import { loadContainerStats, loadRepoDiff, loadRepos, loadSystemHealth, useMock } from './views/mockViews';
 import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
-import ContainerDrawer from './views/ContainerDrawer';
+import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
+import ContainerLogsDrawer from './views/ContainerLogsDrawer';
+import { dangerEntryFor } from './views/DangerZone';
 import { clickChatSend, useAppShortcuts } from './shortcuts';
 import { ShortcutCheatsheet, ShortcutHint } from './components/ShortcutCheatsheet';
 
@@ -123,9 +126,14 @@ export default function App() {
   const [statsRows, setStatsRows] = useState<ContainerStatsRow[]>([]);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [statsDegraded, setStatsDegraded] = useState<string | null>(null);
   const [statsSeq, setStatsSeq] = useState(0);
   const [restartRequested, setRestartRequested] = useState<string | null>(null);
+  const [serviceRestarted, setServiceRestarted] = useState<string | null>(null);
   const [restartError, setRestartError] = useState<string | null>(null);
+  // Log slide-over selection (issue #928): which container's tail
+  // is open atop the stats drawer, if any.
+  const [logService, setLogService] = useState<string | null>(null);
   // Command palette (issue #810): open flag plus one nonce per
   // cross-view request, so a command lands even when its view is
   // already mounted (or mounts fresh on the tab switch).
@@ -193,7 +201,7 @@ export default function App() {
         refreshBriefing: () => setBriefingReloadRequest((n) => n + 1),
         switchRepo: (name) => setRepo(name),
         syncNow: () => void flushOutbox(),
-        openStats: () => setStatsOpen(true),
+        openStats: () => openStats(),
         newIssue: () => setCreateRequest((n) => n + 1),
         openUrl: (url) => {
           window.location.href = url;
@@ -327,20 +335,34 @@ export default function App() {
     return r;
   }
 
-  // Stats drawer fetch: on open + manual refresh (statsSeq), never
-  // a ticker — point-in-time CPU/RAM per the issue.
+  // Stats drawer fetch (issue #928): rows always derive from the
+  // header health snapshot (the History banner's store) with live
+  // stats overlaid; a stats failure degrades to health rows with a
+  // note instead of blanking the drawer on a 404. Refreshes on
+  // open + manual refresh (statsSeq) + health arrival, never a
+  // ticker — point-in-time CPU/RAM per the issue.
   useEffect(() => {
     if (!statsOpen) return;
     let cancelled = false;
     setStatsLoading(true);
     setStatsError(null);
+    setStatsDegraded(null);
+    const base = statsRowsFromHealth(health);
     (async () => {
       try {
         const s = useMock() ? loadContainerStats() : await fetchContainerStats();
         if (cancelled) return;
-        setStatsRows(s.containers);
+        setStatsRows(mergeStatsRows(base, s.containers));
       } catch (err) {
-        if (!cancelled) setStatsError(err instanceof Error ? err.message : String(err));
+        if (cancelled) return;
+        if (base.length > 0) {
+          setStatsRows(base);
+          setStatsDegraded(
+            `Live CPU/RAM unavailable — ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } else {
+          setStatsError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
         if (!cancelled) setStatsLoading(false);
       }
@@ -349,7 +371,7 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statsOpen, statsSeq]);
+  }, [statsOpen, statsSeq, health]);
 
   async function onRestartContainer(action: string) {
     // Same engine path + confirm text as DangerZone restarts; the
@@ -363,10 +385,39 @@ export default function App() {
     }
   }
 
+  async function onRestartServiceContainer(service: string) {
+    // Plain compose restart for services without an engine action.
+    setRestartError(null);
+    try {
+      await restartContainer(service);
+      setServiceRestarted(service);
+    } catch (err) {
+      setRestartError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // One restart entry per service: the engine action where one
+  // exists (buttons/code-server), else the plain system restart.
+  function restartForService(service: string) {
+    const action = restartActionFor(service);
+    if (action) void onRestartContainer(action);
+    else void onRestartServiceContainer(service);
+  }
+
   function closeStats() {
     setStatsOpen(false);
     setRestartRequested(null);
+    setServiceRestarted(null);
     setRestartError(null);
+    setStatsDegraded(null);
+    setLogService(null);
+  }
+
+  // Status pill / container pill entry: opens the drawer, focusing
+  // the log slide-over on the pill's container when one was given.
+  function openStats(service?: string) {
+    setLogService(service || null);
+    setStatsOpen(true);
   }
 
   // Prefetch repo metrics on select (issue #897): fire-and-forget
@@ -392,6 +443,18 @@ export default function App() {
 
   const selectedRepo = repos.find((r) => r.name === repo) ?? null;
   const diffBranch = diffRepo ? (repos.find((r) => r.name === diffRepo)?.branch ?? '') : '';
+  const logRow = logService ? (statsRows.find((r) => r.service === logService) ?? null) : null;
+  const logUsage = logRow
+    ? `${logRow.state} · ${(logRow.status ?? '').trim() || 'uptime unknown'} · CPU ${logRow.cpu_pct === null ? '—' : `${logRow.cpu_pct}%`} · RAM ${logRow.mem_used && logRow.mem_limit ? `${logRow.mem_used} / ${logRow.mem_limit}` : '—'}`
+    : '';
+  const logEngineAction = logService ? restartActionFor(logService) : null;
+  const logRestartNote = !logService
+    ? null
+    : logEngineAction && restartRequested === logEngineAction
+      ? 'restart requested — watch Jobs for the run.'
+      : serviceRestarted === logService
+        ? 'restart requested — the container is restarting.'
+        : null;
 
   return (
     <main className="layout">
@@ -412,7 +475,8 @@ export default function App() {
           type="button"
           className="repo-chip"
           data-testid="stack-status"
-          onClick={() => setStatsOpen(true)}
+          aria-expanded={statsOpen}
+          onClick={() => (statsOpen ? closeStats() : openStats())}
         >
           {healthSummary(health)}
         </button>
@@ -455,11 +519,30 @@ export default function App() {
           rows={statsRows}
           loading={statsLoading}
           error={statsError}
+          degraded={statsDegraded}
           restartRequested={restartRequested}
           restartError={restartError}
+          serviceRestarted={serviceRestarted}
           onRestart={(action) => void onRestartContainer(action)}
+          onRestartService={(service) => void onRestartServiceContainer(service)}
+          onOpenLogs={(service) => setLogService(service)}
           onRefresh={() => setStatsSeq((n) => n + 1)}
           onClose={closeStats}
+        />
+      )}
+      {statsOpen && logService && (
+        <ContainerLogsDrawer
+          service={logService}
+          name={logRow?.name ?? logService}
+          usage={logUsage}
+          canRestart={logEngineAction !== null || serviceRestartable(logService)}
+          restartConfirm={
+            logEngineAction ? dangerEntryFor(logEngineAction)?.confirm : undefined
+          }
+          restartNote={logRestartNote}
+          restartError={restartError}
+          onRestart={restartForService}
+          onClose={() => setLogService(null)}
         />
       )}
       <nav className="topnav" aria-label="Views">
@@ -489,7 +572,7 @@ export default function App() {
           reportRequest={reportRequest}
           createRequest={createRequest}
           onSectionChange={setNowSection}
-          onOpenStats={() => setStatsOpen(true)}
+          onOpenStats={openStats}
         />
       )}
       {tab === 'chat' &&
@@ -525,7 +608,7 @@ export default function App() {
           <HistoryView
             repo={repo}
             health={health}
-            onOpenStats={() => setStatsOpen(true)}
+            onOpenStats={openStats}
             active={tab === 'history'}
           />
         </div>
