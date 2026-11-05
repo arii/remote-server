@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import CopyButton from '../components/CopyButton';
 import RetryableError from '../components/RetryableError';
 import { fetchJobRun, fetchJobs, fetchLedger, rerunJob } from '../apiClient';
@@ -272,6 +272,7 @@ export default function HistoryView({
   health,
   onOpenStats,
   active = true,
+  queryRequest = null,
 }: {
   repo: string;
   health: import('../apiClient').SystemHealthResponse | null;
@@ -279,6 +280,10 @@ export default function HistoryView({
   // Keep-alive visibility (issue #897): the timeline poll pauses
   // while the tab is hidden.
   active?: boolean;
+  // Deep-link search seed (issue #930): a nonce bump from App
+  // re-seeds the search box — the Now hero's deploy segment lands
+  // here filtered to deploy runs.
+  queryRequest?: { query: string; nonce: number } | null;
 }) {
   const { data, error, loading, load } = useSnapshotData(loadHistorySnapshot, EMPTY_HISTORY);
   const { jobs, entries } = data;
@@ -286,6 +291,19 @@ export default function HistoryView({
   const [query, setQuery] = useState('');
   const [facet, setFacet] = useState<HistoryFacet>('all');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Deep-link seeds land even on a live view (keepalive): each
+  // nonce applies once and resets the other filters, so the link
+  // owns the full filter state instead of intersecting it.
+  const handledQueryNonce = useRef(0);
+  useEffect(() => {
+    if (queryRequest && queryRequest.nonce !== handledQueryNonce.current) {
+      handledQueryNonce.current = queryRequest.nonce;
+      setQuery(queryRequest.query);
+      setKind('all');
+      setFacet('all');
+      setSelectedKey(null);
+    }
+  }, [queryRequest]);
   const [rerunBusy, setRerunBusy] = useState<string | null>(null);
   const [rerunNote, setRerunNote] = useState<string | null>(null);
   const all = entries;

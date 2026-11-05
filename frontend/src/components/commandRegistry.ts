@@ -15,7 +15,7 @@ export type PaletteTab = 'now' | 'chat' | 'briefing' | 'history';
 
 export interface CommandContext {
   go: (tab: PaletteTab) => void;
-  openSection: (section: 'review' | 'jobs') => void;
+  openSection: (section: 'review' | 'jobs' | 'queue') => void;
   reportBug: () => void;
   focusChat: () => void;
   refreshBriefing: () => void;
@@ -62,6 +62,7 @@ export function buildCommands(ctx: CommandContext): PaletteCommand[] {
     { id: 'go-history', label: 'Go to History', hint: 'Navigate', keywords: 'trail ledger past runs', run: () => ctx.go('history') },
     { id: 'open-review', label: 'Open Review section', hint: 'Now', keywords: 'prs issues merge pr status', run: () => ctx.openSection('review') },
     { id: 'open-jobs', label: 'Open Jobs section', hint: 'Now', keywords: 'runs repair dispatch', run: () => ctx.openSection('jobs') },
+    { id: 'open-queue', label: 'Open Queue section', hint: 'Now', keywords: 'queued backlog waiting lane', run: () => ctx.openSection('queue') },
     { id: 'report-bug', label: 'Report a bug', hint: 'Now', keywords: 'file issue create', run: () => ctx.reportBug() },
     {
       id: 'new-issue',

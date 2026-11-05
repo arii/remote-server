@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import NowView, {
   ActionControl,
@@ -9,14 +9,18 @@ import NowView, {
   attentionGroupKey,
   attentionTargetName,
   DEPLOY_ACTION,
+  fireHeroSegment,
   groupAttentionItems,
   groupSeenText,
   heroCountsText,
+  heroLabel,
+  heroSegments,
   heroStatus,
   lastDeployAt,
   NowEmptyState,
   NowHero,
   reconcileSnoozed,
+  repoContextText,
   RepoTag,
   SourceDestination,
   resolveAttentionTarget,
@@ -218,12 +222,11 @@ describe('source destination links (issue #896)', () => {
     expect(html).toContain('>Jobs</button>');
   });
 
-  it('keeps fetch-only actions as plain text', () => {
+  it('renders nothing for fetch-only actions (issue #930)', () => {
     const html = renderToStaticMarkup(
       <SourceDestination item={item('api/unknown')} onSection={noop} onTab={noop} />,
     );
-    expect(html).not.toContain('<button');
-    expect(html).toContain('action');
+    expect(html).toBe('');
   });
 });
 
@@ -292,7 +295,9 @@ describe('Now status hero (issue #811)', () => {
   it('heroStatus loads, clears, and escalates worst-first', () => {
     expect(heroStatus(null, [])).toBe('loading');
     expect(heroStatus(health(), [])).toBe('ok');
-    expect(heroStatus(health(), [item({ severity: 'info' })])).toBe('ok');
+    // All clear needs a truly empty queue (issue #930): even an
+    // info-only item keeps the banner amber.
+    expect(heroStatus(health(), [item({ severity: 'info' })])).toBe('warn');
     expect(heroStatus(health(), [item({ severity: 'warn' })])).toBe('warn');
     expect(heroStatus(health(), [item({ severity: 'crit' })])).toBe('crit');
     expect(heroStatus(health(), [item({ severity: 'warn' }), item({ id: 'a2', severity: 'crit' })])).toBe('crit');
@@ -372,17 +377,44 @@ describe('Now status hero (issue #811)', () => {
         onError={() => {}}
         onSection={() => {}}
         onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
       />,
     );
     expect(html).toContain('data-testid="now-hero"');
     expect(html).toContain('Status summary');
     expect(html).toContain('data-testid="now-hero-dot"');
     expect(html).toContain('dot-warn');
-    expect(html).toContain('Needs attention');
-    expect(html).toContain('1 needing attention · 1 active run · 2 PRs open · no recent deploys');
+    expect(html).toContain('1 needing attention');
     expect(html).toContain('data-testid="now-hero-urgent"');
     expect(html).toContain('Top: Failing workflow');
     expect(html).toContain('View jobs');
+  });
+
+  it('NowHero renders every count as a deep-link button (issue #930)', () => {
+    const top = item({ id: 'urgent', severity: 'warn', title: 'Failing workflow' });
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={health()}
+        feed={feed({ attention: [top], runs: { active: { id: 'r1', action: 'briefing', started: 1 }, recent: [] } })}
+        prCount={2}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="now-hero-seg-attention"');
+    expect(html).toContain('>1 needing attention</button>');
+    expect(html).toContain('data-testid="now-hero-seg-runs"');
+    expect(html).toContain('>1 active run</button>');
+    expect(html).toContain('data-testid="now-hero-seg-prs"');
+    expect(html).toContain('>2 PRs open</button>');
+    expect(html).toContain('data-testid="now-hero-seg-deploys"');
+    expect(html).toContain('>no recent deploys</button>');
   });
 
   it('NowHero reads all clear with an empty queue and healthy stack', () => {
@@ -396,6 +428,8 @@ describe('Now status hero (issue #811)', () => {
         onError={() => {}}
         onSection={() => {}}
         onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
       />,
     );
     expect(html).toContain('dot-ok');
@@ -414,11 +448,13 @@ describe('Now status hero (issue #811)', () => {
         onError={() => {}}
         onSection={() => {}}
         onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
       />,
     );
     expect(sick).toContain('dot-bad');
     expect(sick).toContain('Action needed');
-    expect(sick).not.toContain('PRs open');
+    expect(sick).not.toContain('now-hero-seg-prs');
     const loading = renderToStaticMarkup(
       <NowHero
         health={null}
@@ -429,10 +465,67 @@ describe('Now status hero (issue #811)', () => {
         onError={() => {}}
         onSection={() => {}}
         onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
       />,
     );
     expect(loading).toContain('dot-idle');
     expect(loading).toContain('Loading status…');
+  });
+});
+
+describe('triage banner dynamics (issue #930)', () => {
+  it('heroLabel names the queue depth while items are queued', () => {
+    expect(heroLabel('loading', 0)).toBe('Loading status…');
+    expect(heroLabel('ok', 0)).toBe('All clear');
+    expect(heroLabel('warn', 1)).toBe('1 needing attention');
+    expect(heroLabel('warn', 3)).toBe('3 needing attention');
+    expect(heroLabel('crit', 2)).toBe('2 needing attention');
+  });
+
+  it('heroLabel names the stack state on an empty queue', () => {
+    expect(heroLabel('warn', 0)).toBe('Needs attention');
+    expect(heroLabel('crit', 0)).toBe('Action needed');
+  });
+
+  it('heroSegments maps every count to its deep-link target', () => {
+    const segments = heroSegments({ attentionOpen: 1, runsActive: true, prCount: 2, deployAt: null });
+    expect(segments.map((s) => [s.key, s.text, s.target])).toEqual([
+      ['attention', '1 needing attention', 'attention'],
+      ['runs', '1 active run', 'jobs'],
+      ['prs', '2 PRs open', 'review'],
+      ['deploys', 'no recent deploys', 'history'],
+    ]);
+  });
+
+  it('heroSegments omits the PR segment when the count is unknown', () => {
+    const segments = heroSegments({ attentionOpen: 0, runsActive: false, prCount: null, deployAt: null });
+    expect(segments.map((s) => s.key)).toEqual(['attention', 'runs', 'deploys']);
+    expect(segments[0].text).toBe('0 needing attention');
+  });
+
+  it('fireHeroSegment dispatches each target to its callback', () => {
+    const cbs = { onAttention: vi.fn(), onSection: vi.fn(), onHistoryDeploys: vi.fn() };
+    fireHeroSegment('attention', cbs);
+    expect(cbs.onAttention).toHaveBeenCalledTimes(1);
+    fireHeroSegment('review', cbs);
+    expect(cbs.onSection).toHaveBeenCalledWith('review');
+    fireHeroSegment('jobs', cbs);
+    expect(cbs.onSection).toHaveBeenCalledWith('jobs');
+    fireHeroSegment('history', cbs);
+    expect(cbs.onHistoryDeploys).toHaveBeenCalledTimes(1);
+    expect(cbs.onAttention).toHaveBeenCalledTimes(1);
+  });
+
+  it('repoContextText names the branch and flags dirty worktrees', () => {
+    expect(repoContextText('remote-server', null)).toBe('repo: remote-server');
+    expect(repoContextText('remote-server', undefined)).toBe('repo: remote-server');
+    expect(
+      repoContextText('remote-server', { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: true }),
+    ).toBe('repo: remote-server (main)');
+    expect(
+      repoContextText('boomtick', { name: 'boomtick', full: 'arii/boomtick', branch: 'feat', clean: false }),
+    ).toBe('repo: boomtick (feat) · dirty worktree');
   });
 });
 
@@ -523,7 +616,8 @@ describe('attention grouping (issue #839)', () => {
     expect(html).toContain('data-testid="now-item-job-j1"');
     expect(html).toContain('data-testid="now-select-job-j1"');
     expect(html).toContain('data-testid="now-source-job-j1"');
-    expect(html).toContain('source: remote-server · opens');
+    expect(html).toContain('repo: remote-server');
+    expect(html).toContain('· opens');
     expect(html).toContain('data-testid="now-source-open-job-j1"');
     expect(html).toContain('>Jobs</button>');
     expect(html).toContain('data-testid="ask-agent-job-j1"');
@@ -531,6 +625,33 @@ describe('attention grouping (issue #839)', () => {
     expect(html).toContain('data-testid="now-more-job-j1"');
     expect(html).toContain('data-testid="snooze-job-j1-60"');
     expect(html).toContain('data-testid="snooze-job-j1-480"');
+  });
+
+  it('AttentionRow shows repo context without an opens run for fetch-only actions (issue #930)', () => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      <AttentionRow
+        item={item({
+          id: 'fetch-f1',
+          action: { label: 'Retry pull', method: 'POST', href: 'api/unknown', destructive: false, intent: 'retry' },
+        })}
+        viewRepo="remote-server"
+        rollup={false}
+        repoInfo={{ name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: false }}
+        selected={false}
+        busy={false}
+        onToggleSelect={noop}
+        onDone={noop}
+        onError={noop}
+        onSection={noop}
+        onTab={noop}
+        onAskAgent={noop}
+        onSnooze={noop}
+      />,
+    );
+    expect(html).toContain('repo: remote-server (main) · dirty worktree');
+    expect(html).not.toContain('opens');
+    expect(html).not.toContain('now-source-open-fetch-f1');
   });
 
   it('AttentionGroupRow shows the count, worst severity, and seen range', () => {

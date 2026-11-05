@@ -64,12 +64,14 @@ function healthSummary(health: SystemHealthResponse | null): string {
 
 export type Tab = 'now' | 'chat' | 'briefing' | 'history';
 
-// Persistent console nav (#896): one bar, six destinations. Review
-// and Jobs live inside Now as sections (not routes); the nav reaches
-// them through the palette's section-request path.
+// Persistent console nav (#896): one bar, seven destinations. Review,
+// Jobs, and Queue live inside Now as sections (not routes); the nav
+// reaches them through the palette's section-request path. Queue
+// joined the bar in #930 (it was orphaned: reachable only from the
+// duplicate toggle row that issue removed).
 export type NavEntry =
   | { kind: 'tab'; id: Tab; label: string; key: string }
-  | { kind: 'section'; id: 'review' | 'jobs'; label: string };
+  | { kind: 'section'; id: 'review' | 'jobs' | 'queue'; label: string };
 
 export const NAV_ENTRIES: NavEntry[] = [
   { kind: 'tab', id: 'now', label: 'Now', key: '1' },
@@ -78,18 +80,19 @@ export const NAV_ENTRIES: NavEntry[] = [
   { kind: 'tab', id: 'history', label: 'History', key: '4' },
   { kind: 'section', id: 'review', label: 'Review' },
   { kind: 'section', id: 'jobs', label: 'Jobs' },
+  { kind: 'section', id: 'queue', label: 'Queue' },
 ];
 
 export type NowSection = 'review' | 'jobs' | 'queue' | null;
 
 // Pressed rule for the unified nav: tabs light on tab match, except
-// Now yields to an open Review/Jobs section; Now stays lit for the
-// inbox and for sections without an entry (Queue).
+// Now yields to an open section entry; Now stays lit for the inbox
+// only (every section has an entry since #930).
 export function navPressed(tab: Tab, section: NowSection, entry: NavEntry): boolean {
   if (entry.kind === 'tab') {
     if (tab !== entry.id) return false;
     if (entry.id !== 'now') return true;
-    return section !== 'review' && section !== 'jobs';
+    return section !== 'review' && section !== 'jobs' && section !== 'queue';
   }
   return tab === 'now' && section === entry.id;
 }
@@ -139,7 +142,7 @@ export default function App() {
   // already mounted (or mounts fresh on the tab switch).
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [sectionRequest, setSectionRequest] = useState<{
-    section: 'review' | 'jobs' | null;
+    section: 'review' | 'jobs' | 'queue' | null;
     nonce: number;
   } | null>(null);
   // Open Now section mirrored up from NowView (#896): drives the
@@ -149,6 +152,14 @@ export default function App() {
   const [chatFocusRequest, setChatFocusRequest] = useState(0);
   const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
   const [createRequest, setCreateRequest] = useState(0);
+  // History deep-link search seed (issue #930): the Now hero's
+  // deploy segment opens History filtered to deploy runs. Nonce
+  // path like sectionRequest — History stays mounted (keepalive),
+  // so a bump re-seeds even on revisit.
+  const [historyQueryRequest, setHistoryQueryRequest] = useState<{
+    query: string;
+    nonce: number;
+  } | null>(null);
 
   // Cheatsheet visibility for the app-level shortcuts (#808). Tab/send
   // shortcuts suspend while a modal/drawer owns the screen; the
@@ -221,6 +232,7 @@ export default function App() {
     if (
       cmd.id === 'open-review' ||
       cmd.id === 'open-jobs' ||
+      cmd.id === 'open-queue' ||
       cmd.id === 'report-bug' ||
       cmd.id === 'new-issue'
     ) {
@@ -550,6 +562,7 @@ export default function App() {
           <button
             key={t.id}
             type="button"
+            data-testid={`nav-${t.id}`}
             aria-pressed={navPressed(tab, nowSection, t)}
             aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
             title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
@@ -564,10 +577,15 @@ export default function App() {
         <NowView
           repo={repo}
           defaultBranch={repos.find((r) => r.name === repo)?.branch}
+          repos={repos}
           health={health}
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}
           onOpenTab={(t) => setTab(t)}
+          onOpenHistoryQuery={(q) => {
+            setHistoryQueryRequest((r) => ({ query: q, nonce: (r?.nonce ?? 0) + 1 }));
+            setTab('history');
+          }}
           sectionRequest={sectionRequest}
           reportRequest={reportRequest}
           createRequest={createRequest}
@@ -611,6 +629,7 @@ export default function App() {
             health={health}
             onOpenStats={openStats}
             active={tab === 'history'}
+            queryRequest={historyQueryRequest}
           />
         </div>
       )}

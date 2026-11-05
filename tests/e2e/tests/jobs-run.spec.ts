@@ -8,7 +8,7 @@ import { expect, test } from '@playwright/test';
 test.describe('jobs run', () => {
   test('td doctor dispatch finishes green', async ({ page }) => {
     await page.goto('/');
-    await page.getByTestId('inbox-open-jobs').click();
+    await page.getByTestId('nav-jobs').click();
     await expect(page.getByTestId('jobs-view')).toBeVisible();
 
     // The branch field is optional: blank keeps the run

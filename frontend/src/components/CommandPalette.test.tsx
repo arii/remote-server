@@ -98,6 +98,7 @@ describe('buildCommands', () => {
       'go-history',
       'open-review',
       'open-jobs',
+      'open-queue',
       'report-bug',
       'focus-chat',
       'refresh-briefing',
@@ -124,6 +125,8 @@ describe('buildCommands', () => {
     expect(ctx.go).toHaveBeenCalledWith('history');
     byId['open-review'].run();
     expect(ctx.openSection).toHaveBeenCalledWith('review');
+    byId['open-queue'].run();
+    expect(ctx.openSection).toHaveBeenCalledWith('queue');
     byId['report-bug'].run();
     expect(ctx.reportBug).toHaveBeenCalled();
     byId['focus-chat'].run();
