@@ -488,6 +488,40 @@ export function warmViewCaches(repo: string): Promise<void> {
   ]).then(() => undefined);
 }
 
+/**
+ * Background precache for instant tab switches (issue #936): warm the
+ * view-cache entry behind every nav destination on boot and on repo
+ * switch, fire-and-forget, so the first visit to Chat, Briefing,
+ * History, Review, Jobs, or Queue renders from cache instead of a
+ * loading flash. Every read rides the shared cached fetches, so this
+ * costs one request per endpoint and dedups against any view (or nav
+ * badge refresh) fetching the same payload concurrently. Failures are
+ * swallowed per read: the owning view still surfaces its own error on
+ * visit, and a failed warm simply stays uncached. The rollup pseudo
+ * repo skips the per-repo reads its gated views never mount.
+ */
+export function prefetchTabPayloads(repo: string): Promise<void> {
+  const reads: Array<Promise<unknown>> = [
+    fetchInbox(repo),
+    fetchJobs(),
+    fetchLedger('all', 100),
+    fetchDispatchQueue(),
+    fetchAllIssues(),
+  ];
+  if (repo !== 'all') {
+    reads.push(
+      fetchBriefing(repo),
+      fetchAttention(repo),
+      fetchPrs(repo),
+      fetchIssues(repo),
+      fetchDeferred(repo),
+      fetchRepoMetrics(repo),
+      fetchWorkflowHealth(repo),
+    );
+  }
+  return Promise.all(reads.map((p) => p.catch(() => undefined))).then(() => undefined);
+}
+
 export function fetchJobs(): Promise<JobsResponse> {
   return cachedViewFetch<JobsResponse>('api/jobs', VIEW_CACHE_SHORT_TTL_MS, () =>
     getJson<JobsResponse>('api/jobs'),
@@ -536,7 +570,10 @@ export interface InboxFeed {
 }
 
 export function fetchInbox(repo: string): Promise<InboxFeed> {
-  return getJson<InboxFeed>(`api/inbox?repo=${encodeURIComponent(repo)}`);
+  const path = `api/inbox?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<InboxFeed>(path, VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<InboxFeed>(path),
+  );
 }
 
 export async function createIssue(repo: string, title: string, body: string, labels?: string[]): Promise<{ ok: boolean; url: string }> {
@@ -546,6 +583,9 @@ export async function createIssue(repo: string, title: string, body: string, lab
       throw new Error(`POST /api/create-issue failed: ${resp.status}`);
     }
     return (await resp.json()) as { ok: boolean; url: string };
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -558,7 +598,9 @@ export function fetchLedger(
   const qs = `api/ledger?kind=${encodeURIComponent(kind)}&limit=${limit}`
     + (since !== undefined ? `&since=${since}` : '')
     + (source !== undefined ? `&source=${encodeURIComponent(source)}` : '');
-  return getJson<LedgerResponse>(qs);
+  return cachedViewFetch<LedgerResponse>(qs, VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<LedgerResponse>(qs),
+  );
 }
 
 export interface WorkflowRun {
@@ -581,8 +623,9 @@ export interface WorkflowHealthResponse {
 }
 
 export function fetchWorkflowHealth(repo: string): Promise<WorkflowHealthResponse> {
-  return getJson<WorkflowHealthResponse>(
-    `api/workflow-health?repo=${encodeURIComponent(repo)}`,
+  const path = `api/workflow-health?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<WorkflowHealthResponse>(path, VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<WorkflowHealthResponse>(path),
   );
 }
 
@@ -601,7 +644,10 @@ async function postJson<T>(path: string, body: unknown, timeoutMs: number = API_
 // outbox + idempotency treatment as other mutations, so NowView
 // taps queue offline instead of bypassing the outbox.
 export function postActionHref(href: string, body: unknown): Promise<unknown> {
-  return postJson<unknown>(href, body);
+  return postJson<unknown>(href, body).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
@@ -655,6 +701,9 @@ export function repoAction(repo: string, action: RepoAction): Promise<RepoAction
     action,
     intent: 'repo-action',
     confirmed: true,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -709,8 +758,11 @@ export function fetchRepoFiles(repo: string, prefix = ''): Promise<RepoFilesResp
 }
 
 export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListResponse> {
-  return getJson<import('./reviewTypes').PrListResponse>(
-    `api/prs?repo=${encodeURIComponent(repo)}`,
+  const path = `api/prs?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<import('./reviewTypes').PrListResponse>(
+    path,
+    VIEW_CACHE_SHORT_TTL_MS,
+    () => getJson<import('./reviewTypes').PrListResponse>(path),
   );
 }
 
@@ -820,7 +872,10 @@ export function mergePr(
       },
       branch,
     ),
-  );
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export function approvePr(
@@ -840,7 +895,10 @@ export function approvePr(
       },
       branch,
     ),
-  );
+  ).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export function requestPrChanges(
@@ -855,6 +913,9 @@ export function requestPrChanges(
     body,
     intent: 'pr-request-changes',
     confirmed: true,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -1122,21 +1183,32 @@ export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number 
 }
 
 export function fetchIssues(repo: string): Promise<import('./reviewTypes').IssueListResponse> {
-  return getJson<import('./reviewTypes').IssueListResponse>(
-    `api/issues?repo=${encodeURIComponent(repo)}`,
+  const path = `api/issues?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<import('./reviewTypes').IssueListResponse>(
+    path,
+    VIEW_CACHE_SHORT_TTL_MS,
+    () => getJson<import('./reviewTypes').IssueListResponse>(path),
   );
 }
 
 // Cross-repo open-issue discovery (issue #882): one tagged list
 // across every checkout, no picker switching.
 export function fetchAllIssues(): Promise<import('./reviewTypes').IssueListResponse> {
-  return getJson<import('./reviewTypes').IssueListResponse>('api/issues?repo=all');
+  const path = 'api/issues?repo=all';
+  return cachedViewFetch<import('./reviewTypes').IssueListResponse>(
+    path,
+    VIEW_CACHE_SHORT_TTL_MS,
+    () => getJson<import('./reviewTypes').IssueListResponse>(path),
+  );
 }
 
 // Cross-repo lane dispatch queue (issue #853). Reads are plain
 // GETs; mutations ride the outbox like other console taps.
 export function fetchDispatchQueue(): Promise<DispatchQueueResponse> {
-  return getJson<DispatchQueueResponse>('api/dispatch/queue');
+  const path = 'api/dispatch/queue';
+  return cachedViewFetch<DispatchQueueResponse>(path, VIEW_CACHE_SHORT_TTL_MS, () =>
+    getJson<DispatchQueueResponse>(path),
+  );
 }
 
 export function fetchDispatchGates(repo: string, issue: number): Promise<DispatchGatesResponse> {
@@ -1187,8 +1259,11 @@ async function deleteJson<T>(path: string, body: unknown, timeoutMs: number = AP
 }
 
 export function fetchDeferred(repo: string): Promise<import('./reviewTypes').DeferredListResponse> {
-  return getJson<import('./reviewTypes').DeferredListResponse>(
-    `api/deferred?repo=${encodeURIComponent(repo)}`,
+  const path = `api/deferred?repo=${encodeURIComponent(repo)}`;
+  return cachedViewFetch<import('./reviewTypes').DeferredListResponse>(
+    path,
+    VIEW_CACHE_SHORT_TTL_MS,
+    () => getJson<import('./reviewTypes').DeferredListResponse>(path),
   );
 }
 
@@ -1201,6 +1276,9 @@ export function deferRow(
     repo,
     kind,
     number,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -1213,6 +1291,9 @@ export function restoreRow(
     repo,
     kind,
     number,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -1225,6 +1306,9 @@ export function deferRowsBulk(
     repo,
     op,
     rows,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -1260,6 +1344,9 @@ export function editIssueLabel(
     issue,
     label,
     op,
+  }).then((r) => {
+    invalidateViewCaches();
+    return r;
   });
 }
 
@@ -1738,9 +1825,15 @@ export function snoozeAttention(
   minutes: number,
   repo = 'remote-server',
 ): Promise<SnoozeResult> {
-  return postJson<SnoozeResult>('api/attention/snooze', { id, minutes, repo });
+  return postJson<SnoozeResult>('api/attention/snooze', { id, minutes, repo }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }
 
 export function unsnoozeAttention(id: string): Promise<UnsnoozeResult> {
-  return postJson<UnsnoozeResult>('api/attention/unsnooze', { id });
+  return postJson<UnsnoozeResult>('api/attention/unsnooze', { id }).then((r) => {
+    invalidateViewCaches();
+    return r;
+  });
 }

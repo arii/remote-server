@@ -9,10 +9,16 @@ import CommandPalette from './components/CommandPalette';
 import { buildCommands, type PaletteCommand } from './components/commandRegistry';
 import {
   fetchContainerStats,
+  fetchDispatchQueue,
+  fetchInbox,
+  fetchJobs,
+  fetchLedger,
+  fetchPrs,
   fetchRepoDiff,
   fetchRepos,
   fetchSystemHealth,
   flushOutbox,
+  prefetchTabPayloads,
   repoAction,
   restartContainer,
   startJobRun,
@@ -21,7 +27,28 @@ import {
 } from './apiClient';
 import type { ContainerStatsRow, RepoAction, RepoActionResponse, SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
-import { loadContainerStats, loadRepoDiff, loadRepos, loadSystemHealth, useMock } from './views/mockViews';
+import {
+  loadContainerStats,
+  loadDispatchQueue,
+  loadHistory,
+  loadJobs,
+  loadPrs,
+  loadRepoDiff,
+  loadRepos,
+  loadSystemHealth,
+  useMock,
+} from './views/mockViews';
+import { loadInbox } from './mocks/inbox';
+import {
+  EMPTY_BADGE_COUNTS,
+  historyErrorCount,
+  jobsActiveCount,
+  navBadge,
+  nowBadgeCount,
+  queueActiveCount,
+  reviewBadgeCount,
+} from './tabBadges';
+import type { NavBadgeCounts } from './tabBadges';
 import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
@@ -442,6 +469,74 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
+  // Live nav badges + background precache (issue #936, review
+  // F1 on #954): every counter derives from the same payload its
+  // destination renders. Boot + repo switch run a precache plus an
+  // immediate refresh; a 60s poll, a tab-visible refresh, and a
+  // refresh on any API failure keep the pills live afterwards —
+  // single-flight, sharing the view cache, so each tick costs one
+  // request per endpoint. Null means not loaded yet — the pill
+  // stays hidden instead of flashing a wrong zero, and a failed
+  // refresh keeps the last good counts.
+  const [badgeCounts, setBadgeCounts] = useState<NavBadgeCounts>(EMPTY_BADGE_COUNTS);
+  useEffect(() => {
+    if (useMock()) {
+      const feed = loadInbox();
+      const jobs = loadJobs().jobs;
+      const history = loadHistory();
+      setBadgeCounts({
+        now: nowBadgeCount(feed),
+        review: reviewBadgeCount(loadPrs()),
+        history: historyErrorCount(history.jobs, history.entries),
+        jobs: jobsActiveCount(jobs),
+        queue: queueActiveCount(loadDispatchQueue().items),
+      });
+      return;
+    }
+    let cancelled = false;
+    const refresh = singleFlight(async () => {
+      const rollup = isRollupRepo(repo);
+      const [inboxRes, prsRes, jobsRes, ledgerRes, queueRes] = await Promise.allSettled([
+        fetchInbox(repo),
+        rollup ? Promise.resolve(null) : fetchPrs(repo),
+        fetchJobs(),
+        fetchLedger('all', 100),
+        fetchDispatchQueue(),
+      ]);
+      if (cancelled) return;
+      setBadgeCounts((prev) => ({
+        now: inboxRes.status === 'fulfilled' && inboxRes.value
+          ? nowBadgeCount(inboxRes.value)
+          : prev.now,
+        review: prsRes.status === 'fulfilled'
+          ? (prsRes.value ? reviewBadgeCount(prsRes.value.prs) : null)
+          : prev.review,
+        history: jobsRes.status === 'fulfilled' && ledgerRes.status === 'fulfilled'
+          ? historyErrorCount(jobsRes.value.jobs, ledgerRes.value.entries)
+          : prev.history,
+        jobs: jobsRes.status === 'fulfilled' ? jobsActiveCount(jobsRes.value.jobs) : prev.jobs,
+        queue: queueRes.status === 'fulfilled'
+          ? queueActiveCount(queueRes.value.items)
+          : prev.queue,
+      }));
+    });
+    void prefetchTabPayloads(repo);
+    refresh();
+    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const unsubscribe = subscribeApiFailures(refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo]);
+
   // Keep-alive tabs (issue #897): Briefing + History mount on
   // first visit and stay mounted hidden afterwards, so warm
   // switches render with zero remount and zero network. Now keeps
@@ -558,19 +653,35 @@ export default function App() {
         />
       )}
       <nav className="topnav" aria-label="Views">
-        {NAV_ENTRIES.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            data-testid={`nav-${t.id}`}
-            aria-pressed={navPressed(tab, nowSection, t)}
-            aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
-            title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
-            onClick={() => goNav(t)}
-          >
-            {t.label}
-          </button>
-        ))}
+        {NAV_ENTRIES.map((t) => {
+          // Live count pill (issue #936): hidden until the first
+          // refresh lands and whenever the count is zero, so the bar
+          // only speaks up when a destination needs the operator.
+          const badge = navBadge(t.id, badgeCounts);
+          return (
+            <button
+              key={t.id}
+              type="button"
+              data-testid={`nav-${t.id}`}
+              aria-pressed={navPressed(tab, nowSection, t)}
+              aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
+              title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
+              onClick={() => goNav(t)}
+            >
+              {t.label}
+              {badge && (
+                <span
+                  className="nav-badge"
+                  data-testid={`nav-badge-${t.id}`}
+                  title={badge.label}
+                  aria-label={badge.label}
+                >
+                  {badge.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </nav>
       <ShortcutHint />
       {tab === 'now' && (

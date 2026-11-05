@@ -487,6 +487,30 @@ a.link-chip:hover { border-color: var(--accent); }
   border-radius: 8px;
 }
 .topnav button { min-height: 44px; }
+/* Live count pills (issue #936): repo-chip vocabulary at a smaller
+   size, riding the label baseline; amber for Now's call to action,
+   neutral for the rest. Hidden until loaded and when zero. */
+.topnav .nav-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.topnav .nav-badge[data-testid="nav-badge-now"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.topnav button[aria-pressed="true"] .nav-badge {
+  border-color: currentColor;
+  background: transparent;
+  color: inherit;
+}
 .topnav button[aria-pressed="true"] {
   background: var(--accent-solid);
   border-color: var(--accent-solid);
