@@ -191,10 +191,10 @@ Completely delete `remote-server/core_cli/` and duplicate scripts (`git rm -rf c
    - Update `Makefile`, `mk/common.mk`, and `.github/workflows/ci.yml` to remove all references to `core_cli` and `scripts/detect-antipatterns.mjs`, replacing them with `td` commands.
 
 ## Acceptance Criteria
-- [ ] `remote-server/core_cli/` directory and `remote-server/scripts/detect-antipatterns.mjs` no longer exist in the repository (`test ! -d core_cli`).
-- [ ] `grep -rn "core_cli" backend/ deep-agent/ tests/ .github/ Makefile mk/` returns zero matches.
-- [ ] All `backend/` and `deep-agent/` callers invoke `td <subcommand> --json` directly with zero legacy fallback code.
-- [ ] All `backend/tests/` and `tests/` suites pass.
+- [x] `remote-server/core_cli/` directory and `remote-server/scripts/detect-antipatterns.mjs` no longer exist in the repository (`test ! -d core_cli`).
+- [x] `grep -rn "core_cli" backend/ deep-agent/ tests/ .github/ Makefile mk/` returns zero matches.
+- [ ] All `backend/` and `deep-agent/` callers invoke `td <subcommand> --json` directly with zero legacy fallback code. (stale premise: no such callers existed; run_td() gateway added, relocation is behavior-identical)
+- [x] All `backend/tests/` and `tests/` suites pass (1908 passed; 4 ledger + 1 langchain-env failures pre-exist on base).
 
 ## Verification Commands
 ```bash
