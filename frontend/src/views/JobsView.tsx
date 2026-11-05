@@ -180,14 +180,33 @@ export function RunProgressPanel({
   // Client-only filter over the already-fetched tail (#657). The
   // parent keys this panel by run id, so the query resets per run.
   const [query, setQuery] = useState('');
-  if (!tail && !runId) return null;
+  if (!tail && !runId && !running) return null;
   const { visible, matched, total } = filterOutputLines(tail, query);
   const filtering = query.trim() !== '';
   return (
-    <div className="detail" data-testid="jobs-progress" ref={panelRef}>
+    <div
+      className="detail jobs-live"
+      data-testid="jobs-progress"
+      data-live={running ? 'true' : undefined}
+      role="status"
+      aria-live="polite"
+      aria-label={running ? `Live output: running ${running}` : 'Job output'}
+      ref={panelRef}
+    >
       <span className="row-title">
-        {running ? `Running ${running}…` : `Output${runId ? ` · ${runId}` : ''}`}
+        {running ? (
+          <>
+            <span className="dot dot-warn" aria-hidden="true" /> Running {running} — streaming live output…
+          </>
+        ) : (
+          `Output${runId ? ` · ${runId}` : ''}`
+        )}
       </span>
+      {running && (
+        <p className="row-meta" data-testid="jobs-live-status">
+          Live — output streams here as the job runs. You can leave this view; the run continues.
+        </p>
+      )}
       {!running && runId && resultLine(tail) && (
         <p className="row-meta" data-testid="jobs-result">
           {resultLine(tail)}
@@ -1002,8 +1021,13 @@ export default function JobsView({
         </p>
       )}
       {notice && (
-        <p className="row-meta" data-testid="jobs-notice">
+        <p className="row-meta" data-testid="jobs-notice" role="status" aria-live="polite">
           {notice}
+        </p>
+      )}
+      {running && (
+        <p className="row-meta" data-testid="jobs-running-banner" role="status" aria-live="polite">
+          Running {running} — live output below.
         </p>
       )}
       <div className="actions">
@@ -1029,36 +1053,58 @@ export default function JobsView({
         onToggle={() => void onTogglePlan()}
         onExecute={() => void onExecutePlan()}
       />
-      <RepairSection repo={repo} defaultBranch={defaultBranch} />
 
-      <TriageFanoutSection
-        repo={repo}
-        onDispatch={() =>
-          void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)))
-        }
-      />
+      <section className="jobs-workflows" data-testid="jobs-workflows" aria-label="Agent Workflows & Diagnostics">
+        <h3>Agent Workflows &amp; Diagnostics</h3>
+        <p className="row-meta">
+          Safe, non-disruptive agent runs and diagnostics. Triggering shows live streaming output above — no service is restarted.
+        </p>
 
-      <UxAuditSection
-        onDispatch={(site, maxPages) =>
-          void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)))
-        }
-      />
+        <RepairSection repo={repo} defaultBranch={defaultBranch} />
 
-      <JobSchedulesSection
-        repo={repo}
-        draft={schedDraft}
-        onScheduled={(s) => setNotice(`Scheduled ${s.action}: ${s.id}`)}
-        onClearDraft={() => setSchedDraft(null)}
-      />
+        <TriageFanoutSection
+          repo={repo}
+          onDispatch={() =>
+            void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)))
+          }
+        />
 
-      <TdCommands
-        pr={pr}
-        onPrChange={setPr}
-        prStateCurrent={prStateCurrent}
-        prOk={prOk}
-        conflictBlock={conflictBlock}
-        onDispatch={onDispatchTd}
-      />
+        <UxAuditSection
+          onDispatch={(site, maxPages) =>
+            void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)))
+          }
+        />
+
+        <section aria-label="Briefing plan">
+          <h3>Briefing plan</h3>
+          <p className="row-meta">Writes a dated plan file into .agents/plans for the briefing.</p>
+          <div className="actions">
+            <button
+              type="button"
+              data-testid="dispatch-create-plan"
+              onClick={() => onDangerAction('create-plan', 'Write briefing plan')}
+            >
+              Write briefing plan
+            </button>
+          </div>
+        </section>
+
+        <TdCommands
+          pr={pr}
+          onPrChange={setPr}
+          prStateCurrent={prStateCurrent}
+          prOk={prOk}
+          conflictBlock={conflictBlock}
+          onDispatch={onDispatchTd}
+        />
+
+        <JobSchedulesSection
+          repo={repo}
+          draft={schedDraft}
+          onScheduled={(s) => setNotice(`Scheduled ${s.action}: ${s.id}`)}
+          onClearDraft={() => setSchedDraft(null)}
+        />
+      </section>
 
       <DangerZone
         mergeReady={mergeReady}

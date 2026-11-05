@@ -39,6 +39,13 @@ const DANGER: DangerAction[] = [
   },
 ];
 
+// System operations rendered in the danger section (#934).
+// `create-plan` is an agent workflow (writes a plan file, no service
+// restart) and lives under Agent Workflows & Diagnostics instead —
+// it stays in DANGER above so `dangerEntryFor` still resolves its
+// re-run confirm metadata and schedule gating.
+const SYSTEM_ACTIONS = new Set(['merge-approved', 'deploy-buttons', 'recreate-code']);
+
 // Confirm metadata for destructive re-runs: the same challenge
 // text fresh launches show, so a repeated tap replays identically.
 // null = not a destructive action.
@@ -63,10 +70,13 @@ export default function DangerZone({
   onTakeover: () => void;
 }) {
   return (
-    <section aria-label="Danger zone" className="danger-zone">
-      <h3>Danger zone</h3>
+    <section aria-label="Danger / System Operations" className="danger-zone" data-testid="jobs-danger">
+      <h3>Danger / System Operations</h3>
+      <p className="row-meta">
+        Disruptive — restarts services or disconnects viewers. Each action asks for confirmation first.
+      </p>
       <ul className="session-list">
-        {DANGER.map((d) => {
+        {DANGER.filter((d) => SYSTEM_ACTIONS.has(d.action)).map((d) => {
           const mergeNote = mergeNoteFor(d.action, mergeReady);
           return (
             <li key={d.action} className="danger-row" data-testid={`danger-${d.action}`}>

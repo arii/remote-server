@@ -342,3 +342,33 @@ describe('jobs actionable rows (issue #907)', () => {
     expect(html).toContain('Loading findings…');
   });
 });
+
+describe('jobs live feedback (issue #934)', () => {
+  it('streams live output with a running indicator', () => {
+    const html = renderToStaticMarkup(
+      <RunProgressPanel tail={'step 1\n'} runId="abc123def456" running="triage fanout" panelRef={{ current: null }} />,
+    );
+    expect(html).toContain('data-testid="jobs-progress"');
+    expect(html).toContain('data-live="true"');
+    expect(html).toContain('data-testid="jobs-live-status"');
+    expect(html).toContain('streaming live output');
+    expect(html).toContain('Running triage fanout');
+    expect(html).toContain('role="status"');
+  });
+
+  it('shows the live drawer immediately on trigger (empty tail, running set)', () => {
+    const html = renderToStaticMarkup(
+      <RunProgressPanel tail={''} runId="abc123def456" running="ux audit" panelRef={{ current: null }} />,
+    );
+    expect(html).toContain('data-testid="jobs-progress"');
+    expect(html).toContain('Waiting for output…');
+    expect(html).toContain('jobs-live-status');
+  });
+
+  it('hides the drawer when nothing has run', () => {
+    const html = renderToStaticMarkup(
+      <RunProgressPanel tail={''} runId={null} running={null} panelRef={{ current: null }} />,
+    );
+    expect(html).toBe('');
+  });
+});
