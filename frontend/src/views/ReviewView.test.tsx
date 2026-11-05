@@ -38,10 +38,17 @@ import ReviewView, {
   dropMergedPr,
   isRowDeferred,
   issueLabelNames,
+  ISSUE_TABS,
+  feedbackIssueSeed,
+  issueInTab,
+  issueSeverity,
+  issueSeverityClass,
   linkedIssueNumbers,
   linkedPrNumbers,
   nextPrAfterMerge,
   prTitleRefs,
+  rebaseIssueSeed,
+  repairIssueSeed,
   mergeBadge,
   openIssueUrl,
   parseBulkRowKey,
@@ -57,7 +64,7 @@ import ReviewView, {
   validateRequestChangesBody,
 } from './ReviewView';
 import { approveBlockReason, approveMergeEligible, isDependabotPr, isOwnPr, mergeBlockReason } from '../reviewTypes';
-import type { PrRow } from '../reviewTypes';
+import type { IssueRow, PrRow } from '../reviewTypes';
 
 describe('optimistic merge row state', () => {
   it('applies the pending state without mutating the prior set', () => {
@@ -1427,5 +1434,68 @@ describe('approve and merge compound (issue #932)', () => {
     );
     expect(html).toContain('data-testid="open-github-pr-7"');
     expect(html).toContain('Open on GitHub');
+  });
+});
+
+describe('issues quick filters, badges, and agent seeds (issue #962)', () => {
+  const bug: IssueRow = { number: 7, title: 'Crash on boot', labels: [{ name: 'bug' }, { name: 'critical' }] };
+  const feat: IssueRow = { number: 8, title: 'Dark mode', labels: [{ name: 'enhancement' }] };
+  const bare: IssueRow = { number: 9, title: 'Typo', labels: [] };
+  const flagged: IssueRow = { number: 10, title: 'Triage me', labels: [{ name: 'needs-triage' }] };
+  const debug: IssueRow = { number: 11, title: 'Debug helper', labels: [{ name: 'debug' }] };
+
+  it('offers the four tabs', () => {
+    expect(ISSUE_TABS.map((t) => t.id)).toEqual(['all', 'bugs', 'enhancements', 'needs-triage']);
+  });
+
+  it('routes rows by label family', () => {
+    expect(issueInTab(bug, 'bugs')).toBe(true);
+    expect(issueInTab(feat, 'bugs')).toBe(false);
+    expect(issueInTab(debug, 'bugs')).toBe(false);
+    expect(issueInTab(feat, 'enhancements')).toBe(true);
+    expect(issueInTab(bug, 'enhancements')).toBe(false);
+    expect(issueInTab(bare, 'needs-triage')).toBe(true);
+    expect(issueInTab(flagged, 'needs-triage')).toBe(true);
+    expect(issueInTab(bug, 'needs-triage')).toBe(false);
+    expect(issueInTab(bug, 'all')).toBe(true);
+  });
+
+  it('reads severity from labels, null when absent', () => {
+    expect(issueSeverity(bug.labels)).toBe('critical');
+    expect(issueSeverity([{ name: 'p1' }])).toBe('high');
+    expect(issueSeverity([{ name: 'medium' }])).toBe('medium');
+    expect(issueSeverity([{ name: 'low' }])).toBe('low');
+    expect(issueSeverity(feat.labels)).toBeNull();
+    expect(issueSeverity([])).toBeNull();
+    expect(issueSeverity(undefined)).toBeNull();
+  });
+
+  it('maps severity onto the shared palette', () => {
+    expect(issueSeverityClass('critical')).toBe('sev sev-crit');
+    expect(issueSeverityClass('high')).toBe('sev sev-warn');
+    expect(issueSeverityClass('medium')).toBe('sev sev-warn');
+    expect(issueSeverityClass('low')).toBe('sev sev-info');
+    expect(issueSeverityClass(null)).toBe('sev sev-info');
+  });
+
+  it('seeds agent actions with repo and issue context', () => {
+    expect(repairIssueSeed('r', bug)).toContain('In r, fix issue #7');
+    expect(repairIssueSeed('r', bug)).toContain('Crash on boot');
+    expect(feedbackIssueSeed('r', bug)).toContain('address the feedback');
+    expect(feedbackIssueSeed('r', bug)).toContain('#7');
+    expect(rebaseIssueSeed('r', bug, 'main')).toContain('onto the latest main');
+    expect(rebaseIssueSeed('r', bug, 'main')).toContain('#7');
+  });
+
+  it('renders filter tabs with counts and the triage hint', () => {
+    const html = renderToStaticMarkup(
+      <ReviewView repo="r" onAskAgent={() => {}} onSelectPr={() => {}} />,
+    );
+    expect(html).toContain('data-testid="issue-filter-tabs"');
+    for (const id of ['all', 'bugs', 'enhancements', 'needs-triage']) {
+      expect(html).toContain(`data-testid="issue-tab-${id}"`);
+    }
+    expect(html).toContain('data-testid="issue-triage-hint"');
+    expect(html).toContain('c asks agent');
   });
 });
