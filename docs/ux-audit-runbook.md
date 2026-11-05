@@ -92,7 +92,7 @@ capped at the page cap. First runs go from the terminal container
 
 - The findings issue carries Target Files (URL-derived guesses —
   confirm in the checkout) + Verification Command sections, so it
-  parses under `core_cli.parse_task_spec` and passes the repair
+  parses under `backend.parse_task_spec` and passes the repair
   verify gate.
 - Verification is `python3 -m unittest` (tree-smoke placeholder:
   static site repos ship no pytest/vitest suite; unittest with
