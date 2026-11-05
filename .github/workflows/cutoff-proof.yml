@@ -18,7 +18,7 @@ on:
       - 'deep-agent/**'
       - 'backend/exec/**'
       - 'backend/api/routers/briefing.py'
-      - 'core_cli/briefing_summary.py'
+      - 'backend/briefing_summary.py'
       - 'scripts/cutoff-drill.sh'
       - 'tests/test_cutoff_drill.py'
       - '.github/workflows/cutoff-proof.yml'

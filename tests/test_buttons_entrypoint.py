@@ -1,8 +1,8 @@
 """Tests for scripts/buttons-entrypoint.sh (#562, #699).
 
 Wiring tests assert the Dockerfile entrypoint/call chain; behavior
-tests run the script against fake app roots (fake venv python +
-fake build_index.py) so no container is ever needed. The server
+tests run the script against fake app roots (fake `td` on PATH)
+so no container is ever needed. The server
 execs immediately while the index builds in the background: tests
 assert the fast boot synchronously, then poll the readiness markers
 (.index_building -> gone, .index_failed) for the background outcome.
@@ -123,7 +123,6 @@ class TestEntrypointBehavior(unittest.TestCase):
             ["echo", "skip-marker"],
             {"SKIP_INDEX_BUILD": "1",
              "OLLAMA_URL": CLOSED_PORT_URL,
-             "DEEP_AGENT_VENV": "/nonexistent/python",
              "S5_CHROMA_DIR": "/nonexistent/index"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("SKIP_INDEX_BUILD=1", proc.stdout)
@@ -149,7 +148,7 @@ class TestEntrypointBehavior(unittest.TestCase):
         # Ollama down: the server still execs at once; the build
         # fails in the background and records .index_failed.
         with tempfile.TemporaryDirectory() as app_root:
-            _, _, marker = self._fake_app(app_root)
+            bindir, _, marker = self._fake_app(app_root)
             with tempfile.TemporaryDirectory() as index_dir:
                 proc = _run(
                     ["echo", "boot-marker"],
@@ -157,8 +156,7 @@ class TestEntrypointBehavior(unittest.TestCase):
                      "S5_CHROMA_DIR": index_dir,
                      "OLLAMA_URL": CLOSED_PORT_URL,
                      "OLLAMA_WAIT_SECS": "0",
-                     "OLLAMA_TRIES": "2",
-                     "DEEP_AGENT_VENV": "/nonexistent/python"})
+                     "OLLAMA_TRIES": "2"})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("server starting now", proc.stdout)
                 self.assertIn("boot-marker", proc.stdout)
@@ -177,35 +175,31 @@ class TestEntrypointBehavior(unittest.TestCase):
                     self.assertIn("ollama unreachable", f.read())
 
     def _fake_app(self, root, build_exit=0):
-        """Fake APP_ROOT: venv shim logs argv then execs the build
-        shim, which records that it ran."""
-        deep = os.path.join(root, "deep-agent")
-        os.makedirs(deep)
-        log = os.path.join(root, "venv.log")
+        """Fake APP_ROOT: a fake `td` on a shim PATH records its
+        argv and the index build outcome."""
+        bindir = os.path.join(root, "fakebin")
+        os.makedirs(bindir)
+        log = os.path.join(root, "td.log")
         marker = os.path.join(root, "built.marker")
-        venv = os.path.join(root, "venv-python")
         _write_exe(
-            venv,
+            os.path.join(bindir, "td"),
             "#!/bin/sh\n"
-            f'echo "venv-argv: $*" >> "{log}"\n'
-            'exec "$@"\n')
-        _write_exe(
-            os.path.join(deep, "build_index.py"),
-            "#!/bin/sh\n"
+            f'echo "td-argv: $*" >> "{log}"\n'
             f'echo "built" > "{marker}"\n'
             f"exit {build_exit}\n")
-        return venv, log, marker
+        return bindir, log, marker
 
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
     def test_missing_index_builds_in_background(self):
         with tempfile.TemporaryDirectory() as app_root:
-            venv, log, marker = self._fake_app(app_root)
+            bindir, log, marker = self._fake_app(app_root)
             with tempfile.TemporaryDirectory() as index_dir:
                 proc = _run(
                     ["echo", "happy-marker"],
                     {"APP_ROOT": app_root,
                      "S5_CHROMA_DIR": index_dir,
-                     "DEEP_AGENT_VENV": venv})
+                     "PATH": bindir + os.pathsep + os.environ.get(
+                         "PATH", "")})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("server starting now", proc.stdout)
                 self.assertIn("happy-marker", proc.stdout)
@@ -219,8 +213,10 @@ class TestEntrypointBehavior(unittest.TestCase):
                 with open(marker, encoding="utf-8") as f:
                     self.assertEqual(f.read().strip(), "built")
                 with open(log, encoding="utf-8") as f:
-                    self.assertIn(
-                        "deep-agent/build_index.py", f.read())
+                    body = f.read()
+                    self.assertIn("rag", body)
+                    self.assertIn("index", body)
+                    self.assertIn(app_root, body)
                 with open(os.path.join(
                         index_dir, "index_build.log"),
                         encoding="utf-8") as f:
@@ -229,7 +225,7 @@ class TestEntrypointBehavior(unittest.TestCase):
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
     def test_empty_sqlite_rebuilds_in_background(self):
         with tempfile.TemporaryDirectory() as app_root:
-            venv, _, marker = self._fake_app(app_root)
+            bindir, _, marker = self._fake_app(app_root)
             with tempfile.TemporaryDirectory() as index_dir:
                 open(os.path.join(
                     index_dir, "chroma.sqlite3"), "wb").close()
@@ -237,7 +233,8 @@ class TestEntrypointBehavior(unittest.TestCase):
                     ["echo", "empty-marker"],
                     {"APP_ROOT": app_root,
                      "S5_CHROMA_DIR": index_dir,
-                     "DEEP_AGENT_VENV": venv})
+                     "PATH": bindir + os.pathsep + os.environ.get(
+                         "PATH", "")})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("server starting now", proc.stdout)
                 self.assertIn("empty-marker", proc.stdout)
@@ -252,7 +249,7 @@ class TestEntrypointBehavior(unittest.TestCase):
         # Killed mid-build then `restart`: usable-looking sqlite but
         # a leftover .index_building forces a background rebuild.
         with tempfile.TemporaryDirectory() as app_root:
-            venv, _, marker = self._fake_app(app_root)
+            bindir, _, marker = self._fake_app(app_root)
             with tempfile.TemporaryDirectory() as index_dir:
                 with open(os.path.join(
                         index_dir, "chroma.sqlite3"), "wb") as f:
@@ -263,7 +260,8 @@ class TestEntrypointBehavior(unittest.TestCase):
                     ["echo", "stale-marker"],
                     {"APP_ROOT": app_root,
                      "S5_CHROMA_DIR": index_dir,
-                     "DEEP_AGENT_VENV": venv})
+                     "PATH": bindir + os.pathsep + os.environ.get(
+                         "PATH", "")})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("server starting now", proc.stdout)
                 self.assertTrue(
@@ -273,13 +271,14 @@ class TestEntrypointBehavior(unittest.TestCase):
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
     def test_build_failure_boots_then_marks_failed(self):
         with tempfile.TemporaryDirectory() as app_root:
-            venv, _, _ = self._fake_app(app_root, build_exit=3)
+            bindir, _, _ = self._fake_app(app_root, build_exit=3)
             with tempfile.TemporaryDirectory() as index_dir:
                 proc = _run(
                     ["echo", "fail-marker"],
                     {"APP_ROOT": app_root,
                      "S5_CHROMA_DIR": index_dir,
-                     "DEEP_AGENT_VENV": venv})
+                     "PATH": bindir + os.pathsep + os.environ.get(
+                         "PATH", "")})
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn("server starting now", proc.stdout)
                 self.assertIn("fail-marker", proc.stdout)

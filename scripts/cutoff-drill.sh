@@ -202,7 +202,7 @@ with open("backend/api/routers/briefing.py", encoding="utf-8") as fh:
     for n, line in enumerate(fh, 1):
         if "muse" in line.lower():
             failures.append(f"briefing.py:{n}: {line.strip()[:100]}")
-with open("core_cli/briefing_summary.py", encoding="utf-8") as fh:
+with open("backend/briefing_summary.py", encoding="utf-8") as fh:
     for n, line in enumerate(fh, 1):
         if "muse" in line.lower():
             failures.append(f"briefing_summary.py:{n}: {line.strip()[:100]}")

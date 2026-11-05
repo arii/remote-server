@@ -2042,7 +2042,7 @@ class CheckNotificationsActionTest(unittest.TestCase):
             "/srv/repos/boomtick")
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "core_cli.notify_check",
+            steps, [[sys.executable, "-m", "backend.notify_check",
                      "--repo", "boomtick", "--gh", "arii/boomtick"]])
 
     def test_step_needs_a_repo(self):
@@ -2077,7 +2077,7 @@ class GatedMergeActionTest(unittest.TestCase):
             "/srv/repos/boomtick")
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "core_cli.merge_gated",
+            steps, [[sys.executable, "-m", "backend.merge_gated",
                      "--repo", "boomtick", "--gh", "arii/boomtick"]])
 
     def test_step_needs_a_repo(self):
@@ -2097,7 +2097,7 @@ class GatedMergeActionTest(unittest.TestCase):
 class StepEnvTest(unittest.TestCase):
     def test_python_m_steps_get_engine_root_pythonpath(self):
         # Steps run with cwd=stack_dir() (stale host bind-mount), so
-        # `python -m core_cli.*` must resolve from this backend's own
+        # `python -m backend.*` must resolve from this backend's own
         # tree or fail with No module named (live 2026-11-04).
         steps, err = engine.action_steps(
             "check-notifications", "boomtick", "arii/boomtick", "")
@@ -2121,7 +2121,7 @@ class StepEnvTest(unittest.TestCase):
 
     def test_python_m_steps_run_from_engine_root(self):
         # cwd shadows PYTHONPATH for the top-level package: a stale
-        # stack_dir()/core_cli (no notify_check.py) wins over /app, so
+        # stack_dir()/backend (stale tree) wins over /app, so
         # -m steps must execute FROM the deployed tree, not just see it.
         steps, err = engine.action_steps(
             "check-notifications", "boomtick", "arii/boomtick", "")
@@ -2380,7 +2380,7 @@ class ImpactPassActionTest(_LedgerTmpDir, unittest.TestCase):
             "impact-pass", "remote-server", "", "")
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "core_cli.impact_pass"]])
+            steps, [[sys.executable, "-m", "backend.impact_pass"]])
         # -m steps execute FROM the deployed tree (step_cwd), so the
         # pass reads/writes the same state the API serves.
         self.assertEqual(engine.step_cwd(steps), engine.ENGINE_ROOT)
@@ -2439,7 +2439,7 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         import impact
 
         from backend import ledger
-        from core_cli import impact_pass
+        from backend import impact_pass
 
         self.impact = impact
         self.ledger = ledger
@@ -2478,7 +2478,7 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         are fixtures, so these tests prove the gate trips exactly the
         shipped probe (not a mock of it).
         """
-        from core_cli import impact_pass
+        from backend import impact_pass
 
         bindir = os.path.join(self._tmp.name, "bin")
         os.makedirs(bindir, exist_ok=True)
@@ -2743,7 +2743,7 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
             "/srv/remote-server", ["review-pr", "12"])
         self.assertIsNone(err)
         self.assertEqual(
-            steps, [[sys.executable, "-m", "core_cli.review",
+            steps, [[sys.executable, "-m", "backend.review",
                      "--repo", "arii/remote-server", "--pr", "12",
                      "--dry-run"]])
         # -m steps execute FROM the deployed tree (step_cwd).

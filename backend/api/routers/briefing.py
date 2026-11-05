@@ -103,7 +103,7 @@ DEFAULT_NARRATOR_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 
 class Briefing(BaseModel):
     """Structured briefing payload: shape of analyze() in
-    core_cli/briefing_summary.py. Extra keys allowed so new briefing
+    backend/briefing_summary.py. Extra keys allowed so new briefing
     sections pass through instead of 500ing."""
 
     model_config = ConfigDict(extra="allow")
@@ -587,7 +587,7 @@ def warm_briefing_cache(repos: list[str] | None = None) -> list[str]:
 
 def _run_briefing(repo: str, gh: str) -> dict:
     script = os.path.join(os.path.dirname(__file__),
-                          "..", "..", "..", "core_cli",
+                          "..", "..", "..", "backend",
                           "briefing_summary.py")
     script = os.path.normpath(script)
     # cwd = live checkout: td discovers project_config.json upward from
