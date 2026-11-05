@@ -77,3 +77,23 @@ describe('danger zone clear-all (issue #512)', () => {
     expect(row).toContain('disabled');
   });
 });
+
+describe('danger zone clear-finished honesty (issue #965)', () => {
+  function clearFinishedRow(html: string): string {
+    const start = html.indexOf('data-testid="danger-clear-finished"');
+    expect(start).toBeGreaterThan(-1);
+    return html.slice(start, html.indexOf('</li>', start));
+  }
+
+  it('disables clear-finished and says so with zero finished runs', () => {
+    const row = clearFinishedRow(render(0, 0));
+    expect(row).toContain('Nothing finished to clear.');
+    expect(row).toContain('disabled');
+  });
+
+  it('enables clear-finished with honest copy once runs finish', () => {
+    const row = clearFinishedRow(render(3, 2));
+    expect(row).toContain('Drops finished runs from the list below.');
+    expect(row).not.toContain('disabled');
+  });
+});
