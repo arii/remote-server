@@ -100,7 +100,7 @@ later tick).
 
 ## Webhook auto-pull
 
-`POST /api/webhook` (edge: `/buttons/api/webhook`, the one
+`POST /api/webhook` (edge: `/buttons/api/webhook`, a
 `--skip-auth-route` in `docker-compose.yml`) pulls `main` on push:
 HMAC-SHA256 (`WEBHOOK_SECRET`, fail closed when unset), push-only,
 allowlisted repos, `--ff-only`. Pull only — never rebuild, never
@@ -133,6 +133,11 @@ oauth2-proxy.
   the console is down too.
 - Webhook exception, tightly scoped: exact-path POST skip-auth + HMAC +
   repo/branch allowlist + fast-forward only; it can only pull checkouts.
+- PWA install assets exception (#943): `GET /buttons/manifest.json` and
+  `GET /buttons/icons/*` skip auth (public, non-sensitive) because
+  browsers fetch the manifest without credentials; the shell and all
+  `/api` routes stay gated. The manifest link also sends
+  `crossorigin="use-credentials"` so credentialed fetches work.
 
 ## Deploy
 

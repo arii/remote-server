@@ -45,6 +45,13 @@ services:
       # auth. The buttons handler still verifies the HMAC signature,
       # so a skip-auth bypass alone cannot trigger a pull.
       - --skip-auth-route=POST=^/buttons/api/webhook$
+      # PWA manifest + icons are public, non-sensitive install assets.
+      # Browsers fetch the manifest without credentials by default, so
+      # gating it behind OAuth 302s to GitHub and fails CORS on every
+      # load (#943). GET-only, exact manifest + icons prefix only; the
+      # app shell and every /api route stay behind the OAuth gate.
+      - --skip-auth-route=GET=^/buttons/manifest\.json$
+      - --skip-auth-route=GET=^/buttons/icons/.+$
       - --tls-cert-file=/certs/live/${TERMINAL_DOMAIN}/fullchain.pem
       - --tls-key-file=/certs/live/${TERMINAL_DOMAIN}/privkey.pem
       - --upstream=http://caddy:8080

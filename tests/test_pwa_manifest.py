@@ -78,10 +78,31 @@ class PwaManifestTests(unittest.TestCase):
             html = fh.read()
         self.assertIn('rel="manifest"', html)
         self.assertIn("/manifest.json", html)
+        # Manifest fetches omit credentials by default; without
+        # use-credentials the OAuth cookie is not sent and the fetch
+        # 302s to GitHub, failing CORS (#943).
+        self.assertIn('crossorigin="use-credentials"', html)
         self.assertIn('name="theme-color"', html)
         self.assertIn('rel="apple-touch-icon"', html)
-        self.assertIn("apple-mobile-web-app-capable", html)
+        self.assertIn("mobile-web-app-capable", html)
+        self.assertNotIn("apple-mobile-web-app-capable", html)
         self.assertIn("apple-mobile-web-app-status-bar-style", html)
+
+    def test_oauth_proxy_skips_auth_for_manifest_and_icons(self):
+        # The manifest is fetched without credentials, so oauth2-proxy
+        # must let GET manifest/icons through without a 302 to GitHub
+        # (#943). The app shell and /api stay gated.
+        compose = os.path.join(
+            os.path.dirname(__file__), "..", "docker-compose.yml")
+        with open(compose, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn(
+            "--skip-auth-route=GET=^/buttons/manifest", text)
+        self.assertIn(
+            "--skip-auth-route=GET=^/buttons/icons/", text)
+        # The only other skip-auth route stays the exact POST webhook.
+        self.assertIn(
+            "--skip-auth-route=POST=^/buttons/api/webhook$", text)
 
     def test_served_content_types(self):
         # StaticFiles serves by mimetypes: the manifest must be
