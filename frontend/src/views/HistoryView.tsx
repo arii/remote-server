@@ -397,7 +397,7 @@ export default function HistoryView({
 
   return (
     <div data-testid="history-view">
-      <WorkflowRunsSection repo={repo} />
+      <WorkflowRunsSection repo={repo} onFindInFeed={(text) => setQuery(text)} />
 
       <ActivityTimeline active={active} />
 

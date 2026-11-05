@@ -177,9 +177,13 @@ function RunsList({
 export function WorkflowRunsBody({
   flow,
   error,
+  onFindInFeed,
 }: {
   flow: WorkflowHealthResponse | null;
   error: string | null;
+  // One-click feed search for URL-less runs (#907, re-threaded in
+  // the #947 rebase): absent, those rows render no finder.
+  onFindInFeed?: (text: string) => void;
 }) {
   if (error) {
     return (
@@ -195,10 +199,16 @@ export function WorkflowRunsBody({
       </p>
     );
   }
-  return <RunsList flow={flow} />;
+  return <RunsList flow={flow} onFindInFeed={onFindInFeed} />;
 }
 
-export function WorkflowRunsSection({ repo }: { repo: string }) {
+export function WorkflowRunsSection({
+  repo,
+  onFindInFeed,
+}: {
+  repo: string;
+  onFindInFeed?: (text: string) => void;
+}) {
   const [flow, setFlow] = useState<WorkflowHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -227,7 +237,7 @@ export function WorkflowRunsSection({ repo }: { repo: string }) {
   return (
     <section aria-label="Automated runs" data-testid="workflow-runs-section">
       <h2>Automated runs</h2>
-      <WorkflowRunsBody flow={flow} error={error} />
+      <WorkflowRunsBody flow={flow} error={error} onFindInFeed={onFindInFeed} />
     </section>
   );
 }

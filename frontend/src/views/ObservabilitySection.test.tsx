@@ -170,6 +170,20 @@ describe('workflow runs section (issue #931)', () => {
     expect(html).toContain('workflow-runs-empty');
     expect(html).toContain('No failing automated runs');
   });
+
+  it('threads feed search to URL-less runs, hides it without a callback', () => {
+    // Rebase regression lock (#947 review): WorkflowRunsBody must
+    // forward onFindInFeed so URL-less rows keep one-click search.
+    const withFinder = renderToStaticMarkup(
+      <WorkflowRunsBody flow={flow()} error={null} onFindInFeed={() => {}} />,
+    );
+    expect(withFinder).toContain('data-testid="observability-find-1"');
+    expect(withFinder).toContain('Find in feed');
+    const withoutFinder = renderToStaticMarkup(
+      <WorkflowRunsBody flow={flow()} error={null} />,
+    );
+    expect(withoutFinder).not.toContain('observability-find-1');
+  });
 });
 
 describe('observability actionable rows (issue #907)', () => {
