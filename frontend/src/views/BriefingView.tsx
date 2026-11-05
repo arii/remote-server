@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
+import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, invalidateViewCaches, refreshBriefing, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
 import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { isHistoryFailure, toHistoryRows } from './historyUtils';
@@ -814,6 +814,14 @@ function PrRow({
   );
 }
 
+// Empty-state generate flow (#929): poll the refreshed snapshot
+// until a newer payload lands, bounded so the loop always ends.
+const GEN_POLL_MS = 5000;
+const GEN_MAX_TRIES = 36;
+// Loading stages (#929): past this the bare spinner names the
+// wait, so a slow first generation never reads as stuck.
+const SLOW_LOAD_MS = 10000;
+
 export default function BriefingView({
   repo,
   onAskAgent,
@@ -841,8 +849,17 @@ export default function BriefingView({
   const [ledger, setLedger] = useState<LedgerEntry[] | null>(null);
   const [window, setWindow] = useState<ActivityWindow>('24h');
   const [staleTries, setStaleTries] = useState(0);
+  // Generate flow (#929): genBase is the payload stamp at tap
+  // time (null when idle); the loop ends on any newer stamp.
+  const [genBase, setGenBase] = useState<number | null>(null);
+  const [genTries, setGenTries] = useState(0);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [slowLoad, setSlowLoad] = useState(false);
   useEffect(() => {
     setStaleTries(0);
+    setGenBase(null);
+    setGenTries(0);
+    setGenError(null);
   }, [repo]);
 
   async function load() {
@@ -852,6 +869,21 @@ export default function BriefingView({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function generate() {
+    if (genBase !== null) return;
+    setGenError(null);
+    try {
+      await refreshBriefing(repo);
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    invalidateViewCaches();
+    setGenBase(data?.generated_at ?? 0);
+    setGenTries(0);
+    void load();
   }
 
   // Palette reload: adopt the mount-time nonce, act on later bumps.
@@ -891,6 +923,46 @@ export default function BriefingView({
     if (returning && data && !useMock()) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
+
+  // Generate poll (#929): bounded re-fetch until a post-tap
+  // payload lands. Comparing server stamps keeps the loop
+  // clock-skew-proof; content arriving early ends it too, and a
+  // fresh-but-still-empty payload ends it as well (the empty
+  // state re-renders with its action, never a spinner).
+  useEffect(() => {
+    if (genBase === null || useMock()) return;
+    const stamp = data?.generated_at ?? 0;
+    if (stamp > genBase || (data !== null && !briefingAllClear(data))) {
+      setGenBase(null);
+      return;
+    }
+    if (genTries >= GEN_MAX_TRIES) {
+      setGenBase(null);
+      setGenError('Generation is taking longer than expected — retry in a minute.');
+      return;
+    }
+    // Bare timer global: the activity `window` state shadows
+    // window.* in this component.
+    const t = setTimeout(() => {
+      setGenTries((n) => n + 1);
+      invalidateViewCaches();
+      void load();
+    }, GEN_POLL_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genBase, genTries, data]);
+
+  // Staged loading (#929): past SLOW_LOAD_MS the bare spinner
+  // names the wait, so a slow first generation never reads as
+  // stuck. The fetch timeout still bounds the total wait.
+  useEffect(() => {
+    if (data || error) {
+      setSlowLoad(false);
+      return;
+    }
+    const t = setTimeout(() => setSlowLoad(true), SLOW_LOAD_MS);
+    return () => clearTimeout(t);
+  }, [data, error, repo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -938,7 +1010,13 @@ export default function BriefingView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo, window]);
 
-  if (!data && !error) return <section data-testid="briefing-loading" role="status">Loading…</section>;
+  if (!data && !error) {
+    return (
+      <section data-testid="briefing-loading" role="status">
+        {slowLoad ? 'Still generating — first loads can take up to 2 minutes…' : 'Loading…'}
+      </section>
+    );
+  }
 
   return (
     <section data-testid="briefing-view">
@@ -976,6 +1054,9 @@ export default function BriefingView({
           onOpenReview={onOpenReview}
           window={window}
           onWindowChange={setWindow}
+          onGenerate={() => void generate()}
+          generating={genBase !== null}
+          genError={genError}
         />
       )}
     </section>
@@ -990,6 +1071,9 @@ export function BriefingBody({
   onOpenReview,
   window = '24h',
   onWindowChange = () => {},
+  onGenerate = () => {},
+  generating = false,
+  genError = null,
 }: {
   data: BriefingResponse;
   ledger: LedgerEntry[] | null;
@@ -998,6 +1082,9 @@ export function BriefingBody({
   onOpenReview: (prNumber: string) => void;
   window?: ActivityWindow;
   onWindowChange?: (window: ActivityWindow) => void;
+  onGenerate?: () => void;
+  generating?: boolean;
+  genError?: string | null;
 }) {
   const actions = briefingActions(data);
   const nowSec = Date.now() / 1000;
@@ -1051,6 +1138,27 @@ export function BriefingBody({
         <div data-testid="briefing-clear">
           <h3>All clear</h3>
           <p className="row-meta">No open PRs, no conflicts, no failing runs.</p>
+          <div className="actions">
+            <button
+              type="button"
+              data-testid="briefing-generate"
+              className="btn-secondary"
+              disabled={generating}
+              onClick={onGenerate}
+            >
+              {generating ? 'Generating briefing…' : 'Generate Briefing Now'}
+            </button>
+          </div>
+          {generating && (
+            <p className="row-meta" role="status" data-testid="briefing-generating">
+              Generating a fresh briefing — this can take a minute…
+            </p>
+          )}
+          {genError && (
+            <p className="row-meta" role="alert" data-testid="briefing-generate-error">
+              {genError}
+            </p>
+          )}
         </div>
       ) : (
         <>

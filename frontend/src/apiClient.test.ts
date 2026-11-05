@@ -42,6 +42,7 @@ import {
   mergePr,
   postAgentTurn,
   postChatStream,
+  refreshBriefing,
   repoAction,
   requestPrChanges,
   rerunJob,
@@ -154,6 +155,18 @@ describe('apiClient (fetch with inline shapes)', () => {
         intent: 'repo-action',
         confirmed: true,
       }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('posts briefing refreshes without a confirm intent (issue #929)', async () => {
+    const res = { ok: true, repo: 'demo', started: true };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await refreshBriefing('demo')).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith('/api/briefing/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': expect.any(String) },
+      body: JSON.stringify({ repo: 'demo' }),
       signal: expect.any(AbortSignal),
     });
   });

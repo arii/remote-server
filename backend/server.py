@@ -25,9 +25,21 @@ async def _lifespan(app):
     anything, including the notify seeds. Starting it here makes the
     tick unconditional; _ensure_schedule_ticker stays idempotent so
     the lazy call sites remain harmless.
+
+    Also precaches the briefing snapshot on a daemon thread (#929):
+    first Briefing visits land on a warm cache instead of blocking
+    on cold generation. Best-effort; boot never waits for it.
     """
     try:
         issues._ensure_schedule_ticker()
+    except Exception:
+        pass
+    try:
+        import threading
+
+        thread = threading.Thread(
+            target=briefing.warm_briefing_cache, daemon=True)
+        thread.start()
     except Exception:
         pass
     yield
