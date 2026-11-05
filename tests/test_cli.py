@@ -121,6 +121,36 @@ class TestB64Decode(unittest.TestCase):
         self.assertIsNone(cli.b64decode(123))
 
 
+class TestCliAgentSuggest(unittest.TestCase):
+    """issue_generator.py --spec-file mode contract (no model needed)."""
+
+    def test_no_args_usage(self):
+        p = run_script("issue_generator.py")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("usage: issue_generator.py --spec-file", p.stderr)
+        self.assertEqual(p.stdout, "")
+
+    def test_unknown_arg_usage(self):
+        p = run_script("issue_generator.py", "--bogus")
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("unknown arg", p.stderr)
+
+    def test_missing_file_sorry(self):
+        p = run_script("issue_generator.py", "--spec-file",
+                       "/nonexistent-brief.md")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Sorry, cannot read spec", p.stdout)
+
+    def test_empty_stdin_sorry(self):
+        proc = subprocess.run(
+            [sys.executable,
+             os.path.join(DEEP_AGENT, "issue_generator.py"),
+             "--spec-file", "-"],
+            input="", capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Sorry, empty brief", proc.stdout)
+
+
 class TestLedgerArgv(unittest.TestCase):
     def test_bad_n(self):
         p = run_script("ledger.py", "abc")
@@ -258,11 +288,6 @@ class TestVenvEntrypointArgv(unittest.TestCase):
         self.assertEqual(
             p.stderr,
             "usage: resolve_conflicts.py <worktree-path> [base-ref]\n")
-
-    def test_triage_explainer_usage(self):
-        p = run_script("triage_explainer.py")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "usage: triage_explainer.py owner/repo\n")
 
     def test_triage_fanout_bad_repos(self):
         env = dict(os.environ, NEBIUS_API_KEY="dummy")
