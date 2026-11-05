@@ -21,6 +21,8 @@ import type { AttentionItem } from '../attentionTypes';
 import type { DeferredRow } from '../reviewTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
 import { ContainerPills } from './ObservabilitySection';
+import DirtyReposStrip from './DirtyReposStrip';
+import type { RepoAction, RepoActionResponse } from '../apiClient';
 import InboxStrips from './InboxStrips';
 import ReviewView from './ReviewView';
 import JobsView from './JobsView';
@@ -1122,6 +1124,9 @@ export default function NowView({
   createRequest = 0,
   onSectionChange,
   onOpenStats,
+  onViewDiff,
+  onRepoAction,
+  onOpenChat,
 }: {
   repo: string;
   // Checkout branch of the viewed repo, seeding the Review/Jobs
@@ -1155,6 +1160,13 @@ export default function NowView({
   onSectionChange?: (section: 'review' | 'jobs' | 'queue' | null) => void;
   // Opens the container stats drawer (#896): Stack pills navigate.
   onOpenStats?: (service?: string) => void;
+  // Dirty-repos strip (#937): per-row actions carry the row's repo
+  // so the global picker never moves first. Absent (older callers,
+  // tests), View Diff / Open in Chat fall back to Ask-agent seeds
+  // and the Chat tab, and git actions report unavailable.
+  onViewDiff?: (repo: string) => void;
+  onRepoAction?: (repo: string, action: RepoAction) => Promise<RepoActionResponse>;
+  onOpenChat?: (repo: string) => void;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The
@@ -1599,6 +1611,21 @@ export default function NowView({
           Done: {fired}
         </p>
       )}
+      <DirtyReposStrip
+        repos={repos}
+        onViewDiff={
+          onViewDiff ??
+          ((name) => onAskAgent(`In ${name}, review git status and diff.`))
+        }
+        onAction={
+          onRepoAction ??
+          (async () => {
+            throw new Error('Repo actions unavailable here');
+          })
+        }
+        onAskAgent={onAskAgent}
+        onOpenChat={onOpenChat ?? (() => onOpenTab('chat'))}
+      />
       <StackSection health={health} onOpenStats={onOpenStats} />
       {data && (
         <>

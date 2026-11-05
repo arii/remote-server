@@ -508,6 +508,20 @@ def _parse_gh_remote(url: str | None) -> str | None:
     return f"{owner}/{repo_part}"
 
 
+def _parse_ahead_behind(header: str) -> tuple[int, int]:
+    """(ahead, behind) from a ``status --short --branch`` header.
+
+    ``## main...origin/main [ahead 1, behind 2]``; a missing
+    upstream or count reads as 0. Pure helper for list_repos (#937).
+    """
+    import re
+
+    ahead = re.search(r"ahead (\d+)", header or "")
+    behind = re.search(r"behind (\d+)", header or "")
+    return (int(ahead.group(1)) if ahead else 0,
+            int(behind.group(1)) if behind else 0)
+
+
 def _git_run(run, cmd: list[str], path: Path, timeout: int = 30):
     import subprocess
 
@@ -522,15 +536,18 @@ def _git_run(run, cmd: list[str], path: Path, timeout: int = 30):
 def list_repos(repos_dir: Path | str | None = None,
                stack_dir: Path | str | None = None,
                run=None) -> list[dict[str, Any]]:
-    """Every discovered checkout as {name, full, branch, clean}.
+    """Every discovered checkout as {name, full, branch, clean,
+    ahead, behind, status_count}.
 
     Port of buttons/server.py _discover_repos, minus the td/gh
     runtime fields: the special stack checkout (remote-server)
     plus every repos-dir entry with a .git. Entries that fail
     git probing are skipped, never mapped to another repo; a
     checkout without a parseable GitHub origin keeps the
-    default full name ``arii/<name>``. ``repos_dir``/``stack_dir``/
-    ``run`` are injectable seams for tests.
+    default full name ``arii/<name>``. ``ahead``/``behind`` parse
+    the branch header (#937); ``status_count`` counts dirty
+    entries. ``repos_dir``/``stack_dir``/``run`` are injectable
+    seams for tests.
     """
     import subprocess
 
@@ -575,10 +592,16 @@ def list_repos(repos_dir: Path | str | None = None,
                 run, ["status", "--short", "--branch"], path)
             if status_proc.returncode != 0:
                 continue
+            header = next(
+                (ln for ln in status_proc.stdout.splitlines()
+                 if ln.startswith("##")), "")
+            ahead, behind = _parse_ahead_behind(header)
             lines = [ln for ln in status_proc.stdout.splitlines()
                      if ln and not ln.startswith("##")]
             repos.append({"name": name, "full": full or f"arii/{name}",
-                          "branch": branch, "clean": len(lines) == 0})
+                          "branch": branch, "clean": len(lines) == 0,
+                          "ahead": ahead, "behind": behind,
+                          "status_count": len(lines)})
         except Exception:
             continue
     return sorted(repos, key=lambda r: r["name"])

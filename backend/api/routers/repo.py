@@ -86,6 +86,11 @@ class RepoEntry(BaseModel):
     full: str
     branch: str
     clean: bool
+    # Workspace lag overview (#937): branch-header counts plus the
+    # dirty-entry count backing the Now dirty-repos strip.
+    ahead: int = 0
+    behind: int = 0
+    status_count: int = 0
 
 
 class ReposList(BaseModel):

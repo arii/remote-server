@@ -97,7 +97,9 @@ class ReposListTest(unittest.TestCase):
             self.assertEqual(len(body["repos"]), 1)
             entry = body["repos"][0]
             self.assertEqual(entry, {"name": "alpha", "full": "arii/alpha",
-                                     "branch": "main", "clean": True})
+                                     "branch": "main", "clean": True,
+                                     "ahead": 0, "behind": 0,
+                                     "status_count": 0})
 
     def test_multiple_repos_sorted_and_dirty_flag(self):
         import tempfile
@@ -115,6 +117,49 @@ class ReposListTest(unittest.TestCase):
             self.assertTrue(by_name["beta"]["clean"])
             self.assertFalse(by_name["zeta"]["clean"])
             self.assertEqual(by_name["zeta"]["branch"], "feat")
+
+    def test_behind_ahead_and_status_count(self):
+        import tempfile
+        from pathlib import Path
+
+        from backend.core import list_repos
+
+        def fake_run(cmd, **kwargs):
+            path = cmd[cmd.index("-C") + 1]
+            name = path.rstrip("/").rsplit("/", 1)[-1]
+            if "remote.origin.url" in cmd:
+                return _proc(out=f"git@github.com:arii/{name}.git\n")
+            if "rev-parse" in cmd:
+                return _proc(out="main\n")
+            if "status" in cmd:
+                if name == "laggy":
+                    return _proc(
+                        out="## main...origin/main [behind 3]\n"
+                            " M a.py\n?? b.txt\n")
+                if name == "aheady":
+                    return _proc(
+                        out="## main...origin/main [ahead 2, behind 1]\n")
+                return _proc(out="## main...origin/main\n")
+            raise AssertionError(f"unexpected git call: {cmd}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repos"
+            stack = Path(tmp) / "stack"
+            for name in ("laggy", "aheady", "clean"):
+                d = root / name
+                d.mkdir(parents=True)
+                (d / ".git").mkdir()
+            got = list_repos(repos_dir=root, stack_dir=stack, run=fake_run)
+            by_name = {r["name"]: r for r in got}
+            self.assertEqual(by_name["laggy"]["behind"], 3)
+            self.assertEqual(by_name["laggy"]["ahead"], 0)
+            self.assertEqual(by_name["laggy"]["status_count"], 2)
+            self.assertFalse(by_name["laggy"]["clean"])
+            self.assertEqual(by_name["aheady"]["ahead"], 2)
+            self.assertEqual(by_name["aheady"]["behind"], 1)
+            self.assertEqual(by_name["aheady"]["status_count"], 0)
+            self.assertTrue(by_name["aheady"]["clean"])
+            self.assertEqual(by_name["clean"]["behind"], 0)
 
     def test_unknown_dir_handling(self):
         import tempfile
