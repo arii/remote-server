@@ -17,7 +17,7 @@ this backend serves /api/* like its sibling routers):
 - POST /api/repair/schedule       set/clear a daily/weekly repair schedule
 
 Repair runs the worker like the legacy handler does (python3 -m
-core_cli repair --issue N --repo R). Dispatch is a confirmed
+backend.repair_worker --issue N --repo R). Dispatch is a confirmed
 (intent repair-dispatch + confirmed), single-flight (409 when a
 worker runs), repo-scoped action; a run holding the slot past
 REPAIR_WORKER_TIMEOUT is killed and records failed, never running
@@ -37,8 +37,8 @@ from pydantic import BaseModel, Field
 
 from backend.exec.engine import stack_dir
 from backend.gh import repo_gh, run_gh, run_gh_json
-from core_cli.parse_task_spec import parse_task_spec
-from core_cli.verify_allowlist import (
+from backend.parse_task_spec import parse_task_spec
+from backend.verify_allowlist import (
     VERIFY_VERB_HELP,
     validate_verify_command,
 )
@@ -278,7 +278,7 @@ def _repair_worker_thread(issue_number: int,
         _repair_proc = None
         _repair_abort = False
     run = _repair_runner or subprocess
-    cmd = ["python3", "-m", "core_cli", "repair",
+    cmd = ["python3", "-m", "backend.repair_worker",
            "--issue", str(issue_number), "--repo", repo]
     if focus:
         cmd += ["--body", focus]

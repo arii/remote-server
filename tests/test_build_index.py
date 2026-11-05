@@ -66,24 +66,26 @@ class TestCollectSourceFiles(unittest.TestCase):
         _write(root, "frontend/src/node_modules/pkg/f.ts", "f = 1\n")
         _write(root, "frontend/src/dist/g.ts", "g = 1\n")
         _write(root, "frontend/src/.hidden.ts", "h = 1\n")
-        _write(root, "core_cli/cli.py", "CLI = 1\n")
-        _write(root, "core_cli/fixtures/f.py", "f = 1\n")
+        _write(root, "backend/cli.py", "CLI = 1\n")
+        _write(root, "backend/fixtures/f.py", "f = 1\n")
 
     def test_docs_and_code_collected_with_tags(self):
         with tempfile.TemporaryDirectory() as root:
             self._fixture_root(root)
             found = build_index.collect_source_files(root)
+        # Order-insensitive: os.walk yields filesystem readdir order,
+        # which shifts as fixture entries change; tags are the contract.
         self.assertEqual(
-            found,
-            [
+            sorted(found),
+            sorted([
                 ("docs/guide.md", "doc", "markdown"),
                 ("AGENTS.md", "doc", "markdown"),
                 ("backend/app.py", "code", "python"),
                 ("deep-agent/top.py", "code", "python"),
                 ("frontend/src/a.ts", "code", "typescript"),
                 ("frontend/src/views/b.tsx", "code", "typescript"),
-                ("core_cli/cli.py", "code", "python"),
-            ],
+                ("backend/cli.py", "code", "python"),
+            ]),
         )
 
     def test_excluded_dirs_never_descended(self):

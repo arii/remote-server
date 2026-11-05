@@ -29,13 +29,13 @@ except ImportError:
     END = "__end__"  # type: ignore
 
 try:
-    from core_cli.ast_validator import validate_source_syntax
-    from core_cli.parse_task_spec import (
+    from backend.ast_validator import validate_source_syntax
+    from backend.parse_task_spec import (
         SCAFFOLD_HINT,
         TaskSpecError,
         parse_task_spec,
     )
-    from core_cli.verify_allowlist import (
+    from backend.verify_allowlist import (
         VERIFY_TIMEOUT,
         VERIFY_VERB_HELP,
         validate_verify_command,
@@ -70,8 +70,8 @@ except ImportError:
 
 # Parity with deep-agent/model_router.py DEFAULT_OLLAMA_URL: the stack's Ollama
 # host. Replicated instead of imported — model_router pulls deep-agent-only
-# modules (pricing, runs, cli, ledger) that are not on core_cli's sys.path,
-# while core_cli stays stdlib-only and self-contained. Never bake the
+# modules (pricing, runs, cli, ledger) that are not on backend's sys.path,
+# while repair_worker stays stdlib-only and self-contained. Never bake the
 # /api/generate path into the default; endpoints are built by the helpers below.
 DEFAULT_OLLAMA_HOST = "http://ollama:11434"
 OLLAMA_GENERATE_PATH = "/api/generate"

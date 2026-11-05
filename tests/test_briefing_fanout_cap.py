@@ -11,7 +11,7 @@ first, with an explicit enrichment_note when capped.
 import unittest
 from unittest import mock
 
-import core_cli.briefing_summary as bs
+import backend.briefing_summary as bs
 
 
 def _pr(num, updated):

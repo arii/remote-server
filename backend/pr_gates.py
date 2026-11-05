@@ -1,7 +1,7 @@
 """Single-sourced PR merge gating (stdlib-only).
 
 Both the manual merge path (backend/api/routers/pulls.py::_pr_action)
-and the scheduled gated-merge action (core_cli/merge_gated.py)
+and the scheduled gated-merge action (backend/merge_gated.py)
 evaluate through here, so the gate semantics can never drift (the
 #477 lesson: never a copy). Stdlib-only: the scheduled step runs
 under system python3 without backend deps.
@@ -17,7 +17,7 @@ FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT",
 
 
 def ci_label(rollup) -> str:
-    """Port of core_cli/briefing_summary.py::ci_summary label."""
+    """Port of backend/briefing_summary.py::ci_summary label."""
     if rollup is None:
         return "unknown"
     if not rollup:

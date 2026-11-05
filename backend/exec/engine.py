@@ -480,7 +480,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     if action == "briefing-td":
         return [
             exec_argv(prefix +
-                      "python3 /srv/remote-server/core_cli/briefing_summary.py "
+                      "python3 /srv/remote-server/backend/briefing_summary.py "
                       f"--briefing --repo {repo} --gh {gh}"),
         ], None
     if action == "warm-context":
@@ -488,12 +488,12 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     if action == "preflight":
         return [
             exec_argv(prefix + "set -o pipefail; td --json preflight | "
-                      "python3 /srv/remote-server/core_cli/preflight_digest.py"),
+                      "python3 /srv/remote-server/backend/preflight_digest.py"),
         ], None
     if action == "create-plan":
         return [
             exec_argv(prefix + "mkdir -p .agents/plans && "
-                      "python3 /srv/remote-server/core_cli/briefing_summary.py "
+                      "python3 /srv/remote-server/backend/briefing_summary.py "
                       "--plan-dir .agents/plans "
                       f"--repo {repo} --gh {gh} && "
                       "git status --short .agents/plans/"),
@@ -528,7 +528,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # step_cwd resolve the module from this backend's tree.
         if not gh:
             return None, "merge-approved-gated needs a repo"
-        return [[sys.executable, "-m", "core_cli.merge_gated",
+        return [[sys.executable, "-m", "backend.merge_gated",
                  "--repo", repo, "--gh", gh]], None
     if action == "triage-fanout":
         # One-repo sweep for the run's repo (#670). --prefer is
@@ -553,7 +553,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # this backend's tree: stack_dir() lags the image.
         if not gh:
             return None, "check-notifications needs a repo"
-        return [[sys.executable, "-m", "core_cli.notify_check",
+        return [[sys.executable, "-m", "backend.notify_check",
                  "--repo", repo, "--gh", gh]], None
     if action == "autofile-scan":
         # One-repo repeated-failure scan (#825): local exec (like
@@ -562,7 +562,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # crossed signature (marker-deduped, filing only).
         if not gh:
             return None, "autofile-scan needs a repo"
-        return [[sys.executable, "-m", "core_cli.autofile_scan",
+        return [[sys.executable, "-m", "backend.autofile_scan",
                  "--repo", repo, "--gh", gh]], None
     if action == "ux-audit":
         # Dispatched multi-page UX audit (#850): local exec of the
@@ -592,10 +592,10 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # same snapshot + ledger state the API serves. Console-wide,
         # not repo-scoped (like ux-audit); findings are data (exit
         # 0, ledgered), capture errors fail the run (job_fail push).
-        return [[sys.executable, "-m", "core_cli.impact_pass"]], None
+        return [[sys.executable, "-m", "backend.impact_pass"]], None
     if action == "review-pr":
         # Local-model PR review (#886): local -m exec (the
-        # merge-approved-gated shape) of core_cli.review. Read-only
+        # merge-approved-gated shape) of backend.review. Read-only
         # by default: the bare argv maps to --dry-run (plan only,
         # prints, never posts); --post rides only when the attached
         # argv explicitly carries it. review.py rejects --dry-run +
@@ -604,7 +604,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             return None, "review-pr needs a repo"
         if not td_argv or not validate_review_pr_argv(td_argv):
             return None, "review-pr needs attached [review-pr, N]"
-        argv = [sys.executable, "-m", "core_cli.review",
+        argv = [sys.executable, "-m", "backend.review",
                "--repo", gh, "--pr", td_argv[1]]
         argv.append("--post" if len(td_argv) == 3 else "--dry-run")
         return [argv], None
@@ -657,7 +657,7 @@ def step_cwd(steps):
 
     Steps default to cwd=stack_dir(), a host bind-mount that lags
     the deployed image — and cwd SHADOWS PYTHONPATH for the
-    top-level package, so a stale stack_dir()/core_cli (missing
+    top-level package, so a stale stack_dir()/backend (missing
     notify_check.py) wins over /app and the import dies with No
     module named (live 2026-11-04). -m steps therefore execute FROM
     the deployed tree; their state paths are absolute, so no step

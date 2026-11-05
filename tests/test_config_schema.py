@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core_cli import validate_config
+from backend import validate_config
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 
@@ -130,7 +130,7 @@ class TestValidator(unittest.TestCase):
 class TestLiveTree(unittest.TestCase):
     def test_live_configs_validate(self):
         proc = subprocess.run(
-            [sys.executable, "-m", "core_cli", "validate-config"],
+            [sys.executable, "-m", "backend.validate_config"],
             capture_output=True, text=True, timeout=120,
             cwd=os.path.abspath(ROOT),
         )

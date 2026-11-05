@@ -35,7 +35,7 @@ MUSE_RE = re.compile(r"muse", re.I)
 # provider allowlist itself; everything else must be muse-free.
 # (.muse/ grep exclusions are directory names, not dependencies.)
 MUSE_FREE_MODULES = [
-    "core_cli/briefing_summary.py",
+    "backend/briefing_summary.py",
     "backend/api/routers/briefing.py",
     "deep-agent/model_router.py",
     "deep-agent/ask_investigator.py",

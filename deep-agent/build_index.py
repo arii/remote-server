@@ -46,7 +46,6 @@ CODE_SOURCES = [
     ("backend", True, (".py",), "python"),
     ("deep-agent", False, (".py",), "python"),
     ("frontend/src", True, (".ts", ".tsx"), "typescript"),
-    ("core_cli", True, (".py",), "python"),
 ]
 # Pruned before descent: the walker never enters these, and the
 # pattern tests assert they contribute zero chunks.
