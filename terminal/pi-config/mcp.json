@@ -17,7 +17,6 @@
       "exposure": "direct",
       "toolExposure": {
         "github_get_pr_diff": "direct",
-        "github_comment_triage_summary": "direct",
         "github_search_open_prs": "direct",
         "repo_read_ci_logs": "direct",
         "repo_get_changed_files": "direct",

@@ -26,13 +26,12 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-# Pinned to the version running in prod at pin time (npm latest was 0.10.0,
-# deliberately not taken). Bump: install the candidate, exercise the MCP
-# tools, then bump this default.
-ARG BOOMTICK_MCP_VERSION=0.8.0
-# Release tag, not main: every rebuild used to pull unaudited upstream.
-# Bump: take the newest cli-vX.Y.Z tag and smoke td in the built image.
-ARG BOOMTICK_CLI_REF=cli-v0.19.1
+# Git SHA pinned to boomtick origin/main at pin time (no release tag
+# exists yet containing the td JSON gates + MCP tool pruning; a full SHA
+# is immutable and therefore as deterministic as a tag).
+# Bump: take the newest cli-vX.Y.Z tag (or newer main SHA) and smoke td
+# + boomtick-mcp in the built image.
+ARG BOOMTICK_CLI_REF=3e9c5c2f8b604e38d8d0d76944d5c03e9d5c656e
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -73,9 +72,18 @@ RUN apt-get update \
  && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version \
  && gh --version \
- && npm install -g "pnpm@10.28.2" "@arii/boomtick-mcp@${BOOMTICK_MCP_VERSION}" \
+ && npm install -g "pnpm@10.28.2" \
  && pnpm --version \
+ && git clone https://github.com/arii/boomtick.git /tmp/boomtick \
+ && git -C /tmp/boomtick checkout "${BOOMTICK_CLI_REF}" \
+ && test "$(git -C /tmp/boomtick rev-parse HEAD)" = "${BOOMTICK_CLI_REF}" \
+ && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
+ && (cd /tmp/boomtick/mcp && pnpm run build) \
+ && npm install -g /tmp/boomtick/mcp \
+ && rm -rf /tmp/boomtick \
  && test -x /usr/local/bin/boomtick-mcp \
+ && test -f "$(npm root -g)/@arii/boomtick-mcp/dist/mcp/server.js" \
+ && test "$(find "$(npm root -g)/@arii/boomtick-mcp/.mcp/schemas" -name '*.json' | wc -l)" -ge 27 \
  && MUSE_NO_MODIFY_PATH=1 bash /tmp/muse-install.sh \
  && rm -f /tmp/muse-install.sh \
  && test -x /root/.local/bin/muse \

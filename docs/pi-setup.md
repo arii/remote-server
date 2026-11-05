@@ -71,11 +71,11 @@ should be replaced with the real number.
 
 Running local models on CPU (such as the AMD Ryzen 7 PRO 5850U on the S5) is
 extremely sensitive to initial prompt prefill token counts. When
-`@arii/boomtick-mcp` connects to Pi with all 35+ tools declared unconditionally,
-it injects ~2,500–3,500 tokens of JSON schemas into every conversation turn.
+`boomtick-mcp` connects to Pi with all 27 tools declared unconditionally,
+it injects ~2,000–3,000 tokens of JSON schemas into every conversation turn.
 
 Empirical benchmarks on the S5:
-- **All 35 MCP tools active:** ~190s prompt prefill on CPU.
+- **All 27 MCP tools active:** ~190s prompt prefill on CPU.
 - **Pi core tools (`--no-mcp`):** 2.7s total execution time (~70x speedup).
 
 Small 7B–14B models on CPU suffer from extreme latency and instruction dilution
@@ -97,8 +97,8 @@ Baked into the terminal image (`/usr/local/bin/`):
    ```bash
    pi-review "review the latest PR diff"
    ```
-   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr_diff,mcp__boomtick__github_comment_triage_summary "$@"`.
-   Scopes tools strictly to PR diffs and triage comments.
+   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr_diff,mcp__boomtick__github_get_pr_reviews "$@"`.
+   Scopes tools strictly to PR diffs and reviews.
 3. **`pi-triage`** (issue & CI triage):
    ```bash
    pi-triage "triage failing runs on tech-dancer"
@@ -118,7 +118,6 @@ Tool exposure can also be configured per MCP server via `toolExposure` in
       "exposure": "direct",
       "toolExposure": {
         "github_get_pr_diff": "direct",
-        "github_comment_triage_summary": "direct",
         "github_search_open_prs": "direct",
         "repo_read_ci_logs": "direct",
         "repo_get_changed_files": "direct",
@@ -135,19 +134,19 @@ Pi flags can also override tool visibility on demand:
 
 ## BoomTick MCP tools (active 2026-10-27)
 
-Pi also loads the BoomTick MCP server (`@arii/boomtick-mcp`, tracking latest
-in `terminal/Dockerfile` via `BOOMTICK_MCP_VERSION=latest` and run from
+Pi also loads the BoomTick MCP server (built from the pinned boomtick
+git SHA in `terminal/Dockerfile` via `BOOMTICK_CLI_REF` and run from
 the baked `/usr/local/bin/boomtick-mcp` binary declared in
 `terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
-`"toolExposure": {"*.*": "hidden"}` so the 35 underscore-named tools are
+`"toolExposure": {"*.*": "hidden"}` so the 27 underscore-named tools are
 declared directly to the model without duplicate dot-alias collisions or
 QuickJS `codemode` indirection. It adds structured tools Pi's built-ins
 don't have:
 
-- **GitHub ops:** search PRs, get diffs, detect merge conflicts, open
-  replacement PRs, triage comments.
-- **Repo ops:** inspect changed files, extract package scripts, map app
-  routes, read CI logs.
+- **GitHub ops:** search PRs, get diffs/reviews/commits, detect merge
+  conflicts, manage issues, comment on PRs.
+- **Repo ops:** inspect changed files, extract package scripts, read
+  CI logs, run tests, manage worktrees, dispatch agent sessions.
 - **Validation:** isolated repair-branch creation, verification suites
   (tests, Lighthouse, Playwright).
 - **Resources & prompts:** MCP resources (`mcp://workspace/agent-contract`, `repo://diff/{pr}`, `repo://ci/{pr}` … accessed via server `boomtick`)
@@ -173,9 +172,9 @@ server entry with its own `GITHUB_REPO` / `BOOMTICK_REPO_PATH`.
   check; if `td` isn't resolvable, startup fails with
   `spawnSync td ENOENT` and the connection closes. `td` is baked
   into the terminal image (venv `/opt/venvs/td`, `boomtick-cli`
-  from the BoomTick repo main branch — tracks main so td updates
-  on every terminal rebuild; pin `BOOMTICK_CLI_REF` to a `cli-vX.Y.Z`
-  tag to freeze it — on `PATH`) — no manual install.
+  from the pinned boomtick git SHA `BOOMTICK_CLI_REF` — on `PATH`) —
+  no manual install. Bump the SHA (or a newer `cli-vX.Y.Z` tag) in
+  both `terminal/Dockerfile` and `Dockerfile` together.
 - **Git safe.directory:** `terminal/gitconfig` (`safe.directory = *` +
   user identity) is baked into `/etc/gitconfig` and bind-mounted by
   compose so bind-mounted host checkouts pass `td doctor` and git
@@ -263,8 +262,8 @@ recreate; anything installed into `/srv/repos` (a host bind mount)
 persists.
 
 - **Baked into the terminal image** (CI smoke-tested; versions pinned except `td`, `boomtick-mcp` and Muse, which track latest):
-  Node 24.16.0 + npm, pnpm 10.28.2, `@arii/boomtick-mcp` (tracks latest), Muse CLI,
-  Python 3 + venv/pip, `td` (`boomtick-cli` from the BoomTick repo main branch in venv
+  Node 24.16.0 + npm, pnpm 10.28.2, `boomtick-mcp` (built from the pinned boomtick SHA), Muse CLI,
+  Python 3 + venv/pip, `td` (`boomtick-cli` from the pinned boomtick SHA in venv
   `/opt/venvs/td`, on `PATH`), `gh`, `git` (with `/etc/gitconfig`
   `safe.directory = *`), Docker CLI, `tmux`, `vim`. This covers the
   interpreters and package managers every repo needs before its own setup can run.

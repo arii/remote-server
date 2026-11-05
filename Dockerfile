@@ -25,7 +25,11 @@ RUN mkdir -p /tscheck && cp -rL /build/frontend/node_modules/typescript/lib /tsc
 
 # ---- Runtime ----
 FROM python:3.11-slim
-ARG BOOMTICK_CLI_REF=main
+# Git SHA pinned to boomtick origin/main at pin time (same pin as the
+# terminal image: no release tag exists yet containing the td JSON
+# gates; a full SHA is immutable and therefore deterministic).
+# Bump together with terminal/Dockerfile BOOMTICK_CLI_REF.
+ARG BOOMTICK_CLI_REF=3e9c5c2f8b604e38d8d0d76944d5c03e9d5c656e
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 ARG NODE_VERSION=22.21.1
