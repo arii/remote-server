@@ -1492,6 +1492,7 @@ export interface AgentRun {
   model: string;
   provider: string | null;
   thread: string;
+  repo: string | null;
   started_ts: number;
   duration_s: number | null;
   ok: boolean;

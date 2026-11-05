@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -188,6 +188,7 @@ function pastRun(over: Partial<AgentRun> = {}): AgentRun {
     model: 'm',
     provider: null,
     thread: 't',
+    repo: null,
     started_ts: 0,
     duration_s: 1,
     ok: true,
@@ -205,10 +206,15 @@ function paneHtml(
   runs: AgentRun[],
   notice: string | null = null,
   budget: BudgetStatus | null = null,
+  repo = 'r',
+  showAllRepos = false,
 ): string {
   return renderToStaticMarkup(
     <RunsPane
       runs={runs}
+      repo={repo}
+      showAllRepos={showAllRepos}
+      onToggleScope={() => {}}
       selected={null}
       detail={null}
       onSelect={() => {}}
@@ -284,6 +290,9 @@ function selectedPaneHtml(runs: AgentRun[], selected: string | null, detail: Age
   return renderToStaticMarkup(
     <RunsPane
       runs={runs}
+      repo="r"
+      showAllRepos={false}
+      onToggleScope={() => {}}
       selected={selected}
       detail={detail}
       onSelect={() => {}}
@@ -323,6 +332,9 @@ describe('run decisions (issue #414)', () => {
     const html = renderToStaticMarkup(
       <RunsPane
         runs={[pastRun()]}
+        repo="r"
+        showAllRepos={false}
+        onToggleScope={() => {}}
         selected="run-0"
         detail={detailWith({
           decisions: [{ what: 'ran grep_repo(q)', why: '→ found it' }],
@@ -344,6 +356,9 @@ describe('run decisions (issue #414)', () => {
     const html = renderToStaticMarkup(
       <RunsPane
         runs={[pastRun()]}
+        repo="r"
+        showAllRepos={false}
+        onToggleScope={() => {}}
         selected="run-0"
         detail={detailWith({})}
         onSelect={() => {}}
@@ -1692,5 +1707,110 @@ describe('chat actionable rows (issue #907)', () => {
     );
     expect(html).toContain('data-testid="chat-trace-copy"');
     expect(html).toContain('Copy trace');
+  });
+});
+
+describe('past runs repo scope (issue #933)', () => {
+  it('shortens owner/name tags, passes nulls through', () => {
+    expect(shortRunRepo('arii/remote-server')).toBe('remote-server');
+    expect(shortRunRepo('remote-server')).toBe('remote-server');
+    expect(shortRunRepo(null)).toBe(null);
+    expect(shortRunRepo(undefined)).toBe(null);
+    expect(shortRunRepo('')).toBe(null);
+    expect(shortRunRepo('arii/')).toBe(null);
+  });
+
+  it('matches the selected repo, keeps unattributed rows visible', () => {
+    expect(runMatchesRepo(pastRun({ repo: 'arii/r' }), 'r')).toBe(true);
+    expect(runMatchesRepo(pastRun({ repo: 'arii/other' }), 'r')).toBe(false);
+    expect(runMatchesRepo(pastRun({ repo: null }), 'r')).toBe(true);
+  });
+
+  it('filters to the selected repo unless widened', () => {
+    const runs = [
+      pastRun({ id: 'run-0', repo: 'arii/r' }),
+      pastRun({ id: 'run-1', repo: 'arii/other' }),
+      pastRun({ id: 'run-2', repo: null }),
+    ];
+    expect(filterRunsByRepo(runs, 'r', false).map((r) => r.id)).toEqual([
+      'run-0',
+      'run-2',
+    ]);
+    expect(filterRunsByRepo(runs, 'r', true)).toBe(runs);
+  });
+
+  it('badges each tagged run, skips the badge when unattributed', () => {
+    const html = paneHtml(
+      [pastRun({ repo: 'arii/r' }), pastRun({ id: 'run-1', repo: null })],
+      null,
+      null,
+      'r',
+      true,
+    );
+    expect(html).toContain('data-testid="chat-run-repo-run-0"');
+    expect(html).toContain('>r</span>');
+    expect(html).not.toContain('data-testid="chat-run-repo-run-1"');
+  });
+
+  it('scopes to the repo by default with a widen toggle and note', () => {
+    const html = paneHtml(
+      [pastRun({ repo: 'arii/r' }), pastRun({ id: 'run-1', repo: 'arii/other' })],
+      null,
+      null,
+      'r',
+      false,
+    );
+    expect(html).toContain('data-testid="chat-run-run-0"');
+    expect(html).not.toContain('data-testid="chat-run-run-1"');
+    expect(html).toContain('data-testid="chat-runs-scope"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain('data-testid="chat-runs-scope-note"');
+    expect(html).toContain('Scoped to r · 1 other-repo run hidden');
+  });
+
+  it('widened view shows every run with the toggle pressed', () => {
+    const html = paneHtml(
+      [pastRun({ repo: 'arii/r' }), pastRun({ id: 'run-1', repo: 'arii/other' })],
+      null,
+      null,
+      'r',
+      true,
+    );
+    expect(html).toContain('data-testid="chat-run-run-0"');
+    expect(html).toContain('data-testid="chat-run-run-1"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).not.toContain('data-testid="chat-runs-scope-note"');
+  });
+
+  it('empty scope keeps the toggle with an empty note, not a blank pane', () => {
+    const html = paneHtml([pastRun({ repo: 'arii/other' })], null, null, 'r', false);
+    expect(html).toContain('data-testid="chat-runs"');
+    expect(html).toContain('data-testid="chat-runs-scope"');
+    expect(html).toContain('data-testid="chat-runs-empty-scope"');
+    expect(html).toContain('No runs for r yet.');
+  });
+
+  it('metered total covers the visible runs only', () => {
+    const html = paneHtml(
+      [
+        pastRun({ repo: 'arii/r', metered: true, cost_usd: 0.01 }),
+        pastRun({ id: 'run-1', repo: 'arii/other', metered: true, cost_usd: 5 }),
+      ],
+      null,
+      null,
+      'r',
+      false,
+    );
+    expect(html).toContain('Metered total $0.01');
+  });
+});
+
+describe('composer auto route line (issue #933)', () => {
+  const noop = () => {};
+
+  it('reads at full weight in Auto mode', () => {
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    expect(html).toContain('data-testid="chat-route-hint"');
+    expect(html).toContain('class="chat-route-auto"');
   });
 });
