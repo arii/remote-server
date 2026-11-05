@@ -9,7 +9,7 @@ test.describe('review merge-block context', () => {
     page,
   }) => {
     await page.goto('/');
-    await page.getByTestId('inbox-open-review').click();
+    await page.getByTestId('nav-review').click();
     await expect(page.getByTestId('review-pr-list')).toBeVisible();
 
     await page.getByTestId('open-pr-103').click();

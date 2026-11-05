@@ -10,6 +10,15 @@ describe('history search input (issue #608)', () => {
     expect(html).toContain('data-testid="history-kind-filter"');
   });
 
+  it('accepts a deep-link search seed without crashing (issue #930)', () => {
+    // The nonce effect only runs client-side; static markup just
+    // proves the prop threads through to a normal first paint.
+    const html = renderToStaticMarkup(
+      <HistoryView repo="r" health={null} queryRequest={{ query: 'deploy', nonce: 1 }} />,
+    );
+    expect(html).toContain('data-testid="history-search"');
+  });
+
   it('explains an empty result while filtering, keeps the default copy otherwise', () => {
     const filtered = renderToStaticMarkup(<RowsList rows={[]} filtering />);
     expect(filtered).toContain('data-testid="history-empty"');
