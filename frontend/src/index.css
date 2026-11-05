@@ -342,6 +342,11 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
 
 [data-testid="history-list"] { gap: 0; }
 .history-row { padding: 0.55rem 0; border-top: 1px solid var(--border); }
+/* Inline status edge (#964): green/red row edge for exit status,
+   readable without expanding. Plain left edge, no glow or radius. */
+li.history-row.tone-bad,
+li.runs-row.tone-bad { border-left: 3px solid var(--bad); padding-left: 0.5rem; }
+li.history-row.tone-ok { border-left: 3px solid var(--ok); padding-left: 0.5rem; }
 .history-row:first-child { border-top: 0; }
 .history-row .row-title { display: flex; align-items: center; gap: 0.45rem; }
 .history-row .row-meta { display: block; margin-top: 0.15rem; }

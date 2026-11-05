@@ -27,6 +27,11 @@ describe('run trace link (issue #584)', () => {
     expect(html).not.toContain('Open run trace');
     expect(html).not.toContain('<a ');
   });
+
+  it('paints the failing edge without expanding (issue #964)', () => {
+    const html = renderToStaticMarkup(<RunRow run={run} />);
+    expect(html).toContain('class="runs-row tone-bad"');
+  });
 });
 
 describe('container list failure (issue #530)', () => {
