@@ -1,11 +1,12 @@
-"""repo router: read-only git status for one validated repo."""
+"""repo router: git status/diff reads + confirmed one-click actions."""
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.core import (get_repo_diff, get_repo_metrics,
                           get_repo_status, list_repos,
-                          list_repo_files)
+                          list_repo_files, repo_discard_untracked,
+                          repo_stash, repo_sync, require_confirm)
 
 router = APIRouter(prefix="/api/repo", tags=["repo"])
 
@@ -19,14 +20,44 @@ class RepoStatus(BaseModel):
     clean: bool
 
 
+class RepoDiffFile(BaseModel):
+    path: str
+    status: str
+    staged: bool = False
+    unstaged: bool = False
+    additions: int = 0
+    deletions: int = 0
+
+
 class RepoDiff(BaseModel):
     repo: str
     branch: str
     clean: bool
     status_short: str
+    status_truncated: bool = False
     diff_stat: str
     diff: str
     truncated: bool
+    files: list[RepoDiffFile] = []
+    files_truncated: bool = False
+
+
+class RepoActionRequest(BaseModel):
+    repo: str = "remote-server"
+    action: str = ""
+    intent: str = ""
+    confirmed: bool = False
+
+
+class RepoActionResult(BaseModel):
+    ok: bool = True
+    repo: str = ""
+    action: str = ""
+    clean: bool = False
+    detail: str = ""
+
+
+REPO_ACTIONS = ("stash", "discard-untracked", "sync")
 
 
 class RepoHealth(BaseModel):
@@ -99,6 +130,25 @@ def status(repo: str) -> dict:
 def diff(repo: str) -> dict:
     try:
         return get_repo_diff(repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/action", response_model=RepoActionResult)
+def repo_action(body: RepoActionRequest) -> dict:
+    if body.action not in REPO_ACTIONS:
+        raise HTTPException(status_code=400, detail="unknown action")
+    require_confirm(body, "repo-action")
+    try:
+        if body.action == "stash":
+            return repo_stash(body.repo)
+        if body.action == "discard-untracked":
+            return repo_discard_untracked(body.repo)
+        return repo_sync(body.repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError as exc:

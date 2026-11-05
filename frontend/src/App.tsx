@@ -13,12 +13,13 @@ import {
   fetchRepos,
   fetchSystemHealth,
   flushOutbox,
+  repoAction,
   restartContainer,
   startJobRun,
   subscribeApiFailures,
   warmRepoMetrics,
 } from './apiClient';
-import type { ContainerStatsRow, SystemHealthResponse } from './apiClient';
+import type { ContainerStatsRow, RepoAction, RepoActionResponse, SystemHealthResponse } from './apiClient';
 import type { RepoInfo } from './reviewTypes';
 import { loadContainerStats, loadRepoDiff, loadRepos, loadSystemHealth, useMock } from './views/mockViews';
 import RepoDiffModal from './views/RepoDiffModal';
@@ -287,8 +288,10 @@ export default function App() {
     };
   }, []);
 
-  // Diff modal fetch: on open only; the modal is a point-in-time
-  // read (close + reopen retries).
+  // Diff modal fetch: on open + after each one-click git action
+  // (diffSeq); the modal is otherwise a point-in-time read (close
+  // + reopen retries).
+  const [diffSeq, setDiffSeq] = useState(0);
   useEffect(() => {
     if (!diffRepo) return;
     let cancelled = false;
@@ -300,9 +303,12 @@ export default function App() {
         if (cancelled) return;
         setDiffData({
           statusShort: d.status_short,
+          statusTruncated: d.status_truncated,
           diffStat: d.diff_stat,
           diff: d.diff,
           truncated: d.truncated,
+          files: d.files,
+          filesTruncated: d.files_truncated,
         });
       } catch (err) {
         if (!cancelled) setDiffError(err instanceof Error ? err.message : String(err));
@@ -311,7 +317,23 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [diffRepo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diffRepo, diffSeq]);
+
+  // One-click git action from the diff modal (#927): run it, then
+  // refresh the modal payload and the header dirty pill.
+  async function onRepoAction(action: RepoAction): Promise<RepoActionResponse> {
+    if (!diffRepo) throw new Error('no repo selected');
+    const r = await repoAction(diffRepo, action);
+    setDiffSeq((n) => n + 1);
+    try {
+      const live = await fetchRepos();
+      if (live.repos.length > 0) setRepos(live.repos);
+    } catch {
+      // Pill keeps its prior state; the modal shows the result.
+    }
+    return r;
+  }
 
   // Stats drawer fetch (issue #928): rows always derive from the
   // header health snapshot (the History banner's store) with live
@@ -487,6 +509,8 @@ export default function App() {
           branch={diffBranch}
           data={diffData}
           error={diffError}
+          onAction={(action) => onRepoAction(action)}
+          onAskAgent={askAgent}
           onClose={() => setDiffRepo(null)}
         />
       )}
