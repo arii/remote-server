@@ -162,6 +162,28 @@ class TestCliCommands(unittest.TestCase):
                       "--repo", "/tmp", "--issue", "abc"]), 2)
 
 
+class TestSubmitArgv(unittest.TestCase):
+    def test_submit_uses_agent_submit_pr(self):
+        import json as _json
+        seen = []
+
+        def fake_td(argv, cwd=None):
+            seen.append(list(argv))
+            return 0, _json.dumps({"status": "success",
+                                   "url": "https://example.invalid/pr/9"})
+
+        import pipeline as pipeline_mod
+        pipe = pipeline_mod.Pipeline("/tmp", "intent", issue_id=7,
+                                     td_run=fake_td)
+        ok, url = pipe.stage_submit("/tmp/wt", "title", "body")
+        self.assertTrue(ok)
+        self.assertEqual(url, "https://example.invalid/pr/9")
+        self.assertEqual(
+            seen[0][:3], ["agent", "submit-pr", "--worktree"])
+        self.assertIn("--issue", seen[0])
+        self.assertIn("7", seen[0])
+
+
 class TestRealTdSmoke(unittest.TestCase):
     @unittest.skipUnless(shutil.which("td"), "no td on PATH")
     def test_td_worktree_help(self):
