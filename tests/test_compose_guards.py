@@ -32,6 +32,24 @@ class TestComposeGuards(unittest.TestCase):
             "GITHUB_USER interpolation must use the :? fail-closed guard",
         )
 
+    def test_buttons_ollama_url(self):
+        """buttons OLLAMA_URL must default to the compose-network alias.
+
+        localhost inside the buttons container is itself, so every
+        model call refused (issue #966). The default must be the
+        ollama service address with an env override, never localhost.
+        """
+        with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        gated = [line for line in lines if "OLLAMA_URL" in line]
+        self.assertEqual(len(gated), 1,
+                         "expected exactly one OLLAMA_URL line")
+        self.assertIn("http://ollama:11434", gated[0])
+        self.assertNotIn("localhost", gated[0])
+        self.assertRegex(gated[0], r"\$\{OLLAMA_URL:-http://ollama:11434",
+                         "OLLAMA_URL must keep the host override with "
+                         "the network-alias default")
+
     def test_pinned_service_images(self):
         """ollama/tailscale/code-server images must be digest-pinned.
 
