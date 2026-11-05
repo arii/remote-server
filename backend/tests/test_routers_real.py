@@ -75,8 +75,8 @@ class RealRoutersTest(unittest.TestCase):
         body = resp.json()
         self.assertIsInstance(body["containers"], list)
         for row in body["containers"]:
-            for key in ("name", "service", "state", "cpu_pct",
-                        "mem_used", "mem_limit"):
+            for key in ("name", "service", "state", "status",
+                        "health", "cpu_pct", "mem_used", "mem_limit"):
                 self.assertIn(key, row)
 
     def test_jobs_honest_empty(self):

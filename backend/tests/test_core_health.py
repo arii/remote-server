@@ -137,10 +137,12 @@ class ContainerStatsTest(unittest.TestCase):
         self._check_calls(seen)
         self.assertEqual(body["containers"], [
             {"name": "remote-buttons-1", "service": "buttons",
-             "state": "running", "cpu_pct": 0.12,
+             "state": "running", "status": "Up 5 minutes",
+             "health": "", "cpu_pct": 0.12,
              "mem_used": "12.34MiB", "mem_limit": "7.81GiB"},
             {"name": "remote-terminal-1", "service": "terminal",
-             "state": "running", "cpu_pct": 2.5,
+             "state": "running", "status": "Up 2 hours",
+             "health": "", "cpu_pct": 2.5,
              "mem_used": "1.20GiB", "mem_limit": "7.81GiB"},
         ])
 
@@ -151,7 +153,8 @@ class ContainerStatsTest(unittest.TestCase):
         self._check_calls(seen)
         self.assertEqual(body["containers"], [{
             "name": "remote-buttons-1", "service": "buttons",
-            "state": "running", "cpu_pct": None,
+            "state": "running", "status": "Up 5 minutes",
+            "health": "healthy", "cpu_pct": None,
             "mem_used": None, "mem_limit": None,
         }])
 

@@ -379,10 +379,14 @@ export function fetchSystemHealth(): Promise<SystemHealthResponse> {
 }
 
 // Per-container live CPU/RAM for the header drawer (issue #663).
+// status/health ride along from compose ps (#928); optional so
+// rows derived from older backends still typecheck.
 export interface ContainerStatsRow {
   name: string;
   service: string;
   state: string;
+  status?: string;
+  health?: string;
   cpu_pct: number | null;
   mem_used: string | null;
   mem_limit: string | null;
@@ -394,6 +398,30 @@ export interface ContainerStatsResponse {
 
 export function fetchContainerStats(): Promise<ContainerStatsResponse> {
   return getJson<ContainerStatsResponse>('api/system/stats');
+}
+
+// Last-N docker log lines + plain restart for one stack
+// container (issue #928). The restart round-trips a compose
+// restart (server timeout 120s), so the client budget clears it.
+export interface ContainerLogsResponse {
+  service: string;
+  name: string;
+  lines: string[];
+  truncated: boolean;
+}
+
+export function fetchContainerLogs(service: string, tail = 100): Promise<ContainerLogsResponse> {
+  return getJson<ContainerLogsResponse>(
+    `api/system/containers/${encodeURIComponent(service)}/logs?tail=${tail}`,
+  );
+}
+
+export function restartContainer(service: string): Promise<{ ok: boolean; service: string }> {
+  return postJson<{ ok: boolean; service: string }>(
+    `api/system/containers/${encodeURIComponent(service)}/restart`,
+    { intent: 'container-restart', confirmed: true },
+    150_000,
+  );
 }
 
 // Short-lived in-memory cache + in-flight dedup for slow view reads

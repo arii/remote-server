@@ -191,7 +191,7 @@ export function StackSection({
   onOpenStats,
 }: {
   health: SystemHealthResponse | null;
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
 }) {
   const allUp =
     health !== null &&
@@ -855,7 +855,7 @@ export default function NowView({
   // so App never shows a stale entry pressed.
   onSectionChange?: (section: 'review' | 'jobs' | 'queue' | null) => void;
   // Opens the container stats drawer (#896): Stack pills navigate.
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
   // Deferred flags backing the strips bulk bar (issue #591). The

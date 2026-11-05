@@ -14,6 +14,7 @@ import type {
   LedgerResponse,
 } from '../apiTypes';
 import type {
+  ContainerLogsResponse,
   ContainerStatsResponse,
   RepoDiffResponse,
   SystemHealthResponse,
@@ -56,6 +57,21 @@ export function loadSystemHealth(): SystemHealthResponse {
 export function loadContainerStats(): ContainerStatsResponse {
   const s = systemStatsFixture as unknown as ContainerStatsResponse;
   return { containers: [...s.containers] };
+}
+
+// Canned log tail for ?mock=1 (issue #928): the log slide-over
+// never fires live in preview mode.
+export function loadContainerLogs(service: string): ContainerLogsResponse {
+  return {
+    service,
+    name: `remote-${service}-1`,
+    lines: [
+      `${service}: listening on :8000`,
+      `${service}: health check ok`,
+      `${service}: idle, awaiting requests`,
+    ],
+    truncated: false,
+  };
 }
 
 export function loadRepoDiff(repo: string): RepoDiffResponse {

@@ -18,6 +18,7 @@ import {
   fetchAgentProviders,
   fetchAttention,
   fetchBriefing,
+  fetchContainerLogs,
   fetchContainerStats,
   fetchInbox,
   fetchJobs,
@@ -43,6 +44,7 @@ import {
   postChatStream,
   requestPrChanges,
   rerunJob,
+  restartContainer,
   restoreRow,
   setDigestSchedule,
   saveNotificationPreferences,
@@ -145,6 +147,38 @@ describe('apiClient (fetch with inline shapes)', () => {
     expect(fetch).toHaveBeenCalledWith(
       '/api/system/stats',
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('fetches the container log tail (issue #928)', async () => {
+    const logs = { service: 'caddy', name: 'remote-caddy-1', lines: ['a'], truncated: false };
+    vi.stubGlobal('fetch', mockFetchJson(logs));
+    expect(await fetchContainerLogs('caddy')).toEqual(logs);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/system/containers/caddy/logs?tail=100',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('encodes the service name in the log tail URL (issue #928)', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ service: 'x', name: 'n', lines: [], truncated: false }));
+    await fetchContainerLogs('a/b', 5);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/system/containers/a%2Fb/logs?tail=5',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('restarts a container with the confirm intent (issue #928)', async () => {
+    const res = { ok: true, service: 'caddy' };
+    vi.stubGlobal('fetch', mockFetchJson(res));
+    expect(await restartContainer('caddy')).toEqual(res);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/system/containers/caddy/restart',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ intent: 'container-restart', confirmed: true }),
+      }),
     );
   });
 

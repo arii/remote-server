@@ -16,7 +16,7 @@ export function ContainerPills({
   containers: ContainerStatus[];
   error?: string | null;
   // Opens the container stats drawer (#896): every pill navigates.
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
 }) {
   if (error) {
     return (
@@ -45,8 +45,8 @@ export function ContainerPills({
               type="button"
               className="repo-chip pill-dot"
               title={c.status ?? ''}
-              aria-label={`${label} — open container stats`}
-              onClick={onOpenStats}
+              aria-label={`${label} — open container logs`}
+              onClick={() => onOpenStats?.(c.service ?? c.name ?? '')}
             >
               <span
                 aria-hidden="true"
@@ -68,7 +68,7 @@ function HealthLine({
 }: {
   health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
 }) {
   if (!health) {
     return (
@@ -146,7 +146,7 @@ export function ObservabilityBody({
   health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
   error: string | null;
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
 }) {
   return (
     <>
@@ -169,7 +169,7 @@ export default function ObservabilitySection({
 }: {
   repo: string;
   health: SystemHealthResponse | null;
-  onOpenStats?: () => void;
+  onOpenStats?: (service?: string) => void;
 }) {
   const [flow, setFlow] = useState<WorkflowHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);

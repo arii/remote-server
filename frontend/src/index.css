@@ -540,6 +540,31 @@ a.link-chip:hover { border-color: var(--accent); }
 .palette-empty { margin: 0.6rem 0.25rem 0.2rem; }
 .palette-foot { margin: 0.5rem 0.25rem 0.1rem; }
 
+/* Container log slide-over (#928): right-anchored panel over a
+   dimmed page, same surface/border grammar as the palette. */
+.logs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(3, 7, 18, 0.32);
+  display: flex;
+  justify-content: flex-end;
+}
+.logs-panel {
+  width: min(40rem, 94vw);
+  height: 100%;
+  overflow-y: auto;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  padding: 1rem;
+}
+.logs-pre {
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* @-mention completion list under the chat composer (#653). */
 .mention-list {
   display: grid;
