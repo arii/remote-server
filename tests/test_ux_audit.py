@@ -334,8 +334,8 @@ class GroupingTest(unittest.TestCase):
                          "a/b.html")
 
     def test_group_spec_body_parses_as_task_spec(self):
-        from core_cli.parse_task_spec import parse_task_spec
-        from core_cli.verify_allowlist import validate_verify_command
+        from backend.parse_task_spec import parse_task_spec
+        from backend.verify_allowlist import validate_verify_command
 
         groups = ux_audit.group_findings([
             {"severity": "high", "title": "[P1] x", "route": "/a/",
@@ -360,8 +360,8 @@ class IssueRenderTest(unittest.TestCase):
         return ux_audit.build_report("arii.github.io", crawled)
 
     def test_render_carries_scores_groups_and_spec(self):
-        from core_cli.parse_task_spec import parse_task_spec
-        from core_cli.verify_allowlist import validate_verify_command
+        from backend.parse_task_spec import parse_task_spec
+        from backend.verify_allowlist import validate_verify_command
 
         report = self._report()
         title, body = ux_audit.render_issue("arii.github.io",

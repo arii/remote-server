@@ -11,7 +11,7 @@ board rows for merged branches relabel to Merged.
 import unittest
 from unittest import mock
 
-import core_cli.briefing_summary as bs
+import backend.briefing_summary as bs
 
 
 OPEN_ROWS = [

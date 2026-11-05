@@ -511,7 +511,7 @@ def post_body(repo, pr, body):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="python3 -m core_cli review",
+        prog="python3 -m backend.review",
         description="Local-model PR review: review plan + Ollama/Nebius "
                     "diff review. Prints; posts only with --post.")
     parser.add_argument("--repo", required=True,

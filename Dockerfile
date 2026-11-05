@@ -85,7 +85,6 @@ COPY deep-agent/requirements.txt ./deep-agent-requirements.txt
 RUN /opt/venvs/td/bin/pip install --no-cache-dir -r backend-requirements.txt -r deep-agent-requirements.txt
 COPY backend/ ./backend/
 COPY deep-agent/ ./deep-agent/
-COPY core_cli/ ./core_cli/
 COPY scripts/buttons-entrypoint.sh /usr/local/bin/buttons-entrypoint.sh
 RUN chmod +x /usr/local/bin/buttons-entrypoint.sh
 # impact-pass capture contract (#880): ux scripts + config td ux shells to.
@@ -99,18 +98,18 @@ RUN git config --system --get-all safe.directory | grep -qF '*' \
  && /opt/venvs/td/bin/td --help > /dev/null \
  && /opt/venvs/td/bin/python -c "import fastapi, uvicorn, httpx, langchain; print('deps ok')" \
  && /opt/venvs/td/bin/python -c "import backend.server; print('server imports ok')" \
- && /opt/venvs/td/bin/python /app/core_cli/briefing_summary.py 2>&1 | grep -q "usage:" \
+ && /opt/venvs/td/bin/python /app/backend/briefing_summary.py 2>&1 | grep -q "usage:" \
  && echo "briefing script imports ok"
 # Toolchain smoke (#881): the impact-pass preflight must pass in the
 # image itself, so a regressed runtime dep fails the build instead of
 # a 3am scheduled fire.
-RUN /opt/venvs/td/bin/python /app/core_cli/impact_pass.py --check
+RUN /opt/venvs/td/bin/python /app/backend/impact_pass.py --check
 # Syntax-gate smoke (issue #488): bad .ts must be INVALID (brackets
 # alone would pass it, so INVALID proves the real toolchain ran).
 RUN printf 'const x: = 3;\n' > /tmp/gate-bad.ts \
  && printf 'const x: number = 3;\n' > /tmp/gate-good.ts \
- && /opt/venvs/td/bin/python /app/core_cli/ast_validator.py /tmp/gate-bad.ts 2>&1 | grep -q "^INVALID:" \
- && /opt/venvs/td/bin/python /app/core_cli/ast_validator.py /tmp/gate-good.ts | grep -q "^VALID:" \
+ && /opt/venvs/td/bin/python /app/backend/ast_validator.py /tmp/gate-bad.ts 2>&1 | grep -q "^INVALID:" \
+ && /opt/venvs/td/bin/python /app/backend/ast_validator.py /tmp/gate-good.ts | grep -q "^VALID:" \
  && rm /tmp/gate-bad.ts /tmp/gate-good.ts \
  && echo "ts syntax gate live"
 # Agent runtime = same venv (chat spawn inherits the langchain stack).

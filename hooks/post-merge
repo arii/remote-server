@@ -6,7 +6,7 @@
 #
 # What it does, and what it deliberately does NOT do:
 # - If the merge touched anything baked into the buttons image
-#   (core_cli/, backend/, frontend/, deep-agent/, Dockerfile, compose
+#   (backend/, frontend/, deep-agent/, Dockerfile, compose
 #   file, caddy config), it rebuilds ONLY the buttons container —
 #   never the terminal (a terminal rebuild would kill live sessions)
 #   and never on top of an automated pull.
@@ -44,7 +44,7 @@ changed="$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null \
   || git diff --name-only 'HEAD@{1}' HEAD 2>/dev/null || true)"
 [ -z "$changed" ] && exit 0
 
-if printf '%s\n' "$changed" | grep -Eq '^(core_cli/|backend/|frontend/|deep-agent/|Dockerfile|docker-compose\.yml|caddy/Caddyfile)'; then
+if printf '%s\n' "$changed" | grep -Eq '^(backend/|frontend/|deep-agent/|Dockerfile|docker-compose\.yml|caddy/Caddyfile)'; then
   # BUTTONS_CONTAINER_MARKER overrides the in-container probe for tests.
   if [ -f "${BUTTONS_CONTAINER_MARKER:-/app/server.py}" ]; then
     echo "[post-merge] buttons changed, but refusing to rebuild from inside the buttons container — press Deploy buttons or run: docker compose up -d --build buttons"
@@ -71,6 +71,11 @@ if printf '%s\n' "$changed" | grep -Eq '^(core_cli/|backend/|frontend/|deep-agen
       echo "[post-merge] buttons changed — rebuilding buttons container..."
       HOST_HOME=/home/ari HOME=/home/ari docker compose -f "$COMPOSE_FILE" up -d --build buttons \
         || echo "[post-merge] buttons rebuild failed (page may be stale)"
+      if command -v td >/dev/null 2>&1; then
+        echo "[post-merge] refreshing warm checkout in background (td init)..."
+        (td init --json >> "${TMPDIR:-/tmp}/td-init-post-merge.log" 2>&1 || true) &
+        disown 2>/dev/null || true
+      fi
     else
       echo "[post-merge] buttons changed — docker not found; rebuild manually: docker compose up -d --build buttons"
     fi

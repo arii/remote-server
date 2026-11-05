@@ -31,7 +31,7 @@ from backend.api.cache import SWRCache
 from backend.gh import repo_gh, run_gh, run_gh_json
 from backend.pr_gates import (FAILING_CONCLUSIONS, ci_label,
                               evaluate_merge_gates, merge_argv)
-from core_cli import context_filter
+from backend import context_filter
 
 router = APIRouter(prefix="/api", tags=["pulls"])
 

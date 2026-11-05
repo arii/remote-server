@@ -3,7 +3,7 @@
   "entry": [
     "scripts/*.mjs",
     "buttons/ux/*.js",
-    "core_cli/ts_check.js"
+    "backend/ts_check.js"
   ],
   "ignorePatterns": [
     "terminal/**",

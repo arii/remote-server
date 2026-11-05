@@ -2,7 +2,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from core_cli import briefing_summary
+from backend import briefing_summary
 
 
 class TestFetchPrDiff(unittest.TestCase):

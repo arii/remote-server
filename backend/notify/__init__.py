@@ -532,7 +532,7 @@ def _fire_budget_watch(now: float, sender) -> bool:
 # cheapest calls that still cover both push paths. mergeStateStatus
 # rides `pr list` directly (verified live), so conflicts need no
 # per-PR view calls; DIRTY is the only conflict verdict, mirroring
-# core_cli/briefing_summary.py (overlap scans never count).
+# backend/briefing_summary.py (overlap scans never count).
 NOTIFY_RUN_FIELDS = "name,headBranch,conclusion,event,url"
 NOTIFY_PR_FIELDS = "number,title,mergeStateStatus,url"
 NOTIFY_GH_TIMEOUT = 60

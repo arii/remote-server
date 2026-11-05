@@ -162,4 +162,4 @@ jobs:
       - name: root unit tests
         run: npm run test:root
       - name: validate configs
-        run: python3 -m core_cli validate-config
+        run: python3 -m backend.validate_config
