@@ -469,13 +469,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
-  // Live nav badges + background precache (issue #936): every
-  // counter derives from the same payload its destination renders,
-  // refreshed on boot and repo switch. Null means not loaded yet —
-  // the pill stays hidden instead of flashing a wrong zero, and a
-  // failed refresh keeps the last good counts. The precache run is
-  // fire-and-forget and rides the same view cache, so badge reads
-  // and tab payloads cost one request per endpoint.
+  // Live nav badges + background precache (issue #936, review
+  // F1 on #954): every counter derives from the same payload its
+  // destination renders. Boot + repo switch run a precache plus an
+  // immediate refresh; a 60s poll, a tab-visible refresh, and a
+  // refresh on any API failure keep the pills live afterwards —
+  // single-flight, sharing the view cache, so each tick costs one
+  // request per endpoint. Null means not loaded yet — the pill
+  // stays hidden instead of flashing a wrong zero, and a failed
+  // refresh keeps the last good counts.
   const [badgeCounts, setBadgeCounts] = useState<NavBadgeCounts>(EMPTY_BADGE_COUNTS);
   useEffect(() => {
     if (useMock()) {
@@ -492,8 +494,7 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    void prefetchTabPayloads(repo);
-    (async () => {
+    const refresh = singleFlight(async () => {
       const rollup = isRollupRepo(repo);
       const [inboxRes, prsRes, jobsRes, ledgerRes, queueRes] = await Promise.allSettled([
         fetchInbox(repo),
@@ -518,9 +519,20 @@ export default function App() {
           ? queueActiveCount(queueRes.value.items)
           : prev.queue,
       }));
-    })();
+    });
+    void prefetchTabPayloads(repo);
+    refresh();
+    const timer = window.setInterval(refresh, HEALTH_POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    const unsubscribe = subscribeApiFailures(refresh);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
