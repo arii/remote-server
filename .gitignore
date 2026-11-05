@@ -72,6 +72,8 @@ deep-agent/*
 !deep-agent/impact.py
 !deep-agent/ux_audit.py
 !deep-agent/auditor.py
+!deep-agent/pipeline.py
+!deep-agent/eval_pipeline.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),
