@@ -48,7 +48,7 @@ import {
   queueActiveCount,
   reviewBadgeCount,
 } from './tabBadges';
-import type { NavBadgeCounts } from './tabBadges';
+import type { NavBadge, NavBadgeCounts } from './tabBadges';
 import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
@@ -122,6 +122,44 @@ export function navPressed(tab: Tab, section: NowSection, entry: NavEntry): bool
     return section !== 'review' && section !== 'jobs' && section !== 'queue';
   }
   return tab === 'now' && section === entry.id;
+}
+
+// One shell nav button, shared by the top tab bar and the bottom
+// section cluster (#961): label plus the live count pill (#936),
+// hidden until loaded and when zero.
+function ShellNavButton({
+  entry,
+  pressed,
+  badge,
+  onGo,
+}: {
+  entry: NavEntry;
+  pressed: boolean;
+  badge: NavBadge | null;
+  onGo: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={`nav-${entry.id}`}
+      aria-pressed={pressed}
+      aria-keyshortcuts={entry.kind === 'tab' ? entry.key : undefined}
+      title={entry.kind === 'tab' ? `${entry.label} (${entry.key})` : entry.label}
+      onClick={onGo}
+    >
+      {entry.label}
+      {badge && (
+        <span
+          className="nav-badge"
+          data-testid={`nav-badge-${entry.id}`}
+          title={badge.label}
+          aria-label={badge.label}
+        >
+          {badge.count}
+        </span>
+      )}
+    </button>
+  );
 }
 
 const FALLBACK_REPOS: RepoInfo[] = [
@@ -218,6 +256,13 @@ export default function App() {
   useEffect(() => {
     if (tab !== 'now') setNowSection(null);
   }, [tab]);
+
+  // Report-a-bug (#961): same path as the palette command —
+  // land on Now first so the report dialog's nonce effect fires.
+  function reportBugNow() {
+    setTab('now');
+    setReportRequest((n) => n + 1);
+  }
 
   // Unified nav handler (#896): tabs switch; Now also closes any
   // open section (inbox home); Review/Jobs ride the section-request
@@ -603,6 +648,7 @@ export default function App() {
   return (
     <main className="layout">
       <h1 className="sr-only">Operator console</h1>
+      <div className="topbar" data-testid="topbar">
       <header className="toolbar">
         <RepoPicker repos={repos} value={repo} onChange={setRepo} />
         {selectedRepo && !selectedRepo.clean && (
@@ -640,6 +686,18 @@ export default function App() {
           Code
         </a>
       </header>
+      <nav className="topnav" aria-label="Views">
+        {NAV_ENTRIES.filter((t) => t.kind === 'tab').map((t) => (
+          <ShellNavButton
+            key={t.id}
+            entry={t}
+            pressed={navPressed(tab, nowSection, t)}
+            badge={navBadge(t.id, badgeCounts)}
+            onGo={() => goNav(t)}
+          />
+        ))}
+      </nav>
+      </div>
       <SyncBanner />
       <CommandPalette
         open={paletteOpen}
@@ -692,37 +750,6 @@ export default function App() {
           onClose={() => setLogService(null)}
         />
       )}
-      <nav className="topnav" aria-label="Views">
-        {NAV_ENTRIES.map((t) => {
-          // Live count pill (issue #936): hidden until the first
-          // refresh lands and whenever the count is zero, so the bar
-          // only speaks up when a destination needs the operator.
-          const badge = navBadge(t.id, badgeCounts);
-          return (
-            <button
-              key={t.id}
-              type="button"
-              data-testid={`nav-${t.id}`}
-              aria-pressed={navPressed(tab, nowSection, t)}
-              aria-keyshortcuts={t.kind === 'tab' ? t.key : undefined}
-              title={t.kind === 'tab' ? `${t.label} (${t.key})` : t.label}
-              onClick={() => goNav(t)}
-            >
-              {t.label}
-              {badge && (
-                <span
-                  className="nav-badge"
-                  data-testid={`nav-badge-${t.id}`}
-                  title={badge.label}
-                  aria-label={badge.label}
-                >
-                  {badge.count}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </nav>
       <ShortcutHint />
       {tab === 'now' && (
         <NowView
@@ -788,6 +815,20 @@ export default function App() {
         </div>
       )}
       <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <nav className="bottombar" aria-label="Sections" data-testid="bottombar">
+        {NAV_ENTRIES.filter((t) => t.kind === 'section').map((t) => (
+          <ShellNavButton
+            key={t.id}
+            entry={t}
+            pressed={navPressed(tab, nowSection, t)}
+            badge={navBadge(t.id, badgeCounts)}
+            onGo={() => goNav(t)}
+          />
+        ))}
+        <button type="button" data-testid="report-bug" title="Report a bug" onClick={reportBugNow}>
+          Report a bug
+        </button>
+      </nav>
     </main>
   );
 }

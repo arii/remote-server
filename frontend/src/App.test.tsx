@@ -5,7 +5,7 @@ import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
 import TriageHint from './components/TriageHint';
-import RepoPicker, { repoOptionLabel } from './components/RepoPicker';
+import RepoPicker, { repoOptionLabel, repoRowSecondary } from './components/RepoPicker';
 import BriefingView, {
   BriefingBody,
   briefingActions,
@@ -985,13 +985,16 @@ describe('app', () => {
     expect(html).not.toContain('data-testid="briefing-');
   });
 
-  it('App unifies all seven destinations in one nav bar (issue #896, Queue in #930)', () => {
+  it('App splits primary tabs from the section cluster (issue #961; was one bar in #896, Queue in #930)', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('aria-label="Views"');
-    expect(html).not.toContain('aria-label="Secondary views"');
+    expect(html).toContain('aria-label="Sections"');
+    expect(html).toContain('data-testid="topbar"');
+    expect(html).toContain('data-testid="bottombar"');
     for (const label of ['Now', 'Chat', 'Briefing', 'History', 'Review', 'Jobs', 'Queue']) {
       expect(html).toContain(`>${label}</button>`);
     }
+    expect(html).toContain('data-testid="report-bug"');
     expect(html).toContain('aria-keyshortcuts="1"');
     expect(html).toContain('aria-keyshortcuts="4"');
   });
@@ -1366,26 +1369,28 @@ describe('repo picker labels', () => {
     expect(label).toContain('dirty');
     expect(label.length).toBeLessThan('arii/remote-server · on main (dirty)'.length);
   });
-  it('renders the full repo name as hover title, still branch-free', () => {
+  it('trigger names the checkout only; rows carry branch state (issue #961)', () => {
     const html = renderToStaticMarkup(
       <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
     );
+    expect(html).toContain('>remote-server</button>');
     expect(html).toContain('title="arii/remote-server');
-    expect(html).not.toContain('main');
+    // Closed menu: branch/dirty rows and search render on open only.
+    expect(html).not.toContain('repo-menu');
+    expect(html).not.toContain('repo-search');
   });
-  it('offers All repos first (issue #610)', () => {
-    const html = renderToStaticMarkup(
-      <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
-    );
-    expect(html).toContain('value="all"');
-    expect(html).toContain('All repos');
-    expect(html.indexOf('value="all"')).toBeLessThan(html.indexOf('value="remote-server"'));
-  });
-  it('selects All repos when it is the value', () => {
+  it('trigger reads All repos for the rollup (issue #610)', () => {
     const html = renderToStaticMarkup(
       <RepoPicker repos={[dirty]} value="all" onChange={() => {}} />,
     );
-    expect(html).toContain('selected="">All repos');
+    expect(html).toContain('>All repos</button>');
+  });
+  it('row secondary names branch and lag state (issue #961)', () => {
+    expect(repoRowSecondary(dirty)).toBe('main · dirty');
+    expect(repoRowSecondary({ ...dirty, clean: true })).toBe('main');
+    expect(
+      repoRowSecondary({ ...dirty, clean: true, behind: 2, ahead: 1 }),
+    ).toBe('main · behind 2 · ahead 1');
   });
   it('RollupGate names the gated view (issue #610)', () => {
     const html = renderToStaticMarkup(<RollupGate view="Chat" />);

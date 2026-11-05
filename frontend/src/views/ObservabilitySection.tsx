@@ -121,8 +121,10 @@ export function RunRow({
   const branch = run.branch ?? '?';
   const event = run.event ?? '';
   const cause = run.diagnosed_cause ?? 'Workflow failed.';
+  // Failing-run edge (#964): the runs list holds failures only, so
+  // every row reads red without expanding.
   return (
-    <li key={run.id}>
+    <li key={run.id} className="runs-row tone-bad">
       <span className="row-title">
         {name} failed on {branch}
       </span>{' '}
