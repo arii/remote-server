@@ -26,8 +26,6 @@ export const EMPTY_BADGE_COUNTS: NavBadgeCounts = {
   queue: null,
 };
 
-export type BadgeEntryId = 'now' | 'review' | 'history' | 'jobs' | 'queue';
-
 export interface NavBadge {
   count: number;
   /** Accessible description, e.g. "2 needing attention". */
@@ -76,7 +74,7 @@ function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
 }
 
-const BADGE_LABELS: Record<BadgeEntryId, (count: number) => string> = {
+const BADGE_LABELS: Record<keyof NavBadgeCounts, (count: number) => string> = {
   now: (n) => `${n} needing attention`,
   review: (n) => `${n} open ${plural(n, 'pull request', 'pull requests')}`,
   history: (n) => `${n} ${plural(n, 'error', 'errors')}`,
