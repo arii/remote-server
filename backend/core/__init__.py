@@ -574,12 +574,60 @@ def get_repo_status(repo: str) -> dict[str, Any]:
 # shows status + stat in full and flags a cut diff.
 DIFF_CAP = 20000
 
+# Per-file summary cap for the diff modal (#927): the file list
+# is a preview, the counts stay honest via files_truncated.
+DIFF_FILES_SHOWN = 200
+
+# Raw status lines kept in the payload (#927): --short already
+# collapses untracked dirs, so this only bites on pathological
+# trees; clean is always computed from the full output.
+STATUS_SHORT_LINES_CAP = 500
+
+
+def _numstat_counts(numstat_out: str) -> dict[str, tuple[int, int]]:
+    """Added/deleted line counts per path from git diff --numstat."""
+    counts: dict[str, tuple[int, int]] = {}
+    for line in (numstat_out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        try:
+            counts[parts[2]] = (int(parts[0]), int(parts[1]))
+        except ValueError:
+            continue  # Binary ("-\t-\tpath") or garbage.
+    return counts
+
+
+def _parse_diff_files(status_out: str,
+                      counts: dict[str, tuple[int, int]]
+                      ) -> list[dict[str, Any]]:
+    """Per-file summaries from status --short + numstat counts."""
+    files: list[dict[str, Any]] = []
+    for line in (status_out or "").splitlines():
+        if len(line) < 4 or line[2] != " ":
+            continue
+        x, y, rest = line[0], line[1], line[3:]
+        if not rest:
+            continue
+        count = counts.get(rest, (0, 0))
+        if count == (0, 0) and " -> " in rest:
+            count = counts.get(rest.split(" -> ", 1)[1], (0, 0))
+        code = f"{x}{y}".strip()
+        files.append({"path": rest, "status": code or "M",
+                      "staged": x not in " ?!",
+                      "unstaged": y not in " ?!",
+                      "additions": count[0], "deletions": count[1]})
+    return files
+
 
 def get_repo_diff(repo: str, run=None) -> dict[str, Any]:
-    """Read-only status + diff for one repo checkout (#663).
+    """Read-only status + diff for one repo checkout (#663, #927).
 
     Returns {"repo", "branch", "clean", "status_short",
-    "diff_stat", "diff", "truncated"}. Same error contract as
+    "status_truncated", "diff_stat", "diff", "truncated", "files",
+    "files_truncated}. The diff covers staged AND unstaged work
+    (diff HEAD); files carries per-file summaries parsed from
+    status --short plus numstat counts. Same error contract as
     get_repo_status. ``run`` injects tests.
     """
     import subprocess
@@ -596,24 +644,199 @@ def get_repo_diff(repo: str, run=None) -> dict[str, Any]:
             timeout=30, text=True,
         )
 
+    def diff_head(*args):
+        """diff HEAD with an unborn-HEAD fallback to plain diff."""
+        proc = git("diff", "HEAD", *args)
+        if proc.returncode == 0:
+            return proc
+        head = git("rev-parse", "--verify", "--quiet", "HEAD")
+        if head.returncode == 0:
+            raise _git_failed(proc, "diff HEAD")
+        plain = git("diff", *args)
+        if plain.returncode != 0:
+            raise _git_failed(proc, "diff HEAD")
+        return plain
+
     branch_proc = git("rev-parse", "--abbrev-ref", "HEAD")
     branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
     status_proc = git("status", "--short")
     if status_proc.returncode != 0:
         raise _git_failed(status_proc, "status")
-    stat_proc = git("diff", "--stat")
-    if stat_proc.returncode != 0:
-        raise _git_failed(stat_proc, "diff --stat")
-    diff_proc = git("diff")
-    if diff_proc.returncode != 0:
-        raise _git_failed(diff_proc, "diff")
-    short = status_proc.stdout
-    diff = diff_proc.stdout
+    stat_proc = diff_head("--stat")
+    diff_proc = diff_head()
+    numstat_proc = diff_head("--numstat")
+    short = status_proc.stdout or ""
+    lines = [ln for ln in short.splitlines() if ln]
+    status_lines = short.splitlines()
+    status_truncated = len(status_lines) > STATUS_SHORT_LINES_CAP
+    if status_truncated:
+        short = "\n".join(status_lines[:STATUS_SHORT_LINES_CAP]) + "\n"
+    diff = diff_proc.stdout or ""
     truncated = len(diff) > DIFF_CAP
-    return {"repo": name, "branch": branch,
-            "clean": len([ln for ln in short.splitlines() if ln]) == 0,
-            "status_short": short, "diff_stat": stat_proc.stdout,
-            "diff": diff[:DIFF_CAP], "truncated": truncated}
+    files = _parse_diff_files(status_proc.stdout,
+                              _numstat_counts(numstat_proc.stdout))
+    files_truncated = len(files) > DIFF_FILES_SHOWN
+    return {"repo": name, "branch": branch, "clean": len(lines) == 0,
+            "status_short": short, "status_truncated": status_truncated,
+            "diff_stat": stat_proc.stdout, "diff": diff[:DIFF_CAP],
+            "truncated": truncated, "files": files[:DIFF_FILES_SHOWN],
+            "files_truncated": files_truncated}
+
+
+# One-click git actions for the diff modal (#927): longer timeout
+# for fetch/rebase/stash/clean, fixed-vocabulary details (raw git
+# output is never quoted: it trips the History/autofile failure
+# regexes and can echo remote URLs).
+REPO_ACTION_TIMEOUT = 120
+CONSOLE_STASH_PREFIX = "console diff-modal"
+
+
+def _action_result(action: str, repo: str, ok: bool, clean: bool,
+                   detail: str) -> dict[str, Any]:
+    return {"ok": ok, "repo": repo, "action": action, "clean": clean,
+            "detail": detail}
+
+
+def _action_status_lines(run, path: Path) -> list[str] | None:
+    """Current status lines, or None when git itself fails."""
+    import subprocess
+
+    try:
+        proc = _git_run(run, ["status", "--short"], path)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [ln for ln in (proc.stdout or "").splitlines() if ln]
+
+
+def repo_stash(repo: str, run=None) -> dict[str, Any]:
+    """Stash all local work incl. untracked files (#927).
+
+    Returns {"ok", "repo", "action", "clean", "detail"}. Raises
+    ValueError on a bad name, FileNotFoundError when the checkout
+    is absent. ``run`` injects tests.
+    """
+    import subprocess
+    import time
+
+    name = validate_repo_name(repo)
+    path = _checkout_path(name)
+    try:
+        pre = _action_status_lines(run, path)
+        if pre is not None and not pre:
+            return _action_result("stash", name, True, True,
+                                   "already clean - nothing to stash")
+        proc = _git_run(
+            run, ["stash", "push", "-u", "-m",
+                  f"{CONSOLE_STASH_PREFIX} {int(time.time())}"],
+            path, timeout=REPO_ACTION_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return _action_result("stash", name, False, False,
+                               "timed out stashing; retry")
+    if proc.returncode != 0:
+        out = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+        if "no local changes" in out:
+            return _action_result("stash", name, True, True,
+                                   "already clean - nothing to stash")
+        return _action_result("stash", name, False, False,
+                               "stash failed; stash or commit by hand, "
+                               "then retry")
+    post = _action_status_lines(run, path)
+    return _action_result("stash", name, True,
+                           post is not None and not post,
+                           "changes stashed")
+
+
+def repo_discard_untracked(repo: str, run=None) -> dict[str, Any]:
+    """Remove untracked files/dirs, never ignored ones (#927).
+
+    git clean -fd without -x: build output and env files stay.
+    Same return/error contract as repo_stash.
+    """
+    import subprocess
+
+    name = validate_repo_name(repo)
+    path = _checkout_path(name)
+    try:
+        pre = _action_status_lines(run, path)
+        untracked = [ln for ln in (pre or [])
+                     if ln.startswith("??")] if pre is not None else None
+        if untracked is not None and not untracked:
+            return _action_result(
+                "discard-untracked", name, True, not pre,
+                "no untracked files to discard")
+        proc = _git_run(run, ["clean", "-fd"], path,
+                        timeout=REPO_ACTION_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return _action_result("discard-untracked", name, False, False,
+                               "timed out discarding; retry")
+    if proc.returncode != 0:
+        return _action_result(
+            "discard-untracked", name, False, False,
+            "discard failed; remove untracked files by hand, then retry")
+    removed = len([ln for ln in (proc.stdout or "").splitlines()
+                   if ln.startswith("Removing ")])
+    post = _action_status_lines(run, path)
+    detail = f"discarded {removed} untracked path(s)" if removed \
+        else "untracked files discarded"
+    return _action_result("discard-untracked", name, True,
+                           post is not None and not post, detail)
+
+
+def repo_sync(repo: str, run=None) -> dict[str, Any]:
+    """Fetch origin and rebase onto origin/main (#927).
+
+    Refuses dirty trees with a plain message; a failed rebase is
+    always aborted so the tree is left unchanged. Same
+    return/error contract as repo_stash.
+    """
+    import subprocess
+
+    name = validate_repo_name(repo)
+    path = _checkout_path(name)
+    try:
+        pre = _action_status_lines(run, path)
+        if pre:
+            return _action_result(
+                "sync", name, False, False,
+                "tree has local changes; stash or commit before syncing")
+        fetch = _git_run(run, ["fetch", "origin"], path,
+                         timeout=REPO_ACTION_TIMEOUT)
+        if fetch.returncode != 0:
+            return _action_result("sync", name, False, pre is not None
+                                   and not pre,
+                                   "fetch failed; check network, then retry")
+        verify = _git_run(run, ["rev-parse", "--verify", "--quiet",
+                                "origin/main"], path)
+        if verify.returncode != 0:
+            return _action_result("sync", name, False, pre is not None
+                                   and not pre,
+                                   "origin/main not found; sync by hand")
+        rebase = _git_run(run, ["rebase", "origin/main"], path,
+                          timeout=REPO_ACTION_TIMEOUT)
+        if rebase.returncode == 0:
+            post = _action_status_lines(run, path)
+            out = f"{rebase.stdout or ''}\n{rebase.stderr or ''}"
+            detail = "already up to date with origin/main" \
+                if "up to date" in out else "rebased onto origin/main"
+            return _action_result("sync", name, True,
+                                   post is not None and not post, detail)
+        out = f"{rebase.stdout or ''}\n{rebase.stderr or ''}".lower()
+        try:
+            _git_run(run, ["rebase", "--abort"], path,
+                     timeout=REPO_ACTION_TIMEOUT)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        post = _action_status_lines(run, path)
+        detail = "rebase conflicted; aborted, tree unchanged - " \
+            "resolve by hand" if "conflict" in out \
+            else "rebase failed; aborted, tree unchanged - sync by hand"
+        return _action_result("sync", name, False,
+                               post is not None and not post, detail)
+    except (subprocess.TimeoutExpired, OSError):
+        return _action_result("sync", name, False, False,
+                               "timed out syncing; retry")
 
 
 # Top marker hits returned per metrics read; the count itself is
