@@ -7,12 +7,18 @@ import ReviewView, {
   IssueRowTitle,
   MergeBlockDetail,
   PrDetails,
+  PrDiff,
   PrDiffBody,
   PrRowApprove,
   PrRowRequestChanges,
   RequestChangesForm,
   ReviewListEmpty,
+  RiskSummary,
   RowActionButton,
+  buildRiskSummary,
+  detailsRiskSummary,
+  prRiskLevel,
+  prRiskSummary,
   REVIEW_REPLY_TEMPLATES,
   appendReplyTemplate,
   applyOptimisticMerge,
@@ -1193,5 +1199,101 @@ describe('review actionable rows (issue #907)', () => {
     expect(html).toContain('data-testid="review-diff-body-7"');
     expect(html).toContain('data-testid="review-diff-copy-7"');
     expect(html).toContain('Copy diff');
+  });
+});
+
+describe('inline diff + risk summary on cards (issue #938)', () => {
+  const basePr: PrRow = {
+    number: 7,
+    title: 'Fix thing',
+    author: 'octo',
+    branch: 'fix-thing',
+    isDraft: false,
+    ciStatus: 'passing',
+    ciLabel: 'passing',
+    reviewDecision: 'APPROVED',
+    mergeable: 'MERGEABLE',
+    url: 'https://example.test/pr/7',
+    additions: 10,
+    deletions: 2,
+    changedFiles: 1,
+  };
+
+  it('routine PR gets the low-risk 2-line summary', () => {
+    const { summary, level } = buildRiskSummary({
+      title: 'Fix thing', branch: 'fix-thing', ciStatus: 'passing',
+      mergeable: 'MERGEABLE', additions: 10, deletions: 2, changedFiles: 1,
+    });
+    expect(level).toBe('low');
+    expect(summary.split('\n')).toHaveLength(2);
+    expect(summary).toContain('1 file changed (+10/-2)');
+    expect(summary).toContain('Low risk; 0 breaking changes detected; CI green');
+    expect(prRiskSummary(basePr)).toBe(summary);
+    expect(prRiskLevel(basePr)).toBe('low');
+  });
+
+  it('prefers the backend summary verbatim when present', () => {
+    const pr = {
+      ...basePr,
+      riskSummary: 'Minor dependency bump · 2 files changed (+5/-5)\nLow risk; 0 breaking changes detected; CI green',
+      riskLevel: 'low',
+    };
+    expect(prRiskSummary(pr)).toContain('Minor dependency bump');
+    const html = renderToStaticMarkup(<RiskSummary pr={pr} />);
+    expect(html).toContain('data-testid="review-risk-summary-7"');
+    expect(html).toContain('data-risk-level="low"');
+    expect(html).toContain('Minor dependency bump');
+    expect(html).toContain('CI green');
+  });
+
+  it('falls back to the mirror for older payloads without stats', () => {
+    const bare: PrRow = {
+      number: 9, title: 'Fix', author: 'a', branch: 'b', isDraft: false,
+      ciStatus: 'passing', ciLabel: 'passing', reviewDecision: '',
+      mergeable: 'MERGEABLE', url: '',
+    };
+    expect(prRiskSummary(bare).split('\n')[0]).toBe('No file changes detected · +0/-0');
+    expect(prRiskSummary(bare).split('\n')).toHaveLength(2);
+  });
+
+  it('flags draft, failing, large, and breaking as high', () => {
+    expect(buildRiskSummary({ title: 'WIP', isDraft: true, ciStatus: 'pending', additions: 1, changedFiles: 1 }).level).toBe('high');
+    expect(buildRiskSummary({ title: 'Fix', ciStatus: 'failing', additions: 1, changedFiles: 1 }).level).toBe('high');
+    expect(buildRiskSummary({ title: 'Big', ciStatus: 'passing', mergeable: 'MERGEABLE', additions: 400, deletions: 200, changedFiles: 25 }).level).toBe('high');
+    expect(buildRiskSummary({ title: 'feat!: drop API', ciStatus: 'passing', mergeable: 'MERGEABLE', additions: 5, deletions: 5, changedFiles: 2 }).summary).toContain('Breaking change flagged');
+    expect(buildRiskSummary({ title: 'Fix', ciStatus: 'pending', additions: 5, changedFiles: 1 }).level).toBe('medium');
+  });
+
+  it('renders card and details diffs with distinct testids', () => {
+    const card = renderToStaticMarkup(<PrDiff repo="demo" pr={7} variant="card" />);
+    expect(card).toContain('data-testid="review-card-diff-7"');
+    expect(card).toContain('Diff preview');
+    expect(card).not.toContain('data-testid="review-diff-7"');
+    const pane = renderToStaticMarkup(<PrDiff repo="demo" pr={7} />);
+    expect(pane).toContain('data-testid="review-diff-7"');
+    expect(pane).toContain('View diff');
+    const body = renderToStaticMarkup(
+      <PrDiffBody pr={7} idPrefix="review-card-diff" diff={{ number: 7, diff: '+x', truncated: false }} />,
+    );
+    expect(body).toContain('data-testid="review-card-diff-body-7"');
+    expect(body).toContain('data-testid="review-card-diff-copy-7"');
+  });
+
+  it('details pane shows the risk summary', () => {
+    const d = {
+      repo: 'demo', number: 7, title: 'Fix thing', branch: 'feat/x', base: 'main',
+      ci: 'passing', failing: [], merge: 'clean', conflicted: false, draft: false,
+      url: 'https://example.test/pr/7',
+      files: [{ path: 'a.py', additions: 3, deletions: 1, changes: 4 }],
+      stats: { total_files: 1, additions: 3, deletions: 1 },
+      ai_prompts: [],
+    };
+    expect(detailsRiskSummary(d).level).toBe('low');
+    const html = renderToStaticMarkup(
+      <PrDetails repo="demo" details={d} mergeBlocked={null} mergeDisabled={false} onMerge={() => {}} onAskAgent={() => {}} />,
+    );
+    expect(html).toContain('data-testid="review-details-risk"');
+    expect(html).toContain('CI green');
+    expect(html).toContain('data-testid="review-diff-7"');
   });
 });

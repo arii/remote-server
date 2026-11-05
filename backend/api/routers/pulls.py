@@ -36,7 +36,8 @@ from core_cli import context_filter
 router = APIRouter(prefix="/api", tags=["pulls"])
 
 PR_LIST_FIELDS = ("number,title,isDraft,mergeable,reviewDecision,"
-                  "headRefName,statusCheckRollup,url,author,updatedAt")
+                  "headRefName,statusCheckRollup,url,author,updatedAt,"
+                  "additions,deletions,changedFiles")
 PR_VIEW_FIELDS = ("number,title,headRefName,baseRefName,mergeable,"
                   "mergeStateStatus,reviewDecision,statusCheckRollup,"
                   "updatedAt,author,isDraft,url,files")
@@ -48,6 +49,96 @@ PR_ACTIONS = ("merge", "update", "approve",
 
 # Max chars for a request-changes review body (#616).
 REVIEW_BODY_MAX = 2000
+
+
+def _as_count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def _is_dep_bump(title: str, branch: str) -> bool:
+    text = f"{title} {branch}".lower()
+    return any(k in text for k in (
+        "dependabot", "bump", "deps", "dependency", "dependencies"))
+
+
+def _is_breaking(title: str) -> bool:
+    text = (title or "").lower()
+    return "breaking" in text or "!:" in text
+
+
+def build_risk_summary(*, title: str = "", branch: str = "",
+                       is_draft: bool = False, ci_status: str = "unknown",
+                       review_decision: str = "", mergeable: str = "UNKNOWN",
+                       additions: int = 0, deletions: int = 0,
+                       changed_files: int = 0,
+                       conflicted: bool = False) -> tuple[str, str]:
+    """Deterministic 2-line risk summary for a Review card (#938).
+
+    Returns (summary, level) where summary is exactly two lines
+    joined by a newline and level is low/medium/high. Heuristic
+    only — no model call, so the list stays fast and testable.
+    The frontend mirror (buildRiskSummary in ReviewView.tsx) must
+    produce the same lines for the same inputs.
+    """
+    additions = _as_count(additions)
+    deletions = _as_count(deletions)
+    changed_files = _as_count(changed_files)
+    total = additions + deletions
+    dep = _is_dep_bump(title or "", branch or "")
+    breaking = _is_breaking(title or "")
+    ci = (ci_status or "unknown").lower()
+    mergeable_u = (mergeable or "UNKNOWN").upper()
+
+    if changed_files == 0 and total == 0:
+        line1 = "No file changes detected · +0/-0"
+    elif dep and total <= 200 and changed_files <= 10:
+        line1 = (f"Minor dependency bump · {changed_files} "
+                 f"file{'s' if changed_files != 1 else ''} changed "
+                 f"(+{additions}/-{deletions})")
+    elif dep:
+        line1 = (f"Dependency update · {changed_files} "
+                 f"file{'s' if changed_files != 1 else ''} changed "
+                 f"(+{additions}/-{deletions})")
+    else:
+        if total <= 20:
+            size = "Small change"
+        elif total <= 150:
+            size = "Moderate change"
+        else:
+            size = "Large change"
+        line1 = (f"{size} · {changed_files} "
+                 f"file{'s' if changed_files != 1 else ''} changed "
+                 f"(+{additions}/-{deletions})")
+
+    if is_draft:
+        line2, level = f"Draft — not ready to merge; CI {ci}", "high"
+    elif ci == "failing":
+        line2, level = "CI failing — fix checks before merging", "high"
+    elif ci != "passing":
+        line2, level = f"CI {ci} — wait for checks before merging", "medium"
+    elif conflicted or mergeable_u == "CONFLICTING":
+        line2, level = "Merge conflicts — resolve before merging", "high"
+    elif mergeable_u not in ("MERGEABLE", "CLEAN", ""):
+        line2, level = (
+            f"Merge state {mergeable_u.lower()} — check before merging",
+            "medium")
+    elif (review_decision or "") == "CHANGES_REQUESTED":
+        line2, level = "Changes requested — address review feedback", "high"
+    elif breaking:
+        line2, level = "Breaking change flagged — review carefully; CI green", "high"
+    elif changed_files > 20 or total > 500:
+        line2, level = (
+            "Higher risk: large diff — review carefully; "
+            "0 breaking changes detected; CI green", "high")
+    elif changed_files > 10 or total > 200:
+        line2, level = (
+            "Moderate risk — review diff before merging; "
+            "0 breaking changes detected; CI green", "medium")
+    else:
+        line2, level = "Low risk; 0 breaking changes detected; CI green", "low"
+    return f"{line1}\n{line2}", level
 
 
 class PrRow(BaseModel):
@@ -73,6 +164,14 @@ class PrRow(BaseModel):
     # console merge gate must not demand an approval GitHub itself
     # would never require. Defaults strict for older payloads.
     reviewRequired: bool = True
+    # #938: diff size from gh (additions/deletions/changedFiles) plus
+    # the deterministic 2-line risk summary derived from it, so each
+    # Review card can decide without a GitHub visit. Additive only.
+    additions: int = 0
+    deletions: int = 0
+    changedFiles: int = 0
+    riskSummary: str = ""
+    riskLevel: str = "low"
 
 
 class PrList(BaseModel):
@@ -108,6 +207,9 @@ class PrDetails(BaseModel):
     files: list = Field(default_factory=list)
     stats: dict = Field(default_factory=dict)
     ai_prompts: list = Field(default_factory=list)
+    # #938: same 2-line summary as the card, for the details pane.
+    risk_summary: str = ""
+    risk_level: str = "low"
 
 
 class PrActionRequest(BaseModel):
@@ -212,6 +314,19 @@ def _fetch_prs(gh: str, name: str, runner=None) -> dict:
                   else (author_val or ""))
         label = ci_label(pr.get("statusCheckRollup"))
         review_decision = str(pr.get("reviewDecision") or "")
+        additions = _as_count(pr.get("additions"))
+        deletions = _as_count(pr.get("deletions"))
+        changed_files = _as_count(pr.get("changedFiles"))
+        mergeable = str(pr.get("mergeable") or "UNKNOWN").upper()
+        risk_summary, risk_level = build_risk_summary(
+            title=str(pr.get("title") or ""),
+            branch=str(pr.get("headRefName") or ""),
+            is_draft=bool(pr.get("isDraft")),
+            ci_status=label,
+            review_decision=review_decision,
+            mergeable=mergeable,
+            additions=additions, deletions=deletions,
+            changed_files=changed_files)
         rows.append({
             "number": pr.get("number"),
             "title": pr.get("title", ""),
@@ -224,9 +339,14 @@ def _fetch_prs(gh: str, name: str, runner=None) -> dict:
             # #848: any reported decision means reviews are in play
             # for this PR; blank means no required-review rule.
             "reviewRequired": review_decision != "",
-            "mergeable": str(pr.get("mergeable") or "UNKNOWN").upper(),
+            "mergeable": mergeable,
             "url": pr.get("url", ""),
             "updatedAt": pr.get("updatedAt") or "",
+            "additions": additions,
+            "deletions": deletions,
+            "changedFiles": changed_files,
+            "riskSummary": risk_summary,
+            "riskLevel": risk_level,
         })
     return {"repo": name, "prs": rows, "viewer": _gh_viewer(runner)}
 
@@ -387,6 +507,20 @@ def pr_details(repo: str = "remote-server", pr: int = 0,
                    f"workaround chains (`cmd || variant-cmd` or fallback "
                    f"ladders)."},
     ]
+    stats = {"total_files": len(files),
+             "additions": sum(f["additions"] for f in files),
+             "deletions": sum(f["deletions"] for f in files)}
+    risk_summary, risk_level = build_risk_summary(
+        title=str(view.get("title") or ""),
+        branch=str(view.get("headRefName") or ""),
+        is_draft=bool(view.get("isDraft")),
+        ci_status=label,
+        review_decision=str(view.get("reviewDecision") or ""),
+        mergeable=("CONFLICTING" if merge == "dirty" else
+                   "MERGEABLE" if merge == "clean" else merge.upper()),
+        additions=stats["additions"], deletions=stats["deletions"],
+        changed_files=stats["total_files"],
+        conflicted=merge == "dirty")
     return {
         "repo": repo, "number": pr, "title": view.get("title", ""),
         "branch": view.get("headRefName", ""),
@@ -395,10 +529,10 @@ def pr_details(repo: str = "remote-server", pr: int = 0,
         "conflicted": merge == "dirty",
         "draft": bool(view.get("isDraft")), "url": view.get("url"),
         "files": files,
-        "stats": {"total_files": len(files),
-                  "additions": sum(f["additions"] for f in files),
-                  "deletions": sum(f["deletions"] for f in files)},
+        "stats": stats,
         "ai_prompts": prompts,
+        "risk_summary": risk_summary,
+        "risk_level": risk_level,
     }
 
 

@@ -230,6 +230,99 @@ class PrDetailsTest(unittest.TestCase):
         self.assertEqual(runner.calls, [])
 
 
+class RiskSummaryTest(unittest.TestCase):
+    def test_routine_pr_is_low_risk_two_lines(self):
+        summary, level = pulls_mod.build_risk_summary(
+            title="Fix webhook retry", branch="fix/webhook-retry",
+            ci_status="passing", mergeable="MERGEABLE",
+            additions=42, deletions=3, changed_files=2)
+        self.assertEqual(level, "low")
+        self.assertEqual(summary.count("\n"), 1)
+        line1, line2 = summary.split("\n")
+        self.assertIn("2 files changed (+42/-3)", line1)
+        self.assertEqual(
+            line2, "Low risk; 0 breaking changes detected; CI green")
+
+    def test_dependency_bump_example_shape(self):
+        summary, level = pulls_mod.build_risk_summary(
+            title="Bump lodash from 4.17.20 to 4.17.21",
+            branch="dependabot/npm/lodash-4.17.21",
+            ci_status="passing", mergeable="MERGEABLE",
+            additions=5, deletions=5, changed_files=2)
+        self.assertEqual(level, "low")
+        self.assertIn("Minor dependency bump", summary)
+        self.assertIn("0 breaking changes detected; CI green", summary)
+
+    def test_draft_and_failing_are_high(self):
+        _, draft_level = pulls_mod.build_risk_summary(
+            title="WIP", branch="wip", is_draft=True,
+            ci_status="pending", mergeable="UNKNOWN",
+            additions=1, deletions=0, changed_files=1)
+        self.assertEqual(draft_level, "high")
+        summary, level = pulls_mod.build_risk_summary(
+            title="Fix", branch="fix", ci_status="failing",
+            mergeable="MERGEABLE", additions=1, deletions=0,
+            changed_files=1)
+        self.assertEqual(level, "high")
+        self.assertIn("CI failing", summary)
+
+    def test_large_and_breaking_are_high(self):
+        _, level = pulls_mod.build_risk_summary(
+            title="Big refactor", branch="refactor",
+            ci_status="passing", mergeable="MERGEABLE",
+            additions=400, deletions=200, changed_files=25)
+        self.assertEqual(level, "high")
+        summary, level = pulls_mod.build_risk_summary(
+            title="feat!: drop old API", branch="feat",
+            ci_status="passing", mergeable="MERGEABLE",
+            additions=5, deletions=5, changed_files=2)
+        self.assertEqual(level, "high")
+        self.assertIn("Breaking change flagged", summary)
+
+    def test_pending_is_medium_and_empty_is_safe(self):
+        _, level = pulls_mod.build_risk_summary(
+            title="Fix", branch="fix", ci_status="pending",
+            mergeable="MERGEABLE", additions=5, deletions=0,
+            changed_files=1)
+        self.assertEqual(level, "medium")
+        summary, _ = pulls_mod.build_risk_summary()
+        self.assertEqual(summary.split("\n")[0],
+                         "No file changes detected · +0/-0")
+        self.assertEqual(summary.count("\n"), 1)
+
+    def test_list_rows_carry_size_and_risk(self):
+        payload = json.dumps([{
+            "number": 7, "title": "Fix thing", "isDraft": False,
+            "mergeable": "MERGEABLE", "reviewDecision": "APPROVED",
+            "headRefName": "fix-thing",
+            "statusCheckRollup": [
+                {"name": "ci", "conclusion": "SUCCESS",
+                 "status": "COMPLETED"}],
+            "url": "https://github.com/arii/remote-server/pull/7",
+            "author": {"login": "octo"},
+            "additions": 10, "deletions": 2, "changedFiles": 1,
+        }])
+        runner = FakeRunner().on(
+            ["gh", "pr", "list"], FakeProc(stdout=payload)).on(
+            ["gh", "api", "user"], FakeProc(stdout="octo"))
+        out = pulls_mod.prs(repo="remote-server", runner=runner)
+        row = out["prs"][0]
+        self.assertEqual(
+            (row["additions"], row["deletions"], row["changedFiles"]),
+            (10, 2, 1))
+        self.assertEqual(row["riskLevel"], "low")
+        self.assertEqual(row["riskSummary"].count("\n"), 1)
+        self.assertIn("1 file changed (+10/-2)", row["riskSummary"])
+
+    def test_details_carry_risk(self):
+        runner = FakeRunner().on(["gh"], FakeProc(stdout=gh_pr_view()))
+        out = pulls_mod.pr_details(repo="remote-server", pr=7,
+                                   runner=runner)
+        self.assertEqual(out["risk_level"], "low")
+        self.assertEqual(out["risk_summary"].count("\n"), 1)
+        self.assertIn("CI green", out["risk_summary"])
+
+
 class PrDiffTest(unittest.TestCase):
     DIFF = ("diff --git a/app.py b/app.py\n"
             "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n"
