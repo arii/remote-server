@@ -161,6 +161,25 @@ export function approveBlockReason(p: PrRow, viewer?: string): string | null {
   return null;
 }
 
+// Dependabot detection (#932): the author login carries the bot
+// marker ('dependabot[bot]' or bare 'dependabot').
+export function isDependabotPr(p: PrRow): boolean {
+  return (p.author ?? '').toLowerCase().includes('dependabot');
+}
+
+// Compound Approve & Merge eligibility (#932): CI green, mergeable,
+// and the ONLY remaining blocker is a missing approval (blank or
+// REVIEW_REQUIRED — never CHANGES_REQUESTED). Own PRs stay out
+// (GitHub forbids self-approval); already-approved rows just Merge.
+export function approveMergeEligible(p: PrRow, viewer?: string): boolean {
+  const decision = p.reviewDecision ?? '';
+  if (p.isDraft || decision === 'APPROVED') return false;
+  if (decision !== '' && decision !== 'REVIEW_REQUIRED') return false;
+  if (p.ciStatus !== 'passing' || p.mergeable !== 'MERGEABLE') return false;
+  if (approveBlockReason(p, viewer) !== null) return false;
+  return mergeBlockReason(p) !== null;
+}
+
 export function detailsMergeBlockReason(d: PrDetailsResponse): string | null {
   if (d.ci !== 'passing' || d.merge !== 'clean') {
     return `Not mergeable: CI ${d.ci}, merge ${d.merge}.`;

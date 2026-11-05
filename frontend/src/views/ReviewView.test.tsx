@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import ReviewView, {
   BulkDeferBar,
   BulkRestoreBar,
+  DependabotBatchBar,
   IssueRowLabels,
   IssueRowTitle,
   MergeBlockDetail,
@@ -11,12 +12,15 @@ import ReviewView, {
   PrDiffBody,
   PrRowApprove,
   PrRowRequestChanges,
+  PrRowReviewActions,
   RequestChangesForm,
   ReviewListEmpty,
   RiskSummary,
   RowActionButton,
   buildRiskSummary,
+  dependabotBatchNotice,
   detailsRiskSummary,
+  planDependabotBatch,
   prRiskLevel,
   prRiskSummary,
   REVIEW_REPLY_TEMPLATES,
@@ -52,7 +56,7 @@ import ReviewView, {
   toggleBulkSelected,
   validateRequestChangesBody,
 } from './ReviewView';
-import { approveBlockReason, isOwnPr, mergeBlockReason } from '../reviewTypes';
+import { approveBlockReason, approveMergeEligible, isDependabotPr, isOwnPr, mergeBlockReason } from '../reviewTypes';
 import type { PrRow } from '../reviewTypes';
 
 describe('optimistic merge row state', () => {
@@ -257,16 +261,16 @@ describe('merge badge', () => {
 });
 
 describe('row action accessible names (issue #569)', () => {
-  it('names Open/Defer/Restore with kind + number', () => {
+  it('names Details/Defer/Restore with kind + number', () => {
     const html = renderToStaticMarkup(
       <>
-        <RowActionButton action="Open" kind="pr" num={12} onClick={() => {}} />
+        <RowActionButton action="Details" kind="pr" num={12} onClick={() => {}} />
         <RowActionButton action="Defer" kind="pr" num={12} onClick={() => {}} />
         <RowActionButton action="Defer" kind="issue" num={559} onClick={() => {}} />
         <RowActionButton action="Restore" kind="issue" num={488} onClick={() => {}} />
       </>,
     );
-    expect(html).toContain('aria-label="Open PR #12"');
+    expect(html).toContain('aria-label="Details PR #12"');
     expect(html).toContain('aria-label="Defer PR #12"');
     expect(html).toContain('aria-label="Defer issue #559"');
     expect(html).toContain('aria-label="Restore issue #488"');
@@ -287,7 +291,7 @@ describe('row action accessible names (issue #569)', () => {
           <RowActionButton key={n} action="Defer" kind="issue" num={n} onClick={() => {}} />
         ))}
         {[7, 8].map((n) => (
-          <RowActionButton key={`pr-${n}`} action="Open" kind="pr" num={n} onClick={() => {}} />
+          <RowActionButton key={`pr-${n}`} action="Details" kind="pr" num={n} onClick={() => {}} />
         ))}
       </>,
     );
@@ -1295,5 +1299,133 @@ describe('inline diff + risk summary on cards (issue #938)', () => {
     expect(html).toContain('data-testid="review-details-risk"');
     expect(html).toContain('CI green');
     expect(html).toContain('data-testid="review-diff-7"');
+  });
+});
+
+describe('approve and merge compound (issue #932)', () => {
+  function pr(over: Partial<PrRow> = {}): PrRow {
+    return {
+      number: 7,
+      title: 'build(deps): bump x',
+      author: 'dependabot[bot]',
+      branch: 'dependabot/x',
+      isDraft: false,
+      ciStatus: 'passing',
+      ciLabel: 'passing',
+      reviewDecision: '',
+      mergeable: 'MERGEABLE',
+      url: 'https://example.test/pr/7',
+      ...over,
+    };
+  }
+
+  it('detects dependabot authors', () => {
+    expect(isDependabotPr(pr())).toBe(true);
+    expect(isDependabotPr(pr({ author: 'dependabot' }))).toBe(true);
+    expect(isDependabotPr(pr({ author: 'alice' }))).toBe(false);
+  });
+
+  it('offers the compound only when approval is the sole blocker', () => {
+    expect(approveMergeEligible(pr(), 'alice')).toBe(true);
+    expect(approveMergeEligible(pr({ reviewDecision: 'REVIEW_REQUIRED' }), 'alice')).toBe(true);
+    expect(approveMergeEligible(pr({ reviewDecision: 'APPROVED' }), 'alice')).toBe(false);
+    expect(approveMergeEligible(pr({ reviewDecision: 'CHANGES_REQUESTED' }), 'alice')).toBe(false);
+    expect(approveMergeEligible(pr({ ciStatus: 'failing' }), 'alice')).toBe(false);
+    expect(approveMergeEligible(pr({ mergeable: 'CONFLICTING' }), 'alice')).toBe(false);
+    expect(approveMergeEligible(pr({ isDraft: true }), 'alice')).toBe(false);
+    expect(approveMergeEligible(pr(), 'dependabot[bot]')).toBe(false);
+    expect(approveMergeEligible(pr({ reviewRequired: false }), 'alice')).toBe(false);
+  });
+
+  it('substitutes the compound for the merge+approve pair when eligible', () => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      <PrRowReviewActions
+        pr={pr()}
+        viewer="alice"
+        merging={false}
+        reviewing={false}
+        onMerge={noop}
+        onApprove={noop}
+        onApproveMerge={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="approve-merge-pr-7"');
+    expect(html).toContain('Approve &amp; Merge');
+    expect(html).not.toContain('data-testid="merge-pr-7"');
+    expect(html).not.toContain('data-testid="approve-pr-7"');
+  });
+
+  it('keeps separate buttons when ineligible', () => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      <PrRowReviewActions
+        pr={pr({ ciStatus: 'failing' })}
+        viewer="alice"
+        merging={false}
+        reviewing={false}
+        onMerge={noop}
+        onApprove={noop}
+        onApproveMerge={noop}
+      />,
+    );
+    expect(html).not.toContain('approve-merge-pr-7');
+    expect(html).toContain('merge-pr-7');
+    expect(html).toContain('approve-pr-7');
+  });
+
+  it('plans batches from eligible dependabots only, minimum two', () => {
+    const green = pr({ number: 7 });
+    const green2 = pr({ number: 9 });
+    const failing = pr({ number: 10, ciStatus: 'failing' });
+    const human = pr({ number: 11, author: 'alice' });
+    expect(planDependabotBatch([green2, green], 'alice')).toEqual([7, 9]);
+    expect(planDependabotBatch([green], 'alice')).toEqual([]);
+    expect(planDependabotBatch([green, failing, human], 'alice')).toEqual([]);
+  });
+
+  it('summarizes batch outcomes like the approve batch', () => {
+    expect(dependabotBatchNotice([7], 1)).toBe('Approved and merged PR #7.');
+    expect(dependabotBatchNotice([7, 9], 2)).toBe('Approved and merged 2 Dependabot PRs.');
+    expect(dependabotBatchNotice([7], 2)).toBe('Approved and merged 1 of 2 Dependabot PRs.');
+    expect(dependabotBatchNotice([], 2)).toBe('');
+  });
+
+  it('renders the batch bar with its count', () => {
+    const html = renderToStaticMarkup(
+      <DependabotBatchBar count={3} busy={false} onFire={() => {}} />,
+    );
+    expect(html).toContain('data-testid="batch-approve-merge-dependabot"');
+    expect(html).toContain('Batch Approve &amp; Merge Dependabot (3)');
+  });
+
+  it('labels the details pane GitHub link explicitly', () => {
+    const html = renderToStaticMarkup(
+      <PrDetails
+        repo="demo"
+        details={{
+          repo: 'demo',
+          number: 7,
+          title: 'Fix thing',
+          branch: 'feat/x',
+          base: 'main',
+          ci: 'passing',
+          failing: [],
+          merge: 'clean',
+          conflicted: false,
+          draft: false,
+          url: 'https://example.test/pr/7',
+          files: [],
+          stats: { total_files: 0, additions: 0, deletions: 0 },
+          ai_prompts: [],
+        }}
+        mergeBlocked={null}
+        mergeDisabled={false}
+        onMerge={() => {}}
+        onAskAgent={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="open-github-pr-7"');
+    expect(html).toContain('Open on GitHub');
   });
 });
