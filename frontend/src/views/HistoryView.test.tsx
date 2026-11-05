@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import HistoryView, { HistoryInspector, MemberBlock, RowsList, RunOutput } from './HistoryView';
+import HistoryView, { HistoryFilterChip, HistoryInspector, MemberBlock, RowsList, RunOutput } from './HistoryView';
 import type { HistoryRow } from './historyUtils';
 
 describe('history search input (issue #608)', () => {
   it('renders a search box beside the Kind filter', () => {
-    const html = renderToStaticMarkup(<HistoryView repo="r" health={null} />);
+    const html = renderToStaticMarkup(<HistoryView repo="r" />);
     expect(html).toContain('data-testid="history-search"');
     expect(html).toContain('data-testid="history-kind-filter"');
   });
@@ -14,7 +14,7 @@ describe('history search input (issue #608)', () => {
     // The nonce effect only runs client-side; static markup just
     // proves the prop threads through to a normal first paint.
     const html = renderToStaticMarkup(
-      <HistoryView repo="r" health={null} queryRequest={{ query: 'deploy', nonce: 1 }} />,
+      <HistoryView repo="r" queryRequest={{ query: 'deploy', nonce: 1 }} />,
     );
     expect(html).toContain('data-testid="history-search"');
   });
@@ -36,6 +36,41 @@ describe('history search input (issue #608)', () => {
     const filtered = renderToStaticMarkup(<RowsList rows={[]} filtering />);
     expect(filtered).toContain('No matching rows.');
     expect(filtered).not.toContain('history-empty-refresh');
+  });
+});
+
+describe('history filter chip (issue #931)', () => {
+  it('stays hidden when the feed is unfiltered', () => {
+    expect(
+      renderToStaticMarkup(<HistoryFilterChip query="" facet="all" onClear={() => {}} />),
+    ).toBe('');
+    expect(
+      renderToStaticMarkup(<HistoryFilterChip query="   " facet="all" onClear={() => {}} />),
+    ).toBe('');
+  });
+
+  it('names the container query with a clear action', () => {
+    const html = renderToStaticMarkup(
+      <HistoryFilterChip query="buttons" facet="all" onClear={() => {}} />,
+    );
+    expect(html).toContain('data-testid="history-filter-chip"');
+    expect(html).toContain('Filter:');
+    expect(html).toContain('buttons');
+    expect(html).toContain('data-testid="history-filter-clear"');
+    expect(html).toContain('>Clear</button>');
+  });
+
+  it('names the facet alongside the query', () => {
+    const html = renderToStaticMarkup(
+      <HistoryFilterChip query="buttons" facet="errors" onClear={() => {}} />,
+    );
+    expect(html).toContain('buttons');
+    expect(html).toContain('Errors');
+    const facetOnly = renderToStaticMarkup(
+      <HistoryFilterChip query="" facet="ci" onClear={() => {}} />,
+    );
+    expect(facetOnly).toContain('data-testid="history-filter-chip"');
+    expect(facetOnly).toContain('CI');
   });
 });
 

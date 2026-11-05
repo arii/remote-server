@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import NowView from './views/NowView';
 import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
-import HistoryView from './views/HistoryView';
+import HistoryView, { type HistoryFilterRequest } from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
 import SyncBanner from './components/SyncBanner';
 import CommandPalette from './components/CommandPalette';
@@ -164,6 +164,9 @@ export default function App() {
   // Log slide-over selection (issue #928): which container's tail
   // is open atop the stats drawer, if any.
   const [logService, setLogService] = useState<string | null>(null);
+  // Cross-tab feed filter (issue #931): a container pill in Now or
+  // the Status drawer navigates to History pre-filtered.
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilterRequest | null>(null);
   // Command palette (issue #810): open flag plus one nonce per
   // cross-view request, so a command lands even when its view is
   // already mounted (or mounts fresh on the tab switch).
@@ -484,6 +487,14 @@ export default function App() {
     setStatsOpen(true);
   }
 
+  // Container pill History action (issue #931): the History tab
+  // owns the chronological feed, so the pill navigates there with
+  // the feed pre-filtered to the pill's service.
+  function openHistoryFilter(service: string) {
+    setHistoryFilter((r) => ({ query: service, facet: 'all', nonce: (r?.nonce ?? 0) + 1 }));
+    setTab('history');
+  }
+
   // Prefetch repo metrics on select (issue #897): fire-and-forget
   // into the view cache so the Chat strip renders instantly with
   // zero taps and zero model turns. Skipped for the rollup pseudo
@@ -655,9 +666,12 @@ export default function App() {
           restartRequested={restartRequested}
           restartError={restartError}
           serviceRestarted={serviceRestarted}
+          diskSummary={health?.disk.summary ?? null}
+          memSummary={health?.memory.summary ?? null}
           onRestart={(action) => void onRestartContainer(action)}
           onRestartService={(service) => void onRestartServiceContainer(service)}
           onOpenLogs={(service) => setLogService(service)}
+          onFilterHistory={openHistoryFilter}
           onRefresh={() => setStatsSeq((n) => n + 1)}
           onClose={closeStats}
         />
@@ -730,6 +744,7 @@ export default function App() {
           onViewDiff={(name) => setDiffRepo(name)}
           onRepoAction={(name, action) => onRepoActionFor(name, action)}
           onOpenChat={openRepoInChat}
+          onFilterHistory={openHistoryFilter}
         />
       )}
       {tab === 'chat' &&
@@ -765,10 +780,9 @@ export default function App() {
         <div hidden={tab !== 'history'} data-testid="keepalive-history">
           <HistoryView
             repo={repo}
-            health={health}
-            onOpenStats={openStats}
             active={tab === 'history'}
             queryRequest={historyQueryRequest}
+            filterRequest={historyFilter}
           />
         </div>
       )}

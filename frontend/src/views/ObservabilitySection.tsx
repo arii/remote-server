@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import RetryableError from '../components/RetryableError';
 import { fetchWorkflowHealth } from '../apiClient';
 import type {
   ContainerStatus,
@@ -13,31 +12,37 @@ export function ContainerPills({
   containers,
   error,
   onOpenStats,
+  onFilterHistory,
 }: {
   containers: ContainerStatus[];
   error?: string | null;
   // Opens the container stats drawer (#896): every pill navigates.
   onOpenStats?: (service?: string) => void;
+  // Filters the History feed to the pill's container (#931): the
+  // History tab owns the chronological feed, so the pill's second
+  // action navigates there instead of duplicating state here.
+  onFilterHistory?: (service: string) => void;
 }) {
   if (error) {
     return (
-      <p className="row-meta" data-testid="observability-containers-error" role="alert">
+      <p className="row-meta" data-testid="container-pills-error" role="alert">
         Container list unavailable: {error}
       </p>
     );
   }
   if (containers.length === 0) {
     return (
-      <p className="row-meta" data-testid="observability-containers-empty">
+      <p className="row-meta" data-testid="container-pills-empty">
         No containers reporting.
       </p>
     );
   }
   return (
-    <ul className="pills" data-testid="observability-containers">
+    <ul className="pills" data-testid="container-pills">
       {containers.map((c, i) => {
         const running = (c.state ?? '').toLowerCase() === 'running';
         const sick = (c.health ?? '').toLowerCase() === 'unhealthy';
+        const service = c.service ?? c.name ?? '';
         const label = `${c.service ?? c.name ?? 'container'}: ${c.state ?? '?'}${c.health ? ` (${c.health})` : ''}`;
         // eslint-disable-next-line react/no-array-index-key
         return (
@@ -47,7 +52,7 @@ export function ContainerPills({
               className="repo-chip pill-dot"
               title={c.status ?? ''}
               aria-label={`${label} — open container logs`}
-              onClick={() => onOpenStats?.(c.service ?? c.name ?? '')}
+              onClick={() => onOpenStats?.(service)}
             >
               <span
                 aria-hidden="true"
@@ -55,6 +60,18 @@ export function ContainerPills({
               />
               {label}
             </button>
+            {onFilterHistory && (
+              <button
+                type="button"
+                className="btn-link"
+                data-testid={`container-history-${service}`}
+                aria-label={`${label} — filter history`}
+                title="Show this container in the History feed"
+                onClick={() => onFilterHistory(service)}
+              >
+                History
+              </button>
+            )}
           </li>
         );
       })}
@@ -62,39 +79,34 @@ export function ContainerPills({
   );
 }
 
-function HealthLine({
-  health,
-  flow,
-  onOpenStats,
-}: {
-  health: SystemHealthResponse | null;
-  flow: WorkflowHealthResponse | null;
-  onOpenStats?: (service?: string) => void;
-}) {
+// Host Disk/Mem telemetry line (#931): one copy source for Now's
+// Containers section and the Status drawer. Null when neither
+// summary exists, so callers render nothing instead of an empty
+// line.
+export function telemetryText(
+  disk?: string | null,
+  mem?: string | null,
+): string | null {
+  const parts: string[] = [];
+  if (disk) parts.push(`Disk: ${disk}`);
+  if (mem) parts.push(`Mem: ${mem}`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+export function HostTelemetry({ health }: { health: SystemHealthResponse | null }) {
   if (!health) {
     return (
-      <p className="row-meta" data-testid="observability-health" role="status">
-        Stack health: loading…
+      <p className="row-meta" data-testid="host-telemetry" role="status">
+        Host telemetry: loading…
       </p>
     );
   }
-  const up = health.containers.filter((c) => c.state === 'running').length;
-  const flowText = flow
-    ? ` · automated runs: ${flow.status} (${flow.total_failing} failing)`
-    : '';
-  const stackText = health.containers_error
-    ? 'Stack health: container list unavailable'
-    : `Stack health: ${up}/${health.containers.length} containers up`;
+  const text = telemetryText(health.disk.summary, health.memory.summary);
+  if (!text) return null;
   return (
-    <div data-testid="observability-health">
-      <p className="row-meta">
-        {stackText}
-        {health.disk.summary ? ` · Disk: ${health.disk.summary}` : ''}
-        {health.memory.summary ? ` · Mem: ${health.memory.summary}` : ''}
-        {flowText}
-      </p>
-      <ContainerPills containers={health.containers} error={health.containers_error} onOpenStats={onOpenStats} />
-    </div>
+    <p className="row-meta" data-testid="host-telemetry">
+      {text}
+    </p>
   );
 }
 
@@ -144,14 +156,14 @@ function RunsList({
 }) {
   if (flow.workflows.length === 0) {
     return (
-      <p className="row-meta" data-testid="observability-runs-empty">
+      <p className="row-meta" data-testid="workflow-runs-empty">
         No failing automated runs — everything that runs automatically is
         healthy.
       </p>
     );
   }
   return (
-    <ul className="session-list" data-testid="observability-runs">
+    <ul className="session-list" data-testid="workflow-runs">
       {flow.workflows.map((w) => (
         <RunRow key={w.id} run={w} onFindInFeed={onFindInFeed} />
       ))}
@@ -159,80 +171,42 @@ function RunsList({
   );
 }
 
-export function ObservabilityBody({
-  health,
+// Failing-workflow body (#931): History keeps the chronological CI
+// signal; live infra state (containers, Disk/Mem) lives in Now's
+// Containers section and the Status drawer instead.
+export function WorkflowRunsBody({
   flow,
   error,
-  flowLoading = false,
-  onOpenStats,
-  onRetry = () => {},
-  onFindInFeed,
 }: {
-  health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
   error: string | null;
-  flowLoading?: boolean;
-  onOpenStats?: (service?: string) => void;
-  onRetry?: () => void;
-  onFindInFeed?: (text: string) => void;
 }) {
-  return (
-    <>
-      <HealthLine health={health} flow={flow} onOpenStats={onOpenStats} />
-      {error ? (
-        <RetryableError
-          testid="observability-error"
-          message={`Automated runs unavailable: ${error}`}
-          retryTestid="observability-retry"
-          onRetry={onRetry}
-        />
-      ) : (
-        <>
-          {!flow && flowLoading && (
-            <p className="row-meta" data-testid="observability-loading" role="status">
-              Loading automated runs…
-            </p>
-          )}
-          {flow && <RunsList flow={flow} onFindInFeed={onFindInFeed} />}
-        </>
-      )}
-    </>
-  );
+  if (error) {
+    return (
+      <div data-testid="workflow-runs-error" role="alert">
+        Automated runs unavailable: {error}
+      </div>
+    );
+  }
+  if (!flow) {
+    return (
+      <p className="row-meta" data-testid="workflow-runs-loading" role="status">
+        Loading automated runs…
+      </p>
+    );
+  }
+  return <RunsList flow={flow} />;
 }
 
-export default function ObservabilitySection({
-  repo,
-  health,
-  onOpenStats,
-  onFindInFeed,
-}: {
-  repo: string;
-  health: SystemHealthResponse | null;
-  onOpenStats?: (service?: string) => void;
-  onFindInFeed?: (text: string) => void;
-}) {
+export function WorkflowRunsSection({ repo }: { repo: string }) {
   const [flow, setFlow] = useState<WorkflowHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  async function loadFlow() {
-    setLoading(true);
-    setError(null);
-    try {
-      setFlow(await fetchWorkflowHealth(repo));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
     if (useMock()) {
       setFlow(loadWorkflowHealth());
-      setLoading(false);
       return;
     }
     (async () => {
@@ -240,11 +214,9 @@ export default function ObservabilitySection({
         const w = await fetchWorkflowHealth(repo);
         if (cancelled) return;
         setFlow(w);
-        setLoading(false);
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
       }
     })();
     return () => {
@@ -253,17 +225,9 @@ export default function ObservabilitySection({
   }, [repo]);
 
   return (
-    <section aria-label="System observability" data-testid="observability">
-      <h2>System observability</h2>
-      <ObservabilityBody
-        health={health}
-        flow={flow}
-        error={error}
-        flowLoading={loading}
-        onOpenStats={onOpenStats}
-        onRetry={() => void loadFlow()}
-        onFindInFeed={onFindInFeed}
-      />
+    <section aria-label="Automated runs" data-testid="workflow-runs-section">
+      <h2>Automated runs</h2>
+      <WorkflowRunsBody flow={flow} error={error} />
     </section>
   );
 }

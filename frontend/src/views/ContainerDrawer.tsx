@@ -1,6 +1,7 @@
 import TapToFire from '../components/TapToFire';
 import type { ContainerStatsRow, SystemHealthResponse } from '../apiClient';
 import { dangerEntryFor } from './DangerZone';
+import { telemetryText } from './ObservabilitySection';
 
 // Engine restart action per compose service (issue #663). Only
 // services with a DangerZone action restart from the drawer —
@@ -89,6 +90,7 @@ function ContainerRow({
   onRestart,
   onRestartService,
   onOpenLogs,
+  onFilterHistory,
 }: {
   row: ContainerStatsRow;
   restartRequested: string | null;
@@ -96,6 +98,7 @@ function ContainerRow({
   onRestart: (action: string) => void;
   onRestartService: (service: string) => void;
   onOpenLogs: (service: string) => void;
+  onFilterHistory?: (service: string) => void;
 }) {
   const action = restartActionFor(row.service);
   // No DangerZone entry, no engine button: a restart without the
@@ -144,7 +147,18 @@ function ContainerRow({
       <div className="actions">
         <button type="button" data-testid={`container-logs-${row.service}`} onClick={() => onOpenLogs(row.service)}>
           Logs
-        </button>
+        </button>{' '}
+        {onFilterHistory && (
+          <button
+            type="button"
+            data-testid={`container-history-${row.service}`}
+            aria-label={`Filter history to ${row.service}`}
+            title="Show this container in the History feed"
+            onClick={() => onFilterHistory(row.service)}
+          >
+            History
+          </button>
+        )}
       </div>
     </li>
   );
@@ -156,6 +170,8 @@ function ContainerRow({
 // manual refresh only (no ticker, no streaming daemon). Rows come
 // from the health snapshot with a live stats overlay; when the
 // overlay fails the health rows still render with a degraded note.
+// Host Disk/Mem ride along (#931): the drawer is the inspecting
+// path for live telemetry now that History is a pure feed.
 export default function ContainerDrawer({
   rows,
   loading,
@@ -164,9 +180,12 @@ export default function ContainerDrawer({
   restartRequested,
   restartError,
   serviceRestarted,
+  diskSummary,
+  memSummary,
   onRestart,
   onRestartService,
   onOpenLogs,
+  onFilterHistory,
   onRefresh,
   onClose,
 }: {
@@ -177,15 +196,24 @@ export default function ContainerDrawer({
   restartRequested: string | null;
   restartError: string | null;
   serviceRestarted?: string | null;
+  diskSummary?: string | null;
+  memSummary?: string | null;
   onRestart: (action: string) => void;
   onRestartService: (service: string) => void;
   onOpenLogs: (service: string) => void;
+  onFilterHistory?: (service: string) => void;
   onRefresh: () => void;
   onClose: () => void;
 }) {
+  const hostLine = telemetryText(diskSummary ?? null, memSummary ?? null);
   return (
     <section className="detail" data-testid="container-drawer" aria-label="Container health">
       <span className="row-title">Containers</span>
+      {hostLine && (
+        <p className="row-meta" data-testid="container-host-telemetry">
+          {hostLine}
+        </p>
+      )}
       {error && (
         <p role="alert" data-testid="container-error">
           Couldn&apos;t load container stats: {error}
@@ -222,6 +250,7 @@ export default function ContainerDrawer({
               onRestart={onRestart}
               onRestartService={onRestartService}
               onOpenLogs={onOpenLogs}
+              onFilterHistory={onFilterHistory}
             />
           ))}
         </ul>
