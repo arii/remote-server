@@ -74,11 +74,15 @@ RUN apt-get update \
  && gh --version \
  && npm install -g "pnpm@10.28.2" \
  && pnpm --version \
+ && python3 --version \
+ && python3 -m venv /opt/venvs/td \
+ && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
+ && /opt/venvs/td/bin/td --help > /dev/null \
  && git clone https://github.com/arii/boomtick.git /tmp/boomtick \
  && git -C /tmp/boomtick checkout "${BOOMTICK_CLI_REF}" \
  && test "$(git -C /tmp/boomtick rev-parse HEAD)" = "${BOOMTICK_CLI_REF}" \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
- && (cd /tmp/boomtick/mcp && pnpm run build) \
+ && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && npm install -g /tmp/boomtick/mcp \
  && rm -rf /tmp/boomtick \
  && test -x /usr/local/bin/boomtick-mcp \
@@ -92,9 +96,7 @@ RUN apt-get update \
  && python3 -m venv /tmp/venv-smoke \
  && /tmp/venv-smoke/bin/python --version \
  && rm -rf /tmp/venv-smoke \
- && python3 -m venv /opt/venvs/td \
- && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
- && /opt/venvs/td/bin/td --help > /dev/null \
+ && /opt/venvs/td/bin/td audit-impact --help > /dev/null \
  && mkdir -p /home/ari && ln -sfn /srv/remote-server /home/ari/remote-server \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \
