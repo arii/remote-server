@@ -808,12 +808,16 @@ export default function JobsView({
     onAskAgent(planExecuteSeed(planCard.name, content));
   }
 
-  async function guarded(fn: () => Promise<void>) {
+  // Contextual error surface (#965): backend failures render
+  // inline with the action that caused them, never silent and
+  // never mislabeled as a load error. Callers pass the verb phrase
+  // for their action; the default keeps today's load copy.
+  async function guarded(fn: () => Promise<void>, action = 'load jobs') {
     setError(null);
     try {
       await fn();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(`Couldn't ${action}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -997,11 +1001,11 @@ export default function JobsView({
   }
 
   function handleClear(all: boolean) {
-    void guarded(() => onClear(all));
+    void guarded(() => onClear(all), 'clear runs');
   }
 
   function handleTakeover() {
-    void guarded(onTakeover);
+    void guarded(onTakeover, 'request terminal takeover');
   }
 
   if (!jobs && !error) return <section data-testid="jobs-loading" role="status">Loading jobs…</section>;
@@ -1017,11 +1021,11 @@ export default function JobsView({
       <JobsHeader list={list} running={running} onRefresh={() => void guarded(load)} />
       {error && (
         <p role="alert" data-testid="jobs-error">
-          Couldn&apos;t load jobs: {error}
+          {error}
         </p>
       )}
       {notice && (
-        <p className="row-meta" data-testid="jobs-notice" role="status" aria-live="polite">
+        <p className="jobs-notice" data-testid="jobs-notice" role="status" aria-live="polite">
           {notice}
         </p>
       )}

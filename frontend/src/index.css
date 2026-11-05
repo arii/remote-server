@@ -164,6 +164,16 @@ h1, h2, h3 { text-wrap: balance; }
 .repo-menu [role="option"][data-highlighted] { background: var(--surface-2); }
 .repo-secondary { margin-left: auto; white-space: nowrap; }
 
+/* Upkeep outcome notice (#965): firing an upkeep action reports an
+   unmissable banner, never small meta text. */
+.jobs-notice {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 0.6rem 0.8rem;
+  font-weight: 600;
+}
+
 /* Offline outbox sync strip (issue #404): warning-tinted status
    row under the header; hidden while online with an empty queue. */
 .sync-banner {
@@ -842,7 +852,9 @@ button {
   min-height: 44px;
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
-button:disabled { opacity: 0.45; cursor: default; }
+/* Honest disabled state (#965): dimmed plus the not-allowed
+   cursor, so a dead upkeep action reads dead before the tap. */
+button:disabled { opacity: 0.45; cursor: not-allowed; }
 button[type="submit"] { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 650; }
 button[type="submit"]:hover:not(:disabled) { background: #1d4ed8; }
 
