@@ -107,6 +107,9 @@ agents keep shelling out to the stale CLI.
 
 ## 8. Backup location
 
-Session backup: `~/muse-sessions-backup-<date>.tar.gz` (TBD — created
-during the purge step). Verify the tarball lists JSONL logs before
-deleting anything.
+Session backup: `/root/muse-sessions-backup-20261105.tar.gz` (975M,
+created 2026-11-05, verified: lists all 2693 session JSONL logs).
+Purged 2026-11-05: 99 session dirs from 11/02–11/04 not in the lane
+registry and not the current session. Kept: all 14 registry sessions
+(incl. browser-mcp/hrm auditors), the current session, all of 11/05,
+and `.msp-view-g6/` (unknown view-cache purpose — left alone).
