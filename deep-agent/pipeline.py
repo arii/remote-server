@@ -229,8 +229,8 @@ class Pipeline:
         return status, state, detail
 
     def stage_submit(self, worktree_root, title, body=""):
-        """Submit via td submit-pr. Returns (ok, url-or-error)."""
-        argv = ["submit-pr", "--worktree", worktree_root,
+        """Submit via td agent submit-pr. Returns (ok, url-or-error)."""
+        argv = ["agent", "submit-pr", "--worktree", worktree_root,
                 "--title", title, "--body", body, "--json"]
         if self.issue_id:
             argv += ["--issue", str(self.issue_id)]
