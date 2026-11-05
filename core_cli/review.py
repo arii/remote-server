@@ -21,7 +21,8 @@ Pipeline:
   4. output: findings JSON [{file, line, severity, claim,
      suggestion}] plus a markdown body with the Gemini review
      sections (Summary / Findings / Verdict).
-  5. --post only: `td gh post-comment` with the markdown body.
+  5. --post only: `td gh post-comment --body` with the markdown
+     body (chunked when over the comment size cap).
 
 Modes:
   --dry-run   print the review plan as JSON; no model call, no post.
@@ -41,11 +42,11 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SEVERITIES = ("info", "minor", "major", "critical")
 TD_TIMEOUT = 60
+BODY_CHUNK_LIMIT = 60000
 DIFF_PROMPT_CAP = 24000
 CONTEXT_CAP = 6000
 MAX_FINDINGS = 50
@@ -448,17 +449,50 @@ def render_markdown(repo, pr, meta, findings, summary, verdict, model_label):
     return "\n".join(lines) + "\n"
 
 
+def split_body(body, limit=BODY_CHUNK_LIMIT):
+    """Split body into chunks of at most `limit` chars.
+
+    Cuts at the last blank line within each window when there is
+    one, else hard-splits. A body that fits returns unchanged as one
+    chunk. The chunks partition the input: "".join() of them always
+    reconstructs it exactly.
+    """
+    if len(body) <= limit:
+        return [body]
+    chunks, start, n = [], 0, len(body)
+    while start < n:
+        if n - start <= limit:
+            chunks.append(body[start:])
+            break
+        cut = body.rfind("\n\n", start, start + limit - 1)
+        if cut == -1:
+            chunks.append(body[start:start + limit])
+            start += limit
+        else:
+            chunks.append(body[start:cut + 2])
+            start = cut + 2
+    return chunks
+
+
 def post_body(repo, pr, body):
-    """Post the markdown body via td's posting primitive. Raises
-    ReviewError on failure. Called only for an explicit --post."""
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".md",
-                                      prefix="td-review-",
-                                      delete=False, encoding="utf-8")
-    try:
-        tmp.write(body)
-        tmp.close()
+    """Post the markdown body via td's --body flag. Raises ReviewError
+    on failure. Called only for an explicit --post.
+
+    --body, not --file: td resolves --file through sanitize_path,
+    which rewrites any absolute path outside td's cwd to its bare
+    basename, so every temp-file post failed with "File not found"
+    (#899). Bodies over BODY_CHUNK_LIMIT (GitHub caps comments at
+    65536 chars) post as numbered part-comments instead.
+    """
+    if not body or not body.strip():
+        raise ReviewError("refusing to post an empty body")
+    parts = split_body(body)
+    total = len(parts)
+    for index, part in enumerate(parts, 1):
+        chunk = (part if total == 1 else
+                 f"{part.rstrip()}\n\n_(review part {index} of {total})_\n")
         argv = ["td", "gh", "post-comment", "--pr", str(pr),
-               "--repo", repo, "--file", tmp.name]
+               "--repo", repo, "--body", chunk]
         try:
             proc = subprocess.run(argv, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, timeout=TD_TIMEOUT,
@@ -468,14 +502,11 @@ def post_body(repo, pr, body):
         except OSError as exc:
             raise ReviewError(f"td exec failed: {_short(exc)}")
         if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-            detail = detail[-1][:160] if detail else f"exit {proc.returncode}"
-            raise ReviewError(f"td post-comment: {detail}")
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+            detail = (proc.stderr or proc.stdout or "").strip()
+            if len(detail) > 2000:
+                detail = detail[:2000] + "…"
+            raise ReviewError(
+                f"td post-comment: {detail or f'exit {proc.returncode}'}")
 
 
 def build_parser():
