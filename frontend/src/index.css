@@ -47,7 +47,7 @@ h3 { font-size: 1.12rem; font-weight: 650; margin: 1.25rem 0 0.35rem; }
 
 h1, h2, h3 { text-wrap: balance; }
 
-.layout { max-width: 1400px; margin: 0 auto; padding: 1.25rem 1.25rem 3rem; }
+.layout { max-width: 1400px; margin: 0 auto; padding: 1.25rem 1.25rem 5.5rem; }
 
 /* Screen-reader-only: keeps the document outline honest (h1) without
    adding visual chrome the Operate surface does not need. */
@@ -81,7 +81,88 @@ h1, h2, h3 { text-wrap: balance; }
   display: inline-flex;
   align-items: center;
 }
-.toolbar select { max-width: 20rem; }
+/* Sticky app shell (#961): selector + status + primary tabs stay
+   pinned while the feed scrolls. The wrapper owns the surface so
+   the toolbar and tab row read as one bar. */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.topbar > .toolbar {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.1rem 0;
+  margin-bottom: 0.35rem;
+}
+.topbar > .topnav {
+  position: static;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  padding: 0.1rem 0;
+}
+
+/* Bottom section cluster (#961): Review/Jobs/Queue plus Report a
+   bug ride a fixed bar so secondary destinations never scroll away.
+   Layout bottom padding clears it; safe-area inset covers notched
+   phones. */
+.bottombar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem calc(0.5rem + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.bottombar button { min-height: 44px; }
+
+/* Repo picker menu (#961): trigger names the checkout only;
+   branch + lag ride muted right-aligned row text. */
+.repo-picker { position: relative; display: inline-flex; align-items: center; gap: 0.4rem; }
+.repo-picker > button {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-menu {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  z-index: 60;
+  min-width: 16rem;
+  max-width: 24rem;
+  max-height: 20rem;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem;
+}
+.repo-menu input[type="search"] { width: 100%; margin-bottom: 0.3rem; }
+.repo-menu [role="option"] {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.repo-menu [role="option"][data-highlighted] { background: var(--surface-2); }
+.repo-secondary { margin-left: auto; white-space: nowrap; }
 
 /* Offline outbox sync strip (issue #404): warning-tinted status
    row under the header; hidden while online with an empty queue. */
@@ -182,7 +263,7 @@ button.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offse
 .columns.columns-single { grid-template-columns: 1fr; }
 @media (max-width: 900px) {
   .columns { grid-template-columns: 1fr; }
-  .layout { padding: 0.9rem 0.9rem 3rem; }
+  .layout { padding: 0.9rem 0.9rem 5.5rem; }
   .page-head { flex-direction: column; align-items: stretch; }
 }
 
