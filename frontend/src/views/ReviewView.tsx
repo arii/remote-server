@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import BranchField, { useBranchField } from '../components/BranchField';
+import CopyButton from '../components/CopyButton';
+import RetryableError from '../components/RetryableError';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
@@ -171,17 +173,73 @@ function labelOf(v: unknown): string {
   return '';
 }
 
+export function PrDiffBody({ diff, pr }: { diff: PrDiffResponse; pr: number }) {
+  return (
+    <>
+      {diff.truncated && (
+        <p className="row-meta">Truncated to the first 30 KB.</p>
+      )}
+      {diff.hidden_structural && diff.hidden_structural.count > 0 && (
+        <p
+          className="row-meta"
+          data-testid={`review-diff-hidden-${pr}`}
+          title={diff.hidden_structural.files.join(', ')}
+        >
+          +{diff.hidden_structural.count} hidden structural files
+        </p>
+      )}
+      <div className="actions">
+        <CopyButton text={diff.diff} testid={`review-diff-copy-${pr}`} label="Copy diff" />
+      </div>
+      <pre className="row-meta" data-testid={`review-diff-body-${pr}`}>
+        {diff.diff || 'Empty diff.'}
+      </pre>
+    </>
+  );
+}
+
+export function ReviewListEmpty({
+  testid,
+  filtering,
+  emptyText,
+  onClearFilter,
+}: {
+  testid: string;
+  filtering: boolean;
+  emptyText: string;
+  onClearFilter: () => void;
+}) {
+  return (
+    <p className="row-meta" data-testid={testid}>
+      {filtering ? (
+        <>
+          No matches for this filter.{' '}
+          <button type="button" data-testid={`${testid}-clear`} onClick={onClearFilter}>
+            Clear filter
+          </button>
+        </>
+      ) : (
+        emptyText
+      )}
+    </p>
+  );
+}
+
 function PrDiff({ repo, pr }: { repo: string; pr: number }) {
   const [diff, setDiff] = useState<PrDiffResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    if (diff || error || useMock()) return;
+  async function fetchDiff() {
     try {
       setDiff(await fetchPrDiff(repo, pr));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  async function load() {
+    if (diff || error || useMock()) return;
+    await fetchDiff();
   }
 
   return (
@@ -193,30 +251,20 @@ function PrDiff({ repo, pr }: { repo: string; pr: number }) {
     >
       <summary className="details-title">View diff</summary>
       {error && (
-        <p className="row-meta" role="alert">
-          Couldn&apos;t load diff: {error}
-        </p>
+        <RetryableError
+          testid={`review-diff-error-${pr}`}
+          message={`Couldn't load diff: ${error}`}
+          retryTestid={`review-diff-retry-${pr}`}
+          onRetry={() => {
+            setError(null);
+            void fetchDiff();
+          }}
+        />
       )}
       {diff ? (
-        <>
-          {diff.truncated && (
-            <p className="row-meta">Truncated to the first 30 KB.</p>
-          )}
-          {diff.hidden_structural && diff.hidden_structural.count > 0 && (
-            <p
-              className="row-meta"
-              data-testid={`review-diff-hidden-${pr}`}
-              title={diff.hidden_structural.files.join(', ')}
-            >
-              +{diff.hidden_structural.count} hidden structural files
-            </p>
-          )}
-          <pre className="row-meta" data-testid={`review-diff-body-${pr}`}>
-            {diff.diff || 'Empty diff.'}
-          </pre>
-        </>
+        <PrDiffBody diff={diff} pr={pr} />
       ) : (
-        !error && <p className="row-meta" role="status">Loading…</p>
+        !error && <p className="row-meta" role="status">Loading diff…</p>
       )}
     </details>
   );
@@ -307,9 +355,10 @@ export function PrDetails({
         {details.stats.total_files} files (+{details.stats.additions}/-{details.stats.deletions})
       </p>
       <ul data-testid="review-files">
-        {details.files.map((f) => (
+        {details.files.map((f, i) => (
           <li key={f.path}>
-            {f.path} (+{f.additions}/-{f.deletions})
+            {f.path} (+{f.additions}/-{f.deletions}){' '}
+            <CopyButton text={f.path} testid={`review-file-copy-${i}`} label="Copy path" />
           </li>
         ))}
       </ul>
@@ -317,7 +366,19 @@ export function PrDetails({
       <ul data-testid="review-prompts">
         {details.ai_prompts.map((p) => (
           <li key={p.id}>
-            <strong>{p.label}:</strong> {p.prompt}
+            <strong>{p.label}:</strong> {p.prompt}{' '}
+            <button
+              type="button"
+              className="btn-secondary"
+              data-testid={`ask-prompt-${p.id}`}
+              onClick={() =>
+                onAskAgent(
+                  `On PR #${details.number} (${details.branch} into ${details.base}): ${p.prompt}`,
+                )
+              }
+            >
+              Ask
+            </button>
           </li>
         ))}
       </ul>
@@ -1143,8 +1204,47 @@ export default function ReviewView({
   });
   const prCount = visiblePrs.length;
 
+  // List loader, extracted for the error-state retry (#907): a
+  // generation guard drops late settles after repo switches, the
+  // same protection the old per-effect cancelled flag gave.
+  const loadGen = useRef(0);
+  const loadLists = useCallback(async () => {
+    if (useMock()) {
+      setPrs(loadPrs());
+      setIssues(loadIssues());
+      return;
+    }
+    const gen = ++loadGen.current;
+    setError(null);
+    const live = () => gen === loadGen.current;
+    const lists = (async () => {
+      try {
+        const [p, i] = await Promise.all([fetchPrs(repo), fetchIssues(repo)]);
+        if (!live()) return;
+        setPrs(p.prs);
+        setViewer(p.viewer || undefined);
+        setIssues(i.issues);
+      } catch (err) {
+        if (!live()) return;
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    // Deferred flags load independently: if the store is unreachable
+    // the lists still render, with nothing hidden.
+    const flags = (async () => {
+      try {
+        const d = await fetchDeferred(repo);
+        if (!live()) return;
+        setDeferred(d.deferred);
+      } catch {
+        if (!live()) return;
+        setDeferred([]);
+      }
+    })();
+    await Promise.all([lists, flags]);
+  }, [repo]);
+
   useEffect(() => {
-    let cancelled = false;
     setPrs(null);
     setViewer(undefined);
     setIssues(null);
@@ -1153,36 +1253,11 @@ export default function ReviewView({
     setDetails(null);
     setError(null);
     setBulkSelected(new Set());
-    if (useMock()) {
-      setPrs(loadPrs());
-      setIssues(loadIssues());
-      return;
-    }
-    (async () => {
-      try {
-        const [p, i] = await Promise.all([fetchPrs(repo), fetchIssues(repo)]);
-        if (!cancelled) {
-          setPrs(p.prs);
-          setViewer(p.viewer || undefined);
-          setIssues(i.issues);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    // Deferred flags load independently: if the store is unreachable
-    // the lists still render, with nothing hidden.
-    (async () => {
-      try {
-        const d = await fetchDeferred(repo);
-        if (!cancelled) setDeferred(d.deferred);
-      } catch {
-        if (!cancelled) setDeferred([]);
-      }
-    })();
+    void loadLists();
     return () => {
-      cancelled = true;
+      loadGen.current++;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
   async function selectPr(n: number) {
@@ -1561,7 +1636,12 @@ export default function ReviewView({
         </div>
       </header>
       {error && (
-        <p role="alert" data-testid="review-error">{error}</p>
+        <RetryableError
+          testid="review-error"
+          message={error}
+          retryTestid="review-retry"
+          onRetry={() => void loadLists()}
+        />
       )}
       {notice && (
         <p className="row-meta" data-testid="review-notice" role="status">{notice}</p>
@@ -1632,11 +1712,14 @@ export default function ReviewView({
             )}
           </h3>
           {!prs ? (
-            <p className="row-meta" data-testid="review-prs-loading" role="status">Loading…</p>
+            <p className="row-meta" data-testid="review-prs-loading" role="status">Loading pull requests…</p>
           ) : visiblePrs.length === 0 ? (
-            <p className="row-meta" data-testid="review-prs-empty">
-              {filtering ? 'No matching PRs.' : 'No open PRs.'}
-            </p>
+            <ReviewListEmpty
+              testid="review-prs-empty"
+              filtering={filtering}
+              emptyText="No open PRs."
+              onClearFilter={() => setFilter('')}
+            />
           ) : (
             <ul className="session-list" data-testid="review-pr-list">
               {visiblePrs.map((p, pi) => (
@@ -1723,11 +1806,14 @@ export default function ReviewView({
             )}
           </h3>
           {!issues ? (
-            <p className="row-meta" data-testid="review-issues-loading" role="status">Loading…</p>
+            <p className="row-meta" data-testid="review-issues-loading" role="status">Loading issues…</p>
           ) : visibleIssues.length === 0 ? (
-            <p className="row-meta" data-testid="review-issues-empty">
-              {filtering ? 'No matching issues.' : 'No open issues.'}
-            </p>
+            <ReviewListEmpty
+              testid="review-issues-empty"
+              filtering={filtering}
+              emptyText="No open issues."
+              onClearFilter={() => setFilter('')}
+            />
           ) : (
             <ul className="session-list" data-testid="review-issue-list">
               {visibleIssues.map((iss, ii) => (

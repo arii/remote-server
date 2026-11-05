@@ -1437,7 +1437,7 @@ export default function NowView({
               strips, or the palette (issue #930 removed the duplicate
               Review/Jobs/Queue toggle row that used to sit here). */}
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
-          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} />}
+          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} onOpenChat={() => onOpenTab('chat')} />}
           {section === 'queue' && <QueueView repo={repo} />}
         </>
       )}

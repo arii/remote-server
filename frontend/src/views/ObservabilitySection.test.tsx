@@ -115,3 +115,32 @@ describe('independent stack/flow rendering (issue #474)', () => {
     expect(html).not.toContain('observability-error');
   });
 });
+
+describe('observability actionable rows (issue #907)', () => {
+  it('finds URL-less runs in the feed', () => {
+    const html = renderToStaticMarkup(
+      <RunRow
+        run={{ id: 9, name: 'Nightly', diagnosed_cause: 'Flaky.' } as WorkflowRun}
+        onFindInFeed={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="observability-find-9"');
+    expect(html).toContain('Find in feed');
+  });
+
+  it('retries failed runs fetches inline', () => {
+    const html = renderToStaticMarkup(
+      <ObservabilityBody health={null} flow={null} error="gh hiccup" onRetry={() => {}} />,
+    );
+    expect(html).toContain('data-testid="observability-retry"');
+    expect(html).toContain('>Retry</button>');
+  });
+
+  it('names the runs load while pending', () => {
+    const html = renderToStaticMarkup(
+      <ObservabilityBody health={null} flow={null} error={null} flowLoading />,
+    );
+    expect(html).toContain('data-testid="observability-loading"');
+    expect(html).toContain('Loading automated runs…');
+  });
+});

@@ -6,9 +6,12 @@ import ReviewView, {
   IssueRowLabels,
   IssueRowTitle,
   MergeBlockDetail,
+  PrDetails,
+  PrDiffBody,
   PrRowApprove,
   PrRowRequestChanges,
   RequestChangesForm,
+  ReviewListEmpty,
   RowActionButton,
   REVIEW_REPLY_TEMPLATES,
   appendReplyTemplate,
@@ -1119,5 +1122,76 @@ describe('bulk approve selected PRs (issue #890)', () => {
     expect(deferring).toContain('>Deferring…<');
     expect(deferring).toContain('>Approve 3<');
     expect(deferring.match(/disabled/g)?.length).toBe(2);
+  });
+});
+
+describe('review actionable rows (issue #907)', () => {
+  const details = {
+    repo: 'demo',
+    number: 7,
+    title: 'Fix thing',
+    branch: 'feat/x',
+    base: 'main',
+    ci: 'passing',
+    failing: [],
+    merge: 'clean',
+    conflicted: false,
+    draft: false,
+    url: 'https://example.test/pr/7',
+    files: [{ path: 'a.py', additions: 3, deletions: 1, changes: 4 }],
+    stats: { total_files: 1, additions: 3, deletions: 1 },
+    ai_prompts: [{ id: 'p1', label: 'Risk', prompt: 'name the top risk' }],
+  };
+
+  it('offers Ask per review prompt and copy per file', () => {
+    const html = renderToStaticMarkup(
+      <PrDetails
+        repo="demo"
+        details={details}
+        mergeBlocked={null}
+        mergeDisabled={false}
+        onMerge={() => {}}
+        onAskAgent={() => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="ask-prompt-p1"');
+    expect(html).toContain('>Ask</button>');
+    expect(html).toContain('data-testid="review-file-copy-0"');
+    expect(html).toContain('Copy path');
+  });
+
+  it('offers clear-filter on filtered empties only', () => {
+    const filtered = renderToStaticMarkup(
+      <ReviewListEmpty
+        testid="review-prs-empty"
+        filtering
+        emptyText="No open PRs."
+        onClearFilter={() => {}}
+      />,
+    );
+    expect(filtered).toContain('No matches for this filter.');
+    expect(filtered).toContain('data-testid="review-prs-empty-clear"');
+    const bare = renderToStaticMarkup(
+      <ReviewListEmpty
+        testid="review-prs-empty"
+        filtering={false}
+        emptyText="No open PRs."
+        onClearFilter={() => {}}
+      />,
+    );
+    expect(bare).toContain('No open PRs.');
+    expect(bare).not.toContain('review-prs-empty-clear');
+  });
+
+  it('renders diff bodies with a copy action', () => {
+    const html = renderToStaticMarkup(
+      <PrDiffBody
+        pr={7}
+        diff={{ number: 7, diff: 'diff --git a/a b/a\n+x\n', truncated: false }}
+      />,
+    );
+    expect(html).toContain('data-testid="review-diff-body-7"');
+    expect(html).toContain('data-testid="review-diff-copy-7"');
+    expect(html).toContain('Copy diff');
   });
 });

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import RetryableError from '../components/RetryableError';
 import { fetchWorkflowHealth } from '../apiClient';
 import type {
   ContainerStatus,
@@ -97,7 +98,13 @@ function HealthLine({
   );
 }
 
-export function RunRow({ run }: { run: WorkflowRun }) {
+export function RunRow({
+  run,
+  onFindInFeed,
+}: {
+  run: WorkflowRun;
+  onFindInFeed?: (text: string) => void;
+}) {
   const name = run.name ?? 'Workflow';
   const branch = run.branch ?? '?';
   const event = run.event ?? '';
@@ -114,12 +121,27 @@ export function RunRow({ run }: { run: WorkflowRun }) {
         <a href={run.url} target="_blank" rel="noreferrer">
           Open run trace
         </a>
+      ) : onFindInFeed ? (
+        <button
+          type="button"
+          className="btn-secondary"
+          data-testid={`observability-find-${run.id}`}
+          onClick={() => onFindInFeed(name)}
+        >
+          Find in feed
+        </button>
       ) : null}
     </li>
   );
 }
 
-function RunsList({ flow }: { flow: WorkflowHealthResponse }) {
+function RunsList({
+  flow,
+  onFindInFeed,
+}: {
+  flow: WorkflowHealthResponse;
+  onFindInFeed?: (text: string) => void;
+}) {
   if (flow.workflows.length === 0) {
     return (
       <p className="row-meta" data-testid="observability-runs-empty">
@@ -131,7 +153,7 @@ function RunsList({ flow }: { flow: WorkflowHealthResponse }) {
   return (
     <ul className="session-list" data-testid="observability-runs">
       {flow.workflows.map((w) => (
-        <RunRow key={w.id} run={w} />
+        <RunRow key={w.id} run={w} onFindInFeed={onFindInFeed} />
       ))}
     </ul>
   );
@@ -141,22 +163,38 @@ export function ObservabilityBody({
   health,
   flow,
   error,
+  flowLoading = false,
   onOpenStats,
+  onRetry = () => {},
+  onFindInFeed,
 }: {
   health: SystemHealthResponse | null;
   flow: WorkflowHealthResponse | null;
   error: string | null;
+  flowLoading?: boolean;
   onOpenStats?: (service?: string) => void;
+  onRetry?: () => void;
+  onFindInFeed?: (text: string) => void;
 }) {
   return (
     <>
       <HealthLine health={health} flow={flow} onOpenStats={onOpenStats} />
       {error ? (
-        <div data-testid="observability-error" role="alert">
-          Automated runs unavailable: {error}
-        </div>
+        <RetryableError
+          testid="observability-error"
+          message={`Automated runs unavailable: ${error}`}
+          retryTestid="observability-retry"
+          onRetry={onRetry}
+        />
       ) : (
-        flow && <RunsList flow={flow} />
+        <>
+          {!flow && flowLoading && (
+            <p className="row-meta" data-testid="observability-loading" role="status">
+              Loading automated runs…
+            </p>
+          )}
+          {flow && <RunsList flow={flow} onFindInFeed={onFindInFeed} />}
+        </>
       )}
     </>
   );
@@ -166,27 +204,47 @@ export default function ObservabilitySection({
   repo,
   health,
   onOpenStats,
+  onFindInFeed,
 }: {
   repo: string;
   health: SystemHealthResponse | null;
   onOpenStats?: (service?: string) => void;
+  onFindInFeed?: (text: string) => void;
 }) {
   const [flow, setFlow] = useState<WorkflowHealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  async function loadFlow() {
+    setLoading(true);
+    setError(null);
+    try {
+      setFlow(await fetchWorkflowHealth(repo));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
     if (useMock()) {
       setFlow(loadWorkflowHealth());
+      setLoading(false);
       return;
     }
     (async () => {
       try {
         const w = await fetchWorkflowHealth(repo);
-        if (!cancelled) setFlow(w);
+        if (cancelled) return;
+        setFlow(w);
+        setLoading(false);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
       }
     })();
     return () => {
@@ -197,7 +255,15 @@ export default function ObservabilitySection({
   return (
     <section aria-label="System observability" data-testid="observability">
       <h2>System observability</h2>
-      <ObservabilityBody health={health} flow={flow} error={error} onOpenStats={onOpenStats} />
+      <ObservabilityBody
+        health={health}
+        flow={flow}
+        error={error}
+        flowLoading={loading}
+        onOpenStats={onOpenStats}
+        onRetry={() => void loadFlow()}
+        onFindInFeed={onFindInFeed}
+      />
     </section>
   );
 }

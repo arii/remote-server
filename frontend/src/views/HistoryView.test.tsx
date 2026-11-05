@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import HistoryView, { HistoryInspector, RowsList } from './HistoryView';
+import HistoryView, { HistoryInspector, MemberBlock, RowsList, RunOutput } from './HistoryView';
 import type { HistoryRow } from './historyUtils';
 
 describe('history search input (issue #608)', () => {
@@ -128,5 +128,30 @@ describe('history inspector (issue #839)', () => {
     );
     expect(noted).toContain('data-testid="history-rerun-note"');
     expect(noted).toContain('Re-run started: run-2');
+  });
+});
+
+describe('history actionable rows (issue #907)', () => {
+  it('clears search and filters from the filtered empty state', () => {
+    const html = renderToStaticMarkup(
+      <RowsList rows={[]} filtering onClearFilters={() => {}} />,
+    );
+    expect(html).toContain('data-testid="history-clear-filters"');
+    expect(html).toContain('Clear search');
+  });
+
+  it('names run output loads per run', () => {
+    const html = renderToStaticMarkup(<RunOutput runId="abc123" />);
+    expect(html).toContain('data-testid="history-run-output-loading-abc123"');
+    expect(html).toContain('Loading run output…');
+  });
+
+  it('offers copy on inspector entries', () => {
+    const html = renderToStaticMarkup(
+      <MemberBlock member={{ at: 'then', detail: 'boom x1' }} grouped={false} />,
+    );
+    expect(html).toContain('data-testid="history-group-copy"');
+    expect(html).toContain('Copy entry');
+    expect(html).toContain('boom x1');
   });
 });

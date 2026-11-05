@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import BranchField, { useBranchField } from '../components/BranchField';
+import CopyButton from '../components/CopyButton';
+import RetryableError from '../components/RetryableError';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
 import {
@@ -204,18 +206,24 @@ export function RunProgressPanel({
       <p className="row-meta" data-testid="jobs-output-count">
         {filtering ? `${matched} of ${total} lines match` : `${total} lines`}
       </p>
-      <pre className="row-meta">
-        {tail === ''
-          ? 'Waiting for output…'
-          : visible.length === 0
-            ? 'No matching lines.'
-            : visible.map((l, i) => (
-                <span key={i}>
-                  <HighlightedLine line={l} query={query} />
-                  {i < visible.length - 1 ? '\n' : ''}
-                </span>
-              ))}
-      </pre>
+      <div className="actions">
+        <CopyButton text={tail} testid="jobs-output-copy" label="Copy output" />
+      </div>
+      <details open data-testid="jobs-output-wrap">
+        <summary className="row-meta">Output</summary>
+        <pre className="row-meta">
+          {tail === ''
+            ? 'Waiting for output…'
+            : visible.length === 0
+              ? 'No matching lines.'
+              : visible.map((l, i) => (
+                  <span key={i}>
+                    <HighlightedLine line={l} query={query} />
+                    {i < visible.length - 1 ? '\n' : ''}
+                  </span>
+                ))}
+        </pre>
+      </details>
     </div>
   );
 }
@@ -230,17 +238,22 @@ export function UnifiedDiffView({ diff }: { diff: string }) {
   if (diff === '') return <p className="row-meta">No differences.</p>;
   const lines = diff.split('\n');
   return (
-    <pre className="row-meta" data-testid="run-compare-diff">
-      {lines.map((line, i) => {
-        const tone = diffLineTone(line);
-        return (
-          <span key={i} className={tone ? DIFF_TONE_CLASS[tone] : undefined}>
-            {line}
-            {i < lines.length - 1 ? '\n' : ''}
-          </span>
-        );
-      })}
-    </pre>
+    <>
+      <div className="actions">
+        <CopyButton text={diff} testid="run-compare-copy" label="Copy diff" />
+      </div>
+      <pre className="row-meta" data-testid="run-compare-diff">
+        {lines.map((line, i) => {
+          const tone = diffLineTone(line);
+          return (
+            <span key={i} className={tone ? DIFF_TONE_CLASS[tone] : undefined}>
+              {line}
+              {i < lines.length - 1 ? '\n' : ''}
+            </span>
+          );
+        })}
+      </pre>
+    </>
   );
 }
 
@@ -301,6 +314,7 @@ export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
   const [result, setResult] = useState<RunCompareResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
   // Picks fall back to the defaults when the picked run is gone
   // (cleared) or was never picked.
   const a = aPick && ids.includes(aPick) ? aPick : (defaults?.[0] ?? null);
@@ -328,7 +342,7 @@ export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
     return () => {
       live = false;
     };
-  }, [a, b]);
+  }, [a, b, nonce]);
   if (!defaults) return null;
   const optionLabel = (id: string) => {
     const j = finished.find((f) => f.id === id);
@@ -376,9 +390,15 @@ export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
       </div>
       {loading && <p className="row-meta" role="status">Loading diff…</p>}
       {error && (
-        <p role="alert" data-testid="run-compare-error">
-          Couldn&apos;t load the diff: {error}
-        </p>
+        <RetryableError
+          testid="run-compare-error"
+          message={`Couldn't load the diff: ${error}`}
+          retryTestid="run-compare-retry"
+          onRetry={() => {
+            setError(null);
+            setNonce((n) => n + 1);
+          }}
+        />
       )}
       {!loading && !error && result && (
         <>
@@ -396,7 +416,7 @@ export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
   );
 }
 
-function PlanCardPanel({
+export function PlanCardPanel({
   card,
   open,
   content,
@@ -422,9 +442,10 @@ function PlanCardPanel({
         </button>{' '}
         <button type="button" data-testid="jobs-plan-execute" onClick={onExecute}>
           Execute plan
-        </button>
+        </button>{' '}
+        {content && <CopyButton text={content} testid="jobs-plan-copy" label="Copy plan" />}
       </div>
-      {open && <pre className="row-meta">{content ?? 'Loading…'}</pre>}
+      {open && <pre className="row-meta">{content ?? 'Loading plan…'}</pre>}
     </div>
   );
 }
@@ -494,6 +515,11 @@ export function UxAuditGroups({ site }: { site: string }) {
       {error && (
         <p role="alert" data-testid="ux-audit-groups-error">
           Couldn&apos;t load findings: {error}
+        </p>
+      )}
+      {groups === null && !error && (
+        <p className="row-meta" data-testid="ux-audit-groups-loading" role="status">
+          Loading findings…
         </p>
       )}
       {message && (
@@ -626,7 +652,7 @@ export function TriageFanoutSection({
   );
 }
 
-function JobsListPanel({
+export function JobsListPanel({
   list,
   repo,
   cursor,
@@ -634,6 +660,7 @@ function JobsListPanel({
   onRerun,
   onCancel,
   onSchedule,
+  onOpenChat,
 }: {
   list: JobRecord[];
   repo: string;
@@ -642,6 +669,7 @@ function JobsListPanel({
   onRerun: (job: JobRecord, confirmed: boolean) => void;
   onCancel: (job: JobRecord) => void;
   onSchedule: (job: JobRecord) => void;
+  onOpenChat?: () => void;
 }) {
   if (list.length === 0) {
     return (
@@ -650,6 +678,13 @@ function JobsListPanel({
         <p className="row-meta">
           Dispatch one above. Agent chat runs live under Chat → Past runs.
         </p>
+        {onOpenChat && (
+          <div className="actions">
+            <button type="button" data-testid="jobs-empty-chat" onClick={onOpenChat}>
+              Open Chat past runs
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -677,6 +712,7 @@ export default function JobsView({
   triageSuspended = false,
   onAskAgent,
   initialPr = null,
+  onOpenChat,
 }: {
   repo: string;
   // Checkout branch of the viewed repo: seeds the launch branch
@@ -689,6 +725,8 @@ export default function JobsView({
   // Review row selection from Now: seeds the PR field on mount.
   // Jobs remounts per section visit, so each visit picks up the latest.
   initialPr?: number | null;
+  // Empty-state hop to Chat past runs (#907).
+  onOpenChat?: () => void;
 }) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
   const [branch, setBranch] = useBranchField(repo, defaultBranch);
@@ -947,7 +985,7 @@ export default function JobsView({
     void guarded(onTakeover);
   }
 
-  if (!jobs && !error) return <section data-testid="jobs-loading" role="status">Loading…</section>;
+  if (!jobs && !error) return <section data-testid="jobs-loading" role="status">Loading jobs…</section>;
 
   const prOk = /^\d+$/.test(pr.trim());
   const prStateCurrent = prState && String(prState.n) === pr.trim() ? prState : null;
@@ -1040,6 +1078,7 @@ export default function JobsView({
         onRerun={(job, confirmed) => void guarded(() => onRerun(job, confirmed))}
         onCancel={(job) => void guarded(() => onCancelRun(job))}
         onSchedule={onScheduleJob}
+        onOpenChat={onOpenChat}
       />
     </section>
   );

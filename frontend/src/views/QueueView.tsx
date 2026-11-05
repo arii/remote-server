@@ -435,7 +435,7 @@ export default function QueueView({ repo }: { repo: string }) {
   if (!items && !error)
     return (
       <section data-testid="queue-loading" role="status">
-        Loading…
+        Loading dispatch queue…
       </section>
     );
 

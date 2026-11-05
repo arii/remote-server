@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import CopyButton from '../components/CopyButton';
 import TapToFire from '../components/TapToFire';
 import {
   abortChat,
@@ -70,14 +71,31 @@ export function repoMetricsLine(m: RepoMetricsResponse): string {
   return `${dirty} · ${todos} · ${diff}`;
 }
 
-export function RepoMetricsStrip({ metrics }: { metrics: RepoMetricsResponse }) {
+export function RepoMetricsStrip({
+  metrics,
+  onOpenDiff,
+}: {
+  metrics: RepoMetricsResponse;
+  onOpenDiff?: () => void;
+}) {
+  const dirty = metrics.status_count > 0 || metrics.diff_files > 0;
   return (
     <p
       className="row-meta"
       data-testid="chat-metrics-strip"
       title={metrics.diff_stat.trim() === '' ? 'No uncommitted changes' : metrics.diff_stat}
     >
-      {repoMetricsLine(metrics)}
+      {repoMetricsLine(metrics)}{' '}
+      {dirty && onOpenDiff && (
+        <button
+          type="button"
+          className="btn-secondary"
+          data-testid="chat-metrics-diff"
+          onClick={onOpenDiff}
+        >
+          View diff
+        </button>
+      )}
     </p>
   );
 }
@@ -659,41 +677,60 @@ export function TraceTimeline({
   const queryNarrow = useIsNarrowViewport();
   const isNarrow = narrow ?? queryNarrow;
   if (!isNarrow) {
+    if (trace.length === 0) {
+      return <pre className="row-meta">No trace events recorded.</pre>;
+    }
     return (
-      <pre className="row-meta">
-        {trace.length > 0
-          ? trace.map((ev) => traceLine(ev, t0)).join('\n')
-          : 'No trace events recorded.'}
-      </pre>
+      <>
+        <div className="actions">
+          <CopyButton
+            text={trace.map((ev) => traceLine(ev, t0)).join('\n')}
+            testid="chat-trace-copy"
+            label="Copy trace"
+          />
+        </div>
+        <pre className="row-meta">
+          {trace.map((ev) => traceLine(ev, t0)).join('\n')}
+        </pre>
+      </>
     );
   }
   if (trace.length === 0) {
     return <p className="row-meta">No trace events recorded.</p>;
   }
   return (
-    <ol className="trace-fold" data-testid="chat-trace-fold">
-      {trace.map((ev, i) => {
-        const s = traceSummary(ev, t0);
-        const dotCls = s.status === 'ok' ? 'dot-ok' : s.status === 'failed' ? 'dot-bad' : '';
-        return (
-          // Trace events carry no ids; order is stable.
-          // eslint-disable-next-line react/no-array-index-key
-          <li key={i} className="trace-fold-row">
-            <details>
-              <summary>
-                <span className={`dot ${dotCls}`} aria-hidden="true" />
-                <span className="trace-fold-action">{s.action}</span>
-                <span className="trace-fold-timing">{s.timing}</span>
-                {s.status !== 'info' && (
-                  <span className={`trace-fold-status ${s.status}`}>{s.status}</span>
-                )}
-              </summary>
-              <pre className="row-meta">{traceLine(ev, t0)}</pre>
-            </details>
-          </li>
-        );
-      })}
-    </ol>
+    <>
+      <div className="actions">
+        <CopyButton
+          text={trace.map((ev) => traceLine(ev, t0)).join('\n')}
+          testid="chat-trace-copy"
+          label="Copy trace"
+        />
+      </div>
+      <ol className="trace-fold" data-testid="chat-trace-fold">
+        {trace.map((ev, i) => {
+          const s = traceSummary(ev, t0);
+          const dotCls = s.status === 'ok' ? 'dot-ok' : s.status === 'failed' ? 'dot-bad' : '';
+          return (
+            // Trace events carry no ids; order is stable.
+            // eslint-disable-next-line react/no-array-index-key
+            <li key={i} className="trace-fold-row">
+              <details>
+                <summary>
+                  <span className={`dot ${dotCls}`} aria-hidden="true" />
+                  <span className={`trace-fold-action`}>{s.action}</span>
+                  <span className={`trace-fold-timing`}>{s.timing}</span>
+                  {s.status !== 'info' && (
+                    <span className={`trace-fold-status ${s.status}`}>{s.status}</span>
+                  )}
+                </summary>
+                <pre className="row-meta">{traceLine(ev, t0)}</pre>
+              </details>
+            </li>
+          );
+        })}
+      </ol>
+    </>
   );
 }
 
@@ -1532,6 +1569,7 @@ export default function ChatView({
   onSeedUsed,
   initialRuns,
   focusRequest = 0,
+  onOpenDiff,
 }: {
   repo: string;
   seed: string | null;
@@ -1542,6 +1580,8 @@ export default function ChatView({
   // Palette request (issue #810): a nonce bump focuses the prompt,
   // including on a fresh mount after the palette navigates here.
   focusRequest?: number;
+  // Dirty-tree hop to the diff modal (#907).
+  onOpenDiff?: () => void;
 }) {
   // Restored live exchange (#573): the initializer replays the
   // sessionStorage snapshot, so a tab switch (unmount/remount) keeps
@@ -2270,7 +2310,7 @@ export default function ChatView({
           Loading repo metrics…
         </p>
       )}
-      {metrics && <RepoMetricsStrip metrics={metrics} />}
+      {metrics && <RepoMetricsStrip metrics={metrics} onOpenDiff={onOpenDiff} />}
       {/* Starters only start conversations: once a thread
           exists the chips would be a third button row (#839). */}
       {messages.length === 0 && (
