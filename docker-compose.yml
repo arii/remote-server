@@ -267,6 +267,11 @@ services:
       # terminal). Empty/unset = public read-only GitHub ops only.
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
+      # Nebius fallback for the local-model router (mirrors terminal).
+      # Empty/unset = Ollama-only; calls raise instead of falling back.
+      NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
+      NEBIUS_MODEL: ${NEBIUS_MODEL:-}
+      NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
       # Metered-spend cap (gate + budget UI). Empty/unset = uncapped.
       NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
       # Ollama on the compose network (repair worker, narrators).
