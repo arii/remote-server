@@ -82,8 +82,9 @@ RUN apt-get update \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
  && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 27 \
- && npm install -g /tmp/boomtick/mcp \
- && rm -rf /tmp/boomtick \
+ && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
+ && npm install -g /tmp/*.tgz \
+ && rm -rf /tmp/boomtick /tmp/*.tgz \
  && test -x /usr/local/bin/boomtick-mcp \
  && command -v boomtick-mcp > /dev/null \
  && MUSE_NO_MODIFY_PATH=1 bash /tmp/muse-install.sh \

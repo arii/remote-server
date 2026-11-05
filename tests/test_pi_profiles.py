@@ -72,7 +72,7 @@ class TestPiProfiles(unittest.TestCase):
         self.assertIn("toolExposure", boomtick)
         exposure = boomtick["toolExposure"]
         self.assertEqual(exposure.get("github_get_pr_diff"), "direct")
-        self.assertEqual(exposure.get("github_comment_triage_summary"), "direct")
+        self.assertNotIn("github_comment_triage_summary", exposure)
         self.assertEqual(exposure.get("github_search_open_prs"), "direct")
         self.assertEqual(exposure.get("repo_read_ci_logs"), "direct")
         self.assertEqual(exposure.get("repo_get_changed_files"), "direct")
