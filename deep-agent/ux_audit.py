@@ -987,7 +987,7 @@ def group_findings(findings):
 def group_spec_body(site, repo, issue_ref, index, group):
     """Task-spec markdown for one finding group (assign payload).
 
-    Parses under core_cli.parse_task_spec (Target Files +
+    Parses under backend.parse_task_spec (Target Files +
     Verification Command) so repair dispatch accepts it as a
     --body focus override; the worker then fixes this group only.
     """

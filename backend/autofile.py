@@ -17,7 +17,7 @@ fresh streak after close files a fresh issue).
 
 Filing only: no auto-assign, no auto-close, no repair dispatch, and
 no new failure detection beyond the collapse-rule port below. The
-day-job entry is `core_cli.autofile_scan` (engine action
+day-job entry is `backend.autofile_scan` (engine action
 `autofile-scan`, seeded daily per checkout like the #822 notify
 loop); this module never raises out of `scan_repo` except for an
 invalid repo name.

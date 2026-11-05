@@ -243,5 +243,53 @@ class TestIndexReadiness(unittest.TestCase):
                 del os.environ["S5_CHROMA_DIR"]
 
 
+class TestTdQuery(unittest.TestCase):
+    """td rag query path: JSON parsing, errors, formatting."""
+
+    def _run(self, stdout="", returncode=0, stderr=""):
+        import subprocess
+        from unittest import mock
+
+        proc = subprocess.CompletedProcess(
+            args=["td"], returncode=returncode, stdout=stdout,
+            stderr=stderr)
+        return mock.patch("subprocess.run", return_value=proc)
+
+    def test_query_td_repo_parses_hits(self):
+        import json
+
+        payload = {"status": "success", "hits": [
+            {"content": "hello", "filepath": "a.py", "start_line": 3,
+             "score": 1.5}]}
+        with self._run(stdout=json.dumps(payload)):
+            hits = retrieval.query_td_repo("q", "/tmp")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["filepath"], "a.py")
+
+    def test_query_td_repo_raises_on_nonjson(self):
+        with self._run(stdout="not json"):
+            with self.assertRaises(RuntimeError):
+                retrieval.query_td_repo("q", "/tmp")
+
+    def test_query_td_repo_raises_on_exit(self):
+        with self._run(stdout="", returncode=1, stderr="boom"):
+            with self.assertRaises(RuntimeError):
+                retrieval.query_td_repo("q", "/tmp")
+
+    def test_search_td_formats_and_degrades(self):
+        import json
+
+        payload = {"status": "success", "hits": [
+            {"content": "x" * 50, "filepath": "a.py",
+             "start_line": 3}]}
+        with self._run(stdout=json.dumps(payload)):
+            out = retrieval.search_td("q", "/tmp")
+        self.assertIn("[a.py:3]", out)
+        with self._run(stdout="garbage"):
+            out = retrieval.search_td("q", "/tmp")
+        self.assertIn("doc search unavailable", out)
+
+
+
 if __name__ == "__main__":
     unittest.main()

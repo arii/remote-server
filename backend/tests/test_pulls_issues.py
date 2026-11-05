@@ -1049,7 +1049,7 @@ class RepairFocusTest(unittest.TestCase):
                 "done")
             self.assertEqual(
                 runner.calls,
-                [["python3", "-m", "core_cli", "repair",
+                [["python3", "-m", "backend.repair_worker",
                   "--issue", "7", "--repo", "boomtick",
                   "--body", "## Target Files\n- x.html\n"]])
             self.assertIn("[group focus]",
@@ -1077,7 +1077,7 @@ class RepairFocusTest(unittest.TestCase):
                 "done")
             self.assertEqual(
                 runner.calls,
-                [["python3", "-m", "core_cli", "repair",
+                [["python3", "-m", "backend.repair_worker",
                   "--issue", "7", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
@@ -1132,7 +1132,7 @@ class RepairTest(unittest.TestCase):
             self.assertIn("Aborted by user", status["log_buffer"])
             self.assertEqual(
                 runner.calls,
-                [["python3", "-m", "core_cli", "repair",
+                [["python3", "-m", "backend.repair_worker",
                   "--issue", "9", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
@@ -1182,7 +1182,7 @@ class RepairTest(unittest.TestCase):
             self.assertNotIn("Aborted by user", status["log_buffer"])
             self.assertEqual(
                 runner.calls,
-                [["python3", "-m", "core_cli", "repair",
+                [["python3", "-m", "backend.repair_worker",
                   "--issue", "9", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
@@ -1226,7 +1226,7 @@ class RepairTest(unittest.TestCase):
             self.assertIn("line1", status["log_buffer"])
             self.assertEqual(
                 runner.calls[0],
-                ["python3", "-m", "core_cli", "repair",
+                ["python3", "-m", "backend.repair_worker",
                  "--issue", "5", "--repo", "remote-server"])
         finally:
             issues_mod._repair_runner = old
@@ -1518,7 +1518,7 @@ class RepairDispatchGuardTest(unittest.TestCase):
                       "--json", "body"])
             self.assertEqual(
                 runner.calls[0],
-                ["python3", "-m", "core_cli", "repair",
+                ["python3", "-m", "backend.repair_worker",
                  "--issue", "5", "--repo", "boomtick"])
             self.assertEqual(
                 wait_repair_status(("done", "failed", "aborted")), "done")
@@ -1674,7 +1674,7 @@ class RepairScheduleTest(unittest.TestCase):
             self.assertIsNotNone(sched["last_run"])
             self.assertEqual(
                 runner.calls[0],
-                ["python3", "-m", "core_cli", "repair",
+                ["python3", "-m", "backend.repair_worker",
                  "--issue", "13", "--repo", "remote-server"])
         finally:
             issues_mod._repair_runner = old
@@ -1760,7 +1760,7 @@ class RepairScheduleTest(unittest.TestCase):
                 "done")
             self.assertEqual(
                 runner.calls,
-                [["python3", "-m", "core_cli", "repair",
+                [["python3", "-m", "backend.repair_worker",
                   "--issue", "16", "--repo", "remote-server"]])
         finally:
             issues_mod._repair_runner = old
@@ -2092,13 +2092,13 @@ class GatedMergeTest(unittest.TestCase):
 
 
 class MergeGatedScriptTest(unittest.TestCase):
-    """core_cli/merge_gated.py: cap, reasons, exit codes (#867)."""
+    """backend/merge_gated.py: cap, reasons, exit codes (#867)."""
 
     def _run_main(self, argv, fakes):
         import io
         import sys
 
-        import core_cli.merge_gated as script
+        import backend.merge_gated as script
 
         saved = {}
         for name, fake in fakes.items():

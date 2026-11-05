@@ -581,9 +581,9 @@ Create `deep-agent/pipeline.py` connecting all 4 stages with persistent SQLite/l
    - Add `run-pipeline --intent "<prompt>" --repo <path> [--submit-pr]` and `eval-pipeline` subcommands.
 
 ## Acceptance Criteria
-- [ ] `deep-agent/pipeline.py` executes all 4 stages end-to-end using exclusively `td` deterministic gates and worktrees.
-- [ ] Auditor rejections (`CHANGES_REQUESTED`) route back to `InitCoderGraph` in the active worktree and re-verify.
-- [ ] All 3 end-to-end evaluation scenarios in `tests/test_pipeline_e2e.py` and `deep-agent/eval_pipeline.py` pass with zero legacy `core_cli` dependencies.
+- [x] `deep-agent/pipeline.py` executes all 4 stages end-to-end using exclusively `td` deterministic gates and worktrees.
+- [x] Auditor rejections (`CHANGES_REQUESTED`) route back to `InitCoderGraph` in the active worktree and re-verify.
+- [x] All 3 end-to-end evaluation scenarios in `tests/test_pipeline_e2e.py` and `deep-agent/eval_pipeline.py` pass with zero legacy `core_cli` dependencies.
 
 ## Verification Commands
 ```bash

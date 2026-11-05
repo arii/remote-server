@@ -162,6 +162,61 @@ def get_retriever(k=3, repo=None):
     return _retrievers[key]
 
 
+def query_td_repo(query, repo_path, top_k=8, timeout=120):
+    """Query the td-managed vector index for a checkout.
+
+    Shells to ``td rag query --json`` (boomtick capability); returns
+    the raw hit list ``[{content, filepath, start_line, score}]``.
+    Raises RuntimeError when td is missing, errors, or returns
+    non-JSON. This is the forward path for agent retrieval; the
+    legacy Chroma retriever above stays until all callers migrate.
+    """
+    import json as _json
+    import subprocess as _sp
+
+    proc = _sp.run(
+        ["td", "rag", "query", "--repo-root", str(repo_path),
+         "--query", query, "--top-k", str(top_k), "--json"],
+        capture_output=True, text=True, timeout=timeout)
+    out = (proc.stdout or "").strip()
+    try:
+        payload = _json.loads(out) if out else {}
+    except ValueError as exc:
+        raise RuntimeError(
+            f"td rag query returned non-JSON output: {out[:200]}"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"td rag query exited {proc.returncode}: "
+            f"{(proc.stderr or out)[:300]}")
+    if not isinstance(payload, dict) or not isinstance(
+            payload.get("hits"), list):
+        raise RuntimeError(
+            f"td rag query returned unexpected payload: {out[:200]}")
+    return payload["hits"]
+
+
+def search_td(query, repo_path, top_k=8):
+    """td-backed doc search formatted like the legacy retriever output.
+
+    Returns '[filepath:line] excerpt' lines, or 'no doc hits'.
+    Never raises: td failures degrade to an explanatory string.
+    """
+    try:
+        hits = query_td_repo(query, repo_path, top_k=top_k)
+    except Exception as exc:
+        return f"doc search unavailable: {exc}"
+    parts = []
+    for hit in hits or []:
+        try:
+            parts.append(
+                f"[{hit.get('filepath')}:{hit.get('start_line')}] "
+                f"{(hit.get('content') or '')[:700]}")
+        except Exception:
+            continue
+    return "\n\n".join(parts)[:2800] or "no doc hits"
+
+
 def format_hits(hits, limit=700):
     """'[repo/source] excerpt' lines for tool output. Never raises."""
     parts = []

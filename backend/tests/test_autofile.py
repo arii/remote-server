@@ -14,7 +14,7 @@ from unittest.mock import patch
 from backend import autofile
 from backend.api.routers import jobs as jobs_mod
 from backend.exec import engine
-from core_cli import autofile_scan
+from backend import autofile_scan
 
 NOW = 1_700_000_000.0
 HOUR = 3600.0
@@ -334,7 +334,7 @@ class EngineWiringTest(unittest.TestCase):
             "arii/remote-server", "/tmp")
         self.assertIsNone(err)
         self.assertEqual(steps, [[sys.executable, "-m",
-                                  "core_cli.autofile_scan",
+                                  "backend.autofile_scan",
                                   "--repo", "remote-server",
                                   "--gh", "arii/remote-server"]])
 

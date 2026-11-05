@@ -1684,13 +1684,13 @@ class CollectNotifyBriefTest(unittest.TestCase):
 
 
 class NotifyCheckCliTest(unittest.TestCase):
-    """core_cli.notify_check runner (issue #822)."""
+    """backend.notify_check runner (issue #822)."""
 
     def test_main_runs_check_and_prints_summary(self):
         import io
         from contextlib import redirect_stdout
 
-        from core_cli import notify_check
+        from backend import notify_check
 
         seen = {}
 

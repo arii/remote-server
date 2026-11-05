@@ -10,7 +10,7 @@ frontend falls back to the in-app Review section.
 
 import unittest
 
-import core_cli.briefing_summary as bs
+import backend.briefing_summary as bs
 
 
 def _analyze_data(**over):

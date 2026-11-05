@@ -1065,3 +1065,40 @@ def get_repo_metrics(repo: str, run=None) -> dict[str, Any]:
                                  if ln]),
             "todo_count": count, "todo_hits": hits,
             "diff_stat": stat, "diff_files": diff_files}
+
+
+def run_td(args: list[str], cwd: Path) -> dict:
+    """Invoke ``td <args> --json`` in cwd and return the parsed payload.
+
+    Single deterministic gateway for backend/deep-agent callers that
+    need boomtick's td CLI (validate-issue, verify-scope, audit-code,
+    rag query, worktree create/remove, ...). No fallback shims: a
+    missing td, non-JSON output, nonzero exit, or td-reported error
+    raises RuntimeError for the caller to surface as a failed gate.
+    """
+    import subprocess
+
+    argv = ["td", *args]
+    if "--json" not in argv and "--no-json" not in argv:
+        argv.insert(1, "--json")
+    try:
+        proc = subprocess.run(
+            argv, cwd=str(cwd), stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, timeout=300)
+    except FileNotFoundError as exc:
+        raise RuntimeError("td CLI not found on PATH") from exc
+    out = (proc.stdout or "").strip()
+    try:
+        payload = json.loads(out) if out else {}
+    except ValueError as exc:
+        raise RuntimeError(
+            f"td returned non-JSON output: {out[:300]}") from exc
+    if isinstance(payload, dict) and payload.get("status") == "error":
+        raise RuntimeError(
+            f"td error: {payload.get('message', 'unknown')!s:.300}")
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"td exited {proc.returncode}: {(proc.stderr or out)[:300]}")
+    if isinstance(payload, dict):
+        return payload
+    return {"result": payload}
