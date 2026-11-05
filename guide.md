@@ -367,10 +367,10 @@ Create `deep-agent/issue_generator.py` implementing the `Init -> Investigate -> 
    - Test 2: Validator loop recovery—simulate a first draft containing a non-existent file path and missing `Verification Commands`; assert `td_validate_spec_node` rejects it, feeds errors back to `draft_spec_node`, and succeeds on attempt 2.
 
 ## Acceptance Criteria
-- [ ] `IssueGeneratorGraph` runs `td init --json` before investigating and validates all specs exclusively via `td validate-issue --json`.
-- [ ] Invalid specs (hallucinated file paths, missing sections, vague placeholders) automatically loop back to `draft_spec_node` with exact error feedback.
-- [ ] Validated specs and Q&A context are persisted in `decisions.py` and `ledger.py`.
-- [ ] All tests in `tests/test_issue_generator.py` and `tests/test_cli.py` pass.
+- [x] `IssueGeneratorGraph` runs `td init --json` before investigating and validates all specs exclusively via `td validate-issue --json`.
+- [x] Invalid specs (hallucinated file paths, missing sections, vague placeholders) automatically loop back to `draft_spec_node` with exact error feedback.
+- [x] Validated specs and Q&A context are persisted in `decisions.py` and `ledger.py`.
+- [x] All tests in `tests/test_issue_generator.py` and `tests/test_cli.py` pass.
 
 ## Verification Commands
 ```bash
@@ -437,9 +437,9 @@ Refactor `deep-agent/coder.py` into `InitCoderGraph` with hard `td` worktree iso
    - Test 3: Verifies 2 consecutive test failures route to `validated_replanner_node`, which persists a revised validated plan to `decisions.py` and succeeds on the next coding turn.
 
 ## Acceptance Criteria
-- [ ] `InitCoderGraph` provisions worktrees exclusively via `td worktree create --json` and blocks any file access outside `worktree_root`.
-- [ ] `td_deterministic_gate_node` enforces `td verify-scope`, `td audit-code`, and issue `verification_commands` on every turn.
-- [ ] Repeated deterministic failures trigger `validated_replanner_node`, updating and validating the plan in `decisions.py`.
+- [x] `InitCoderGraph` provisions worktrees exclusively via `td worktree create --json` and blocks any file access outside `worktree_root`.
+- [x] `td_deterministic_gate_node` enforces `td verify-scope`, `td audit-code`, and issue `verification_commands` on every turn.
+- [x] Repeated deterministic failures trigger `validated_replanner_node`, updating and validating the plan in `decisions.py`.
 - [ ] All tests in `tests/test_coder.py` pass.
 
 ## Verification Commands
@@ -516,10 +516,10 @@ Expose `td audit-impact --json` in `boomtick` and implement the two-phase gated 
    - Test 3 (Unmet Requirement Rejection): When an acceptance criterion lacks evidence in the diff, assert `status == "CHANGES_REQUESTED"` with specific repair instructions.
 
 ## Acceptance Criteria
-- [ ] `remote-server/deep-agent/impact.py` and `ux_audit.py` are deleted; all impact and visual diffing runs via `td audit-impact --json`.
-- [ ] `AuditorGraph` strictly gates Node 2 and Node 3 behind `hard_deterministic_gate_node`.
-- [ ] `AuditVerdict` verifies every issue Acceptance Criterion with `file:line` evidence, dependency impact, visual impact, and anti-slop rules.
-- [ ] All tests in `remote-server/tests/test_auditor.py` and `boomtick/cli/tests/test_ast_audit.py` pass.
+- [ ] `remote-server/deep-agent/impact.py` and `ux_audit.py` are deleted; all impact and visual diffing runs via `td audit-impact --json`. (NOT done — live callers: `backend/api/routers/jobs.py` ux-audit endpoints + `deep-agent/deep_chat.py` import `impact`; committed `test_jobs_exec.py` covers them. Deletion would break shipped features.)
+- [x] `AuditorGraph` strictly gates Node 2 and Node 3 behind `hard_deterministic_gate_node`.
+- [x] `AuditVerdict` verifies every issue Acceptance Criterion with `file:line` evidence, dependency impact, visual impact, and anti-slop rules.
+- [x] All tests in `remote-server/tests/test_auditor.py` and `boomtick/cli/tests/test_ast_audit.py` pass.
 
 ## Verification Commands
 ```bash
@@ -581,9 +581,9 @@ Create `deep-agent/pipeline.py` connecting all 4 stages with persistent SQLite/l
    - Add `run-pipeline --intent "<prompt>" --repo <path> [--submit-pr]` and `eval-pipeline` subcommands.
 
 ## Acceptance Criteria
-- [ ] `deep-agent/pipeline.py` executes all 4 stages end-to-end using exclusively `td` deterministic gates and worktrees.
-- [ ] Auditor rejections (`CHANGES_REQUESTED`) route back to `InitCoderGraph` in the active worktree and re-verify.
-- [ ] All 3 end-to-end evaluation scenarios in `tests/test_pipeline_e2e.py` and `deep-agent/eval_pipeline.py` pass with zero legacy `core_cli` dependencies.
+- [x] `deep-agent/pipeline.py` executes all 4 stages end-to-end using exclusively `td` deterministic gates and worktrees.
+- [x] Auditor rejections (`CHANGES_REQUESTED`) route back to `InitCoderGraph` in the active worktree and re-verify.
+- [x] All 3 end-to-end evaluation scenarios in `tests/test_pipeline_e2e.py` and `deep-agent/eval_pipeline.py` pass with zero legacy `core_cli` dependencies.
 
 ## Verification Commands
 ```bash

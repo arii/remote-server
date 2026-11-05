@@ -74,3 +74,74 @@ def b64decode(raw):
         return base64.b64decode(raw).decode()
     except Exception:
         return None
+
+
+def _flag(argv, *names):
+    """Pop the first matching --flag from argv; returns (found, rest)."""
+    rest = list(argv)
+    for name in names:
+        if name in rest:
+            rest.remove(name)
+            return True, rest
+    return False, rest
+
+
+def _option(argv, *names):
+    """Pop --opt <value> from argv; returns (value-or-None, rest)."""
+    rest = list(argv)
+    for name in names:
+        if name in rest:
+            idx = rest.index(name)
+            if idx + 1 >= len(rest):
+                return None, rest
+            value = rest[idx + 1]
+            del rest[idx:idx + 2]
+            return value, rest
+    return None, rest
+
+
+def main(argv=None):
+    """Subcommands: run-pipeline | eval-pipeline. Returns exit code."""
+    args = list(argv if argv is not None else sys.argv[1:])
+    if not args:
+        return usage_error(
+            "usage: cli.py run-pipeline --intent <text> --repo <path>",
+            "               [--issue <id>] [--submit-pr]",
+            "       cli.py eval-pipeline")
+    command, args = args[0], args[1:]
+    if command == "eval-pipeline":
+        if args:
+            return usage_error("usage: cli.py eval-pipeline")
+        import eval_pipeline
+        return eval_pipeline.main()
+    if command != "run-pipeline":
+        return usage_error(f"unknown command: {command}",
+                           "want: run-pipeline | eval-pipeline")
+    intent, args = _option(args, "--intent")
+    repo, args = _option(args, "--repo")
+    issue, args = _option(args, "--issue")
+    submit, args = _flag(args, "--submit-pr")
+    if not intent or not repo or args:
+        return usage_error(
+            "usage: cli.py run-pipeline --intent <text> --repo <path>",
+            "               [--issue <id>] [--submit-pr]")
+    try:
+        issue_id = int(issue) if issue else None
+    except ValueError:
+        return usage_error(f"bad --issue: {issue!r}")
+    import pipeline as pipeline_mod
+    pipe = pipeline_mod.Pipeline(
+        repo, intent, issue_id=issue_id, submit_pr=submit)
+    result = pipe.run()
+    print(json_dumps(result))
+    return 0 if result["status"] == pipeline_mod.APPROVED else 1
+
+
+def json_dumps(payload):
+    """Compact JSON for CLI output (stdlib, testable)."""
+    import json as _json
+    return _json.dumps(payload, indent=2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
