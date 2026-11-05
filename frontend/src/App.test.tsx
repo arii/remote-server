@@ -742,6 +742,7 @@ describe('chat composer order', () => {
     model: 'ollama:qwen3:8b',
     provider: 'ollama',
     thread: `t${i}`,
+    repo: 'arii/r',
     started_ts: 1793745700,
     duration_s: 9.8,
     ok: true,
@@ -801,6 +802,7 @@ describe('past-run button names', () => {
     model: 'ollama:qwen3:8b',
     provider: 'ollama',
     thread: 't7',
+    repo: 'arii/r',
     started_ts: 1793745700,
     duration_s: 156,
     ok: true,
@@ -829,6 +831,9 @@ describe('past-run button names', () => {
     const html = renderToStaticMarkup(
       <RunsPane
         runs={[run]}
+        repo="r"
+        showAllRepos={false}
+        onToggleScope={noop}
         selected={null}
         detail={null}
         onSelect={noop}

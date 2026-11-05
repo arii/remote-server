@@ -144,6 +144,11 @@ h1, h2, h3 { text-wrap: balance; }
 button.repo-chip { font: inherit; color: inherit; cursor: pointer; }
 button.repo-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+/* Pre-send route line in Auto mode (issue #933): the resolved model
+   + cost is the send decision, so it reads at full weight instead of
+   muted metadata. */
+.chat-route-auto { font-size: 0.9rem; font-weight: 650; margin: 0; }
+
 /* Page-head freshness stamp: metadata riding the heading baseline. */
 .head-stamp {
   color: var(--muted);
@@ -295,14 +300,34 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
 [data-testid="jobs-view"] > .detail { margin-top: 0.75rem; }
 [data-testid="jobs-view"] > section { margin-top: 1rem; }
 
-.danger-zone {
-  background: rgba(239, 68, 68, 0.06);
+/* Jobs separation (#934): safe workflows vs disruptive system ops
+   read differently at a glance — accent left rule for workflows,
+   red tint + stronger border for danger. */
+.jobs-workflows {
+  background: var(--surface);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
   border-radius: 12px;
   padding: 0 0.9rem 0.9rem;
   margin-top: 1.25rem;
 }
-.danger-zone > h3 { margin-top: 0.9rem; }
+.jobs-workflows > h3 { margin-top: 0.9rem; }
+.jobs-workflows > section { margin-top: 1rem; }
+.jobs-workflows > section:first-of-type { margin-top: 0.75rem; }
+
+.jobs-live {
+  border-left: 3px solid var(--warn);
+}
+.jobs-live .dot { display: inline-block; vertical-align: middle; margin-right: 0.35rem; }
+
+.danger-zone {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 12px;
+  padding: 0 0.9rem 0.9rem;
+  margin-top: 1.25rem;
+}
+.danger-zone > h3 { margin-top: 0.9rem; color: #fca5a5; }
 .danger-zone .session-list { gap: 0; }
 .danger-row {
   display: flex;
@@ -610,6 +635,96 @@ a.link-chip:hover { border-color: var(--accent); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Diff modal (#942): centered dialog over a dimmed page, same
+   surface/border grammar as the palette and log slide-over. */
+.diff-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgba(3, 7, 18, 0.32);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 6vh 1rem 1rem;
+  overflow-y: auto;
+}
+.diff-modal {
+  width: 100%;
+  max-width: 56rem;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.diff-group-label { font-weight: 650; margin-top: 0.5rem; }
+.diff-file-list { list-style: none; margin: 0.25rem 0 0; padding: 0; display: grid; gap: 0.25rem; }
+button.diff-file-jump {
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.diff-badge {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+.diff-badge-add { color: #86efac; border-color: var(--ok); }
+.diff-badge-del { color: #fca5a5; border-color: var(--bad); }
+.diff-badge-mod { color: var(--accent); border-color: var(--accent); }
+.diff-badge-untracked { color: #ffd9a0; border-color: var(--warn); }
+.diff-file-summary { cursor: pointer; overflow-wrap: anywhere; }
+.diff-body-wrap { position: relative; }
+.diff-body {
+  position: relative;
+  margin: 0.5rem 0 0;
+  max-height: 24rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.diff-line {
+  padding: 0 0.6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--muted);
+}
+.diff-line.diff-add { color: #86efac; background: rgba(34, 197, 94, 0.13); }
+.diff-line.diff-del { color: #fca5a5; background: rgba(239, 68, 68, 0.13); }
+.diff-line.diff-meta { color: var(--text); font-weight: 650; }
+.diff-line.diff-hunk {
+  color: var(--accent);
+  background: rgba(96, 165, 250, 0.12);
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diff-line.diff-current { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Bottom fade over a scrollable diff body: the scroll cue. */
+.diff-fade {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 2rem;
+  border-radius: 0 0 8px 8px;
+  background: linear-gradient(to bottom, transparent, rgba(3, 7, 18, 0.45));
+  pointer-events: none;
+}
+/* Destructive actions (#942): danger fill, stronger once armed. */
+button.btn-danger {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: var(--bad);
+  color: #fecaca;
+}
+button.btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.26); border-color: #f87171; }
+button.btn-danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 650; }
 
 /* @-mention completion list under the chat composer (#653). */
 .mention-list {

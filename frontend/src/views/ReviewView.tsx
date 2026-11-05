@@ -23,7 +23,7 @@ import {
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
-import { approveBlockReason, detailsMergeBlockReason, isOwnPr, mergeBlockReason } from '../reviewTypes';
+import { approveBlockReason, approveMergeEligible, detailsMergeBlockReason, isDependabotPr, isOwnPr, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
@@ -553,6 +553,19 @@ export function PrDetails({
       <p className="row-meta">
         {details.branch} into {details.base} · CI {details.ci} · merge {details.merge} ·{' '}
         {details.stats.total_files} files (+{details.stats.additions}/-{details.stats.deletions})
+        {details.url ? (
+          <>
+            {' · '}
+            <a
+              href={details.url}
+              target="_blank"
+              rel="noreferrer"
+              data-testid={`open-github-pr-${details.number}`}
+            >
+              Open on GitHub ↗
+            </a>
+          </>
+        ) : null}
       </p>
       <div
         className={`risk-summary risk-${risk.level}`}
@@ -688,6 +701,47 @@ export function PrRowApprove({
           {blocked}
         </span>
       )}
+    </>
+  );
+}
+
+// Merge + approve row pair with the compound shortcut (#932): when
+// CI is green and a missing approval is the only blocker, one
+// hold-to-confirm Approve & Merge replaces the pair (Merge would
+// sit disabled naming that same blocker). All other rows keep the
+// separate buttons.
+export function PrRowReviewActions({
+  pr,
+  viewer,
+  merging,
+  reviewing,
+  onMerge,
+  onApprove,
+  onApproveMerge,
+}: {
+  pr: PrRow;
+  viewer?: string;
+  merging: boolean;
+  reviewing: boolean;
+  onMerge: (n: number) => void;
+  onApprove: (n: number) => void;
+  onApproveMerge: (n: number) => void;
+}) {
+  if (approveMergeEligible(pr, viewer)) {
+    return (
+      <TapToFire
+        label="Approve & Merge"
+        testid={`approve-merge-pr-${pr.number}`}
+        confirm="This cannot be undone."
+        disabled={merging || reviewing}
+        onFire={() => onApproveMerge(pr.number)}
+      />
+    );
+  }
+  return (
+    <>
+      <PrRowMerge pr={pr} merging={merging} onMerge={onMerge} />
+      <PrRowApprove pr={pr} busy={reviewing} onApprove={onApprove} viewer={viewer} />
     </>
   );
 }
@@ -851,7 +905,7 @@ export function RowActionButton({
   testid,
   onClick,
 }: {
-  action: 'Open' | 'Defer' | 'Restore';
+  action: 'Details' | 'Defer' | 'Restore';
   kind: 'pr' | 'issue';
   num: number;
   testid?: string;
@@ -1130,6 +1184,47 @@ export function bulkApproveFailureText(
   return failed.map((f) => `PR #${f.number}: ${f.error}`).join('; ');
 }
 
+// Dependabot batch plan (#932): compound-eligible Dependabot PR
+// numbers in ascending order. Empty when fewer than two qualify —
+// a lone green bot just uses its row button.
+export function planDependabotBatch(prs: readonly PrRow[], viewer?: string): number[] {
+  const nums = prs
+    .filter((p) => isDependabotPr(p) && approveMergeEligible(p, viewer))
+    .map((p) => p.number)
+    .sort((a, b) => a - b);
+  return nums.length >= 2 ? nums : [];
+}
+
+export function dependabotBatchNotice(done: readonly number[], total: number): string {
+  if (done.length === 1 && total === 1) return `Approved and merged PR #${done[0]}.`;
+  if (done.length === 0) return '';
+  if (done.length === total) return `Approved and merged ${total} Dependabot PRs.`;
+  return `Approved and merged ${done.length} of ${total} Dependabot PRs.`;
+}
+
+export function DependabotBatchBar({
+  count,
+  busy,
+  onFire,
+}: {
+  count: number;
+  busy: boolean;
+  onFire: () => void;
+}) {
+  return (
+    <div className="actions">
+      <button
+        type="button"
+        data-testid="batch-approve-merge-dependabot"
+        disabled={busy}
+        onClick={onFire}
+      >
+        {busy ? 'Approving & merging…' : `Batch Approve & Merge Dependabot (${count})`}
+      </button>
+    </div>
+  );
+}
+
 // Fanout core (#890): approve each number through the single-row
 // approve call, collecting per-PR outcomes. Sequential — N is small
 // in phone triage, and ordering stays deterministic. Failures never
@@ -1339,6 +1434,8 @@ export default function ReviewView({
   // #890: bulk-approve in-flight flag, separate from bulkBusy (defer)
   // so each bar button keeps its own busy label.
   const [bulkApproveBusy, setBulkApproveBusy] = useState(false);
+  // #932: dependabot batch in-flight flag, same pattern.
+  const [depBotBusy, setDepBotBusy] = useState(false);
   const [bulkRestore, setBulkRestore] = useState<ReadonlySet<string>>(new Set());
   const [bulkRestoreBusy, setBulkRestoreBusy] = useState(false);
   // Inline issue labels (#612): repo labels load lazily on first
@@ -1383,6 +1480,9 @@ export default function ReviewView({
   // from the same selection the Defer-n action uses.
   const approvePlan = planBulkApprove(prs ?? [], bulkSelected, viewer);
   const approveSkippedNote = bulkApproveSkippedNote(approvePlan);
+  // #932: dependabot batch targets derive from the visible list, so
+  // the filter narrows the batch like it narrows select-all.
+  const depBotPlan = planDependabotBatch(visiblePrs, viewer);
 
   // Keyboard triage cursor across PR rows then issue rows. Enter opens
   // a PR row in the details pane, an issue row in a new tab.
@@ -1615,12 +1715,12 @@ export default function ReviewView({
     }
   }
 
-  async function onMerge(n: number) {
+  async function onMerge(n: number, mergedNotice?: string) {
     setError(null);
     setMerging((prev) => applyOptimisticMerge(prev, n));
     try {
       await mergePr(repo, n, branch);
-      setNotice(`Merged PR #${n}.`);
+      setNotice(mergedNotice ?? `Merged PR #${n}.`);
       const numbers = visiblePrs.map((p) => p.number);
       const next = nextPrAfterMerge(numbers, n);
       // The merge landed: clear the optimistic flag and drop the row
@@ -1725,6 +1825,72 @@ export default function ReviewView({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setReviewing((prev) => revertOptimisticMerge(prev, n));
+    }
+  }
+
+  // Compound Approve & Merge (#932): approve first, then ride the
+  // full merge transaction (row removal, selection advance). An
+  // approve failure stops before any merge; a merge failure keeps
+  // the approval (the row re-read shows Merge enabled).
+  async function onApproveMerge(n: number) {
+    setError(null);
+    setReviewing((prev) => applyOptimisticMerge(prev, n));
+    try {
+      await approvePr(repo, n, branch);
+    } catch (err) {
+      setReviewing((prev) => revertOptimisticMerge(prev, n));
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setReviewing((prev) => revertOptimisticMerge(prev, n));
+    await onMerge(n, `Approved and merged PR #${n}.`);
+  }
+
+  // Dependabot batch (#932): sequential approve+merge over the
+  // planned numbers, one list re-read, one summary notice. Failures
+  // never abort the batch; per-PR errors surface in the banner.
+  async function approveMergeDependabots(numbers: readonly number[]) {
+    if (numbers.length === 0) return;
+    setError(null);
+    setDepBotBusy(true);
+    setReviewing((prev) => {
+      const next = new Set(prev);
+      for (const n of numbers) next.add(n);
+      return next;
+    });
+    try {
+      const { approved: done, failed } = await approveEach(async (n) => {
+        await approvePr(repo, n, branch);
+        await mergePr(repo, n, branch);
+      }, numbers);
+      if (done.length > 0) {
+        try {
+          const p = await fetchPrs(repo);
+          setPrs(p.prs);
+          setViewer(p.viewer || undefined);
+        } catch {
+          setPrs((prev) => {
+            let next = prev;
+            for (const n of done) next = dropMergedPr(next, n);
+            return next;
+          });
+        }
+        if (selected !== null && done.includes(selected)) {
+          setSelected(null);
+          onSelectPr(null);
+          setDetails(null);
+        }
+      }
+      const notice = dependabotBatchNotice(done, numbers.length);
+      if (notice) setNotice(notice);
+      if (failed.length > 0) setError(bulkApproveFailureText(failed));
+    } finally {
+      setReviewing((prev) => {
+        const next = new Set(prev);
+        for (const n of numbers) next.delete(n);
+        return next;
+      });
+      setDepBotBusy(false);
     }
   }
 
@@ -1921,6 +2087,13 @@ export default function ReviewView({
               </label>
             )}
           </h3>
+          {depBotPlan.length > 0 && (
+            <DependabotBatchBar
+              count={depBotPlan.length}
+              busy={depBotBusy}
+              onFire={() => void approveMergeDependabots(depBotPlan)}
+            />
+          )}
           {!prs ? (
             <p className="row-meta" data-testid="review-prs-loading" role="status">Loading pull requests…</p>
           ) : visiblePrs.length === 0 ? (
@@ -1978,10 +2151,17 @@ export default function ReviewView({
                       as direct li children the full-row button rule
                       stacked them into five vertical text lines. */}
                   <div className="actions">
-                    <RowActionButton action="Open" kind="pr" num={p.number} testid={`open-pr-${p.number}`} onClick={() => void selectPr(p.number)} />
+                    <RowActionButton action="Details" kind="pr" num={p.number} testid={`details-pr-${p.number}`} onClick={() => void selectPr(p.number)} />
                     <RowActionButton action="Defer" kind="pr" num={p.number} testid={`defer-pr-${p.number}`} onClick={() => void deferSelected('pr', p.number)} />
-                    <PrRowMerge pr={p} merging={merging.has(p.number)} onMerge={(n) => void onMerge(n)} />
-                    <PrRowApprove pr={p} busy={reviewing.has(p.number)} onApprove={(n) => void onApprove(n)} viewer={viewer} />
+                    <PrRowReviewActions
+                      pr={p}
+                      viewer={viewer}
+                      merging={merging.has(p.number)}
+                      reviewing={reviewing.has(p.number)}
+                      onMerge={(n) => void onMerge(n)}
+                      onApprove={(n) => void onApprove(n)}
+                      onApproveMerge={(n) => void onApproveMerge(n)}
+                    />
                     <PrRowRequestChanges
                       pr={p}
                       busy={reviewing.has(p.number)}

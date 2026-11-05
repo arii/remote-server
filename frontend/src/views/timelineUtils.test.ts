@@ -9,6 +9,7 @@ function turn(over: Partial<AgentRun> = {}): AgentRun {
     model: 'qwen3:8b',
     provider: 'ollama',
     thread: 'th1',
+    repo: 'arii/boomtick',
     started_ts: 300,
     duration_s: 12,
     ok: true,

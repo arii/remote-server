@@ -147,8 +147,9 @@ export default function App() {
   const [repo, setRepo] = useState('remote-server');
   const [health, setHealth] = useState<SystemHealthResponse | null>(null);
   const [chatSeed, setChatSeed] = useState<string | null>(null);
-  // Header drawers (issue #663): dirty-repo diff modal + container
-  // health drawer, both inline under the toolbar while open.
+  // Header overlays (issue #663): the dirty-repo diff is a real
+  // modal (issue #942); the container health drawer stays inline
+  // under the toolbar while open.
   const [diffRepo, setDiffRepo] = useState<string | null>(null);
   const [diffData, setDiffData] = useState<RepoDiffData | null>(null);
   const [diffError, setDiffError] = useState<string | null>(null);
