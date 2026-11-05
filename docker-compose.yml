@@ -158,6 +158,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      skills-provisioner:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7681/ > /dev/null"]
       interval: 30s
@@ -165,6 +167,16 @@ services:
       retries: 3
     logging: *default-logging
     restart: unless-stopped
+
+  # One-shot: install .agents/skills from skills-lock.json on every
+  # bring-up. Idempotent (no-op when satisfied) and fail-open, so a fresh
+  # reinstall provisions skills automatically without blocking the stack.
+  skills-provisioner:
+    image: ${TERMINAL_IMAGE:-ghcr.io/arii/remote-server-terminal:latest}
+    volumes:
+      - .:/srv/remote-server
+    command: ["bash", "/srv/remote-server/scripts/provision-skills.sh", "--fail-open"]
+    logging: *default-logging
 
   # Local LLM inference, CPU-only. Loopback-published only.
   # Active since 2026-10-27 for Pi (see docs/pi-setup.md).
