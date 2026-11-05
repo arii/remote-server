@@ -5,6 +5,7 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 /api/* like its sibling routers):
 
 - GET /api/briefing?repo=  structured briefing passthrough
+- POST /api/briefing/refresh  background regenerate (deduped)
 - GET /api/status           backend status (health + empty run lists)
 - GET /api/ledger?kind=&limit=&since=  newest-first audit entries
 - POST /api/ledger/clear    truncate + tombstone (gated: intent
@@ -167,6 +168,16 @@ class LedgerClearRequest(BaseModel):
 
 class LedgerClearResult(BaseModel):
     ok: bool = True
+
+
+class BriefingRefreshRequest(BaseModel):
+    repo: str = "remote-server"
+
+
+class BriefingRefreshResult(BaseModel):
+    ok: bool = True
+    repo: str = ""
+    started: bool = False
 
 
 # TTL cache with stale-while-revalidate: the gh fan-out behind
@@ -552,6 +563,28 @@ def get_briefing(name: str, gh: str) -> dict:
             "generated_at": ts}
 
 
+def warm_briefing_cache(repos: list[str] | None = None) -> list[str]:
+    """Best-effort boot precache (#929): generate snapshots now.
+
+    Sequential get_briefing per repo (fresh cache hits return
+    instantly); per-repo failures are skipped, never raised.
+    Returns the warmed repo names. The server lifespan runs this
+    on a daemon thread so boot never blocks on generation.
+    """
+    warmed: list[str] = []
+    for repo in repos if repos is not None else ["remote-server"]:
+        try:
+            name = validate_repo_name(repo)
+        except ValueError:
+            continue
+        try:
+            get_briefing(name, f"arii/{name}")
+        except Exception:
+            continue
+        warmed.append(name)
+    return warmed
+
+
 def _run_briefing(repo: str, gh: str) -> dict:
     script = os.path.join(os.path.dirname(__file__),
                           "..", "..", "..", "core_cli",
@@ -630,6 +663,24 @@ def briefing(repo: str = "remote-server") -> dict:
         return get_briefing(name, f"arii/{name}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
+
+
+@router.post("/briefing/refresh", response_model=BriefingRefreshResult)
+def briefing_refresh(body: BriefingRefreshRequest) -> dict:
+    """Trigger background regeneration for one repo (#929).
+
+    Deduped via _BRIEFING_REFRESHING: started is False when a
+    refresh was already in flight. Non-destructive, so no
+    confirm gate (reads stay reads; this just warms them).
+    """
+    try:
+        name = validate_repo_name(body.repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    with _BRIEFING_LOCK:
+        already = name in _BRIEFING_REFRESHING
+    _revalidate_briefing(name, f"arii/{name}")
+    return {"ok": True, "repo": name, "started": not already}
 
 
 @router.get("/status", response_model=BackendStatus)

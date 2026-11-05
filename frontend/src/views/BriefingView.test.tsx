@@ -817,3 +817,70 @@ describe('briefing freshness line (issue #897)', () => {
     ).toBe('Updated 30s ago · refreshing…');
   });
 });
+
+describe('briefing empty-state generate (issue #929)', () => {
+  function briefing(over: Record<string, unknown> = {}): BriefingResponse {
+    return {
+      repo: 'r',
+      attention: [],
+      prs: [],
+      prs_err: '',
+      reviews_lines: [],
+      reviews_err: {},
+      board: [],
+      board_lines: [],
+      board_err: '',
+      conflicts_lines: [],
+      conf_err: '',
+      overlaps_lines: [],
+      failing_runs: [],
+      workflow_lines: [],
+      runs_err: '',
+      ...over,
+    } as BriefingResponse;
+  }
+
+  function renderBody(
+    data: BriefingResponse,
+    extra: { generating?: boolean; genError?: string | null } = {},
+  ): string {
+    const noop = () => {};
+    return renderToStaticMarkup(
+      <BriefingBody
+        data={data}
+        ledger={[]}
+        onAskAgent={noop}
+        onOpenHistory={noop}
+        onOpenReview={noop}
+        onGenerate={noop}
+        generating={extra.generating ?? false}
+        genError={extra.genError ?? null}
+      />,
+    );
+  }
+
+  it('offers Generate Briefing Now on the empty state', () => {
+    const html = renderBody(briefing());
+    expect(html).toContain('data-testid="briefing-clear"');
+    expect(html).toContain('data-testid="briefing-generate"');
+    expect(html).toContain('Generate Briefing Now');
+  });
+
+  it('shows progress and disables the button while generating', () => {
+    const html = renderBody(briefing(), { generating: true });
+    expect(html).toContain('data-testid="briefing-generating"');
+    expect(html).toContain('Generating briefing…');
+    expect(html).toContain('disabled');
+  });
+
+  it('surfaces generate errors inline', () => {
+    const html = renderBody(briefing(), { genError: 'refresh failed' });
+    expect(html).toContain('data-testid="briefing-generate-error"');
+    expect(html).toContain('refresh failed');
+  });
+
+  it('hides the generate action when content exists', () => {
+    const html = renderBody(briefing({ attention: ['#1 do the thing'] }));
+    expect(html).not.toContain('data-testid="briefing-generate"');
+  });
+});

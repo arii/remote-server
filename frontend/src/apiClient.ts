@@ -501,6 +501,19 @@ export function fetchBriefing(repo: string): Promise<BriefingResponse> {
   );
 }
 
+// Background briefing regeneration for the empty-state generate
+// action (#929): deduped server-side, so repeat taps are cheap.
+// Non-destructive; no confirm intent.
+export interface BriefingRefreshResponse {
+  ok: boolean;
+  repo: string;
+  started: boolean;
+}
+
+export function refreshBriefing(repo: string): Promise<BriefingRefreshResponse> {
+  return postJson<BriefingRefreshResponse>('api/briefing/refresh', { repo });
+}
+
 export function fetchAttention(repo: string): Promise<import('./attentionTypes').AttentionResponse> {
   const path = `api/attention?repo=${encodeURIComponent(repo)}`;
   return cachedViewFetch<import('./attentionTypes').AttentionResponse>(path, VIEW_CACHE_SHORT_TTL_MS, () =>
