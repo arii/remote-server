@@ -8,3 +8,5 @@ pytest==9.1.1
 # Co-browsing preflight drives the shared head via Grid CDP
 # (connect_over_cdp; no local browser download needed).
 playwright==1.64.1
+# CDP-direct viewer spike: raw CDP websocket client + ASGI server.
+websockets==17.0.0

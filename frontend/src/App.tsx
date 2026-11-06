@@ -19,7 +19,6 @@ import {
   fetchRepos,
   fetchSystemHealth,
   flushOutbox,
-  pauseAgentBrowser,
   resumeAgentBrowser,
   prefetchTabPayloads,
   repoAction,
@@ -543,15 +542,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [browserOpen]);
 
-  async function onPauseBrowser(): Promise<void> {
-    setBrowserError(null);
-    try {
-      setAgentBrowser(await pauseAgentBrowser());
-    } catch (err) {
-      setBrowserError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   async function onResumeBrowser(): Promise<void> {
     setBrowserError(null);
     try {
@@ -822,9 +812,8 @@ export default function App() {
         <CoBrowsingDrawer
           browserState={agentBrowser?.state ?? 'IDLE'}
           currentStep={agentBrowser?.current_step || null}
-          iframeSrc={`${stackBase()}/browser/vnc.html?autoconnect=1&resize=scale`}
+          iframeSrc={`${stackBase()}/cdp-stream/`}
           error={browserError}
-          onPause={() => void onPauseBrowser()}
           onResume={() => void onResumeBrowser()}
           onClose={() => setBrowserOpen(false)}
         />

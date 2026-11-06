@@ -9,11 +9,9 @@ Environment (all optional)::
 
     BROWSER_HTTP       Selenium Grid base URL (default http://browser:4444).
                        The headed browser service must exist; no fail-safe.
-    BROWSER_NOVNC      noVNC base URL (default http://browser:7900)
     AGENT_API          agent-control API base (default http://buttons:8000/api/agent)
     PREVIEW_URL        page the visual audit loads (default
-                       <BROWSER_NOVNC>/vnc.html?autoconnect=1&resize=scale --
-                       the same live head the human watches)
+                       http://caddy:8080/buttons/ -- the console itself)
     TD_BIN             td entrypoint, shlex-split (default "td").
                        The installed td must know --preview-url; when it is
                        stale (see docs/follow-ups.md section 3) point at a
@@ -41,11 +39,9 @@ import urllib.parse
 import urllib.request
 
 BROWSER_HTTP = os.environ.get("BROWSER_HTTP", "http://browser:4444")
-BROWSER_NOVNC = os.environ.get("BROWSER_NOVNC", "http://browser:7900")
 AGENT_API = os.environ.get("AGENT_API", "http://buttons:8000/api/agent")
 PREVIEW_URL = os.environ.get(
-    "PREVIEW_URL",
-    BROWSER_NOVNC.rstrip("/") + "/vnc.html?autoconnect=1&resize=scale")
+    "PREVIEW_URL", "http://caddy:8080/buttons/")
 TD_BIN = os.environ.get("TD_BIN", "td")
 TD_CWD = os.environ.get("TD_CWD") or None
 REPO = os.environ.get("REPO", "/srv/remote-server")

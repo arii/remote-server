@@ -431,29 +431,15 @@ services:
     restart: unless-stopped
     expose:
       - "4444"
-      - "7900"
-      - "9222"
     ports:
       - "127.0.0.1:4444:4444"
-      - "127.0.0.1:7900:7900"
-      # Personal-window CDP (verify-only; agents must drive Grid
-      # sessions on :4444, never this port).
-      - "127.0.0.1:9222:9222"
     volumes:
-      # Persistent Chromium profiles on the host drive: logins,
+      # Persistent Chromium agent profile on the host drive: logins,
       # cookies, localStorage survive container restarts. Pre-created
-      # as 1200:1201 (seluser) so the node can write. Two profiles:
-      # personal/ (always-open window, supervisord) and agent/
-      # (Grid sessions via goog:chromeOptions caps).
+      # as 1200:1201 (seluser) so the node can write. The human side
+      # no longer needs noVNC or a personal window: the /cdp-stream
+      # viewer attaches to the live agent session (or opens its own).
       - ${HOST_HOME:-/home/ari}/.s5-shared-browser:/data/shared-browser
-      # Always-open personal browser (the noVNC stream shows a bare
-      # desktop whenever no Grid session runs). Single-file mount so
-      # the image's own conf.d entries stay intact.
-      # NOTE: the source must exist on the DOCKER HOST before the
-      # container is (re)created -- the daemon mkdirs a missing file
-      # source as a directory. Seeded host-side from the
-      # config/browser-supervisor/ template.
-      - ${HOST_HOME:-/home/ari}/.s5-shared-browser/persistent-chrome.conf:/etc/supervisor/conf.d/persistent-chrome.conf:ro
     environment:
       - SE_START_XVFB=true
       - SE_NODE_MAX_SESSIONS=1
