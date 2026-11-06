@@ -63,52 +63,39 @@ h1, h2, h3 { text-wrap: balance; }
   border: 0;
 }
 
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-  padding: 0.6rem 0.8rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  margin-bottom: 0.75rem;
-}
-.toolbar .spacer { flex: 1 1 auto; }
-.toolbar a { font-size: 0.9rem; }
-.toolbar a, .toolbar button {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-}
-/* Sticky app shell (#961): selector + status + primary tabs stay
-   pinned while the feed scrolls. The wrapper owns the surface so
-   the toolbar and tab row read as one bar. */
+/* Sticky app shell (#961, unified bar): repo context left, view
+   tabs center, tools right — one row that wraps on narrow screens
+   instead of three separate headers. */
 .topbar {
   position: sticky;
   top: 0;
   z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.6rem 0.8rem;
   margin-bottom: 0.75rem;
 }
-.topbar > .toolbar {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 0.1rem 0;
-  margin-bottom: 0.35rem;
+.topbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  min-width: 0;
 }
-.topbar > .topnav {
-  position: static;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  margin: 0;
-  padding: 0.1rem 0;
+.topbar-group a { font-size: 0.9rem; }
+.topbar-group a, .topbar-group button {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
 }
+/* Center group takes the middle: auto margins on both sides push
+   context left and tools right; on wrap the row stacks cleanly. */
+.topbar-views { margin-left: auto; margin-right: auto; }
 
 /* Bottom section cluster (#961): Review/Jobs/Queue plus Report a
    bug ride a fixed bar so secondary destinations never scroll away.
@@ -457,6 +444,11 @@ li.detail.merging { opacity: 0.55; }
    along; runs and launch stay one click away in the main nav. */
 .cobrowse-chat .chat-side { display: none; }
 .cobrowse-chat .chat-main { min-width: 0; }
+/* ChatView brings its own two-column .split; inside a 300-380px
+   rail that grid crushes chat-main to zero width (prompt chips
+   measured 28px wide). Collapse it: the rail is already the
+   narrow column. */
+.cobrowse-chat .split { grid-template-columns: minmax(0, 1fr); }
 .cobrowse-takeover {
   position: absolute;
   inset: 0;
@@ -763,6 +755,15 @@ a.link-chip:hover { border-color: var(--accent); }
   color: #fff;
   font-weight: 650;
 }
+/* In-bar variant: inside the unified topbar the tab group is
+   borderless — the bar owns the surface, not the nav. */
+.topbar .topnav {
+  position: static;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.1rem 0;
+}
 
 /* Command palette: overlay panel reusing the console's row grammar —
    surface, border, and the selected-row accent. No chrome beyond that. */
@@ -1057,7 +1058,7 @@ label.row-meta { display: grid; gap: 0.3rem; }
 @media (max-width: 700px) {
   .layout { padding: 0.75rem 0.75rem 5rem; }
   .topbar { position: static; margin-bottom: 0.5rem; }
-  .topbar > .toolbar { flex-wrap: nowrap; overflow-x: auto; }
+  .topbar-group { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
   .topnav { flex-wrap: nowrap; overflow-x: auto; }
   .bottombar {
     gap: 0.25rem;

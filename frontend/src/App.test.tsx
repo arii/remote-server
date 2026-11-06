@@ -1001,6 +1001,21 @@ describe('app', () => {
     expect(html).toContain('aria-keyshortcuts="4"');
   });
 
+  it('App renders one unified top bar: context, views, tools in order', () => {
+    const html = renderToStaticMarkup(<App />);
+    const bar = html.indexOf('data-testid="topbar"');
+    const views = html.indexOf('aria-label="Views"');
+    const tools = html.indexOf('data-testid="palette-open"');
+    expect(bar).toBeGreaterThanOrEqual(0);
+    // Repo context first, view tabs center, tool links last — a
+    // single header row instead of scattered bars.
+    expect(views).toBeGreaterThan(bar);
+    expect(tools).toBeGreaterThan(views);
+    expect(html).toContain('data-testid="tool-terminal"');
+    expect(html).toContain('data-testid="tool-code"');
+    expect(html).toContain('data-testid="tool-browser"');
+  });
+
   it('navPressed lights exactly the visible destination (issue #896)', () => {
     const entry = (id: string) => NAV_ENTRIES.find((e) => e.id === id)!;
     expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['now', 'chat', 'briefing', 'history', 'review', 'jobs', 'queue']);

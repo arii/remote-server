@@ -771,64 +771,65 @@ export default function App() {
   return (
     <main className="layout">
       <h1 className="sr-only">Operator console</h1>
-      <div className="topbar" data-testid="topbar">
-      <header className="toolbar">
-        <RepoPicker repos={repos} value={repo} onChange={setRepo} />
-        {selectedRepo && !selectedRepo.clean && (
+      <header className="topbar" data-testid="topbar">
+        <div className="topbar-group">
+          <RepoPicker repos={repos} value={repo} onChange={setRepo} />
+          {selectedRepo && !selectedRepo.clean && (
+            <button
+              type="button"
+              className="repo-chip"
+              data-testid="repo-diff-chip"
+              onClick={() => setDiffRepo(repo)}
+            >
+              dirty · view diff
+            </button>
+          )}
           <button
             type="button"
             className="repo-chip"
-            data-testid="repo-diff-chip"
-            onClick={() => setDiffRepo(repo)}
+            data-testid="stack-status"
+            aria-expanded={statsOpen}
+            onClick={() => (statsOpen ? closeStats() : openStats())}
           >
-            dirty · view diff
+            {healthSummary(health)}
           </button>
-        )}
-        <button
-          type="button"
-          className="repo-chip"
-          data-testid="stack-status"
-          aria-expanded={statsOpen}
-          onClick={() => (statsOpen ? closeStats() : openStats())}
-        >
-          {healthSummary(health)}
-        </button>
-        <span className="spacer" />
-        <button
-          type="button"
-          data-testid="palette-open"
-          title="Open command palette (Ctrl+K)"
-          onClick={() => setPaletteOpen(true)}
-        >
-          Commands
-        </button>
-        <a data-testid="tool-terminal" href={`${stackBase()}/`}>
-          Terminal
-        </a>
-        <a data-testid="tool-code" href={`${stackBase()}/code`}>
-          Code
-        </a>
-        <button
-          type="button"
-          data-testid="tool-browser"
-          title="Open shared browser"
-          onClick={() => setBrowserOpen(true)}
-        >
-          Browser
-        </button>
+        </div>
+        <nav className="topnav topbar-views" aria-label="Views">
+          {NAV_ENTRIES.filter((t) => t.kind === 'tab').map((t) => (
+            <ShellNavButton
+              key={t.id}
+              entry={t}
+              pressed={navPressed(tab, nowSection, t)}
+              badge={navBadge(t.id, badgeCounts)}
+              onGo={() => goNav(t)}
+            />
+          ))}
+        </nav>
+        <div className="topbar-group">
+          <button
+            type="button"
+            data-testid="palette-open"
+            title="Open command palette (Ctrl+K)"
+            onClick={() => setPaletteOpen(true)}
+          >
+            Commands
+          </button>
+          <a data-testid="tool-terminal" href={`${stackBase()}/`}>
+            Terminal
+          </a>
+          <a data-testid="tool-code" href={`${stackBase()}/code`}>
+            Code
+          </a>
+          <button
+            type="button"
+            data-testid="tool-browser"
+            title="Open shared browser"
+            onClick={() => setBrowserOpen(true)}
+          >
+            Browser
+          </button>
+        </div>
       </header>
-      <nav className="topnav" aria-label="Views">
-        {NAV_ENTRIES.filter((t) => t.kind === 'tab').map((t) => (
-          <ShellNavButton
-            key={t.id}
-            entry={t}
-            pressed={navPressed(tab, nowSection, t)}
-            badge={navBadge(t.id, badgeCounts)}
-            onGo={() => goNav(t)}
-          />
-        ))}
-      </nav>
-      </div>
       <SyncBanner />
       <SessionBanner />
       <CommandPalette
