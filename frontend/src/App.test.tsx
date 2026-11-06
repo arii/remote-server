@@ -655,7 +655,7 @@ describe('chat backend picker', () => {
   it('offers Auto / Local only / Cloud allowed', () => {
     expect(CHAT_BACKEND_OPTIONS.map((o) => o.value)).toEqual(['auto', 'local', 'cloud']);
     expect(CHAT_BACKEND_OPTIONS.map((o) => o.label)).toEqual([
-      'Auto',
+      'Auto (default)',
       'Local only',
       'Cloud allowed',
     ]);
@@ -749,6 +749,7 @@ describe('chat composer order', () => {
     tools: [],
     tokens: 96,
     preview: `run ${i}`,
+    prompt_first_line: '',
     has_prompt: true,
     cost_usd: 0,
     metered: false,
@@ -809,6 +810,7 @@ describe('past-run button names', () => {
     tools: [],
     tokens: 11089,
     preview: `No TODOs found in the repo. ${'detail '.repeat(40)}`,
+    prompt_first_line: '',
     has_prompt: true,
     cost_usd: 0,
     metered: false,

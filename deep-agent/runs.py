@@ -96,6 +96,18 @@ def _row_latency(row):
     return None
 
 
+# First prompt line for run titles (#960): rows without a final
+# preview fall back to the user's words, not the bare run id.
+def _prompt_first_line(extra):
+    if not isinstance(extra, dict):
+        return ""
+    prompt = extra.get("prompt")
+    if not isinstance(prompt, str):
+        return ""
+    first = prompt.split("\n", 1)[0].strip()
+    return first[:119] + "…" if len(first) > 120 else first
+
+
 def _entry_summary(index, row):
     extra = row.get("extra") or {}
     usage = row.get("usage")
@@ -117,6 +129,7 @@ def _entry_summary(index, row):
                   for c in row.get("tool_calls", []) or []],
         "tokens": usage.get("total_tokens", 0) or 0,
         "preview": (row.get("final_preview", "") or "")[:200],
+        "prompt_first_line": _prompt_first_line(extra),
         "has_prompt": isinstance(extra.get("prompt"), str)
         and bool(extra.get("prompt")),
         "cost_usd": cost_usd,

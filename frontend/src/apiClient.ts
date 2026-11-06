@@ -1519,6 +1519,7 @@ export interface AgentRun {
   tools: string[];
   tokens: number;
   preview: string;
+  prompt_first_line: string;
   has_prompt: boolean;
   cost_usd: number | null;
   metered: boolean;
