@@ -35,6 +35,143 @@ class ViewerMountTest(unittest.TestCase):
             with client.websocket_connect("/nope"):
                 pass
 
+    def test_attached_names_viewer_kinds(self):
+        # Issue #1026: the state line distinguishes agent-shared,
+        # viewer-shared, and own sessions for the human.
+        self.assertIn("shared browser tab", browser_view.VIEWER_HTML)
+        self.assertIn("shared agent session", browser_view.VIEWER_HTML)
+
+
+class FakeBridge:
+    """Stand-in for CDPBridge: no Grid traffic under test."""
+    def __init__(self, session_id):
+        self.session_id = session_id
+
+    async def connect(self):
+        pass
+
+    async def start_screencast(self, on_frame):
+        pass
+
+    async def navigate(self, url):
+        pass
+
+    async def reattach(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+class SharedViewerSessionTest(unittest.TestCase):
+    def setUp(self):
+        self._sid = browser_view._viewer_session_id
+        self._ref = browser_view._viewer_refcount
+        browser_view._viewer_session_id = None
+        browser_view._viewer_refcount = 0
+        self._bridge = mock.patch.object(
+            browser_view, "CDPBridge", FakeBridge)
+        self._bridge.start()
+        self.addCleanup(self._bridge.stop)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        browser_view._viewer_session_id = self._sid
+        browser_view._viewer_refcount = self._ref
+
+    def test_two_tabs_share_one_session(self):
+        # Issue #1026: first tab creates, second tab attaches to the
+        # same Grid session (one create for two viewers). Teardown
+        # policy is covered directly below: the TestClient portal
+        # tears down app tasks on close before a second awaited
+        # step in the websocket finally can run.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        with mock.patch.object(
+                browser_view, "_grid_live_session",
+                return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA") as create, \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"):
+            with client.websocket_connect("/ws") as ws1:
+                first = _json.loads(ws1.receive_text())
+                self.assertEqual(first["kind"], "own")
+                with client.websocket_connect("/ws") as ws2:
+                    second = _json.loads(ws2.receive_text())
+                    self.assertEqual(second["kind"], "viewer-shared")
+                    self.assertEqual(second["session"],
+                                     first["session"])
+            self.assertEqual(create.call_count, 1)
+
+    def test_teardown_policy(self):
+        # The websocket finally only calls _viewer_teardown: last
+        # viewer out deletes, agent attaches own nothing, unknown
+        # sessions are left alone.
+        import asyncio as _aio
+        browser_view._viewer_session_id = "AAA"
+        browser_view._viewer_refcount = 2
+        with mock.patch.object(
+                browser_view, "_grid_session_delete") as delete:
+            self.assertFalse(_aio.run(
+                browser_view._viewer_teardown("AAA", "viewer-shared")))
+            self.assertEqual(delete.call_count, 0)
+            self.assertTrue(_aio.run(
+                browser_view._viewer_teardown("AAA", "own")))
+            delete.assert_called_once_with("AAA")
+            self.assertFalse(_aio.run(
+                browser_view._viewer_teardown("AAA", "own")))
+            self.assertFalse(_aio.run(
+                browser_view._viewer_teardown("AGENT", "agent")))
+
+    def test_stale_record_creates_fresh(self):
+        # A dead stored session is cleared; the viewer creates anew
+        # instead of attaching to a corpse.
+        import json as _json
+        browser_view._viewer_session_id = "ZZZ"
+        browser_view._viewer_refcount = 1
+        client = TestClient(browser_view.create_app())
+        with mock.patch.object(
+                browser_view, "_grid_live_session",
+                return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=False), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="NEW"), \
+             mock.patch.object(browser_view, "_grid_session_delete"):
+            with client.websocket_connect("/ws") as ws:
+                msg = _json.loads(ws.receive_text())
+                self.assertEqual(msg["kind"], "own")
+                self.assertEqual(msg["session"], "NEW"[:8])
+            # Post-close release is covered by test_teardown_policy:
+            # the TestClient portal tears app tasks down on close.
+
+    def test_create_race_falls_back_to_shared(self):
+        # Two tabs connecting at once: the loser of the create race
+        # attaches to the just-stored session instead of erroring.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        with mock.patch.object(
+                browser_view, "_grid_live_session",
+                return_value=None), \
+             mock.patch.object(
+                 browser_view, "_viewer_claim",
+                 side_effect=[None, "AAA"]) as claim, \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 side_effect=RuntimeError("slot taken")), \
+             mock.patch.object(browser_view, "_grid_session_delete"):
+            with client.websocket_connect("/ws") as ws:
+                msg = _json.loads(ws.receive_text())
+                self.assertEqual(msg["kind"], "viewer-shared")
+                self.assertEqual(msg["session"], "AAA"[:8])
+            self.assertEqual(claim.call_count, 2)
+
     def test_ws_attempts_grid_session(self):
         # The route is hit and a session is attempted: a dead grid
         # closes the socket instead of hanging the handshake.
