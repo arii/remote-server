@@ -218,7 +218,7 @@ export default function App() {
   // is open atop the stats drawer, if any.
   const [logService, setLogService] = useState<string | null>(null);
   // Shared browser drawer (follow_up Issue 11): embedded
-  // browserless head with takeover interception. Polls the agent
+  // headed-Chromium noVNC head with takeover interception. Polls the agent
   // control API while open; pause/resume POST there too.
   const [browserOpen, setBrowserOpen] = useState(false);
   const [agentBrowser, setAgentBrowser] = useState<AgentBrowserStatus | null>(null);
@@ -822,7 +822,7 @@ export default function App() {
         <CoBrowsingDrawer
           browserState={agentBrowser?.state ?? 'IDLE'}
           currentStep={agentBrowser?.current_step || null}
-          iframeSrc={`${stackBase()}/browser/debugger/`}
+          iframeSrc={`${stackBase()}/browser/vnc.html?autoconnect=1&resize=scale`}
           error={browserError}
           onPause={() => void onPauseBrowser()}
           onResume={() => void onResumeBrowser()}

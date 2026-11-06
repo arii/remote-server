@@ -1,8 +1,9 @@
 # Co-browsing runbook: live preflight via `agy` (follow_up Issue 12)
 
-End-to-end proof that the shared browser head, the pause/resume
-lock, and `td audit-impact` visual diffs work as one loop. Run from
-the **terminal container** (compose network), where `agy` lives::
+End-to-end proof that the shared headed-browser head, the
+pause/resume lock, and `td audit-impact` visual diffs work as one
+loop. Run from the **terminal container** (compose network), where
+`agy` lives::
 
     cd /srv/remote-server
     python3 scripts/verify-co-browsing-preflight.py
@@ -13,24 +14,27 @@ what).
 
 ## Environment knobs (all optional)
 
-- `BROWSERLESS_HTTP` (default `http://browserless:3000`)
-- `BROWSERLESS_TOKEN` (appended to the CDP websocket URL)
+- `BROWSER_HTTP` (default `http://browser:4444`) — Selenium Grid
+  base of the `browser` service. The service must exist; no fail-safe.
+- `BROWSER_NOVNC` (default `http://browser:7900`) — noVNC stream
+  the human watches (same head, routed at `/browser*` by Caddy).
 - `AGENT_API` (default `http://buttons:8000/api/agent`)
-- `PREVIEW_URL` (default `<BROWSERLESS_HTTP>/debugger/`)
+- `PREVIEW_URL` (default `<BROWSER_NOVNC>/vnc.html?autoconnect=1&resize=scale`)
 - `TD_BIN` + `TD_CWD` (default `td`; the installed td predates
   `--preview-url`, so until it is reinstalled point at a checkout:
   `TD_BIN="python3 dev_tools/cli.py"
   TD_CWD=/srv/repos/boomtick/cli`)
-- `BROWSERLESS_ENDPOINT` (default derived from the above; after the
-  next terminal recreate the compose default `ws://browserless:3000`
-  applies and the export is unnecessary)
+- `BROWSER_ENDPOINT` (default `http://browser:4444` via compose;
+  `browser_cdp` opens its own Grid session from this base URL)
 - `REPO` (default `/srv/remote-server`; needs a `frontend/src/index.css`)
 
 ## What each stage proves
 
-1. `pressure` — browserless head up and accepting sessions.
-2. `cdp_snapshot` — Playwright `connect_over_cdp` (no local
-   Chrome), preview navigation, DOM metrics, screenshot to tmp.
+1. `grid_ready` — Selenium Grid up with a ready node and a free
+   slot (single session: `SE_NODE_MAX_SESSIONS=1`).
+2. `cdp_snapshot` — Grid session + Playwright `connect_over_cdp`
+   (no local Chrome), preview navigation, DOM metrics, screenshot
+   to tmp; the session is always deleted so the slot never wedges.
 3. `screenshot_integrity` — the shot is a non-empty PNG.
 4. `pause_halts` — `POST /api/agent/pause` sticks
    `PAUSED_BY_USER` + flags a DOM refresh (the halt the pipeline
@@ -49,15 +53,17 @@ what).
   `TD_CWD` as above.
 - `pause_halts` / `resume_refresh` HTTP errors: the backend is down
   or unreachable — `docker compose ps`, then check buttons health.
-- `pressure` / `cdp_snapshot` errors: `docker compose ps
-  browserless`; `curl http://browserless:3000/pressure` from the
-  terminal container. Never bare `docker compose up -d` (it
-  recreates the terminal service and kills live sessions);
-  single-service `docker compose up -d browserless` only.
+- `grid_ready` / `cdp_snapshot` errors: `docker compose ps
+  browser`; `curl http://browser:4444/status` from the terminal
+  container. A `no free grid slot` failure means a leaked session
+  holds the single slot — list sessions via the Grid UI and
+  `DELETE /session/<id>`. Never bare `docker compose up -d` (it
+  kills the terminal and live sessions); single-service
+  `docker compose up browser` only.
 
 ## CI shape
 
 `tests/test_co_browsing_e2e.py` wraps the same stages as unittest
 methods: pure helpers run everywhere; live stages skip unless the
 stack is reachable (`E2E_COBROWSING=1` guard inside — set it when
-running where browserless + backend are up).
+running where the headed browser + backend are up).

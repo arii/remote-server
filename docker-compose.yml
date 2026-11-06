@@ -72,6 +72,11 @@ services:
     depends_on:
       caddy:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
     logging: *default-logging
     restart: unless-stopped
 
@@ -153,6 +158,9 @@ services:
       NEBIUS_MODEL: ${NEBIUS_MODEL:-}
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
       NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
+      # Shared headed browser (Solution A): Selenium Grid base for agent
+      # CDP sessions. The service must exist; there is no fail-safe.
+      BROWSER_ENDPOINT: http://browser:4444
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
@@ -165,6 +173,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '8.0'
+          memory: 6G
+        reservations:
+          memory: 512M
     logging: *default-logging
     restart: unless-stopped
 
@@ -176,6 +191,11 @@ services:
     volumes:
       - .:/srv/remote-server
     command: ["bash", "/srv/remote-server/scripts/provision-skills.sh", "--fail-open"]
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
     logging: *default-logging
 
   # Local LLM inference, CPU-only. Loopback-published only.
@@ -194,9 +214,15 @@ services:
       - "127.0.0.1:11434:11434"
     volumes:
       - ollama-data:/root/.ollama
-    # Box has 26GB RAM; a 14b model needs ~10GB. Cap keeps a big pull from
-    # starving the rest of the stack (OOM-kill here beats box-wide thrash).
-    mem_limit: 16g
+    # Box has 32GB RAM (26.8GB usable); a 14b model needs ~10GB.
+    # 14G limit + 12 CPU cap keeps local inference from starving the stack.
+    deploy:
+      resources:
+        limits:
+          cpus: '12.0'
+          memory: 14G
+        reservations:
+          memory: 8G
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -227,6 +253,11 @@ services:
       TS_AUTHKEY: ${TS_AUTHKEY} # reusable auth key from Tailscale admin console
       TS_HOSTNAME: ${TS_HOSTNAME:-s5}
     entrypoint: ["/usr/local/bin/tailscale-entrypoint.sh"]
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
     logging: *default-logging
     restart: unless-stopped
 
@@ -303,6 +334,13 @@ services:
       # Boot is fast: the RAG index builds in the background (#699)
       # while uvicorn already serves; /health reports its state.
       start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          memory: 256M
     logging: *default-logging
     restart: unless-stopped
     # In-flight SSE chat streams run minutes on CPU-Ollama; uvicorn drains
@@ -337,6 +375,11 @@ services:
         condition: service_healthy
       code-server:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 512M
     logging: *default-logging
     restart: unless-stopped
 
@@ -356,8 +399,44 @@ services:
       - ./config/browser-relay:/etc/caddy:ro
     depends_on:
       - terminal
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
     logging: *default-logging
     restart: unless-stopped
+
+  # Shared headed browser for visual co-browsing (Solution A): real
+  # Chromium on Xvfb. Humans watch/drive via the noVNC stream (:7900,
+  # routed at /browser*); agents drive it over CDP (:4444). Replaces
+  # the decommissioned browserless head.
+  browser:
+    # Pinned 2026-11-06: digest of selenium/standalone-chromium at
+    # Solution-A bring-up (was :latest) — byte-identical, no upgrade.
+    image: selenium/standalone-chromium@sha256:b211549a4c35f11826bc1a7559b9f23ff055198517f8cb7d49ef74df01c5e38d
+    container_name: remote-browser-1
+    shm_size: "2gb"
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          memory: 512M
+    restart: unless-stopped
+    expose:
+      - "4444"
+      - "7900"
+    ports:
+      - "127.0.0.1:4444:4444"
+      - "127.0.0.1:7900:7900"
+    environment:
+      - SE_START_XVFB=true
+      - SE_NODE_MAX_SESSIONS=1
+      - SE_VNC_NO_PASSWORD=true
+      - VNC_NO_PASSWORD=1
+    logging: *default-logging
 
   # Browser-based VS Code: code-server.
   # --auth none: the GitHub OAuth gate is the boundary, same as ttyd.
@@ -399,6 +478,13 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+        reservations:
+          memory: 512M
     logging: *default-logging
     restart: unless-stopped
 
