@@ -9,7 +9,7 @@
 ARG PNPM_VERSION=10.28.2
 
 # ---- SPA build (pnpm workspace: single root lockfile) ----
-FROM node:22-alpine AS spa
+FROM node:24-alpine AS spa
 ARG PNPM_VERSION
 WORKDIR /build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -31,7 +31,7 @@ FROM python:3.11-slim
 ARG BOOMTICK_CLI_REF=main
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
-ARG NODE_VERSION=22.21.1
+ARG NODE_VERSION=24.16.0
 ARG PNPM_VERSION
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git gh curl ca-certificates openssh-client xz-utils \
@@ -54,7 +54,7 @@ RUN apt-get update \
  && /opt/venvs/td/bin/pip install --no-cache-dir \
   "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
  && /opt/venvs/td/bin/td --help > /dev/null
-# impact-pass toolchain (#881): node 22 + pnpm. Debian's nodejs (18)
+# impact-pass toolchain (#881): node 24 + pnpm. Debian's nodejs (18)
 # is too old for @axe-core/playwright (>= 22.12), so node comes from
 # the pinned upstream tarball (replaces the apt nodejs the #488 gate
 # used — the gate's smoke below proves the new binary); pnpm because

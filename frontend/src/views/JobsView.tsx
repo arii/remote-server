@@ -185,6 +185,68 @@ export function HighlightedLine({ line, query }: { line: string; query: string }
   return <>{parts}</>;
 }
 
+export function RunOutputDrawer({
+  open,
+  onClose,
+  tail,
+  runId,
+  running,
+  panelRef,
+}: {
+  open: boolean;
+  onClose: () => void;
+  tail: string;
+  runId: string | null;
+  running: string | null;
+  panelRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  // Side drawer for run output (#1013): fixed to the viewport edge
+  // so opening output never shifts the list underneath. Closed =
+  // unmounted (lazy). Escape closes; focus lands on Close.
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div
+      className="jobs-drawer"
+      role="dialog"
+      aria-label="Job output"
+      data-testid="jobs-output-drawer"
+    >
+      <div className="jobs-drawer-head">
+        <span className="row-title">Job output</span>
+        <button
+          type="button"
+          ref={closeRef}
+          data-testid="jobs-output-close"
+          onClick={onClose}
+        >
+          Close
+        </button>
+      </div>
+      <div className="jobs-drawer-body">
+        <RunProgressPanel
+          tail={tail}
+          runId={runId}
+          running={running}
+          panelRef={panelRef}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function RunProgressPanel({
   tail,
   runId,
@@ -387,7 +449,7 @@ export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
     return j ? `${id} · ${labelOf(j)}` : id;
   };
   return (
-    <div className="detail" data-testid="run-compare">
+    <div className="detail jobs-compare" data-testid="run-compare">
       <span className="row-title">Compare runs</span>
       <div className="actions">
         <label className="row-meta">
@@ -451,6 +513,37 @@ export function RunComparePanel({ jobs }: { jobs: JobRecord[] }) {
         </>
       )}
     </div>
+  );
+}
+
+// Collapsed-by-default compare wrapper (#1013): the toggle
+// reserves one row and the heavy diff pane mounts only when
+// opened (lazy), so idle Jobs visits never fetch diffs and the
+// list below never shifts. Hidden with fewer than two runs.
+export function CompareRunsSection({
+  jobs,
+  open,
+  onToggle,
+}: {
+  jobs: JobRecord[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  if (jobs.filter((j) => j.done).length < 2) return null;
+  return (
+    <section aria-label="Compare runs" data-testid="run-compare-section">
+      <div className="actions">
+        <button
+          type="button"
+          data-testid="run-compare-toggle"
+          aria-expanded={open}
+          onClick={onToggle}
+        >
+          {open ? 'Hide compare' : 'Compare runs'}
+        </button>
+      </div>
+      {open && <RunComparePanel jobs={jobs} />}
+    </section>
   );
 }
 
@@ -789,6 +882,10 @@ export default function JobsView({
   const [schedDraft, setSchedDraft] = useState<ScheduleDraft | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [planContent, setPlanContent] = useState<string | null>(null);
+  // Detail drawer + compare collapse (#1013): output lives in the
+  // side drawer, the diff pane mounts only when opened.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
   const progressRef = useRef<HTMLDivElement | null>(null);
   // Live list for the triage opener (hook subscribes once, reads via ref).
   const jobsRef = useRef(jobs);
@@ -895,6 +992,7 @@ export default function JobsView({
     setRunId(id);
     setRunning(null);
     setTail(r.output || 'No output yet.');
+    setDrawerOpen(true);
   }
 
   async function onRerun(job: JobRecord, confirmed: boolean) {
@@ -975,11 +1073,13 @@ export default function JobsView({
       if (!attached) throw err;
       setRunId(attached);
       setNotice(`Already running — attached to ${attached}.`);
+      setDrawerOpen(true);
       if (!useMock()) trackRun(attached, label, repo);
       return;
     }
     setRunId(id);
     setNotice(`Started ${label}: ${id}`);
+    setDrawerOpen(true);
     if (useMock()) return;
     if (/^[0-9a-f]{12}$/.test(id)) trackRun(id, label, repo);
     else await load();
@@ -1024,6 +1124,7 @@ export default function JobsView({
       setPlanCard(null);
       setPlanOpen(false);
       setPlanContent(null);
+      setDrawerOpen(false);
     }
     await load();
   }
@@ -1081,14 +1182,20 @@ export default function JobsView({
           onChange={setBranch}
         />
       </div>
-      <RunProgressPanel
+      <RunOutputDrawer
         key={runId ?? 'none'}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
         tail={tail}
         runId={runId}
         running={running}
         panelRef={progressRef}
       />
-      <RunComparePanel jobs={list} />
+      <CompareRunsSection
+        jobs={list}
+        open={compareOpen}
+        onToggle={() => setCompareOpen((o) => !o)}
+      />
       <PlanCardPanel
         card={planCard}
         open={planOpen}

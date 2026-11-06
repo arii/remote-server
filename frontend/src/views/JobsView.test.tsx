@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { dangerEntryFor } from './DangerZone';
 import {
+  CompareRunsSection,
   HighlightedLine,
   JobListItem,
   JobsListPanel,
   PlanCardPanel,
   RunComparePanel,
+  RunOutputDrawer,
   RunProgressPanel,
   SideBySideDiffView,
   TriageFanoutSection,
@@ -398,5 +400,67 @@ describe('jobs live feedback (issue #934)', () => {
       <RunProgressPanel tail={''} runId={null} running={null} panelRef={{ current: null }} />,
     );
     expect(html).toBe('');
+  });
+});
+
+describe('compare collapse (issue #1013)', () => {
+  const twoDone = [mkJob(), mkJob({ id: 'b'.repeat(12) })];
+
+  it('hides the section with fewer than two finished runs', () => {
+    const html = renderToStaticMarkup(
+      <CompareRunsSection jobs={[mkJob()]} open={true} onToggle={() => {}} />,
+    );
+    expect(html).toBe('');
+  });
+
+  it('renders only the toggle when closed (lazy: no diff pane)', () => {
+    const html = renderToStaticMarkup(
+      <CompareRunsSection jobs={twoDone} open={false} onToggle={() => {}} />,
+    );
+    expect(html).toContain('data-testid="run-compare-section"');
+    expect(html).toContain('data-testid="run-compare-toggle"');
+    expect(html).toContain('>Compare runs<');
+    expect(html).not.toContain('data-testid="run-compare"');
+  });
+
+  it('mounts the compare pane when open', () => {
+    const html = renderToStaticMarkup(
+      <CompareRunsSection jobs={twoDone} open={true} onToggle={() => {}} />,
+    );
+    expect(html).toContain('data-testid="run-compare"');
+    expect(html).toContain('>Hide compare<');
+  });
+});
+
+describe('output drawer (issue #1013)', () => {
+  it('renders nothing when closed', () => {
+    const html = renderToStaticMarkup(
+      <RunOutputDrawer
+        open={false}
+        onClose={() => {}}
+        tail="out"
+        runId="abc123def456"
+        running={null}
+        panelRef={{ current: null }}
+      />,
+    );
+    expect(html).toBe('');
+  });
+
+  it('renders the output pane with a close control when open', () => {
+    const html = renderToStaticMarkup(
+      <RunOutputDrawer
+        open={true}
+        onClose={() => {}}
+        tail=""
+        runId="abc123def456"
+        running="ux audit"
+        panelRef={{ current: null }}
+      />,
+    );
+    expect(html).toContain('data-testid="jobs-output-drawer"');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('data-testid="jobs-output-close"');
+    expect(html).toContain('data-testid="jobs-progress"');
   });
 });

@@ -18,16 +18,16 @@ from backend.api.routers import jobs as jobs_mod
 def _registry_snapshot():
     reg = jobs_mod.registry
     with reg._lock:
-        return (dict(reg.runs), reg.active_id, reg._seq)
+        return (dict(reg.runs), set(reg.active_ids), reg._seq)
 
 
 def _registry_restore(snap):
-    runs, active_id, seq = snap
+    runs, active_ids, seq = snap
     reg = jobs_mod.registry
     with reg._lock:
         reg.runs.clear()
         reg.runs.update(runs)
-        reg.active_id = active_id
+        reg.active_ids = set(active_ids)
         reg._seq = seq
 
 
@@ -224,29 +224,37 @@ class ActionScheduleStoreTest(unittest.TestCase):
         self.assertEqual(run["td_argv"], argv)
         jobs_mod.registry.finish_run(rid, 0)
 
-    def test_fire_records_single_flight_conflict(self):
+    def test_fire_queues_behind_full_pool(self):
+        # Issue #1025: a due schedule fires into the queue instead
+        # of failing when the pool is full — the claim advances,
+        # the launcher still spawns the (parking) worker, and the
+        # result records the queued run id.
+        import backend.exec.engine as engine_mod
         sched = self._create()
         with jobs_mod.action_schedule_lock:
             state = jobs_mod.load_action_schedules()
             state[sched["id"]]["next_run"] = time.time() - 1
             jobs_mod.save_action_schedules(state)
-        blocker, err = jobs_mod.registry.start_run("logs")
-        self.assertIsNone(err)
+        blockers = []
+        for _ in range(engine_mod.MAX_CONCURRENT_RUNS):
+            blocker, err = jobs_mod.registry.start_run("logs")
+            self.assertIsNone(err)
+            blockers.append(blocker)
         try:
             with patch.object(jobs_mod, "_launch") as launcher:
                 fired = jobs_mod.fire_due_action_schedules()
             self.assertEqual(fired, 1)
-            launcher.assert_not_called()
+            launcher.assert_called_once()
         finally:
-            jobs_mod.registry.finish_run(blocker, 0)
+            for blocker in blockers:
+                jobs_mod.registry.finish_run(blocker, 0)
         row = jobs_mod.list_action_schedules()["schedules"][0]
-        self.assertFalse(row["last_result"]["ok"])
-        self.assertIn("already in progress",
-                      row["last_result"]["error"])
+        self.assertTrue(row["last_result"]["ok"])
+        self.assertIn("run_id", row["last_result"])
         # The claim still advanced: no retry storm next tick.
         self.assertGreater(row["next_run"], time.time())
 
-    def test_fire_launch_failure_releases_single_flight(self):
+    def test_fire_launch_failure_releases_slot(self):
         sched = self._create()
         with jobs_mod.action_schedule_lock:
             state = jobs_mod.load_action_schedules()
@@ -255,7 +263,7 @@ class ActionScheduleStoreTest(unittest.TestCase):
         with patch.object(jobs_mod, "_launch",
                           side_effect=RuntimeError("spawn down")):
             self.assertEqual(jobs_mod.fire_due_action_schedules(), 1)
-        self.assertIsNone(jobs_mod.registry.active_id)
+        self.assertEqual(jobs_mod.registry.active_ids, set())
         row = jobs_mod.list_action_schedules()["schedules"][0]
         self.assertFalse(row["last_result"]["ok"])
         self.assertIn("spawn down", row["last_result"]["error"])

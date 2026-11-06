@@ -104,6 +104,11 @@ class RunRequest(BaseModel):
 
 class RunStarted(BaseModel):
     id: str
+    # Queue state (issue #1025): capacity never 409s — beyond
+    # MAX_CONCURRENT_RUNS the run waits queued and the response
+    # names its place in line.
+    queued: bool = False
+    position: int = 0
 
 
 class RunTdRequest(BaseModel):
@@ -230,6 +235,32 @@ def _launch(run_id: str, action: str, repo: str,
     worker.start()
 
 
+def _start_dispatch(action: str, repo: str, td_argv=None) -> dict:
+    """start_run + worker launch with a queue-aware response.
+
+    Capacity never 409s (issue #1025): beyond
+    MAX_CONCURRENT_RUNS the run waits queued and the worker parks
+    in acquire() until promotion, so the response names its place
+    in line instead of failing. Only validation errors raise.
+    """
+    run_id, err = registry.start_run(action, repo, td_argv=td_argv)
+    if err:
+        raise HTTPException(
+            status_code=409 if "already in progress" in err else 400,
+            detail=err,
+        )
+    try:
+        _launch(run_id, action, repo, td_argv=td_argv)
+    except Exception:
+        # _launch runs after start_run took a slot; release it so a
+        # failed launch can't wedge the engine (#294).
+        registry.finish_run(run_id, 1)
+        raise
+    return {"id": run_id,
+            "queued": bool(registry.runs.get(run_id, {}).get("queued")),
+            "position": registry.queue_position(run_id)}
+
+
 @router.post("/run", response_model=RunStarted)
 def start_run(body: RunRequest) -> dict:
     if body.action not in ALLOWED_ACTIONS:
@@ -249,20 +280,7 @@ def start_run(body: RunRequest) -> dict:
         validate_action_branch(body.repo, body.branch)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    run_id, err = registry.start_run(body.action, body.repo)
-    if err:
-        raise HTTPException(
-            status_code=409 if "already in progress" in err else 400,
-            detail=err,
-        )
-    try:
-        _launch(run_id, body.action, body.repo)
-    except Exception:
-        # _launch runs after start_run took the single-flight lock;
-        # release it so a failed launch can't wedge the engine (#294).
-        registry.finish_run(run_id, 1)
-        raise
-    return {"id": run_id}
+    return _start_dispatch(body.action, body.repo)
 
 
 @router.post("/run-td", response_model=RunStarted)
@@ -282,18 +300,7 @@ def start_run_td(body: RunTdRequest) -> dict:
         validate_action_branch(body.repo, body.branch)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    run_id, err = registry.start_run("run-td", body.repo, td_argv=tokens)
-    if err:
-        raise HTTPException(
-            status_code=409 if "already in progress" in err else 400,
-            detail=err,
-        )
-    try:
-        _launch(run_id, "run-td", body.repo, td_argv=tokens)
-    except Exception:
-        registry.finish_run(run_id, 1)
-        raise
-    return {"id": run_id}
+    return _start_dispatch("run-td", body.repo, td_argv=tokens)
 
 
 class RunProgress(BaseModel):
@@ -497,19 +504,7 @@ def start_run_ux_audit(body: RunUxAuditRequest) -> dict:
             or not 1 <= pages <= 200:
         raise HTTPException(status_code=400, detail="bad max_pages")
     argv = ["ux-audit", body.site, "--max-pages", str(pages)]
-    run_id, err = registry.start_run("ux-audit", "remote-server",
-                                     td_argv=argv)
-    if err:
-        raise HTTPException(
-            status_code=409 if "already in progress" in err else 400,
-            detail=err,
-        )
-    try:
-        _launch(run_id, "ux-audit", "remote-server", td_argv=argv)
-    except Exception:
-        registry.finish_run(run_id, 1)
-        raise
-    return {"id": run_id}
+    return _start_dispatch("ux-audit", "remote-server", td_argv=argv)
 
 
 @router.get("/ux-audit/groups", response_model=UxAuditGroups)
@@ -558,19 +553,7 @@ def start_run_review(body: RunReviewRequest) -> dict:
     argv = ["review-pr", str(pr)]
     if body.post:
         argv.append("--post")
-    run_id, err = registry.start_run("review-pr", body.repo,
-                                     td_argv=argv)
-    if err:
-        raise HTTPException(
-            status_code=409 if "already in progress" in err else 400,
-            detail=err,
-        )
-    try:
-        _launch(run_id, "review-pr", body.repo, td_argv=argv)
-    except Exception:
-        registry.finish_run(run_id, 1)
-        raise
-    return {"id": run_id}
+    return _start_dispatch("review-pr", body.repo, td_argv=argv)
 
 
 @router.post("/run-plan", response_model=RunStarted)
@@ -583,18 +566,7 @@ def start_run_plan(body: RunPlanRequest) -> dict:
     # await. The plan runs in the stack dir regardless of repo (as the
     # old inline handler did); clients poll /runs/{rid} for the output
     # JSON, which carries plan_path.
-    run_id, err = registry.start_run("run-plan", body.repo, td_argv=argv)
-    if err:
-        raise HTTPException(
-            status_code=409 if "already in progress" in err else 400,
-            detail=err,
-        )
-    try:
-        _launch(run_id, "run-plan", body.repo, td_argv=argv)
-    except Exception:
-        registry.finish_run(run_id, 1)
-        raise
-    return {"id": run_id}
+    return _start_dispatch("run-plan", body.repo, td_argv=argv)
 
 
 PLAN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.md$")
@@ -897,8 +869,8 @@ def _record_schedule_result(sid: str, result: dict) -> None:
 
 def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
     """Fire one claimed schedule through the standard launch
-    internals (registry.single-flight + _launch), recording the run
-    id or the error back to the store. Scheduled actions are
+    internals (registry queue + _launch), recording the run id or
+    the error back to the store. Scheduled actions are
     non-destructive by construction, so no confirm gate applies."""
     action = sched.get("action", "")
     repo = sched.get("repo", "remote-server")
@@ -913,7 +885,7 @@ def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
         _launch(run_id, action, repo, td_argv=list(td_argv) or None)
     except Exception as exc:
         # Same release as start_run: a failed launch must not wedge
-        # the single-flight engine.
+        # the engine.
         registry.finish_run(run_id, 1)
         _record_schedule_result(
             sid, {"ok": False, "at": now, "error": str(exc)[:300]})

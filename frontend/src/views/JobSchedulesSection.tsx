@@ -332,7 +332,7 @@ export default function JobSchedulesSection({
                   Resume all
                 </button>
               </p>
-              <ul className="session-list">
+              <ul className="session-list jobs-schedule-scroll">
                 {g.rows.map((s) => (
                   <li key={s.id} className="detail">
                     <label className="row-meta" htmlFor={`jobs-schedule-select-${s.id}`}>

@@ -39,5 +39,7 @@ To coders, one line: `ready: #<n> [<area>] <finding>`. To auditors on dupes: `du
 - Never deploy, restart, or recreate the terminal container/service — buttons only.
 - No swarm fan-out; sequential queue work.
 - Never merge a PR that is not green and pre-approved.
+- Never open or accept minimal one-line/single-file PRs; batch per upstream release (#1081).
+- Never let fixes live outside revision control: after every merge/deploy, verify runtime-only changes are encoded in compose/scripts/config/skills in the same change.
 - Never mark an issue `ready` without checking for dupes first.
 - Verify before claiming: a deploy is live only after curl + BrowserMCP confirm it.
