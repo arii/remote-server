@@ -69,22 +69,49 @@ and promote to gating once green on both Ollama and cloud.
 
 ## RAG index
 
-`td rag query` reads the repo vector index; `deep-agent/retrieval.py`
-(`query_td_repo` / `search_td`) delegates to it, and the
-`search_docs` agent tool goes through the same path. The index is
-built and incrementally updated by commit SHA via `td rag index`
-(markdown-aware chunking), and `td init` refreshes it as part of
-worktree provisioning. The index covers repo docs plus
-Python/TS/TSX sources (`backend/`, tracked `deep-agent/` files,
-`frontend/src/`; tests, fixtures, venvs, `node_modules/`, `dist/`,
-`.td_rag/`, and `.worktrees/` are skipped). The index is a local
-runtime artifact: gitignored, never baked into images.
+Two paths exist — know which one you are debugging:
+
+- **Forward path (agents use this):** `td rag query` reads the repo
+  vector index at `<repo>/.td_rag/chroma_db`; `deep-agent/retrieval.py`
+  (`query_td_repo` / `search_td`) shells to it, and the `search_docs`
+  agent tool goes through the same path. Build/update by commit SHA
+  via `td rag index` (markdown-aware chunking); `td init` refreshes
+  it as part of worktree provisioning. Coverage: repo docs plus
+  Python/TS/TSX sources (`backend/`, tracked `deep-agent/` files,
+  `frontend/src/`; tests, fixtures, venvs, `node_modules/`, `dist/`,
+  `.td_rag/`, and `.worktrees/` are skipped). The index is a local
+  runtime artifact: gitignored, never baked into images.
+- **Legacy path:** `retrieval.get_retriever` over
+  `deep-agent/chroma_db` (built at buttons startup, `#562`/`#699`).
+  Superseded by the `td rag` path; `index_status()` may report
+  `failed` while agents still retrieve fine via `td rag`.
 
 Rebuild after docs or code change:
 
 ```
 td rag index --repo-root /srv/remote-server --json
 ```
+
+Requirements (both verified 2026-11-06): the `td` doing the
+index/query must ship the `rag` command (installed td 0.19.2+ does;
+the buttons image lagged on 0.19.1 without it — remote-server#1011),
+and `chromadb` + `sentence_transformers` must be importable where the
+command runs (the terminal venv lacks them: `td rag index` then
+reports chunk counts but persists nothing and queries come back
+empty — boomtick#1139 tracks failing loudly instead).
+
+## Model routing (replication notes)
+
+Auto stays local (Ollama `qwen3:8b`, no-think production default —
+`CHAT_THINK=1` re-enables thinking); explicit per-turn **Cloud**
+forces Nebius. Verified 2026-11-06: direct Ollama generate ~3 s,
+Ollama models present, Nebius `resolve_llm(prefer='nebius')` returns
+a spec after the Nemotron rate-card fix (#1009). One fail-closed rule
+to know: a single unrated metered ledger row blocks ALL Nebius calls
+— rate new models in `deep-agent/pricing.py` from the live Token
+Factory catalog (`GET /v1/models?verbose=true`). Chat
+`prefer=cloud` is the fast path for large tasks; local agentic loops
+are CPU-bound (multi-round, large context) with no auto-escalation.
 
 Buttons containers build the index at startup (#562, #699): the
 image carries no `chroma_db/` (dockerignored), and

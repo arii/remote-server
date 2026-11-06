@@ -11,8 +11,10 @@ Do NOT put secrets in here; the model router (`model_router.py`) and the
 ledger (`ledger.py`) own their own concerns.
 """
 
+import collections
 import html
 import ipaddress
+import json
 import os
 import re
 import shlex
@@ -114,6 +116,77 @@ def checkout_for(repo):
     if repo in CHECKOUTS:
         return CHECKOUTS[repo]
     return f"/srv/repos/{repo.split('/', 1)[1]}"
+
+
+def repo_for_checkout(path):
+    """Owner/name for a checkout path, or '' when unknown.
+
+    Inverse of checkout_for for agent tools that need the repo but
+    only know the checkout (bare names gain the arii/ owner prefix,
+    mirroring retrieval.normalize_repo).
+    """
+    if not isinstance(path, str) or not path:
+        return ""
+    for repo, root in CHECKOUTS.items():
+        if path == root or path.startswith(root.rstrip("/") + "/"):
+            return repo
+    parts = path.rstrip("/").split("/")
+    if len(parts) >= 2 and parts[-2] == "repos" and REPO_RE.match(
+            "arii/" + parts[-1]):
+        return "arii/" + parts[-1]
+    return ""
+
+
+PR_JSON_FIELDS = ("number,title,author,state,isDraft,url,"
+                  "reviewDecision,statusCheckRollup")
+
+
+def read_pr(number, repo, timeout=60):
+    """Read-only GitHub PR summary via gh. Never raises.
+
+    Private repos are invisible to keyless search_web, and td-based
+    PR reads need a project_config.json the checkout may not carry,
+    so chat agents read PRs through gh directly (auth comes from the
+    environment, same as lane tooling). Failures return
+    "PR_ERROR: <one-line reason>".
+    """
+    num = valid_number(number)
+    if num is None:
+        return "PR_ERROR: bad PR number"
+    text = repo.strip() if isinstance(repo, str) else ""
+    if text and "/" not in text:
+        text = "arii/" + text
+    if not valid_repo(text):
+        return "PR_ERROR: bad repo (want owner/name)"
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "view", str(num), "--repo", text,
+             "--json", PR_JSON_FIELDS],
+            capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"PR_ERROR: gh failed: {exc}"[:MAX_OUT]
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return f"PR_ERROR: {(err[0] if err else 'gh error')[:200]}"
+    try:
+        snap = json.loads(proc.stdout or "")
+    except (ValueError, TypeError):
+        return "PR_ERROR: gh returned non-JSON"
+    if not isinstance(snap, dict):
+        return "PR_ERROR: gh returned unexpected payload"
+    author = snap.get("author") or {}
+    checks = snap.get("statusCheckRollup") or []
+    states = collections.Counter(
+        str(c.get("conclusion") or c.get("status") or "?").upper()
+        for c in checks if isinstance(c, dict))
+    check_line = (", ".join(f"{k}:{v}" for k, v in sorted(states.items()))
+                  or "no checks")
+    line = (f"PR #{snap.get('number')} [{snap.get('state')}"
+            f"{' DRAFT' if snap.get('isDraft') else ''}] "
+            f"{snap.get('title')} by {(author.get('login') if isinstance(author, dict) else author) or '?'} "
+            f"review={snap.get('reviewDecision') or 'none'} "
+            f"checks=({check_line}) {snap.get('url') or ''}")
+    return line[:MAX_OUT]
 
 
 def run(argv, cwd=None, timeout=DEFAULT_TIMEOUT):
