@@ -28,11 +28,25 @@ describe('schedule pause/resume (issue #870)', () => {
       />,
     );
     expect(html).toContain('data-testid="jobs-schedule-pause"');
-    expect(html).toContain('>Pause schedule<');
+    expect(html).toContain('>Pause<');
     expect(html).toContain('data-testid="jobs-schedule-resume"');
-    expect(html).toContain('>Resume schedule<');
+    expect(html).toContain('>Resume<');
     expect(html).toContain('data-testid="jobs-schedule-paused"');
     expect(html).toContain('>Paused<');
+  });
+
+  it('names each toggle with its action and repo (#1002)', () => {
+    const html = renderToStaticMarkup(
+      <JobSchedulesSection
+        repo="remote-server"
+        draft={null}
+        initialSchedules={[mkSchedule({ id: 'aaa' })]}
+      />,
+    );
+    expect(html).toContain('aria-label="Pause schedule logs for remote-server"');
+    expect(html).toContain('aria-label="Disable schedule logs for remote-server"');
+    expect(html).not.toContain('>Pause schedule<');
+    expect(html).not.toContain('>Disable schedule<');
   });
 
   it('keeps the delete control beside the toggle', () => {

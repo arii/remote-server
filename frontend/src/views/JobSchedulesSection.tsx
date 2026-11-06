@@ -184,25 +184,28 @@ export default function JobSchedulesSection({
                   <button
                     type="button"
                     data-testid="jobs-schedule-resume"
+                    aria-label={`Resume schedule ${s.action} for ${s.repo}`}
                     onClick={() => void onResume(s.id)}
                   >
-                    Resume schedule
+                    Resume
                   </button>
                 ) : (
                   <button
                     type="button"
                     data-testid="jobs-schedule-pause"
+                    aria-label={`Pause schedule ${s.action} for ${s.repo}`}
                     onClick={() => void onPause(s.id)}
                   >
-                    Pause schedule
+                    Pause
                   </button>
                 )}{' '}
                 <button
                   type="button"
                   data-testid="jobs-schedule-disable"
+                  aria-label={`Disable schedule ${s.action} for ${s.repo}`}
                   onClick={() => void onDisable(s.id)}
                 >
-                  Disable schedule
+                  Disable
                 </button>
               </div>
             </li>

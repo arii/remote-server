@@ -47,6 +47,16 @@ describe('danger / system operations separation (issue #934)', () => {
     expect(html).not.toContain('UX audit');
   });
 
+  it('shows verb-only buttons with full names in aria (#1002)', () => {
+    const html = render(2, 1);
+    expect(html).toContain('>Merge</button>');
+    expect(html).toContain('>Redeploy</button>');
+    expect(html).toContain('>Restart</button>');
+    expect(html).toContain('>Take over</button>');
+    // The row heading keeps the full name; the button does not repeat it.
+    expect(html).toContain('aria-label="Merge approved PR (asks for confirmation)"');
+  });
+
   it('guards every disruptive action with a confirmation', () => {
     const html = render(2, 1);
     // TapToFire marks confirm-backed triggers in the accessible name.
