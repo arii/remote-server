@@ -73,8 +73,10 @@ echo "started $(date -u +%FT%TZ)" > "$BUILDING"
   done
   # Index the mounted live checkout, not the baked copy: /app has
   # no .git and goes stale on every deploy (BUTTONS_STACK doctrine
-  # in the Dockerfile).
-  if ! td rag index --repo-root "${BUTTONS_STACK:-$APP_ROOT}"; then
+  # in the Dockerfile). --full: this path runs only when no usable
+  # sqlite exists, so incremental state (stale SHA with wiped
+  # artifacts) must not no-op the build.
+  if ! td rag index --repo-root "${BUTTONS_STACK:-$APP_ROOT}" --full; then
     echo "buttons-entrypoint: ERROR: index build failed; queries degrade until the index is rebuilt" >&2
     echo "index build failed (see $LOG)" > "$FAILED"
     rm -f "$BUILDING"
