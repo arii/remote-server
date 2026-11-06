@@ -438,5 +438,94 @@ class InboxCacheTest(unittest.TestCase):
             N.webhook_pending.discard(repo)
 
 
+class SnoozeInvalidatesInboxTest(unittest.TestCase):
+    """Snooze sticks through the Now read path (issue #1010).
+
+    Now renders /api/inbox (SWR-cached), not /api/attention, so the
+    snooze/unsnooze endpoints must invalidate the cached feeds —
+    otherwise the card returns on refresh while the optimistic stub
+    is already reconciled away ("does nothing visible").
+    """
+
+    def setUp(self):
+        inbox._INBOX_CACHE.clear()
+        self._tmp = tempfile.mkdtemp()
+        self._old_path = os.environ.get("BUTTONS_SNOOZE_PATH")
+        os.environ["BUTTONS_SNOOZE_PATH"] = os.path.join(
+            self._tmp, "snooze.json")
+        from backend.api.routers import attention as attention_mod
+        self._attention = attention_mod
+        self._orig_attention = {}
+        for k, v in {
+            "get_workflow_health": lambda repo: {"workflows": []},
+            "list_failed_jobs": lambda: [
+                {"id": "j1", "name": "n", "state": "failed",
+                 "created_at": 1.0}],
+            "list_failed_webhooks": lambda: [],
+            "list_skipped_webhooks": lambda: [],
+            "list_pending_approvals": lambda: [],
+            "ollama_up": lambda: True,
+        }.items():
+            self._orig_attention[k] = getattr(attention_mod, k)
+            setattr(attention_mod, k, v)
+        self._orig_inbox = {}
+        for k, v in {
+            "list_open_prs": lambda repo: [],
+            "list_runs": lambda: [],
+            "list_repo_names": lambda: ["remote-server"],
+        }.items():
+            self._orig_inbox[k] = getattr(inbox, k)
+            setattr(inbox, k, v)
+
+    def tearDown(self):
+        for k, v in self._orig_attention.items():
+            setattr(self._attention, k, v)
+        for k, v in self._orig_inbox.items():
+            setattr(inbox, k, v)
+        inbox._INBOX_CACHE.clear()
+        if self._old_path is None:
+            os.environ.pop("BUTTONS_SNOOZE_PATH", None)
+        else:
+            os.environ["BUTTONS_SNOOZE_PATH"] = self._old_path
+
+    def _ids(self, body):
+        return [i["id"] for i in body["attention"]]
+
+    def test_snooze_hides_card_through_inbox_and_rollup(self):
+        attention_mod = self._attention
+        # First paint warms both the per-repo entry and the rollup.
+        self.assertEqual(
+            self._ids(inbox.inbox("remote-server")), ["job-j1"])
+        self.assertEqual(self._ids(inbox.inbox("all")), ["job-j1"])
+        # Operator clicks Dismiss (= snooze 480).
+        res = attention_mod.snooze_attention(
+            attention_mod.SnoozeRequest(
+                id="job-j1", minutes=480, repo="remote-server"))
+        self.assertTrue(res["ok"])
+        # The mutation drops the cached feeds so the refresh rebuilds.
+        self.assertIsNone(
+            inbox._INBOX_CACHE.peek("remote-server"))
+        self.assertIsNone(inbox._INBOX_CACHE.peek("all"))
+        self.assertEqual(
+            self._ids(inbox.inbox("remote-server")), [])
+        self.assertEqual(self._ids(inbox.inbox("all")), [])
+
+    def test_unsnooze_restores_card_through_inbox(self):
+        attention_mod = self._attention
+        attention_mod.snooze_attention(
+            attention_mod.SnoozeRequest(
+                id="job-j1", minutes=480, repo="remote-server"))
+        self.assertEqual(
+            self._ids(inbox.inbox("remote-server")), [])
+        res = attention_mod.unsnooze_attention(
+            attention_mod.UnsnoozeRequest(id="job-j1"))
+        self.assertTrue(res["ok"])
+        self.assertIsNone(
+            inbox._INBOX_CACHE.peek("remote-server"))
+        self.assertIsNone(inbox._INBOX_CACHE.peek("all"))
+        self.assertEqual(
+            self._ids(inbox.inbox("remote-server")), ["job-j1"])
+
+
 if __name__ == "__main__":
     unittest.main()

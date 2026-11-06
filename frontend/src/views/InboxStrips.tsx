@@ -58,6 +58,18 @@ export function StripsBulkBar({
 // shorter or mostly-vertical drags are taps/scrolls, untouched.
 export const SWIPE_ACT_PX = 64;
 
+// Busy-guard feedback (issue #1010): a swipe or undo landing while a
+// row update is in flight must surface a notice — silently dropping
+// it leaves the row reading dead. Null when idle (no notice).
+export const STRIPS_BUSY_NOTICE =
+  'A row update is already in progress — try again in a moment.';
+
+export function stripsBusyNotice(
+  busyOp: 'defer' | 'restore' | null,
+): string | null {
+  return busyOp === null ? null : STRIPS_BUSY_NOTICE;
+}
+
 // Pure swipe classifier so the gesture rule is unit-testable
 // without a touch device: dx/dy in CSS pixels from touchstart to
 // touchend. Null means "not a swipe" — leave the tap alone.
@@ -197,7 +209,11 @@ export default function InboxStrips({
   // right to open Review (primary action); deferred rows swipe
   // either way to restore.
   async function runSingle(op: 'defer' | 'restore', rows: RowRef[]) {
-    if (busyOp !== null) return;
+    const busyNotice = stripsBusyNotice(busyOp);
+    if (busyNotice) {
+      setError(busyNotice);
+      return;
+    }
     setError(null);
     setDone(null);
     setUndo(null);
@@ -214,7 +230,12 @@ export default function InboxStrips({
   }
 
   async function runUndo() {
-    if (!undo || busyOp !== null) return;
+    if (!undo) return;
+    const busyNotice = stripsBusyNotice(busyOp);
+    if (busyNotice) {
+      setError(busyNotice);
+      return;
+    }
     const back = undo.op === 'defer' ? 'restore' : 'defer';
     const rows = undo.rows;
     setError(null);

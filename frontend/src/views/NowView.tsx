@@ -99,6 +99,16 @@ export function nowPollMs(itemCount: number): number {
 // Attention snooze presets (issue #614), minutes. Server validates.
 export const SNOOZE_PRESETS = [60, 480];
 
+// Busy-guard feedback (issue #1010): a tap landing while a snooze is
+// in flight must surface a notice — silently dropping it leaves the
+// controls reading dead. Null when idle (no notice).
+export const SNOOZE_BUSY_NOTICE =
+  'A snooze is already in progress — try again in a moment.';
+
+export function snoozeBusyNotice(snoozeBusy: string | null): string | null {
+  return snoozeBusy === null ? null : SNOOZE_BUSY_NOTICE;
+}
+
 export function snoozePresetLabel(minutes: number): string {
   return minutes >= 60 ? `Snooze ${minutes / 60}h` : `Snooze ${minutes}m`;
 }
@@ -1311,7 +1321,11 @@ export default function NowView({
   }
 
   async function onSnooze(item: AttentionItem, minutes: number) {
-    if (snoozeBusy !== null) return;
+    const busyNotice = snoozeBusyNotice(snoozeBusy);
+    if (busyNotice) {
+      setError(busyNotice);
+      return;
+    }
     const optimisticUntil = Date.now() / 1000 + minutes * 60;
     setSnoozed((prev) => ({ ...prev, [item.id]: { until: optimisticUntil, title: item.title } }));
     setSnoozeBusy(item.id);
@@ -1334,7 +1348,11 @@ export default function NowView({
   }
 
   async function onUnsnooze(id: string) {
-    if (snoozeBusy !== null) return;
+    const busyNotice = snoozeBusyNotice(snoozeBusy);
+    if (busyNotice) {
+      setError(busyNotice);
+      return;
+    }
     setSnoozeBusy(id);
     try {
       await unsnoozeAttention(id);
@@ -1351,7 +1369,12 @@ export default function NowView({
   // row, then refresh once. A mid-loop failure keeps the stubs that
   // landed and reports; refresh reconciles the rest.
   async function onBulkSnooze(minutes: number) {
-    if (snoozeBusy !== null || !data) return;
+    if (!data) return;
+    const busyNotice = snoozeBusyNotice(snoozeBusy);
+    if (busyNotice) {
+      setError(busyNotice);
+      return;
+    }
     const targets = data.attention.filter((i) => bulkSelected.has(i.id));
     if (targets.length === 0) return;
     setSnoozeBusy('bulk');

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import InboxStrips, { SWIPE_ACT_PX, StripsBulkBar, swipeDirection } from './InboxStrips';
+import InboxStrips, {
+  STRIPS_BUSY_NOTICE,
+  stripsBusyNotice,
+  SWIPE_ACT_PX,
+  StripsBulkBar,
+  swipeDirection,
+} from './InboxStrips';
 import type { InboxFeed } from '../apiClient';
 import type { DeferredRow } from '../reviewTypes';
 
@@ -139,5 +145,17 @@ describe('inbox strips swipe classifier (issue #403)', () => {
     expect(html).toContain('data-testid="strips-row-pr-12"');
     expect(html).toContain('data-testid="strips-row-check-pr-12"');
     expect(html).toContain('aria-label="Select PR #12"');
+  });
+});
+
+describe('strips busy guard (issue #1010)', () => {
+  it('stays quiet when idle', () => {
+    expect(stripsBusyNotice(null)).toBeNull();
+  });
+
+  it('surfaces a visible notice while a row update is in flight', () => {
+    expect(stripsBusyNotice('defer')).toBe(STRIPS_BUSY_NOTICE);
+    expect(stripsBusyNotice('restore')).toBe(STRIPS_BUSY_NOTICE);
+    expect(STRIPS_BUSY_NOTICE.length).toBeGreaterThan(0);
   });
 });
