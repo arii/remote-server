@@ -21,6 +21,14 @@ class ViewerMountTest(unittest.TestCase):
         self.assertNotIn("__DEFAULT_URL__", resp.text)
         self.assertIn(browser_view.DEFAULT_URL, resp.text)
 
+    def test_default_url_is_neutral_not_console(self):
+        # Issue #1023: first paint must not recurse into Buttons
+        # itself — a neutral page paints immediately and reads
+        # sanely. https so no upgrade warning on first paint.
+        self.assertNotIn("caddy", browser_view.DEFAULT_URL)
+        self.assertTrue(
+            browser_view.DEFAULT_URL.startswith("https://"))
+
     def test_unknown_ws_path_closes(self):
         client = TestClient(browser_view.create_app())
         with self.assertRaises(WebSocketDisconnect):
