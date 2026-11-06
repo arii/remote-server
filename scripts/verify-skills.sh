@@ -75,7 +75,7 @@ do_verify() {
     checked=$((checked + 1))
     local file="$SKILLS_DIR/$name/SKILL.md"
     if [[ ! -f "$file" ]]; then
-      echo "MISSING  $name ($file not installed)" >&2
+      echo "MISSING  $name ($file not installed — fresh worktree? run bash scripts/provision-skills.sh first)" >&2
       failures=$((failures + 1))
       continue
     fi
