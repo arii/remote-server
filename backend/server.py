@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import agent, agents, attention, briefing, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import agent, agent_control, agents, attention, briefing, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEEP_AGENT = os.path.join(REPO_ROOT, "deep-agent")
@@ -48,6 +48,7 @@ async def _lifespan(app):
 app = FastAPI(title="remote-server backend", lifespan=_lifespan)
 
 app.include_router(agent.router)
+app.include_router(agent_control.router)
 app.include_router(agents.router)
 app.include_router(briefing.router)
 app.include_router(repo.router)

@@ -363,6 +363,31 @@ li.detail.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px va
 li.detail.kbd-focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Optimistic merge pending state: dim the row while the merge is in flight. */
 li.detail.merging { opacity: 0.55; }
+/* Co-browsing drawer (Issue 11): embedded browser frame with a
+   transparent takeover interceptor. Flat tokens only: no glow,
+   no glass, no emoji. The interceptor covers the frame while the
+   agent runs; the first pointer/key press pauses the agent, then
+   the overlay unmounts so the human drives the live page. */
+.cobrowse-frame-wrap { position: relative; margin: 0.5rem 0 0; }
+.cobrowse-frame-wrap iframe {
+  display: block;
+  width: 100%;
+  height: 26rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.cobrowse-takeover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.cobrowse-takeover:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Same dim while a review (approve / request-changes) is in flight. */
 li.detail.reviewing { opacity: 0.55; }
 

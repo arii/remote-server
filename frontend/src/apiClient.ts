@@ -1592,6 +1592,34 @@ export function fetchAgentProviders(): Promise<{
   );
 }
 
+export type AgentBrowserState = 'RUNNING' | 'PAUSED_BY_USER' | 'IDLE';
+
+export interface AgentBrowserStatus {
+  state: AgentBrowserState;
+  active_issue: number | null;
+  current_step: string;
+  requires_dom_refresh: boolean;
+  updated_at: number;
+}
+
+// Shared-browser control (follow_up Issue 11): direct fetchApi, NOT
+// the offline outbox. Pause/resume are real-time control signals —
+// queueing them would fire a stale takeover/resume on reconnect, so
+// they fail as today when offline.
+export function fetchAgentBrowserState(): Promise<AgentBrowserStatus> {
+  return getJson<AgentBrowserStatus>('api/agent/state');
+}
+
+export async function pauseAgentBrowser(): Promise<AgentBrowserStatus> {
+  const resp = await fetchApi('api/agent/pause', { method: 'POST' });
+  return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/pause');
+}
+
+export async function resumeAgentBrowser(): Promise<AgentBrowserStatus> {
+  const resp = await fetchApi('api/agent/resume', { method: 'POST' });
+  return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/resume');
+}
+
 export function postAgentTurn(
   provider: string,
   repo: string,
