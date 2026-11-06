@@ -221,6 +221,18 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertNotIn("crosshair", html)
         self.assertIn("cursor:default", html.replace(" ", ""))
 
+    def test_url_bar_submits_and_normalizes(self):
+        # Enter in the address box must take the same path as Go
+        # (form submit, not button click); bare hostnames ride
+        # https:// per normalizeUrl.
+        html = browser_view.VIEWER_HTML
+        self.assertIn('<form id="nav">', html)
+        self.assertIn('type="submit"', html)
+        self.assertIn("getElementById('nav').onsubmit", html)
+        self.assertNotIn("getElementById('go').onclick", html)
+        self.assertIn("function normalizeUrl(raw)", html)
+        self.assertIn("https://' + v", html)
+
 
 class ChromeFlagsTest(unittest.TestCase):
     def test_session_args_fallback_off_shm(self):

@@ -34,12 +34,12 @@ VIEWER_HTML = r"""<!doctype html>
 <style>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 #bar{display:flex;gap:8px;padding:8px;align-items:center}
+#nav{display:flex;gap:8px;flex:1}
 #url{flex:1;padding:6px}
 #stats{padding:0 8px 8px;font-size:13px;color:#9f9}
 #screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
 </style></head><body>
-<div id="bar"><input id="url" value="__DEFAULT_URL__">
-<button id="go">Go</button><span id="state">connecting…</span></div>
+<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address"><button id="go" type="submit">Go</button></form><span id="state">connecting…</span></div>
 <div id="stats">fps: - | last input→frame: - ms</div>
 <canvas id="screen"></canvas>
 <script>
@@ -93,8 +93,29 @@ cv.addEventListener('keydown', (e) => {
   e.preventDefault(); lastClick = performance.now();
   ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
 });
-document.getElementById('go').onclick = () =>
-  ws.send(JSON.stringify({t: 'go', url: document.getElementById('url').value}));
+function normalizeUrl(raw) {
+  // Chrome-omnibox-lite: trim first; keep explicit schemes and
+  // chrome pages; bare hostnames ride https://; bare host:port
+  // rides http:// (alt ports are near-always plain-http local
+  // services); spaced input is left for the engine to reject
+  // visibly rather than mangled here.
+  const v = (raw || '').trim();
+  if (!v || /\s/.test(v)) return v;
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/^(about|data|blob):/i.test(v)) return v;
+  if (/^[^/:?\s]+:\d+(\/|$|\?)/.test(v)) return 'http://' + v;
+  return 'https://' + v;
+}
+function go() {
+  const box = document.getElementById('url');
+  const url = normalizeUrl(box.value);
+  if (!url) return;
+  box.value = url;
+  ws.send(JSON.stringify({t: 'go', url}));
+}
+// Form submit (not button click) so Enter in the address box and
+// the Go button take the same path — keyboard and touch alike.
+document.getElementById('nav').onsubmit = (e) => { e.preventDefault(); go(); };
 </script></body></html>
 """
 
