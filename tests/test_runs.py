@@ -109,6 +109,18 @@ class TestRuns(unittest.TestCase):
             self.assertFalse(out[0]["has_prompt"])
             self.assertTrue(out[1]["has_prompt"])
 
+    def test_summary_prompt_first_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(extra={"prompt": "  fix the deploy\nsecond line"}),
+                _row(extra={}),
+                _row(extra={"prompt": "x" * 200}),
+            ])
+            out = runs.list_runs(ledger_path=path)
+            self.assertEqual(out[2]["prompt_first_line"], "fix the deploy")
+            self.assertEqual(out[1]["prompt_first_line"], "")
+            self.assertEqual(len(out[0]["prompt_first_line"]), 120)
+
     def test_summary_carries_recorded_cost(self):
         with tempfile.TemporaryDirectory() as d:
             path = self._ledger(d, [

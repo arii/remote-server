@@ -42,7 +42,7 @@ export function isKeyboardSend(e: {
 // Local only forces Ollama (fails instead of spending), Cloud
 // allowed forces Nebius for the turn.
 export const CHAT_BACKEND_OPTIONS: Array<{ value: ChatBackend; label: string }> = [
-  { value: 'auto', label: 'Auto' },
+  { value: 'auto', label: 'Auto (default)' },
   { value: 'local', label: 'Local only' },
   { value: 'cloud', label: 'Cloud allowed' },
 ];
@@ -734,6 +734,13 @@ export function TraceTimeline({
   );
 }
 
+// Row title fallback (#960): the recorded final preview first,
+// else the user's own first prompt line, else the bare run id —
+// never an empty slot or a lone id when words exist.
+export function runTitle(run: AgentRun): string {
+  return run.preview || run.prompt_first_line || run.id;
+}
+
 export function runMeta(run: AgentRun): string {
   const when = run.started_ts
     ? new Date(run.started_ts * 1000).toLocaleString()
@@ -1030,7 +1037,7 @@ export function RunsPane({
                       {shortRunRepo(r.repo)}
                     </span>
                   )}{' '}
-                  {r.preview || r.id}
+                  {runTitle(r)}
                 </span>{' '}
                 <span className="row-meta">
                   {r.id} · {runMeta(r)}
@@ -2384,7 +2391,7 @@ export default function ChatView({
       {messages.length === 0 && (
         <PromptChips disabled={streaming} onPick={(text, altKey) => onPickChip(text, altKey)} />
       )}
-      <form onSubmit={(e) => void onSend(e)}>
+      <form className="composer" onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
           Prompt{' '}
           <textarea
@@ -2577,6 +2584,7 @@ export default function ChatView({
       </form>
       </div>
       <aside className="chat-side" aria-label="Past runs and agent launcher">
+      <AgentDrawer repo={repo} />
       <RunsPane
         runs={runs}
         repo={repo}
@@ -2591,7 +2599,6 @@ export default function ChatView({
         notice={runsNotice}
         budget={budget}
       />
-      <AgentDrawer repo={repo} />
       </aside>
       </div>
     </section>

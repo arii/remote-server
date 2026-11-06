@@ -16,6 +16,7 @@ function turn(over: Partial<AgentRun> = {}): AgentRun {
     tools: [],
     tokens: 1500,
     preview: 'did the thing',
+    prompt_first_line: '',
     has_prompt: true,
     cost_usd: null,
     metered: false,

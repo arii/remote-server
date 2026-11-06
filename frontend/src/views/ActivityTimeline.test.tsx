@@ -19,7 +19,7 @@ describe('activity timeline (issue #812)', () => {
         id: 't1', script: 'muse', model: 'qwen3:8b', provider: 'ollama', thread: 'th1',
         repo: 'arii/boomtick',
         started_ts: 300, duration_s: 12, ok: true, tools: [], tokens: 1500,
-        preview: 'did the thing', has_prompt: true, cost_usd: null, metered: false,
+        preview: 'did the thing', prompt_first_line: '', has_prompt: true, cost_usd: null, metered: false,
       }],
       [{ kind: 'webhook', event: 'webhook pull ok', at: 200, ok: true }],
       [{ kind: 'pr-action', event: 'merge: PR #5 merged', ts: 400 }],
