@@ -177,6 +177,22 @@ function BoardSection({
 // Board chip text: branch names run to 50+ chars and wrap the
 // chip row, so over-long chips truncate with the full text kept
 // in the title. Short chips render verbatim (no title needed).
+// Retry busy state (issue #1070): disable the trigger with a label
+// swap until the fetch settles — no unbounded re-taps. Pure props
+// so the disabled/label contract is unit-tested.
+export function BriefingRetryButton({ retrying, onRetry }: { retrying: boolean; onRetry: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="briefing-retry"
+      disabled={retrying}
+      onClick={onRetry}
+    >
+      {retrying ? 'Retrying…' : 'Retry'}
+    </button>
+  );
+}
+
 export function truncateChip(text: string, max: number = 32): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
@@ -1170,6 +1186,9 @@ export default function BriefingView({
   const [genTries, setGenTries] = useState(0);
   const [genError, setGenError] = useState<string | null>(null);
   const [slowLoad, setSlowLoad] = useState(false);
+  // Retry busy state (issue #1070): disable the trigger with a
+  // label swap until the fetch settles — no unbounded re-taps.
+  const [retrying, setRetrying] = useState(false);
   useEffect(() => {
     setStaleTries(0);
     setGenBase(null);
@@ -1178,11 +1197,15 @@ export default function BriefingView({
   }, [repo]);
 
   async function load() {
+    if (retrying) return;
+    setRetrying(true);
     setError(null);
     try {
       setData(await fetchBriefing(repo));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -1342,9 +1365,7 @@ export default function BriefingView({
         </div>
         {error && (
           <div className="actions">
-            <button type="button" data-testid="briefing-retry" onClick={() => void load()}>
-              Retry
-            </button>
+            <BriefingRetryButton retrying={retrying} onRetry={() => void load()} />
           </div>
         )}
       </header>

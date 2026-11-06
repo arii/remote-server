@@ -63,6 +63,22 @@ function labelOf(j: JobRecord): string {
 // scale. Pure helper so the truncation boundary is unit-tested.
 const JOB_ROW_NOTE_CHARS = 160;
 
+// Re-entry guard (issue #1070): drops overlapping invocations while
+// one is in flight (repair/triage/danger double-taps, poll ticks).
+// Pure factory so the absorb-then-release contract is unit-tested.
+export function createReentryGuard(): (fn: () => Promise<void>) => Promise<void> {
+  let inflight = false;
+  return async (fn: () => Promise<void>) => {
+    if (inflight) return;
+    inflight = true;
+    try {
+      await fn();
+    } finally {
+      inflight = false;
+    }
+  };
+}
+
 export function excerptJobNote(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim();
   if (clean.length <= JOB_ROW_NOTE_CHARS) return clean;
@@ -934,10 +950,15 @@ export default function JobsView({
   // inline with the action that caused them, never silent and
   // never mislabeled as a load error. Callers pass the verb phrase
   // for their action; the default keeps today's load copy.
+  // Re-entry guard (issue #1070): a slow in-flight call absorbs
+  // rapid re-taps (repair/triage/danger double-dispatch) and
+  // overlapping poll ticks instead of running them twice.
+  const guardRef = useRef<ReturnType<typeof createReentryGuard> | null>(null);
+  if (!guardRef.current) guardRef.current = createReentryGuard();
   async function guarded(fn: () => Promise<void>, action = 'load jobs') {
     setError(null);
     try {
-      await fn();
+      await guardRef.current!(fn);
     } catch (err) {
       setError(`Couldn't ${action}: ${err instanceof Error ? err.message : String(err)}`);
     }

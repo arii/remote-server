@@ -454,10 +454,13 @@ services:
       # to a user-supplied --user-data-dir, unlike the image wrapper
       # flag which its temp dir overrides). Single session => no lock
       # contention.
-      # Keep the head alive between runs (default 300s idle kill looks
-      # like a crash to a watching human). Leaked sessions wedge the
-      # single slot longer: DELETE /session/<id> to free it.
-      - SE_NODE_SESSION_TIMEOUT=3600
+      # Idle reap (issue #1054): 10 minutes, not an hour. A leaked
+      # session wedged the single slot ~1hr; agent runs issue
+      # commands continuously so only truly idle sessions die, and
+      # the viewer transparently creates a new one on next connect
+      # (browser_view refcounted shared session). Watched-idle heads
+      # still survive 10x longer than the 300s Grid default.
+      - SE_NODE_SESSION_TIMEOUT=600
     logging: *default-logging
 
   # Browser-based VS Code: code-server.
