@@ -813,6 +813,7 @@ export default function App() {
           browserState={agentBrowser?.state ?? 'IDLE'}
           currentStep={agentBrowser?.current_step || null}
           iframeSrc={`${stackBase()}/cdp-stream/`}
+          repo={repo}
           error={browserError}
           onResume={() => void onResumeBrowser()}
           onClose={() => setBrowserOpen(false)}

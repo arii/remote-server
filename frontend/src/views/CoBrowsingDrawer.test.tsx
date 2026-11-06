@@ -8,6 +8,7 @@ function renderDrawer(over: Record<string, unknown> = {}): string {
       browserState="IDLE"
       currentStep={null}
       iframeSrc="/cdp-stream/"
+      repo="remote-server"
       error={null}
       onResume={() => {}}
       onClose={() => {}}
@@ -45,5 +46,12 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     const html = renderDrawer({ error: 'boom' });
     expect(html).toContain('data-testid="cobrowse-error"');
     expect(html).toContain('data-testid="cobrowse-frame"');
+  });
+
+  it('gives the browser full height with chat in the side rail', () => {
+    const html = renderDrawer({});
+    expect(html).toContain('data-testid="chat-view"');
+    expect(html).toContain('cobrowse-split');
+    expect(html).toContain('cobrowse-chat');
   });
 });
