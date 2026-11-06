@@ -56,7 +56,7 @@ class ReattachTest(unittest.TestCase):
             return {}
 
         bridge.call = fake_call
-        asyncio.get_event_loop().run_until_complete(bridge.reattach())
+        asyncio.run(bridge.reattach())
         self.assertEqual(bridge.cdp_session, "S9")
         attach = [c for c in calls
                   if c[0] == "Target.attachToTarget"]
