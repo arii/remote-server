@@ -28,6 +28,46 @@ APPROVED = "APPROVED"
 CHANGES_REQUESTED = "CHANGES_REQUESTED"
 BLOCKED = "BLOCKED_DETERMINISTIC"
 
+AGENT_PAUSED = "PAUSED_BY_USER"
+
+
+def control_state_path():
+    """Co-browsing state file shared with the backend agent_control
+    router (AGENT_CONTROL_STATE_FILE overrides the default)."""
+    return os.environ.get(
+        "AGENT_CONTROL_STATE_FILE", "/tmp/agent_control_state.json")
+
+
+def read_pause_state(path=None):
+    """Return (paused, requires_refresh); missing/corrupt files mean
+    "not paused" so a deleted or half-written state never wedges a run."""
+    try:
+        with open(path or control_state_path(),
+                   encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return False, False
+    if not isinstance(data, dict):
+        return False, False
+    return (data.get("state") == AGENT_PAUSED,
+            bool(data.get("requires_dom_refresh")))
+
+
+def clear_refresh_flag(path=None):
+    """Best-effort reset of requires_dom_refresh after resumption."""
+    target = path or control_state_path()
+    try:
+        with open(target, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict) or not data.get(
+                "requires_dom_refresh"):
+            return
+        data["requires_dom_refresh"] = False
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+    except Exception:
+        pass
+
 
 def run_td(argv, cwd=None, timeout=300):
     """Run the td CLI; returns (returncode, stdout). Never raises."""
@@ -249,6 +289,31 @@ class Pipeline:
             return False, out[:300]
         return True, ""
 
+    def _await_if_paused(self, poll_s=0.5, timeout_s=None):
+        """Block while a human has taken over the shared browser head.
+
+        The pause signal comes from POST /api/agent/pause (first
+        pointerdown/keydown on the co-browsing canvas). No browser
+        mutations run until resume. On resume the refresh flag is
+        cleared; no snapshot is captured here because this layer holds
+        no element references -- stage_audit re-gathers impact fresh
+        on the post-takeover DOM. Raises TimeoutError when timeout_s
+        expires while still paused.
+        """
+        start = time.time()
+        paused, _refresh = read_pause_state()
+        while paused:
+            if timeout_s is not None and time.time() - start > timeout_s:
+                raise TimeoutError("agent still paused by user")
+            self.log("paused", "manual takeover active; standing by")
+            time.sleep(poll_s)
+            paused, _refresh = read_pause_state()
+        _paused, refresh = read_pause_state()
+        if refresh:
+            clear_refresh_flag()
+            self.log("resumed",
+                     "post-takeover state accepted; continuing")
+
     def run(self):
         """Execute all stages; returns a result dict (never raises)."""
         started = time.time()
@@ -278,6 +343,7 @@ class Pipeline:
         worktree = ""
         audit_cycles = 0
         while True:
+            self._await_if_paused()
             ok, _code_state, worktree = self.stage_code(
                 spec, worktree_root=worktree or None,
                 repair_notes=detail if audit_cycles else "")
@@ -288,6 +354,7 @@ class Pipeline:
                 return self._result(BLOCKED, worktree, reason,
                                     audit_cycles, started)
             self.log("code", f"worktree={worktree}")
+            self._await_if_paused()
             status, _audit_state, detail = self.stage_audit(worktree)
             if status == APPROVED:
                 self.log("audit", "APPROVED")

@@ -11,6 +11,7 @@ import {
   fetchContainerStats,
   fetchDispatchQueue,
   fetchInbox,
+  fetchAgentBrowserState,
   fetchJobs,
   fetchLedger,
   fetchPrs,
@@ -18,6 +19,8 @@ import {
   fetchRepos,
   fetchSystemHealth,
   flushOutbox,
+  pauseAgentBrowser,
+  resumeAgentBrowser,
   prefetchTabPayloads,
   repoAction,
   restartContainer,
@@ -25,7 +28,13 @@ import {
   subscribeApiFailures,
   warmRepoMetrics,
 } from './apiClient';
-import type { ContainerStatsRow, RepoAction, RepoActionResponse, SystemHealthResponse } from './apiClient';
+import type {
+  AgentBrowserStatus,
+  ContainerStatsRow,
+  RepoAction,
+  RepoActionResponse,
+  SystemHealthResponse,
+} from './apiClient';
 import type { RepoInfo } from './reviewTypes';
 import {
   loadContainerStats,
@@ -53,6 +62,7 @@ import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
 import ContainerLogsDrawer from './views/ContainerLogsDrawer';
+import CoBrowsingDrawer from './views/CoBrowsingDrawer';
 import { dangerEntryFor } from './views/DangerZone';
 import { clickChatSend, useAppShortcuts } from './shortcuts';
 import { ShortcutCheatsheet, ShortcutHint } from './components/ShortcutCheatsheet';
@@ -66,6 +76,10 @@ function stackBase(): string {
 // Header health revalidation cadence (issue #588): slow enough to
 // never storm, fast enough that outages surface within a minute.
 export const HEALTH_POLL_MS = 60_000;
+// Shared-browser agent-state poll while the drawer is open
+// (follow_up Issue 11): takeover must pause the agent within a
+// couple of seconds in both directions.
+export const BROWSER_POLL_MS = 2_000;
 
 // Single-in-flight async trigger: concurrent calls collapse into
 // the in-flight run, so failure bursts can't stack refreshes. The
@@ -203,6 +217,12 @@ export default function App() {
   // Log slide-over selection (issue #928): which container's tail
   // is open atop the stats drawer, if any.
   const [logService, setLogService] = useState<string | null>(null);
+  // Shared browser drawer (follow_up Issue 11): embedded
+  // browserless head with takeover interception. Polls the agent
+  // control API while open; pause/resume POST there too.
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [agentBrowser, setAgentBrowser] = useState<AgentBrowserStatus | null>(null);
+  const [browserError, setBrowserError] = useState<string | null>(null);
   // Cross-tab feed filter (issue #931): a container pill in Now or
   // the Status drawer navigates to History pre-filtered.
   const [historyFilter, setHistoryFilter] = useState<HistoryFilterRequest | null>(null);
@@ -237,7 +257,7 @@ export default function App() {
   // subscription, so the chord can never double-fire.
   const [helpOpen, setHelpOpen] = useState(false);
   useAppShortcuts({
-    suspended: diffRepo !== null || statsOpen,
+    suspended: diffRepo !== null || statsOpen || browserOpen,
     helpOpen,
     onTab: setTab,
     onSend: () => clickChatSend(),
@@ -486,6 +506,61 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statsOpen, statsSeq, health]);
 
+  // Agent control poll while the browser drawer is open. Point-in-time
+  // status, not a stream: open + 2s cadence only.
+  useEffect(() => {
+    if (!browserOpen) return;
+    let cancelled = false;
+    setBrowserError(null);
+    const applyState = (status: AgentBrowserStatus) => {
+      if (cancelled) return;
+      setAgentBrowser(status);
+      setBrowserError(null);
+    };
+    const failState = (err: unknown) => {
+      if (!cancelled) setBrowserError(err instanceof Error ? err.message : String(err));
+    };
+    if (useMock()) {
+      setAgentBrowser({
+        state: 'IDLE',
+        active_issue: null,
+        current_step: '',
+        requires_dom_refresh: false,
+        updated_at: 0,
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    void fetchAgentBrowserState().then(applyState, failState);
+    const timer = window.setInterval(() => {
+      void fetchAgentBrowserState().then(applyState, failState);
+    }, BROWSER_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [browserOpen]);
+
+  async function onPauseBrowser(): Promise<void> {
+    setBrowserError(null);
+    try {
+      setAgentBrowser(await pauseAgentBrowser());
+    } catch (err) {
+      setBrowserError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onResumeBrowser(): Promise<void> {
+    setBrowserError(null);
+    try {
+      setAgentBrowser(await resumeAgentBrowser());
+    } catch (err) {
+      setBrowserError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function onRestartContainer(action: string) {
     // Same engine path + confirm text as DangerZone restarts; the
     // drawer only offers actions with a DangerZone entry.
@@ -685,6 +760,14 @@ export default function App() {
         <a data-testid="tool-code" href={`${stackBase()}/code`}>
           Code
         </a>
+        <button
+          type="button"
+          data-testid="tool-browser"
+          title="Open shared browser"
+          onClick={() => setBrowserOpen(true)}
+        >
+          Browser
+        </button>
       </header>
       <nav className="topnav" aria-label="Views">
         {NAV_ENTRIES.filter((t) => t.kind === 'tab').map((t) => (
@@ -733,6 +816,17 @@ export default function App() {
           onFilterHistory={openHistoryFilter}
           onRefresh={() => setStatsSeq((n) => n + 1)}
           onClose={closeStats}
+        />
+      )}
+      {browserOpen && (
+        <CoBrowsingDrawer
+          browserState={agentBrowser?.state ?? 'IDLE'}
+          currentStep={agentBrowser?.current_step || null}
+          iframeSrc={`${stackBase()}/browser/debugger/`}
+          error={browserError}
+          onPause={() => void onPauseBrowser()}
+          onResume={() => void onResumeBrowser()}
+          onClose={() => setBrowserOpen(false)}
         />
       )}
       {statsOpen && logService && (
