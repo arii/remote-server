@@ -989,6 +989,28 @@ export interface IssueLabelOp {
 // form with repo-label typeahead. Server errors surface inline
 // with retry; the parent refreshes the row on success. Accessible
 // names carry kind + number like RowActionButton (#569).
+//
+// Readability cap (#1012): at most MAX_VISIBLE_LABELS chips render
+// inline with a "+N more" expander; remove-button testids keep
+// absolute indices so automation does not shift when collapsed.
+// Suggestions are capped too — the native datalist already filters
+// as you type, the cap only bounds the DOM.
+export const MAX_VISIBLE_LABELS = 3;
+export const MAX_LABEL_SUGGESTIONS = 100;
+
+export function splitLabelNames(
+  names: string[],
+  expanded: boolean,
+): { visible: Array<{ name: string; index: number }>; hiddenCount: number } {
+  const indexed = names.map((name, index) => ({ name, index }));
+  if (expanded || names.length <= MAX_VISIBLE_LABELS) {
+    return { visible: indexed, hiddenCount: 0 };
+  }
+  return {
+    visible: indexed.slice(0, MAX_VISIBLE_LABELS),
+    hiddenCount: names.length - MAX_VISIBLE_LABELS,
+  };
+}
 export function IssueRowLabels({
   issue,
   repoLabels,
@@ -1013,17 +1035,19 @@ export function IssueRowLabels({
   const [open, setOpen] = useState(initialOpen);
   const [draft, setDraft] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
+  const [labelsExpanded, setLabelsExpanded] = useState(false);
   const n = issue.number;
   const names = issueLabelNames(issue.labels);
   const busy = pending !== null;
+  const { visible: visibleLabels, hiddenCount } = splitLabelNames(names, labelsExpanded);
   return (
     <>
       <p className="row-meta" data-testid={`issue-labels-${n}`}>
         {names.length === 0
           ? 'no labels'
-          : names.map((name, i) => (
+          : visibleLabels.map(({ name, index: i }, vi) => (
               <span key={`${name}-${i}`}>
-                {i > 0 ? ', ' : ''}
+                {vi > 0 ? ', ' : ''}
                 {name}{' '}
                 <button
                   type="button"
@@ -1036,6 +1060,25 @@ export function IssueRowLabels({
                 </button>
               </span>
             ))}
+        {(hiddenCount > 0 || labelsExpanded) &&
+          names.length > MAX_VISIBLE_LABELS && (
+            <>
+              {', '}
+              <button
+                type="button"
+                data-testid={`labels-more-${n}`}
+                aria-expanded={labelsExpanded}
+                aria-label={
+                  labelsExpanded
+                    ? `Show fewer labels on issue #${n}`
+                    : `Show ${hiddenCount} more labels on issue #${n}`
+                }
+                onClick={() => setLabelsExpanded((v) => !v)}
+              >
+                {labelsExpanded ? 'show less' : `+${hiddenCount} more`}
+              </button>
+            </>
+          )}
       </p>
       <button
         type="button"
@@ -1073,7 +1116,7 @@ export function IssueRowLabels({
             onChange={(e) => setDraft(e.target.value)}
           />
           <datalist id={`label-suggestions-${n}`} data-testid={`label-suggestions-${n}`}>
-            {repoLabels.map((name) => (
+            {repoLabels.slice(0, MAX_LABEL_SUGGESTIONS).map((name) => (
               <option key={name} value={name} />
             ))}
           </datalist>{' '}

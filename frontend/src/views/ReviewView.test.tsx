@@ -32,6 +32,7 @@ import ReviewView, {
   bulkApproveNotice,
   bulkApproveSkippedNote,
   bulkDeferNotice,
+  splitLabelNames,
   planBulkApprove,
   bulkRestoreNotice,
   bulkRowKey,
@@ -635,6 +636,62 @@ describe('issue row labels', () => {
     expect(html).toContain('data-testid="label-suggestions-7"');
     expect(html).toContain('<option value="audit"');
     expect(html).toContain('<option value="ready"');
+  });
+
+  it('caps inline chips at three with a +N more expander', () => {
+    const html = renderLabels({
+      number: 7,
+      title: 'T',
+      labels: ['a', 'b', 'c', 'd', 'e'],
+    });
+    expect(html).toContain('data-testid="label-remove-7-0"');
+    expect(html).toContain('data-testid="label-remove-7-2"');
+    expect(html).not.toContain('data-testid="label-remove-7-3"');
+    expect(html).toContain('data-testid="labels-more-7"');
+    expect(html).toContain('+2 more');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('keeps every chip inline at or under the cap', () => {
+    const html = renderLabels({
+      number: 7,
+      title: 'T',
+      labels: ['a', 'b', 'c'],
+    });
+    expect(html).toContain('data-testid="label-remove-7-2"');
+    expect(html).not.toContain('labels-more-7');
+  });
+
+  it('caps the suggestion list', () => {
+    const many = Array.from({ length: 150 }, (_, i) => `tag-${i}`);
+    const html = renderLabels(
+      { number: 7, title: 'T', labels: [] },
+      { initialOpen: true, repoLabels: many },
+    );
+    expect(html).toContain('<option value="tag-99"');
+    expect(html).not.toContain('<option value="tag-100"');
+  });
+
+  it('splits label names with absolute indices', () => {
+    expect(splitLabelNames(['a', 'b', 'c'], false)).toEqual({
+      visible: [
+        { name: 'a', index: 0 },
+        { name: 'b', index: 1 },
+        { name: 'c', index: 2 },
+      ],
+      hiddenCount: 0,
+    });
+    expect(splitLabelNames(['a', 'b', 'c', 'd'], false)).toEqual({
+      visible: [
+        { name: 'a', index: 0 },
+        { name: 'b', index: 1 },
+        { name: 'c', index: 2 },
+      ],
+      hiddenCount: 1,
+    });
+    expect(
+      splitLabelNames(['a', 'b', 'c', 'd'], true).hiddenCount,
+    ).toBe(0);
   });
 
   it('surfaces errors inline with retry', () => {

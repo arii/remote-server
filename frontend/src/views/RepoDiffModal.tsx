@@ -258,6 +258,7 @@ export default function RepoDiffModal({
   const [discardArmed, setDiscardArmed] = useState(false);
   const [syncArmed, setSyncArmed] = useState(false);
   const [openFiles, setOpenFiles] = useState<Set<string>>(() => new Set());
+  const [filter, setFilter] = useState('');
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
@@ -265,9 +266,12 @@ export default function RepoDiffModal({
 
   // Modal chrome (issue #942): focus lands on Close, Tab cycles
   // inside the panel, Escape closes, and focus returns to the
-  // control that opened the modal on unmount.
+  // control that opened the modal on unmount. The open modal also
+  // locks page scroll (#1018) so the page behind stays put.
   useEffect(() => {
     const prev = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    const prevOverflow = typeof document === 'undefined' ? '' : document.body.style.overflow;
+    if (typeof document !== 'undefined') document.body.style.overflow = 'hidden';
     closeRef.current?.focus();
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -301,6 +305,7 @@ export default function RepoDiffModal({
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
+      if (typeof document !== 'undefined') document.body.style.overflow = prevOverflow;
       prev?.focus?.();
     };
   }, []);
@@ -351,7 +356,18 @@ export default function RepoDiffModal({
     if (!chunkPaths.has(f.path)) sections.push({ path: f.path, body: null, file: f });
   }
   const sectionIdByPath = new Map(sections.map((s, i) => [s.path, `repo-diff-section-${i}`]));
-  const groups = data ? groupDiffFiles(data.files) : [];
+  // Single filterable file list (#1018): the query narrows both the
+  // jump chips and the per-file stack, so a 19-file dialog collapses
+  // to what matches. Jump chips stay for small lists (navigation
+  // without typing); large unfiltered lists show sections only, so
+  // file names no longer render twice.
+  const q = filter.trim().toLowerCase();
+  const matches = (p: string) =>
+    !q || p.toLowerCase().includes(q);
+  const visibleSections = sections.filter((s) => matches(s.path));
+  const jumpFiles = (data?.files ?? []).filter((f) => matches(f.path));
+  const groups = groupDiffFiles(
+    q || (data?.files.length ?? 0) <= 8 ? jumpFiles : []);
   const actionsOff = !data || !!error || busy !== null;
 
   function jumpToFile(path: string) {
@@ -395,10 +411,24 @@ export default function RepoDiffModal({
         {!error && data && (
           <>
             <p className="row-meta">
-              Changed files ({data.files.length}
+              Changed files (
+              {q
+                ? `${visibleSections.length} of ${data.files.length}`
+                : data.files.length}
               {data.filesTruncated ? '+, showing first' : ''})
             </p>
-            {data.files.length > 0 ? (
+            <p className="row-meta">
+              <label htmlFor="repo-diff-filter">Filter files</label>{' '}
+              <input
+                id="repo-diff-filter"
+                data-testid="repo-diff-filter"
+                type="search"
+                placeholder="e.g. inbox"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+            </p>
+            {data.files.length > 0 && groups.length > 0 ? (
               <div data-testid="repo-diff-files">
                 {groups.map((g) => (
                   <div key={g.key} data-testid={`repo-diff-group-${g.key}`}>
@@ -432,11 +462,11 @@ export default function RepoDiffModal({
                   </div>
                 ))}
               </div>
-            ) : (
+            ) : data.files.length === 0 ? (
               <pre className="row-meta" data-testid="repo-diff-status">
                 (clean)
               </pre>
-            )}
+            ) : null}
             {data.files.length > 0 && (
               <details data-testid="repo-diff-raw-wrap">
                 <summary className="row-meta">
@@ -452,14 +482,15 @@ export default function RepoDiffModal({
                 )}
               </details>
             )}
-            {sections.length > 0 && (
+            {visibleSections.length > 0 && (
               <>
                 <p className="row-meta">Per-file diffs</p>
                 <div className="actions">
                   <button
                     type="button"
                     data-testid="repo-diff-expand-all"
-                    onClick={() => setOpenFiles(new Set(sections.map((s) => s.path)))}
+                    onClick={() => setOpenFiles(
+                      new Set(visibleSections.map((s) => s.path)))}
                   >
                     Expand all
                   </button>
@@ -472,7 +503,7 @@ export default function RepoDiffModal({
                   </button>
                 </div>
                 <div data-testid="repo-diff-per-file">
-                  {sections.map((s) => {
+                  {visibleSections.map((s) => {
                     const hit = s.file;
                     const countNote =
                       hit && (hit.additions > 0 || hit.deletions > 0)

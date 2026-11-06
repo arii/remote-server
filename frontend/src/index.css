@@ -798,7 +798,7 @@ a.link-chip:hover { border-color: var(--accent); }
   position: fixed;
   inset: 0;
   z-index: 55;
-  background: rgba(3, 7, 18, 0.32);
+  background: rgba(3, 7, 18, 0.55);
   display: flex;
   justify-content: center;
   align-items: flex-start;
