@@ -61,9 +61,19 @@ def _env(name, default=""):
     return val
 
 
+def _ollama_base(base_url=None):
+    """Bare Ollama host: OLLAMA_URL ships with the /api/generate
+    path in compose, so strip it (same convention as
+    backend/repair_worker.py and the briefing router)."""
+    base = (base_url or _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)).strip().rstrip("/")
+    if base.lower().endswith("/api/generate"):
+        base = base[: -len("/api/generate")]
+    return base
+
+
 def ollama_reachable(base_url=None, timeout=5):
     """True when the Ollama API answers, False on any failure."""
-    base = (base_url or _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)).rstrip("/")
+    base = _ollama_base(base_url)
     try:
         with urllib.request.urlopen(base + "/api/tags", timeout=timeout) as res:
             return res.status == 200
@@ -75,7 +85,7 @@ def _ollama_spec():
     return {
         "provider": "ollama",
         "model": _env("ASK_MODEL", DEFAULT_OLLAMA_MODEL),
-        "base_url": _env("OLLAMA_URL", DEFAULT_OLLAMA_URL),
+        "base_url": _ollama_base(),
     }
 
 
