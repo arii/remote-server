@@ -20,10 +20,17 @@ import urllib.request
 
 GRID_BASE = "http://browser:4444"
 VIEWPORT = {"width": 1280, "height": 800}
-# Device pixels per CSS pixel. Screencast frames arrive at
-# width*DSF; the viewer divides pointer coords by DSF so CDP input
-# (CSS viewport space) lands where the human clicked.
-DSF = 2
+# Requested device pixels per CSS pixel. This MUST be 1: the
+# viewer maps pointer coords as frame_px / advertised_dsf, which
+# only lands when frames equal CSS px in every world — override
+# applied (1280x800 view, DSF 1), override ignored (default 800x600
+# view, DSF 1). DSF=2 was tried and measured broken live: frames
+# arrived 1280px while the client divided by 2, so every click
+# landed at half coords (quadrant probe HIT_B=Q1). Crispness via
+# device pixels is sacrificed for a mapping that cannot be wrong;
+# the bridge still measures window.devicePixelRatio per attach and
+# advertises THAT (plus sizes the screencast from it) as backstop.
+DSF = 1
 
 # Start page for fresh viewer sessions (also the URL-box default).
 # A new tab never repaints, so without an initial navigation the
@@ -47,53 +54,75 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 <canvas id="screen"></canvas>
 <script>
 const base = location.pathname.replace(/\/$/, '');
-const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws');
+const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
+// Auto-reconnect: deploys and Grid restarts drop the socket, and a
+// dead socket silently eats clicks — so a close re-dials after a
+// beat instead of stranding the canvas. Sends are guarded on
+// readyState so input during the gap is dropped, never thrown.
 const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
 cv.tabIndex = 0;
 const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
 let dsf = 1;
-ws.onopen = () => document.getElementById('state').textContent = 'live';
-ws.onmessage = (ev) => {
-  const m = JSON.parse(ev.data);
-  if (m.type === 'attached') {
-    dsf = m.dsf || 1;
-    const label = m.kind === 'agent' ? 'shared agent session '
-      : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
-    document.getElementById('state').textContent = label + m.session;
-    return;
-  }
-  if (m.type === 'status' || m.type === 'reattached') {
-    document.getElementById('state').textContent = m.msg || m.type;
-    return;
-  }
-  if (m.type === 'error') {
-    document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
-    return;
-  }
-  if (m.type === 'frame') {
-    img.onload = () => {
-      if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
-      ctx.drawImage(img, 0, 0); frames++;
-      const el = (performance.now() - t0) / 1000;
-      if (el >= 2) {
-        document.querySelector('#stats').textContent =
-          'fps: ' + (frames / el).toFixed(1) +
-          ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
-      }
-      URL.revokeObjectURL(img.src);
-    };
-    img.src = URL.createObjectURL(new Blob(
-      [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
-  }
-};
+let ws = null;
+let reconnectTimer = 0;
+function sendable() { return ws && ws.readyState === 1; }
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => {
+    document.getElementById('state').textContent = 'live';
+    frames = 0; t0 = performance.now();
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
+    if (m.type === 'attached') {
+      dsf = m.dsf || 1;
+      const label = m.kind === 'agent' ? 'shared agent session '
+        : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
+      document.getElementById('state').textContent = label + m.session;
+      return;
+    }
+    if (m.type === 'status' || m.type === 'reattached') {
+      document.getElementById('state').textContent = m.msg || m.type;
+      return;
+    }
+    if (m.type === 'error') {
+      document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
+      return;
+    }
+    if (m.type === 'frame') {
+      img.onload = () => {
+        if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
+        ctx.drawImage(img, 0, 0); frames++;
+        const el = (performance.now() - t0) / 1000;
+        if (el >= 2) {
+          document.querySelector('#stats').textContent =
+            'fps: ' + (frames / el).toFixed(1) +
+            ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
+        }
+        URL.revokeObjectURL(img.src);
+      };
+      img.src = URL.createObjectURL(new Blob(
+        [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
+    }
+  };
+  ws.onclose = () => {
+    document.getElementById('state').textContent = 'reconnecting…';
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+}
+connect();
 function pos(e) {
   const r = cv.getBoundingClientRect();
   // Canvas backing store is device pixels; CDP input is CSS pixels.
   return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
           y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
 }
-cv.addEventListener('click', (e) => { cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
 cv.addEventListener('keydown', (e) => {
+  if (!sendable()) return;
   e.preventDefault(); lastClick = performance.now();
   ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
 });
@@ -111,6 +140,7 @@ function normalizeUrl(raw) {
   return 'https://' + v;
 }
 function go() {
+  if (!sendable()) return;
   const box = document.getElementById('url');
   const url = normalizeUrl(box.value);
   if (!url) return;
@@ -306,6 +336,9 @@ class CDPBridge:
         # Set by the app: reattach + restart the screencast after a
         # renderer crash instead of letting the socket die.
         self._crash_cb = None
+        # Advertised device-pixel ratio, measured per attach in
+        # reattach(); DSF until the first measure lands.
+        self.dsf = DSF
 
     def _ws_url(self):
         return f"ws://browser:4444/session/{self.session_id}/se/cdp"
@@ -334,6 +367,20 @@ class CDPBridge:
                         {"width": VIEWPORT["width"],
                          "height": VIEWPORT["height"],
                          "deviceScaleFactor": DSF, "mobile": False})
+        # Trust but verify: the override may not apply (headless
+        # quirks, swapped targets). Advertise the measured ratio so
+        # clicks never land at half coords again; on any error keep
+        # the previous value (DSF until the first measure lands).
+        try:
+            dpr = await self.call(
+                "Runtime.evaluate",
+                {"expression": "window.devicePixelRatio",
+                 "returnByValue": True})
+            measured = (dpr or {}).get("result", {}).get("value")
+            if isinstance(measured, (int, float)) and measured > 0:
+                self.dsf = float(measured)
+        except Exception:
+            pass
 
     async def _reader(self):
         from websockets.exceptions import ConnectionClosed
@@ -423,10 +470,15 @@ class CDPBridge:
             await self.call("Page.stopScreencast")
         except Exception:
             pass
+        # Size the capture from the MEASURED ratio, not the request:
+        # clamping below device px would reintroduce a scale the
+        # viewer does not know about.
+        scale = self.dsf if isinstance(self.dsf, (int, float)) \
+            and self.dsf > 0 else 1
         await self.call("Page.startScreencast",
                         {"format": "jpeg", "quality": 70,
-                         "maxWidth": VIEWPORT["width"] * DSF,
-                         "maxHeight": VIEWPORT["height"] * DSF,
+                         "maxWidth": int(VIEWPORT["width"] * scale),
+                         "maxHeight": int(VIEWPORT["height"] * scale),
                          "everyNthFrame": 1})
 
     async def ack_frame(self, session_id):
@@ -594,6 +646,9 @@ def create_app():
             try:
                 await _ws_send_text(
                     send, lock,
+                    json.dumps({"type": "dsf", "dsf": bridge.dsf}))
+                await _ws_send_text(
+                    send, lock,
                     json.dumps({"type": "reattached",
                                 "msg": "reattached after target crash"}))
             except Exception:
@@ -603,6 +658,11 @@ def create_app():
             bridge = CDPBridge(session_id)
             await bridge.connect()
             bridge._crash_cb = on_crash
+            # Measured ratio beats the assumed DSF: the viewer maps
+            # pointer coords with this, before the first frame lands.
+            await _ws_send_text(
+                send, lock,
+                json.dumps({"type": "dsf", "dsf": bridge.dsf}))
             await bridge.start_screencast(on_frame)
 
             async def do_go(url):
@@ -612,6 +672,11 @@ def create_app():
                 # on it — otherwise the viewer goes dark.
                 await asyncio.sleep(1.5)
                 await bridge.reattach()
+                # Reattach re-measures: push the fresh divisor or
+                # post-nav clicks use the stale one and mis-land.
+                await _ws_send_text(
+                    send, lock,
+                    json.dumps({"type": "dsf", "dsf": bridge.dsf}))
                 await bridge.start_screencast(on_frame)
 
             if kind == "own":

@@ -41,11 +41,22 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("shared browser tab", browser_view.VIEWER_HTML)
         self.assertIn("shared agent session", browser_view.VIEWER_HTML)
 
+    def test_viewer_reconnects_after_socket_close(self):
+        # A dropped socket (deploy, Grid restart) must re-dial
+        # instead of stranding clicks on a dead canvas; input
+        # during the gap is dropped, never thrown.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("ws.onclose", html)
+        self.assertIn("reconnecting", html)
+        self.assertIn("setTimeout(connect", html)
+        self.assertIn("sendable()", html)
+
 
 class FakeBridge:
     """Stand-in for CDPBridge: no Grid traffic under test."""
     def __init__(self, session_id):
         self.session_id = session_id
+        self.dsf = browser_view.DSF
 
     async def connect(self):
         pass
@@ -276,6 +287,70 @@ class ReattachTest(unittest.TestCase):
         self.assertEqual(attach[0][1]["targetId"], "NEW")
         self.assertTrue(attach[0][1]["flatten"])
 
+    def test_reattach_advertises_measured_dpr(self):
+        # The override may not apply (live tabs measured 1280px
+        # frames with DSF=2 assumed: every click landed at half
+        # coords). The bridge measures window.devicePixelRatio per
+        # attach and advertises that instead of the assumption.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"type": "page", "targetId": "P"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "S1"}
+            if method == "Runtime.evaluate":
+                return {"result": {"value": 1}}
+            return {}
+
+        bridge.call = fake_call
+        self.assertEqual(bridge.dsf, browser_view.DSF)
+        asyncio.run(bridge.reattach())
+        self.assertEqual(bridge.dsf, 1.0)
+
+    def test_measure_failure_keeps_assumed_dsf(self):
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"type": "page", "targetId": "P"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "S1"}
+            if method == "Runtime.evaluate":
+                raise RuntimeError("nope")
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.reattach())
+        self.assertEqual(bridge.dsf, browser_view.DSF)
+
+    def test_screencast_sized_from_measured_dsf(self):
+        # The capture clamp must match the advertised divisor or
+        # frames arrive at a scale the viewer does not know about.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        seen = {}
+
+        async def fake_call(method, params=None, timeout=15):
+            seen[method] = params
+            return {}
+
+        bridge.call = fake_call
+        bridge.dsf = 2.0
+        asyncio.run(bridge.start_screencast(lambda params: None))
+        self.assertEqual(seen["Page.startScreencast"]["maxWidth"], 2560)
+        self.assertEqual(seen["Page.startScreencast"]["maxHeight"], 1600)
+        bridge.dsf = 1.0
+        asyncio.run(bridge.start_screencast(lambda params: None))
+        self.assertEqual(seen["Page.startScreencast"]["maxWidth"], 1280)
+        self.assertEqual(seen["Page.startScreencast"]["maxHeight"], 800)
+
 
 class ScreencastAckTest(unittest.TestCase):
     def test_ack_dispatched_before_frame_callback(self):
@@ -380,6 +455,14 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertTrue(re.search(r"(?m)^(let|var) dsf\s*=", html),
                         "VIEWER_HTML needs a global dsf declaration")
         self.assertNotIn("let dsf = 1;\n    if (m.type === 'attached')", html)
+
+    def test_viewer_applies_measured_dsf(self):
+        # The server measures window.devicePixelRatio per attach and
+        # sends it as {type: 'dsf'}; the viewer must apply it to the
+        # global pos() uses, or clicks land at half coords.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("if (m.type === 'dsf') { dsf = m.dsf || 1; return; }",
+                      html)
 
     def test_screen_cursor_is_not_crosshair(self):
         # Operator report: the crosshair is awkward to use on the

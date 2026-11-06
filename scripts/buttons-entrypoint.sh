@@ -25,7 +25,14 @@ set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/app}"
 INDEX_DIR="${S5_CHROMA_DIR:-$APP_ROOT/deep-agent/chroma_db}"
+# Bare Ollama host: OLLAMA_URL ships with the /api/generate path in
+# compose (repair-worker convention), so strip it before appending
+# probe paths — same normalization as model_router._ollama_base
+# (#968 fixed the identical suffix bug in the tags probe there).
 OLLAMA="${OLLAMA_URL:-http://ollama:11434}"
+OLLAMA="${OLLAMA%/}"
+OLLAMA="${OLLAMA%/api/generate}"
+OLLAMA="${OLLAMA%/}"
 WAIT_SECS="${OLLAMA_WAIT_SECS:-5}"
 TRIES="${OLLAMA_TRIES:-36}"
 BUILDING="$INDEX_DIR/.index_building"
@@ -64,7 +71,10 @@ echo "started $(date -u +%FT%TZ)" > "$BUILDING"
     fi
     sleep "$WAIT_SECS"
   done
-  if ! td rag index --repo-root "$APP_ROOT"; then
+  # Index the mounted live checkout, not the baked copy: /app has
+  # no .git and goes stale on every deploy (BUTTONS_STACK doctrine
+  # in the Dockerfile).
+  if ! td rag index --repo-root "${BUTTONS_STACK:-$APP_ROOT}"; then
     echo "buttons-entrypoint: ERROR: index build failed; queries degrade until the index is rebuilt" >&2
     echo "index build failed (see $LOG)" > "$FAILED"
     rm -f "$BUILDING"
