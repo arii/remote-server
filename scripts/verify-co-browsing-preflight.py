@@ -90,12 +90,20 @@ def grid_cdp_ws_url(session_id):
 
 
 def create_grid_session():
-    """Open a Grid session; returns (session_id, cdp_ws_url)."""
+    """Open a Grid session; returns (session_id, cdp_ws_url).
+
+    The agent profile lives on the mounted host dir, so logins and
+    localStorage survive session and container restarts. ChromeDriver
+    yields to a user-supplied --user-data-dir."""
     req = urllib.request.Request(
         BROWSER_HTTP.rstrip("/") + "/session",
         data=json.dumps(
-            {"capabilities": {"alwaysMatch": {"browserName": "chrome"}}
-             }).encode("utf-8"),
+            {"capabilities": {"alwaysMatch": {
+                "browserName": "chrome",
+                "goog:chromeOptions": {"args": [
+                    "--user-data-dir=/data/shared-browser/agent",
+                    "--enable-features=WebMCP"]}}
+             }}).encode("utf-8"),
         headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
