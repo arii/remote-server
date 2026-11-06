@@ -3,8 +3,10 @@ import { plainLanguage } from './views/historyUtils';
 import {
   API_SLOW_TIMEOUT_MS,
   API_TIMEOUT_MS,
+  AuthExpiredError,
   QueuedOfflineError,
   RequestTimeoutError,
+  __clearAuthExpired,
   __clearOutbox,
   __clearPrCaches,
   abortAgentSession,
@@ -39,6 +41,8 @@ import {
   getOutbox,
   getOutboxStatus,
   invalidateViewCaches,
+  isAuthExpired,
+  isAuthRedirect,
   mergePr,
   postAgentTurn,
   postChatStream,
@@ -54,6 +58,7 @@ import {
   startJobRun,
   startTdRun,
   subscribeApiFailures,
+  subscribeAuthExpired,
   subscribeJobsPush,
   subscribeOutbox,
   subscribeRunPush,
@@ -74,6 +79,7 @@ function mockFetchJson(body: unknown, ok = true, status = 200) {
 beforeEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  __clearAuthExpired();
   __clearPrCaches();
   __clearOutbox();
   invalidateViewCaches();
@@ -1532,5 +1538,49 @@ describe('request timeouts (issue #460)', () => {
       '/api/agent/turn',
       expect.objectContaining({ signal: ctrl.signal }),
     );
+  });
+});
+
+describe('auth expiry (issue #1035)', () => {
+  const loginUrl = 'https://github.com/login/oauth/authorize?client_id=x';
+
+  function mockRedirectedFetch() {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      redirected: true,
+      url: loginUrl,
+      json: async () => ({}),
+      text: async () => '',
+    });
+  }
+
+  it('flags an OAuth login redirect as auth expiry', () => {
+    expect(isAuthRedirect(loginUrl, 200)).toBe(true);
+    expect(isAuthRedirect('https://example.com/api/jobs', 200)).toBe(false);
+    expect(isAuthRedirect('https://example.com/api/jobs', 401)).toBe(true);
+  });
+
+  it('throws AuthExpiredError and latches the flag once', async () => {
+    const seen: number[] = [];
+    const unsubscribe = subscribeAuthExpired(() => {
+      seen.push(1);
+    });
+    try {
+      vi.stubGlobal('fetch', mockRedirectedFetch());
+      await expect(fetchJobs()).rejects.toBeInstanceOf(AuthExpiredError);
+      expect(isAuthExpired()).toBe(true);
+      vi.stubGlobal('fetch', mockRedirectedFetch());
+      await expect(fetchJobs()).rejects.toBeInstanceOf(AuthExpiredError);
+      expect(seen).toHaveLength(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('treats a 401 JSON body as auth expiry', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ error: 'unauthorized' }, false, 401));
+    await expect(fetchSystemHealth()).rejects.toBeInstanceOf(AuthExpiredError);
+    expect(isAuthExpired()).toBe(true);
   });
 });

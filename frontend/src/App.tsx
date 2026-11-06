@@ -5,6 +5,17 @@ import BriefingView from './views/BriefingView';
 import HistoryView, { type HistoryFilterRequest } from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
 import SyncBanner from './components/SyncBanner';
+import SessionBanner from './components/SessionBanner';
+
+// Bottom-bar auto-hide (issue #1033): pure scroll-direction state so
+// the rule itself is unit-testable. Top of page always shows; scroll
+// up reveals; a sustained scroll down hides.
+export function nextBarHidden(prevY: number, y: number, hidden: boolean): boolean {
+  if (y <= 8) return false;
+  if (y < prevY - 4) return false;
+  if (y > prevY + 24) return true;
+  return hidden;
+}
 import CommandPalette from './components/CommandPalette';
 import { buildCommands, type PaletteCommand } from './components/commandRegistry';
 import {
@@ -217,6 +228,27 @@ export default function App() {
   // Log slide-over selection (issue #928): which container's tail
   // is open atop the stats drawer, if any.
   const [logService, setLogService] = useState<string | null>(null);
+  // Bottom bar auto-hide (issue #1033): hides on sustained scroll
+  // down, reveals on scroll up; the CSS only applies it on narrow
+  // viewports and never under reduced motion.
+  const [barHidden, setBarHidden] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let prev = window.scrollY;
+    let hidden = false;
+    const onScroll = () => {
+      const y = window.scrollY;
+      const next = nextBarHidden(prev, y, hidden);
+      prev = y;
+      if (next !== hidden) {
+        hidden = next;
+        setBarHidden(next);
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
   // Shared browser drawer (follow_up Issue 11): embedded
   // headed-Chromium noVNC head with takeover interception. Polls the agent
   // control API while open; pause/resume POST there too.
@@ -781,6 +813,7 @@ export default function App() {
       </nav>
       </div>
       <SyncBanner />
+      <SessionBanner />
       <CommandPalette
         open={paletteOpen}
         commands={commands}
@@ -908,7 +941,11 @@ export default function App() {
         </div>
       )}
       <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
-      <nav className="bottombar" aria-label="Sections" data-testid="bottombar">
+      <nav
+        className={barHidden ? 'bottombar bottombar-hidden' : 'bottombar'}
+        aria-label="Sections"
+        data-testid="bottombar"
+      >
         {NAV_ENTRIES.filter((t) => t.kind === 'section').map((t) => (
           <ShellNavButton
             key={t.id}

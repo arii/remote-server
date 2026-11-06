@@ -1002,3 +1002,39 @@ label.row-meta { display: grid; gap: 0.3rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* Phone-first: keyboard triage hints are unactionable on touch. */
 @media (pointer: coarse) { .triage-hint { display: none; } }
+
+/* Narrow phone chrome (issue #1033): one slim pinned bar at a time.
+   The header scrolls away with the page; the tab row rides one
+   horizontally scrollable line; the bottom bar compacts and
+   auto-hides on scroll-down (App toggles .bottombar-hidden).
+   44px touch targets are untouched — reach, not size, is what
+   collapses. */
+@media (max-width: 700px) {
+  .layout { padding: 0.75rem 0.75rem 5rem; }
+  .topbar { position: static; margin-bottom: 0.5rem; }
+  .topbar > .toolbar { flex-wrap: nowrap; overflow-x: auto; }
+  .topnav { flex-wrap: nowrap; overflow-x: auto; }
+  .bottombar {
+    gap: 0.25rem;
+    padding: 0.4rem 0.5rem calc(0.4rem + env(safe-area-inset-bottom));
+    transition: transform 0.2s ease;
+  }
+  .bottombar-hidden { transform: translateY(110%); }
+}
+@media (max-width: 700px) and (prefers-reduced-motion: reduce) {
+  .bottombar { transition: none; }
+}
+/* Session-expiry strip (issue #1035): same surface as the sync
+   banner, alert role for the sign-in call to action. */
+.session-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+}
+.session-banner button { min-height: 44px; }
