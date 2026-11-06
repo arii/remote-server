@@ -58,6 +58,7 @@ import {
   startJobRun,
   startTdRun,
   subscribeApiFailures,
+  throwIfAuthExpired,
   subscribeAuthExpired,
   subscribeJobsPush,
   subscribeOutbox,
@@ -1559,6 +1560,56 @@ describe('auth expiry (issue #1035)', () => {
     expect(isAuthRedirect(loginUrl, 200)).toBe(true);
     expect(isAuthRedirect('https://example.com/api/jobs', 200)).toBe(false);
     expect(isAuthRedirect('https://example.com/api/jobs', 401)).toBe(true);
+  });
+
+  it('does not cry wolf on our own oauth callback path', () => {
+    expect(isAuthRedirect('https://buttons.example.com/oauth2/callback?code=x', 200)).toBe(false);
+  });
+
+  function mockResp(overrides: Record<string, unknown> = {}) {
+    return {
+      ok: true,
+      status: 200,
+      redirected: false,
+      url: 'https://buttons.example.com/api/jobs',
+      json: async () => ({}),
+      text: async () => '',
+      ...overrides,
+    } as unknown as Response;
+  }
+
+  it('throwIfAuthExpired throws on 401 and clears on recovery', () => {
+    expect(() => throwIfAuthExpired(mockResp({ ok: false, status: 401 }), 'api/jobs')).toThrow(
+      AuthExpiredError,
+    );
+    expect(isAuthExpired()).toBe(true);
+    expect(() => throwIfAuthExpired(mockResp(), 'api/jobs')).not.toThrow();
+    expect(isAuthExpired()).toBe(false);
+  });
+
+  it('retires the flag on the next good response', async () => {
+    vi.stubGlobal('fetch', mockRedirectedFetch());
+    await expect(fetchJobs()).rejects.toBeInstanceOf(AuthExpiredError);
+    expect(isAuthExpired()).toBe(true);
+    vi.stubGlobal('fetch', mockFetchJson({ jobs: [] }));
+    await fetchJobs();
+    expect(isAuthExpired()).toBe(false);
+  });
+
+  it('flags 401s on raw stream responses', async () => {
+    vi.stubGlobal('fetch', mockFetchJson({ error: 'unauthorized' }, false, 401));
+    await expect(postChatStream('hi', 'remote-server', 'sess1')).rejects.toBeInstanceOf(
+      AuthExpiredError,
+    );
+    expect(isAuthExpired()).toBe(true);
+  });
+
+  it('never queues expired-session mutations as offline', async () => {
+    vi.stubGlobal('fetch', mockRedirectedFetch());
+    await expect(startJobRun('logs', 'remote-server', false)).rejects.toBeInstanceOf(
+      AuthExpiredError,
+    );
+    expect(getOutbox()).toHaveLength(0);
   });
 
   it('throws AuthExpiredError and latches the flag once', async () => {

@@ -52,11 +52,8 @@ export function apiUrl(path: string): string {
 async function readJson<T>(resp: Response, method: string, path: string): Promise<T> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
+    throwIfAuthExpired(resp, path);
     notifyApiFailure();
-    if (resp.status === 401) {
-      notifyAuthExpired();
-      throw new AuthExpiredError(path);
-    }
     throw new Error(`${method} ${path} failed: ${resp.status} ${text}`.trim());
   }
   return (await resp.json()) as T;
@@ -95,7 +92,28 @@ export class AuthExpiredError extends Error {
 
 export function isAuthRedirect(url: string, status: number): boolean {
   if (status === 401) return true;
-  return /\/login|oauth|authorize/i.test(url);
+  // Anchored to the proxy login shape (github.com/login…,
+  // …/oauth/authorize): a loose `oauth` substring would also match
+  // our own same-origin callback and cry wolf on healthy traffic.
+  return /github\.com\/login|\/oauth\/authorize/i.test(url);
+}
+
+/** Throw AuthExpiredError on 401 / login-redirect responses, and
+retire the banner flag on the next good response (re-login may have
+completed in another tab). Raw-Response callers (streams) use this
+too — they bypass readJson, so without it a 401 there stays a
+silent generic error. */
+export function throwIfAuthExpired(resp: Response, path: string): void {
+  if (resp.status === 401 ||
+      (resp.redirected && isAuthRedirect(resp.url, resp.status))) {
+    notifyApiFailure();
+    notifyAuthExpired();
+    throw new AuthExpiredError(path);
+  }
+  if (authExpiredFlag && resp.ok && !resp.redirected) {
+    authExpiredFlag = false;
+    for (const listener of [...authExpiredListeners]) listener();
+  }
 }
 
 type AuthExpiredListener = () => void;
@@ -318,6 +336,9 @@ async function mutateWith<T>(
     // applied the mutation, so replaying could double-apply.
     // Surface it instead of queuing.
     if (err instanceof RequestTimeoutError) throw err;
+    // Same for an expired session: queuing would replay the
+    // mutation as if offline, long after the operator moved on.
+    if (err instanceof AuthExpiredError) throw err;
     queueEntry(method, path, body, key);
   }
   return read(resp);
@@ -414,13 +435,11 @@ async function fetchApi(
   }, timeoutMs);
   try {
     // Every request carries the timeout signal: tests assert its
-    // presence, including on plain GETs.
+    // presence, including on plain GETs. The auth check also
+    // retires the expiry flag on good responses (re-login may have
+    // completed in another tab).
     const resp = await fetch(apiUrl(path), { ...init, signal: ctrl.signal });
-    if (resp.redirected && isAuthRedirect(resp.url, resp.status)) {
-      notifyApiFailure();
-      notifyAuthExpired();
-      throw new AuthExpiredError(path);
-    }
+    throwIfAuthExpired(resp, path);
     return resp;
   } catch (err) {
     // Auth expiry already broadcast above; re-notifying would just
@@ -1446,11 +1465,16 @@ export function postChatStream(
   // the POST body, never the URL (#459): query params land in
   // browser history and proxy access logs. No request timeout:
   // streams keep user-abort behavior only, like postAgentTurn.
+  // The auth check still applies: a 401 here used to stay a silent
+  // generic error (issue #1035 follow-up).
   return fetch(apiUrl('api/chat/stream'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt, repo, session_id: sessionId, prefer }),
     signal,
+  }).then((resp) => {
+    throwIfAuthExpired(resp, 'api/chat/stream');
+    return resp;
   });
 }
 
@@ -1709,6 +1733,10 @@ export function postAgentTurn(
       confirmed: fresh,
     }),
     signal,
+  }).then((resp) => {
+    // Same 401 exposure as postChatStream: streams bypass readJson.
+    throwIfAuthExpired(resp, 'api/agent/turn');
+    return resp;
   });
 }
 

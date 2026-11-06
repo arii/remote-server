@@ -312,6 +312,12 @@ def chat_kwargs(spec):
             # The gateway omits usage from stream chunks unless asked;
             # without this every Nebius run ledgers zero tokens.
             "stream_usage": True,
+            # Issue #1040: default reasoning effort burns the whole
+            # output budget on long turns (reasoning_content eats
+            # output tokens, content starves, empty review for full
+            # price). Low effort keeps answers (probe: 1277 -> 1
+            # reasoning token, content intact).
+            "reasoning_effort": "low",
         }
     raise ValueError(f"bad spec provider: {spec.get('provider')!r}")
 
