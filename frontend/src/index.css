@@ -116,6 +116,29 @@ h1, h2, h3 { text-wrap: balance; }
 }
 .bottombar button { min-height: 44px; }
 
+/* Dirty repos strip (issue #1069): row buttons meet the 44px touch
+   target; below 768px the table stacks into cards so repo, status,
+   and actions never cram side by side on a phone. */
+[data-testid="dirty-repos-strip"] .actions button { min-height: 44px; }
+@media (max-width: 768px) {
+  [data-testid="dirty-repos-table"] thead { display: none; }
+  [data-testid="dirty-repos-table"],
+  [data-testid="dirty-repos-table"] tbody,
+  [data-testid="dirty-repos-table"] tr,
+  [data-testid="dirty-repos-table"] td { display: block; width: 100%; }
+  [data-testid="dirty-repos-table"] tr {
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+  [data-testid="dirty-repos-strip"] .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+}
+
 /* Repo picker menu (#961): trigger names the checkout only;
    branch + lag ride muted right-aligned row text. */
 .repo-picker { position: relative; display: inline-flex; align-items: center; gap: 0.4rem; }

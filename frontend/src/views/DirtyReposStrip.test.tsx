@@ -118,6 +118,14 @@ describe('DirtyReposStrip (issue #937)', () => {
     expect(html).not.toContain('data-testid="dirty-pull-boomtick"');
     // Behind + clean row: pull primary, no agent button.
     expect(html).toContain('data-testid="dirty-pull-hrm"');
+  });
+
+  it('wraps row buttons in the styled actions hook (issue #1069)', () => {
+    const html = renderToStaticMarkup(
+      <DirtyReposStrip repos={[dirtyBehind, behindOnly]} {...handlers} />,
+    );
+    // CSS touch-target and card-layout rules hook off .actions.
+    expect(html).toContain('class="actions"');
     expect(html).not.toContain('data-testid="dirty-agent-hrm"');
     // Every row still drills into the diff (stash/sync live there).
     expect(html).toContain('data-testid="dirty-view-diff-boomtick"');
