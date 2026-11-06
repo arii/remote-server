@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import DirtyReposStrip, {
   commitViaAgentSeed,
   dirtyRepos,
+  primaryRepoAction,
   repoLagLabel,
 } from './DirtyReposStrip';
 import type { RepoInfo } from '../reviewTypes';
@@ -95,7 +96,14 @@ describe('DirtyReposStrip (issue #937)', () => {
     expect(html).toBe('');
   });
 
-  it('lists every dirty/behind repo with all one-click actions', () => {
+  it('routes each row state to one primary action (#958)', () => {
+    expect(primaryRepoAction(dirtyBehind)).toBe('agent');
+    expect(primaryRepoAction(behindOnly)).toBe('sync');
+    expect(primaryRepoAction({ ...behindOnly, behind: 0 })).toBe('diff');
+    expect(primaryRepoAction(clean)).toBe('diff');
+  });
+
+  it('lists every dirty/behind repo with one primary action plus drill-down', () => {
     const html = renderToStaticMarkup(
       <DirtyReposStrip repos={[clean, dirtyBehind, behindOnly]} {...handlers} />,
     );
@@ -105,26 +113,20 @@ describe('DirtyReposStrip (issue #937)', () => {
     expect(html).toContain('data-testid="dirty-row-hrm"');
     expect(html).not.toContain('data-testid="dirty-row-remote-server"');
     expect(html).toContain('2 changed · behind 3');
-    for (const repo of ['boomtick', 'hrm']) {
-      expect(html).toContain(`data-testid="dirty-view-diff-${repo}"`);
-      expect(html).toContain(`data-testid="dirty-stash-${repo}"`);
-      expect(html).toContain(`data-testid="dirty-autostash-${repo}"`);
-      expect(html).toContain(`data-testid="dirty-agent-${repo}"`);
-      expect(html).toContain(`data-testid="dirty-pull-${repo}"`);
-      expect(html).toContain(`data-testid="dirty-chat-${repo}"`);
-    }
-    expect(html).toContain('View Diff');
-    expect(html).toContain('Auto-Stash &amp; Pull');
-    expect(html).toContain('Commit via Agent');
-    expect(html).toContain('Pull --rebase');
-    expect(html).toContain('Open in Chat');
-  });
-
-  it('disables Pull --rebase on dirty rows', () => {
-    const html = renderToStaticMarkup(
-      <DirtyReposStrip repos={[dirtyBehind]} {...handlers} />,
-    );
-    const pull = html.match(/<button[^>]*dirty-pull-boomtick[^>]*>/)?.[0] ?? '';
-    expect(pull).toContain('disabled');
+    // Dirty row: agent primary, no pull button at all.
+    expect(html).toContain('data-testid="dirty-agent-boomtick"');
+    expect(html).not.toContain('data-testid="dirty-pull-boomtick"');
+    // Behind + clean row: pull primary, no agent button.
+    expect(html).toContain('data-testid="dirty-pull-hrm"');
+    expect(html).not.toContain('data-testid="dirty-agent-hrm"');
+    // Every row still drills into the diff (stash/sync live there).
+    expect(html).toContain('data-testid="dirty-view-diff-boomtick"');
+    expect(html).toContain('data-testid="dirty-view-diff-hrm"');
+    // The old six-button chrome is gone.
+    expect(html).not.toContain('dirty-stash-');
+    expect(html).not.toContain('dirty-autostash-');
+    expect(html).not.toContain('dirty-chat-');
+    expect(html).not.toContain('Auto-Stash &amp; Pull');
+    expect(html).not.toContain('Open in Chat');
   });
 });
