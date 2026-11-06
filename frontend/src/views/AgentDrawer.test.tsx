@@ -149,6 +149,36 @@ describe('elapsed clock (issue #838)', () => {
   });
 });
 
+describe('live progress (issue #1021)', () => {
+  it('routes progress events to the callback, never the transcript', async () => {
+    const seen: string[] = [];
+    const tokens: string[] = [];
+    const reader = streamOf(
+      'event: token\ndata: {"token": "hi"}\n\n' +
+        'event: progress\ndata: {"text": "tool run_command ls /tmp"}\n\n' +
+        'event: done\ndata: {"session_id": "s1", "text": "hi"}\n\n',
+    );
+    const done = await pumpTurn(
+      reader,
+      (t) => tokens.push(t),
+      undefined,
+      (t) => seen.push(t),
+    );
+    expect(seen).toEqual(['tool run_command ls /tmp']);
+    expect(tokens).toEqual(['hi']);
+    expect(done.text).toBe('hi');
+  });
+
+  it('ignores progress without a callback', async () => {
+    const reader = streamOf(
+      'event: progress\ndata: {"text": "tool x"}\n\n' +
+        'event: done\ndata: {"session_id": "s1", "text": ""}\n\n',
+    );
+    const done = await pumpTurn(reader, () => {});
+    expect(done.sessionId).toBe('s1');
+  });
+});
+
 describe('timeout warning (issue #838)', () => {
   it('reports warning events without touching the transcript', async () => {
     const seen: number[] = [];

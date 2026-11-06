@@ -149,6 +149,11 @@ async def _turn_events(provider: str, repo: str, cwd: str,
                 yield sse_frame("warning", {
                     "seconds_left": chunk.seconds_left})
                 continue
+            # Live progress (issue #1021): tool calls and phase
+            # changes ride their own frames, never the transcript.
+            if isinstance(chunk, agent_turn.TurnProgress):
+                yield sse_frame("progress", {"text": chunk.text})
+                continue
             text.append(chunk)
             yield sse_frame("token", {"token": chunk})
     except ValueError:

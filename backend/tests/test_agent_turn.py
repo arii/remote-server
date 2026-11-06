@@ -342,6 +342,43 @@ class AgyStreamParserTest(unittest.TestCase):
         self.assertEqual(out, ["late answer"])
         self.assertEqual(parser.conversation_id, "cid-4")
 
+    def test_tool_step_lines(self):
+        self.assertEqual(
+            agent_turn.tool_step_line(
+                {"tool_name": "run_command",
+                 "tool_info": {"name": "run_command",
+                               "parameters":
+                                   {"CommandLine": "ls /tmp"}}}),
+            "tool run_command ls /tmp")
+        self.assertEqual(
+            agent_turn.tool_step_line({"tool_name": "x"}), "tool x")
+        self.assertEqual(agent_turn.tool_step_line({}), "tool")
+
+    def test_tool_active_emits_progress_marker(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, [
+            '{"event":"step_update","step_update":'
+            '{"conversation_id":"cid-5","step_index":2,'
+            '"state":"ACTIVE","step_type":"tool",'
+            '"tool_name":"run_command","tool_info":{"name":'
+            '"run_command","parameters":{"CommandLine":'
+            '"ls /tmp"}}}}\n',
+        ])
+        self.assertEqual(len(out), 1)
+        self.assertIsInstance(out[0], agent_turn.TurnProgress)
+        self.assertEqual(out[0].text, "tool run_command ls /tmp")
+        # Zero-text: joining chunks never leaks it into the answer.
+        self.assertEqual("".join(out), "")
+
+    def test_tool_done_stays_silent(self):
+        parser = agent_turn.AgyStreamParser()
+        out = self._feed_all(parser, [
+            '{"event":"step_update","step_update":'
+            '{"step_type":"tool","state":"DONE",'
+            '"tool_name":"run_command"}}\n',
+        ])
+        self.assertEqual(out, [])
+
     def test_non_agent_steps_are_swallowed(self):
         parser = agent_turn.AgyStreamParser()
         out = self._feed_all(parser, [
@@ -1494,6 +1531,28 @@ class TurnSurvivalRouterTest(unittest.TestCase):
                                     json=TURN_BODY)
         self.assertIn("event: warning", resp.text)
         self.assertIn('"seconds_left": 120', resp.text)
+        # The marker never leaks into the transcript.
+        done = [json.loads(line[6:]) for line in
+                resp.text.splitlines()
+                if line.startswith("data: ")][-1]
+        self.assertEqual(done["text"], "partial-")
+
+    def test_progress_marker_renders_progress_event(self):
+        async def _fake(*args, **kwargs):
+            yield agent_turn.TurnProgress("tool run_command ls /tmp")
+            yield "partial-"
+
+        with mock.patch.object(agent_turn.manager, "run_turn",
+                               _fake), \
+                mock.patch.object(
+                    agent_turn.manager, "pop_result",
+                    return_value={"exit": 0, "stderr": "",
+                                  "truncated": False,
+                                  "timed_out": False}):
+            resp = self.client.post("/api/agent/turn",
+                                    json=TURN_BODY)
+        self.assertIn("event: progress", resp.text)
+        self.assertIn("tool run_command ls /tmp", resp.text)
         # The marker never leaks into the transcript.
         done = [json.loads(line[6:]) for line in
                 resp.text.splitlines()

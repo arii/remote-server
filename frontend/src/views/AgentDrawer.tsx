@@ -61,6 +61,7 @@ export async function pumpTurn(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
   onWarning?: (secondsLeft: number) => void,
+  onProgress?: (text: string) => void,
 ): Promise<{ sessionId: string; text: string; truncated: boolean }> {
   const decoder = new TextDecoder();
   let buf = '';
@@ -114,6 +115,16 @@ export async function pumpTurn(
           const secs = (JSON.parse(ev.data) as { seconds_left?: unknown })
             .seconds_left;
           if (typeof secs === 'number') onWarning?.(secs);
+        } catch {
+          /* ignore */
+        }
+      }
+      // Live progress (issue #1021): tool calls and phase changes
+      // land here, never in the transcript tokens.
+      if (ev.name === 'progress') {
+        try {
+          const text = (JSON.parse(ev.data) as { text?: unknown }).text;
+          if (typeof text === 'string' && text) onProgress?.(text);
         } catch {
           /* ignore */
         }
@@ -273,6 +284,10 @@ export default function AgentDrawer({
   const [lastPrompt, setLastPrompt] = useState(snap?.lastPrompt ?? '');
   const [salvage, setSalvage] = useState<SalvageInfo | null>(null);
   const [warningSecs, setWarningSecs] = useState<number | null>(null);
+  // Live progress lines (issue #1021): tool calls and phase
+  // changes, newest last, capped — rendered collapsed, never
+  // persisted with the transcript snapshot.
+  const [progress, setProgress] = useState<string[]>([]);
   const [now, setNow] = useState(0);
   // Reload reattach (issue #856): orphan marks a restored session
   // the server no longer knows (Resume reclaims it); reattachNote
@@ -554,6 +569,7 @@ export default function AgentDrawer({
     tokenRef.current = at;
     setNow(at);
     setWarningSecs(null);
+    setProgress([]);
     setSalvage(null);
     setOrphan(false);
     setReattachNote(null);
@@ -579,8 +595,11 @@ export default function AgentDrawer({
         sessionId,
         text: full,
         truncated,
-      } = await pumpTurn(resp.body.getReader(), appendAnswer, (secs) =>
-        setWarningSecs(secs),
+      } = await pumpTurn(
+        resp.body.getReader(),
+        appendAnswer,
+        (secs) => setWarningSecs(secs),
+        (line) => setProgress((p) => [...p.slice(-49), line]),
       );
       if (sessionId) sidRef.current = sessionId;
       backfillAnswer(full);
@@ -829,6 +848,23 @@ export default function AgentDrawer({
                     {formatElapsed((now - tokenRef.current) / 1000)}
                   </p>
                 )}
+                {progress.length > 0 &&
+                  t.role === 'assistant' &&
+                  i === turns.length - 1 && (
+                    <details data-testid="agent-progress">
+                      <summary className="row-meta">
+                        Working details ({progress.length})
+                      </summary>
+                      <ul className="agent-progress-list">
+                        {progress.map((line, j) => (
+                          // eslint-disable-next-line react/no-array-index-key
+                          <li key={j} className="row-meta">
+                            {line}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
               </li>
             ))}
           </ul>
