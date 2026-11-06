@@ -56,6 +56,9 @@ class BriefingLedgerTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
             self.tmp, "ledger.jsonl")
+        self._old_eval_ledger = os.environ.get("EVAL_LEDGER")
+        os.environ["EVAL_LEDGER"] = os.path.join(
+            self.tmp, "cli-ledger.jsonl")
         # Narrator off: these tests pin data-path behavior; prose has
         # its own suite (test_briefing_narrative.py).
         self._old_narrator = os.environ.get("BRIEFING_NARRATOR")
@@ -74,6 +77,10 @@ class BriefingLedgerTest(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("BUTTONS_LEDGER_PATH", None)
         os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
+        if self._old_eval_ledger is None:
+            os.environ.pop("EVAL_LEDGER", None)
+        else:
+            os.environ["EVAL_LEDGER"] = self._old_eval_ledger
         if self._old_narrator is None:
             os.environ.pop("BRIEFING_NARRATOR", None)
         else:

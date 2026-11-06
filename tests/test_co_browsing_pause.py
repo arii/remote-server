@@ -22,8 +22,10 @@ def write_state(path, **fields):
     state = {"state": "IDLE", "active_issue": None, "current_step": "",
              "requires_dom_refresh": False, "updated_at": time.time()}
     state.update(fields)
-    with open(path, "w", encoding="utf-8") as handle:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(state, handle)
+    os.replace(tmp, path)
 
 
 class PauseStateTest(unittest.TestCase):

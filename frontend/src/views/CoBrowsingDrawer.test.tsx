@@ -7,7 +7,7 @@ function renderDrawer(over: Record<string, unknown> = {}): string {
     <CoBrowsingDrawer
       browserState="IDLE"
       currentStep={null}
-      iframeSrc="/browser/debugger/"
+      iframeSrc="/browser/vnc.html?autoconnect=1&resize=scale"
       error={null}
       onPause={() => {}}
       onResume={() => {}}
@@ -40,7 +40,7 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     const running = renderDrawer({ browserState: 'RUNNING' });
     expect(running).not.toContain('cobrowse-resume');
     expect(running).toContain('data-testid="cobrowse-frame"');
-    expect(running).toContain('src="/browser/debugger/"');
+    expect(running).toContain('src="/browser/vnc.html?autoconnect=1&amp;resize=scale"');
   });
 
   it('surfaces control API errors without dropping the frame', () => {

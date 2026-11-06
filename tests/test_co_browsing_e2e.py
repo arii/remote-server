@@ -1,6 +1,6 @@
 """End-to-end co-browsing tests (follow_up Issue 12).
 
-Pure helper checks run everywhere. Live stages (browserless,
+Pure helper checks run everywhere. Live stages (headed browser,
 backend API, td) run only with E2E_COBROWSING=1 and skip when the
 stack is unreachable, so CI stays green without a live stack::
 
@@ -27,18 +27,19 @@ def _png_bytes(extra=b"0" * 2048):
 
 
 class HelperTest(unittest.TestCase):
-    def test_cdp_ws_url_plain(self):
-        with mock.patch.object(preflight, "BROWSERLESS_HTTP",
-                               "http://browserless:3000"), \
-             mock.patch.object(preflight, "BROWSERLESS_TOKEN", ""):
-            self.assertEqual(preflight.cdp_ws_url(), "ws://browserless:3000")
+    def test_grid_cdp_ws_url_plain(self):
+        with mock.patch.object(preflight, "BROWSER_HTTP",
+                               "http://browser:4444"):
+            self.assertEqual(
+                preflight.grid_cdp_ws_url("abc"),
+                "ws://browser:4444/session/abc/se/cdp")
 
-    def test_cdp_ws_url_appends_token(self):
-        with mock.patch.object(preflight, "BROWSERLESS_HTTP",
-                               "http://h:3000"), \
-             mock.patch.object(preflight, "BROWSERLESS_TOKEN", "s3"):
-            self.assertEqual(preflight.cdp_ws_url(),
-                             "http://h:3000?token=s3".replace("http", "ws"))
+    def test_grid_cdp_ws_url_https_and_trailing_slash(self):
+        with mock.patch.object(preflight, "BROWSER_HTTP",
+                               "https://h:4444/"):
+            self.assertEqual(
+                preflight.grid_cdp_ws_url("s1"),
+                "wss://h:4444/session/s1/se/cdp")
 
     def test_screenshot_integrity_ok(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -67,13 +68,13 @@ class LivePreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            preflight.stage_pressure()
+            preflight.stage_grid_ready()
         except Exception as exc:
             raise unittest.SkipTest(
-                f"browserless unreachable: {exc}")
+                f"headed browser unreachable: {exc}")
 
-    def test_pressure(self):
-        self.assertIn("max_concurrent", preflight.stage_pressure())
+    def test_grid_ready(self):
+        self.assertIn("free_slots", preflight.stage_grid_ready())
 
     def test_cdp_snapshot_and_integrity(self):
         try:

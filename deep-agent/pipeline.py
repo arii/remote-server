@@ -63,8 +63,10 @@ def clear_refresh_flag(path=None):
                 "requires_dom_refresh"):
             return
         data["requires_dom_refresh"] = False
-        with open(target, "w", encoding="utf-8") as handle:
+        tmp = f"{target}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2)
+        os.replace(tmp, target)
     except Exception:
         pass
 
@@ -302,6 +304,7 @@ class Pipeline:
         """
         start = time.time()
         paused, _refresh = read_pause_state()
+        was_paused = paused
         while paused:
             if timeout_s is not None and time.time() - start > timeout_s:
                 raise TimeoutError("agent still paused by user")
@@ -309,7 +312,7 @@ class Pipeline:
             time.sleep(poll_s)
             paused, _refresh = read_pause_state()
         _paused, refresh = read_pause_state()
-        if refresh:
+        if refresh or was_paused:
             clear_refresh_flag()
             self.log("resumed",
                      "post-takeover state accepted; continuing")

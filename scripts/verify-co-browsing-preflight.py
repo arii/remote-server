@@ -7,10 +7,13 @@ terminal container (compose network). Human or `agy` usage::
 
 Environment (all optional)::
 
-    BROWSERLESS_HTTP   browserless base URL (default http://browserless:3000)
-    BROWSERLESS_TOKEN  token appended to the CDP websocket URL
+    BROWSER_HTTP       Selenium Grid base URL (default http://browser:4444).
+                       The headed browser service must exist; no fail-safe.
+    BROWSER_NOVNC      noVNC base URL (default http://browser:7900)
     AGENT_API          agent-control API base (default http://buttons:8000/api/agent)
-    PREVIEW_URL        page the visual audit loads (default <BROWSERLESS_HTTP>/debugger/)
+    PREVIEW_URL        page the visual audit loads (default
+                       <BROWSER_NOVNC>/vnc.html?autoconnect=1&resize=scale --
+                       the same live head the human watches)
     TD_BIN             td entrypoint, shlex-split (default "td").
                        The installed td must know --preview-url; when it is
                        stale (see docs/follow-ups.md section 3) point at a
@@ -37,11 +40,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BROWSERLESS_HTTP = os.environ.get("BROWSERLESS_HTTP", "http://browserless:3000")
-BROWSERLESS_TOKEN = os.environ.get("BROWSERLESS_TOKEN", "").strip()
+BROWSER_HTTP = os.environ.get("BROWSER_HTTP", "http://browser:4444")
+BROWSER_NOVNC = os.environ.get("BROWSER_NOVNC", "http://browser:7900")
 AGENT_API = os.environ.get("AGENT_API", "http://buttons:8000/api/agent")
 PREVIEW_URL = os.environ.get(
-    "PREVIEW_URL", BROWSERLESS_HTTP.rstrip("/") + "/debugger/")
+    "PREVIEW_URL",
+    BROWSER_NOVNC.rstrip("/") + "/vnc.html?autoconnect=1&resize=scale")
 TD_BIN = os.environ.get("TD_BIN", "td")
 TD_CWD = os.environ.get("TD_CWD") or None
 REPO = os.environ.get("REPO", "/srv/remote-server")
@@ -77,61 +81,102 @@ def http_post(url, timeout=10):
         raise MissingTool(f"{url} unreachable: {exc}")
 
 
-def cdp_ws_url():
-    """Derive the CDP websocket URL the same way browser_cdp does."""
-    parts = urllib.parse.urlsplit(BROWSERLESS_HTTP)
+def grid_cdp_ws_url(session_id):
+    """Per-session CDP websocket URL, the same way browser_cdp derives it."""
+    parts = urllib.parse.urlsplit(BROWSER_HTTP)
     scheme = "wss" if parts.scheme == "https" else "ws"
-    endpoint = f"{scheme}://{parts.netloc or parts.path}"
-    if BROWSERLESS_TOKEN and "token=" not in endpoint:
-        sep = "&" if "?" in endpoint else "?"
-        endpoint = f"{endpoint}{sep}token={BROWSERLESS_TOKEN}"
-    return endpoint
+    base = f"{scheme}://{parts.netloc or parts.path}".rstrip("/")
+    return f"{base}/session/{session_id}/se/cdp"
 
 
-def stage_pressure():
-    """Stage 1: browserless pressure API reports an available head."""
-    status, body = http_get(BROWSERLESS_HTTP.rstrip("/") + "/pressure")
-    if status != 200:
-        raise CheckFailed(f"pressure HTTP {status}")
+def create_grid_session():
+    """Open a Grid session; returns (session_id, cdp_ws_url)."""
+    req = urllib.request.Request(
+        BROWSER_HTTP.rstrip("/") + "/session",
+        data=json.dumps(
+            {"capabilities": {"alwaysMatch": {"browserName": "chrome"}}
+             }).encode("utf-8"),
+        headers={"Content-Type": "application/json"})
     try:
-        payload = json.loads(body.decode("utf-8"))["pressure"]
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise MissingTool(f"grid session create failed: {exc}")
+    try:
+        session_id = payload["value"]["sessionId"]
+    except (KeyError, TypeError) as exc:
+        raise CheckFailed(f"grid session payload unparseable: {exc}")
+    return session_id, grid_cdp_ws_url(session_id)
+
+
+def delete_grid_session(session_id):
+    """Free the single grid slot; best-effort, never raises."""
+    req = urllib.request.Request(
+        BROWSER_HTTP.rstrip("/") + f"/session/{session_id}",
+        method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass
+
+
+def stage_grid_ready():
+    """Stage 1: Selenium Grid reports a ready node with a free slot."""
+    status, body = http_get(BROWSER_HTTP.rstrip("/") + "/status")
+    if status != 200:
+        raise CheckFailed(f"grid status HTTP {status}")
+    try:
+        value = json.loads(body.decode("utf-8"))["value"]
     except (ValueError, KeyError) as exc:
-        raise CheckFailed(f"pressure payload unparseable: {exc}")
-    if not payload.get("isAvailable", False):
-        raise CheckFailed(f"head not available: {payload.get('reason')}")
-    return {"max_concurrent": payload.get("maxConcurrent")}
+        raise CheckFailed(f"grid status payload unparseable: {exc}")
+    if not value.get("ready"):
+        raise CheckFailed("grid not ready")
+    nodes = value.get("nodes", [])
+    free = sum(1 for node in nodes for slot in node.get("slots", [])
+               if slot.get("session") is None)
+    if not free:
+        raise CheckFailed(
+            "no free grid slot (single session; a leaked session may "
+            "hold it — DELETE /session/<id>)")
+    return {"nodes": len(nodes), "free_slots": free}
 
 
 def stage_cdp_snapshot(out_dir):
-    """Stage 2: CDP connect, navigate the preview, read DOM metrics."""
+    """Stage 2: Grid session, CDP connect, navigate the preview,
+    read DOM metrics. The session is always deleted so the single
+    grid slot never wedges."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         raise MissingTool("playwright not installed (pip install playwright)")
-    endpoint = cdp_ws_url()
-    with sync_playwright() as playwright:
-        try:
-            browser = playwright.chromium.connect_over_cdp(endpoint,
-                                                           timeout=10000)
-        except Exception as exc:
-            raise CheckFailed(f"CDP connect failed: {exc}")
-        context = (browser.contexts[0] if browser.contexts
-                   else browser.new_context(viewport={"width": 1280,
-                                                      "height": 800}))
-        page = context.new_page()
-        try:
-            page.goto(PREVIEW_URL, wait_until="domcontentloaded",
-                      timeout=20000)
-            metrics = page.evaluate(
-                """() => ({
-                    dom_node_count: document.querySelectorAll('*').length,
-                    title: document.title
-                })""")
-            shot = os.path.join(out_dir, "preflight_viewport.png")
-            page.screenshot(path=shot, full_page=False)
-        finally:
-            page.close()
-            browser.close()
+    session_id, endpoint = create_grid_session()
+    try:
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.connect_over_cdp(
+                    endpoint, timeout=10000)
+            except Exception as exc:
+                raise CheckFailed(f"CDP connect failed: {exc}")
+            context = (browser.contexts[0] if browser.contexts
+                       else browser.new_context(viewport={"width": 1280,
+                                                          "height": 800}))
+            page = context.new_page()
+            try:
+                page.goto(PREVIEW_URL, wait_until="domcontentloaded",
+                          timeout=20000)
+                metrics = page.evaluate(
+                    """() => ({
+                        dom_node_count: document.querySelectorAll('*').length,
+                        title: document.title
+                    })""")
+                shot = os.path.join(out_dir, "preflight_viewport.png")
+                page.screenshot(path=shot, full_page=False)
+            finally:
+                page.close()
+                browser.close()
+    finally:
+        delete_grid_session(session_id)
     if not metrics.get("dom_node_count"):
         raise CheckFailed("preview page has no DOM nodes")
     return {"dom_node_count": metrics["dom_node_count"],
@@ -225,8 +270,8 @@ def stage_td_impact(repo, out_dir):
                + ["audit-impact", "--worktree", worktree,
                   "--preview-url", PREVIEW_URL, "--json"])
         env = dict(os.environ)
-        # browser_cdp consumes this as the raw CDP websocket endpoint.
-        env.setdefault("BROWSERLESS_ENDPOINT", cdp_ws_url())
+        # browser_cdp opens its own Grid session from this base URL.
+        env.setdefault("BROWSER_ENDPOINT", BROWSER_HTTP)
         if TD_CWD:
             # Checkout entrypoints (TD_BIN="python3 dev_tools/cli.py")
             # must resolve dev_tools from the checkout, not the stale
@@ -256,7 +301,7 @@ def stage_td_impact(repo, out_dir):
 
 
 STAGES = [
-    ("pressure", lambda ctx: stage_pressure()),
+    ("grid_ready", lambda ctx: stage_grid_ready()),
     ("cdp_snapshot", lambda ctx: stage_cdp_snapshot(ctx["dir"])),
     ("screenshot_integrity",
      lambda ctx: stage_screenshot_integrity(ctx["snapshot"]["screenshot"])),

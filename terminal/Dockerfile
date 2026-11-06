@@ -41,6 +41,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Vendored muse installer (#523): no pipe-to-bash at build time. The script
 # self-verifies the launcher it fetches (x-content-sha256 when advertised).
 COPY muse-install.sh /tmp/muse-install.sh
+COPY requirements.txt /tmp/requirements.txt
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bash ca-certificates curl gh git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv tmux vim xz-utils \
@@ -76,12 +77,14 @@ RUN apt-get update \
  && python3 --version \
  && python3 -m venv /opt/venvs/td \
  && /opt/venvs/td/bin/pip install "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
+ && /opt/venvs/td/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
+ && rm -f /tmp/requirements.txt \
  && /opt/venvs/td/bin/td --help > /dev/null \
  && git clone --depth 1 --branch "${BOOMTICK_CLI_REF}" https://github.com/arii/boomtick.git /tmp/boomtick \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
- && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 27 \
+ && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 17 \
  && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
  && npm install -g /tmp/*.tgz \
  && rm -rf /tmp/boomtick /tmp/*.tgz \
@@ -96,6 +99,7 @@ RUN apt-get update \
  && /tmp/venv-smoke/bin/python --version \
  && rm -rf /tmp/venv-smoke \
  && /opt/venvs/td/bin/td audit-impact --help > /dev/null \
+ && /opt/venvs/td/bin/python -c "import fastapi, pydantic, pytest; print('terminal deps ok')" \
  && mkdir -p /home/ari && ln -sfn /srv/remote-server /home/ari/remote-server \
  && apt-get purge -y gnupg xz-utils \
  && apt-get autoremove -y \

@@ -1,5 +1,5 @@
 // Co-browsing drawer (follow_up Issue 11): embedded shared browser
-// head (/browser/debugger/ via Caddy) with immediate-takeover
+// head (/browser/vnc.html via Caddy -> headed Chromium noVNC) with immediate-takeover
 // interception. Presentational: the parent owns state polling and
 // the pause/resume POSTs, so this renders from props and stays
 // testable via static markup like ContainerDrawer.
