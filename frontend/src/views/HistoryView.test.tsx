@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import HistoryView, { HistoryFilterChip, HistoryInspector, MemberBlock, RowsList, RunOutput, isSkipRow, rowToneClass } from './HistoryView';
+import HistoryView, { HistoryFilterChip, HistoryInspector, MemberBlock, RowsList, RunOutput, isQuietAgentRow, isSkipRow, rowToneClass } from './HistoryView';
 import { toHistoryRows } from './historyUtils';
 import type { HistoryRow } from './historyUtils';
 
@@ -228,6 +228,24 @@ describe('ledger noise filter and inline status (issue #964)', () => {
     const html = renderToStaticMarkup(<HistoryView repo="r" />);
     expect(html).toContain('data-testid="history-show-skips"');
     expect(html).not.toContain('data-testid="history-skips-note"');
+  });
+
+  it('flags failure-free agent rows, never failures or other kinds', () => {
+    const base: HistoryRow = {
+      key: 'a', kind: 'agent-turn', summary: 'chat turn',
+      at: 'now', repeat: 1, recovery: '', tone: 'ok', detail: 'd', members: [],
+    };
+    expect(isQuietAgentRow(base)).toBe(true);
+    expect(isQuietAgentRow({ ...base, kind: 'cli-turn' })).toBe(true);
+    expect(isQuietAgentRow({ ...base, tone: 'bad' })).toBe(false);
+    expect(isQuietAgentRow({ ...base, kind: 'webhook' })).toBe(false);
+    expect(isQuietAgentRow({ ...base, kind: 'job' })).toBe(false);
+  });
+
+  it('hides quiet agent runs behind an unchecked toggle by default', () => {
+    const html = renderToStaticMarkup(<HistoryView repo="r" />);
+    expect(html).toContain('data-testid="history-show-agent"');
+    expect(html).not.toContain('data-testid="history-agent-note"');
   });
 
   it('folds identical consecutive skips into one expandable row', () => {

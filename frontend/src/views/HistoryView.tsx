@@ -53,6 +53,15 @@ export function isSkipRow(r: HistoryRow): boolean {
   return r.tone !== 'bad' && /skipped/i.test(r.summary);
 }
 
+// Agent-run noise filter (#1014): failure-free agent-turn/cli-turn
+// rows hide by default behind their own toggle (agent sessions are
+// frequent and verbose; only their failures earn feed space).
+// Failed agent rows always stay visible, same rule as skips.
+export const AGENT_ROW_KINDS = new Set(['agent-turn', 'cli-turn']);
+export function isQuietAgentRow(r: HistoryRow): boolean {
+  return r.tone !== 'bad' && AGENT_ROW_KINDS.has(r.kind);
+}
+
 // Inline status edge (#964): green/red left edge per row, readable
 // without expanding. Muted rows carry no edge.
 export function rowToneClass(tone: HistoryRow['tone']): string {
@@ -345,6 +354,9 @@ export default function HistoryView({
   // Skipped webhooks hide by default (#964): the feed buries
   // signal in repeated low-value skip rows.
   const [showSkips, setShowSkips] = useState(false);
+  // Failure-free agent runs hide by default (#1014): same rule as
+  // skips, own toggle so failures still surface either way.
+  const [showAgent, setShowAgent] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // Deep-link seeds land even on a live view (keepalive): each
   // nonce applies once and resets the other filters, so the link
@@ -381,8 +393,22 @@ export default function HistoryView({
   // Identical consecutive skips already fold into one expandable ×N
   // row upstream (#855); here they hide behind the toggle instead
   // of burying the feed. Failures never hide (see isSkipRow).
-  const visibleRows = showSkips ? rows : rows.filter((r) => !isSkipRow(r));
-  const hiddenSkips = rows.length - visibleRows.length;
+  const visibleRows = rows.filter(
+    (r) =>
+      (showSkips || !isSkipRow(r)) &&
+      (showAgent || !isQuietAgentRow(r)),
+  );
+  // Per-toggle reveal counts: flipping one toggle surfaces exactly
+  // the rows its own filter hides (rows hidden by both toggles need
+  // both flips and sit out of both counts).
+  const hiddenSkips = rows.filter(
+    (r) => !showSkips && isSkipRow(r) &&
+      (showAgent || !isQuietAgentRow(r)),
+  ).length;
+  const hiddenAgents = rows.filter(
+    (r) => !showAgent && isQuietAgentRow(r) &&
+      (showSkips || !isSkipRow(r)),
+  ).length;
   // The inspector follows the selection, defaulting to the newest
   // row; a selection that filters out falls back the same way.
   const inspected =
@@ -417,6 +443,7 @@ export default function HistoryView({
     setFacet('all');
     setKind('all');
     setShowSkips(true);
+    setShowAgent(true);
   }
 
   return (
@@ -466,6 +493,16 @@ export default function HistoryView({
                 onChange={(e) => setShowSkips(e.target.checked)}
               />{' '}
               Skips
+            </label>
+            <label className="row-meta" htmlFor="history-show-agent">
+              <input
+                id="history-show-agent"
+                type="checkbox"
+                data-testid="history-show-agent"
+                checked={showAgent}
+                onChange={(e) => setShowAgent(e.target.checked)}
+              />{' '}
+              Agent runs
             </label>
             <button type="button" data-testid="history-refresh" onClick={() => void load()}>
               Refresh
@@ -520,11 +557,19 @@ export default function HistoryView({
                 </button>
               </p>
             )}
+            {hiddenAgents > 0 && (
+              <p className="row-meta" data-testid="history-agent-note">
+                {hiddenAgents} agent run{hiddenAgents === 1 ? '' : 's'} hidden.{' '}
+                <button type="button" data-testid="history-agent-show" onClick={() => setShowAgent(true)}>
+                  Show
+                </button>
+              </p>
+            )}
             <div className="split">
               <div>
                 <RowsList
                   rows={visibleRows}
-                  filtering={filtering || hiddenSkips > 0}
+                  filtering={filtering || hiddenSkips > 0 || hiddenAgents > 0}
                   selectedKey={inspected?.key ?? null}
                   onSelect={(r) => setSelectedKey(r.key)}
                   onRefresh={() => void load()}

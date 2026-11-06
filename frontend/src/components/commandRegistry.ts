@@ -30,6 +30,9 @@ export interface CommandContext {
   syncNow?: () => void;
   openStats?: () => void;
   newIssue?: () => void;
+  // Check runner (issue #1016): dispatch a td doctor/preflight run
+  // from anywhere; the wiring lands on Jobs to watch it.
+  runCheck?: (command: string) => void;
 }
 
 // Palette sections (issue #839): the hint chips group into four
@@ -78,6 +81,8 @@ export function buildCommands(ctx: CommandContext): PaletteCommand[] {
     { id: 'refresh-briefing', label: 'Refresh briefing', hint: 'Briefing', keywords: 'reload fetch latest', run: () => ctx.refreshBriefing() },
     { id: 'sync-now', label: 'Sync now', hint: 'System', keywords: 'flush outbox upload retry offline queue', run: () => ctx.syncNow?.() },
     { id: 'open-stats', label: 'Container stats', hint: 'System', keywords: 'restart container health cpu ram docker', run: () => ctx.openStats?.() },
+    { id: 'run-doctor', label: 'Run Doctor check', hint: 'Tools', keywords: 'diagnostic health td doctor runtime full-stack', run: () => ctx.runCheck?.('td doctor') },
+    { id: 'run-preflight', label: 'Run Preflight check', hint: 'Tools', keywords: 'pre-push local checks ci td preflight gate', run: () => ctx.runCheck?.('td preflight') },
     { id: 'open-terminal', label: 'Open Terminal', hint: 'Tools', keywords: 'shell console ssh', run: () => ctx.openUrl(ctx.terminalUrl) },
     { id: 'open-code', label: 'Open Code editor', hint: 'Tools', keywords: 'vscode edit files', run: () => ctx.openUrl(ctx.codeUrl) },
   ];

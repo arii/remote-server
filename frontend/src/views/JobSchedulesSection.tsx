@@ -22,6 +22,38 @@ export function draftLabel(draft: ScheduleDraft): string {
   return draft.action;
 }
 
+// Bulk + grouping helpers (#1017): rows group by action in
+// first-seen order; the armed delete confirm names its exact
+// targets so Disable is never a blind single tap.
+export interface ScheduleGroup {
+  action: string;
+  rows: ActionSchedule[];
+}
+
+export function groupSchedules(rows: ActionSchedule[]): ScheduleGroup[] {
+  const groups = new Map<string, ActionSchedule[]>();
+  for (const r of rows) {
+    const argv = r.td_argv ?? [];
+    const key = argv.length > 0 ? argv.join(' ') : r.action;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(r);
+    else groups.set(key, [r]);
+  }
+  return Array.from(groups.entries()).map(([action, groupRows]) => ({
+    action,
+    rows: groupRows,
+  }));
+}
+
+export function describeBulkTargets(rows: ActionSchedule[]): string {
+  return rows
+    .map((r) => {
+      const argv = r.td_argv ?? [];
+      return argv.length > 0 ? argv.join(' ') : r.action;
+    })
+    .join(', ');
+}
+
 export default function JobSchedulesSection({
   repo,
   draft,
@@ -43,6 +75,10 @@ export default function JobSchedulesSection({
   );
   const [cadence, setCadence] = useState('daily');
   const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkArmed, setBulkArmed] = useState<'delete' | null>(null);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const [busyOp, setBusyOp] = useState<string | null>(null);
   const activeDraft = draft ?? initialDraft ?? null;
 
   async function load() {
@@ -112,7 +148,58 @@ export default function JobSchedulesSection({
     }
   }
 
+  // Bulk run: sequential pause/resume/delete over a row set with
+  // one notice naming failures (#1017). Single-flight via busyOp —
+  // the per-row buttons below share the same guard.
+  async function runBulk(
+    op: 'pause' | 'resume' | 'delete',
+    ids: string[],
+  ) {
+    if (busyOp !== null || ids.length === 0) return;
+    setBusyOp(`bulk-${op}`);
+    setBulkNote(null);
+    setError(null);
+    const failed: string[] = [];
+    try {
+      if (useMock()) return;
+      for (const id of ids) {
+        try {
+          if (op === 'pause') await pauseActionSchedule(id);
+          else if (op === 'resume') await resumeActionSchedule(id);
+          else await deleteActionSchedule(id);
+        } catch {
+          failed.push(id.slice(0, 8));
+        }
+      }
+      await load();
+      if (op === 'delete') {
+        setSelected(new Set());
+        setBulkArmed(null);
+      }
+      setBulkNote(
+        failed.length === 0
+          ? `${op === 'delete' ? 'Deleted' : op === 'pause' ? 'Paused' : 'Resumed'} ${ids.length} schedule${ids.length === 1 ? '' : 's'}.`
+          : `${op} partial: ${failed.length} failed (${failed.join(', ')}).`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyOp(null);
+    }
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const list = schedules ?? [];
+  const groups = groupSchedules(list);
+  const selectedRows = list.filter((s) => selected.has(s.id));
   return (
     <section data-testid="jobs-schedule-section" aria-label="Scheduled runs">
       <h3>Scheduled runs</h3>
@@ -159,58 +246,167 @@ export default function JobSchedulesSection({
           No scheduled runs. Finished runs offer Schedule to repeat them.
         </p>
       )}
-      {list.length > 0 && (
-        <ul className="session-list" data-testid="jobs-schedule-list">
-          {list.map((s) => (
-            <li key={s.id} className="detail">
-              <span className="row-title">
-                {s.td_argv.length > 0 ? s.td_argv.join(' ') : s.action}
+      {selectedRows.length > 0 && (
+        <div className="actions" data-testid="jobs-schedule-bulkbar" role="group" aria-label="Bulk schedule actions">
+          <span className="row-meta" data-testid="jobs-schedule-bulkcount">
+            {selectedRows.length} selected
+          </span>{' '}
+          <button
+            type="button"
+            data-testid="jobs-schedule-bulk-pause"
+            disabled={busyOp !== null}
+            onClick={() => void runBulk('pause', selectedRows.map((s) => s.id))}
+          >
+            {busyOp === 'bulk-pause' ? 'Pausing…' : `Pause ${selectedRows.length}`}
+          </button>{' '}
+          <button
+            type="button"
+            data-testid="jobs-schedule-bulk-resume"
+            disabled={busyOp !== null}
+            onClick={() => void runBulk('resume', selectedRows.map((s) => s.id))}
+          >
+            {busyOp === 'bulk-resume' ? 'Resuming…' : `Resume ${selectedRows.length}`}
+          </button>{' '}
+          {bulkArmed === 'delete' ? (
+            <>
+              <span className="row-meta" data-testid="jobs-schedule-bulk-targets">
+                Delete {describeBulkTargets(selectedRows)}?
               </span>{' '}
-              {s.enabled === false && (
-                <span className="row-meta" data-testid="jobs-schedule-paused">
-                  Paused
-                </span>
-              )}
-              <p className="row-meta" data-testid="jobs-schedule-next">
-                {s.cadence} · {s.repo} · next{' '}
-                {new Date(s.next_run * 1000).toLocaleString()}
-                {s.last_result?.run_id ? ` · last ${s.last_result.run_id}` : ''}
-                {s.last_result?.ok === false && s.last_result?.error
-                  ? ` · failed: ${s.last_result.error}`
-                  : ''}
-              </p>
-              <div className="actions">
-                {s.enabled === false ? (
-                  <button
-                    type="button"
-                    data-testid="jobs-schedule-resume"
-                    aria-label={`Resume schedule ${s.action} for ${s.repo}`}
-                    onClick={() => void onResume(s.id)}
-                  >
-                    Resume
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    data-testid="jobs-schedule-pause"
-                    aria-label={`Pause schedule ${s.action} for ${s.repo}`}
-                    onClick={() => void onPause(s.id)}
-                  >
-                    Pause
-                  </button>
-                )}{' '}
+              <button
+                type="button"
+                data-testid="jobs-schedule-bulk-delete-confirm"
+                disabled={busyOp !== null}
+                onClick={() => void runBulk('delete', selectedRows.map((s) => s.id))}
+              >
+                {busyOp === 'bulk-delete' ? 'Deleting…' : 'Confirm delete'}
+              </button>{' '}
+              <button
+                type="button"
+                data-testid="jobs-schedule-bulk-delete-cancel"
+                onClick={() => setBulkArmed(null)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              data-testid="jobs-schedule-bulk-delete"
+              disabled={busyOp !== null}
+              onClick={() => setBulkArmed('delete')}
+            >
+              Delete {selectedRows.length}
+            </button>
+          )}
+          {bulkNote && (
+            <span className="row-meta" role="status" data-testid="jobs-schedule-bulk-note">
+              {bulkNote}
+            </span>
+          )}
+        </div>
+      )}
+      {groups.length > 0 && (
+        <div data-testid="jobs-schedule-list">
+          {groups.map((g) => (
+            <section key={g.action} aria-label={`Schedules for ${g.action}`}>
+              <p className="row-meta">
+                <span data-testid={`jobs-schedule-group-${g.action}`}>
+                  {g.action} ({g.rows.length})
+                </span>{' '}
                 <button
                   type="button"
-                  data-testid="jobs-schedule-disable"
-                  aria-label={`Disable schedule ${s.action} for ${s.repo}`}
-                  onClick={() => void onDisable(s.id)}
+                  data-testid={`jobs-schedule-group-pause-${g.action}`}
+                  aria-label={`Pause all ${g.action} schedules`}
+                  disabled={busyOp !== null || !g.rows.some((s) => s.enabled !== false)}
+                  onClick={() => void runBulk('pause', g.rows.filter((s) => s.enabled !== false).map((s) => s.id))}
                 >
-                  Disable
+                  Pause all
+                </button>{' '}
+                <button
+                  type="button"
+                  data-testid={`jobs-schedule-group-resume-${g.action}`}
+                  aria-label={`Resume all ${g.action} schedules`}
+                  disabled={busyOp !== null || !g.rows.some((s) => s.enabled === false)}
+                  onClick={() => void runBulk('resume', g.rows.filter((s) => s.enabled === false).map((s) => s.id))}
+                >
+                  Resume all
                 </button>
-              </div>
-            </li>
+              </p>
+              <ul className="session-list">
+                {g.rows.map((s) => (
+                  <li key={s.id} className="detail">
+                    <label className="row-meta" htmlFor={`jobs-schedule-select-${s.id}`}>
+                      <input
+                        id={`jobs-schedule-select-${s.id}`}
+                        type="checkbox"
+                        data-testid={`jobs-schedule-select-${s.id}`}
+                        checked={selected.has(s.id)}
+                        onChange={() => toggleSelect(s.id)}
+                      />{' '}
+                      Select
+                    </label>{' '}
+                    <span className="row-title">
+                      {s.td_argv.length > 0 ? s.td_argv.join(' ') : s.action}
+                    </span>{' '}
+                    {s.enabled === false && (
+                      <span className="row-meta" data-testid="jobs-schedule-paused">
+                        Paused
+                      </span>
+                    )}
+                    <p className="row-meta" data-testid="jobs-schedule-next">
+                      {s.cadence} · {s.repo} · next{' '}
+                      {new Date(s.next_run * 1000).toLocaleString()}
+                      {s.last_result?.run_id ? ` · last ${s.last_result.run_id}` : ''}
+                      {s.last_result?.ok === false && s.last_result?.error
+                        ? ` · failed: ${s.last_result.error}`
+                        : ''}
+                    </p>
+                    <details data-testid={`jobs-schedule-past-${s.id}`}>
+                      <summary className="row-meta">Show past</summary>
+                      <p className="row-meta">
+                        {s.last_result?.run_id
+                          ? `Last run ${s.last_result.run_id}: ${s.last_result.ok === false ? 'failed' : 'ok'}${s.last_result.error ? ` — ${s.last_result.error}` : ''}`
+                          : 'No runs recorded yet.'}
+                      </p>
+                    </details>
+                    <div className="actions">
+                      {s.enabled === false ? (
+                        <button
+                          type="button"
+                          data-testid="jobs-schedule-resume"
+                          aria-label={`Resume schedule ${s.action} for ${s.repo}`}
+                          disabled={busyOp !== null}
+                          onClick={() => void onResume(s.id)}
+                        >
+                          Resume
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid="jobs-schedule-pause"
+                          aria-label={`Pause schedule ${s.action} for ${s.repo}`}
+                          disabled={busyOp !== null}
+                          onClick={() => void onPause(s.id)}
+                        >
+                          Pause
+                        </button>
+                      )}{' '}
+                      <button
+                        type="button"
+                        data-testid="jobs-schedule-disable"
+                        aria-label={`Disable schedule ${s.action} for ${s.repo}`}
+                        disabled={busyOp !== null}
+                        onClick={() => void onDisable(s.id)}
+                      >
+                        Disable
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
       )}
       {error && (
         <p className="row-meta" role="alert">
