@@ -1523,21 +1523,39 @@ describe('header health revalidation (issue #588)', () => {
 });
 
 describe('bottom-bar auto-hide (issue #1033)', () => {
+  const shown = { hidden: false, downPx: 0 };
+
   it('always shows at the top of the page', () => {
-    expect(nextBarHidden(100, 0, true)).toBe(false);
-    expect(nextBarHidden(0, 8, true)).toBe(false);
+    expect(nextBarHidden(100, 0, { hidden: true, downPx: 99 })).toEqual({
+      hidden: false,
+      downPx: 0,
+    });
   });
 
-  it('hides on a sustained scroll down', () => {
-    expect(nextBarHidden(100, 140, false)).toBe(true);
+  it('hides on a sustained scroll-down run, not one flick', () => {
+    let state = shown;
+    for (const y of [110, 120, 130, 140]) state = nextBarHidden(y - 10, y, state);
+    expect(state.hidden).toBe(false);
+    state = nextBarHidden(140, 180, state);
+    expect(state.hidden).toBe(true);
   });
 
-  it('reveals on scroll up', () => {
-    expect(nextBarHidden(140, 100, true)).toBe(false);
+  it('catches slow trackpad drags that per-event thresholds miss', () => {
+    let state = shown;
+    for (let i = 0; i < 8; i += 1) state = nextBarHidden(100 + i * 10, 110 + i * 10, state);
+    expect(state.hidden).toBe(true);
+  });
+
+  it('reveals on scroll up and resets the run', () => {
+    const hidden = { hidden: true, downPx: 0 };
+    expect(nextBarHidden(140, 100, hidden)).toEqual({ hidden: false, downPx: 0 });
   });
 
   it('holds state on jitter', () => {
-    expect(nextBarHidden(100, 105, false)).toBe(false);
-    expect(nextBarHidden(100, 105, true)).toBe(true);
+    expect(nextBarHidden(100, 103, shown)).toEqual({ hidden: false, downPx: 3 });
+    expect(nextBarHidden(100, 103, { hidden: true, downPx: 0 })).toEqual({
+      hidden: true,
+      downPx: 0,
+    });
   });
 });

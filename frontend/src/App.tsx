@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import NowView from './views/NowView';
 import ChatView from './views/ChatView';
 import BriefingView from './views/BriefingView';
@@ -7,14 +7,24 @@ import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
 import SyncBanner from './components/SyncBanner';
 import SessionBanner from './components/SessionBanner';
 
-// Bottom-bar auto-hide (issue #1033): pure scroll-direction state so
-// the rule itself is unit-testable. Top of page always shows; scroll
-// up reveals; a sustained scroll down hides.
-export function nextBarHidden(prevY: number, y: number, hidden: boolean): boolean {
-  if (y <= 8) return false;
-  if (y < prevY - 4) return false;
-  if (y > prevY + 24) return true;
-  return hidden;
+// Bottom-bar auto-hide (issue #1033): pure scroll state so the
+// rule itself is unit-testable. Top of page always shows; scroll
+// up reveals and resets the run; a sustained downward run past
+// 64px hides (per-event deltas alone miss slow trackpad drags).
+export interface BarHideState {
+  hidden: boolean;
+  downPx: number;
+}
+
+export function nextBarHidden(prevY: number, y: number, state: BarHideState): BarHideState {
+  if (y <= 8) return { hidden: false, downPx: 0 };
+  if (y < prevY - 4) return { hidden: false, downPx: 0 };
+  if (!state.hidden) {
+    const downPx = state.downPx + Math.max(0, y - prevY);
+    if (downPx > 64) return { hidden: true, downPx: 0 };
+    return { hidden: false, downPx };
+  }
+  return state;
 }
 import CommandPalette from './components/CommandPalette';
 import { buildCommands, type PaletteCommand } from './components/commandRegistry';
@@ -228,23 +238,30 @@ export default function App() {
   // Log slide-over selection (issue #928): which container's tail
   // is open atop the stats drawer, if any.
   const [logService, setLogService] = useState<string | null>(null);
-  // Bottom bar auto-hide (issue #1033): hides on sustained scroll
-  // down, reveals on scroll up; the CSS only applies it on narrow
-  // viewports and never under reduced motion.
+  // Bottom bar auto-hide (issue #1033): hides on a sustained
+  // scroll-down run, reveals on scroll up; the CSS only applies it
+  // on narrow viewports and never under reduced motion.
   const [barHidden, setBarHidden] = useState(false);
+  const barHiddenRef = useRef(barHidden);
+  barHiddenRef.current = barHidden;
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    let prev = window.scrollY;
-    let hidden = false;
+    // Lazy prev: scroll restoration firing after mount must not
+    // look like a user flick. The ref seeds remounts so a hidden
+    // bar cannot stick through an effect re-run.
+    let prev: number | null = null;
+    let state: BarHideState = { hidden: barHiddenRef.current, downPx: 0 };
     const onScroll = () => {
       const y = window.scrollY;
-      const next = nextBarHidden(prev, y, hidden);
-      prev = y;
-      if (next !== hidden) {
-        hidden = next;
-        setBarHidden(next);
+      if (prev === null) {
+        prev = y;
+        return;
       }
+      const was = state.hidden;
+      state = nextBarHidden(prev, y, state);
+      prev = y;
+      if (state.hidden !== was) setBarHidden(state.hidden);
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
