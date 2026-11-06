@@ -22,6 +22,30 @@
 		reverse_proxy code-server:8080
 	}
 
+	# Shared browser head (browserless debugger UI). No X-Frame-Options
+	# so the /buttons dashboard can embed /browser/ in an <iframe>.
+	# Human access is gated by oauth2-proxy upstream; agents use
+	# http://browserless:3000 directly over the compose network.
+	# The image serves the UI at /debugger/ (/ is 404 upstream), so
+	# the bare entry points redirect there (same pattern as /code).
+	handle /browser {
+		redir * /browser/debugger/
+	}
+
+	handle /browser/ {
+		redir * /browser/debugger/
+	}
+	handle /browser* {
+		uri strip_prefix /browser
+		header -X-Frame-Options
+		reverse_proxy browserless:3000 {
+			# Vital for WebSocket and CDP screencast streaming.
+			transport http {
+				dial_timeout 10s
+			}
+		}
+	}
+
 	# Repo previews: one block per /<name>, no strip (the app serves its
 	# own basePath). Template:
 	#   handle /<name>* {
