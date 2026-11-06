@@ -174,6 +174,57 @@ class TestEntrypointBehavior(unittest.TestCase):
                         encoding="utf-8") as f:
                     self.assertIn("ollama unreachable", f.read())
 
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_live_checkout_root_used_for_index(self):
+        # The baked /app copy has no .git and goes stale on deploy:
+        # the index must build from the mounted live checkout
+        # (BUTTONS_STACK doctrine in the Dockerfile).
+        with tempfile.TemporaryDirectory() as app_root:
+            self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as stack_root:
+                stack_bind, log, marker = self._fake_app(stack_root)
+                with tempfile.TemporaryDirectory() as index_dir:
+                    proc = _run(
+                        ["echo", "happy-marker"],
+                        {"APP_ROOT": app_root,
+                         "BUTTONS_STACK": stack_root,
+                         "S5_CHROMA_DIR": index_dir,
+                         "PATH": stack_bind + os.pathsep + os.environ.get(
+                             "PATH", "")})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertTrue(
+                        _wait_for(marker),
+                        "background build never ran")
+                    with open(log, encoding="utf-8") as f:
+                        body = f.read()
+                    self.assertIn(stack_root, body)
+                    self.assertNotIn(app_root, body)
+
+    def test_generate_suffix_stripped_from_probe(self):
+        # OLLAMA_URL ships with the /api/generate path in compose;
+        # the tags probe must hit the bare host, or a healthy
+        # Ollama 404s forever and the index degrades to failed
+        # (same suffix bug as model_router #968).
+        with tempfile.TemporaryDirectory() as app_root:
+            self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as index_dir:
+                proc = _run(
+                    ["echo", "boot-marker"],
+                    {"APP_ROOT": app_root,
+                     "S5_CHROMA_DIR": index_dir,
+                     "OLLAMA_URL": "http://127.0.0.1:9/api/generate",
+                     "OLLAMA_WAIT_SECS": "0",
+                     "OLLAMA_TRIES": "2"})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                failed = os.path.join(index_dir, ".index_failed")
+                self.assertTrue(
+                    _wait_for(failed),
+                    "background build never recorded its failure")
+                with open(failed, encoding="utf-8") as f:
+                    body = f.read()
+                self.assertIn("http://127.0.0.1:9", body)
+                self.assertNotIn("/api/generate", body)
+
     def _fake_app(self, root, build_exit=0):
         """Fake APP_ROOT: a fake `td` on a shim PATH records its
         argv and the index build outcome."""
