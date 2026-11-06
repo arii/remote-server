@@ -36,6 +36,19 @@
 		}
 	}
 
+	# CDP-direct viewer spike (feat/cdp-direct-viewer): raw screencast
+	# over one websocket + CDP input relay, no VNC in the loop.
+	# Standards track only; the noVNC drawer remains the supported UI.
+	handle /cdp-stream* {
+		uri strip_prefix /cdp-stream
+		header -X-Frame-Options
+		reverse_proxy terminal:8099 {
+			transport http {
+				dial_timeout 10s
+			}
+		}
+	}
+
 	# Repo previews: one block per /<name>, no strip (the app serves its
 	# own basePath). Template:
 	#   handle /<name>* {
