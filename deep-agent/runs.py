@@ -363,8 +363,10 @@ def total_metered_spend(ledger_path=None):
 
     Returns {"spent": float, "unknown": int}: priced metered rows
     sum into spent; metered rows without a rate count as unknown.
-    Tombstoned rows count — deletes hide runs, not spend. The
-    spend-cap gate and the budget endpoint share this. Never raises.
+    Tombstoned rows count — deletes hide runs, not spend — except
+    bare delete markers with no model, usage, or cost evidence,
+    which meter nothing (#968). The spend-cap gate and the budget
+    endpoint share this. Never raises.
     """
     spent = 0.0
     unknown = 0
@@ -378,6 +380,9 @@ def total_metered_spend(ledger_path=None):
         except (json.JSONDecodeError, ValueError):
             continue
         if not isinstance(row, dict):
+            continue
+        if row.get("deleted") and "cost_usd" not in row \
+                and "model" not in row and "usage" not in row:
             continue
         try:
             cost_usd, metered = _row_cost(row)

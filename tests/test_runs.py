@@ -237,6 +237,24 @@ class TestRuns(unittest.TestCase):
                                    before["spent"])
             self.assertEqual(runs.list_runs(ledger_path=path), [])
 
+    def test_evidence_less_tombstones_meter_nothing(self):
+        # Bare delete markers (deleted + ts, no model/usage/cost —
+        # as left in the buttons ledger) must not wedge the
+        # fail-closed spend gate: there is no spend evidence to
+        # price. A deleted row that kept model+usage still counts
+        # unknown (#968).
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                {"deleted": True, "ts": 1793746866.0},
+                {"deleted": True, "ts": 1793746868.0},
+                _row(model="nebius:Some/Future-Model",
+                     usage={"input_tokens": 1}),
+            ])
+            self.assertTrue(runs.delete_run("run-2", ledger_path=path))
+            total = runs.total_metered_spend(ledger_path=path)
+            self.assertEqual(total["unknown"], 1)
+            self.assertAlmostEqual(total["spent"], 0.0)
+
 
 class TestSearchTurns(unittest.TestCase):
     def _ledger(self, directory, rows):

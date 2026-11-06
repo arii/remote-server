@@ -7,11 +7,13 @@ bare "metered" tag rather than an invented number). Anything else
 is treated as metered-unknown: only an explicit ollama: prefix
 earns the free tag.
 
-Rates are $/1M tokens (input, output), verified 2026-11-03 against
-the Token Factory catalog (dev.nebius.com cookbook + nebius.com
-model pages). The catalog moves: METERED_RATE_IN_PER_1M /
-METERED_RATE_OUT_PER_1M override the rate for models missing from
-the card without a code push. Never raises.
+Rates are $/1M tokens (input, output), re-verified 2026-11-06
+against the live Token Factory catalog
+(GET /v1/models?verbose=true, per-model pricing.prompt /
+pricing.completion per token x 1M). The catalog moves:
+METERED_RATE_IN_PER_1M / METERED_RATE_OUT_PER_1M override the
+rate for models missing from the card without a code push.
+Never raises.
 """
 
 import os
