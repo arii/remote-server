@@ -1237,11 +1237,11 @@ describe('p2 a11y batch', () => {
       <ReportDialog initialBody="ctx" onSubmit={() => {}} onCancel={() => {}} />,
     );
     expect(html).toContain('role="dialog"');
-    expect(html).toContain('aria-label="Report a bug"');
+    expect(html).toContain('aria-labelledby="report-heading"');
     expect(html).toContain('autofocus');
   });
 
-  it('report dialog exposes repo labels as optional checkboxes (issue #436)', () => {
+  it('report dialog exposes repo labels as collapsed chips with a top close (issues #436, #1027)', () => {
     const html = renderToStaticMarkup(
       <ReportDialog
         initialBody="ctx"
@@ -1253,11 +1253,14 @@ describe('p2 a11y batch', () => {
     expect(html).toContain('data-testid="report-labels"');
     expect(html).toContain('data-testid="report-label-ready"');
     expect(html).toContain('data-testid="report-label-bug"');
-    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).toContain('data-testid="report-close"');
     const bare = renderToStaticMarkup(
       <ReportDialog initialBody="ctx" onSubmit={() => {}} onCancel={() => {}} />,
     );
     expect(bare).not.toContain('data-testid="report-labels"');
+    expect(bare).toContain('data-testid="report-close"');
   });
 
   it('approval Approve uses tap-to-fire with an inline confirm, not hold-to-arm (issue #508)', () => {

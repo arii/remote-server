@@ -375,7 +375,7 @@ export function ReportDialog({
     <form
       data-testid="report-dialog"
       role="dialog"
-      aria-label="Report a bug"
+      aria-labelledby="report-heading"
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -387,21 +387,40 @@ export function ReportDialog({
         onSubmit(title.trim(), body, labels);
       }}
     >
+      <div className="report-head">
+        <span className="row-title" id="report-heading">
+          Report a bug
+        </span>
+        <button
+          type="button"
+          data-testid="report-close"
+          aria-label="Close report form"
+          title="Close (Escape)"
+          onClick={onCancel}
+        >
+          ✕
+        </button>
+      </div>
       {availableLabels.length > 0 && (
-        <fieldset data-testid="report-labels">
-          <legend className="row-meta">Labels (optional)</legend>
-          {availableLabels.map((name) => (
-            <label key={name} className="row-meta">
-              <input
-                type="checkbox"
+        <details className="report-labels" data-testid="report-labels">
+          <summary className="row-meta">
+            Labels (optional)
+            {labels.length > 0 ? ` — ${labels.length} selected` : ''}
+          </summary>
+          <div className="report-chips" role="group" aria-label="Labels">
+            {availableLabels.map((name) => (
+              <button
+                key={name}
+                type="button"
                 data-testid={`report-label-${name}`}
-                checked={labels.includes(name)}
-                onChange={() => toggleLabel(name)}
-              />{' '}
-              {name}
-            </label>
-          ))}
-        </fieldset>
+                aria-pressed={labels.includes(name)}
+                onClick={() => toggleLabel(name)}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </details>
       )}
       <label className="row-meta" htmlFor="report-title">
         Bug title (required){' '}

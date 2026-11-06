@@ -348,6 +348,38 @@ li.detail > button:focus-visible { outline: 2px solid var(--accent); outline-off
 li.detail.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 /* Keyboard triage cursor (j/k): visible focus ring on the current row. */
 li.detail.kbd-focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Report-a-bug dialog (issue #1027): heading plus an explicit top
+   close (Escape still works); labels collapse into a disclosure of
+   toggle chips so title + File/Cancel stay visible without scrolling
+   past 19 checkbox rows. */
+.report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.report-head > button {
+  flex: none;
+  min-height: 44px;
+  min-width: 44px;
+}
+.report-labels { margin-bottom: 0.5rem; }
+.report-labels > summary { cursor: pointer; }
+.report-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  max-height: 7.5rem;
+  overflow-y: auto;
+}
+.report-chips > button[aria-pressed="true"] {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: #fff;
+  font-weight: 650;
+}
 /* Optimistic merge pending state: dim the row while the merge is in flight. */
 li.detail.merging { opacity: 0.55; }
 /* Co-browsing drawer (Issue 11): embedded browser frame with a
