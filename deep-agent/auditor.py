@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 
+import skills_registry
+
 MAX_AUDIT_LOOPS_DEFAULT = 3
 
 
@@ -170,12 +172,14 @@ class AuditorGraph:
             model, [ask_investigator.search_docs,
                     ask_investigator.read_repo_file,
                     ask_investigator.grep_repo])
+        user_content = (
+            "Audit these changes for rule violations and risky blast "
+            "radius. Reply with numbered findings.\n\n"
+            f"Gate payload:\n{json.dumps(gate_payload)[:4000]}")
+        user_content = skills_registry.SkillsRegistry().inject_skills_for_node(
+            "deep_semantic_auditor_node", user_content)
         result = agent.invoke(
-            {"messages": [{"role": "user",
-                           "content": "Audit these changes for rule "
-                                      "violations and risky blast radius. "
-                                      "Reply with numbered findings.\n\n"
-                                      f"Gate payload:\n{json.dumps(gate_payload)[:4000]}"}]})
+            {"messages": [{"role": "user", "content": user_content}]})
         messages = result.get("messages", []) if isinstance(
             result, dict) else []
         texts = [getattr(m, "content", "") or "" for m in messages]
