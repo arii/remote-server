@@ -48,6 +48,25 @@ describe('re-entry guard (issue #1070)', () => {
     expect(calls).toBe(2);
   });
 
+  it('lets a different action proceed while one is in flight (issue #1090)', async () => {
+    const run = createReentryGuard();
+    let calls: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = run(async () => {
+      calls.push('poll');
+      await gate;
+    }, 'load jobs');
+    await run(async () => {
+      calls.push('launch');
+    }, 'td doctor');
+    expect(calls).toEqual(['poll', 'launch']);
+    release();
+    await first;
+  });
+
   it('releases the guard when the run throws', async () => {
     const run = createReentryGuard();
     let calls = 0;
