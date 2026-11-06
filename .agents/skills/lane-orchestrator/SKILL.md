@@ -23,6 +23,13 @@ Write the lane registry to memory file `lanes/registry.md` (personal_project sco
 7. Answer lane questions from the other roles.
 8. On `role: <role> <session>` announce messages, update `lanes/registry.md` and reply confirming registration.
 
+## 4-Stage Deep-Agent Pipeline Rules
+
+1. **Stage 1 (Init)**: Run `td.init_and_rag` across target repo (`arii/tech-dancer`, `arii/hrm`, `arii/glossy`, `arii/remote-server`, `arii/boomtick`).
+2. **Stage 2 (Issue Generator)**: Author issue with explicit `Allowed Scope` file list and call `td.validate_issue`. Do not assign to `lane:coder` unless `td.validate_issue` passes.
+3. **Stage 3 (Init Coder)**: Spawn isolated worktree via `worktree.create`, enforce RAG receipt, and submit PR via `agent.submit_pr`.
+4. **Stage 4 (Issue+Code Auditor)**: Run `td.verify_scope`, `td.audit_worktree`, and `repo.read_ci_logs` before approving or merging.
+
 ## Handoff format
 
 To coders, one line: `ready: #<n> [<area>] <finding>`. To auditors on dupes: `dupe: closed #<n> as dupe of #<m>`.
