@@ -26,6 +26,14 @@ if ! python3 -c "import fastapi, uvicorn" 2>/dev/null; then
   pip install -r "$REPO_ROOT/backend/requirements.txt"
 fi
 
+# The backend shells out to td (workflow-health, td doctor
+# dispatches). Pin the boomtick CLI release — never float main here
+# (release-train, issue #1081).
+if ! command -v td >/dev/null 2>&1; then
+  echo "==> installing boomtick td CLI (pinned)" >&2
+  pip install "git+https://github.com/arii/boomtick.git@cli-v0.19.3#subdirectory=cli"
+fi
+
 echo "==> ensuring chromium" >&2
 (cd "$E2E_DIR" && npx playwright install --with-deps chromium)
 

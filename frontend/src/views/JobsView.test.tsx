@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { dangerEntryFor } from './DangerZone';
 import {
   CompareRunsSection,
+  createReentryGuard,
   HighlightedLine,
   JobListItem,
   JobsListPanel,
@@ -22,6 +23,46 @@ import type { JobRecord } from '../apiTypes';
 function mkJob(over: Partial<JobRecord> = {}): JobRecord {
   return { id: 'abc123def456', kind: 'logs', name: 'logs', repo: 'remote-server', done: true, ...over };
 }
+
+describe('re-entry guard (issue #1070)', () => {
+  it('absorbs overlapping runs while one is in flight', async () => {
+    const run = createReentryGuard();
+    let calls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = run(async () => {
+      calls += 1;
+      await gate;
+    });
+    await run(async () => {
+      calls += 1;
+    });
+    expect(calls).toBe(1);
+    release();
+    await first;
+    await run(async () => {
+      calls += 1;
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('releases the guard when the run throws', async () => {
+    const run = createReentryGuard();
+    let calls = 0;
+    await expect(
+      run(async () => {
+        calls += 1;
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    await run(async () => {
+      calls += 1;
+    });
+    expect(calls).toBe(2);
+  });
+});
 
 describe('row note excerpt (issue #1013)', () => {
   it('caps long notes with an ellipsis', () => {

@@ -7,6 +7,7 @@ import {
   activityWindowSeconds,
   boardStatusForBranch,
   BriefingBody,
+  BriefingRetryButton,
   briefingActions,
   briefingFreshness,
   briefingAllClear,
@@ -890,6 +891,28 @@ describe('briefing empty-state generate (issue #929)', () => {
   it('hides the generate action when content exists', () => {
     const html = renderBody(briefing({ attention: ['#1 do the thing'] }));
     expect(html).not.toContain('data-testid="briefing-generate"');
+  });
+});
+
+describe('retry busy state (issue #1070)', () => {
+  const noop = () => {};
+
+  it('offers an enabled Retry trigger when idle', () => {
+    const html = renderToStaticMarkup(
+      <BriefingRetryButton retrying={false} onRetry={noop} />,
+    );
+    expect(html).toContain('data-testid="briefing-retry"');
+    expect(html).toContain('>Retry</button>');
+    expect(html).not.toContain('disabled');
+  });
+
+  it('disables the trigger with a label swap while settling', () => {
+    const html = renderToStaticMarkup(
+      <BriefingRetryButton retrying onRetry={noop} />,
+    );
+    expect(html).toContain('data-testid="briefing-retry"');
+    expect(html).toContain('disabled');
+    expect(html).toContain('Retrying…');
   });
 });
 

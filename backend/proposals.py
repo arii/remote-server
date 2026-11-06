@@ -12,7 +12,7 @@ approval, on the existing resume path (no new endpoints):
   (the BoomTick local worktree session), returns the session id
 - coder:    ``td worktree create`` + detached ``coder`` executor
   spawned on the worktree with the filled executor prompt,
-  returns the pid (replaces Jules dispatch)
+  returns the pid
 - comment:  ``gh pr comment`` on an arii PR, returns the URL
 - review:   ``gh pr review --comment|--request-changes`` (never
   ``--approve``: unrepresentable by construction), returns the URL

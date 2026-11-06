@@ -85,6 +85,28 @@ class TestComposeGuards(unittest.TestCase):
                 f"{svc} image must be pinned by digest (got {images[svc]})",
             )
 
+    def test_grid_session_timeout(self):
+        """Grid idle reap must be minutes, not an hour (issue #1054).
+
+        A leaked session wedged the single browser slot ~1hr
+        (SE_NODE_SESSION_TIMEOUT=3600). Agent runs issue commands
+        continuously and the viewer recreates transparently, so a
+        10-minute ceiling only kills truly idle sessions.
+        """
+        with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        timeout = [
+            line for line in lines
+            if "SE_NODE_SESSION_TIMEOUT" in line
+            and not line.strip().startswith("#")
+        ]
+        self.assertEqual(len(timeout), 1,
+                         "expected exactly one SE_NODE_SESSION_TIMEOUT line")
+        m = re.search(r"SE_NODE_SESSION_TIMEOUT=(\d+)", timeout[0])
+        self.assertIsNotNone(m, "session timeout must carry an integer value")
+        self.assertLessEqual(int(m.group(1)), 600,
+                             "idle reap must be 10 minutes or less")
+
     def test_terminal_requirements_parity(self):
         """terminal/requirements.txt must include all backend deps and pytest."""
         backend_req = os.path.join(ROOT, "backend", "requirements.txt")
