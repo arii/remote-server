@@ -154,6 +154,13 @@ services:
       NEBIUS_MODEL: ${NEBIUS_MODEL:-}
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
       NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
+    # Shared browser head (Issue 8): default CDP endpoint for
+    # td audit-impact visual audits and agent automation inside
+    # this container. Overridable per-machine via BROWSERLESS_ENDPOINT.
+    # Takes effect on the next terminal recreate (never recreate
+    # terminal just for this -- the gate degrades gracefully to
+    # BROWSERLESS_UNREACHABLE without it).
+      BROWSERLESS_ENDPOINT: "${BROWSERLESS_ENDPOINT:-ws://browserless:3000}"
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
