@@ -34,7 +34,7 @@ To transition away from unmetered cloud token spend (Muse, Copilot, expensive cl
 │        • deep_semantic_auditor_node◄── architectural_audit_rubric.md       │
 │        • visual_interaction_node   ◄── co_browsing_state_takeover.md       │
 │                                                                            │
-│  2. Local / Nebius Model Adapter (deep-agent/llm_factory.py)               │
+│  2. Local / Nebius Model Adapter (deep-agent/model_router.py)               │
 │     ├─ Local:  http://127.0.0.1:8000/v1 (Qwen2.5-Coder-32B / DeepSeek-R1) │
 │     └─ Nebius: https://api.studio.nebius.ai/v1 (temperature: 0.1, max: 1500)│
 │                                                                            │
@@ -74,9 +74,9 @@ To transition away from unmetered cloud token spend (Muse, Copilot, expensive cl
 | **`lane-coder` Sub-Agents** | `remote-server/backend/lane_coder.py` | Repeatedly echoes full codebase history. Replaced by `InitCoderGraph` in `deep-agent/coder.py`. |
 | **Unrestricted Chat Baselines** | Agent prompts referencing open-ended conversational turns | Forces agents to run exploratory shell loops (`ls`, `grep`, `cat`) instead of single deterministic `td` calls. |
 | **Granular MCP Tools (11 deleted)** | `boomtick/mcp/src/tools/repo.multi_exec.ts`, `repo.commit_patch.ts`, `repo.logs.ts`, `repo.get_package_scripts.ts`, `repo.get_changed_files.ts`, `repo.get_command_schema.ts`, `github.get_pr_commits.ts`, `github.get_pr_reviews.ts`, `github.get_merge_conflict_files.ts`, `skill.list.ts`, `skill.read.ts` | Eliminates unsandboxed execution, root-repo git mutation, and schema bloat from LLM tool definitions. |
-| **Duplicate Python Modules** | `remote-server/backend/ast_validator.py`, `parse_task_spec.py`, `verify_allowlist.py`, `impact_pass.py`, `repair_worker.py`, `deep-agent/impact.py`, `deep-agent/ux_audit.py` | Legacy copies that duplicated logic now executed directly via `td <subcommand> --json`. |
-
 ### 2.2 Retained & Optimized Components (Lean Pipeline)
+
+> Audit note (#1095, 2026-11-06): the former "Duplicate Python Modules" row was removed — `backend/ast_validator.py`, `parse_task_spec.py`, `verify_allowlist.py`, `impact_pass.py`, `repair_worker.py`, `deep-agent/impact.py`, and `deep-agent/ux_audit.py` are all still imported live (e.g. `backend/repair_worker.py`, `backend/api/routers/issues.py`, `deep-agent/auditor.py`). They are not dead duplicates; do not purge them.
 
 1. **Deterministic `td` CLI & MCP Engine (`boomtick`):** 16 structured tools capped to $\le 16$ in `server.test.ts`.
 2. **4-Stage LangGraph Pipeline (`remote-server`):** Single-pass state transitions (`Init` $\rightarrow$ `IssueGenerator` $\rightarrow$ `Coder` $\rightarrow$ `Auditor`).
@@ -86,9 +86,11 @@ To transition away from unmetered cloud token spend (Muse, Copilot, expensive cl
 
 ## 3. Local LLM & Nebius Integration Layer
 
-Configure all LangChain/LangGraph nodes in `remote-server` to route through a single model factory (`remote-server/deep-agent/llm_factory.py`) with strict token clamping.
+Configure all LangChain/LangGraph nodes in `remote-server` to route through a single model factory (`remote-server/deep-agent/model_router.py`) with strict token clamping.
 
-### 3.1 Model Factory Implementation (`remote-server/deep-agent/llm_factory.py`)
+### 3.1 Model Factory Implementation (`remote-server/deep-agent/model_router.py`)
+
+> Audit note (#1095, 2026-11-06): there is no `deep-agent/llm_factory.py`; the factory role lives in `deep-agent/model_router.py` (`resolve_llm`). The sketch below is a reference pattern, not the live implementation.
 
 ```python
 from __future__ import annotations
@@ -144,6 +146,8 @@ CLI agents waste thousands of tokens running exploratory bash commands (`git sta
 ### 4.1 CLI Agent Configuration
 
 #### A. `agy` Configuration (`~/.agy/config.json` or project root `.agy.json`)
+
+> Status (#1095, 2026-11-06): aspirational — neither file exists in the tree. Track under the release-train procedure (`docs/release-train.md`) or leave as a reference pattern.
 Point `agy` to the local `boomtick-mcp` server via `stdio` or SSE:
 
 ```json
@@ -175,6 +179,8 @@ Point `agy` to the local `boomtick-mcp` server via `stdio` or SSE:
 ```
 
 #### B. GitHub Copilot & Muse Instructions (`.github/copilot-instructions.md`)
+
+> Status (#1095, 2026-11-06): aspirational — the file does not exist in the tree. Track under the release-train procedure (`docs/release-train.md`) or leave as a reference pattern.
 Embed deterministic execution rules directly into the repository prompt root:
 
 ```markdown
@@ -657,15 +663,13 @@ pytest cli/tests/test_browser_cdp.py cli/tests/test_visual_audit.py
 
 # 2. Verify remote-server SkillsRegistry, Agent Control API, and Clean Tree
 cd ../remote-server
-test ! -f backend/ast_validator.py && test ! -f backend/lane_orchestrator.py
+test -f backend/ast_validator.py && test ! -f backend/lane_orchestrator.py
 pytest tests/test_skills_registry.py tests/test_co_browsing_api.py
 
 # 3. Verify Local / Nebius Model Factory
-python3 -c "
-from deep_agent.llm_factory import get_lean_chat_model
-llm = get_lean_chat_model('test')
-res = llm.invoke('Hello from lean deep-agent')
-print('Model response:', res.content[:50])
+PYTHONPATH=deep-agent python3 -c "
+import model_router
+print('resolve_llm:', callable(model_router.resolve_llm))
 "
 
 # 4. End-to-End Co-Browsing Preflight Execution

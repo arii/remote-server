@@ -94,6 +94,8 @@ skills-lock.json
 .langgraph_api/
 .mda/
 sandbox/output/
+.worktrees/
+.dependency-cache/
 
 # Vite build output (regenerate with pnpm build)
 frontend/dist/

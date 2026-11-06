@@ -13,6 +13,8 @@
 
 ### Critical Gaps Discovered in the Codebase Audit (Next Steps)
 Despite the completions above, several **duplicate modules, legacy MCP tools, and orphaned `core_cli` callers** remain in the trees:
+
+> Status (audit #1095, 2026-11-06): gaps 2–4 below are SUPERSEDED. `run_core_cli` is gone everywhere (`tests/test_no_core_cli.py` locks zero `core_cli`/`run_core_cli` references across `backend/`, `deep-agent/`, `tests/`, `.github/`, `Makefile`, `mk/`), `ci-repair.yml` was removed, and the `backend/` + `deep-agent/` modules named below are still imported live — not dead duplicates. Do not execute Steps 3.1–3.4; they are kept as historical record only.
 1. **`boomtick/mcp` still exposes 23 tools instead of $\le 16$** (and `mcp/src/mcp/server.test.ts` still asserts `<= 43` tools) because 6 redundant/unsafe tools were kept and the 6 new deterministic `td` gates (`td init`, `td rag`, `td validate-issue`, `td verify-scope`, `td audit-code`, `td audit-impact`) are **not yet exposed as MCP tools** in `mcp/src/mcp/definitions.ts`.
 2. **`remote-server/backend/` secretly retained copies of `core_cli/`** as top-level files inside `backend/` (`backend/ast_validator.py`, `backend/parse_task_spec.py`, `backend/verify_allowlist.py`, `backend/impact_pass.py`, `backend/merge_gated.py`, `backend/review.py`, `backend/repair_worker.py`, `backend/ts_check.js`, etc.) and `backend/core/__init__.py` still routes `run_core_cli()` to `python -m backend.<module>` instead of `td <subcommand> --json`.
 3. **`remote-server/deep-agent/impact.py` and `ux_audit.py` were not deleted** (along with `tests/test_impact.py`, `tests/test_ux_audit.py`, and `tests/test_core_cli.py`).
@@ -85,7 +87,9 @@ After updating `mcp/src/mcp/definitions.ts` and `mcp/src/mcp/tools.ts`:
 
 ## 3. Step-by-Step Code Cleanup Instructions in `remote-server`
 
-### Step 3.1: Delete Shadow `core_cli` Files Hidden Inside `remote-server/backend/`
+### Step 3.1: Delete Shadow `core_cli` Files Hidden Inside `remote-server/backend/` — SUPERSEDED (#1095)
+
+> Do not run the `git rm` commands below: every listed file is still imported live. The `core_cli` cutover this step assumed is complete and test-locked (`tests/test_no_core_cli.py`, 4/4 green).
 When `core_cli/` was removed, 9 of its modules were copied into `remote-server/backend/` instead of cutting callers over to `td`.
 
 **Delete these 9 duplicate files in `remote-server`:**
