@@ -36,20 +36,9 @@ const TD_COMMANDS: TdCommand[] = [
     needsPr: true,
     build: (pr) => `td gh resolve-conflicts --pr ${pr}`,
   },
-  {
-    slug: 'doctor',
-    label: 'Doctor',
-    desc: 'Full-stack runtime diagnostic.',
-    needsPr: false,
-    build: () => 'td doctor',
-  },
-  {
-    slug: 'preflight',
-    label: 'Preflight',
-    desc: 'Local checks before blaming CI.',
-    needsPr: false,
-    build: () => 'td preflight',
-  },
+  // #1016: doctor/preflight demoted out of the Jobs whole-repo grid —
+  // they live on in the command palette (run-doctor/run-preflight) and
+  // the td CLI. No whole-repo entries remain, so the group below is gone.
   {
     slug: 'audit-pr',
     label: 'Audit PR',
@@ -186,22 +175,6 @@ export default function TdCommands({
             {conflictBlock}
           </p>
         )}
-      </div>
-      <div className="cmd-group" data-testid="td-repo-group">
-        <p className="row-meta">Whole repo</p>
-        <div className="actions">
-          {TD_COMMANDS.filter((c) => !c.needsPr).map((c) => (
-            <button
-              key={c.slug}
-              type="button"
-              data-testid={`dispatch-td-${c.slug}`}
-              title={c.desc}
-              onClick={() => onDispatch(c)}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
       </div>
     </section>
   );
