@@ -1119,6 +1119,7 @@ export default function JobsView({
           prOk={prOk}
           conflictBlock={conflictBlock}
           onDispatch={onDispatchTd}
+          repo={repo}
         />
 
         <JobSchedulesSection
