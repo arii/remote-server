@@ -45,7 +45,6 @@ import {
   repoAction,
   restartContainer,
   startJobRun,
-  startTdRun,
   subscribeApiFailures,
   warmRepoMetrics,
 } from './apiClient';
@@ -282,6 +281,7 @@ export default function App() {
   const [sectionRequest, setSectionRequest] = useState<{
     section: 'review' | 'jobs' | 'queue' | null;
     nonce: number;
+    tdCommand?: string;
   } | null>(null);
   // Open Now section mirrored up from NowView (#896): drives the
   // nav pressed state for the Review/Jobs entries.
@@ -362,13 +362,12 @@ export default function App() {
         openUrl: (url) => {
           window.location.href = url;
         },
-        // Doctor/Preflight from anywhere (#1016): same startTdRun
-        // path as the Jobs TdCommands buttons, then land on the Jobs
-        // section to watch the run. A failed dispatch still lands on
-        // Jobs, where the operator retries with visible errors.
+        // Doctor/Preflight from anywhere (#1016, #1057): hand the
+        // command to the Jobs section so it launches through the same
+        // progress/notice path as the Jobs buttons. Nothing runs here;
+        // a failed dispatch surfaces in Jobs with visible errors.
         runCheck: (command) => {
-          setSectionRequest((r) => ({ section: 'jobs', nonce: (r?.nonce ?? 0) + 1 }));
-          void startTdRun(command, repo).catch(() => {});
+          setSectionRequest((r) => ({ section: 'jobs', nonce: (r?.nonce ?? 0) + 1, tdCommand: command }));
         },
         terminalUrl: `${stackBase()}/`,
         codeUrl: `${stackBase()}/code`,
