@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import os
+import threading
 import time
 import urllib.request
 
@@ -56,8 +57,9 @@ ws.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
   if (m.type === 'attached') {
     dsf = m.dsf || 1;
-    document.getElementById('state').textContent =
-      (m.shared ? 'shared agent session ' : 'own session ') + m.session;
+    const label = m.kind === 'agent' ? 'shared agent session '
+      : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
+    document.getElementById('state').textContent = label + m.session;
     return;
   }
   if (m.type === 'status' || m.type === 'reattached') {
@@ -152,6 +154,93 @@ def _grid_session_delete(session_id):
 #: driver (boomtick browser_cdp). Viewer/human sessions lack it —
 #: attaching to one would mirror the viewer recursively.
 AGENT_SESSION_MARKER = "boomtick:agentSession"
+
+
+#: Shared viewer session (issue #1026). With a single Grid slot,
+#: every viewer tab minting its own session wedges all but the
+#: first — and each shows a different browser. The first viewer
+#: tab creates the session and records it here; later tabs attach
+#: to it while it is alive, so all tabs show the same page. Agent
+#: sessions still take precedence for new viewers. Refcounted: the
+#: last viewer disconnect deletes it (no warm-TTL policy to tune).
+#: Single-worker uvicorn owns this registry (Dockerfile CMD sets
+#: no --workers); a restart orphans the Grid session to its idle
+#: timeout, and the next viewer transparently creates a new one.
+_viewer_lock = threading.Lock()
+_viewer_session_id: "str | None" = None
+_viewer_refcount = 0
+
+
+def _grid_session_alive(session_id):
+    """True when Grid still has the session (cheap read-only probe)."""
+    try:
+        with urllib.request.urlopen(
+                GRID_BASE + f"/session/{session_id}/url",
+                timeout=10) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _viewer_claim():
+    """Attach to the live shared viewer session, if any.
+
+    Returns the session id (refcounted) or None. Stale records are
+    cleared so the next claim creates fresh.
+    """
+    global _viewer_session_id, _viewer_refcount
+    with _viewer_lock:
+        sid = _viewer_session_id
+        if sid is None:
+            return None
+        # Validate outside the lock: network I/O under a mutex
+        # would serialize every viewer connect behind Grid latency.
+        alive = _grid_session_alive(sid)
+    with _viewer_lock:
+        if not alive or _viewer_session_id != sid:
+            if _viewer_session_id == sid:
+                _viewer_session_id = None
+                _viewer_refcount = 0
+            return None
+        _viewer_refcount += 1
+        return sid
+
+
+def _viewer_create(session_id):
+    """Record a fresh viewer-owned session (refcount starts at 1)."""
+    global _viewer_session_id, _viewer_refcount
+    with _viewer_lock:
+        _viewer_session_id = session_id
+        _viewer_refcount = 1
+
+
+def _viewer_release(session_id):
+    """Drop one viewer reference; True when the session must be
+    deleted (last viewer out and the record is still ours)."""
+    global _viewer_session_id, _viewer_refcount
+    with _viewer_lock:
+        if _viewer_session_id != session_id:
+            return False
+        _viewer_refcount -= 1
+        if _viewer_refcount <= 0:
+            _viewer_session_id = None
+            _viewer_refcount = 0
+            return True
+        return False
+
+
+async def _viewer_teardown(session_id, kind):
+    """Refcounted teardown for viewer-owned sessions (issue #1026):
+    the last viewer out deletes the Grid session; agent attaches
+    own nothing. Split out so the policy is unit-testable — the
+    websocket finally only calls it."""
+    import asyncio as aio
+    if kind not in ("own", "viewer-shared"):
+        return False
+    last_out = await aio.to_thread(_viewer_release, session_id)
+    if last_out:
+        await aio.to_thread(_grid_session_delete, session_id)
+    return last_out
 
 
 def _grid_live_session():
@@ -421,10 +510,31 @@ def create_app():
         # would hang on "connecting…" with an ASGI traceback).
         try:
             session_id = await asyncio.to_thread(_grid_live_session)
-            own_session = session_id is None
-            if own_session:
-                session_id = await asyncio.to_thread(
-                    _grid_session_create)
+            if session_id is not None:
+                kind = "agent"
+            else:
+                claimed = await asyncio.to_thread(_viewer_claim)
+                if claimed is not None:
+                    session_id = claimed
+                    kind = "viewer-shared"
+                else:
+                    try:
+                        session_id = await asyncio.to_thread(
+                            _grid_session_create)
+                    except Exception:
+                        # Lost the create race: another tab just
+                        # stored the shared session — attach to it
+                        # instead of reporting busy for a slot we
+                        # now share.
+                        claimed = await asyncio.to_thread(
+                            _viewer_claim)
+                        if claimed is None:
+                            raise
+                        session_id = claimed
+                        kind = "viewer-shared"
+                    else:
+                        _viewer_create(session_id)
+                        kind = "own"
         except Exception:
             try:
                 await _ws_send_text(
@@ -438,7 +548,7 @@ def create_app():
             return
         await _ws_send_text(
             send, asyncio.Lock(),
-            json.dumps({"type": "attached", "shared": not own_session,
+            json.dumps({"type": "attached", "kind": kind,
                         "session": session_id[:8], "dsf": DSF}))
         bridge = None
         paused = False
@@ -504,10 +614,12 @@ def create_app():
                 await bridge.reattach()
                 await bridge.start_screencast(on_frame)
 
-            if own_session:
+            if kind == "own":
                 # A fresh tab never repaints: without this the new
                 # viewer sits on a black canvas (fps: -) until the
                 # human types a URL. Start on the neutral page.
+                # Shared/agent attaches skip this: re-navigating
+                # would yank the other tabs' page out from under them.
                 await recover_once(lambda: do_go(DEFAULT_URL))
             while True:
                 event = await receive()
@@ -531,8 +643,7 @@ def create_app():
         finally:
             if bridge is not None:
                 await bridge.close()
-            if own_session:
-                await asyncio.to_thread(_grid_session_delete, session_id)
+            await _viewer_teardown(session_id, kind)
 
     return app
 
