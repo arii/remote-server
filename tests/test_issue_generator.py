@@ -29,6 +29,104 @@ def _valid_td(args):
                           "acceptance_criteria": ["done"], "errors": []})
 
 
+class TestEvidenceCitesRepoFile(unittest.TestCase):
+    def test_hits_existing_file_with_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "widget.py")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("x = 1\n")
+            self.assertEqual(
+                issue_generator.evidence_cites_repo_file(
+                    "see widget.py:3 for the bug", tmp),
+                ["widget.py"])
+
+    def test_misses_have_no_hits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                issue_generator.evidence_cites_repo_file(
+                    "researched the Kubernetes Python client at length",
+                    tmp),
+                [])
+
+    def test_nonexistent_and_absolute_paths_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                issue_generator.evidence_cites_repo_file(
+                    "see missing.py:1 and /etc/hosts and ../up.py", tmp),
+                [])
+
+    def test_ollama_url_default_is_compose_host(self):
+        old = os.environ.get("OLLAMA_URL")
+        os.environ.pop("OLLAMA_URL", None)
+        try:
+            self.assertEqual(issue_generator._ollama_base_url(),
+                             "http://ollama:11434")
+        finally:
+            if old is not None:
+                os.environ["OLLAMA_URL"] = old
+
+    def test_backend_probe_skipped_for_injected_model(self):
+        gen = issue_generator.IssueGeneratorGraph(
+            repo_root=tempfile.gettempdir(),
+            model_fn=lambda: None)
+        ok, _ = gen.check_backend()
+        self.assertTrue(ok)
+
+    def test_backend_probe_fails_closed_on_dead_port(self):
+        old = os.environ.get("OLLAMA_URL")
+        os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"
+        try:
+            gen = issue_generator.IssueGeneratorGraph(
+                repo_root=tempfile.gettempdir())
+            ok, message = gen.check_backend(timeout=2)
+            self.assertFalse(ok)
+            self.assertIn("OLLAMA_URL", message)
+        finally:
+            if old is None:
+                os.environ.pop("OLLAMA_URL", None)
+            else:
+                os.environ["OLLAMA_URL"] = old
+
+    def test_backend_probe_passes_on_live_port(self):
+        import socket
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        old = os.environ.get("OLLAMA_URL")
+        os.environ["OLLAMA_URL"] = f"http://127.0.0.1:{port}"
+        try:
+            gen = issue_generator.IssueGeneratorGraph(
+                repo_root=tempfile.gettempdir())
+            ok, _ = gen.check_backend(timeout=2)
+            self.assertTrue(ok)
+        finally:
+            server.close()
+            if old is None:
+                os.environ.pop("OLLAMA_URL", None)
+            else:
+                os.environ["OLLAMA_URL"] = old
+
+
+class TestDraftPrompt(unittest.TestCase):
+    def test_draft_demands_read_first(self):
+        seen = []
+
+        def model_fn():
+            class FakeModel:
+                def invoke(self, prompt):
+                    seen.append(prompt)
+                    return "draft"
+            return FakeModel()
+
+        gen = issue_generator.IssueGeneratorGraph(
+            repo_root=tempfile.gettempdir(), model_fn=model_fn)
+        gen.draft_text("Fix it", "ctx", [], {})
+        self.assertTrue(seen)
+        self.assertIn("read one repo file", seen[0].lower())
+        self.assertIn("quote", seen[0].lower())
+
+
 class TestAssembleSpec(unittest.TestCase):
     def test_required_sections_present(self):
         spec = issue_generator.assemble_spec("Fix the widget", "ctx",
@@ -91,6 +189,10 @@ class TestValidateSpec(unittest.TestCase):
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langgraph)")
 class TestGraphLoop(unittest.TestCase):
     def _gen(self, tmp):
+        with open(os.path.join(tmp, "widget.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("x = 1\n")
+
         def model_fn():
             class FakeModel:
                 def invoke(self, prompt):
@@ -157,9 +259,12 @@ class TestGraphLoop(unittest.TestCase):
             return FakeModel()
 
         with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "ev.py"), "w",
+                      encoding="utf-8") as handle:
+                handle.write("x = 1\n")
             gen = issue_generator.IssueGeneratorGraph(
                 repo_root=tmp, model_fn=model_fn,
-                investigate_fn=lambda b, d: "ev",
+                investigate_fn=lambda b, d: "evidence: ev.py",
                 td_runner=td_runner, max_loops=3,
                 thread_id="test-thread-2")
             final = gen.run("Fix the widget")
@@ -183,14 +288,43 @@ class TestGraphLoop(unittest.TestCase):
             return FakeModel()
 
         with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "ev.py"), "w",
+                      encoding="utf-8") as handle:
+                handle.write("x = 1\n")
             gen = issue_generator.IssueGeneratorGraph(
                 repo_root=tmp, model_fn=model_fn,
-                investigate_fn=lambda b, d: "ev",
+                investigate_fn=lambda b, d: "evidence: ev.py",
                 td_runner=td_runner, max_loops=2,
                 thread_id="test-thread-3")
             final = gen.run("Fix the widget")
             self.assertFalse(final.get("valid"))
             self.assertIn("always invalid", final.get("errors", []))
+
+    def test_off_brief_evidence_fails_loud_without_looping(self):
+        def td_runner(args):
+            if args and args[0] == "init":
+                return 0, json.dumps({"status": "ready"})
+            return _valid_td(args)
+
+        def model_fn():
+            class FakeModel:
+                def invoke(self, prompt):
+                    return "Draft spec body, no questions."
+            return FakeModel()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = issue_generator.IssueGeneratorGraph(
+                repo_root=tmp, model_fn=model_fn,
+                investigate_fn=lambda b, d: (
+                    "researched the Kubernetes Python client at length"),
+                td_runner=td_runner, max_loops=5,
+                thread_id="test-thread-4")
+            final = gen.run("Fix the widget")
+            self.assertFalse(final.get("valid"))
+            self.assertTrue(final.get("off_brief"))
+            self.assertTrue(any("off-brief" in e
+                               for e in final.get("errors", [])))
+            self.assertLessEqual(final.get("attempts", 0), 1)
 
 
 if __name__ == "__main__":
