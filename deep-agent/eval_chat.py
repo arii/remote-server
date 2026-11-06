@@ -50,6 +50,7 @@ EXIT_NEEDS_APPROVAL = deep_chat.EXIT_NEEDS_APPROVAL
 DEEP_CHAT_TOOLS = {"read_repo_file", "grep_repo", "list_dir",
                    "search_docs", "propose_action", "run_repo_command",
                    "fetch_url", "search_web", "search_turns",
+                   "pr_read",
                    "run_ux_capture", "diff_versions", "ask_diff",
                    "lighthouse_read"}
 HARNESS_READ_TOOLS = {"write_todos", "ls", "read_file", "glob", "grep"}

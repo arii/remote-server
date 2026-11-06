@@ -523,14 +523,14 @@ class TestTrivialTrace(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
-    def test_nine_tools(self):
+    def test_ten_tools(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 9)
+        self.assertEqual(len(tools), 10)
         self.assertEqual(
             {t.name for t in tools},
             {"read_repo_file", "grep_repo", "list_dir", "search_docs",
              "propose_action", "run_repo_command", "fetch_url",
-             "search_web", "search_turns"},
+             "search_web", "search_turns", "pr_read"},
         )
 
     def test_read_grep_list_delegate(self):

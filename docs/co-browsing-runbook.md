@@ -22,12 +22,13 @@ what).
 - `AGENT_API` (default `http://buttons:8000/api/agent`)
 - `PREVIEW_URL` (default `http://caddy:8080/buttons/` — the console
   itself, the meaningful visual-audit target)
-- `TD_BIN` + `TD_CWD` (default `td`; the installed td predates
-  `--preview-url`, so until it is reinstalled point at a checkout:
+- `TD_BIN` + `TD_CWD` (default `td`; installed td 0.19.2+
+  ships `--preview-url`, verified 6/6 PASS 2026-11-06 — only point
+  at a checkout if the installed td regresses:
   `TD_BIN="python3 dev_tools/cli.py"
   TD_CWD=/srv/repos/boomtick/cli`)
 - `BROWSER_ENDPOINT` (default `http://browser:4444` via compose;
-  `browser_cdp` opens its own Grid session from this base URL)
+  the viewer bridge opens its own Grid session from this base URL)
 - `REPO` (default `/srv/remote-server`; needs a `frontend/src/index.css`)
 
 ## What each stage proves
@@ -62,6 +63,26 @@ what).
   `DELETE /session/<id>`. Never bare `docker compose up -d` (it
   kills the terminal and live sessions); single-service
   `docker compose up browser` only.
+
+## Viewer architecture (post-#1008)
+
+The `/cdp-stream` viewer (`backend/api/routers/browser_view.py`) is
+the single viewer-side CDP client: it acks every `screencastFrame`
+immediately on receipt (the compositor blocks until ack), flushes
+only the latest frame while a UI send is in flight, reattaches +
+restarts the screencast on `targetCrashed`, and retries input ops
+once after reattach. Human input pauses the agent via
+`POST /api/agent/pause`. Container side: `browser` runs with
+`shm_size: 2gb` + `init: true`, and Chrome sessions pass
+`--disable-dev-shm-usage`.
+
+Live self-test against the real Grid (needs no browser):
+
+    docker compose exec -T buttons \
+      python3 -m backend.api.routers.browser_view --self-test
+
+Expected: `frames=<n> ... typed='hi42'` + `OK` (proves frames flow,
+click + atomic `insertText` typing land, cleanup runs).
 
 ## CI shape
 

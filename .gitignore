@@ -100,3 +100,6 @@ frontend/dist/
 
 # Local test/runtime venvs (recreate with python3 -m venv .venv)
 .venv/
+
+# td vector index (rebuild with td rag index --repo-root .; machine-local)
+.td_rag/

@@ -33,6 +33,8 @@ import NowView, {
   SnoozedStub,
   SNOOZE_PRESETS,
   SnoozeButtons,
+  SNOOZE_BUSY_NOTICE,
+  snoozeBusyNotice,
   snoozedRows,
   snoozePresetLabel,
   topUrgent,
@@ -47,6 +49,18 @@ describe('snooze presets (issue #614)', () => {
     expect(SNOOZE_PRESETS).toEqual([60, 480]);
     expect(snoozePresetLabel(60)).toBe('Snooze 1h');
     expect(snoozePresetLabel(480)).toBe('Snooze 8h');
+  });
+});
+
+describe('snooze busy guard (issue #1010)', () => {
+  it('stays quiet when idle', () => {
+    expect(snoozeBusyNotice(null)).toBeNull();
+  });
+
+  it('surfaces a visible notice while a snooze is in flight', () => {
+    expect(snoozeBusyNotice('job-j1')).toBe(SNOOZE_BUSY_NOTICE);
+    expect(snoozeBusyNotice('bulk')).toBe(SNOOZE_BUSY_NOTICE);
+    expect(SNOOZE_BUSY_NOTICE.length).toBeGreaterThan(0);
   });
 });
 

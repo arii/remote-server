@@ -40,6 +40,79 @@ class TestS5Tools(unittest.TestCase):
         # Traversal neutralized: only the post-slash part is used.
         self.assertEqual(s5tools.checkout_for("../escape"), "/srv/repos/escape")
 
+    def test_repo_for_checkout(self):
+        self.assertEqual(
+            s5tools.repo_for_checkout("/srv/remote-server"),
+            "arii/remote-server")
+        self.assertEqual(
+            s5tools.repo_for_checkout("/srv/repos/hrm"), "arii/hrm")
+        self.assertEqual(s5tools.repo_for_checkout("/tmp"), "")
+        self.assertEqual(s5tools.repo_for_checkout(""), "")
+        self.assertEqual(s5tools.repo_for_checkout(None), "")
+
+    def test_read_pr_rejects_without_subprocess(self):
+        from unittest import mock
+        with mock.patch("subprocess.run") as m:
+            for number, repo in (("0", "arii/hrm"), ("-3", "arii/hrm"),
+                                 ("12x", "arii/hrm"), ("", "arii/hrm"),
+                                 (True, "arii/hrm"), ("1", ""),
+                                 ("1", "no slash here"),
+                                 ("1", "a/" * 200), ("1", None)):
+                out = s5tools.read_pr(number, repo)
+                self.assertTrue(out.startswith("PR_ERROR:"),
+                                (number, repo, out))
+            m.assert_not_called()
+
+    def test_read_pr_bare_name_gains_owner(self):
+        from unittest import mock
+        import json as _json
+        payload = {"number": 9826, "title": "t", "author": {"login": "u"},
+                   "state": "OPEN", "isDraft": False, "url": "http://x",
+                   "reviewDecision": None, "statusCheckRollup": []}
+        with mock.patch("subprocess.run") as m:
+            m.return_value = mock.Mock(returncode=0,
+                                       stdout=_json.dumps(payload),
+                                       stderr="")
+            out = s5tools.read_pr("9826", "hrm")
+        self.assertIn("PR #9826", out)
+        argv = m.call_args[0][0]
+        self.assertEqual(argv[argv.index("--repo") + 1], "arii/hrm")
+
+    def test_read_pr_formats_and_caps(self):
+        from unittest import mock
+        import json as _json
+        payload = {"number": 1, "title": "T", "author": {"login": "a"},
+                   "state": "OPEN", "isDraft": True, "url": "http://x/y",
+                   "reviewDecision": "APPROVED",
+                   "statusCheckRollup": [{"conclusion": "SUCCESS"},
+                                         {"conclusion": "FAILURE"},
+                                         {"status": "pending"}]}
+        with mock.patch("subprocess.run") as m:
+            m.return_value = mock.Mock(returncode=0,
+                                       stdout=_json.dumps(payload),
+                                       stderr="")
+            out = s5tools.read_pr(1, "arii/hrm")
+        self.assertIn("DRAFT", out)
+        self.assertIn("review=APPROVED", out)
+        self.assertIn("FAILURE:1", out)
+        self.assertLessEqual(len(out), s5tools.MAX_OUT)
+
+    def test_read_pr_gh_failure_paths(self):
+        from unittest import mock
+        import subprocess as _sp
+        with mock.patch("subprocess.run") as m:
+            m.return_value = mock.Mock(returncode=1, stdout="",
+                                       stderr="gh: not found")
+            self.assertTrue(
+                s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
+            m.return_value = mock.Mock(returncode=0, stdout="nope",
+                                       stderr="")
+            self.assertTrue(
+                s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
+            m.side_effect = _sp.TimeoutExpired("gh", 60)
+            self.assertTrue(
+                s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
+
     def test_run_ok_and_failure(self):
         out = s5tools.run([sys.executable, "-c", "print('hi')"])
         self.assertEqual(out, "hi")

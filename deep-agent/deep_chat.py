@@ -164,7 +164,8 @@ SYSTEM = (
     "You are helping Ari from his phone. Be terse, no filler. "
     "Answer the question directly; when it is about the repo, "
     "investigate read-only first "
-    "(list_dir, grep_repo, read_repo_file, search_docs). "
+    "(list_dir, grep_repo, read_repo_file, search_docs; "
+    "pr_read for GitHub PR questions). "
     "You cannot run, change, or deploy anything yourself — the only "
     "write path is the propose_action tool: call it once with the "
     "exact change and STOP; a human approves or rejects it. "
@@ -388,7 +389,7 @@ def build_tools(checkout, *, impact_tools=False):
     Default is the 9 phone-chat tools; impact_tools=True adds the 4
     visual-impact tools (run_ux_capture, diff_versions, ask_diff,
     lighthouse_read) for UI impact passes (#849). The default
-    surface is pinned by tests/test_deep_chat.py::test_nine_tools.
+    surface is pinned by tests/test_deep_chat.py::test_ten_tools.
     """
     from langchain_core.tools import tool  # noqa: E402
 
@@ -555,9 +556,25 @@ def build_tools(checkout, *, impact_tools=False):
         """
         return runs.search_turns(query, kind=kind, limit=limit)
 
+    @tool
+    def pr_read(number: str, repo: str = "") -> str:
+        """Read a GitHub PR: title, author, state, reviews, checks.
+
+        Use for open-PR questions — private repos are invisible to
+        keyless search_web and td PR reads need a project_config.json
+        the checkout may not carry. Read-only; never comments or edits.
+
+        Args:
+            number: PR number as digits, e.g. "9826".
+            repo: Optional owner/name (or bare checkout name); blank
+                reads the turn's repo.
+        """
+        return s5tools.read_pr(
+            number, repo or s5tools.repo_for_checkout(checkout))
+
     base = [read_repo_file, grep_repo, list_dir, search_docs,
             propose_action, run_repo_command, fetch_url, search_web,
-            search_turns]
+            search_turns, pr_read]
     if not impact_tools:
         return base
 

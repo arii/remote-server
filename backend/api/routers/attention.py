@@ -141,6 +141,18 @@ def _write_snooze(store: dict) -> None:
     os.replace(tmp, path)
 
 
+def _invalidate_inbox(name: str | None) -> None:
+    """Drop cached inbox feeds after a snooze change (issue #1010).
+
+    Now reads /api/inbox (SWR-cached), not /api/attention, so without
+    this a snoozed card returns on refresh until the TTL lapses while
+    the optimistic stub is already reconciled away. Lazy import: the
+    inbox router imports this module at load time.
+    """
+    from backend.api.routers import inbox as inbox_mod
+    inbox_mod.invalidate_inbox_cache(name)
+
+
 def _snooze_filter(items: list, now: float) -> list:
     """Drop items snoozed past now; prune expired entries (persisted).
 
@@ -635,6 +647,7 @@ def snooze_attention(body: SnoozeRequest) -> dict:
         store = _read_snooze()
         store[body.id] = until
         _write_snooze(store)
+    _invalidate_inbox(name)
     return {"ok": True, "id": body.id, "snoozed_until": until}
 
 
@@ -644,4 +657,7 @@ def unsnooze_attention(body: UnsnoozeRequest) -> dict:
         store = _read_snooze()
         store.pop(body.id, None)
         _write_snooze(store)
+    # No repo on the request and snooze ids are global, so every
+    # per-repo entry plus the rollup could serve the id: clear all.
+    _invalidate_inbox(None)
     return {"ok": True, "id": body.id, "snoozed": False}
