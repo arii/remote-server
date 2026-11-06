@@ -171,6 +171,43 @@ describe('repo diff modal polish (issue #942)', () => {
     expect(html).toContain('more lines');
   });
 
+  it('renders a filter input for the file list', () => {
+    const html = renderToStaticMarkup(
+      <RepoDiffModal {...props} data={data} error={null} />,
+    );
+    expect(html).toContain('data-testid="repo-diff-filter"');
+    expect(html).toContain('for="repo-diff-filter"');
+  });
+
+  it('hides the jump wall for large unfiltered lists', () => {
+    const files = Array.from({ length: 19 }, (_, i) => ({
+      path: `f${i}.py`,
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      additions: 1,
+      deletions: 0,
+    }));
+    const html = renderToStaticMarkup(
+      <RepoDiffModal
+        {...props}
+        data={{ ...data, files, diffStat: '19 files' }}
+        error={null}
+      />,
+    );
+    expect(html).not.toContain('data-testid="repo-diff-files"');
+    expect(html).toContain('data-testid="repo-diff-per-file"');
+    expect(html).toContain('Changed files (19');
+  });
+
+  it('keeps jump chips for short lists', () => {
+    const html = renderToStaticMarkup(
+      <RepoDiffModal {...props} data={data} error={null} />,
+    );
+    expect(html).toContain('data-testid="repo-diff-files"');
+    expect(html).toContain('data-testid="repo-diff-group-modified"');
+  });
+
   it('styles destructive actions as danger and names the agent flow', () => {
     const html = renderToStaticMarkup(<RepoDiffModal {...props} data={data} error={null} />);
     expect(html).toContain('btn-danger');
