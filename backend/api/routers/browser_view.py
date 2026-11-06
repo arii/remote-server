@@ -26,8 +26,10 @@ DSF = 2
 
 # Start page for fresh viewer sessions (also the URL-box default).
 # A new tab never repaints, so without an initial navigation the
-# viewer sits on a black canvas until the human types a URL.
-DEFAULT_URL = "http://caddy:8080/buttons/"
+# viewer sits on a black canvas until the human types a URL. Start
+# on a neutral page, not the console itself (issue #1023:
+# Buttons-inside-Buttons as first paint is disorienting).
+DEFAULT_URL = "https://example.com"
 
 VIEWER_HTML = r"""<!doctype html>
 <html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
@@ -505,7 +507,7 @@ def create_app():
             if own_session:
                 # A fresh tab never repaints: without this the new
                 # viewer sits on a black canvas (fps: -) until the
-                # human types a URL. Start where the work is.
+                # human types a URL. Start on the neutral page.
                 await recover_once(lambda: do_go(DEFAULT_URL))
             while True:
                 event = await receive()
