@@ -35,5 +35,35 @@ class ViewerMountTest(unittest.TestCase):
             m.assert_called_once()
 
 
+class ReattachTest(unittest.TestCase):
+    def test_reattach_binds_current_page_target(self):
+        # A cross-origin load can swap the page target: reattach
+        # must bind whatever page target exists NOW, not the one
+        # from connect time.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        calls = []
+
+        async def fake_call(method, params=None, timeout=15):
+            calls.append((method, params))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"type": "browser", "targetId": "B"},
+                    {"type": "page", "targetId": "NEW"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "S9"}
+            return {}
+
+        bridge.call = fake_call
+        asyncio.get_event_loop().run_until_complete(bridge.reattach())
+        self.assertEqual(bridge.cdp_session, "S9")
+        attach = [c for c in calls
+                  if c[0] == "Target.attachToTarget"]
+        self.assertEqual(len(attach), 1)
+        self.assertEqual(attach[0][1]["targetId"], "NEW")
+        self.assertTrue(attach[0][1]["flatten"])
+
+
 if __name__ == "__main__":
     unittest.main()

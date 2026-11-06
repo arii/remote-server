@@ -160,8 +160,14 @@ class CDPBridge:
         import websockets
         self.ws = await websockets.connect(self._ws_url(), max_size=8 << 20)
         asyncio.get_event_loop().create_task(self._reader())
+        await self.reattach()
+
+    async def reattach(self):
         # The Grid endpoint fronts the browser target: attach to the
         # page target (flattened) before any Page.* command resolves.
+        # Re-run after every navigation: a cross-origin load can swap
+        # the page target, leaving the old session (and its screencast)
+        # pointed at a dead target with zero frames and dead input.
         targets = await self.call("Target.getTargets")
         page = next(t for t in targets["targetInfos"]
                     if t["type"] == "page")
@@ -336,6 +342,12 @@ def create_app():
                                      str(msg.get("code", "")))
                 elif msg.get("t") == "go":
                     await bridge.navigate(str(msg["url"]))
+                    # Let the load commit, then bind the (possibly
+                    # swapped) page target and restart the screencast
+                    # on it — otherwise the viewer goes dark.
+                    await asyncio.sleep(1.5)
+                    await bridge.reattach()
+                    await bridge.start_screencast(on_frame)
         finally:
             if bridge is not None:
                 await bridge.close()
