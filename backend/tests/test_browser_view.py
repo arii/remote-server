@@ -15,6 +15,11 @@ class ViewerMountTest(unittest.TestCase):
         resp = client.get("/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("CDP direct viewer", resp.text)
+        # The start page is baked in: no unfilled placeholder, so a
+        # fresh viewer navigates somewhere on connect (black canvas
+        # otherwise — a new tab never repaints).
+        self.assertNotIn("__DEFAULT_URL__", resp.text)
+        self.assertIn(browser_view.DEFAULT_URL, resp.text)
 
     def test_unknown_ws_path_closes(self):
         client = TestClient(browser_view.create_app())
