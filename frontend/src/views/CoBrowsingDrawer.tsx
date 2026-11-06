@@ -12,7 +12,7 @@ import ChatView from './ChatView';
 // The frame can sit blank for seconds (Grid slot wait, cold
 // browser) or fail outright (Grid down, route 404): the overlay
 // names the state and offers a retry instead of a black box.
-export type FrameState = 'loading' | 'live' | 'error';
+type FrameState = 'loading' | 'live' | 'error';
 const FRAME_LOAD_TIMEOUT_MS = 20_000;
 
 export function bannerTextFor(state: AgentBrowserState, currentStep: string | null): string {
