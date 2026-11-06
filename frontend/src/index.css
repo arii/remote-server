@@ -406,6 +406,12 @@ li.detail.merging { opacity: 0.55; }
   background: var(--surface);
 }
 .cobrowse-chat { min-width: 0; }
+/* Slim rail: the browser page embeds the full ChatView, but its own
+   past-runs/launcher rail would triple the chrome in 340px and
+   overlap the composer. The conversation canvas + composer ride
+   along; runs and launch stay one click away in the main nav. */
+.cobrowse-chat .chat-side { display: none; }
+.cobrowse-chat .chat-main { min-width: 0; }
 .cobrowse-takeover {
   position: absolute;
   inset: 0;

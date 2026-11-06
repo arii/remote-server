@@ -35,6 +35,46 @@ class ViewerMountTest(unittest.TestCase):
             m.assert_called_once()
 
 
+class LiveSessionFilterTest(unittest.TestCase):
+    def test_attaches_only_to_marked_agent_sessions(self):
+        import io
+        import json
+        from unittest import mock
+        human = {"sessionId": "human1",
+                 "capabilities": {"browserName": "chrome"}}
+        agent = {"sessionId": "agent9",
+                 "capabilities": {"browserName": "chrome",
+                                  browser_view.AGENT_SESSION_MARKER: True}}
+        payload = io.BytesIO(json.dumps(
+            {"value": {"nodes": [{"slots": [{"session": human},
+                                            {"session": agent}]}]}}).encode())
+
+        class Ctx:
+            def __enter__(self): return payload
+            def __exit__(self, *a): return False
+
+        with mock.patch.object(browser_view.urllib.request, "urlopen",
+                               return_value=Ctx()):
+            self.assertEqual(browser_view._grid_live_session(), "agent9")
+
+    def test_no_marked_session_means_none(self):
+        import io
+        import json
+        from unittest import mock
+        human = {"sessionId": "human1",
+                 "capabilities": {"browserName": "chrome"}}
+        payload = io.BytesIO(json.dumps(
+            {"value": {"nodes": [{"slots": [{"session": human}]}]}}).encode())
+
+        class Ctx:
+            def __enter__(self): return payload
+            def __exit__(self, *a): return False
+
+        with mock.patch.object(browser_view.urllib.request, "urlopen",
+                               return_value=Ctx()):
+            self.assertIsNone(browser_view._grid_live_session())
+
+
 class ReattachTest(unittest.TestCase):
     def test_reattach_binds_current_page_target(self):
         # A cross-origin load can swap the page target: reattach

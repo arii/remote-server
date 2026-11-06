@@ -108,8 +108,14 @@ def _grid_session_delete(session_id):
         pass
 
 
+#: Sessions carrying this capability were opened by an agent
+#: driver (boomtick browser_cdp). Viewer/human sessions lack it —
+#: attaching to one would mirror the viewer recursively.
+AGENT_SESSION_MARKER = "boomtick:agentSession"
+
+
 def _grid_live_session():
-    """Return an existing Grid session id with a page target, if any."""
+    """Return an existing *agent* Grid session id, if any."""
     try:
         with urllib.request.urlopen(
                 GRID_BASE + "/status", timeout=10) as resp:
@@ -119,7 +125,10 @@ def _grid_live_session():
     for node in value.get("nodes", []):
         for slot in node.get("slots", []):
             session = slot.get("session") or {}
-            if session.get("sessionId"):
+            if not session.get("sessionId"):
+                continue
+            caps = session.get("capabilities") or {}
+            if caps.get(AGENT_SESSION_MARKER):
                 return session["sessionId"]
     return None
 
