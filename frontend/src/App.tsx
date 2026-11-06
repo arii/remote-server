@@ -90,7 +90,7 @@ export const HEALTH_POLL_MS = 60_000;
 // Shared-browser agent-state poll while the drawer is open
 // (follow_up Issue 11): takeover must pause the agent within a
 // couple of seconds in both directions.
-export const BROWSER_POLL_MS = 2_000;
+const BROWSER_POLL_MS = 2_000;
 
 // Single-in-flight async trigger: concurrent calls collapse into
 // the in-flight run, so failure bursts can't stack refreshes. The

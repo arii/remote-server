@@ -16,7 +16,7 @@ import {
   unsnoozeAttention,
   warmViewCaches,
 } from '../apiClient';
-import type { InboxFeed, SystemHealthResponse } from '../apiClient';
+import type { InboxFeed, SnoozedRow, SystemHealthResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import type { AttentionItem } from '../attentionTypes';
 import type { DeferredRow } from '../reviewTypes';
@@ -140,7 +140,7 @@ export function reconcileSnoozed(
 // is the truth.
 export function mergeServerSnoozed(
   prev: Record<string, SnoozedEntry>,
-  rows: Array<{ id: string; title: string; until: number }>,
+  rows: SnoozedRow[],
   liveIds: string[],
   nowSec: number,
 ): Record<string, SnoozedEntry> {
@@ -327,7 +327,7 @@ export function retryBlocked(
   return null;
 }
 
-export function retryBlockWarning(block: RetryBlock): string {
+function retryBlockWarning(block: RetryBlock): string {
   return block === 'diverged'
     ? 'Retry will fail until the local commits are rebased onto the remote default.'
     : 'Retry will fail until the local changes are stashed or committed.';

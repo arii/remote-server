@@ -11,7 +11,7 @@ export interface PaletteCommand {
   run: () => void;
 }
 
-export type PaletteTab = 'now' | 'chat' | 'briefing' | 'history';
+type PaletteTab = 'now' | 'chat' | 'briefing' | 'history';
 
 export interface CommandContext {
   go: (tab: PaletteTab) => void;
@@ -37,9 +37,7 @@ export interface CommandContext {
 
 // Palette sections (issue #839): the hint chips group into four
 // headed sections instead of one flat list.
-export const PALETTE_SECTIONS = ['Navigation', 'Actions', 'Repositories', 'System'] as const;
-
-export type PaletteSection = (typeof PALETTE_SECTIONS)[number];
+export type PaletteSection = 'Navigation' | 'Actions' | 'Repositories' | 'System';
 
 export function commandSection(cmd: PaletteCommand): PaletteSection {
   switch (cmd.hint) {

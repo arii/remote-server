@@ -233,6 +233,44 @@ def guard_prompt(prompt: str) -> str:
     return "%s\n\n%s" % (prompt, FILE_HYGIENE_GUARDRAIL)
 
 
+# Spec-task skill injection (issue #1034): ad-hoc provider turns run
+# skill-less, so spec requests drift from the canonical template and
+# fail td validate-issue downstream. When the prompt asks for a spec,
+# append the canonical template; every other prompt passes through
+# untouched, and a missing template file degrades to no-op.
+SPEC_TASK_MARKERS = ("design spec", "spec issue", "write a spec",
+                     "write_spec_issue", "spec template")
+SPEC_SKILL_PATH = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "deep-agent", "skills", "write_spec_issue.md"))
+
+
+def is_spec_task(prompt: str) -> bool:
+    """Whether the prompt asks for a design spec."""
+    lowered = (prompt or "").lower()
+    return any(m in lowered for m in SPEC_TASK_MARKERS)
+
+
+def spec_template() -> str:
+    """Canonical spec template text, or '' when unreadable."""
+    try:
+        with open(SPEC_SKILL_PATH, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def spec_prompt(prompt: str) -> str:
+    """Append the spec template to spec-task prompts only."""
+    if not prompt or not is_spec_task(prompt):
+        return prompt
+    template = spec_template()
+    if not template:
+        return prompt
+    return "%s\n\nFollow this spec template exactly:\n\n%s" % (
+        prompt, template)
+
+
 def _first_line(text: str, limit: int) -> str:
     for line in (text or "").splitlines():
         stripped = line.strip()
@@ -693,7 +731,7 @@ class AgentTurnManager:
         pop_result never returns another turn's record."""
         conversation_id = (self.agy_conversation(session_id)
                            if provider == "agy" else None)
-        send = guard_prompt(prompt)
+        send = guard_prompt(spec_prompt(prompt))
         cmd = list(argv) if argv is not None else turn_argv(
             provider, cwd, session_id, send, continued,
             conversation_id=conversation_id)

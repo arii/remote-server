@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "rules": {
+    // Listener fan-out snapshots the set on purpose (apiClient
+    // notify*): a subscriber may unsubscribe mid-notify, and a live
+    // Set walk would then skip or double-fire entries.
+    "unicorn/no-useless-spread": "off"
+  }
+}

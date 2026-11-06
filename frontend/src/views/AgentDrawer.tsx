@@ -144,7 +144,7 @@ export async function pumpTurn(
   return { sessionId, text, truncated };
 }
 
-export function defaultProvider(
+function defaultProvider(
   providers: string[],
   status: Record<string, boolean>,
 ): string {

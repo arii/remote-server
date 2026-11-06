@@ -57,7 +57,7 @@ export function isSkipRow(r: HistoryRow): boolean {
 // rows hide by default behind their own toggle (agent sessions are
 // frequent and verbose; only their failures earn feed space).
 // Failed agent rows always stay visible, same rule as skips.
-export const AGENT_ROW_KINDS = new Set(['agent-turn', 'cli-turn']);
+const AGENT_ROW_KINDS = new Set(['agent-turn', 'cli-turn']);
 export function isQuietAgentRow(r: HistoryRow): boolean {
   return r.tone !== 'bad' && AGENT_ROW_KINDS.has(r.kind);
 }
