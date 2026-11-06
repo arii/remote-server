@@ -36,7 +36,7 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 #bar{display:flex;gap:8px;padding:8px;align-items:center}
 #url{flex:1;padding:6px}
 #stats{padding:0 8px 8px;font-size:13px;color:#9f9}
-#screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:crosshair}
+#screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
 </style></head><body>
 <div id="bar"><input id="url" value="__DEFAULT_URL__">
 <button id="go">Go</button><span id="state">connecting…</span></div>

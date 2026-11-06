@@ -214,6 +214,13 @@ class ViewerHtmlTest(unittest.TestCase):
                         "VIEWER_HTML needs a global dsf declaration")
         self.assertNotIn("let dsf = 1;\n    if (m.type === 'attached')", html)
 
+    def test_screen_cursor_is_not_crosshair(self):
+        # Operator report: the crosshair is awkward to use on the
+        # shared screen; the viewer canvas keeps the standard arrow.
+        html = browser_view.VIEWER_HTML
+        self.assertNotIn("crosshair", html)
+        self.assertIn("cursor:default", html.replace(" ", ""))
+
 
 class ChromeFlagsTest(unittest.TestCase):
     def test_session_args_fallback_off_shm(self):
