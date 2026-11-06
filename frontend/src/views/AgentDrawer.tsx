@@ -165,6 +165,18 @@ export function otherProvider(
   );
 }
 
+// Launch guard (issue #1037): onLaunch must never no-op. A Launch
+// click with no provider, or against a stale live flag, used to
+// return silently — no Working, no error, no Abort. Either case
+// now names the block so the operator can act on it.
+export function launchBlockReason(provider: string, live: boolean): string | null {
+  if (!provider)
+    return 'No agent provider is available — check the terminal CLIs.';
+  if (live)
+    return 'A session is already live — use Send, or New session to start over.';
+  return null;
+}
+
 export function GuidanceCard({
   message,
   detail,
@@ -352,6 +364,11 @@ export default function AgentDrawer({
       if (snap.turns.length > 0) {
         setReattachNote('Turn was interrupted by the reload — Resume re-fires it.');
       }
+      // Stale-live reset (issue #1037): after a reload nothing
+      // streams, so a live flag with no session id is always dead —
+      // without this the launch form stays hidden with no Working,
+      // no error, and no Abort. The transcript and note survive.
+      setLive(false);
       return;
     }
     const run = reattachRef.current + 1;
@@ -599,7 +616,11 @@ export default function AgentDrawer({
   }
 
   async function onLaunch() {
-    if (!provider || live) return;
+    const blocked = launchBlockReason(provider, live);
+    if (blocked) {
+      setError(blocked);
+      return;
+    }
     const text = prompt.trim();
     if (!text) {
       setError('Describe the task first.');
