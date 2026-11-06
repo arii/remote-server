@@ -4,17 +4,15 @@ import { expect, test } from '@playwright/test';
 
 // Job trigger→green run: the Doctor dispatch (a td allowlist
 // command needing no PR) runs through the real engine against the
-// stub terminal and lands green.
+// stub terminal and lands green. Dispatched via the command palette
+// (#1016 demoted the Jobs whole-repo buttons).
 test.describe('jobs run', () => {
   test('td doctor dispatch finishes green', async ({ page }) => {
     await page.goto('/');
-    await page.getByTestId('nav-jobs').click();
+    await page.getByTestId('palette-open').click();
+    await page.getByTestId('palette-input').fill('doctor');
+    await page.getByTestId('palette-item-run-doctor').click();
     await expect(page.getByTestId('jobs-view')).toBeVisible();
-
-    // The branch field is optional: blank keeps the run
-    // checkout-agnostic (CI checks out a detached HEAD).
-    await page.getByTestId('jobs-branch').fill('');
-    await page.getByTestId('dispatch-td-doctor').click();
 
     // Terminal state only: the stubbed run finishes in ~1s, so the
     // transient "Started …" notice is already gone when polled.
