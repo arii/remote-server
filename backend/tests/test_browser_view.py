@@ -34,10 +34,32 @@ class ViewerMountTest(unittest.TestCase):
         with mock.patch.object(
                 browser_view, "_grid_session_create",
                 side_effect=RuntimeError("grid down")) as m:
-            with self.assertRaises(RuntimeError):
-                with client.websocket_connect("/ws") as ws:
+            with client.websocket_connect("/ws") as ws:
+                raw = ws.receive_text()
+                self.assertIn("browser busy", raw)
+                with self.assertRaises(WebSocketDisconnect) as cm:
                     ws.receive_text()
+            self.assertEqual(cm.exception.code, 1013)
             m.assert_called_once()
+
+    def test_ws_grid_busy_reports_error(self):
+        # Single-slot Grid full: the viewer must SEE "browser busy"
+        # instead of hanging on "connecting…" with an ASGI traceback.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        with mock.patch.object(
+                browser_view, "_grid_live_session", return_value=None):
+            with mock.patch.object(
+                    browser_view, "_grid_session_create",
+                    side_effect=RuntimeError("grid full")):
+                with client.websocket_connect("/ws") as ws:
+                    raw = ws.receive_text()
+                    self.assertIn("browser busy", raw)
+                    self.assertEqual(
+                        _json.loads(raw)["type"], "error")
+                    with self.assertRaises(WebSocketDisconnect) as cm:
+                        ws.receive_text()
+                self.assertEqual(cm.exception.code, 1013)
 
 
 class LiveSessionFilterTest(unittest.TestCase):

@@ -5,8 +5,15 @@
 // needed. Presentational: the parent owns state polling and the
 // resume POST, so this renders from props and stays testable via
 // static markup like ContainerDrawer.
+import { useEffect, useState } from 'react';
 import type { AgentBrowserState } from '../apiClient';
 import ChatView from './ChatView';
+
+// The frame can sit blank for seconds (Grid slot wait, cold
+// browser) or fail outright (Grid down, route 404): the overlay
+// names the state and offers a retry instead of a black box.
+export type FrameState = 'loading' | 'live' | 'error';
+const FRAME_LOAD_TIMEOUT_MS = 20_000;
 
 export function bannerTextFor(state: AgentBrowserState, currentStep: string | null): string {
   if (state === 'PAUSED_BY_USER') return 'Manual control active — agent paused';
@@ -35,6 +42,20 @@ export default function CoBrowsingDrawer({
   onResume: () => void;
   onClose: () => void;
 }) {
+  const [frameState, setFrameState] = useState<FrameState>('loading');
+  const [frameKey, setFrameKey] = useState(0);
+  useEffect(() => {
+    if (frameState !== 'loading') return;
+    const timer = window.setTimeout(
+      () => setFrameState('error'),
+      FRAME_LOAD_TIMEOUT_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [frameState, frameKey]);
+  function retryFrame() {
+    setFrameKey((k) => k + 1);
+    setFrameState('loading');
+  }
   return (
     <section className="cobrowse-page" data-testid="cobrowse-drawer" aria-label="Shared browser">
       <header className="cobrowse-head">
@@ -62,7 +83,34 @@ export default function CoBrowsingDrawer({
       </header>
       <div className="cobrowse-split">
         <div className="cobrowse-frame-wrap">
-          <iframe title="Shared browser head" src={iframeSrc} data-testid="cobrowse-frame" />
+          {frameState !== 'live' && (
+            <div
+              className="cobrowse-frame-status"
+              role="status"
+              data-testid="cobrowse-frame-status"
+            >
+              {frameState === 'loading' ? (
+                <>
+                  <span className="frame-spinner" aria-hidden="true" />
+                  <p>Connecting to the shared browser…</p>
+                </>
+              ) : (
+                <>
+                  <p>The shared browser did not respond.</p>
+                  <button type="button" data-testid="cobrowse-retry" onClick={retryFrame}>
+                    Reconnect
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          <iframe
+            key={frameKey}
+            title="Shared browser head"
+            src={iframeSrc}
+            data-testid="cobrowse-frame"
+            onLoad={() => setFrameState('live')}
+          />
         </div>
         <aside className="cobrowse-chat" aria-label="Chat alongside the shared browser">
           <ChatView repo={repo} seed={null} onSeedUsed={() => {}} />

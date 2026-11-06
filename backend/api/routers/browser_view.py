@@ -414,10 +414,26 @@ def create_app():
         await send({"type": "websocket.accept"})
         # Shared autonomy: attach to the live agent session when one
         # exists; otherwise open our own (deleted on disconnect).
-        session_id = await asyncio.to_thread(_grid_live_session)
-        own_session = session_id is None
-        if own_session:
-            session_id = await asyncio.to_thread(_grid_session_create)
+        # A full Grid (single slot) or a down Grid raises here: tell
+        # the viewer instead of dying before 'attached' (the page
+        # would hang on "connecting…" with an ASGI traceback).
+        try:
+            session_id = await asyncio.to_thread(_grid_live_session)
+            own_session = session_id is None
+            if own_session:
+                session_id = await asyncio.to_thread(
+                    _grid_session_create)
+        except Exception:
+            try:
+                await _ws_send_text(
+                    send, asyncio.Lock(),
+                    json.dumps({"type": "error",
+                                "msg": ("browser busy — no free Grid "
+                                        "slot; retry shortly")}))
+            except Exception:
+                pass
+            await send({"type": "websocket.close", "code": 1013})
+            return
         await _ws_send_text(
             send, asyncio.Lock(),
             json.dumps({"type": "attached", "shared": not own_session,

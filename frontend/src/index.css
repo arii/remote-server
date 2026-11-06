@@ -382,8 +382,10 @@ li.detail.merging { opacity: 0.55; }
   gap: 0.5rem;
 }
 /* Full-height browser + side chat: the frame takes the main
-   column and the chat rides a fixed rail. Single column under
-   900px (chat below the browser). */
+   column and the chat rides a fixed 300-380px rail. Single column
+   under 1100px (chat becomes a full-width panel below the
+   browser): between 900-1100px the rail would otherwise squeeze
+   buttons mid-word instead of wrapping cleanly. */
 .cobrowse-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
@@ -392,8 +394,8 @@ li.detail.merging { opacity: 0.55; }
   flex: 1;
   min-height: 0;
 }
-@media (max-width: 900px) {
-  .cobrowse-split { grid-template-columns: 1fr; }
+@media (max-width: 1100px) {
+  .cobrowse-split { grid-template-columns: minmax(0, 1fr); }
 }
 .cobrowse-frame-wrap { position: relative; margin: 0; min-height: 0; }
 .cobrowse-frame-wrap iframe {
@@ -406,6 +408,49 @@ li.detail.merging { opacity: 0.55; }
   background: var(--surface);
 }
 .cobrowse-chat { min-width: 0; }
+/* Narrow rail stacking: prompt chips and row buttons take one
+   full-width line each with ellipsis, so nothing clips or wraps
+   mid-word when the rail is at its 300px minimum. The rail owns
+   only these rows; the main-chat layout is untouched. */
+.cobrowse-chat .actions { flex-direction: column; align-items: stretch; }
+.cobrowse-chat .actions > button {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  max-width: 100%;
+  flex: none;
+}
+/* Frame connection state: covers the iframe while it loads or
+   when it fails, so the viewer never reads as a black box. The
+   spinner is a flat border ring (static under reduced-motion via
+   the global rule); the copy names the state and the recovery. */
+.cobrowse-frame-status {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+}
+.cobrowse-frame-status p { margin: 0; }
+.frame-spinner {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: frame-spin 0.9s linear infinite;
+}
+@keyframes frame-spin { to { transform: rotate(360deg); } }
 /* Slim rail: the browser page embeds the full ChatView, but its own
    past-runs/launcher rail would triple the chrome in 340px and
    overlap the composer. The conversation canvas + composer ride
