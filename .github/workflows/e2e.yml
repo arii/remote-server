@@ -29,6 +29,13 @@ jobs:
     name: console E2E smoke (non-required)
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # td shells to the Actions API (workflow runs) and Checks API
+    # (annotations) for workflow-health; contents:read alone 403s
+    # those calls and every run fails (issue #1090).
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     steps:
       - uses: actions/checkout@v7
 
