@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -178,6 +178,26 @@ describe('stall watchdog (issue #376)', () => {
     expect(isStalled(0, 179_999)).toBe(false);
     expect(isStalled(0, 180_000)).toBe(false);
     expect(isStalled(0, 180_001)).toBe(true);
+
+    expect(interruptedPrompt([])).toBeNull();
+    expect(
+      interruptedPrompt([{ role: 'assistant', text: 'done' }]),
+    ).toBeNull();
+    expect(
+      interruptedPrompt([
+        { role: 'user', text: 'q?' },
+        { role: 'assistant', text: '' },
+      ]),
+    ).toBeNull();
+    expect(
+      interruptedPrompt([
+        { role: 'assistant', text: 'done' },
+        { role: 'user', text: 'stranded?' },
+      ]),
+    ).toBe('stranded?');
+    expect(interruptedPrompt([{ role: 'user', text: '   ' }])).toBeNull();
+    expect(shouldAutoRetryStall(false)).toBe(true);
+    expect(shouldAutoRetryStall(true)).toBe(false);
   });
 });
 

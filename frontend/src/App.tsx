@@ -24,6 +24,7 @@ import {
   repoAction,
   restartContainer,
   startJobRun,
+  startTdRun,
   subscribeApiFailures,
   warmRepoMetrics,
 } from './apiClient';
@@ -311,6 +312,14 @@ export default function App() {
         newIssue: () => setCreateRequest((n) => n + 1),
         openUrl: (url) => {
           window.location.href = url;
+        },
+        // Doctor/Preflight from anywhere (#1016): same startTdRun
+        // path as the Jobs TdCommands buttons, then land on the Jobs
+        // section to watch the run. A failed dispatch still lands on
+        // Jobs, where the operator retries with visible errors.
+        runCheck: (command) => {
+          setSectionRequest((r) => ({ section: 'jobs', nonce: (r?.nonce ?? 0) + 1 }));
+          void startTdRun(command, repo).catch(() => {});
         },
         terminalUrl: `${stackBase()}/`,
         codeUrl: `${stackBase()}/code`,

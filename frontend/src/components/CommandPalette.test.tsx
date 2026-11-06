@@ -19,6 +19,7 @@ function testCtx(overrides: Partial<CommandContext> = {}): CommandContext {
     reportBug: vi.fn(),
     focusChat: vi.fn(),
     refreshBriefing: vi.fn(),
+    runCheck: vi.fn(),
     switchRepo: vi.fn(),
     openUrl: vi.fn(),
     terminalUrl: '/term',
@@ -104,9 +105,21 @@ describe('buildCommands', () => {
       'refresh-briefing',
       'open-terminal',
       'open-code',
+      'run-doctor',
+      'run-preflight',
     ]) {
       expect(ids).toContain(id);
     }
+  });
+
+  it('dispatches doctor and preflight through runCheck', () => {
+    const ctx = testCtx();
+    const cmds = buildCommands(ctx);
+    const byId = new Map(cmds.map((c) => [c.id, c]));
+    byId.get('run-doctor')!.run();
+    byId.get('run-preflight')!.run();
+    expect(ctx.runCheck).toHaveBeenCalledWith('td doctor');
+    expect(ctx.runCheck).toHaveBeenCalledWith('td preflight');
   });
 
   it('appends a switch command per other repo, skipping the current one', () => {

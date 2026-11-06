@@ -1422,6 +1422,25 @@ export function settledChatMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages;
 }
 
+// Interrupted-turn resume (#1015): a persisted log ending on a user
+// message means the turn died mid-stream (reload, crash, stall-kill)
+// with no reply recorded. Mount surfaces it as a resend banner
+// instead of a silently dead prompt. Returns the stranded text.
+export function interruptedPrompt(messages: ChatMessage[]): string | null {
+  const n = messages.length;
+  if (n === 0) return null;
+  const last = messages[n - 1];
+  if (last.role === 'user' && last.text.trim().length > 0) return last.text;
+  return null;
+}
+
+// Stall auto-retry budget (#1015): exactly one automatic retry per
+// turn — the second stall is a real failure and the error stands so
+// the operator retries deliberately instead of burning the loop.
+export function shouldAutoRetryStall(autoRetried: boolean): boolean {
+  return !autoRetried;
+}
+
 // Edit recalls a sent prompt into the composer for fix-and-resend.
 // Available on every user bubble once the stream settles.
 export function shouldShowChatEdit(streaming: boolean): boolean {
@@ -1662,6 +1681,15 @@ export default function ChatView({
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     useMock() ? [] : loadChatMessages(),
   );
+  // Interrupted-turn banner (#1015): a persisted log ending on a
+  // user message means the turn died mid-stream. Offer one-tap
+  // resend instead of a silently dead prompt; cleared on send.
+  const [interrupted, setInterrupted] = useState<string | null>(() =>
+    useMock() ? null : interruptedPrompt(loadChatMessages()),
+  );
+  // Stall auto-retry budget (#1015): exactly one automatic retry per
+  // turn; reset on every fresh send.
+  const autoRetriedRef = useRef(false);
   // Restored composer draft (#402): an explicit seed wins, else the
   // sessionStorage snapshot replays so a tab switch keeps the draft.
   // Mock mode starts empty, matching the message snapshot.
@@ -2045,6 +2073,8 @@ export default function ChatView({
     setPhase(null);
     setApproval(null);
     setDecided(null);
+    setInterrupted(null);
+    autoRetriedRef.current = false;
     setLastSent(text);
     // Reuse the conversation thread (#467): the stored snapshot
     // covers tab-switch remounts; mock mode skips storage (pure mint).
@@ -2114,6 +2144,8 @@ export default function ChatView({
     setMessages([]);
     setPrompt('');
     setError(null);
+    setInterrupted(null);
+    autoRetriedRef.current = false;
     setLastSent('');
     setApproval(null);
     setDecided(null);
@@ -2282,7 +2314,26 @@ export default function ChatView({
   function onStall() {
     stopStream();
     const sid = sessionRef.current;
-    setError(`Stream stalled — no response for ${STALL_SECONDS}s.`);
+    if (
+      shouldAutoRetryStall(autoRetriedRef.current) &&
+      !useMock() &&
+      lastSent.trim().length > 0
+    ) {
+      // One automatic retry per turn (#1015): the failed pair strips
+      // first so the resend appends exactly one fresh pair, mirroring
+      // manual retry. The progress line carries the attempt; a second
+      // stall is a real failure and the error stands.
+      autoRetriedRef.current = true;
+      setPhase('retrying after stall');
+      setMessages((m) => stripFailedRetryExchange(m, lastSent));
+      void sendText(lastSent);
+      return;
+    }
+    setError(
+      autoRetriedRef.current
+        ? `Stream stalled again after automatic retry — no response for ${STALL_SECONDS}s. Retry manually or pick Cloud.`
+        : `Stream stalled — no response for ${STALL_SECONDS}s.`,
+    );
     if (!sid || useMock()) return;
     void abortChat(sid).catch(() => {
       // Run already dead; the stall message stands.
@@ -2355,6 +2406,29 @@ export default function ChatView({
         <button type="button" data-testid="chat-retry" onClick={() => onRetry()}>
           Retry
         </button>
+      )}
+      {interrupted !== null && !streaming && (
+        <p className="row-meta" data-testid="chat-interrupted" role="status">
+          Previous turn was interrupted before the reply arrived.{' '}
+          <button
+            type="button"
+            data-testid="chat-interrupted-resend"
+            onClick={() => {
+              const text = interrupted;
+              setInterrupted(null);
+              void sendText(text);
+            }}
+          >
+            Resend
+          </button>{' '}
+          <button
+            type="button"
+            data-testid="chat-interrupted-dismiss"
+            onClick={() => setInterrupted(null)}
+          >
+            Dismiss
+          </button>
+        </p>
       )}
       {streaming && <StreamProgress elapsed={elapsed} phase={phase} tokens={tokenCount} />}
       <span className="sr-only" role="status" data-testid="chat-phase">

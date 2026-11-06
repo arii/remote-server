@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import JobSchedulesSection from './JobSchedulesSection';
+import JobSchedulesSection, {
+  describeBulkTargets,
+  groupSchedules,
+} from './JobSchedulesSection';
 import type { ActionSchedule } from '../apiClient';
 
 function mkSchedule(over: Partial<ActionSchedule> = {}): ActionSchedule {
@@ -56,5 +59,61 @@ describe('schedule pause/resume (issue #870)', () => {
     expect(html).toContain('data-testid="jobs-schedule-pause"');
     expect(html).toContain('data-testid="jobs-schedule-disable"');
     expect(html).not.toContain('data-testid="jobs-schedule-paused"');
+  });
+});
+
+describe('schedule grouping and bulk bar (issue #1017)', () => {
+  it('groups rows by action in first-seen order', () => {
+    const rows = [
+      { id: 'a', action: 'logs' },
+      { id: 'b', action: 'audit' },
+      { id: 'c', action: 'logs' },
+    ] as ActionSchedule[];
+    expect(groupSchedules(rows).map((g) => g.action)).toEqual([
+      'logs',
+      'audit',
+    ]);
+    expect(groupSchedules(rows)[0].rows.map((r) => r.id)).toEqual([
+      'a',
+      'c',
+    ]);
+  });
+
+  it('names bulk targets with commands, falling back to actions', () => {
+    expect(
+      describeBulkTargets([
+        { action: 'logs', td_argv: ['td', 'doctor'] },
+        { action: 'audit', td_argv: [] },
+      ] as ActionSchedule[]),
+    ).toBe('td doctor, audit');
+  });
+
+  it('renders group headers with master toggles and row checkboxes', () => {
+    const html = renderToStaticMarkup(
+      <JobSchedulesSection
+        repo="remote-server"
+        draft={null}
+        initialSchedules={[
+          {
+            id: 'aaa',
+            action: 'logs',
+            td_argv: [],
+            repo: 'remote-server',
+            cadence: 'daily',
+            next_run: 1790000000,
+            last_run: null,
+            last_result: {},
+            enabled: true,
+          } as ActionSchedule,
+        ]}
+      />,
+    );
+    expect(html).toContain('data-testid="jobs-schedule-group-logs"');
+    expect(html).toContain('data-testid="jobs-schedule-group-pause-logs"');
+    expect(html).toContain('data-testid="jobs-schedule-group-resume-logs"');
+    expect(html).toContain('data-testid="jobs-schedule-select-aaa"');
+    expect(html).toContain('data-testid="jobs-schedule-past-aaa"');
+    expect(html).not.toContain('data-testid="jobs-schedule-bulkbar"');
+    expect(html).not.toContain('data-testid="jobs-schedule-bulk-targets"');
   });
 });
