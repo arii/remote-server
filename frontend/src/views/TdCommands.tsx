@@ -122,8 +122,11 @@ export default function TdCommands({
           </p>
         )}
       </div>
-      <div className="cmd-group" data-testid="td-repo-group">
-        <p className="row-meta">Whole repo</p>
+      <details className="cmd-group" data-testid="td-repo-group">
+        <summary className="row-meta">Advanced (whole repo)</summary>
+        <p className="row-meta">
+          Manual diagnostics — CI status already shows on each PR above, so these are rarely needed.
+        </p>
         <div className="actions">
           {TD_COMMANDS.filter((c) => !c.needsPr).map((c) => (
             <button
@@ -137,7 +140,7 @@ export default function TdCommands({
             </button>
           ))}
         </div>
-      </div>
+      </details>
     </section>
   );
 }
