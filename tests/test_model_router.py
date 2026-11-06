@@ -383,6 +383,9 @@ class TestSpendCapGate(unittest.TestCase):
             {"provider": "nebius", "model": "m",
              "base_url": "http://x"})
         self.assertTrue(kwargs["stream_usage"])
+        # Issue #1040: default reasoning effort burns the output
+        # budget on long turns; low keeps content for ~1 token.
+        self.assertEqual(kwargs["reasoning_effort"], "low")
         ollama = model_router.chat_kwargs(
             {"provider": "ollama", "model": "m",
              "base_url": "http://x"})
