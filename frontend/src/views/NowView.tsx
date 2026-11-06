@@ -8,6 +8,7 @@ import {
   fetchDeferred,
   fetchInbox,
   fetchJobs,
+  fetchSnoozed,
   fetchPrs,
   fetchRepoLabels,
   postActionHref,
@@ -131,6 +132,31 @@ export function reconcileSnoozed(
     if (entry.until > nowSec && !liveIds.includes(id)) next[id] = entry;
   }
   return next;
+}
+
+// Server rows hydrate stubs for ids this session never snoozed
+// itself (issue #1030). Local optimism wins only when newer — an
+// in-flight snooze racing the server write — otherwise the server
+// is the truth.
+export function mergeServerSnoozed(
+  prev: Record<string, SnoozedEntry>,
+  rows: Array<{ id: string; title: string; until: number }>,
+  liveIds: string[],
+  nowSec: number,
+): Record<string, SnoozedEntry> {
+  const next: Record<string, SnoozedEntry> = {};
+  for (const row of rows) {
+    if (row.until > nowSec && !liveIds.includes(row.id)) {
+      next[row.id] = { until: row.until, title: row.title || row.id };
+    }
+  }
+  for (const [id, entry] of Object.entries(prev)) {
+    if (entry.until > nowSec && !liveIds.includes(id)) {
+      const cur = next[id];
+      if (!cur || entry.until > cur.until) next[id] = entry;
+    }
+  }
+  return reconcileSnoozed(next, liveIds, nowSec);
 }
 
 // Stubs for snoozed ids missing from the live list (the undo row);
@@ -1278,6 +1304,20 @@ export default function NowView({
     }
   }
 
+  // Merge server snoozed rows into stub state (issue #1030): a
+  // fresh session renders Undo stubs for ids it never snoozed
+  // itself. Local optimism wins only when newer (in-flight snooze
+  // racing the server write); otherwise the server is the truth.
+  async function hydrateSnoozed(liveIds: string[]) {
+    try {
+      const s = await fetchSnoozed();
+      const nowSec = Date.now() / 1000;
+      setSnoozed((prev) => mergeServerSnoozed(prev, s.snoozed, liveIds, nowSec));
+    } catch {
+      // Stubs stay local-only; the queue itself still renders.
+    }
+  }
+
   async function refresh() {
     try {
       const live = await fetchInbox(repo);
@@ -1290,6 +1330,7 @@ export default function NowView({
           // Strips keep their last flags; Review shows its own error.
         }
       }
+      await hydrateSnoozed(live.attention.map((i) => i.id));
       await refreshHeroExtras();
       setSnoozed((prev) =>
         reconcileSnoozed(
@@ -1439,6 +1480,8 @@ export default function NowView({
       if (cancelled) return;
       if (inboxResult.status === 'fulfilled') {
         setData(inboxResult.value);
+        // First paint hydrates server snoozes too (issue #1030).
+        void hydrateSnoozed(inboxResult.value.attention.map((i) => i.id));
       } else {
         const err = inboxResult.reason;
         setError(err instanceof Error ? err.message : String(err));
