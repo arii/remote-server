@@ -17,6 +17,8 @@ import sys
 import tempfile
 import time
 
+import skills_registry
+
 REQUIRED_SECTIONS = (
     "Problem Statement",
     "Goal",
@@ -165,6 +167,8 @@ class IssueGeneratorGraph:
         if answers:
             prompt += "\nHuman answers:\n" + "\n".join(
                 f"- {k}: {v}" for k, v in sorted(answers.items())) + "\n"
+        prompt = skills_registry.SkillsRegistry().inject_skills_for_node(
+            "draft_spec_node", prompt)
         reply = model.invoke(prompt)
         return getattr(reply, "content", reply) if not isinstance(
             reply, str) else reply

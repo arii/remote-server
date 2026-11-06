@@ -104,6 +104,17 @@ PLAN:
 Task:
 {brief}"""
 
+# Replan/runbook skill for the plan + validated_replanner loop. The
+# registry tolerates a missing skills dir (worktrees), yielding PLAN_PROMPT
+# unchanged.
+try:
+    import skills_registry as _skills_registry
+
+    PLAN_PROMPT = _skills_registry.SkillsRegistry().inject_skills_for_node(
+        "validated_replanner_node", PLAN_PROMPT)
+except Exception:
+    pass
+
 PLAN_NUDGE = ("Call the propose_plan tool now with your numbered plan "
               "(steps + files + checks each). Do not write code.")
 
