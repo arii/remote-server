@@ -122,6 +122,10 @@ class ChatOpsTest(unittest.TestCase):
         chat.deep_agent_python = self._orig_venv
         chat.deep_agent_script = self._orig_script
         chat.pending_resumes.clear()
+        # Turn records persist for remount queries (#1015) instead of
+        # popping at done — clear per test so finished turns never
+        # leak across cases.
+        chat.chat_sessions.clear()
         ops.run_takeover = self._orig_takeover
         ops.fetch_workflow_health = self._orig_wf
         proposals.run_gh_create_issue = self._orig_gh_issue
@@ -375,7 +379,10 @@ class ChatOpsTest(unittest.TestCase):
                                json={"session_id": "missing00000"})
         self.assertEqual(resp.status_code, 404)
 
-    def test_chat_disconnect_terminates_child(self):
+    def test_chat_disconnect_detaches_for_reattach(self):
+        # #1015 replaces kill-on-disconnect: a page leave detaches the
+        # turn so a remount re-attaches; the TTL sweep below owns the
+        # #294 no-zombie invariant instead of the socket.
         proc = FakeProc("hello world")
         chat.spawn_chat_process = lambda argv: proc
         gen = chat._chat_events("hi", "remote-server", "disc00000001")
@@ -384,8 +391,80 @@ class ChatOpsTest(unittest.TestCase):
         self.assertIn("token", next(gen))
         with self.assertRaises(GeneratorExit):
             gen.throw(GeneratorExit)
-        self.assertTrue(proc.terminated)
+        self.assertFalse(proc.terminated)
+        sess = chat.chat_sessions.get("disc00000001")
+        self.assertIsNotNone(sess)
+        self.assertFalse(sess["done"])
+        self.assertIsNotNone(sess["detached_at"])
+        self.assertEqual(sess["tokens"], ["hello world"])
+        # Stale detached turns are reaped with their child stopped.
+        with mock.patch.object(chat, "DETACHED_CHAT_TTL", -1):
+            self.assertGreaterEqual(chat._sweep_chat_sessions(), 1)
         self.assertNotIn("disc00000001", chat.chat_sessions)
+        self.assertTrue(proc.terminated)
+
+    def test_chat_status_reports_live_done_and_missing(self):
+        now = time.time()
+        with chat.chat_sessions_lock:
+            chat.chat_sessions["live00000001"] = {
+                "id": "live00000001", "repo": "remote-server",
+                "prompt": "hi", "started_at": now - 5, "aborted": False,
+                "proc": None, "tokens": ["hel", "lo"], "phase": "generating",
+                "done": False, "final": None, "detached_at": None,
+                "completed_at": None}
+            chat.chat_sessions["done00000001"] = {
+                "id": "done00000001", "repo": "remote-server",
+                "prompt": "hi", "started_at": now - 10, "aborted": False,
+                "proc": None, "tokens": ["hi"],
+                "phase": "done", "done": True,
+                "final": {"kind": "done", "text": "hi", "aborted": False,
+                          "elapsed": 1.5},
+                "detached_at": None, "completed_at": now}
+        live = chat.chat_session_status("live00000001")
+        self.assertEqual(live["state"], "live")
+        self.assertEqual(live["text"], "hello")
+        self.assertEqual(live["phase"], "generating")
+        done = chat.chat_session_status("done00000001")
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(done["text"], "hi")
+        try:
+            chat.chat_session_status("missing000001")
+            self.fail("expected 404")
+        except Exception as exc:
+            self.assertEqual(getattr(exc, "status_code", None), 404)
+
+    def test_chat_reattach_replays_buffer_then_done(self):
+        now = time.time()
+        with chat.chat_sessions_lock:
+            chat.chat_sessions["reatt0000001"] = {
+                "id": "reatt0000001", "repo": "remote-server",
+                "prompt": "hi", "started_at": now - 5, "aborted": False,
+                "proc": None, "tokens": ["hel", "lo"],
+                "phase": "done", "done": True,
+                "final": {"kind": "done", "text": "hello", "aborted": False,
+                          "elapsed": 2.0},
+                "detached_at": None, "completed_at": now}
+        frames = list(chat._reattach_events("reatt0000001"))
+        self.assertTrue(all(f.startswith("event: ") for f in frames))
+        kinds = [f.splitlines()[0][len("event: "):] for f in frames]
+        self.assertEqual(kinds, ["token", "token", "done"])
+        done = json.loads(frames[-1].split("data: ", 1)[1])
+        self.assertEqual(done["text"], "hello")
+        self.assertFalse(done["aborted"])
+
+    def test_chat_stream_post_rejects_live_turn(self):
+        with chat.chat_sessions_lock:
+            chat.chat_sessions["busy00000001"] = {
+                "id": "busy00000001", "repo": "remote-server",
+                "prompt": "hi", "started_at": time.time(), "aborted": False,
+                "proc": None, "tokens": [], "phase": "generating",
+                "done": False, "final": None, "detached_at": None,
+                "completed_at": None}
+        resp = self.client.post("/api/chat/stream",
+                                json={"prompt": "another",
+                                      "repo": "remote-server",
+                                      "session_id": "busy00000001"})
+        self.assertEqual(resp.status_code, 409)
 
     def test_chat_stream_timeout_kills_hung_child(self):
         block = threading.Event()
@@ -401,7 +480,13 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(phases[-1], "error")
         self.assertTrue(proc.terminated)
         self.assertIsNotNone(proc.poll())
-        self.assertNotIn("timeout00001", chat.chat_sessions)
+        # #1015: terminal turns stay queryable (no pop) until the TTL
+        # sweep; the record carries the error final for remounts.
+        sess = chat.chat_sessions.get("timeout00001")
+        self.assertIsNotNone(sess)
+        self.assertTrue(sess["done"])
+        self.assertEqual(sess["final"]["kind"], "error")
+        self.assertIn("timed out", sess["final"]["error"])
         with open(os.environ["BUTTONS_LEDGER_PATH"]) as fh:
             logged = [json.loads(line) for line in fh if line.strip()]
         failed = [e for e in logged if e.get("event") == "chat failed"]

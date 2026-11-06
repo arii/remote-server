@@ -8,10 +8,12 @@ import {
   fetchAgentRun,
   fetchAgentRuns,
   fetchBudget,
+  fetchChatSessionStatus,
   fetchRepoFiles,
   fetchRepoMetrics,
   fetchRouteHint,
   postChatStream,
+  reattachChatStream,
   resumeChat,
 } from '../apiClient';
 import type {
@@ -1472,6 +1474,30 @@ export function turnPrompt(messages: ChatMessage[], index: number): string {
   return '';
 }
 
+// Remount resume decision (#1015): maps a polled turn status to the
+// one action the mount effect takes — stream (live turn: re-attach),
+// backfill (finished while the page was gone), approval (restore the
+// card), or none (unknown session, empty finish, error state keeps
+// the interrupted-resend banner).
+export type ResumeAction =
+  | { kind: 'stream' }
+  | { kind: 'backfill'; text: string }
+  | { kind: 'approval' }
+  | { kind: 'none' };
+
+export function resumeActionForStatus(
+  status: { session_id: string; state: string; text: string; approval?: unknown } | null | undefined,
+  sessionId: string,
+): ResumeAction {
+  if (!status || status.session_id !== sessionId) return { kind: 'none' };
+  if (status.state === 'live') return { kind: 'stream' };
+  if ((status.state === 'done' || status.state === 'aborted') && status.text) {
+    return { kind: 'backfill', text: status.text };
+  }
+  if (status.state === 'approval_pending' && status.approval) return { kind: 'approval' };
+  return { kind: 'none' };
+}
+
 // Streaming progress line: elapsed always, plus phase and token count
 // once known. "Working… 45s · prefill · 12 tok".
 export function streamProgress(
@@ -1920,19 +1946,37 @@ export default function ChatView({
       setMessages(loadChat().messages);
       return;
     }
+    let cancelled = false;
+    const ctrl = new AbortController();
     (async () => {
       try {
         const live = await fetchAgentRuns();
-        setRuns(live.runs);
+        if (!cancelled) setRuns(live.runs);
       } catch {
         // Past runs stay hidden; live chat still works.
       }
       try {
-        setBudget(await fetchBudget());
+        const budget = await fetchBudget();
+        if (!cancelled) setBudget(budget);
       } catch {
         // Budget line stays hidden; runs still render.
       }
+      // Turn survival (#1015): a stored thread whose turn outlived
+      // the page resumes here — live turns re-attach their stream,
+      // finished ones backfill. Unknown sessions stay on the
+      // interrupted-resend banner.
+      try {
+        const sid = loadChatSessionId();
+        if (sid && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
+      } catch {
+        // Resume is best-effort; the snapshot still renders.
+      }
     })();
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Persist the live exchange across tab switches (#573): the view
@@ -2061,6 +2105,100 @@ export default function ChatView({
     } finally {
       abortRef.current = null;
     }
+  }
+
+  // Turn survival across page leave (#1015): the server buffers the
+  // live turn and keeps finished records queryable, so a remount
+  // picks up where the reload cut off instead of stranding an empty
+  // reply. Unknown/TTL-swept sessions (404) fall through silently and
+  // the interrupted-resend banner stands. The status-to-action mapping
+  // is a pure exported helper so the resume branches stay unit-tested.
+  async function resumeStoredTurn(
+    sid: string,
+    outerSignal: AbortSignal,
+    isCancelled: () => boolean,
+  ) {
+    let status;
+    try {
+      status = await fetchChatSessionStatus(sid);
+    } catch {
+      return;
+    }
+    if (isCancelled()) return;
+    // One mapping drives every branch below (unit-tested helper).
+    const action = resumeActionForStatus(status, sid);
+    if (action.kind === 'stream') {
+      // The turn outlived the page: pump its replay + live tail with
+      // the same mechanics as a fresh send, so tokens land in the
+      // trailing placeholder and Stop/stall wiring keeps working.
+      sessionRef.current = sid;
+      setInterrupted(null);
+      setMessages((m) => [...m, { role: 'assistant', text: '' }]);
+      setStreaming(true);
+      startRef.current = Date.now() - (status.elapsed ?? 0) * 1000;
+      lastEventRef.current = Date.now();
+      stalledRef.current = false;
+      setElapsed(Math.floor(status.elapsed ?? 0));
+      setTokenCount(0);
+      setPhase(status.phase || null);
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      const onOuterAbort = () => ctrl.abort();
+      outerSignal.addEventListener('abort', onOuterAbort);
+      try {
+        const resp = await reattachChatStream(sid, ctrl.signal);
+        if (!resp.ok || !resp.body) throw new Error(`Reattach failed: ${resp.status}`);
+        await pumpStream(
+          resp.body.getReader(),
+          appendToken,
+          (payload) => {
+            setApproval(payload);
+            setDecided(null);
+          },
+          setPhase,
+          backfillDone,
+          () => {
+            lastEventRef.current = Date.now();
+          },
+        );
+        await refreshRunsQuiet(fetchAgentRuns, setRuns);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        outerSignal.removeEventListener('abort', onOuterAbort);
+        if (abortRef.current === ctrl) abortRef.current = null;
+        if (!isCancelled()) setStreaming(false);
+      }
+      return;
+    }
+    if (action.kind === 'backfill') {
+      // The turn finished while the page was gone: backfill the
+      // reply the snapshot could not persist (#573 drops the tail).
+      const text = action.text;
+      setInterrupted(null);
+      setMessages((m) => {
+        const last = m[m.length - 1];
+        if (last && last.role === 'assistant' && last.text === '') {
+          const next = [...m];
+          next[next.length - 1] = { role: 'assistant', text };
+          return next;
+        }
+        return [...m, { role: 'assistant', text }];
+      });
+      return;
+    }
+    if (action.kind === 'approval' && status?.approval) {
+      setInterrupted(null);
+      setApproval(status.approval);
+      setDecided(null);
+      if (status.text) {
+        const text = status.text;
+        setMessages((m) => [...m, { role: 'assistant', text }]);
+      }
+    }
+    // Error state and none: leave the interrupted banner to offer resend.
   }
 
   function mockReply() {

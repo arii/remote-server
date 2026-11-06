@@ -10,18 +10,31 @@ updates:
       interval: "weekly"
   # SHA-pinned agent workflows (issue #529): this entry makes action bumps
   # (including boomtick SHAs) arrive as reviewed PRs — verify the boomtick
-  # diff before merging.
+  # diff before merging. Batched into one PR per cycle (issue #1081).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
   # Python pins (issue #536): backend + deep-agent requirements are ==
-  # pinned; these entries make bumps arrive as reviewed PRs.
+  # pinned; these entries make bumps arrive as reviewed PRs. Batched
+  # into one PR per cycle (issue #1081).
   - package-ecosystem: "pip"
     directory: "/backend"
     schedule:
       interval: "weekly"
+    groups:
+      pip-deps:
+        patterns:
+          - "*"
   - package-ecosystem: "pip"
     directory: "/deep-agent"
     schedule:
       interval: "weekly"
+    groups:
+      pip-deps:
+        patterns:
+          - "*"

@@ -26,11 +26,11 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-# Tracks boomtick main: every rebuild pulls the latest td gates +
-# MCP tools (user decision 2026-11-05; a floating ref means rebuilds
-# can pull unaudited upstream — pin to a cli-vX.Y.Z tag or full SHA
-# to freeze).
-ARG BOOMTICK_CLI_REF=main
+# Release-train pin (issue #1081): one rollup PR per upstream boomtick
+# release — never float main. A floating ref means rebuilds can pull
+# unaudited upstream. Bumped together with Dockerfile by the
+# release-train batch; see docs/release-train.md.
+ARG BOOMTICK_CLI_REF=cli-v0.20.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -84,7 +84,8 @@ RUN apt-get update \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
- && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 17 \
+ && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 16 \
+ && echo "boomtick ${BOOMTICK_CLI_REF} ships 16 MCP schemas (floor matches the release)" \
  && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
  && npm install -g /tmp/*.tgz \
  && rm -rf /tmp/boomtick /tmp/*.tgz \
