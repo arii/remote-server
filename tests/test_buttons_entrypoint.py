@@ -199,6 +199,10 @@ class TestEntrypointBehavior(unittest.TestCase):
                         body = f.read()
                     self.assertIn(stack_root, body)
                     self.assertNotIn(app_root, body)
+                    # Missing artifacts must force a full rebuild:
+                    # incremental state (stale SHA, wiped sqlite)
+                    # no-ops and leaves RAG unavailable.
+                    self.assertIn("--full", body)
 
     def test_generate_suffix_stripped_from_probe(self):
         # OLLAMA_URL ships with the /api/generate path in compose;

@@ -67,9 +67,19 @@ let ws = null;
 let reconnectTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
 function connect() {
-  ws = new WebSocket(wsUrl);
+  clearTimeout(reconnectTimer);
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (_) {
+    // Synchronous constructor throw (no path re-dials otherwise):
+    // show the gap and retry like a clean close.
+    document.getElementById('state').textContent = 'reconnecting…';
+    reconnectTimer = setTimeout(connect, 2000);
+    return;
+  }
   ws.onopen = () => {
     document.getElementById('state').textContent = 'live';
+    cv.style.opacity = '';
     frames = 0; t0 = performance.now();
   };
   ws.onmessage = (ev) => {
@@ -107,6 +117,9 @@ function connect() {
     }
   };
   ws.onclose = () => {
+    // Dim the canvas: a frozen last frame must not pose as live
+    // while the socket is down.
+    cv.style.opacity = '0.35';
     document.getElementById('state').textContent = 'reconnecting…';
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 2000);
@@ -356,8 +369,13 @@ class CDPBridge:
         # the page target, leaving the old session (and its screencast)
         # pointed at a dead target with zero frames and dead input.
         targets = await self.call("Target.getTargets")
-        page = next(t for t in targets["targetInfos"]
-                    if t["type"] == "page")
+        pages = [t for t in targets["targetInfos"]
+                 if t["type"] == "page"]
+        if not pages:
+            # Crash/nav gap with no page target yet: raw StopIteration
+            # would surface as an inscrutable 500-class failure.
+            raise RuntimeError("no page target to attach")
+        page = pages[0]
         attached = await self.call("Target.attachToTarget",
                                    {"targetId": page["targetId"],
                                     "flatten": True})
@@ -509,13 +527,18 @@ class CDPBridge:
             "return document.activeElement.tagName;})()")})
 
     async def key(self, key, code):
-        await self.ensure_focus()
+        try:
+            await self.ensure_focus()
+        except Exception:
+            # Focus is best-effort: a failed focus probe must not
+            # eat the keystroke when something is already focused.
+            pass
         if len(key) == 1:
             await self.call("Input.insertText", {"text": key})
             return
         vk = KEYCODES.get(key)
         if vk is None:
-            return
+            raise ValueError(f"unknown key: {key!r}")
         for typ in ("keyDown", "keyUp"):
             params = {"type": typ, "key": key,
                       "windowsVirtualKeyCode": vk, "code": code or key}
@@ -621,21 +644,32 @@ def create_app():
         async def recover_once(op):
             # One reattach + screencast restart, then retry: a swapped
             # or crashed target must not kill the viewer socket.
+            # Deterministic input rejections (ValueError: unknown key,
+            # no page target) skip the retry and report immediately.
+            async def report(msg):
+                try:
+                    await _ws_send_text(
+                        send, lock,
+                        json.dumps({"type": "error", "msg": msg}))
+                except Exception:
+                    pass
+
             try:
                 await op()
+                return
+            except ValueError as exc:
+                await report(f"browser op rejected: {exc}")
+                return
             except Exception:
-                try:
-                    await bridge.reattach()
-                    await bridge.start_screencast(on_frame)
-                    await op()
-                except Exception:
-                    try:
-                        await _ws_send_text(
-                            send, lock,
-                            json.dumps({"type": "error",
-                                        "msg": "browser op failed"}))
-                    except Exception:
-                        pass
+                pass
+            try:
+                await bridge.reattach()
+                await bridge.start_screencast(on_frame)
+                await op()
+            except ValueError as exc:
+                await report(f"browser op rejected: {exc}")
+            except Exception:
+                await report("browser op failed")
 
         async def on_crash():
             try:
@@ -656,7 +690,21 @@ def create_app():
 
         try:
             bridge = CDPBridge(session_id)
-            await bridge.connect()
+            try:
+                await bridge.connect()
+            except Exception as exc:
+                # Past 'attached' with no bridge: without this the
+                # viewer gets frames-never plus silence. Name it and
+                # close so the viewer re-dials instead of hanging.
+                try:
+                    await _ws_send_text(
+                        send, lock,
+                        json.dumps({"type": "error",
+                                    "msg": f"browser connect failed: {exc}"}))
+                except Exception:
+                    pass
+                await send({"type": "websocket.close", "code": 1011})
+                return
             bridge._crash_cb = on_crash
             # Measured ratio beats the assumed DSF: the viewer maps
             # pointer coords with this, before the first frame lands.
