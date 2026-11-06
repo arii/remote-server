@@ -29,7 +29,7 @@ DSF = 2
 # viewer sits on a black canvas until the human types a URL.
 DEFAULT_URL = "http://caddy:8080/buttons/"
 
-VIEWER_HTML = """<!doctype html>
+VIEWER_HTML = r"""<!doctype html>
 <html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
 <style>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif}
@@ -48,14 +48,22 @@ const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') +
 const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
 cv.tabIndex = 0;
 const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
+let dsf = 1;
 ws.onopen = () => document.getElementById('state').textContent = 'live';
 ws.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
-  let dsf = 1;
   if (m.type === 'attached') {
     dsf = m.dsf || 1;
     document.getElementById('state').textContent =
       (m.shared ? 'shared agent session ' : 'own session ') + m.session;
+    return;
+  }
+  if (m.type === 'status' || m.type === 'reattached') {
+    document.getElementById('state').textContent = m.msg || m.type;
+    return;
+  }
+  if (m.type === 'error') {
+    document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
     return;
   }
   if (m.type === 'frame') {
@@ -92,9 +100,13 @@ document.getElementById('go').onclick = () =>
 
 
 def _grid_session_create():
+    # --disable-dev-shm-usage complements the 2gb shm_size: when raster
+    # buffers spike, Chromium falls back to /tmp instead of SIGBUS/SIGKILL
+    # on /dev/shm exhaustion (the #1 silent renderer crash in Docker).
     caps = {"browserName": "chrome",
             "goog:chromeOptions": {"args": [
                 "--user-data-dir=/data/shared-browser/agent",
+                "--disable-dev-shm-usage",
                 "--enable-features=WebMCP"]}}
     req = urllib.request.Request(
         GRID_BASE + "/session",
@@ -159,13 +171,29 @@ KEYCODES = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27,
 
 
 class CDPBridge:
-    """Minimal CDP client over the per-session Grid endpoint."""
+    """Minimal CDP client over the per-session Grid endpoint.
+
+    Screencast policy: every frame is acknowledged to Chromium
+    immediately on receipt (the compositor blocks until
+    Page.screencastFrameAck arrives), and only the latest frame is
+    flushed to the UI websocket — intermediate frames are dropped
+    while a send is in flight so a laggy viewer cannot wedge the
+    renderer or balloon server memory.
+    """
 
     def __init__(self, session_id):
         self.session_id = session_id
         self._id = 0
+        # Fire-and-forget ack ids live far above call ids so an ack
+        # response can never collide with a tracked call future.
+        self._ack_id = 10 ** 9
         self._pending = {}
         self.ws = None
+        self._latest_params = None
+        self._dispatch_in_flight = False
+        # Set by the app: reattach + restart the screencast after a
+        # renderer crash instead of letting the socket die.
+        self._crash_cb = None
 
     def _ws_url(self):
         return f"ws://browser:4444/session/{self.session_id}/se/cdp"
@@ -206,16 +234,61 @@ class CDPBridge:
     def on_message(self, msg):
         # Unwrap flattened target messages to the inner page event.
         if msg.get("method") == "Target.receivedMessageFromTarget":
-            msg = json.loads(msg["params"]["message"])
-        if (msg.get("method") == "Page.screencastFrame"
-                and getattr(self, "_frame_cb", None)):
-            asyncio.get_event_loop().create_task(
-                self._frame_cb(msg.get("params", {})))
+            try:
+                msg = json.loads(msg["params"]["message"])
+            except Exception:
+                return
+        method = msg.get("method", "")
+        if method == "Page.screencastFrame":
+            if getattr(self, "_frame_cb", None) is not None:
+                try:
+                    loop = asyncio.get_event_loop()
+                except Exception:
+                    return
+                loop.create_task(
+                    self._ack_and_dispatch(msg.get("params", {})))
+            return
+        if "targetCrashed" in method:
+            cb = getattr(self, "_crash_cb", None)
+            if cb is not None:
+                async def _run():
+                    try:
+                        res = cb()
+                        if asyncio.iscoroutine(res):
+                            await res
+                    except Exception:
+                        pass
+                try:
+                    asyncio.get_event_loop().create_task(_run())
+                except Exception:
+                    pass
             return
         if "id" in msg and msg["id"] in self._pending:
             fut = self._pending.pop(msg["id"])
             if not fut.done():
                 fut.set_result(msg.get("result", {}))
+
+    async def _ack_and_dispatch(self, params):
+        # Ack first so the compositor never blocks; then coalesce —
+        # only the latest frame is flushed while a send is in flight.
+        try:
+            await self.ack_frame(params.get("sessionId"))
+        except Exception:
+            pass
+        self._latest_params = params
+        if self._dispatch_in_flight:
+            return
+        self._dispatch_in_flight = True
+        try:
+            while self._latest_params is not None:
+                current = self._latest_params
+                self._latest_params = None
+                try:
+                    await self._frame_cb(current)
+                except Exception:
+                    return
+        finally:
+            self._dispatch_in_flight = False
 
     async def call(self, method, params=None, timeout=15):
         import asyncio as aio
@@ -231,7 +304,13 @@ class CDPBridge:
 
     async def start_screencast(self, on_frame):
         self._frame_cb = on_frame
+        self._latest_params = None
+        self._dispatch_in_flight = False
         await self.call("Page.enable")
+        try:
+            await self.call("Page.stopScreencast")
+        except Exception:
+            pass
         await self.call("Page.startScreencast",
                         {"format": "jpeg", "quality": 70,
                          "maxWidth": VIEWPORT["width"] * DSF,
@@ -239,7 +318,8 @@ class CDPBridge:
                          "everyNthFrame": 1})
 
     async def ack_frame(self, session_id):
-        envelope = {"id": 10 ** 9,
+        self._ack_id += 1
+        envelope = {"id": self._ack_id,
                     "method": "Page.screencastFrameAck",
                     "params": {"sessionId": session_id}}
         if getattr(self, "cdp_session", None):
@@ -326,19 +406,54 @@ def create_app():
         lock = asyncio.Lock()
 
         async def on_frame(params):
+            # Ack-first + latest-wins live in the bridge: this only
+            # flushes the coalesced frame to the viewer.
             await _ws_send_text(
                 send, lock,
                 json.dumps({"type": "frame", "data": params["data"]}))
-            await bridge.ack_frame(params["sessionId"])
 
         async def human_input():
             nonlocal paused
             if not paused:
                 paused = await asyncio.to_thread(_pause_agent)
 
+        async def recover_once(op):
+            # One reattach + screencast restart, then retry: a swapped
+            # or crashed target must not kill the viewer socket.
+            try:
+                await op()
+            except Exception:
+                try:
+                    await bridge.reattach()
+                    await bridge.start_screencast(on_frame)
+                    await op()
+                except Exception:
+                    try:
+                        await _ws_send_text(
+                            send, lock,
+                            json.dumps({"type": "error",
+                                        "msg": "browser op failed"}))
+                    except Exception:
+                        pass
+
+        async def on_crash():
+            try:
+                await bridge.reattach()
+                await bridge.start_screencast(on_frame)
+            except Exception:
+                return
+            try:
+                await _ws_send_text(
+                    send, lock,
+                    json.dumps({"type": "reattached",
+                                "msg": "reattached after target crash"}))
+            except Exception:
+                pass
+
         try:
             bridge = CDPBridge(session_id)
             await bridge.connect()
+            bridge._crash_cb = on_crash
             await bridge.start_screencast(on_frame)
 
             async def do_go(url):
@@ -354,7 +469,7 @@ def create_app():
                 # A fresh tab never repaints: without this the new
                 # viewer sits on a black canvas (fps: -) until the
                 # human types a URL. Start where the work is.
-                await do_go(DEFAULT_URL)
+                await recover_once(lambda: do_go(DEFAULT_URL))
             while True:
                 event = await receive()
                 if event["type"] == "websocket.disconnect":
@@ -364,13 +479,16 @@ def create_app():
                 msg = json.loads(event.get("text") or "{}")
                 if msg.get("t") == "click":
                     await human_input()
-                    await bridge.click(int(msg["x"]), int(msg["y"]))
+                    x, y = int(msg["x"]), int(msg["y"])
+                    await recover_once(lambda: bridge.click(x, y))
                 elif msg.get("t") == "key":
                     await human_input()
-                    await bridge.key(str(msg.get("key", "")),
-                                     str(msg.get("code", "")))
+                    key, code = (str(msg.get("key", "")),
+                                 str(msg.get("code", "")))
+                    await recover_once(lambda: bridge.key(key, code))
                 elif msg.get("t") == "go":
-                    await do_go(str(msg["url"]))
+                    url = str(msg["url"])
+                    await recover_once(lambda: do_go(url))
         finally:
             if bridge is not None:
                 await bridge.close()
@@ -391,8 +509,8 @@ async def self_test():
         t_click = None
 
         async def on_frame(params):
+            # The bridge acks each frame on receipt; this only records.
             got.append((time.monotonic(), len(params["data"])))
-            await bridge.ack_frame(params["sessionId"])
 
         await bridge.start_screencast(on_frame)
         await bridge.navigate("http://caddy:8080/buttons/")

@@ -110,5 +110,135 @@ class ReattachTest(unittest.TestCase):
         self.assertTrue(attach[0][1]["flatten"])
 
 
+class ScreencastAckTest(unittest.TestCase):
+    def test_ack_dispatched_before_frame_callback(self):
+        # The compositor blocks until Page.screencastFrameAck arrives:
+        # the bridge must ack immediately on receipt, never after the
+        # (slow) UI websocket send inside the frame callback.
+        import asyncio
+
+        async def go():
+            bridge = browser_view.CDPBridge("sid")
+            events = []
+
+            class FakeWS:
+                async def send(self, raw):
+                    import json as _json
+                    msg = _json.loads(raw)
+                    if msg.get("method") == "Page.screencastFrameAck":
+                        events.append("ack")
+
+            bridge.ws = FakeWS()
+            bridge.cdp_session = "S1"
+
+            async def on_frame(params):
+                events.append("frame")
+
+            bridge._frame_cb = on_frame
+            bridge.on_message({"method": "Target.receivedMessageFromTarget",
+                               "params": {"message": (
+                                   '{"method":"Page.screencastFrame",'
+                                   '"params":{"data":"AAA","sessionId":"1"}}')}})
+            await asyncio.sleep(0.2)
+            self.assertEqual(events[:2], ["ack", "frame"])
+
+        asyncio.run(go())
+
+    def test_rapid_frames_coalesce_to_latest(self):
+        # Backpressure: while one UI send is in flight, intermediate
+        # frames are dropped and only the latest is flushed next.
+        import asyncio
+
+        async def go():
+            bridge = browser_view.CDPBridge("sid")
+            delivered = []
+            release = asyncio.Event()
+
+            class FakeWS:
+                async def send(self, raw):
+                    pass
+
+            bridge.ws = FakeWS()
+            bridge.cdp_session = "S1"
+
+            async def on_frame(params):
+                delivered.append(params["data"])
+                await release.wait()
+
+            bridge._frame_cb = on_frame
+            for data in ("f1", "f2", "f3"):
+                bridge.on_message({"method": "Page.screencastFrame",
+                                   "params": {"data": data,
+                                              "sessionId": "1"}})
+                await asyncio.sleep(0.05)
+            release.set()
+            await asyncio.sleep(0.3)
+            # First frame flows, f2 is superseded, latest (f3) follows.
+            self.assertEqual(delivered[0], "f1")
+            self.assertEqual(delivered[-1], "f3")
+            self.assertLessEqual(len(delivered), 2)
+
+        asyncio.run(go())
+
+
+class CrashRecoveryTest(unittest.TestCase):
+    def test_target_crash_invokes_crash_callback(self):
+        import asyncio
+
+        async def go():
+            bridge = browser_view.CDPBridge("sid")
+            called = []
+
+            async def on_crash():
+                called.append(1)
+
+            bridge._crash_cb = on_crash
+            bridge.on_message({"method": "Inspector.targetCrashed",
+                               "params": {}})
+            await asyncio.sleep(0.2)
+            return called
+
+        self.assertTrue(asyncio.run(go()))
+
+
+class ViewerHtmlTest(unittest.TestCase):
+    def test_dsf_is_global_for_click_mapping(self):
+        # pos() maps device pixels back to CSS pixels with dsf: it must
+        # resolve at click time, not throw a ReferenceError because dsf
+        # was scoped inside the onmessage handler.
+        import re
+        html = browser_view.VIEWER_HTML
+        self.assertIn("function pos(e)", html)
+        # A top-level dsf declaration the handler assigns to (no shadowing).
+        self.assertTrue(re.search(r"(?m)^(let|var) dsf\s*=", html),
+                        "VIEWER_HTML needs a global dsf declaration")
+        self.assertNotIn("let dsf = 1;\n    if (m.type === 'attached')", html)
+
+
+class ChromeFlagsTest(unittest.TestCase):
+    def test_session_args_fallback_off_shm(self):
+        # Complement shm_size 2gb: when raster buffers spike, Chromium
+        # falls back to /tmp instead of taking a /dev/shm SIGBUS.
+        import io
+        import json
+        from unittest import mock
+        seen = {}
+
+        def fake_urlopen(req, timeout=60):
+            seen["data"] = json.loads(req.data.decode())
+            class Ctx:
+                def __enter__(self): return io.BytesIO(
+                    b'{"value": {"sessionId": "s1"}}')
+                def __exit__(self, *a): return False
+            return Ctx()
+
+        with mock.patch.object(browser_view.urllib.request, "urlopen",
+                               side_effect=fake_urlopen):
+            browser_view._grid_session_create()
+        args = seen["data"]["capabilities"]["alwaysMatch"][
+            "goog:chromeOptions"]["args"]
+        self.assertIn("--disable-dev-shm-usage", args)
+
+
 if __name__ == "__main__":
     unittest.main()

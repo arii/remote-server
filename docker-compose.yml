@@ -421,6 +421,10 @@ services:
     # look like "another computer" and refuse the shared profile.
     hostname: shared-browser
     shm_size: "2gb"
+    # Reap zombie Chromium renderer/GPU subprocesses on teardown:
+    # without an init, orphaned procs accumulate until the container
+    # hits its PID/memory limit and crashes.
+    init: true
     deploy:
       resources:
         limits:
