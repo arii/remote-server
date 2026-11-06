@@ -170,7 +170,7 @@ class ClearSemanticsTest(unittest.TestCase):
         self.assertIn("still active", err)
         self.assertIn(active_id, err)
         self.assertIn(active_id, reg.runs)
-        self.assertEqual(reg.active_id, active_id)
+        self.assertEqual(reg.active_ids, {active_id})
         # Once the run finishes, clear-all goes through.
         reg.finish_run(active_id, 0)
         self.assertEqual(reg.clear_jobs(all_jobs=True), (1, None))
@@ -200,18 +200,28 @@ class ClearSemanticsTest(unittest.TestCase):
         self.assertEqual(got, rid)
         self.assertEqual(reg.runs[rid]["output"], "")
 
-    def test_second_start_carries_active_id(self):
+    def test_second_start_queues_behind_full_pool(self):
+        # Issue #1025: capacity is a FIFO queue, not single-flight.
+        # The (MAX+1)-th dispatch waits with a place-in-line instead
+        # of failing; finishing the head promotes it.
         reg = RunRegistry()
-        rid, err = reg.start_run("logs")
-        self.assertIsNone(err)
+        import backend.exec.engine as engine_mod
+        cap = engine_mod.MAX_CONCURRENT_RUNS
+        ids = []
+        for _ in range(cap):
+            rid, err = reg.start_run("logs")
+            self.assertIsNone(err)
+            ids.append(rid)
         rid2, err2 = reg.start_run("logs")
-        self.assertIsNone(rid2)
-        self.assertIn("already in progress", err2)
-        self.assertIn(rid, err2)
-        reg.finish_run(rid, 0)
-        rid3, err3 = reg.start_run("logs")
-        self.assertIsNone(err3)
-        self.assertIsNotNone(rid3)
+        self.assertIsNone(err2)
+        self.assertTrue(reg.runs[rid2]["queued"])
+        self.assertEqual(reg.queue_position(rid2), 1)
+        self.assertEqual(reg.active_ids, set(ids))
+        # Head finishes: the waiter promotes into the freed slot.
+        reg.finish_run(ids[0], 0)
+        self.assertIn(rid2, reg.active_ids)
+        self.assertFalse(reg.runs[rid2]["queued"])
+        self.assertEqual(reg.queue_position(rid2), 0)
 
 
 class RouterTest(unittest.TestCase):
@@ -237,7 +247,7 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
 
     def test_run_plan_starts_first_class_run(self):
-        # #452: run-plan takes the single-flight slot, appears in the
+        # #452: run-plan takes a run slot, appears in the
         # job list with progress, and launches through the standard
         # run path — no inline 5-minute await.
         import backend.api.routers.jobs as jobs_router
@@ -263,20 +273,31 @@ class RouterTest(unittest.TestCase):
             prog = self.client.get(f"/api/jobs/runs/{rid}").json()
             self.assertFalse(prog["done"])
             self.assertEqual(prog["action"], "run-plan")
-            # Single-flighted both ways: a second plan 409s, and so
-            # does an action run while the plan holds the slot.
+            # Queue, not single-flight (#1025): a second plan takes
+            # the second slot, and an action run arriving with both
+            # slots full waits queued with its FIFO position.
             resp2 = self.client.post(
                 "/api/jobs/run-plan",
                 json={"plan": "review", "pr": "3"},
             )
-            self.assertEqual(resp2.status_code, 409)
+            self.assertEqual(resp2.status_code, 200)
+            body2 = resp2.json()
+            self.assertFalse(body2["queued"])
+            self.assertEqual(body2["position"], 0)
             resp3 = self.client.post(
                 "/api/jobs/run", json={"action": "logs"})
-            self.assertEqual(resp3.status_code, 409)
-        jobs_router.registry.finish_run(rid, 0)
+            self.assertEqual(resp3.status_code, 200)
+            body3 = resp3.json()
+            self.assertTrue(body3["queued"])
+            self.assertEqual(body3["position"], 1)
+        for done_id in (rid, body2["id"], body3["id"]):
+            jobs_router.registry.finish_run(done_id, 0)
         jobs_router.registry = RunRegistry()
 
-    def test_run_plan_conflicts_with_active_action_run(self):
+    def test_run_plan_queues_behind_active_action_runs(self):
+        # Queue (#1025): with both slots held by action runs, a
+        # plan waits queued with its FIFO position instead of
+        # conflicting.
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
@@ -284,11 +305,19 @@ class RouterTest(unittest.TestCase):
             resp = self.client.post(
                 "/api/jobs/run", json={"action": "logs"})
             self.assertEqual(resp.status_code, 200)
-            rid = resp.json()["id"]
+            resp_b = self.client.post(
+                "/api/jobs/run", json={"action": "logs"})
+            self.assertEqual(resp_b.status_code, 200)
+            self.assertFalse(resp_b.json()["queued"])
             resp2 = self.client.post(
                 "/api/jobs/run-plan", json={"plan": "issue-audit"})
-            self.assertEqual(resp2.status_code, 409)
-        jobs_router.registry.finish_run(rid, 0)
+            self.assertEqual(resp2.status_code, 200)
+            body2 = resp2.json()
+            self.assertTrue(body2["queued"])
+            self.assertEqual(body2["position"], 1)
+        for done_id in (resp.json()["id"], resp_b.json()["id"],
+                        body2["id"]):
+            jobs_router.registry.finish_run(done_id, 0)
         jobs_router.registry = RunRegistry()
 
     def test_td_run_timeout_and_error(self):
@@ -322,9 +351,14 @@ class RouterTest(unittest.TestCase):
             launched.assert_called_once_with(
                 rid, "run-td", "remote-server",
                 td_argv=["td", "context-warm"])
-            # single-flight: second run conflicts
+            # Queue (#1025): the engine holds two slots, so the
+            # second run starts too instead of conflicting.
             resp2 = self.client.post("/api/jobs/run", json={"action": "logs"})
-            self.assertEqual(resp2.status_code, 409)
+            self.assertEqual(resp2.status_code, 200)
+            body2 = resp2.json()
+            self.assertFalse(body2["queued"])
+            self.assertEqual(body2["position"], 0)
+            rid2 = body2["id"]
         # list + clear jobs
         self.assertEqual(self.client.get("/api/jobs").status_code, 200)
         resp3 = self.client.post("/api/jobs/clear", json={})
@@ -334,6 +368,7 @@ class RouterTest(unittest.TestCase):
             json={"intent": "jobs-clear", "confirmed": True})
         self.assertEqual(resp3.json(), {"ok": True, "cleared": 0})
         jobs_router.registry.finish_run(rid, 0)
+        jobs_router.registry.finish_run(rid2, 0)
 
     def test_run_accepts_branch(self):
         # Explicit branch (#708): validated, then the run starts
@@ -437,34 +472,51 @@ class RouterTest(unittest.TestCase):
         jobs_router.registry = RunRegistry()
 
     def test_clear_all_conflicts_while_active(self):
-        # Endpoint pins #512: clear-all refuses with 409 naming the
-        # still-visible active run; post-clear conflicts never name
-        # an invisible run.
+        # Endpoint pins #512: clear-all refuses with 409 naming a
+        # still-visible active run; with the queue (#1025) extra
+        # dispatches wait instead of conflicting.
         import backend.api.routers.jobs as jobs_router
 
         jobs_router.registry = RunRegistry()
         rid, err = jobs_router.registry.start_run("logs")
         self.assertIsNone(err)
+        extra_ids = []
         try:
             resp = self.client.post(
                 "/api/jobs/clear",
                 json={"all": True, "intent": "jobs-clear",
                       "confirmed": True})
             self.assertEqual(resp.status_code, 409)
-            self.assertIn(rid, resp.json()["detail"])
             listed = self.client.get("/api/jobs").json()["jobs"]
             self.assertEqual([j["id"] for j in listed], [rid])
+            # The refusal names the still-visible active run (#512),
+            # never an invisible one.
+            self.assertIn(rid, resp.json()["detail"])
+            # Queue (#1025): a second dispatch takes the free slot
+            # and a third waits queued — neither conflicts.
             resp2 = self.client.post(
                 "/api/jobs/run", json={"action": "logs"})
-            self.assertEqual(resp2.status_code, 409)
-            self.assertIn(rid, resp2.json()["detail"])
+            self.assertEqual(resp2.status_code, 200)
+            body2 = resp2.json()
+            self.assertFalse(body2["queued"])
+            self.assertEqual(body2["position"], 0)
+            extra_ids.append(body2["id"])
+            resp_q = self.client.post(
+                "/api/jobs/run", json={"action": "logs"})
+            self.assertEqual(resp_q.status_code, 200)
+            body_q = resp_q.json()
+            self.assertTrue(body_q["queued"])
+            self.assertEqual(body_q["position"], 1)
+            extra_ids.append(body_q["id"])
         finally:
             jobs_router.registry.finish_run(rid, 0)
+            for extra in extra_ids:
+                jobs_router.registry.finish_run(extra, 0)
         resp3 = self.client.post(
             "/api/jobs/clear",
             json={"all": True, "intent": "jobs-clear",
                   "confirmed": True})
-        self.assertEqual(resp3.json(), {"ok": True, "cleared": 1})
+        self.assertEqual(resp3.json(), {"ok": True, "cleared": 3})
 
     def test_run_destructive_requires_confirm(self):
         import backend.api.routers.jobs as jobs_router
@@ -482,7 +534,8 @@ class RouterTest(unittest.TestCase):
                       "confirmed": True})
             self.assertEqual(resp.status_code, 200)
             launched.assert_called_once_with(
-                resp.json()["id"], "recreate-code", "remote-server")
+                resp.json()["id"], "recreate-code", "remote-server",
+                td_argv=None)
         jobs_router.registry.finish_run(resp.json()["id"], 0)
 
     def test_run_recreate_rejected_no_resume_path(self):
@@ -771,13 +824,17 @@ class PushStreamTest(unittest.TestCase):
         self.assertEqual(reg._version, 2)
         reg.finish_run(rid, 0)
         self.assertEqual(reg._version, 3)
-        # No-ops bump nothing: missing append, busy start, empty clear.
+        # No-ops bump nothing: missing append, empty clear.
         reg.append("deadbeef0000", "x")
         self.assertEqual(reg._version, 3)
         reg2 = RunRegistry()
-        reg2.start_run("logs")
-        self.assertIsNone(reg2.start_run("logs")[0])
-        self.assertEqual(reg2._version, 1)
+        _, err_a = reg2.start_run("logs")
+        self.assertIsNone(err_a)
+        # Queue (#1025): the repeat start waits instead of
+        # conflicting, so it bumps like any other mutation.
+        _, err_b = reg2.start_run("logs")
+        self.assertIsNone(err_b)
+        self.assertEqual(reg2._version, 2)
         rid_b, _ = reg.start_run("logs")
         self.assertTrue(rid_b)
         self.assertEqual(reg._version, 4)
@@ -918,7 +975,7 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         self.assertEqual(run["exit_code"], 0)
         self.assertEqual(len(seen), 3)
         self.assertIn("$ df", run["output"])
-        self.assertIsNone(reg.active_id)
+        self.assertEqual(reg.active_ids, set())
 
     def test_failing_step_stops_with_note(self):
         reg, rid = self._reg("status")
@@ -1110,7 +1167,7 @@ class WatchdogTest(_LedgerTmpDir, unittest.TestCase):
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 124)
         self.assertIn("watchdog", run["output"])
-        self.assertIsNone(reg.active_id)
+        self.assertEqual(reg.active_ids, set())
 
     def test_normal_step_unaffected(self):
         chunks = []
@@ -1154,13 +1211,13 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 1)
-        self.assertIsNone(reg.active_id)
+        self.assertEqual(reg.active_ids, set())
 
     def test_finish_run_clears_missing_record(self):
         reg = RunRegistry()
-        reg.active_id = "deadbeefcafe"
+        reg.active_ids = {"deadbeefcafe"}
         reg.finish_run("deadbeefcafe", 1)
-        self.assertIsNone(reg.active_id)
+        self.assertEqual(reg.active_ids, set())
 
     def test_launch_failure_releases_lock(self):
         import backend.api.routers.jobs as jobs_router
@@ -1186,7 +1243,7 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
             ):
                 resp = client.post(path, json=payload)
             self.assertEqual(resp.status_code, 500)
-            self.assertIsNone(jobs_router.registry.active_id)
+            self.assertEqual(jobs_router.registry.active_ids, set())
             rid, err = jobs_router.registry.start_run("logs")
             self.assertIsNone(err)
             jobs_router.registry.finish_run(rid, 0)
@@ -1380,7 +1437,7 @@ class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 130)
         self.assertIn("cancelled by operator", run["output"])
-        self.assertIsNone(reg.active_id)
+        self.assertEqual(reg.active_ids, set())
         self.assertIsNotNone(proc.poll())
         self._assert_grandchild_dead(child)
 
@@ -1420,7 +1477,7 @@ class CancelRunTest(_LedgerTmpDir, unittest.TestCase):
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 130)
         self.assertIn("cancelled by operator", run["output"])
-        self.assertIsNone(reg.active_id)
+        self.assertEqual(reg.active_ids, set())
 
 
 class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
@@ -1543,7 +1600,7 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
         self.assertTrue(reg.runs[rid]["done"])
         self.assertEqual(reg.runs[rid]["exit_code"], 0)
 
-    def test_launch_single_flight_rerun_cancel(self):
+    def test_launch_queue_rerun_cancel(self):
         import backend.api.routers.jobs as jobs_router
 
         with mock.patch.object(jobs_router, "_launch"), mock.patch(
@@ -1555,26 +1612,41 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
                 json={"action": "triage-fanout", "repo": "boomtick"})
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
-            # Single-flight: a second launch conflicts while active.
+            self.assertFalse(resp.json()["queued"])
+            # Queue (#1025): repeat launches take the second slot,
+            # then wait queued — no conflict while active.
             resp2 = self.client.post(
                 "/api/jobs/run",
                 json={"action": "triage-fanout", "repo": "boomtick"})
-            self.assertEqual(resp2.status_code, 409)
-            # History row carries the action + repo.
+            self.assertEqual(resp2.status_code, 200)
+            self.assertFalse(resp2.json()["queued"])
+            rid2 = resp2.json()["id"]
+            resp3 = self.client.post(
+                "/api/jobs/run",
+                json={"action": "triage-fanout", "repo": "boomtick"})
+            self.assertEqual(resp3.status_code, 200)
+            body3 = resp3.json()
+            self.assertTrue(body3["queued"])
+            self.assertEqual(body3["position"], 1)
+            # History rows carry the action + repo.
+            ids = {rid, rid2, body3["id"]}
             rows = [j for j in self.client.get("/api/jobs").json()["jobs"]
-                    if j["id"] == rid]
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["kind"], "triage-fanout")
-            self.assertEqual(rows[0]["repo"], "boomtick")
+                    if j["id"] in ids]
+            self.assertEqual(len(rows), 3)
+            for row in rows:
+                self.assertEqual(row["kind"], "triage-fanout")
+                self.assertEqual(row["repo"], "boomtick")
             # Cancel works on the active fanout run.
-            resp3 = self.client.post(f"/api/jobs/runs/{rid}/cancel")
-            self.assertEqual(resp3.status_code, 202)
+            resp_c = self.client.post(f"/api/jobs/runs/{rid}/cancel")
+            self.assertEqual(resp_c.status_code, 202)
             jobs_router.registry.finish_run(rid, 130)
             # Re-run replays action+repo like any plain action.
             resp4 = self.client.post(
                 "/api/jobs/run",
                 json={"action": "triage-fanout", "repo": "boomtick"})
             self.assertEqual(resp4.status_code, 200)
+            jobs_router.registry.finish_run(rid2, 0)
+            jobs_router.registry.finish_run(body3["id"], 0)
             jobs_router.registry.finish_run(resp4.json()["id"], 0)
 
     def test_unknown_repo_rejected(self):
@@ -1684,7 +1756,7 @@ class RunStorePersistenceTest(unittest.TestCase):
         reg.finish_run(second, 1)
         # "Restart": a fresh registry over the same store.
         boot = RunRegistry(store_path=self.path)
-        self.assertIsNone(boot.active_id)
+        self.assertEqual(boot.active_ids, set())
         self.assertEqual(set(boot.runs), {first, second})
         for rid, exit_code, tail in ((first, 0, "hi\n"),
                                      (second, 1, "diag output\n")):
@@ -2264,11 +2336,21 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
                 json={"site": "boomtick.blog", "max_pages": 5})
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
-            # Single-flight: a second dispatch conflicts.
+            # Queue (#1025): a second dispatch takes the free slot
+            # and a third waits queued — neither conflicts.
             resp2 = self.client.post(
                 "/api/jobs/run-ux-audit",
                 json={"site": "arii.github.io", "max_pages": 5})
-            self.assertEqual(resp2.status_code, 409)
+            self.assertEqual(resp2.status_code, 200)
+            self.assertFalse(resp2.json()["queued"])
+            rid2 = resp2.json()["id"]
+            resp3 = self.client.post(
+                "/api/jobs/run-ux-audit",
+                json={"site": "boomtick.blog", "max_pages": 2})
+            self.assertEqual(resp3.status_code, 200)
+            body3 = resp3.json()
+            self.assertTrue(body3["queued"])
+            self.assertEqual(body3["position"], 1)
             # The run lists with its replay argv attached.
             listed = self.client.get("/api/jobs").json()["jobs"]
             row = next(j for j in listed if j["id"] == rid)
@@ -2276,6 +2358,8 @@ class UxAuditActionTest(_LedgerTmpDir, unittest.TestCase):
             self.assertEqual(
                 row["td_argv"],
                 ["ux-audit", "boomtick.blog", "--max-pages", "5"])
+            for done_id in (rid, rid2, body3["id"]):
+                jobs_router.registry.finish_run(done_id, 0)
 
     def test_groups_404_until_first_report(self):
         resp = self.client.get(
@@ -2786,17 +2870,21 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
             launched.assert_called_once_with(
                 rid, "review-pr", "remote-server",
                 td_argv=["review-pr", "12"])
-            # Single-flight: a second dispatch conflicts.
+            # Queue (#1025): a second dispatch takes the free
+            # slot instead of conflicting.
             resp2 = self.client.post(
                 "/api/jobs/run-review",
                 json={"repo": "remote-server", "pr": 13})
-            self.assertEqual(resp2.status_code, 409)
+            self.assertEqual(resp2.status_code, 200)
+            self.assertFalse(resp2.json()["queued"])
+            rid2 = resp2.json()["id"]
             row = next(j for j in
                        self.client.get("/api/jobs").json()["jobs"]
                        if j["id"] == rid)
             self.assertEqual(row["kind"], "review-pr")
             self.assertEqual(row["td_argv"], ["review-pr", "12"])
         jobs_router.registry.finish_run(rid, 0)
+        jobs_router.registry.finish_run(rid2, 0)
 
     def test_dispatch_post_rides_explicit_flag(self):
         import backend.api.routers.jobs as jobs_router
@@ -2925,7 +3013,7 @@ class SuperviseActionTest(_LedgerTmpDir, unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             rid = resp.json()["id"]
             launched.assert_called_once_with(
-                rid, "supervise", "remote-server")
+                rid, "supervise", "remote-server", td_argv=None)
         jobs_router.registry.finish_run(rid, 0)
 
 

@@ -829,6 +829,13 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
     def _track(proc):
         registry.set_proc(run_id, proc)
 
+    # Queue gate (issue #1025): runs beyond the slot pool wait in
+    # acquire until promotion. A False return means the run was
+    # cancelled, cleared, or finished before its turn — exit
+    # without running and without finishing (already done).
+    if not registry.acquire(run_id):
+        return
+
     try:
         steps, err = action_steps(action, repo, gh, td_cwd, td_argv)
         if err:
@@ -896,6 +903,15 @@ RUN_STORE_MAX_RUNS = 200
 # run chats. start/finish/clear always persist immediately.
 RUN_STORE_SAVE_INTERVAL = 2.0
 
+# Run-queue knobs (issue #1025): how many td runs may hold a slot
+# at once, and how long an active run may go without output before
+# it reads as wedged and gets reaped. Module-attr lookups at call
+# time so tests can override them without env surgery.
+MAX_CONCURRENT_RUNS = int(os.environ.get("BUTTONS_JOBS_MAX_CONCURRENT",
+                                         "2"))
+RUN_STALE_TTL = int(os.environ.get("BUTTONS_JOBS_STALE_TTL",
+                                   "1800"))
+
 # Suffix for runs that were active when the previous process died:
 # the tail above it ends at the last persist, and the outcome is
 # honestly unknown (exit stays None).
@@ -922,9 +938,11 @@ def runs_store_path() -> str:
 JOB_ERROR_MAX = 300
 
 
-def _run_to_job(run):
+def _run_to_job(run, queue_position=0):
     """Job-shaped view of one run record (#451). Pure: the caller
-    snapshots under the registry lock; the row is a fresh dict."""
+    snapshots under the registry lock; the row is a fresh dict.
+    Queued runs carry their 1-based FIFO position (#1025) so the
+    UI can show place-in-line instead of a bare waiting flag."""
     job = {
         "id": run.get("id", ""),
         "name": run.get("action", ""),
@@ -936,6 +954,8 @@ def _run_to_job(run):
         "finished_at": run.get("finished_at"),
         "td_argv": list(run.get("td_argv", [])),
         "error": "",
+        "queued": bool(run.get("queued")) and not bool(run.get("done")),
+        "queue_position": queue_position,
     }
     if run.get("awaiting_approval") is True:
         job["awaiting_approval"] = True
@@ -950,15 +970,21 @@ def _run_to_job(run):
 
 
 class RunRegistry:
-    """Single-flight run records + job list. Ports the runs dict,
-    locks, and clear semantics of buttons/server.py. Runs are the
-    one collection (#451): the job list, clear, and the attention
-    seams all read runs — no second jobs dict."""
+    """Run records + FIFO queue + job list (issues #451, #1025).
+
+    Ports the runs dict, locks, and clear semantics of
+    buttons/server.py. Runs are the one collection (#451): the
+    job list, clear, and the attention seams all read runs — no
+    second jobs dict. Concurrency is a bounded slot pool, not
+    single-flight: dispatches beyond MAX_CONCURRENT_RUNS wait in
+    FIFO order instead of failing with 409s, and a stale lease
+    (no output for RUN_STALE_TTL) reaps wedged runs so one stuck
+    run cannot jam the queue forever."""
 
     def __init__(self, store_path=None):
         self._lock = threading.Lock()
         self.runs = {}
-        self.active_id = None
+        self.active_ids = set()
         self._seq = 0
         # Push channel state: every real mutation bumps _version and
         # notifies _cond (which shares _lock, so waiters never miss
@@ -1053,26 +1079,29 @@ class RunRegistry:
                 run["done"] = True
             self.runs[rid] = run
         self._seq = seq
-        self.active_id = None
+        self.active_ids = set()
         # A restart must not resurrect long-dead runs: drop stale
         # completeds now, and persist so the next boot agrees (#451).
         if self._evict_completed_locked(now):
             self._persist_locked()
 
     def start_run(self, action, repo="remote-server", td_argv=None):
-        """Create a run for an allowlisted action. Exact port of
-        buttons/server.py::_start_run validation + single-flight."""
+        """Create a run for an allowlisted action. Validation mirrors
+        buttons/server.py::_start_run; capacity is a FIFO queue, not
+        single-flight (issue #1025): beyond MAX_CONCURRENT_RUNS the
+        run waits queued instead of failing, so schedules pend
+        instead of going red."""
         if action not in ALLOWED_ACTIONS:
             return None, "unknown action"
+        # Reap outside the create lock: cancel_run takes _lock itself.
+        self.reap_stale()
         with self._lock:
-            if self.active_id is not None:
-                return (None, "a run is already in progress: "
-                              f"{self.active_id}")
             # Store-site sweep (#451): stale completeds go before
             # the new record lands. The bump below covers both.
             self._evict_completed_locked()
             run_id = uuid.uuid4().hex[:12]
             now = time.time()
+            queued = len(self.active_ids) >= MAX_CONCURRENT_RUNS
             run = {
                 "id": run_id,
                 "action": action,
@@ -1084,15 +1113,110 @@ class RunRegistry:
                 "started_at": now,
                 "finished_at": None,
                 "last_output_at": now,
+                "queued": queued,
             }
             if td_argv is not None:
                 run["td_argv"] = td_argv
             self._seq += 1
             self.runs[run_id] = run
-            self.active_id = run_id
+            if not queued:
+                self.active_ids.add(run_id)
             self._bump()
             self._persist_locked()
         return run_id, None
+
+    def queue_position(self, run_id):
+        """1-based FIFO position among waiting runs; 0 when the run
+        holds a slot, is done, or is unknown. Pure read for the
+        dispatch response and the job rows."""
+        with self._lock:
+            run = self.runs.get(run_id)
+            if (run is None or run.get("done")
+                    or run_id in self.active_ids):
+                return 0
+            ahead = [r for r in self.runs.values()
+                     if not r.get("done") and r.get("queued")
+                     and r.get("seq", 0) < run.get("seq", 0)]
+            return len(ahead) + 1
+
+    def acquire(self, run_id):
+        """Worker gate: block until the run holds a slot.
+
+        Returns True when the run is active and may execute, False
+        when it was cancelled, cleared, or finished before its turn
+        (the worker must exit without running or finishing). FIFO
+        promotion wakes waiters via the push condition, and cancel
+        bumps wake them too — no polling, no timeout: promotion on
+        every finish/cancel guarantees progress.
+        """
+        with self._lock:
+            while True:
+                run = self.runs.get(run_id)
+                if run is None or run.get("done"):
+                    return False
+                if run_id in self.active_ids:
+                    return True
+                self._cond.wait()
+
+    def _promote_locked(self):
+        """Fill free slots with the oldest queued runs, FIFO. Caller
+        must hold _lock; bumps + notifies when anything moves."""
+        while len(self.active_ids) < MAX_CONCURRENT_RUNS:
+            nxt = [r for r in self.runs.values()
+                   if not r.get("done") and r.get("queued")
+                   and r.get("id") not in self.active_ids]
+            if not nxt:
+                return
+            nxt.sort(key=lambda r: r.get("seq", 0))
+            nxt[0]["queued"] = False
+            self.active_ids.add(nxt[0]["id"])
+            self._bump()
+        self._cond.notify_all()
+
+    def reap_stale(self):
+        """Cancel active runs silent longer than RUN_STALE_TTL and
+        finish the ones whose worker is already gone, then promote.
+
+        A wedged run must not jam the queue forever (issue #1025);
+        runs awaiting approval are exempt — a human, not output, is
+        what they wait for. Locking is staged (scan, cancel outside
+        the lock, finish under it) because cancel_run takes _lock.
+        """
+        now = time.time()
+        with self._lock:
+            stale = [rid for rid in self.active_ids
+                     if (lambda r: r is not None and not r.get("done")
+                        and not r.get("awaiting_approval")
+                        and now - r.get("last_output_at", now)
+                        > RUN_STALE_TTL)(self.runs.get(rid))]
+        for rid in stale:
+            run = self.runs.get(rid)
+            if run is not None and not run.get("done"):
+                self.cancel_run(rid)
+        with self._lock:
+            for rid in list(self.active_ids):
+                run = self.runs.get(rid)
+                if run is None or run.get("done"):
+                    self.active_ids.discard(rid)
+                    continue
+                if not run.get("cancel_requested"):
+                    continue
+                proc = run.get("_proc")
+                try:
+                    exited = proc is None or proc.poll() is not None
+                except Exception:
+                    exited = True
+                if exited:
+                    run["done"] = True
+                    if run.get("exit_code") is None:
+                        run["exit_code"] = 130
+                    run["finished_at"] = time.time()
+                    run["output"] += (
+                        "note: reaped after silence exceeded "
+                        "the stale lease; slot released.\n")
+                    self.active_ids.discard(rid)
+            self._promote_locked()
+            self._persist_locked()
 
     def append(self, run_id, text):
         with self._lock:
@@ -1106,18 +1230,19 @@ class RunRegistry:
 
     def finish_run(self, run_id, exit_code):
         with self._lock:
-            if self.active_id == run_id:
-                self.active_id = None
+            self.active_ids.discard(run_id)
             run = self.runs.get(run_id)
             if run is None:
                 return
             run["exit_code"] = exit_code
             run["done"] = True
+            run["queued"] = False
             run["finished_at"] = time.time()
             # Store-site sweep (#451): the just-finished run is
             # fresh, so only older completeds can go. The bump
-            # below covers both.
+            # below covers both; promotion fills the freed slot.
             self._evict_completed_locked()
+            self._promote_locked()
             self._bump()
             self._persist_locked()
 
@@ -1153,6 +1278,19 @@ class RunRegistry:
                 return None, "unknown run"
             if run.get("done"):
                 return None, "run is not active"
+            # A queued run never started: finish it immediately so
+            # its worker (parked in acquire) exits and the queue
+            # advances, instead of running to completion later.
+            if run.get("queued") and run_id not in self.active_ids:
+                run["done"] = True
+                run["queued"] = False
+                run["exit_code"] = 130
+                run["finished_at"] = time.time()
+                run["output"] += "note: cancelled while queued\n"
+                self._promote_locked()
+                self._bump()
+                self._persist_locked()
+                return run_id, None
             run["cancel_requested"] = True
             proc = run.get("_proc")
             self._bump()
@@ -1163,12 +1301,16 @@ class RunRegistry:
 
     def clear_run(self, run_id=None):
         """Clear stored output only. Exact port of the /api/clear
-        handler: with no id, clears the active or newest run."""
+        handler: with no id, clears the oldest active run, else the
+        newest run (several may be active now that single-flight is
+        a queue)."""
         with self._lock:
             run = self.runs.get(run_id) if run_id else None
             if run is None:
-                if self.active_id in self.runs:
-                    run = self.runs[self.active_id]
+                actives = [self.runs[rid] for rid in self.active_ids
+                           if rid in self.runs]
+                if actives:
+                    run = min(actives, key=lambda r: r.get("seq", 0))
                 elif self.runs:
                     run = max(self.runs.values(), key=lambda r: r["seq"])
             if run is None:
@@ -1183,18 +1325,18 @@ class RunRegistry:
         """Clear finished runs (or all). Returns (count, None).
 
         Operates on the runs store (the same store GET /api/jobs
-        lists). The all-path refuses with (None, err) while a run
-        is active (#512): deleting the active record would orphan
-        its procs and haunt single-flight with 409s naming an
-        invisible run. Cancel the active run first, then
-        clear-all. Refusals bump nothing, like any other no-op.
+        lists). The all-path refuses with (None, err) while any run
+        is active (#512): deleting an active record would orphan
+        its procs. Cancel the active runs first, then clear-all.
+        Refusals bump nothing, like any other no-op.
         """
         with self._lock:
             if all_jobs:
-                if self.active_id is not None:
+                if self.active_ids:
+                    oldest = min(self.active_ids)
                     return (None,
                             "a run is still active: "
-                            f"{self.active_id}")
+                            f"{oldest}")
                 unfinished = [rid for rid, run in self.runs.items()
                               if not run.get("done")]
                 if unfinished:
@@ -1261,9 +1403,18 @@ class RunRegistry:
         shape the attention seams read (id/name/repo/done/
         exit_code/created_at/error). Failed runs carry their last
         output line as error so the attention item says what
-        broke, not just which run.
+        broke, not just which run. Waiting runs carry their FIFO
+        place-in-line (#1025).
         """
         with self._lock:
+            waiting = sorted(
+                (r for r in self.runs.values()
+                 if not r.get("done") and r.get("queued")
+                 and r.get("id") not in self.active_ids),
+                key=lambda r: r.get("seq", 0))
+            positions = {r.get("id"): i + 1
+                         for i, r in enumerate(waiting)}
             ordered = sorted(self.runs.values(),
                              key=lambda r: r.get("seq", 0), reverse=True)
-            return [_run_to_job(r) for r in ordered]
+            return [_run_to_job(r, positions.get(r.get("id"), 0))
+                    for r in ordered]

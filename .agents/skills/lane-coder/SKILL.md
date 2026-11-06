@@ -46,4 +46,6 @@ Blocked: `blocked #126: <what you need>`. Green: `green: <pr-url> closes #126`.
 - No terminal restarts or recreates, ever.
 - No swarm fan-out; sequential work, one branch at a time.
 - Never open more than one PR per issue or batch.
+- Never open minimal one-line/single-file PRs; batch tightly related issues on one branch (release-train per #1081).
+- Never leave improvements outside revision control: every behavior fix lands in a tracked file in the same PR — never in container state, untracked files, or session memory. End with `git status --short` showing only your own files.
 - Verify before claiming: a PR is green only when CI/tests actually pass, never on a local guess.

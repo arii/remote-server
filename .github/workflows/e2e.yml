@@ -37,7 +37,7 @@ jobs:
           version: 10
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24.16.0
           cache: 'pnpm'
 
       - name: install workspace deps
