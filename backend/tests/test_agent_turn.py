@@ -104,6 +104,22 @@ class TurnArgvTest(unittest.TestCase):
         self.assertNotIn("--continue", argv)
         self.assertNotIn("--conversation", argv)
 
+    def test_colon_prompt_stays_one_argv_element(self):
+        # Issue #1036: task text is opaque — colons must ride through
+        # as a single argv element (no shell, no YAML shaping) on
+        # both providers, so any plain-English prompt launches.
+        for provider in ("agy", "muse"):
+            argv = agent_turn.turn_argv(
+                provider, "/srv/x", "s",
+                "Validate X: fetch the log, then write a spec: done",
+                False)
+            self.assertIn(
+                "Validate X: fetch the log, then write a spec: done",
+                argv)
+            self.assertEqual(
+                sum(1 for a in argv
+                    if "Validate X:" in a), 1)
+
     def test_agy_followup_pins_conversation(self):
         argv = agent_turn.turn_argv("agy", "/srv/x", "s", "again",
                                    True, conversation_id="cid-1")
@@ -168,6 +184,27 @@ class TurnArgvTest(unittest.TestCase):
         carried = argv[flag_at + 1]
         self.assertEqual(carried, sid)
         uuid.UUID(carried)
+
+
+class FailureGuidanceTest(unittest.TestCase):
+    def test_yaml_line_number_maps_to_prompt_parse(self):
+        # Issue #1036: a YAML line number for a natural-language
+        # task must name the cause and the retry, never surface raw.
+        code, message = agent.failure_guidance(
+            "agy",
+            "Agent failed: yaml: line 318: "
+            "could not find expected ':'")
+        self.assertEqual(code, "prompt-parse")
+        self.assertIn("agy", message)
+        self.assertIn("simpler wording", message)
+        self.assertNotIn("line 318", message)
+
+    def test_known_signatures_still_map(self):
+        self.assertEqual(
+            agent.failure_guidance(
+                "muse", "not logged in")[0], "auth-expired")
+        self.assertIsNone(
+            agent.failure_guidance("agy", "some new failure"))
 
 
 class ProbeTest(unittest.TestCase):

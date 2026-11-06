@@ -46,13 +46,21 @@ _FAILURE_SIGNATURES = (
      r"executable file not found|command not found",
      "CLI is not installed in the terminal — install it, "
      "or switch provider."),
+    # Provider-side prompt-shape choke (issue #1036): a YAML line
+    # number for a natural-language task is unactionable — name the
+    # cause and the retry instead of surfacing the raw line.
+    ("prompt-parse",
+     r"yaml[^:\n]*line \d+|could not find expected|"
+     r"mapping values are not allowed|did not find expected key",
+     "choked on the prompt text — retry with simpler wording "
+     "(fewer colons and quotes), or switch provider."),
 )
 
 
 def failure_guidance(provider: str, stderr: str):
     """Map a failed turn's stderr to (code, guidance), or None.
 
-    Pure: the three known provider-failure signatures get
+    Pure: the four known provider-failure signatures get
     actionable copy naming the provider; everything else returns
     None so the caller keeps the raw last-line behavior.
     """

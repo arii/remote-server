@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import AgentDrawer, {
   GuidanceCard,
   formatElapsed,
+  launchBlockReason,
   otherProvider,
   pumpTurn,
 } from './AgentDrawer';
@@ -55,6 +56,18 @@ describe('provider switch (issue #410)', () => {
   it('returns empty with no alternative', () => {
     expect(otherProvider('muse', ['muse'], {})).toBe('');
     expect(otherProvider('muse', [], {})).toBe('');
+  });
+});
+
+describe('launch guard (issue #1037)', () => {
+  it('names the block instead of no-op silence', () => {
+    expect(launchBlockReason('', false)).toContain('No agent provider');
+    expect(launchBlockReason('agy', true)).toContain('already live');
+  });
+
+  it('clears a ready launch', () => {
+    expect(launchBlockReason('agy', false)).toBeNull();
+    expect(launchBlockReason('muse', false)).toBeNull();
   });
 });
 
