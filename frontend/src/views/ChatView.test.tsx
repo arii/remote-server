@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, resumeActionForStatus, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -198,6 +198,47 @@ describe('stall watchdog (issue #376)', () => {
     expect(interruptedPrompt([{ role: 'user', text: '   ' }])).toBeNull();
     expect(shouldAutoRetryStall(false)).toBe(true);
     expect(shouldAutoRetryStall(true)).toBe(false);
+  });
+});
+
+describe('remount resume decision (issue #1015)', () => {
+  const base = { session_id: 'abc123', phase: 'generating', text: '', elapsed: 3 };
+  it('streams live turns', () => {
+    expect(resumeActionForStatus({ ...base, state: 'live' }, 'abc123')).toEqual({
+      kind: 'stream',
+    });
+  });
+  it('backfills turns that finished while the page was gone', () => {
+    expect(resumeActionForStatus({ ...base, state: 'done', text: 'hi' }, 'abc123')).toEqual({
+      kind: 'backfill',
+      text: 'hi',
+    });
+    expect(
+      resumeActionForStatus({ ...base, state: 'aborted', text: 'part' }, 'abc123'),
+    ).toEqual({ kind: 'backfill', text: 'part' });
+  });
+  it('restores the approval card', () => {
+    expect(
+      resumeActionForStatus(
+        { ...base, state: 'approval_pending', approval: { session_id: 'abc123' } },
+        'abc123',
+      ),
+    ).toEqual({ kind: 'approval' });
+  });
+  it('leaves the banner for empty finishes, errors, and strangers', () => {
+    expect(resumeActionForStatus({ ...base, state: 'done', text: '' }, 'abc123')).toEqual({
+      kind: 'none',
+    });
+    expect(resumeActionForStatus({ ...base, state: 'error', text: '' }, 'abc123')).toEqual({
+      kind: 'none',
+    });
+    expect(resumeActionForStatus({ ...base, state: 'live' }, 'other')).toEqual({
+      kind: 'none',
+    });
+    expect(resumeActionForStatus(null, 'abc123')).toEqual({ kind: 'none' });
+    expect(
+      resumeActionForStatus({ ...base, state: 'approval_pending' }, 'abc123'),
+    ).toEqual({ kind: 'none' });
   });
 });
 

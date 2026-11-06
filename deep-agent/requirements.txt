@@ -6,8 +6,13 @@
 # delegation-guard gate tests (tests/test_delegation_guard.py).
 # All entries below are == pins: rebuilds resolve identically; bumps
 # arrive as reviewed diffs via Dependabot (pip ecosystem).
+# Single-source-of-truth policy (issue #1081): LangChain stays on the
+# 1.0 LTS line or newer, langchain-core is pinned explicitly (not left
+# to transitive resolution), no langchain-community catch-all (dedicated
+# langchain-* integration packages only).
 deepagents==0.7.32
 langchain==1.4.8
+langchain-core==1.7.4
 langchain-openai==1.7.3
 langchain-ollama==1.1.0
 langchain-chroma==1.1.0

@@ -1484,6 +1484,36 @@ export function abortChat(sessionId: string): Promise<{ ok: boolean; session_id:
   });
 }
 
+// Turn survival across page leave (issue #1015): the server buffers
+// the live turn and keeps the finished record queryable, so a
+// remount polls this status then re-attaches to the stream below.
+// 404 (unknown or TTL-swept) means there is nothing to resume.
+export interface ChatSessionStatus {
+  ok: boolean;
+  session_id: string;
+  state: 'live' | 'done' | 'approval_pending' | 'aborted' | 'error';
+  phase: string;
+  text: string;
+  elapsed: number | null;
+  approval?: ApprovalPayload | null;
+  error?: string;
+}
+
+export function fetchChatSessionStatus(sessionId: string): Promise<ChatSessionStatus> {
+  return getJson<ChatSessionStatus>(`api/chat/session/${encodeURIComponent(sessionId)}`);
+}
+
+export function reattachChatStream(sessionId: string, signal?: AbortSignal): Promise<Response> {
+  // Raw Response like postChatStream: the caller pumps the replayed
+  // + live-tailed SSE with the same pumpStream mechanics.
+  return fetch(apiUrl(`api/chat/reattach?session_id=${encodeURIComponent(sessionId)}`), {
+    signal,
+  }).then((resp) => {
+    throwIfAuthExpired(resp, 'api/chat/reattach');
+    return resp;
+  });
+}
+
 export function requestTakeover(): Promise<{ ok: boolean; matched: boolean; output: string }> {
   return postJson<{ ok: boolean; matched: boolean; output: string }>('api/terminal/takeover', {
     intent: 'terminal-takeover',

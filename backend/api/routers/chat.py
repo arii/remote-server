@@ -7,6 +7,10 @@ prefix convention (buttons serves /buttons/api/*; this backend serves
 - GET/POST /api/chat/stream  SSE stream of a chat session
   (POST resolves @-mention file pins server-side, #653; GET
   leaves mentions literal so attached content never rides a URL)
+- GET      /api/chat/session/{session_id}  poll a turn (#1015):
+  live/done/approval_pending/aborted/missing with buffered text
+- GET      /api/chat/reattach  resume a detached turn's SSE (#1015):
+  replays buffered tokens, then tails live to done
 - GET      /api/chat/route-hint  pre-send backend + cost hint (ladder probe only)
 - POST     /api/chat/abort   abort an active chat session
 - POST     /api/chat/resume  decide a pending approval, return the turn result
@@ -69,6 +73,15 @@ SPAWN_STDERR_CHUNK = 65536
 # many seconds the turn is killed and the stream ends with an error
 # event, mirroring agent_turn.TURN_TIMEOUT.
 CHAT_TURN_TIMEOUT = 600
+# A client that disconnects mid-turn (page leave, reload) detaches
+# instead of killing the child (#1015): the turn keeps streaming
+# into the server-side token buffer so a remount can re-attach via
+# GET /api/chat/reattach or poll GET /api/chat/session/{id}.
+# Detached turns nobody reaps are killed after this many seconds —
+# the #294 no-zombie invariant holds via the sweep, not the socket.
+DETACHED_CHAT_TTL = 300
+# Finished turns stay queryable for remount backfill this long.
+DONE_CHAT_TTL = 3600
 # Bounded wait after SIGTERM before SIGKILL (agent_turn.KILL_GRACE).
 CHAT_KILL_GRACE = 5
 # Abandoned approval cards must not leak forever: entries older than
@@ -380,6 +393,68 @@ def _sweep_pending_resumes(now: float | None = None) -> int:
         for sid in stale:
             pending_resumes.pop(sid, None)
     return len(stale)
+
+
+def _live_turn(session_id: str) -> bool:
+    """A turn is live when its record exists and is not terminal."""
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        return bool(sess and not sess.get("done"))
+
+
+def _sweep_chat_sessions(now: float | None = None) -> int:
+    """Reap detached-done chat records. Returns rows dropped.
+
+    Detached turns past DETACHED_CHAT_TTL get their child stopped
+    outside the lock (bounded SIGTERM/SIGKILL escalation); finished
+    turns past DONE_CHAT_TTL just drop. Runs opportunistically on
+    turn start and status polls, mirroring _sweep_pending_resumes.
+    """
+    now = time.time() if now is None else now
+    procs: list = []
+    with chat_sessions_lock:
+        stale = []
+        for sid, sess in chat_sessions.items():
+            if sess.get("done"):
+                if now - sess.get("completed_at", 0) > DONE_CHAT_TTL:
+                    stale.append(sid)
+            elif sess.get("detached_at") is not None:
+                if now - sess["detached_at"] > DETACHED_CHAT_TTL:
+                    stale.append(sid)
+                    if sess.get("proc") is not None:
+                        procs.append(sess["proc"])
+        for sid in stale:
+            chat_sessions.pop(sid, None)
+    for proc in procs:
+        _stop_proc(proc)
+    return len(stale)
+
+
+def _buffer_token(session_id: str, token: str) -> None:
+    if not token:
+        return
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        if sess is not None and not sess.get("done"):
+            sess["tokens"].append(token)
+
+
+def _set_phase(session_id: str, phase: str) -> None:
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        if sess is not None and not sess.get("done"):
+            sess["phase"] = phase
+
+
+def _finish_turn(session_id: str, final: dict) -> None:
+    """Mark the record terminal but queryable (no pop — #1015)."""
+    with chat_sessions_lock:
+        sess = chat_sessions.get(session_id)
+        if sess is not None:
+            sess["done"] = True
+            sess["final"] = final
+            sess["detached_at"] = None
+            sess["completed_at"] = time.time()
 
 
 def _abort_session(session_id: str) -> tuple[bool, str | None]:
@@ -742,10 +817,16 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         yield sse_frame("error", {"error": "agent runtime not installed"})
         return
 
+    _sweep_chat_sessions()
     with chat_sessions_lock:
         chat_sessions[session_id] = {
             "id": session_id, "repo": repo, "prompt": prompt,
             "started_at": time.time(), "aborted": False, "proc": None,
+            # #1015 turn survival: tokens buffer server-side so a
+            # remount re-attaches; the record stays queryable after
+            # done (no pop) until the TTL sweep above reaps it.
+            "tokens": [], "phase": "prefill", "done": False,
+            "final": None, "detached_at": None, "completed_at": None,
         }
     _sweep_pending_resumes()
     ledger_append({"kind": "chat", "session_id": session_id, "repo": repo,
@@ -771,8 +852,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     except Exception as exc:
         yield sse_frame("phase", {"phase": "error", "error": str(exc)})
         yield sse_frame("error", {"error": str(exc)})
-        with chat_sessions_lock:
-            chat_sessions.pop(session_id, None)
+        _finish_turn(session_id, {"kind": "error", "error": str(exc)})
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat failed",
                        "error": str(exc)[:500]})
@@ -807,6 +887,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     reader = threading.Thread(target=_read_stdout, daemon=True)
     reader.start()
     try:
+        _set_phase(session_id, "generating")
         yield sse_frame("phase", {"phase": "generating",
                                   "message": "Streaming response from model..."})
         while True:
@@ -835,9 +916,11 @@ def _chat_events(prompt: str, repo: str, session_id: str,
             full_response.append(chunk)
             clean = scrubber.feed(chunk)
             if clean:
+                _buffer_token(session_id, clean)
                 yield sse_frame("token", {"token": clean})
         tail = scrubber.flush()
         if tail:
+            _buffer_token(session_id, tail)
             yield sse_frame("token", {"token": tail})
         if timed_out or is_aborted:
             _stop_proc(proc)
@@ -851,29 +934,35 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         code = proc.returncode
         err_tail = drained.tail(timeout=CHAT_KILL_GRACE)
     except GeneratorExit:
-        # Client disconnected mid-stream: GeneratorExit is not an
-        # Exception, so without this the LLM child keeps running
-        # detached (SSE zombie, #294). Kill it, drop the session.
-        _stop_proc(proc)
+        # Client disconnected mid-stream (page leave, reload — #1015):
+        # GeneratorExit is not an Exception, so without this the loop
+        # just ends. Detach instead of killing: the child keeps
+        # streaming into the server-side token buffer for a remount to
+        # re-attach, and the TTL sweep reaps it when nobody returns
+        # (the #294 no-zombie invariant, kept server-side).
         with chat_sessions_lock:
-            chat_sessions.pop(session_id, None)
+            sess = chat_sessions.get(session_id)
+            if sess is not None and not sess.get("done"):
+                sess["detached_at"] = time.time()
         raise
     except Exception as exc:
         _stop_proc(proc)
         code = 1
         yield sse_frame("error", {"error": str(exc)})
     with chat_sessions_lock:
-        sess = chat_sessions.pop(session_id, None)
+        sess = chat_sessions.get(session_id)
         if sess and sess.get("aborted"):
             is_aborted = True
     elapsed = round(time.time() - start_time, 2)
     if is_aborted:
+        text = strip_agent_markers("".join(full_response))
         yield sse_frame("phase", {"phase": "aborted",
                                   "message": "Generation aborted by user.",
                                   "elapsed": elapsed})
-        yield sse_frame("done", {"text": strip_agent_markers(
-            "".join(full_response)),
+        yield sse_frame("done", {"text": text,
                                  "aborted": True, "elapsed": elapsed})
+        _finish_turn(session_id, {"kind": "done", "text": text,
+                                  "aborted": True, "elapsed": elapsed})
         ledger_append({"kind": "chat", "session_id": session_id,
                        "repo": repo, "event": "chat aborted",
                        "elapsed": elapsed})
@@ -889,6 +978,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                   "error": msg, "exit": code, "elapsed": elapsed}
         if err_tail:
             record["stderr"] = err_tail
+        _finish_turn(session_id, {"kind": "error", "error": msg})
         ledger_append(record)
         return
     if code == 2:
@@ -903,6 +993,8 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                   "exit": 2, "elapsed": elapsed}
         if err_tail:
             record["stderr"] = err_tail
+        _finish_turn(session_id, {"kind": "error",
+                                  "error": "agent runtime misconfigured (exit 2)"})
         ledger_append(record)
         return
     if code == 1:
@@ -922,19 +1014,37 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                   "exit": 1, "elapsed": elapsed}
         if err_tail:
             record["stderr"] = err_tail
+        _finish_turn(session_id, {"kind": "error", "error": msg})
         ledger_append(record)
         return
     if code == 3:
         yield from _approval_events(session_id, repo, info,
                                     full_response, elapsed)
+        # Approval waits in pending_resumes; the turn record stays
+        # queryable (not popped — #1015) so a remount polls
+        # approval_pending instead of a silent miss.
+        _set_phase(session_id, "approval")
+        with chat_sessions_lock:
+            sess = chat_sessions.get(session_id)
+            if sess is not None:
+                sess["done"] = True
+                sess["final"] = {
+                    "kind": "done",
+                    "text": strip_agent_markers("".join(full_response)),
+                    "aborted": False, "elapsed": elapsed,
+                    "approval_pending": True}
+                sess["detached_at"] = None
+                sess["completed_at"] = time.time()
         return
     else:
+        text = strip_agent_markers("".join(full_response))
         yield sse_frame("phase", {"phase": "done",
                                   "message": "Complete ✓",
                                   "elapsed": elapsed})
-        yield sse_frame("done", {"text": strip_agent_markers(
-            "".join(full_response)),
+        yield sse_frame("done", {"text": text,
                                  "aborted": False, "elapsed": elapsed})
+        _finish_turn(session_id, {"kind": "done", "text": text,
+                                  "aborted": False, "elapsed": elapsed})
         record = {"kind": "chat", "session_id": session_id,
                   "repo": repo, "event": "chat finished",
                   "exit": code, "elapsed": elapsed}
@@ -991,11 +1101,112 @@ SSE_HEADERS = {
 }
 
 
+def _reattach_events(session_id: str):
+    """Replay a detached turn, then tail it live to done (#1015)."""
+    idx = 0
+    deadline = time.time() + CHAT_TURN_TIMEOUT
+    while True:
+        with chat_sessions_lock:
+            sess = chat_sessions.get(session_id)
+            if sess is None:
+                if idx == 0:
+                    yield sse_frame("error", {"error": "unknown session"})
+                return
+            toks = list(sess.get("tokens", []))
+            new = toks[idx:]
+            idx = len(toks)
+            done = sess.get("done")
+            final = dict(sess.get("final") or {})
+        for tok in new:
+            yield sse_frame("token", {"token": tok})
+        if done:
+            if final.get("kind") == "error":
+                yield sse_frame(
+                    "error",
+                    {"error": final.get("error") or "chat failed"})
+            else:
+                payload = {"text": final.get("text", "".join(toks)),
+                           "aborted": bool(final.get("aborted", False)),
+                           "elapsed": final.get("elapsed", 0)}
+                if final.get("approval_pending"):
+                    payload["approval_pending"] = True
+                yield sse_frame("done", payload)
+            return
+        if time.time() > deadline:
+            yield sse_frame("error", {"error": "reattach timed out"})
+            return
+        time.sleep(0.25)
+
+
+@router.get("/chat/session/{session_id}")
+def chat_session_status(session_id: str) -> dict:
+    """Poll a turn's state for remount re-attach (#1015).
+
+    live (still streaming; text is the buffer so far), done (text is
+    the final reply), approval_pending (decide via POST /api/chat/
+    resume), aborted, or 404 missing (unknown or TTL-swept).
+    """
+    if not session_id or not isinstance(session_id, str):
+        raise HTTPException(status_code=400, detail="invalid session_id")
+    _sweep_chat_sessions()
+    with pending_resumes_lock:
+        pending = pending_resumes.get(session_id)
+        approval = None
+        if pending is not None and pending.get("pending"):
+            value = pending.get("value") or {}
+            approval = {"session_id": session_id, **value,
+                        "proposals": pending.get("proposals", [])}
+    with chat_sessions_lock:
+        sess = dict(chat_sessions.get(session_id) or {})
+    if not sess and approval is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    if approval is not None:
+        return {"ok": True, "session_id": session_id,
+                "state": "approval_pending",
+                "phase": sess.get("phase", "approval"),
+                "text": "".join(sess.get("tokens", [])),
+                "elapsed": None, "approval": approval}
+    final = dict(sess.get("final") or {})
+    if sess.get("done"):
+        if final.get("kind") == "error":
+            return {"ok": True, "session_id": session_id,
+                    "state": "error", "phase": "error",
+                    "text": "".join(sess.get("tokens", [])),
+                    "elapsed": final.get("elapsed"),
+                    "error": final.get("error"), "approval": None}
+        return {"ok": True, "session_id": session_id,
+                "state": "aborted" if final.get("aborted") else "done",
+                "phase": "done",
+                "text": final.get("text", "".join(sess.get("tokens", []))),
+                "elapsed": final.get("elapsed"), "approval": None}
+    elapsed = round(time.time() - sess.get("started_at", time.time()), 2)
+    return {"ok": True, "session_id": session_id, "state": "live",
+            "phase": sess.get("phase", "generating"),
+            "text": "".join(sess.get("tokens", [])),
+            "elapsed": elapsed, "approval": None}
+
+
+@router.get("/chat/reattach")
+def chat_reattach(session_id: str = "") -> StreamingResponse:
+    """Resume a detached turn's SSE after a page leave (#1015)."""
+    if not session_id or not isinstance(session_id, str):
+        def _bad():
+            yield sse_frame("error", {"error": "invalid session_id"})
+        return StreamingResponse(_bad(),
+                                 media_type="text/event-stream",
+                                 headers=SSE_HEADERS)
+    return StreamingResponse(_reattach_events(session_id),
+                             media_type="text/event-stream",
+                             headers=SSE_HEADERS)
+
+
 @router.get("/chat/stream")
 def chat_stream_get(prompt: str = "", repo: str = "remote-server",
                     session_id: str = "",
                     prefer: str = "auto") -> StreamingResponse:
     sid = session_id or uuid.uuid4().hex[:12]
+    if session_id and _live_turn(sid):
+        raise HTTPException(status_code=409, detail="turn in progress")
     return StreamingResponse(_chat_events(prompt, repo, sid, prefer),
                              media_type="text/event-stream",
                              headers=SSE_HEADERS)
@@ -1004,6 +1215,8 @@ def chat_stream_get(prompt: str = "", repo: str = "remote-server",
 @router.post("/chat/stream")
 def chat_stream_post(body: ChatStreamRequest) -> StreamingResponse:
     sid = body.session_id or uuid.uuid4().hex[:12]
+    if body.session_id and _live_turn(sid):
+        raise HTTPException(status_code=409, detail="turn in progress")
     return StreamingResponse(_chat_events(body.prompt, body.repo, sid,
                                           body.prefer,
                                           resolve_mentions=True),

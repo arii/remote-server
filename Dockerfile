@@ -25,10 +25,10 @@ RUN mkdir -p /tscheck && cp -rL /build/frontend/node_modules/typescript/lib /tsc
 
 # ---- Runtime ----
 FROM python:3.11-slim
-# Tracks boomtick main together with terminal/Dockerfile
-# BOOMTICK_CLI_REF (user decision 2026-11-05). Pin both to a
-# cli-vX.Y.Z tag or full SHA to freeze.
-ARG BOOMTICK_CLI_REF=main
+# Release-train pin (issue #1081): one rollup PR per upstream boomtick
+# release — never float main. Bumped together with terminal/Dockerfile
+# by the release-train batch; see docs/release-train.md.
+ARG BOOMTICK_CLI_REF=cli-v0.20.0
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 ARG NODE_VERSION=24.16.0

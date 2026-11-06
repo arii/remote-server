@@ -163,3 +163,48 @@ jobs:
         run: npm run test:root
       - name: validate configs
         run: python3 -m backend.validate_config
+
+  report:
+    name: comment CI failures on the PR
+    # A failing PR yields a PR comment, never a new issue per failure
+    # (issue #1081). One marker comment per PR, updated per run.
+    needs: [shell, compose, terminal-image, skills-lock, secret-scan, audit, frontend, backend]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: comment failures
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- ci-failure-report -->';
+            const results = ${{ toJSON(needs) }};
+            const failed = Object.entries(results)
+              .filter(([, r]) => r && r.result === 'failure')
+              .map(([name]) => name);
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const { data: comments } = await github.rest.issues.listComments(
+              { owner, repo, issue_number });
+            const prior = comments.find(
+              (c) => c.body && c.body.includes(marker));
+            if (failed.length === 0) {
+              if (prior) {
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: prior.id,
+                  body: `${marker}\nCI is green — earlier failures cleared.`,
+                });
+              }
+              return;
+            }
+            const jobs = failed.map((n) => `\`${n}\``).join(', ');
+            const body = `${marker}\nCI failures in this run: ${jobs}. ` +
+              'Fix the jobs — do not file a follow-up issue per failure (#1081).';
+            if (prior) {
+              await github.rest.issues.updateComment(
+                { owner, repo, comment_id: prior.id, body });
+            } else {
+              await github.rest.issues.createComment(
+                { owner, repo, issue_number, body });
+            }

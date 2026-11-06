@@ -62,9 +62,9 @@ jobs:
 
       # The backend shells out to td (workflow-health, td doctor
       # dispatches). Pin the boomtick CLI release — never float main
-      # here (release-train, issue #1081).
+      # here (release-train, issue #1081; same rollup as the Dockerfiles).
       - name: install boomtick td CLI
-        run: pip install "git+https://github.com/arii/boomtick.git@cli-v0.19.3#subdirectory=cli"
+        run: pip install "git+https://github.com/arii/boomtick.git@cli-v0.20.0#subdirectory=cli"
 
       - name: install e2e deps
         run: npm ci
