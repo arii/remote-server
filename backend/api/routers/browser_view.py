@@ -47,53 +47,74 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 <canvas id="screen"></canvas>
 <script>
 const base = location.pathname.replace(/\/$/, '');
-const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws');
+const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
+// Auto-reconnect: deploys and Grid restarts drop the socket, and a
+// dead socket silently eats clicks — so a close re-dials after a
+// beat instead of stranding the canvas. Sends are guarded on
+// readyState so input during the gap is dropped, never thrown.
 const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
 cv.tabIndex = 0;
 const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
 let dsf = 1;
-ws.onopen = () => document.getElementById('state').textContent = 'live';
-ws.onmessage = (ev) => {
-  const m = JSON.parse(ev.data);
-  if (m.type === 'attached') {
-    dsf = m.dsf || 1;
-    const label = m.kind === 'agent' ? 'shared agent session '
-      : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
-    document.getElementById('state').textContent = label + m.session;
-    return;
-  }
-  if (m.type === 'status' || m.type === 'reattached') {
-    document.getElementById('state').textContent = m.msg || m.type;
-    return;
-  }
-  if (m.type === 'error') {
-    document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
-    return;
-  }
-  if (m.type === 'frame') {
-    img.onload = () => {
-      if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
-      ctx.drawImage(img, 0, 0); frames++;
-      const el = (performance.now() - t0) / 1000;
-      if (el >= 2) {
-        document.querySelector('#stats').textContent =
-          'fps: ' + (frames / el).toFixed(1) +
-          ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
-      }
-      URL.revokeObjectURL(img.src);
-    };
-    img.src = URL.createObjectURL(new Blob(
-      [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
-  }
-};
+let ws = null;
+let reconnectTimer = 0;
+function sendable() { return ws && ws.readyState === 1; }
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => {
+    document.getElementById('state').textContent = 'live';
+    frames = 0; t0 = performance.now();
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'attached') {
+      dsf = m.dsf || 1;
+      const label = m.kind === 'agent' ? 'shared agent session '
+        : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
+      document.getElementById('state').textContent = label + m.session;
+      return;
+    }
+    if (m.type === 'status' || m.type === 'reattached') {
+      document.getElementById('state').textContent = m.msg || m.type;
+      return;
+    }
+    if (m.type === 'error') {
+      document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
+      return;
+    }
+    if (m.type === 'frame') {
+      img.onload = () => {
+        if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
+        ctx.drawImage(img, 0, 0); frames++;
+        const el = (performance.now() - t0) / 1000;
+        if (el >= 2) {
+          document.querySelector('#stats').textContent =
+            'fps: ' + (frames / el).toFixed(1) +
+            ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
+        }
+        URL.revokeObjectURL(img.src);
+      };
+      img.src = URL.createObjectURL(new Blob(
+        [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
+    }
+  };
+  ws.onclose = () => {
+    document.getElementById('state').textContent = 'reconnecting…';
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+}
+connect();
 function pos(e) {
   const r = cv.getBoundingClientRect();
   // Canvas backing store is device pixels; CDP input is CSS pixels.
   return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
           y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
 }
-cv.addEventListener('click', (e) => { cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
 cv.addEventListener('keydown', (e) => {
+  if (!sendable()) return;
   e.preventDefault(); lastClick = performance.now();
   ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
 });
@@ -111,6 +132,7 @@ function normalizeUrl(raw) {
   return 'https://' + v;
 }
 function go() {
+  if (!sendable()) return;
   const box = document.getElementById('url');
   const url = normalizeUrl(box.value);
   if (!url) return;

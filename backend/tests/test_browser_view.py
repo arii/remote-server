@@ -41,6 +41,16 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("shared browser tab", browser_view.VIEWER_HTML)
         self.assertIn("shared agent session", browser_view.VIEWER_HTML)
 
+    def test_viewer_reconnects_after_socket_close(self):
+        # A dropped socket (deploy, Grid restart) must re-dial
+        # instead of stranding clicks on a dead canvas; input
+        # during the gap is dropped, never thrown.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("ws.onclose", html)
+        self.assertIn("reconnecting", html)
+        self.assertIn("setTimeout(connect", html)
+        self.assertIn("sendable()", html)
+
 
 class FakeBridge:
     """Stand-in for CDPBridge: no Grid traffic under test."""
