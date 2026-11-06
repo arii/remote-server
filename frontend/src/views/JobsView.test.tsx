@@ -13,12 +13,40 @@ import {
   UnifiedDiffView,
   UxAuditGroups,
   UxAuditSection,
+  excerptJobNote,
 } from './JobsView';
 import type { JobRecord } from '../apiTypes';
 
 function mkJob(over: Partial<JobRecord> = {}): JobRecord {
   return { id: 'abc123def456', kind: 'logs', name: 'logs', repo: 'remote-server', done: true, ...over };
 }
+
+describe('row note excerpt (issue #1013)', () => {
+  it('caps long notes with an ellipsis', () => {
+    expect(excerptJobNote('short note')).toBe('short note');
+    expect(excerptJobNote('  spaced   out  ')).toBe('spaced out');
+    const long = `failed: ${'x'.repeat(300)}`;
+    const out = excerptJobNote(long);
+    expect(out.length).toBeLessThanOrEqual(160);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('renders the note capped with the full text on hover', () => {
+    const long = `failed: ${'y'.repeat(300)}`;
+    const html = renderToStaticMarkup(
+      <JobListItem
+        job={{ id: 'abc123def456', kind: 'logs', name: 'logs', repo: 'remote-server', done: true, error: long }}
+        repo="remote-server"
+        onSelect={() => {}}
+        onRerun={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(html).toContain('class="row-meta job-row-note"');
+    expect(html).toContain(`title="${long}"`);
+    expect(html).toContain('…</p>');
+  });
+});
 
 describe('job re-run button (issue #630)', () => {
   it('shows Re-run on finished runs only', () => {

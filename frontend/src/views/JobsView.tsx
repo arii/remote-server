@@ -58,6 +58,17 @@ function labelOf(j: JobRecord): string {
   return j.title || j.name || j.kind || j.id;
 }
 
+// Row note excerpt (#1013): error/detail text renders capped with
+// the full text on hover — wide rows no longer grow to dialogue
+// scale. Pure helper so the truncation boundary is unit-tested.
+export const JOB_ROW_NOTE_CHARS = 160;
+
+export function excerptJobNote(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (clean.length <= JOB_ROW_NOTE_CHARS) return clean;
+  return `${clean.slice(0, JOB_ROW_NOTE_CHARS - 1).trimEnd()}…`;
+}
+
 export function JobListItem({
   job,
   repo,
@@ -87,7 +98,11 @@ export function JobListItem({
         {job.id} · {job.repo || repo} · {job.done ? 'done' : 'active'}
         {typeof job.exit_code === 'number' ? ` · exit ${job.exit_code}` : ''}
       </p>
-      {(job.error || job.detail) && <p>{job.error || job.detail}</p>}
+      {(job.error || job.detail) && (
+        <p className="row-meta job-row-note" title={job.error || job.detail || ''}>
+          {excerptJobNote(job.error || job.detail || '')}
+        </p>
+      )}
       <div className="actions">
         <button
           type="button"

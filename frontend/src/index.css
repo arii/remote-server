@@ -470,6 +470,19 @@ button[data-testid="chat-dictate"] { display: inline-flex; align-items: center; 
   border-left: 3px solid var(--warn);
 }
 .jobs-live .dot { display: inline-block; vertical-align: middle; margin-right: 0.35rem; }
+/* Bounded output scroll (#1013): the streaming tail no longer
+   stretches the page as lines arrive; the panel holds its height. */
+.jobs-live details[data-testid="jobs-output-wrap"] pre {
+  max-height: 40vh;
+  overflow: auto;
+}
+/* Row notes render as one capped meta line (#1013); hover for full. */
+.job-row-note {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 .danger-zone {
   background: rgba(239, 68, 68, 0.08);
