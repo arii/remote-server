@@ -387,22 +387,14 @@ export function ReportDialog({
         onSubmit(title.trim(), body, labels);
       }}
     >
-      {availableLabels.length > 0 && (
-        <fieldset data-testid="report-labels">
-          <legend className="row-meta">Labels (optional)</legend>
-          {availableLabels.map((name) => (
-            <label key={name} className="row-meta">
-              <input
-                type="checkbox"
-                data-testid={`report-label-${name}`}
-                checked={labels.includes(name)}
-                onChange={() => toggleLabel(name)}
-              />{' '}
-              {name}
-            </label>
-          ))}
-        </fieldset>
-      )}
+      <div className="dialog-head">
+        <p className="row-meta" role="heading" aria-level={2}>
+          Report a bug
+        </p>
+        <button type="button" data-testid="report-close" aria-label="Close" onClick={onCancel}>
+          ✕
+        </button>
+      </div>
       <label className="row-meta" htmlFor="report-title">
         Bug title (required){' '}
         <input
@@ -424,6 +416,26 @@ export function ReportDialog({
           onChange={(e) => setBody(e.target.value)}
         />
       </label>
+      {availableLabels.length > 0 && (
+        <details data-testid="report-labels">
+          <summary className="row-meta">
+            Labels (optional){labels.length > 0 ? ` — ${labels.length} selected` : ''}
+          </summary>
+          <div className="chip-row">
+            {availableLabels.map((name) => (
+              <label key={name} className="label-chip">
+                <input
+                  type="checkbox"
+                  data-testid={`report-label-${name}`}
+                  checked={labels.includes(name)}
+                  onChange={() => toggleLabel(name)}
+                />{' '}
+                {name}
+              </label>
+            ))}
+          </div>
+        </details>
+      )}
       <div className="actions">
         <button type="submit" data-testid="report-submit">
           File bug

@@ -38,6 +38,7 @@ import NowView, {
   snoozeBusyNotice,
   snoozedRows,
   snoozePresetLabel,
+  ReportDialog,
   topUrgent,
 } from './NowView';
 import { ALL_REPOS, isRollupRepo } from '../components/RepoPicker';
@@ -1000,5 +1001,38 @@ describe('triage card CTAs (issue #935)', () => {
     expect(html).toContain('data-testid="now-hero-retry"');
     expect(html).toContain('disabled');
     expect(html).not.toContain('class="btn-primary">Retry pull');
+  });
+});
+
+describe('report-a-bug dialog compactness (issue #1027)', () => {
+  function renderDialog(): string {
+    return renderToStaticMarkup(
+      <ReportDialog
+        initialBody=""
+        availableLabels={['bug', 'enhancement', 'question']}
+        onSubmit={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+  }
+
+  it('puts title and details before the label picker', () => {
+    const html = renderDialog();
+    expect(html).toContain('data-testid="report-close"');
+    expect(html.indexOf('data-testid="report-title"')).toBeLessThan(
+      html.indexOf('data-testid="report-labels"'),
+    );
+    expect(html.indexOf('data-testid="report-body"')).toBeLessThan(
+      html.indexOf('data-testid="report-labels"'),
+    );
+  });
+
+  it('collapses labels into chips with per-label testids intact', () => {
+    const html = renderDialog();
+    expect(html).toContain('<details');
+    expect(html).toContain('Labels (optional)');
+    expect(html).toContain('data-testid="report-label-bug"');
+    expect(html).toContain('data-testid="report-label-enhancement"');
+    expect(html).toContain('label-chip');
   });
 });
