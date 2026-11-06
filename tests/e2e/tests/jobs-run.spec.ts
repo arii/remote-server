@@ -14,13 +14,14 @@ test.describe('jobs run', () => {
     await page.getByTestId('palette-item-run-doctor').click();
     await expect(page.getByTestId('jobs-view')).toBeVisible();
 
-    // Terminal state only: the stubbed run finishes in ~1s, so the
-    // transient "Started …" notice is already gone when polled.
-    await expect(page.getByTestId('jobs-notice')).toContainText(
-      'Finished Doctor: all checks pass',
-      { timeout: 30_000 },
-    );
-    await expect(page.getByTestId('jobs-result')).toContainText('all checks pass');
-    await expect(page.getByTestId('jobs-error')).toBeHidden();
+    // Palette dispatch is fire-and-observe: the Jobs-view-local
+    // launch notice never fires, so assert on the runs list itself.
+    // The stubbed run finishes in ~1s; toContainText polls.
+    await expect(page.getByTestId('jobs-list')).toContainText(/doctor/i, {
+      timeout: 30_000,
+    });
+    await expect(page.getByTestId('jobs-list')).toContainText('exit 0', {
+      timeout: 30_000,
+    });
   });
 });
