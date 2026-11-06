@@ -25,6 +25,12 @@ RATE_CARD = {
     "Qwen/Qwen3-235B-A22B-Instruct-2507": (0.20, 0.60),
     "Qwen/Qwen3-30B-A3B-Instruct-2507": (0.10, 0.30),
     "zai-org/GLM-5": (1.40, 4.40),
+    # Nemotron rates verified 2026-11-06 against the live Token
+    # Factory catalog (per-token pricing.prompt/completion x 1M).
+    # Missing these fail-closed the whole Nebius fallback on one
+    # unrated vision row (Nemotron-3_5-Lightning).
+    "nvidia/Nemotron-3_5-Lightning": (0.06, 0.24),
+    "nvidia/Nemotron-3.5-Super-VL": (0.30, 0.90),
 }
 
 FREE_PREFIX = "ollama:"
