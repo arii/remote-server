@@ -50,6 +50,9 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("reconnecting", html)
         self.assertIn("setTimeout(connect", html)
         self.assertIn("sendable()", html)
+        # A frozen last frame must not pose as live while down.
+        self.assertIn("cv.style.opacity = '0.35'", html)
+        self.assertIn("cv.style.opacity = ''", html)
 
 
 class FakeBridge:
@@ -57,15 +60,22 @@ class FakeBridge:
     def __init__(self, session_id):
         self.session_id = session_id
         self.dsf = browser_view.DSF
+        self.calls = []
 
     async def connect(self):
         pass
 
     async def start_screencast(self, on_frame):
-        pass
+        self.calls.append(("screencast",))
 
     async def navigate(self, url):
-        pass
+        self.calls.append(("navigate", url))
+
+    async def click(self, x, y):
+        self.calls.append(("click", x, y))
+
+    async def key(self, key, code):
+        self.calls.append(("key", key, code))
 
     async def reattach(self):
         pass
@@ -117,6 +127,157 @@ class SharedViewerSessionTest(unittest.TestCase):
                     self.assertEqual(second["session"],
                                      first["session"])
             self.assertEqual(create.call_count, 1)
+
+    def _wait_calls(self, shared, want, timeout=10):
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if want in shared.calls:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_click_dispatched_with_human_pause(self):
+        # Rank 1: the shared ws-loop point (click -> human pause ->
+        # recover_once -> bridge.click) must be wired; a break here
+        # kills both modalities at once with no other symptom.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False) as paused:
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "click",
+                                          "x": 960, "y": 200}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("click", 960, 200)),
+                    f"click never reached bridge: {shared.calls}")
+                self.assertEqual(paused.call_count, 1)
+
+    def test_key_dispatched_with_human_pause(self):
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False) as paused:
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "key", "key": "a",
+                                          "code": "KeyA"}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("key", "a", "KeyA")),
+                    f"key never reached bridge: {shared.calls}")
+                self.assertEqual(paused.call_count, 1)
+
+    def test_go_navigates_and_restarts_screencast(self):
+        # do_go: navigate, reattach, re-send dsf, restart screencast.
+        # The navigate + second screencast prove the path ran.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps(
+                    {"t": "go", "url": "https://example.com/x"}))
+                self.assertTrue(
+                    self._wait_calls(
+                        shared, ("navigate", "https://example.com/x")),
+                    f"go never navigated: {shared.calls}")
+                import time
+                deadline = time.time() + 10
+                restarts = 0
+                while time.time() < deadline:
+                    restarts = sum(1 for c in shared.calls
+                                   if c == ("screencast",))
+                    if restarts >= 2:
+                        break
+                    time.sleep(0.05)
+                self.assertGreaterEqual(
+                    restarts, 2,
+                    f"screencast not restarted after go: {shared.calls}")
+
+    def test_connect_failure_surfaces_error_and_closes(self):
+        # Past 'attached' with no bridge: the viewer must get a
+        # named error + close (re-dial) instead of silent darkness.
+        import json as _json
+        from starlette.websockets import WebSocketDisconnect
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+
+        async def boom():
+            raise RuntimeError("grid gone")
+
+        shared.connect = boom
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                second = _json.loads(ws.receive_text())
+                self.assertEqual(second["type"], "error")
+                self.assertIn("browser connect failed",
+                              second["msg"])
+                with self.assertRaises(WebSocketDisconnect):
+                    ws.receive_text()
 
     def test_teardown_policy(self):
         # The websocket finally only calls _viewer_teardown: last
@@ -350,6 +511,56 @@ class ReattachTest(unittest.TestCase):
         asyncio.run(bridge.start_screencast(lambda params: None))
         self.assertEqual(seen["Page.startScreencast"]["maxWidth"], 1280)
         self.assertEqual(seen["Page.startScreencast"]["maxHeight"], 800)
+
+
+class BridgeKeyTest(unittest.TestCase):
+    def test_unknown_key_raises_instead_of_silence(self):
+        # A dropped unknown key looks exactly like dead input;
+        # raise so recover_once reports it to the viewer.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+
+        async def fake_call(method, params=None, timeout=15):
+            return {}
+
+        bridge.call = fake_call
+        with self.assertRaises(ValueError):
+            asyncio.run(bridge.key("Frobnicator", ""))
+
+    def test_focus_failure_does_not_eat_keystroke(self):
+        # Focus is best-effort: a failed probe must not abort the
+        # key when something is already focused.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        seen = {}
+
+        async def fake_call(method, params=None, timeout=15):
+            seen[method] = params
+            if method == "Runtime.evaluate":
+                raise RuntimeError("nope")
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.key("a", "KeyA"))
+        self.assertEqual(seen.get("Input.insertText"),
+                         {"text": "a"})
+
+    def test_reattach_without_page_target_names_it(self):
+        # Crash/nav gap with no page target: name it instead of a
+        # raw StopIteration.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"type": "browser", "targetId": "B"},
+                ]}
+            return {}
+
+        bridge.call = fake_call
+        with self.assertRaises(RuntimeError):
+            asyncio.run(bridge.reattach())
 
 
 class ScreencastAckTest(unittest.TestCase):
