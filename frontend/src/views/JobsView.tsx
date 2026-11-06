@@ -63,18 +63,22 @@ function labelOf(j: JobRecord): string {
 // scale. Pure helper so the truncation boundary is unit-tested.
 const JOB_ROW_NOTE_CHARS = 160;
 
-// Re-entry guard (issue #1070): drops overlapping invocations while
-// one is in flight (repair/triage/danger double-taps, poll ticks).
-// Pure factory so the absorb-then-release contract is unit-tested.
-export function createReentryGuard(): (fn: () => Promise<void>) => Promise<void> {
-  let inflight = false;
-  return async (fn: () => Promise<void>) => {
-    if (inflight) return;
-    inflight = true;
+// Re-entry guard (issues #1070, #1090): drops overlapping invocations
+// of the SAME action while one is in flight (repair/triage/danger
+// double-taps, overlapping poll ticks). Keyed per action so a slow
+// background poll can never starve a user-initiated launch — the
+// palette run silently never dispatched in CI because a poll load
+// held the single global flag. Pure factory so the contract is
+// unit-tested.
+export function createReentryGuard(): (fn: () => Promise<void>, key?: string) => Promise<void> {
+  const inflight = new Set<string>();
+  return async (fn: () => Promise<void>, key = 'default') => {
+    if (inflight.has(key)) return;
+    inflight.add(key);
     try {
       await fn();
     } finally {
-      inflight = false;
+      inflight.delete(key);
     }
   };
 }
@@ -911,7 +915,7 @@ export default function JobsView({
     suspended: triageSuspended,
     onOpen: (i) => {
       const j = jobsRef.current?.[i];
-      if (j) void guarded(() => onSelectRun(j.id));
+      if (j) void guarded(() => onSelectRun(j.id), 'select run');
     },
     rowTestId: (i) => `job-${jobsRef.current?.[i]?.id ?? ''}`,
   });
@@ -958,7 +962,7 @@ export default function JobsView({
   async function guarded(fn: () => Promise<void>, action = 'load jobs') {
     setError(null);
     try {
-      await guardRef.current!(fn);
+      await guardRef.current!(fn, action);
     } catch (err) {
       setError(`Couldn't ${action}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1115,7 +1119,7 @@ export default function JobsView({
       handledTdNonce.current = pendingTdCommand.nonce;
       const { command, nonce } = pendingTdCommand;
       onPendingTdHandled?.(nonce);
-      void guarded(() => launch(command, () => startTdRun(command, repo, branch)));
+      void guarded(() => launch(command, () => startTdRun(command, repo, branch)), command);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingTdCommand]);
@@ -1133,7 +1137,7 @@ export default function JobsView({
       setError('Enter a PR number first.');
       return;
     }
-    void guarded(() => launch(cmd.label, () => startTdRun(cmd.build(n), repo, branch)));
+    void guarded(() => launch(cmd.label, () => startTdRun(cmd.build(n), repo, branch)), cmd.label);
   }
 
   async function onClear(all: boolean) {
@@ -1158,7 +1162,7 @@ export default function JobsView({
   }
 
   function onDangerAction(action: string, label: string) {
-    void guarded(() => launch(label, () => startJobRun(action, repo, true, branch)));
+    void guarded(() => launch(label, () => startJobRun(action, repo, true, branch)), label);
   }
 
   function handleClear(all: boolean) {
@@ -1236,13 +1240,13 @@ export default function JobsView({
         <TriageFanoutSection
           repo={repo}
           onDispatch={() =>
-            void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)))
+            void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)), 'triage fanout')
           }
         />
 
         <UxAuditSection
           onDispatch={(site, maxPages) =>
-            void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)))
+            void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)), `ux audit ${site}`)
           }
         />
 
@@ -1292,9 +1296,9 @@ export default function JobsView({
         list={list}
         repo={repo}
         cursor={cursor}
-        onSelect={(id) => void guarded(() => onSelectRun(id))}
-        onRerun={(job, confirmed) => void guarded(() => onRerun(job, confirmed))}
-        onCancel={(job) => void guarded(() => onCancelRun(job))}
+        onSelect={(id) => void guarded(() => onSelectRun(id), 'select run')}
+        onRerun={(job, confirmed) => void guarded(() => onRerun(job, confirmed), 'rerun job')}
+        onCancel={(job) => void guarded(() => onCancelRun(job), 'cancel job')}
         onSchedule={onScheduleJob}
         onOpenChat={onOpenChat}
       />
