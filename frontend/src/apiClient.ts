@@ -45,6 +45,10 @@ async function readJson<T>(resp: Response, method: string, path: string): Promis
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     notifyApiFailure();
+    if (resp.status === 401) {
+      notifyAuthExpired();
+      throw new AuthExpiredError(path);
+    }
     throw new Error(`${method} ${path} failed: ${resp.status} ${text}`.trim());
   }
   return (await resp.json()) as T;
@@ -66,6 +70,51 @@ export function subscribeApiFailures(listener: ApiFailureListener): () => void {
 
 function notifyApiFailure(): void {
   for (const listener of [...apiFailureListeners]) listener();
+}
+
+// Auth expiry broadcast (issue #1035): when the oauth2-proxy session
+// lapses, API fetches 302 to the OAuth login (or 401). fetchApi and
+// readJson flag it once so the console shows one re-login banner
+// instead of silent per-endpoint staleness. CORS-opaque TypeErrors
+// stay on the generic path: the browser hides whether a blocked
+// redirect or the network itself failed.
+export class AuthExpiredError extends Error {
+  constructor(public readonly path: string) {
+    super(`${path} failed: session expired — sign in again`);
+    this.name = 'AuthExpiredError';
+  }
+}
+
+export function isAuthRedirect(url: string, status: number): boolean {
+  if (status === 401) return true;
+  return /\/login|oauth|authorize/i.test(url);
+}
+
+type AuthExpiredListener = () => void;
+
+const authExpiredListeners = new Set<AuthExpiredListener>();
+let authExpiredFlag = false;
+
+export function subscribeAuthExpired(listener: AuthExpiredListener): () => void {
+  authExpiredListeners.add(listener);
+  return () => {
+    authExpiredListeners.delete(listener);
+  };
+}
+
+export function isAuthExpired(): boolean {
+  return authExpiredFlag;
+}
+
+/** Test seam: reset the once-per-session flag between cases. */
+export function __clearAuthExpired(): void {
+  authExpiredFlag = false;
+}
+
+function notifyAuthExpired(): void {
+  if (authExpiredFlag) return;
+  authExpiredFlag = true;
+  for (const listener of [...authExpiredListeners]) listener();
 }
 
 // Offline mutation outbox (issue #404): operator commands issued
@@ -358,9 +407,17 @@ async function fetchApi(
   try {
     // Every request carries the timeout signal: tests assert its
     // presence, including on plain GETs.
-    return await fetch(apiUrl(path), { ...init, signal: ctrl.signal });
+    const resp = await fetch(apiUrl(path), { ...init, signal: ctrl.signal });
+    if (resp.redirected && isAuthRedirect(resp.url, resp.status)) {
+      notifyApiFailure();
+      notifyAuthExpired();
+      throw new AuthExpiredError(path);
+    }
+    return resp;
   } catch (err) {
-    notifyApiFailure();
+    // Auth expiry already broadcast above; re-notifying would just
+    // double-refresh failure listeners.
+    if (!(err instanceof AuthExpiredError)) notifyApiFailure();
     if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new RequestTimeoutError(method, path, timeoutMs);
     }

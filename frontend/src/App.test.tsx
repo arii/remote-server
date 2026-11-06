@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import App, { HEALTH_POLL_MS, NAV_ENTRIES, navPressed, RollupGate, singleFlight } from './App';
+import App, { HEALTH_POLL_MS, NAV_ENTRIES, navPressed, nextBarHidden, RollupGate, singleFlight } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
@@ -1519,5 +1519,25 @@ describe('header health revalidation (issue #588)', () => {
     await new Promise((resolve) => { setTimeout(resolve, 0); });
     refresh();
     expect(runs).toBe(2);
+  });
+});
+
+describe('bottom-bar auto-hide (issue #1033)', () => {
+  it('always shows at the top of the page', () => {
+    expect(nextBarHidden(100, 0, true)).toBe(false);
+    expect(nextBarHidden(0, 8, true)).toBe(false);
+  });
+
+  it('hides on a sustained scroll down', () => {
+    expect(nextBarHidden(100, 140, false)).toBe(true);
+  });
+
+  it('reveals on scroll up', () => {
+    expect(nextBarHidden(140, 100, true)).toBe(false);
+  });
+
+  it('holds state on jitter', () => {
+    expect(nextBarHidden(100, 105, false)).toBe(false);
+    expect(nextBarHidden(100, 105, true)).toBe(true);
   });
 });
