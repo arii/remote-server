@@ -38,6 +38,7 @@ describe('one-tap Validate issue (issue #1024)', () => {
   it('does not disturb the PR-side group', () => {
     const html = render();
     expect(html).toContain('data-testid="td-pr-group"');
-    expect(html).toContain('data-testid="td-repo-group"');
+    // #1016 (PR #1049): whole-repo group removed with Doctor/Preflight.
+    expect(html).not.toContain('data-testid="td-repo-group"');
   });
 });
