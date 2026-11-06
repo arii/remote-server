@@ -20,10 +20,17 @@ import urllib.request
 
 GRID_BASE = "http://browser:4444"
 VIEWPORT = {"width": 1280, "height": 800}
-# Device pixels per CSS pixel. Screencast frames arrive at
-# width*DSF; the viewer divides pointer coords by DSF so CDP input
-# (CSS viewport space) lands where the human clicked.
-DSF = 2
+# Requested device pixels per CSS pixel. This MUST be 1: the
+# viewer maps pointer coords as frame_px / advertised_dsf, which
+# only lands when frames equal CSS px in every world — override
+# applied (1280x800 view, DSF 1), override ignored (default 800x600
+# view, DSF 1). DSF=2 was tried and measured broken live: frames
+# arrived 1280px while the client divided by 2, so every click
+# landed at half coords (quadrant probe HIT_B=Q1). Crispness via
+# device pixels is sacrificed for a mapping that cannot be wrong;
+# the bridge still measures window.devicePixelRatio per attach and
+# advertises THAT (plus sizes the screencast from it) as backstop.
+DSF = 1
 
 # Start page for fresh viewer sessions (also the URL-box default).
 # A new tab never repaints, so without an initial navigation the
@@ -67,6 +74,7 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
+    if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
     if (m.type === 'attached') {
       dsf = m.dsf || 1;
       const label = m.kind === 'agent' ? 'shared agent session '
@@ -328,6 +336,9 @@ class CDPBridge:
         # Set by the app: reattach + restart the screencast after a
         # renderer crash instead of letting the socket die.
         self._crash_cb = None
+        # Advertised device-pixel ratio, measured per attach in
+        # reattach(); DSF until the first measure lands.
+        self.dsf = DSF
 
     def _ws_url(self):
         return f"ws://browser:4444/session/{self.session_id}/se/cdp"
@@ -356,6 +367,20 @@ class CDPBridge:
                         {"width": VIEWPORT["width"],
                          "height": VIEWPORT["height"],
                          "deviceScaleFactor": DSF, "mobile": False})
+        # Trust but verify: the override may not apply (headless
+        # quirks, swapped targets). Advertise the measured ratio so
+        # clicks never land at half coords again; on any error keep
+        # the previous value (DSF until the first measure lands).
+        try:
+            dpr = await self.call(
+                "Runtime.evaluate",
+                {"expression": "window.devicePixelRatio",
+                 "returnByValue": True})
+            measured = (dpr or {}).get("result", {}).get("value")
+            if isinstance(measured, (int, float)) and measured > 0:
+                self.dsf = float(measured)
+        except Exception:
+            pass
 
     async def _reader(self):
         from websockets.exceptions import ConnectionClosed
@@ -445,10 +470,15 @@ class CDPBridge:
             await self.call("Page.stopScreencast")
         except Exception:
             pass
+        # Size the capture from the MEASURED ratio, not the request:
+        # clamping below device px would reintroduce a scale the
+        # viewer does not know about.
+        scale = self.dsf if isinstance(self.dsf, (int, float)) \
+            and self.dsf > 0 else 1
         await self.call("Page.startScreencast",
                         {"format": "jpeg", "quality": 70,
-                         "maxWidth": VIEWPORT["width"] * DSF,
-                         "maxHeight": VIEWPORT["height"] * DSF,
+                         "maxWidth": int(VIEWPORT["width"] * scale),
+                         "maxHeight": int(VIEWPORT["height"] * scale),
                          "everyNthFrame": 1})
 
     async def ack_frame(self, session_id):
@@ -616,6 +646,9 @@ def create_app():
             try:
                 await _ws_send_text(
                     send, lock,
+                    json.dumps({"type": "dsf", "dsf": bridge.dsf}))
+                await _ws_send_text(
+                    send, lock,
                     json.dumps({"type": "reattached",
                                 "msg": "reattached after target crash"}))
             except Exception:
@@ -625,6 +658,11 @@ def create_app():
             bridge = CDPBridge(session_id)
             await bridge.connect()
             bridge._crash_cb = on_crash
+            # Measured ratio beats the assumed DSF: the viewer maps
+            # pointer coords with this, before the first frame lands.
+            await _ws_send_text(
+                send, lock,
+                json.dumps({"type": "dsf", "dsf": bridge.dsf}))
             await bridge.start_screencast(on_frame)
 
             async def do_go(url):
@@ -634,6 +672,11 @@ def create_app():
                 # on it — otherwise the viewer goes dark.
                 await asyncio.sleep(1.5)
                 await bridge.reattach()
+                # Reattach re-measures: push the fresh divisor or
+                # post-nav clicks use the stale one and mis-land.
+                await _ws_send_text(
+                    send, lock,
+                    json.dumps({"type": "dsf", "dsf": bridge.dsf}))
                 await bridge.start_screencast(on_frame)
 
             if kind == "own":
