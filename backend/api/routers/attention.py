@@ -115,9 +115,21 @@ def snooze_path() -> str:
                           DEFAULT_SNOOZE_PATH)
 
 
+def _row_until(entry) -> float:
+    """Expiry of one snooze row; 0 for anything malformed so a bad
+    row can never hide a card forever (issue #1030)."""
+    if not isinstance(entry, dict):
+        return 0.0
+    until = entry.get("until", 0)
+    if isinstance(until, bool) or not isinstance(until, (int, float)):
+        return 0.0
+    return float(until)
+
+
 def _read_snooze() -> dict:
-    """Whole store {item_id: until_ts}. {} on any failure (missing or
-    corrupt file reads as empty; a write repairs it)."""
+    """Whole store {item_id: {until, title, repo}}. {} on any failure
+    (missing or corrupt file reads as empty; a write repairs it).
+    Rows that are not dicts with a numeric until are dropped."""
     try:
         with open(snooze_path(), encoding="utf-8") as f:
             data = json.load(f)
@@ -125,9 +137,20 @@ def _read_snooze() -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: v for k, v in data.items()
-            if isinstance(k, str) and isinstance(v, (int, float))
-            and not isinstance(v, bool)}
+    out = {}
+    for k, v in data.items():
+        if not isinstance(k, str) or not isinstance(v, dict):
+            continue
+        if _row_until(v) <= 0:
+            continue
+        title = v.get("title", "")
+        repo = v.get("repo", "")
+        out[k] = {
+            "until": _row_until(v),
+            "title": title if isinstance(title, str) else "",
+            "repo": repo if isinstance(repo, str) else "",
+        }
+    return out
 
 
 def _write_snooze(store: dict) -> None:
@@ -163,10 +186,12 @@ def _snooze_filter(items: list, now: float) -> list:
     """
     with _snooze_lock:
         store = _read_snooze()
-        live = {k: v for k, v in store.items() if v > now}
+        live = {k: v for k, v in store.items()
+                if _row_until(v) > now}
         if live != store:
             _write_snooze(live)
-        return [i for i in items if live.get(i.get("id", ""), 0) <= now]
+        return [i for i in items
+                if _row_until(live.get(i.get("id", ""))) <= now]
 
 
 # TTL cache: the gh subprocess chain behind workflow-health takes
@@ -638,17 +663,59 @@ def snooze_attention(body: SnoozeRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     now = time.time()
-    ids = {i.get("id", "") for i in _assemble_items(name, now)}
-    if body.id not in ids:
+    items = _assemble_items(name, now)
+    match = next((i for i in items if i.get("id", "") == body.id), None)
+    if match is None:
         raise HTTPException(
             status_code=404, detail=f"unknown attention id: {body.id}")
     until = now + body.minutes * 60
     with _snooze_lock:
         store = _read_snooze()
-        store[body.id] = until
+        # Title ships so a later session can render the Undo stub
+        # (issue #1030); the 404 check above guarantees the row.
+        store[body.id] = {
+            "until": until,
+            "title": str(match.get("title", "") or body.id),
+            "repo": name,
+        }
         _write_snooze(store)
     _invalidate_inbox(name)
     return {"ok": True, "id": body.id, "snoozed_until": until}
+
+
+class SnoozedRow(BaseModel):
+    id: str = ""
+    title: str = ""
+    until: float = 0.0
+    repo: str = ""
+
+
+class SnoozedList(BaseModel):
+    snoozed: list[SnoozedRow] = Field(default_factory=list)
+
+
+@router.get("/attention/snoozed", response_model=SnoozedList)
+def list_snoozed() -> dict:
+    """Live snoozed entries so a fresh session can render Undo stubs.
+
+    Ids are global (no repo on the store), so no repo filter: entries
+    carry their own repo. Expired rows prune on read, same as the
+    attention filter (issue #1030).
+    """
+    now = time.time()
+    with _snooze_lock:
+        store = _read_snooze()
+        live = {k: v for k, v in store.items()
+                if _row_until(v) > now}
+        if live != store:
+            _write_snooze(live)
+    rows = [
+        {"id": k, "title": v.get("title", "") or k,
+         "until": _row_until(v), "repo": v.get("repo", "")}
+        for k, v in sorted(live.items(),
+                           key=lambda kv: _row_until(kv[1]))
+    ]
+    return {"snoozed": rows}
 
 
 @router.post("/attention/unsnooze", response_model=UnsnoozeResult)

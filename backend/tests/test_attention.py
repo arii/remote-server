@@ -550,7 +550,9 @@ class SnoozeAttentionTest(unittest.TestCase):
         # Time-travel: rewrite the entry as expired.
         with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
                   encoding="utf-8") as f:
-            json.dump({"job-j1": time.time() - 1}, f)
+            json.dump({"job-j1": {"until": time.time() - 1,
+                                  "title": "t",
+                                  "repo": "remote-server"}}, f)
         self.assertEqual(self._ids(), ["job-j1"])
         self.assertNotIn("job-j1", self._store_file())
 
@@ -558,9 +560,49 @@ class SnoozeAttentionTest(unittest.TestCase):
         until = time.time() + 3600
         with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
                   encoding="utf-8") as f:
-            json.dump({"job-j1": until}, f)
+            json.dump({"job-j1": {"until": until, "title": "t",
+                                  "repo": "remote-server"}}, f)
         # A fresh read (as after a restart) still filters the id.
         self.assertEqual(self._ids(), [])
+
+    def test_snooze_persists_title_for_stub(self):
+        attention.snooze_attention(
+            attention.SnoozeRequest(id="job-j1", minutes=60))
+        row = self._store_file()["job-j1"]
+        self.assertIsInstance(row, dict)
+        self.assertGreater(row["until"], time.time())
+        self.assertTrue(row["title"])
+        self.assertEqual(row["repo"], "remote-server")
+
+    def test_list_snoozed_round_trip(self):
+        self.assertEqual(attention.list_snoozed(), {"snoozed": []})
+        attention.snooze_attention(
+            attention.SnoozeRequest(id="job-j1", minutes=60))
+        rows = attention.list_snoozed()["snoozed"]
+        self.assertEqual([r["id"] for r in rows], ["job-j1"])
+        self.assertTrue(rows[0]["title"])
+        self.assertGreater(rows[0]["until"], time.time())
+        attention.unsnooze_attention(
+            attention.UnsnoozeRequest(id="job-j1"))
+        self.assertEqual(attention.list_snoozed(), {"snoozed": []})
+
+    def test_list_snoozed_prunes_expired(self):
+        with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
+                  encoding="utf-8") as f:
+            json.dump({"job-j1": {"until": time.time() - 1,
+                                  "title": "t",
+                                  "repo": "remote-server"}}, f)
+        self.assertEqual(attention.list_snoozed(), {"snoozed": []})
+        self.assertNotIn("job-j1", self._store_file())
+
+    def test_malformed_rows_are_dropped(self):
+        with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",
+                  encoding="utf-8") as f:
+            json.dump({"job-j1": 9999999999.0,
+                       "other": {"title": "no until"}}, f)
+        # Neither a bare float nor an until-less dict may hide cards.
+        self.assertEqual(self._ids(), ["job-j1"])
+        self.assertEqual(attention.list_snoozed(), {"snoozed": []})
 
     def test_corrupt_store_reads_empty(self):
         with open(os.environ["BUTTONS_SNOOZE_PATH"], "w",

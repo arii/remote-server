@@ -20,6 +20,7 @@ import NowView, {
   heroSegments,
   heroStatus,
   lastDeployAt,
+  mergeServerSnoozed,
   NowEmptyState,
   NowHero,
   reconcileSnoozed,
@@ -78,6 +79,56 @@ describe('reconcileSnoozed (issue #614)', () => {
 
   it('drops stubs whose item is back in the list', () => {
     expect(reconcileSnoozed({ a: entry }, ['a'], 1000)).toEqual({});
+  });
+});
+
+describe('mergeServerSnoozed (issue #1030)', () => {
+  const NOW = 1000;
+
+  it('hydrates stubs for server ids the session never snoozed', () => {
+    const merged = mergeServerSnoozed(
+      {},
+      [{ id: 'a', title: 'Failed job', until: 2000 }],
+      [],
+      NOW,
+    );
+    expect(merged).toEqual({ a: { until: 2000, title: 'Failed job' } });
+    expect(snoozedRows(merged, [])).toEqual([
+      ['a', { until: 2000, title: 'Failed job' }],
+    ]);
+  });
+
+  it('falls back to the id when the server title is empty', () => {
+    const merged = mergeServerSnoozed({}, [{ id: 'a', title: '', until: 2000 }], [], NOW);
+    expect(merged.a.title).toBe('a');
+  });
+
+  it('skips expired rows and ids back in the live list', () => {
+    const rows = [
+      { id: 'old', title: 't', until: 500 },
+      { id: 'back', title: 't', until: 2000 },
+    ];
+    expect(mergeServerSnoozed({}, rows, ['back'], NOW)).toEqual({});
+  });
+
+  it('lets newer local optimism win over a stale server row', () => {
+    const merged = mergeServerSnoozed(
+      { a: { until: 3000, title: 'local' } },
+      [{ id: 'a', title: 'server', until: 2000 }],
+      [],
+      NOW,
+    );
+    expect(merged.a).toEqual({ until: 3000, title: 'local' });
+  });
+
+  it('lets a newer server row replace local optimism', () => {
+    const merged = mergeServerSnoozed(
+      { a: { until: 2000, title: 'local' } },
+      [{ id: 'a', title: 'server', until: 3000 }],
+      [],
+      NOW,
+    );
+    expect(merged.a).toEqual({ until: 3000, title: 'server' });
   });
 });
 

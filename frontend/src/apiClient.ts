@@ -1887,3 +1887,24 @@ export function unsnoozeAttention(id: string): Promise<UnsnoozeResult> {
     return r;
   });
 }
+
+// Live snoozed rows (issue #1030): a fresh session hydrates Undo
+// stubs from the server instead of starting with an empty map.
+export interface SnoozedRow {
+  id: string;
+  title: string;
+  until: number;
+  repo: string;
+}
+
+export interface SnoozedListResponse {
+  snoozed: SnoozedRow[];
+}
+
+export function fetchSnoozed(): Promise<SnoozedListResponse> {
+  return cachedViewFetch<SnoozedListResponse>(
+    'api/attention/snoozed',
+    VIEW_CACHE_SHORT_TTL_MS,
+    () => getJson<SnoozedListResponse>('api/attention/snoozed'),
+  );
+}
