@@ -751,6 +751,8 @@ export default function JobsView({
   onAskAgent,
   initialPr = null,
   onOpenChat,
+  pendingTdCommand = null,
+  onPendingTdHandled,
 }: {
   repo: string;
   // Checkout branch of the viewed repo: seeds the launch branch
@@ -765,6 +767,10 @@ export default function JobsView({
   initialPr?: number | null;
   // Empty-state hop to Chat past runs (#907).
   onOpenChat?: () => void;
+  // Palette-dispatched td command (#1057): launched once through the
+  // same progress/notice path as the Jobs buttons.
+  pendingTdCommand?: { command: string; nonce: number } | null;
+  onPendingTdHandled?: (nonce: number) => void;
 }) {
   const [jobs, setJobs] = useState<JobRecord[] | null>(null);
   const [branch, setBranch] = useBranchField(repo, defaultBranch);
@@ -978,6 +984,20 @@ export default function JobsView({
     if (/^[0-9a-f]{12}$/.test(id)) trackRun(id, label, repo);
     else await load();
   }
+
+  // Palette-dispatched td command (#1057): launch once through the
+  // same progress/notice path as the Jobs buttons. Nonce-guarded so a
+  // revisit never refires a stale request.
+  const handledTdNonce = useRef(0);
+  useEffect(() => {
+    if (pendingTdCommand && pendingTdCommand.nonce !== handledTdNonce.current) {
+      handledTdNonce.current = pendingTdCommand.nonce;
+      const { command, nonce } = pendingTdCommand;
+      onPendingTdHandled?.(nonce);
+      void guarded(() => launch(command, () => startTdRun(command, repo, branch)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingTdCommand]);
 
   // Bring the progress panel into view once it renders for a new run.
   useEffect(() => {

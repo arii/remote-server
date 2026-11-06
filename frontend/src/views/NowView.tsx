@@ -1191,7 +1191,7 @@ export default function NowView({
   // after the palette navigates here from another tab. The nav bar
   // (#896, Queue joins in #930) reuses the same path; a null
   // section closes whichever is open (Now = inbox home).
-  sectionRequest?: { section: 'review' | 'jobs' | 'queue' | null; nonce: number } | null;
+  sectionRequest?: { section: 'review' | 'jobs' | 'queue' | null; nonce: number; tdCommand?: string } | null;
   reportRequest?: number;
   // Palette request (issue #839): a nonce bump opens the Review
   // section's New-issue form (threaded through to ReviewView).
@@ -1255,10 +1255,16 @@ export default function NowView({
   // Palette requests: each nonce handled once; stale nonces from a
   // previous mount still fire, since the palette navigated here.
   const handledSectionNonce = useRef(0);
+  // Palette-dispatched td command (#1057): handed to the Jobs view so it
+  // launches through the same progress/notice path as the Jobs buttons.
+  const [pendingTd, setPendingTd] = useState<{ command: string; nonce: number } | null>(null);
   useEffect(() => {
     if (sectionRequest && sectionRequest.nonce !== handledSectionNonce.current) {
       handledSectionNonce.current = sectionRequest.nonce;
       setSection(sectionRequest.section);
+      setPendingTd(
+        sectionRequest.tdCommand ? { command: sectionRequest.tdCommand, nonce: sectionRequest.nonce } : null,
+      );
     }
   }, [sectionRequest]);
   // Mirror the open section up for the nav active state (#896). One
@@ -1266,6 +1272,9 @@ export default function NowView({
   // repo-switch resets, mount) with no call-site edits.
   useEffect(() => {
     onSectionChange?.(section);
+    // A palette td command only lives for the Jobs visit that consumes
+    // it (#1057): leaving the section drops a request Jobs never ran.
+    if (section !== 'jobs') setPendingTd(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section]);
   const handledReportNonce = useRef(0);
@@ -1764,7 +1773,19 @@ export default function NowView({
       )}
           </section>
           {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
-          {section === 'jobs' && <JobsView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} initialPr={lastPr} onOpenChat={() => onOpenTab('chat')} />}
+          {section === 'jobs' && (
+            <JobsView
+              repo={repo}
+              defaultBranch={defaultBranch}
+              onAskAgent={onAskAgent}
+              initialPr={lastPr}
+              onOpenChat={() => onOpenTab('chat')}
+              pendingTdCommand={pendingTd}
+              onPendingTdHandled={(nonce) =>
+                setPendingTd((p) => (p && p.nonce === nonce ? null : p))
+              }
+            />
+          )}
           {section === 'queue' && <QueueView repo={repo} />}
         </>
       )}
