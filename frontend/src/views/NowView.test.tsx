@@ -488,6 +488,45 @@ describe('Now status hero (issue #811)', () => {
     expect(html).toContain('>no recent deploys</button>');
   });
 
+  it('NowHero hides the duplicate count from screen readers (issue #1068)', () => {
+    const top = item({ id: 'urgent', severity: 'warn', title: 'Failing workflow' });
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={health()}
+        feed={feed({ attention: [top], runs: { active: null, recent: [] } })}
+        prCount={null}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
+      />,
+    );
+    // The attention segment button already announces the count.
+    expect(html).toContain('data-testid="now-hero-status" aria-hidden="true"');
+  });
+
+  it('NowHero keeps non-count labels exposed to screen readers (issue #1068)', () => {
+    const html = renderToStaticMarkup(
+      <NowHero
+        health={health()}
+        feed={feed()}
+        prCount={0}
+        deployAt={null}
+        onDone={() => {}}
+        onError={() => {}}
+        onSection={() => {}}
+        onTab={() => {}}
+        onAttention={() => {}}
+        onHistoryDeploys={() => {}}
+      />,
+    );
+    expect(html).toContain('All clear');
+    expect(html).not.toContain('now-hero-status" aria-hidden');
+  });
+
   it('NowHero reads all clear with an empty queue and healthy stack', () => {
     const html = renderToStaticMarkup(
       <NowHero

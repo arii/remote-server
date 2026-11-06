@@ -755,10 +755,19 @@ export function NowHero({
     prCount,
     deployAt,
   });
+  const label = heroLabel(status, feed.attention.length);
+  // Screen-reader dedup (issue #1068): when the label repeats the
+  // attention count, the attention segment button already announces
+  // it — hide the label so it is not read twice. Every other label
+  // (All clear, Loading, Action needed) stays exposed.
+  const dupCount =
+    feed.attention.length > 0 && label === `${feed.attention.length} needing attention`;
   return (
     <section data-testid="now-hero" aria-label="Status summary" className="health now-hero">
       <span aria-hidden="true" data-testid="now-hero-dot" className={HERO_DOT[status]} />
-      <strong data-testid="now-hero-status">{heroLabel(status, feed.attention.length)}</strong>
+      <strong data-testid="now-hero-status" aria-hidden={dupCount || undefined}>
+        {label}
+      </strong>
       <span className="row-meta" data-testid="now-hero-counts">
         {segments.map((seg, i) => (
           <Fragment key={seg.key}>
