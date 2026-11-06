@@ -22,27 +22,12 @@
 		reverse_proxy code-server:8080
 	}
 
-	# Shared headed browser (Solution A: selenium noVNC stream).
-	# No X-Frame-Options so the buttons dashboard can embed /browser/
-	# in an <iframe>. Human access is gated by oauth2-proxy upstream;
-	# agents drive the same head over CDP at browser:4444.
-	handle /browser* {
-		uri strip_prefix /browser
-		header -X-Frame-Options
-		reverse_proxy browser:7900 {
-			transport http {
-				dial_timeout 10s
-			}
-		}
-	}
-
-	# CDP-direct viewer spike (feat/cdp-direct-viewer): raw screencast
-	# over one websocket + CDP input relay, no VNC in the loop.
-	# Standards track only; the noVNC drawer remains the supported UI.
+	# CDP-direct shared viewer: raw screencast over one websocket +
+	# CDP input relay, no VNC in the loop. The viewer is served by
+	# the buttons backend at /cdp-stream (pass the prefix through).
 	handle /cdp-stream* {
-		uri strip_prefix /cdp-stream
-		header -X-Frame-Options
-		reverse_proxy terminal:8099 {
+		header -X-FrameOptions
+		reverse_proxy buttons:8000 {
 			transport http {
 				dial_timeout 10s
 			}

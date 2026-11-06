@@ -1,8 +1,9 @@
-// Co-browsing drawer (follow_up Issue 11): embedded shared browser
-// head (/browser/vnc.html via Caddy -> headed Chromium noVNC) with immediate-takeover
-// interception. Presentational: the parent owns state polling and
-// the pause/resume POSTs, so this renders from props and stays
-// testable via static markup like ContainerDrawer.
+// Co-browsing drawer: embedded CDP-direct viewer (/cdp-stream via
+// Caddy -> same headed session the agent drives). The viewer pauses
+// the agent server-side on first human input, so no takeover overlay
+// is needed. Presentational: the parent owns state polling and the
+// resume POST, so this renders from props and stays testable via
+// static markup like ContainerDrawer.
 import type { AgentBrowserState } from '../apiClient';
 
 export function bannerTextFor(state: AgentBrowserState, currentStep: string | null): string {
@@ -20,7 +21,6 @@ export default function CoBrowsingDrawer({
   currentStep,
   iframeSrc,
   error,
-  onPause,
   onResume,
   onClose,
 }: {
@@ -28,7 +28,6 @@ export default function CoBrowsingDrawer({
   currentStep: string | null;
   iframeSrc: string;
   error: string | null;
-  onPause: () => void;
   onResume: () => void;
   onClose: () => void;
 }) {
@@ -45,16 +44,6 @@ export default function CoBrowsingDrawer({
       )}
       <div className="cobrowse-frame-wrap">
         <iframe title="Shared browser head" src={iframeSrc} data-testid="cobrowse-frame" />
-        {browserState === 'RUNNING' && (
-          <button
-            type="button"
-            className="cobrowse-takeover"
-            data-testid="cobrowse-takeover"
-            aria-label="Take over browser control and pause the agent"
-            onPointerDown={onPause}
-            onKeyDown={onPause}
-          />
-        )}
       </div>
       <div className="actions">
         {browserState === 'PAUSED_BY_USER' && (

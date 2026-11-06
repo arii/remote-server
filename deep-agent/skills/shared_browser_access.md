@@ -11,10 +11,10 @@ trigger_nodes:
 - Agent CDP: Selenium Grid at `http://browser:4444` (compose network).
   `BROWSER_ENDPOINT` carries this base URL (set on the terminal service);
   the default is the same address. The service must exist; no fail-safe.
-- Human stream: the same head is visible at
-  `/browser/vnc.html?autoconnect=1&resize=scale` (noVNC via Caddy).
-  An always-open personal window lives on the display, so the stream
-  never shows a bare desktop even with zero agent sessions.
+- Human stream: the CDP-direct viewer served by the buttons backend
+  at `/cdp-stream` (drawer iframe, Caddy-routed). It attaches to
+  the live agent session when one exists, else opens its own
+  (deleted on disconnect). No VNC, no personal window.
 
 ## 2. Session lifecycle (mandatory shape)
 1. `POST /session` with `{"capabilities": {"alwaysMatch": {
@@ -39,11 +39,12 @@ trigger_nodes:
   (grid ready, snapshot, pause/resume, visual diff); run it from the
   terminal container.
 
-## 4. Profiles and the personal window
+## 4. Profiles and shared sessions
 - Agent sessions share `/data/shared-browser/agent` (host-backed, survives
   restarts). Do not delete it; do not point sessions elsewhere.
-- The always-open personal window uses `/data/shared-browser/personal`.
-  Never close it, never drive it via CDP; it belongs to the human.
+- The viewer attaches to YOUR live session when one exists: the human
+  sees exactly what you see and their input lands in your page.
+  First human input pauses you via the agent_control lock.
 - Idle sessions are reaped after 3600s. If the slot reports no free
   session and no run is active, `DELETE` the stale session id.
 

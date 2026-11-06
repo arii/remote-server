@@ -1,18 +1,11 @@
-"""CDP-direct shared-autonomy spike (read-only addition, no stack changes).
+"""CDP-direct shared-autonomy viewer (no VNC in the loop).
 
 Streams the headed Grid browser to a lightweight canvas viewer over one
-websocket and relays human input back as CDP Input events -- no X11/VNC
-pixels in the loop. One viewer connection holds one Grid session (the
-single slot); disconnecting always deletes it.
-
-Run (terminal container)::
-
-    python3 scripts/cdp_stream_spike.py --port 8099
-
-Open http://<host>:8099/ in a browser.
-Self-test (no browser needed)::
-
-    python3 scripts/cdp_stream_spike.py --self-test
+websocket and relays human input back as CDP Input events. Mounted at
+/cdp-stream in backend/server.py. One viewer connection attaches to the
+live agent session when one exists, else opens its own (deleted on
+disconnect). Human input pauses the agent via the agent_control API,
+so the drawer needs no takeover overlay.
 """
 from __future__ import annotations
 
@@ -20,11 +13,16 @@ import argparse
 import asyncio
 import base64
 import json
+import os
 import time
 import urllib.request
 
 GRID_BASE = "http://browser:4444"
 VIEWPORT = {"width": 1280, "height": 800}
+# Device pixels per CSS pixel. Screencast frames arrive at
+# width*DSF; the viewer divides pointer coords by DSF so CDP input
+# (CSS viewport space) lands where the human clicked.
+DSF = 2
 
 VIEWER_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
@@ -43,10 +41,18 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 const base = location.pathname.replace(/\/$/, '');
 const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws');
 const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
+cv.tabIndex = 0;
 const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
 ws.onopen = () => document.getElementById('state').textContent = 'live';
 ws.onmessage = (ev) => {
   const m = JSON.parse(ev.data);
+  let dsf = 1;
+  if (m.type === 'attached') {
+    dsf = m.dsf || 1;
+    document.getElementById('state').textContent =
+      (m.shared ? 'shared agent session ' : 'own session ') + m.session;
+    return;
+  }
   if (m.type === 'frame') {
     img.onload = () => {
       if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
@@ -65,10 +71,15 @@ ws.onmessage = (ev) => {
 };
 function pos(e) {
   const r = cv.getBoundingClientRect();
-  return {x: Math.round((e.clientX - r.left) * cv.width / r.width),
-          y: Math.round((e.clientY - r.top) * cv.height / r.height)};
+  // Canvas backing store is device pixels; CDP input is CSS pixels.
+  return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
+          y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
 }
-cv.addEventListener('click', (e) => { lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+cv.addEventListener('click', (e) => { cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+cv.addEventListener('keydown', (e) => {
+  e.preventDefault(); lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
+});
 document.getElementById('go').onclick = () =>
   ws.send(JSON.stringify({t: 'go', url: document.getElementById('url').value}));
 </script></body></html>
@@ -97,6 +108,42 @@ def _grid_session_delete(session_id):
         pass
 
 
+def _grid_live_session():
+    """Return an existing Grid session id with a page target, if any."""
+    try:
+        with urllib.request.urlopen(
+                GRID_BASE + "/status", timeout=10) as resp:
+            value = json.load(resp)["value"]
+    except Exception:
+        return None
+    for node in value.get("nodes", []):
+        for slot in node.get("slots", []):
+            session = slot.get("session") or {}
+            if session.get("sessionId"):
+                return session["sessionId"]
+    return None
+
+
+AGENT_API = os.environ.get("AGENT_API", "http://127.0.0.1:8000/api/agent")
+
+
+def _pause_agent():
+    try:
+        req = urllib.request.Request(
+            AGENT_API.rstrip("/") + "/pause", data=b"{}",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+        return True
+    except Exception:
+        return False
+
+
+KEYCODES = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27,
+            "Delete": 46, "ArrowLeft": 37, "ArrowUp": 38,
+            "ArrowRight": 39, "ArrowDown": 40, "Home": 36, "End": 35}
+
+
 class CDPBridge:
     """Minimal CDP client over the per-session Grid endpoint."""
 
@@ -122,6 +169,11 @@ class CDPBridge:
                                    {"targetId": page["targetId"],
                                     "flatten": True})
         self.cdp_session = attached["sessionId"]
+        # Crisp text: render at device pixels, input stays in CSS px.
+        await self.call("Emulation.setDeviceMetricsOverride",
+                        {"width": VIEWPORT["width"],
+                         "height": VIEWPORT["height"],
+                         "deviceScaleFactor": DSF, "mobile": False})
 
     async def _reader(self):
         from websockets.exceptions import ConnectionClosed
@@ -162,8 +214,8 @@ class CDPBridge:
         await self.call("Page.enable")
         await self.call("Page.startScreencast",
                         {"format": "jpeg", "quality": 70,
-                         "maxWidth": VIEWPORT["width"],
-                         "maxHeight": VIEWPORT["height"],
+                         "maxWidth": VIEWPORT["width"] * DSF,
+                         "maxHeight": VIEWPORT["height"] * DSF,
                          "everyNthFrame": 1})
 
     async def ack_frame(self, session_id):
@@ -180,6 +232,32 @@ class CDPBridge:
                        {**base, "type": "mousePressed"})
         await self.call("Input.dispatchMouseEvent",
                        {**base, "type": "mouseReleased"})
+
+    async def ensure_focus(self):
+        # Keystrokes drop when nothing is focused: focus the active
+        # element, else the first field, else the body.
+        await self.call("Runtime.evaluate", {"expression": (
+            "(()=>{const a=document.activeElement;"
+            "if(a&&a!==document.body)return a.tagName;"
+            "(document.querySelector("
+            "'input,textarea,[contenteditable=\"true\"]')"
+            "||document.body).focus();"
+            "return document.activeElement.tagName;})()")})
+
+    async def key(self, key, code):
+        await self.ensure_focus()
+        if len(key) == 1:
+            await self.call("Input.insertText", {"text": key})
+            return
+        vk = KEYCODES.get(key)
+        if vk is None:
+            return
+        for typ in ("keyDown", "keyUp"):
+            params = {"type": typ, "key": key,
+                      "windowsVirtualKeyCode": vk, "code": code or key}
+            if typ == "keyDown":
+                params["text"] = "\r" if key == "Enter" else ""
+            await self.call("Input.dispatchKeyEvent", params)
 
     async def navigate(self, url):
         await self.call("Page.navigate", {"url": url})
@@ -201,6 +279,7 @@ def create_app():
     combo in terminal images rejects websocket routes at the
     handshake; raw ASGI speaks directly to uvicorn)."""
     async def app(scope, receive, send):
+        path = scope.get("path", "")
         if scope["type"] == "http":
             body = VIEWER_HTML.encode()
             await send({"type": "http.response.start", "status": 200,
@@ -208,12 +287,22 @@ def create_app():
                                      b"text/html; charset=utf-8")]})
             await send({"type": "http.response.body", "body": body})
             return
-        if scope["type"] != "websocket" or scope.get("path") != "/ws":
+        if scope["type"] != "websocket" or not path.endswith("/ws"):
             await send({"type": "websocket.close", "code": 4404})
             return
         await send({"type": "websocket.accept"})
-        session_id = await asyncio.to_thread(_grid_session_create)
-        bridge = CDPBridge(session_id)
+        # Shared autonomy: attach to the live agent session when one
+        # exists; otherwise open our own (deleted on disconnect).
+        session_id = await asyncio.to_thread(_grid_live_session)
+        own_session = session_id is None
+        if own_session:
+            session_id = await asyncio.to_thread(_grid_session_create)
+        await _ws_send_text(
+            send, asyncio.Lock(),
+            json.dumps({"type": "attached", "shared": not own_session,
+                        "session": session_id[:8], "dsf": DSF}))
+        bridge = None
+        paused = False
         lock = asyncio.Lock()
 
         async def on_frame(params):
@@ -222,7 +311,13 @@ def create_app():
                 json.dumps({"type": "frame", "data": params["data"]}))
             await bridge.ack_frame(params["sessionId"])
 
+        async def human_input():
+            nonlocal paused
+            if not paused:
+                paused = await asyncio.to_thread(_pause_agent)
+
         try:
+            bridge = CDPBridge(session_id)
             await bridge.connect()
             await bridge.start_screencast(on_frame)
             while True:
@@ -233,20 +328,28 @@ def create_app():
                     continue
                 msg = json.loads(event.get("text") or "{}")
                 if msg.get("t") == "click":
+                    await human_input()
                     await bridge.click(int(msg["x"]), int(msg["y"]))
+                elif msg.get("t") == "key":
+                    await human_input()
+                    await bridge.key(str(msg.get("key", "")),
+                                     str(msg.get("code", "")))
                 elif msg.get("t") == "go":
                     await bridge.navigate(str(msg["url"]))
         finally:
-            await bridge.close()
-            await asyncio.to_thread(_grid_session_delete, session_id)
+            if bridge is not None:
+                await bridge.close()
+            if own_session:
+                await asyncio.to_thread(_grid_session_delete, session_id)
 
     return app
 
 
 async def self_test():
-    """Headless proof: frames flow, click dispatches, session deleted."""
+    """Headless proof: frames flow, click + typing land, cleanup."""
     session_id = await asyncio.to_thread(_grid_session_create)
     got = []
+    typed = None
     try:
         bridge = CDPBridge(session_id)
         await bridge.connect()
@@ -264,11 +367,19 @@ async def self_test():
             "Runtime.evaluate",
             {"expression": "setInterval(() => {document.body.style."
                            "background = '#' + Math.floor(Math.random()*"
-                           "16777215).toString(16);}, 300);"})
+                           "16777215).toString(16);}, 100);"})
         await asyncio.sleep(4)
         t_click = time.monotonic()
         await bridge.click(640, 200)
         await asyncio.sleep(3)
+        # Typing round-trip on a real input (focus guaranteed by key()).
+        await bridge.navigate("data:text/html,<input id=t value=''>")
+        await asyncio.sleep(1)
+        for ch in "hi42":
+            await bridge.key(ch, "Key" + ch.upper())
+        typed = await bridge.call(
+            "Runtime.evaluate",
+            {"expression": "document.getElementById('t').value"})
         await bridge.close()
     finally:
         await asyncio.to_thread(_grid_session_delete, session_id)
@@ -276,9 +387,12 @@ async def self_test():
     span = (got[-1][0] - got[0][0]) if n > 1 else 0.0
     fps = n / span if span > 0 else 0.0
     sizes = sorted(s for _, s in got)
+    typed_value = (typed or {}).get("result", {}).get("value")
     print(f"frames={n} span_s={span:.1f} fps={fps:.1f} "
-          f"median_bytes={sizes[len(sizes)//2] if sizes else 0}")
-    print("OK" if n >= 10 and fps >= 5 else "WEAK")
+          f"median_bytes={sizes[len(sizes)//2] if sizes else 0} "
+          f"typed={typed_value!r}")
+    print("OK" if (n >= 10 and fps >= 5
+                   and typed_value == "hi42") else "WEAK")
 
 
 def main():

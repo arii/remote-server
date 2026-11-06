@@ -7,9 +7,8 @@ function renderDrawer(over: Record<string, unknown> = {}): string {
     <CoBrowsingDrawer
       browserState="IDLE"
       currentStep={null}
-      iframeSrc="/browser/vnc.html?autoconnect=1&resize=scale"
+      iframeSrc="/cdp-stream/"
       error={null}
-      onPause={() => {}}
       onResume={() => {}}
       onClose={() => {}}
       {...(over as object)}
@@ -25,8 +24,8 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(bannerTextFor('PAUSED_BY_USER', null)).toContain('Manual control active');
   });
 
-  it('arms the takeover interceptor only while running', () => {
-    expect(renderDrawer({ browserState: 'RUNNING' })).toContain('data-testid="cobrowse-takeover"');
+  it('has no takeover overlay in any state (server pauses on input)', () => {
+    expect(renderDrawer({ browserState: 'RUNNING' })).not.toContain('cobrowse-takeover');
     expect(renderDrawer({ browserState: 'PAUSED_BY_USER' })).not.toContain('cobrowse-takeover');
     expect(renderDrawer({ browserState: 'IDLE' })).not.toContain('cobrowse-takeover');
   });
@@ -35,12 +34,11 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     const paused = renderDrawer({ browserState: 'PAUSED_BY_USER', currentStep: 'Paused (user_takeover)' });
     expect(paused).toContain('data-testid="cobrowse-resume"');
     expect(paused).toContain('Resume agent');
-    expect(paused).not.toContain('cobrowse-takeover');
 
     const running = renderDrawer({ browserState: 'RUNNING' });
     expect(running).not.toContain('cobrowse-resume');
     expect(running).toContain('data-testid="cobrowse-frame"');
-    expect(running).toContain('src="/browser/vnc.html?autoconnect=1&amp;resize=scale"');
+    expect(running).toContain('src="/cdp-stream/"');
   });
 
   it('surfaces control API errors without dropping the frame', () => {

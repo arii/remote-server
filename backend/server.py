@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import agent, agent_control, agents, attention, briefing, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import agent, agent_control, agents, attention, briefing, browser_view, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEEP_AGENT = os.path.join(REPO_ROOT, "deep-agent")
@@ -64,6 +64,10 @@ app.include_router(attention.router)
 app.include_router(inbox.router)
 app.include_router(deferred.router)
 app.include_router(dispatch.router)
+
+# CDP-direct viewer (raw ASGI: the baked FastAPI/Starlette combo 403s
+# websocket routes, so this mounts as plain ASGI, not a router).
+app.mount("/cdp-stream", browser_view.create_app(), name="cdp_viewer")
 
 
 def _index_state() -> str:

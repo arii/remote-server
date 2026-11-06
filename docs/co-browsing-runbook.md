@@ -16,10 +16,12 @@ what).
 
 - `BROWSER_HTTP` (default `http://browser:4444`) — Selenium Grid
   base of the `browser` service. The service must exist; no fail-safe.
-- `BROWSER_NOVNC` (default `http://browser:7900`) — noVNC stream
-  the human watches (same head, routed at `/browser*` by Caddy).
+- Human stream: the `/cdp-stream` viewer (Caddy -> buttons
+  backend), which attaches to the live agent session when one
+  exists, else opens its own. First input pauses the agent.
 - `AGENT_API` (default `http://buttons:8000/api/agent`)
-- `PREVIEW_URL` (default `<BROWSER_NOVNC>/vnc.html?autoconnect=1&resize=scale`)
+- `PREVIEW_URL` (default `http://caddy:8080/buttons/` — the console
+  itself, the meaningful visual-audit target)
 - `TD_BIN` + `TD_CWD` (default `td`; the installed td predates
   `--preview-url`, so until it is reinstalled point at a checkout:
   `TD_BIN="python3 dev_tools/cli.py"
