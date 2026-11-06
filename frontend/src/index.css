@@ -444,6 +444,11 @@ li.detail.merging { opacity: 0.55; }
    along; runs and launch stay one click away in the main nav. */
 .cobrowse-chat .chat-side { display: none; }
 .cobrowse-chat .chat-main { min-width: 0; }
+/* ChatView brings its own two-column .split; inside a 300-380px
+   rail that grid crushes chat-main to zero width (prompt chips
+   measured 28px wide). Collapse it: the rail is already the
+   narrow column. */
+.cobrowse-chat .split { grid-template-columns: minmax(0, 1fr); }
 .cobrowse-takeover {
   position: absolute;
   inset: 0;
