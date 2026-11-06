@@ -4,11 +4,10 @@
 #   https://${TERMINAL_DOMAIN}:${TERMINAL_PORT}
 #     -> oauth2-proxy (terminates TLS with the existing LE certs,
 #        GitHub OAuth gate, single-user allowlist)
-#     -> caddy (internal router: / -> terminal, /buttons -> buttons, /code -> code-server, /browser -> browserless)
+#     -> caddy (internal router: / -> terminal, /buttons -> buttons, /code -> code-server)
 #     -> terminal (ttyd + zellij, session persists across reconnects)
 #     -> buttons (allowlisted action runner, see docs/buttons.md)
 #     -> code-server (browser VS Code, see docs/remote-access.md)
-#     -> browserless (shared Chromium head for visual co-browsing, see docs/browser-setup.md)
 #
 # Tailscale = VPN mesh for admin access to everything else (SSH, future
 # services). The terminal does NOT require Tailscale.
@@ -154,13 +153,6 @@ services:
       NEBIUS_MODEL: ${NEBIUS_MODEL:-}
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
       NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
-    # Shared browser head (Issue 8): default CDP endpoint for
-    # td audit-impact visual audits and agent automation inside
-    # this container. Overridable per-machine via BROWSERLESS_ENDPOINT.
-    # Takes effect on the next terminal recreate (never recreate
-    # terminal just for this -- the gate degrades gracefully to
-    # BROWSERLESS_UNREACHABLE without it).
-      BROWSERLESS_ENDPOINT: "${BROWSERLESS_ENDPOINT:-ws://browserless:3000}"
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
@@ -366,29 +358,6 @@ services:
       - terminal
     logging: *default-logging
     restart: unless-stopped
-
-  # Shared browser head for visual co-browsing + automated visual
-  # audits (follow_up.md Issue 8). Persistent Chromium with a live
-  # debugger UI (DEMO_MODE) for human takeover and a CDP endpoint
-  # for agents. Human web access rides behind oauth2-proxy + caddy
-  # (/browser*); agents connect directly over the compose network
-  # (http://browserless:3000) or the Tailscale mesh.
-  browserless:
-    image: ghcr.io/browserless/chromium:latest
-    container_name: remote-browserless-1
-    shm_size: "2gb" # Chromium SIGBUS-crashes on heavy DOM snapshots without this
-    restart: unless-stopped
-    expose:
-      - "3000"
-    ports:
-      - "127.0.0.1:3000:3000" # laptop/agy CDP access over the secure mesh; never public
-    environment:
-      - DEMO_MODE=true # live interactive visual debugger UI
-      - PREBOOT_CHROME=true # keep Chromium warm for sub-second agent connects
-      - MAX_CONCURRENT_SESSIONS=5
-      - CONNECTION_TIMEOUT=300000
-      - TOKEN=${BROWSERLESS_TOKEN:-} # secures the direct CDP endpoint; empty = open on loopback/mesh
-    logging: *default-logging
 
   # Browser-based VS Code: code-server.
   # --auth none: the GitHub OAuth gate is the boundary, same as ttyd.

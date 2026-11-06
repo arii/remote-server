@@ -85,6 +85,29 @@ class TestComposeGuards(unittest.TestCase):
                 f"{svc} image must be pinned by digest (got {images[svc]})",
             )
 
+    def test_terminal_requirements_parity(self):
+        """terminal/requirements.txt must include all backend deps and pytest."""
+        backend_req = os.path.join(ROOT, "backend", "requirements.txt")
+        terminal_req = os.path.join(ROOT, "terminal", "requirements.txt")
+        self.assertTrue(os.path.exists(terminal_req))
+
+        def parse_reqs(path):
+            reqs = set()
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        reqs.add(line.split(";")[0].strip())
+            return reqs
+
+        backend_deps = parse_reqs(backend_req)
+        terminal_deps = parse_reqs(terminal_req)
+        for dep in backend_deps:
+            self.assertIn(dep, terminal_deps,
+                          f"backend dependency {dep} missing from terminal/requirements.txt")
+        self.assertTrue(any(d.startswith("pytest") for d in terminal_deps),
+                        "pytest missing from terminal/requirements.txt")
+
 
 if __name__ == "__main__":
     unittest.main()
