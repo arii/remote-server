@@ -81,3 +81,13 @@ Covered by [#1010](https://github.com/arii/remote-server/issues/1010)
 ## 11. No minimal issues/PRs — coordinate, CI is not free
 Enforced: 3 issues total (#1010 + 2 rollups); fixes batched per issue
 into single PRs; docs batched into one PR with this file.
+
+## 12. Real-browser proof, Batch D (#1030, #1032 @ 5495b9b)
+Headless Chromium via raw CDP against the live container, real
+trusted clicks (scripts in /tmp: cdp_tapthrough.py, cdp_probe1030.py).
+Proved: dismiss click -> stub ~12ms, server exclusion, in-session
+unsnooze restore, deferred bulk defer/restore, and (new) reload keeps
+the server-hydrated stub with a working Unsnooze. Found on the way:
+snoozed stubs were local-only (fixed), strips had no PR rows to click
+(defer UI path still only unit-tested), old bare-float snooze rows are
+dropped on read (TTL'd, self-healing).
