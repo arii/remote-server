@@ -116,6 +116,43 @@ class TurnWarning(str):
         self.seconds_left = seconds_left
         return self
 
+
+class TurnProgress(str):
+    """Zero-text stream marker for live progress (issue #1021).
+
+    Tool calls and phase changes the drawer shows while the turn
+    runs, so a live session is not a black box until the final
+    text lands. A str subclass so any consumer that joins chunks
+    is unaffected (it contributes ""); the router checks
+    isinstance and renders `progress` {text} instead of a token
+    frame.
+    """
+
+    def __new__(cls, text: str):
+        self = super().__new__(cls, "")
+        self.text = text
+        return self
+
+
+def tool_step_line(update: dict) -> str:
+    """One live-progress line for a tool step, or "".
+
+    Name plus the first scalar argument, capped — the drawer
+    shows what the agent is doing, not full parameter dumps.
+    """
+    name = update.get("tool_name", "")
+    info = update.get("tool_info")
+    params = (info.get("parameters")
+              if isinstance(info, dict) else None)
+    arg = ""
+    if isinstance(params, dict):
+        for value in params.values():
+            if isinstance(value, str) and value.strip():
+                arg = value.strip().splitlines()[0][:100]
+                break
+    line = "tool %s" % name if name else "tool"
+    return "%s %s" % (line, arg) if arg else line
+
 # A stored turn result must not live forever: entries that no route
 # ever pops (abandoned streams, issue #535) are swept past this age,
 # mirroring the pi_runs 3600s eviction in chat.py. The pop-on-complete
@@ -535,12 +572,20 @@ class AgyStreamParser:
             self.conversation_id = self._event_cid(event)
         if event.get("event") == "step_update":
             update = event.get("step_update", {})
-            if isinstance(update, dict) and \
-                    update.get("step_type") == "agent_response":
-                delta = update.get("text_delta", "")
-                if isinstance(delta, str) and delta:
-                    self._saw_answer = True
-                    return [delta]
+            if isinstance(update, dict):
+                if update.get("step_type") == "agent_response":
+                    delta = update.get("text_delta", "")
+                    if isinstance(delta, str) and delta:
+                        self._saw_answer = True
+                        return [delta]
+                # Live progress (issue #1021): tool starts surface
+                # as zero-text markers; completions stay silent so
+                # one call reads as one line, not two.
+                if update.get("step_type") == "tool" and \
+                        update.get("state") == "ACTIVE":
+                    line = tool_step_line(update)
+                    if line:
+                        return [TurnProgress(line)]
             return []
         if event.get("event") == "result":
             result = event.get("result", {})
