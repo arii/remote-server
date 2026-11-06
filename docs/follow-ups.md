@@ -45,7 +45,7 @@ fails; `td rag`/`td init` untested there). After the boomtick merges
 land, reinstall/repin `td` (and `BOOMTICK_CLI_REF=main`) or Issue 4–7
 agents keep shelling out to the stale CLI.
 
-## 4. Deliberate deviations from `guide.md`
+## 4. Deliberate deviations from `archive/guide.md`
 
 - `deep-agent/impact.py` + `ux_audit.py` NOT deleted (Issue 6 asked for
   it): live callers — `backend/api/routers/jobs.py` ux-audit endpoints
@@ -76,9 +76,9 @@ agents keep shelling out to the stale CLI.
   2026-11-05 (both dirs now exactly the 27 dispatched tools). Follow-up:
   teach `scripts/sync-mcp-schemas.ts` to delete schemas with no live
   tool, or the staleness recurs on the next tool deletion.
-- `guide.md` is tracked and merged across all issue branches; the
+- `archive/guide.md` is tracked and merged across all issue branches; the
   add/add conflicts on every main-merge were resolved by taking the
-  newest side. After the stack lands, `guide.md` checkboxes are the
+  newest side. After the stack lands, `archive/guide.md` checkboxes are the
   record (Issue 5 `test_coder` box checked here — 10 pass in venv).
 
 ## 6. Repo-hygiene notes

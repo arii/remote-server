@@ -30,6 +30,6 @@ bash scripts/verify-skills.sh          # expect: OK (26 locked skill(s) match)
 - GitHub API flaked during the `#987` merge (GraphQL errors); merge landed via REST. If `gh` acts up again, wait and retry.
 
 ## Done when
-- [ ] Checkout on `main`, in sync with `origin/main`, no leftover branches.
-- [ ] `skills-provisioner` exited 0 and `verify-skills.sh` passes.
-- [ ] Terminal + buttons reachable; smoke commands pass.
+- [x] Checkout on `main`, in sync with `origin/main`, no leftover branches.
+- [x] `skills-provisioner` exited 0 and `verify-skills.sh` passes.
+- [x] Terminal + buttons reachable; smoke commands pass.
