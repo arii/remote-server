@@ -30,6 +30,15 @@ Blocked: `blocked #126: <what you need>`. Green: `green: <pr-url> closes #126`.
 2. Find it via `list_peer_sessions`; message via `send_session_message`.
 3. If the registry or session is missing: ask the user and stop. Never guess a session name, never broadcast.
 
+## Mandatory Execution Sequence (Stage 3: Init Coder)
+
+1. **Initialize & Query RAG**: Call `td.init_and_rag` and `repo.read_agent_context` first. Never bulk-read files without a RAG query.
+2. **Isolate Worktree**: Call `worktree.create` for the assigned issue and target repo (`arii/boomtick`, `arii/remote-server`, `arii/tech-dancer`, `arii/hrm`, or `arii/glossy`).
+3. **Implement & Test**: Edit only files listed in the issue's `Allowed Scope`. Run `repo.run_tests`.
+4. **Visual / UI Verification (if frontend changed)**: Use CDP cobrowsing (`cdpClick`, `cdpTypeText`) to verify interactive states.
+5. **Deterministic Gates**: Run `td.verify_scope` and `td.audit_worktree`. Fix any AST or allowlist violations.
+6. **Submit PR**: Call `agent.submit_pr` and clean up with `worktree.remove`.
+
 ## Hard don'ts
 
 - Never file issues — code only.
