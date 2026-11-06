@@ -161,7 +161,8 @@ describe('extracted jobs sections (issue #363)', () => {
       />,
     );
     expect(html).toContain('data-testid="td-pr-group"');
-    expect(html).toContain('data-testid="td-repo-group"');
+    // #1016: whole-repo group gone (doctor/preflight demoted to palette/CLI).
+    expect(html).not.toContain('data-testid="td-repo-group"');
     expect(html).toContain('data-testid="td-pr"');
     // #428: fix-ci retired — no button.
     expect(html).not.toContain('dispatch-td-fix-ci');
@@ -169,8 +170,9 @@ describe('extracted jobs sections (issue #363)', () => {
     expect(html).not.toContain('dispatch-td-list-sessions');
     expect(html).not.toContain('dispatch-td-feedback-check');
     expect(html).toContain('data-testid="dispatch-td-resolve-conflicts"');
-    expect(html).toContain('data-testid="dispatch-td-doctor"');
-    expect(html).toContain('data-testid="dispatch-td-preflight"');
+    // #1016: demoted to command palette + CLI — no whole-repo buttons.
+    expect(html).not.toContain('data-testid="dispatch-td-doctor"');
+    expect(html).not.toContain('data-testid="dispatch-td-preflight"');
     expect(html).toContain('data-testid="dispatch-td-audit-pr"');
     expect(html).toContain('data-testid="dispatch-td-ai-review"');
     expect(html).toContain('data-testid="td-change-block"');
