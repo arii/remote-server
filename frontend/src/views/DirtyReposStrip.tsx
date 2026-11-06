@@ -31,18 +31,32 @@ export function commitViaAgentSeed(repo: string): string {
   return `In ${repo}, review git status and diff, commit the current changes with a clear message, and push to origin.`;
 }
 
+// One primary action per row state (#958): behind + clean pulls,
+// dirty hands to the agent (unblocks the pull), ahead-only drills
+// into the diff (no push endpoint exists). Stash, discard, and the
+// full agent handoff live in the diff modal drill-down.
+export type PrimaryRepoAction = 'sync' | 'agent' | 'diff';
+
+export function primaryRepoAction(r: RepoInfo): PrimaryRepoAction {
+  if (!r.clean) return 'agent';
+  if ((r.behind ?? 0) > 0) return 'sync';
+  return 'diff';
+}
+
 export default function DirtyReposStrip({
   repos,
   onViewDiff,
   onAction,
   onAskAgent,
-  onOpenChat,
 }: {
   repos: RepoInfo[];
   onViewDiff: (repo: string) => void;
   onAction: (repo: string, action: RepoAction) => Promise<RepoActionResponse>;
   onAskAgent: (seed: string) => void;
-  onOpenChat: (repo: string) => void;
+  // Retained for callers: the row no longer offers an Open-in-Chat
+  // shortcut (one primary action per row, #958); the drill-down
+  // modal and Chat tab cover navigation.
+  onOpenChat?: (repo: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, { ok: boolean; detail: string }>>({});
@@ -66,31 +80,6 @@ export default function DirtyReposStrip({
     try {
       const r = await onAction(repo, action);
       setResults((prev) => ({ ...prev, [repo]: { ok: r.ok, detail: r.detail } }));
-    } catch (err) {
-      recordFailure(repo, err);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function runAutoStashPull(repo: string) {
-    const key = `${repo}:auto-stash-pull`;
-    if (busy) return;
-    setBusy(key);
-    try {
-      const stashed = await onAction(repo, 'stash');
-      if (!stashed.ok) {
-        setResults((prev) => ({ ...prev, [repo]: { ok: false, detail: stashed.detail } }));
-        return;
-      }
-      const synced = await onAction(repo, 'sync');
-      setResults((prev) => ({
-        ...prev,
-        [repo]: {
-          ok: synced.ok,
-          detail: synced.ok ? `${stashed.detail}; ${synced.detail}` : synced.detail,
-        },
-      }));
     } catch (err) {
       recordFailure(repo, err);
     } finally {
@@ -131,57 +120,31 @@ export default function DirtyReposStrip({
                 </td>
                 <td>
                   <div className="actions">
+                    {primaryRepoAction(r) === 'sync' && (
+                      <button
+                        type="button"
+                        data-testid={`dirty-pull-${r.name}`}
+                        disabled={rowBusy}
+                        onClick={() => void run(r.name, 'sync')}
+                      >
+                        {busy === `${r.name}:sync` ? 'Pulling…' : 'Pull --rebase'}
+                      </button>
+                    )}
+                    {primaryRepoAction(r) === 'agent' && (
+                      <button
+                        type="button"
+                        data-testid={`dirty-agent-${r.name}`}
+                        onClick={() => onAskAgent(commitViaAgentSeed(r.name))}
+                      >
+                        Commit via Agent
+                      </button>
+                    )}
                     <button
                       type="button"
                       data-testid={`dirty-view-diff-${r.name}`}
                       onClick={() => onViewDiff(r.name)}
                     >
                       View Diff
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`dirty-stash-${r.name}`}
-                      disabled={rowBusy}
-                      onClick={() => void run(r.name, 'stash')}
-                    >
-                      {busy === `${r.name}:stash` ? 'Stashing…' : 'Stash'}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`dirty-autostash-${r.name}`}
-                      disabled={rowBusy}
-                      onClick={() => void runAutoStashPull(r.name)}
-                    >
-                      {busy === `${r.name}:auto-stash-pull`
-                        ? 'Working…'
-                        : 'Auto-Stash & Pull'}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`dirty-agent-${r.name}`}
-                      onClick={() => onAskAgent(commitViaAgentSeed(r.name))}
-                    >
-                      Commit via Agent
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`dirty-pull-${r.name}`}
-                      disabled={rowBusy || !r.clean}
-                      title={
-                        !r.clean
-                          ? 'Stash or commit local changes first'
-                          : undefined
-                      }
-                      onClick={() => void run(r.name, 'sync')}
-                    >
-                      {busy === `${r.name}:sync` ? 'Pulling…' : 'Pull --rebase'}
-                    </button>
-                    <button
-                      type="button"
-                      data-testid={`dirty-chat-${r.name}`}
-                      onClick={() => onOpenChat(r.name)}
-                    >
-                      Open in Chat
                     </button>
                   </div>
                   {result && (
