@@ -28,6 +28,41 @@ REQUIRED_SECTIONS = (
 
 MAX_LOOPS_DEFAULT = 5
 
+# Sanctioned Ollama endpoint (issue #1085): OLLAMA_URL override, else
+# the compose-network host. Never raw localhost — unreachable inside
+# containers, which is exactly how the spec agent died silently.
+COMPOSE_OLLAMA_URL = "http://ollama:11434"
+
+_REPO_FILE_RE = re.compile(r"(?<![\w/])([\w./-]+\.\w+)(?::\d+)?")
+
+
+def _ollama_base_url():
+    """Resolve the sanctioned Ollama endpoint (issue #1085)."""
+    try:
+        import model_router
+        default = model_router.DEFAULT_OLLAMA_URL
+    except Exception:
+        default = COMPOSE_OLLAMA_URL
+    url = os.environ.get("OLLAMA_URL", default).strip().rstrip("/") or default
+    return url
+
+
+def evidence_cites_repo_file(evidence, repo_root):
+    """Repo-relative paths in evidence that exist on disk (issue #1053).
+
+    The on-brief guard: a run whose investigation cites no real repo
+    file is off-brief and must fail loud, never file an ungrounded
+    spec with exit 0.
+    """
+    hits = []
+    for match in _REPO_FILE_RE.finditer(evidence or ""):
+        rel = match.group(1).lstrip("./")
+        if not rel or rel.startswith(".") or ".." in rel.split("/"):
+            continue
+        if os.path.isfile(os.path.join(repo_root, rel)) and rel not in hits:
+            hits.append(rel)
+    return hits
+
 
 def assemble_spec(brief, context="", answers=None):
     """Render the canonical spec markdown from brief + context + Q&A."""
@@ -141,8 +176,40 @@ class IssueGeneratorGraph:
         if self.model_fn is not None:
             return self.model_fn()
         from langchain_ollama import ChatOllama
-        return ChatOllama(model=os.environ.get("S5_ISSUE_MODEL",
-                                               "qwen3:8b"))
+        return ChatOllama(model=os.environ.get("S5_ISSUE_MODEL", "qwen3:8b"),
+                          base_url=_ollama_base_url())
+
+    def check_backend(self, timeout=5):
+        """Probe the sanctioned Ollama endpoint (issue #1085).
+
+        Returns (ok, message). Injected model_fn skips the probe.
+        A miss names the sanctioned options instead of dying later
+        with a bare ConnectError. Cloud fallback is deliberately NOT
+        automatic: never spend metered money without being asked.
+        """
+        if self.model_fn is not None:
+            return True, "injected model (probe skipped)"
+        url = _ollama_base_url()
+        host_port = url.split("://", 1)[-1].rstrip("/")
+        host, _, port_s = host_port.partition(":")
+        try:
+            port = int(port_s or 11434)
+        except ValueError:
+            return False, (
+                f"STUCK: bad port in OLLAMA_URL {url!r}; set "
+                "OLLAMA_URL to a host:port serving Ollama "
+                "(compose network: http://ollama:11434).")
+        import socket
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True, f"Ollama reachable at {url}"
+        except OSError as exc:
+            return False, (
+                f"STUCK: model backend unreachable at {url} ({exc}). "
+                "Set OLLAMA_URL to a host serving Ollama "
+                "(compose network: http://ollama:11434), or run where "
+                "Ollama serves. Cloud fallback (NEBIUS_*) is available "
+                "but never automatic.")
 
     def _investigator_tools(self):
         import ask_investigator
@@ -158,7 +225,10 @@ class IssueGeneratorGraph:
             "format exactly (Problem Statement, Goal, Scope, "
             "Definition of Done, Scope & File Boundaries with Allowed "
             "Files, Implementation Plan, Acceptance Criteria checklist, "
-            "Verification Commands fenced block). Ask any blocking "
+            "Verification Commands fenced block).\n"
+            "First step, before any other action: read one repo file "
+            "relevant to the task and quote it — a spec that cites no "
+            "repo file is rejected outright. Ask any blocking "
             "questions as a trailing bulleted list of questions.\n\n"
             f"Task: {brief}\n\nContext:\n{context}\n")
         if errors:
@@ -182,7 +252,12 @@ class IssueGeneratorGraph:
         result = agent.invoke(
             {"messages": [{"role": "user",
                            "content": f"Gather evidence for: {brief}\n\n"
-                                      f"Draft so far:\n{draft}"}]})
+                                      f"Draft so far:\n{draft}\n\n"
+                                      "Cite every factual claim with a "
+                                      "repo file path (path:line). If you "
+                                      "cannot read any repo file, say so "
+                                      "explicitly instead of inventing "
+                                      "content."}]})
         messages = result.get("messages", []) if isinstance(
             result, dict) else []
         texts = [getattr(m, "content", "") or "" for m in messages]
@@ -209,6 +284,7 @@ class IssueGeneratorGraph:
             context: str
             draft: str
             evidence: str
+            off_brief: bool
             questions: list
             answers: dict
             errors: list
@@ -235,6 +311,13 @@ class IssueGeneratorGraph:
                 return {}
             evidence = outer.investigate_text(
                 state.get("brief", ""), state.get("draft", ""))
+            if not evidence_cites_repo_file(evidence, outer.repo_root):
+                return {"evidence": evidence,
+                        "errors": ["investigation cited no repo file "
+                                   "that exists on disk — agent "
+                                   "off-brief, failing loud instead of "
+                                   "filing an ungrounded spec"],
+                        "off_brief": True}
             return {"evidence": evidence}
 
         def qa_loop_node(state):
@@ -258,6 +341,10 @@ class IssueGeneratorGraph:
             return {"questions": questions, "answers": answers}
 
         def validate_spec_node(state):
+            if state.get("off_brief"):
+                return {"valid": False,
+                        "validation": state.get("validation", {}),
+                        "errors": state.get("errors", [])}
             spec_text = state.get("draft", "")
             if state.get("evidence"):
                 spec_text += "\n\n## Investigation Evidence\n" + state[
@@ -276,6 +363,8 @@ class IssueGeneratorGraph:
         def should_redraft(state):
             if state.get("valid"):
                 return "persist"
+            if state.get("off_brief"):
+                return END
             if state.get("attempts", 0) >= outer.max_loops:
                 return END
             return "draft"
@@ -323,6 +412,9 @@ class IssueGeneratorGraph:
     def run(self, brief, context="", answers=None, resume=None):
         """Invoke to completion (or interrupt); resume via Command."""
         from langgraph.types import Command
+        ok, message = self.check_backend()
+        if not ok:
+            raise RuntimeError(message)
         graph = self.build_graph()
         config = {"configurable": {"thread_id": self.thread_id}}
         if resume is None:
@@ -403,12 +495,25 @@ def main(argv=None):
         return cli_helpers.sorry(
             "Sorry, the agent runtime is unavailable here "
             "(deep-agent venv with langgraph is required).")
+    except RuntimeError as exc:
+        return cli_helpers.sorry(f"Sorry, {exc}")
     if state.get("valid"):
         print(json.dumps({"status": "ready", "valid": True,
                           "attempts": state.get("attempts", 0)}))
         return 0
     for error in state.get("errors", []):
         print(f"Invalid spec: {error}")
+    try:
+        import ledger as _ledger
+        _ledger.record(
+            "issue_generator.py",
+            os.environ.get("S5_ISSUE_MODEL", "qwen3:8b"),
+            gen.thread_id, [], time.time(),
+            extra={"valid": False,
+                   "attempts": state.get("attempts", 0),
+                   "errors": state.get("errors", [])})
+    except ImportError:
+        pass
     if "__interrupt__" in state:
         return 2
     return 1
