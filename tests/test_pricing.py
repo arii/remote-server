@@ -27,6 +27,18 @@ class TestQuote(unittest.TestCase):
         self.assertTrue(metered)
         self.assertAlmostEqual(cost, 0.0008)
 
+    def test_nemotron_rows_are_rated(self):
+        # Fail-closed choke: one unrated vision row blocked every
+        # Nebius call. Both catalog-verified Nemotron variants price.
+        for model, rate_out, tokens in (
+                ("nebius:nvidia/Nemotron-3_5-Lightning", 0.24, 1000),
+                ("nebius:nvidia/Nemotron-3.5-Super-VL", 0.90, 1000)):
+            cost, metered = pricing.quote(
+                model, {"input_tokens": 0, "output_tokens": 0,
+                        "total_tokens": tokens})
+            self.assertTrue(metered)
+            self.assertAlmostEqual(cost, rate_out * tokens / 1e6)
+
     def test_unknown_metered_model_has_no_rate(self):
         cost, metered = pricing.quote(
             "nebius:Some/Future-Model",
