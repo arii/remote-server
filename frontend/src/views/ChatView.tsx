@@ -134,7 +134,7 @@ export interface MentionQuery {
 }
 
 const MENTION_QUERY_CHARS = /^[A-Za-z0-9_.\-/]*$/;
-const MENTION_QUERY_BOUNDARY = /[\s(\[{>"']/;
+const MENTION_QUERY_BOUNDARY = /[\s([{>"']/;
 
 export function mentionQueryAt(text: string, cursor: number): MentionQuery | null {
   if (cursor <= 0 || cursor > text.length) return null;
@@ -412,7 +412,7 @@ export interface DictationResultEvent {
   results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
 }
 
-export interface DictationErrorEvent {
+interface DictationErrorEvent {
   error: string;
 }
 
@@ -548,7 +548,7 @@ export function transcriptFilename(when: Date = new Date()): string {
   return `chat-${when.toISOString().slice(0, 10)}.md`;
 }
 
-export function downloadTranscript(messages: ChatMessage[]): void {
+function downloadTranscript(messages: ChatMessage[]): void {
   const blob = new Blob([transcriptMarkdown(messages)], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1341,7 +1341,7 @@ export const SEED_TEMPLATES: ReadonlyArray<PromptTemplate> = [
   },
 ];
 
-export function isPromptTemplate(value: unknown): value is PromptTemplate {
+function isPromptTemplate(value: unknown): value is PromptTemplate {
   if (!value || typeof value !== 'object') return false;
   const t = value as Record<string, unknown>;
   return (
@@ -1375,7 +1375,7 @@ export function savePromptTemplates(templates: PromptTemplate[]): void {
 
 let templateSeq = 0;
 
-export function templateId(): string {
+function templateId(): string {
   templateSeq += 1;
   const rand = Math.floor(Math.random() * 1296).toString(36);
   return `t${Date.now().toString(36)}${templateSeq.toString(36)}${rand}`;

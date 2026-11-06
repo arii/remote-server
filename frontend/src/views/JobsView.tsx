@@ -61,7 +61,7 @@ function labelOf(j: JobRecord): string {
 // Row note excerpt (#1013): error/detail text renders capped with
 // the full text on hover — wide rows no longer grow to dialogue
 // scale. Pure helper so the truncation boundary is unit-tested.
-export const JOB_ROW_NOTE_CHARS = 160;
+const JOB_ROW_NOTE_CHARS = 160;
 
 export function excerptJobNote(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim();

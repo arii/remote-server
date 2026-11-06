@@ -9,7 +9,7 @@ import { epochOf, rowTime, sentenceCase, toHistoryRows } from './historyUtils';
 // No new endpoint: each feed keeps its own fetch, and this module
 // only interleaves them newest-first with one-line summaries.
 
-export type TimelineFeed = 'run' | 'turn' | 'pull' | 'merge';
+type TimelineFeed = 'run' | 'turn' | 'pull' | 'merge';
 
 export interface TimelineItem {
   key: string;

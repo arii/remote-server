@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RepoAction, RepoActionResponse } from '../apiClient';
 
-export interface RepoDiffFileData {
+interface RepoDiffFileData {
   path: string;
   status: string;
   staged: boolean;
@@ -122,7 +122,7 @@ export function nextChangeIndex(changes: number[], current: number): number {
 
 // Initial per-file render cap (issue #942 long-diff scope): a 20+
 // file diff opens collapsed and capped, never as a wall of text.
-export const DIFF_PREVIEW_LINES = 120;
+const DIFF_PREVIEW_LINES = 120;
 const DIFF_MORE_LINES = 240;
 
 // One colored diff body: line-capped with an explicit show-more,

@@ -88,7 +88,7 @@ describe('mergeServerSnoozed (issue #1030)', () => {
   it('hydrates stubs for server ids the session never snoozed', () => {
     const merged = mergeServerSnoozed(
       {},
-      [{ id: 'a', title: 'Failed job', until: 2000 }],
+      [{ id: 'a', title: 'Failed job', until: 2000, repo: 'remote-server' }],
       [],
       NOW,
     );
@@ -99,14 +99,14 @@ describe('mergeServerSnoozed (issue #1030)', () => {
   });
 
   it('falls back to the id when the server title is empty', () => {
-    const merged = mergeServerSnoozed({}, [{ id: 'a', title: '', until: 2000 }], [], NOW);
+    const merged = mergeServerSnoozed({}, [{ id: 'a', title: '', until: 2000, repo: 'remote-server' }], [], NOW);
     expect(merged.a.title).toBe('a');
   });
 
   it('skips expired rows and ids back in the live list', () => {
     const rows = [
-      { id: 'old', title: 't', until: 500 },
-      { id: 'back', title: 't', until: 2000 },
+      { id: 'old', title: 't', until: 500, repo: 'remote-server' },
+      { id: 'back', title: 't', until: 2000, repo: 'remote-server' },
     ];
     expect(mergeServerSnoozed({}, rows, ['back'], NOW)).toEqual({});
   });
@@ -114,7 +114,7 @@ describe('mergeServerSnoozed (issue #1030)', () => {
   it('lets newer local optimism win over a stale server row', () => {
     const merged = mergeServerSnoozed(
       { a: { until: 3000, title: 'local' } },
-      [{ id: 'a', title: 'server', until: 2000 }],
+      [{ id: 'a', title: 'server', until: 2000, repo: 'remote-server' }],
       [],
       NOW,
     );
@@ -124,7 +124,7 @@ describe('mergeServerSnoozed (issue #1030)', () => {
   it('lets a newer server row replace local optimism', () => {
     const merged = mergeServerSnoozed(
       { a: { until: 2000, title: 'local' } },
-      [{ id: 'a', title: 'server', until: 3000 }],
+      [{ id: 'a', title: 'server', until: 3000, repo: 'remote-server' }],
       [],
       NOW,
     );

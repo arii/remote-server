@@ -232,12 +232,12 @@ export function digestChannels(status: NotificationsStatus): string[] {
   return channels;
 }
 
-export function formatDigestStamp(epochSeconds: number): string {
+function formatDigestStamp(epochSeconds: number): string {
   if (!epochSeconds) return 'never sent';
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
-export function digestUnconfiguredReason(): string {
+function digestUnconfiguredReason(): string {
   return (
     'Notifications not configured — set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL ' +
     '(see docs/buttons.md).'
@@ -373,7 +373,7 @@ export function DigestControlsView({
   );
 }
 
-export function DigestControls() {
+function DigestControls() {
   const [status, setStatus] = useState<NotificationsStatus | null>(null);
   const [statusErr, setStatusErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -506,7 +506,7 @@ export function PrefsControlsView({
   );
 }
 
-export function PrefsControls() {
+function PrefsControls() {
   const [prefs, setPrefs] = useState<NotificationPreferences | null>(null);
   const [prefsErr, setPrefsErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

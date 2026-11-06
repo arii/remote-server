@@ -654,7 +654,7 @@ export function PrRowMerge({
 }
 
 // Request-changes body cap, mirroring REVIEW_BODY_MAX on the server.
-export const REQUEST_CHANGES_MAX = 2000;
+const REQUEST_CHANGES_MAX = 2000;
 
 // Inline validation for the request-changes body field: null when
 // submittable, otherwise the message to show (server re-checks).
@@ -995,8 +995,8 @@ export interface IssueLabelOp {
 // absolute indices so automation does not shift when collapsed.
 // Suggestions are capped too — the native datalist already filters
 // as you type, the cap only bounds the DOM.
-export const MAX_VISIBLE_LABELS = 3;
-export const MAX_LABEL_SUGGESTIONS = 100;
+const MAX_VISIBLE_LABELS = 3;
+const MAX_LABEL_SUGGESTIONS = 100;
 
 export function splitLabelNames(
   names: string[],

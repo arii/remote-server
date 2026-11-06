@@ -7,6 +7,14 @@ import type {
   JobsResponse,
   LedgerResponse,
 } from './apiTypes';
+import type {
+  DeferredListResponse,
+  IssueDraftResponse,
+  IssueListResponse,
+  PrDetailsResponse,
+  PrListResponse,
+  ReposResponse,
+} from './reviewTypes';
 
 interface DiskSummary {
   summary?: string;
@@ -125,7 +133,7 @@ function notifyAuthExpired(): void {
 // entry, so replays reuse the key instead of minting dupes. Note:
 // the server does not enforce keys yet; they make retries safe
 // once it does, and document replay identity until then.
-export type OutboxMethod = 'POST' | 'DELETE';
+type OutboxMethod = 'POST' | 'DELETE';
 
 export interface OutboxEntry {
   key: string;
@@ -207,7 +215,7 @@ function saveOutbox(entries: OutboxEntry[]): void {
   }
 }
 
-export function isOnline(): boolean {
+function isOnline(): boolean {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
@@ -707,12 +715,12 @@ export function postActionHref(href: string, body: unknown): Promise<unknown> {
   });
 }
 
-export function fetchRepos(): Promise<import('./reviewTypes').ReposResponse> {
-  return getJson<import('./reviewTypes').ReposResponse>('api/repos');
+export function fetchRepos(): Promise<ReposResponse> {
+  return getJson<ReposResponse>('api/repos');
 }
 
 // Status + diff for one checkout, backing the dirty-repo modal (#663).
-export interface RepoDiffFile {
+interface RepoDiffFile {
   path: string;
   status: string;
   staged: boolean;
@@ -767,7 +775,7 @@ export function repoAction(repo: string, action: RepoAction): Promise<RepoAction
 // Worklist metrics for the prefetch strip (issue #897): short TTL,
 // local reads, zero model turns. Warmed on repo select so the Chat
 // strip renders from cache.
-export interface RepoMetricsTodoHit {
+interface RepoMetricsTodoHit {
   file: string;
   line: number;
   text: string;
@@ -814,12 +822,12 @@ export function fetchRepoFiles(repo: string, prefix = ''): Promise<RepoFilesResp
   );
 }
 
-export function fetchPrs(repo: string): Promise<import('./reviewTypes').PrListResponse> {
+export function fetchPrs(repo: string): Promise<PrListResponse> {
   const path = `api/prs?repo=${encodeURIComponent(repo)}`;
-  return cachedViewFetch<import('./reviewTypes').PrListResponse>(
+  return cachedViewFetch<PrListResponse>(
     path,
     VIEW_CACHE_SHORT_TTL_MS,
-    () => getJson<import('./reviewTypes').PrListResponse>(path),
+    () => getJson<PrListResponse>(path),
   );
 }
 
@@ -845,9 +853,9 @@ interface PrCacheEntry<T> {
   expiresAt: number;
 }
 
-const prDetailsCache = new Map<string, PrCacheEntry<import('./reviewTypes').PrDetailsResponse>>();
+const prDetailsCache = new Map<string, PrCacheEntry<PrDetailsResponse>>();
 const prDiffCache = new Map<string, PrCacheEntry<PrDiffResponse>>();
-const prDetailsInflight = new Map<string, Promise<import('./reviewTypes').PrDetailsResponse>>();
+const prDetailsInflight = new Map<string, Promise<PrDetailsResponse>>();
 const prDiffInflight = new Map<string, Promise<PrDiffResponse>>();
 
 function prCacheKey(repo: string, pr: number): string {
@@ -897,9 +905,9 @@ export function fetchPrDiff(repo: string, pr: number): Promise<PrDiffResponse> {
   );
 }
 
-export function fetchPrDetails(repo: string, pr: number): Promise<import('./reviewTypes').PrDetailsResponse> {
+export function fetchPrDetails(repo: string, pr: number): Promise<PrDetailsResponse> {
   return cachedPrFetch(prDetailsCache, prDetailsInflight, prCacheKey(repo, pr), () =>
-    getJson<import('./reviewTypes').PrDetailsResponse>(
+    getJson<PrDetailsResponse>(
       `api/pr-details?repo=${encodeURIComponent(repo)}&pr=${pr}`,
     ),
   );
@@ -1108,17 +1116,17 @@ export function fetchRunCompare(a: string, b: string): Promise<RunCompareResult>
   );
 }
 
-export function jobsStreamUrl(): string {
+function jobsStreamUrl(): string {
   return apiUrl('api/jobs/stream');
 }
 
-export function jobRunStreamUrl(rid: string): string {
+function jobRunStreamUrl(rid: string): string {
   return apiUrl(`api/jobs/runs/${encodeURIComponent(rid)}/stream`);
 }
 
 // Minimal EventSource surface the subscribers need; injectable so
 // tests drive the state machine with a fake.
-export interface EventSourceLike {
+interface EventSourceLike {
   addEventListener(type: string, listener: (e: { data: string }) => void): void;
   close(): void;
   onmessage: ((e: { data: string }) => void) | null;
@@ -1239,23 +1247,23 @@ export function clearJobs(all: boolean): Promise<{ ok: boolean; cleared: number 
   });
 }
 
-export function fetchIssues(repo: string): Promise<import('./reviewTypes').IssueListResponse> {
+export function fetchIssues(repo: string): Promise<IssueListResponse> {
   const path = `api/issues?repo=${encodeURIComponent(repo)}`;
-  return cachedViewFetch<import('./reviewTypes').IssueListResponse>(
+  return cachedViewFetch<IssueListResponse>(
     path,
     VIEW_CACHE_SHORT_TTL_MS,
-    () => getJson<import('./reviewTypes').IssueListResponse>(path),
+    () => getJson<IssueListResponse>(path),
   );
 }
 
 // Cross-repo open-issue discovery (issue #882): one tagged list
 // across every checkout, no picker switching.
-export function fetchAllIssues(): Promise<import('./reviewTypes').IssueListResponse> {
+export function fetchAllIssues(): Promise<IssueListResponse> {
   const path = 'api/issues?repo=all';
-  return cachedViewFetch<import('./reviewTypes').IssueListResponse>(
+  return cachedViewFetch<IssueListResponse>(
     path,
     VIEW_CACHE_SHORT_TTL_MS,
-    () => getJson<import('./reviewTypes').IssueListResponse>(path),
+    () => getJson<IssueListResponse>(path),
   );
 }
 
@@ -1315,12 +1323,12 @@ async function deleteJson<T>(path: string, body: unknown, timeoutMs: number = AP
   return mutateWith<T>('DELETE', path, body, (resp) => readJson<T>(resp, 'DELETE', path), timeoutMs);
 }
 
-export function fetchDeferred(repo: string): Promise<import('./reviewTypes').DeferredListResponse> {
+export function fetchDeferred(repo: string): Promise<DeferredListResponse> {
   const path = `api/deferred?repo=${encodeURIComponent(repo)}`;
-  return cachedViewFetch<import('./reviewTypes').DeferredListResponse>(
+  return cachedViewFetch<DeferredListResponse>(
     path,
     VIEW_CACHE_SHORT_TTL_MS,
-    () => getJson<import('./reviewTypes').DeferredListResponse>(path),
+    () => getJson<DeferredListResponse>(path),
   );
 }
 
@@ -1328,8 +1336,8 @@ export function deferRow(
   repo: string,
   kind: 'pr' | 'issue',
   number: number,
-): Promise<import('./reviewTypes').DeferredListResponse> {
-  return postJson<import('./reviewTypes').DeferredListResponse>('api/deferred', {
+): Promise<DeferredListResponse> {
+  return postJson<DeferredListResponse>('api/deferred', {
     repo,
     kind,
     number,
@@ -1343,8 +1351,8 @@ export function restoreRow(
   repo: string,
   kind: 'pr' | 'issue',
   number: number,
-): Promise<import('./reviewTypes').DeferredListResponse> {
-  return deleteJson<import('./reviewTypes').DeferredListResponse>('api/deferred', {
+): Promise<DeferredListResponse> {
+  return deleteJson<DeferredListResponse>('api/deferred', {
     repo,
     kind,
     number,
@@ -1358,8 +1366,8 @@ export function deferRowsBulk(
   repo: string,
   op: 'defer' | 'restore',
   rows: Array<{ kind: 'pr' | 'issue'; number: number }>,
-): Promise<import('./reviewTypes').DeferredListResponse> {
-  return postJson<import('./reviewTypes').DeferredListResponse>('api/deferred/bulk', {
+): Promise<DeferredListResponse> {
+  return postJson<DeferredListResponse>('api/deferred/bulk', {
     repo,
     op,
     rows,
@@ -1369,8 +1377,8 @@ export function deferRowsBulk(
   });
 }
 
-export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<import('./reviewTypes').IssueDraftResponse> {
-  return postJson<import('./reviewTypes').IssueDraftResponse>('api/issue-draft', {
+export function draftIssue(repo: string, title: string, cause: string, details: string): Promise<IssueDraftResponse> {
+  return postJson<IssueDraftResponse>('api/issue-draft', {
     repo,
     source: 'finding',
     title,
@@ -1666,11 +1674,6 @@ export interface AgentBrowserStatus {
 // they fail as today when offline.
 export function fetchAgentBrowserState(): Promise<AgentBrowserStatus> {
   return getJson<AgentBrowserStatus>('api/agent/state');
-}
-
-export async function pauseAgentBrowser(): Promise<AgentBrowserStatus> {
-  const resp = await fetchApi('api/agent/pause', { method: 'POST' });
-  return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/pause');
 }
 
 export async function resumeAgentBrowser(): Promise<AgentBrowserStatus> {

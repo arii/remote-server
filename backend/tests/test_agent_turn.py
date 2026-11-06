@@ -1353,6 +1353,38 @@ class TimeoutRescueWiringTest(unittest.TestCase):
         self.assertIsNone(result["rescue"])
 
 
+class SpecPromptTest(unittest.TestCase):
+    def test_spec_task_appends_template(self):
+        self.assertTrue(agent_turn.is_spec_task(
+            "write a design spec for hrm#9825"))
+        self.assertTrue(agent_turn.is_spec_task(
+            "WRITE A SPEC for the queue"))
+        sent = agent_turn.spec_prompt("write a design spec for x")
+        self.assertTrue(sent.startswith("write a design spec for x"))
+        self.assertIn("Follow this spec template exactly", sent)
+        self.assertIn("## ", sent)
+
+    def test_non_spec_prompt_passes_through(self):
+        self.assertFalse(agent_turn.is_spec_task("implement x"))
+        self.assertFalse(agent_turn.is_spec_task(""))
+        self.assertEqual(agent_turn.spec_prompt("implement x"),
+                         "implement x")
+        self.assertEqual(agent_turn.spec_prompt(""), "")
+
+    def test_missing_template_degrades_to_noop(self):
+        with mock.patch.object(agent_turn, "spec_template",
+                               return_value=""):
+            self.assertEqual(
+                agent_turn.spec_prompt("write a design spec"),
+                "write a design spec")
+
+    def test_run_turn_sends_spec_template_to_cli(self):
+        sent = agent_turn.spec_prompt("write a design spec for x")
+        composed = agent_turn.guard_prompt(sent)
+        self.assertIn("Follow this spec template exactly", composed)
+        self.assertIn(agent_turn.FILE_HYGIENE_GUARDRAIL, composed)
+
+
 class GuardPromptTest(unittest.TestCase):
     def test_guardrail_appends_to_prompt(self):
         guarded = agent_turn.guard_prompt("implement x")
