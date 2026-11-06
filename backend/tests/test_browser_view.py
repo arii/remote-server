@@ -34,10 +34,32 @@ class ViewerMountTest(unittest.TestCase):
         with mock.patch.object(
                 browser_view, "_grid_session_create",
                 side_effect=RuntimeError("grid down")) as m:
-            with self.assertRaises(RuntimeError):
-                with client.websocket_connect("/ws") as ws:
+            with client.websocket_connect("/ws") as ws:
+                raw = ws.receive_text()
+                self.assertIn("browser busy", raw)
+                with self.assertRaises(WebSocketDisconnect) as cm:
                     ws.receive_text()
+            self.assertEqual(cm.exception.code, 1013)
             m.assert_called_once()
+
+    def test_ws_grid_busy_reports_error(self):
+        # Single-slot Grid full: the viewer must SEE "browser busy"
+        # instead of hanging on "connecting…" with an ASGI traceback.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        with mock.patch.object(
+                browser_view, "_grid_live_session", return_value=None):
+            with mock.patch.object(
+                    browser_view, "_grid_session_create",
+                    side_effect=RuntimeError("grid full")):
+                with client.websocket_connect("/ws") as ws:
+                    raw = ws.receive_text()
+                    self.assertIn("browser busy", raw)
+                    self.assertEqual(
+                        _json.loads(raw)["type"], "error")
+                    with self.assertRaises(WebSocketDisconnect) as cm:
+                        ws.receive_text()
+                self.assertEqual(cm.exception.code, 1013)
 
 
 class LiveSessionFilterTest(unittest.TestCase):
@@ -213,6 +235,25 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertTrue(re.search(r"(?m)^(let|var) dsf\s*=", html),
                         "VIEWER_HTML needs a global dsf declaration")
         self.assertNotIn("let dsf = 1;\n    if (m.type === 'attached')", html)
+
+    def test_screen_cursor_is_not_crosshair(self):
+        # Operator report: the crosshair is awkward to use on the
+        # shared screen; the viewer canvas keeps the standard arrow.
+        html = browser_view.VIEWER_HTML
+        self.assertNotIn("crosshair", html)
+        self.assertIn("cursor:default", html.replace(" ", ""))
+
+    def test_url_bar_submits_and_normalizes(self):
+        # Enter in the address box must take the same path as Go
+        # (form submit, not button click); bare hostnames ride
+        # https:// per normalizeUrl.
+        html = browser_view.VIEWER_HTML
+        self.assertIn('<form id="nav">', html)
+        self.assertIn('type="submit"', html)
+        self.assertIn("getElementById('nav').onsubmit", html)
+        self.assertNotIn("getElementById('go').onclick", html)
+        self.assertIn("function normalizeUrl(raw)", html)
+        self.assertIn("https://' + v", html)
 
 
 class ChromeFlagsTest(unittest.TestCase):

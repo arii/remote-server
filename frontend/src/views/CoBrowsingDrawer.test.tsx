@@ -54,4 +54,12 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(html).toContain('cobrowse-split');
     expect(html).toContain('cobrowse-chat');
   });
+
+  it('covers a not-yet-loaded frame with a named connecting state', () => {
+    const html = renderDrawer({});
+    expect(html).toContain('data-testid="cobrowse-frame-status"');
+    expect(html).toContain('Connecting to the shared browser');
+    // The frame still mounts underneath so the load can proceed.
+    expect(html).toContain('data-testid="cobrowse-frame"');
+  });
 });
