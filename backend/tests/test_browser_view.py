@@ -15,6 +15,11 @@ class ViewerMountTest(unittest.TestCase):
         resp = client.get("/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("CDP direct viewer", resp.text)
+        # The start page is baked in: no unfilled placeholder, so a
+        # fresh viewer navigates somewhere on connect (black canvas
+        # otherwise — a new tab never repaints).
+        self.assertNotIn("__DEFAULT_URL__", resp.text)
+        self.assertIn(browser_view.DEFAULT_URL, resp.text)
 
     def test_unknown_ws_path_closes(self):
         client = TestClient(browser_view.create_app())
@@ -33,6 +38,46 @@ class ViewerMountTest(unittest.TestCase):
                 with client.websocket_connect("/ws") as ws:
                     ws.receive_text()
             m.assert_called_once()
+
+
+class LiveSessionFilterTest(unittest.TestCase):
+    def test_attaches_only_to_marked_agent_sessions(self):
+        import io
+        import json
+        from unittest import mock
+        human = {"sessionId": "human1",
+                 "capabilities": {"browserName": "chrome"}}
+        agent = {"sessionId": "agent9",
+                 "capabilities": {"browserName": "chrome",
+                                  browser_view.AGENT_SESSION_MARKER: True}}
+        payload = io.BytesIO(json.dumps(
+            {"value": {"nodes": [{"slots": [{"session": human},
+                                            {"session": agent}]}]}}).encode())
+
+        class Ctx:
+            def __enter__(self): return payload
+            def __exit__(self, *a): return False
+
+        with mock.patch.object(browser_view.urllib.request, "urlopen",
+                               return_value=Ctx()):
+            self.assertEqual(browser_view._grid_live_session(), "agent9")
+
+    def test_no_marked_session_means_none(self):
+        import io
+        import json
+        from unittest import mock
+        human = {"sessionId": "human1",
+                 "capabilities": {"browserName": "chrome"}}
+        payload = io.BytesIO(json.dumps(
+            {"value": {"nodes": [{"slots": [{"session": human}]}]}}).encode())
+
+        class Ctx:
+            def __enter__(self): return payload
+            def __exit__(self, *a): return False
+
+        with mock.patch.object(browser_view.urllib.request, "urlopen",
+                               return_value=Ctx()):
+            self.assertIsNone(browser_view._grid_live_session())
 
 
 class ReattachTest(unittest.TestCase):

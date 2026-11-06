@@ -368,15 +368,50 @@ li.detail.merging { opacity: 0.55; }
    no glass, no emoji. The interceptor covers the frame while the
    agent runs; the first pointer/key press pauses the agent, then
    the overlay unmounts so the human drives the live page. */
-.cobrowse-frame-wrap { position: relative; margin: 0.5rem 0 0; }
+.cobrowse-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 6rem);
+  gap: 0.75rem;
+}
+.cobrowse-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+/* Full-height browser + side chat: the frame takes the main
+   column and the chat rides a fixed rail. Single column under
+   900px (chat below the browser). */
+.cobrowse-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+  gap: 1rem;
+  align-items: start;
+  flex: 1;
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .cobrowse-split { grid-template-columns: 1fr; }
+}
+.cobrowse-frame-wrap { position: relative; margin: 0; min-height: 0; }
 .cobrowse-frame-wrap iframe {
   display: block;
   width: 100%;
-  height: 26rem;
+  height: calc(100vh - 12rem);
+  min-height: 24rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
 }
+.cobrowse-chat { min-width: 0; }
+/* Slim rail: the browser page embeds the full ChatView, but its own
+   past-runs/launcher rail would triple the chrome in 340px and
+   overlap the composer. The conversation canvas + composer ride
+   along; runs and launch stay one click away in the main nav. */
+.cobrowse-chat .chat-side { display: none; }
+.cobrowse-chat .chat-main { min-width: 0; }
 .cobrowse-takeover {
   position: absolute;
   inset: 0;

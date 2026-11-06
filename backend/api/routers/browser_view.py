@@ -24,6 +24,11 @@ VIEWPORT = {"width": 1280, "height": 800}
 # (CSS viewport space) lands where the human clicked.
 DSF = 2
 
+# Start page for fresh viewer sessions (also the URL-box default).
+# A new tab never repaints, so without an initial navigation the
+# viewer sits on a black canvas until the human types a URL.
+DEFAULT_URL = "http://caddy:8080/buttons/"
+
 VIEWER_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
 <style>
@@ -33,7 +38,7 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 #stats{padding:0 8px 8px;font-size:13px;color:#9f9}
 #screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:crosshair}
 </style></head><body>
-<div id="bar"><input id="url" value="http://caddy:8080/buttons/">
+<div id="bar"><input id="url" value="__DEFAULT_URL__">
 <button id="go">Go</button><span id="state">connecting…</span></div>
 <div id="stats">fps: - | last input→frame: - ms</div>
 <canvas id="screen"></canvas>
@@ -108,8 +113,14 @@ def _grid_session_delete(session_id):
         pass
 
 
+#: Sessions carrying this capability were opened by an agent
+#: driver (boomtick browser_cdp). Viewer/human sessions lack it —
+#: attaching to one would mirror the viewer recursively.
+AGENT_SESSION_MARKER = "boomtick:agentSession"
+
+
 def _grid_live_session():
-    """Return an existing Grid session id with a page target, if any."""
+    """Return an existing *agent* Grid session id, if any."""
     try:
         with urllib.request.urlopen(
                 GRID_BASE + "/status", timeout=10) as resp:
@@ -119,7 +130,10 @@ def _grid_live_session():
     for node in value.get("nodes", []):
         for slot in node.get("slots", []):
             session = slot.get("session") or {}
-            if session.get("sessionId"):
+            if not session.get("sessionId"):
+                continue
+            caps = session.get("capabilities") or {}
+            if caps.get(AGENT_SESSION_MARKER):
                 return session["sessionId"]
     return None
 
@@ -287,7 +301,7 @@ def create_app():
     async def app(scope, receive, send):
         path = scope.get("path", "")
         if scope["type"] == "http":
-            body = VIEWER_HTML.encode()
+            body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
             await send({"type": "http.response.start", "status": 200,
                         "headers": [(b"content-type",
                                      b"text/html; charset=utf-8")]})
@@ -326,6 +340,21 @@ def create_app():
             bridge = CDPBridge(session_id)
             await bridge.connect()
             await bridge.start_screencast(on_frame)
+
+            async def do_go(url):
+                await bridge.navigate(url)
+                # Let the load commit, then bind the (possibly
+                # swapped) page target and restart the screencast
+                # on it — otherwise the viewer goes dark.
+                await asyncio.sleep(1.5)
+                await bridge.reattach()
+                await bridge.start_screencast(on_frame)
+
+            if own_session:
+                # A fresh tab never repaints: without this the new
+                # viewer sits on a black canvas (fps: -) until the
+                # human types a URL. Start where the work is.
+                await do_go(DEFAULT_URL)
             while True:
                 event = await receive()
                 if event["type"] == "websocket.disconnect":
@@ -341,13 +370,7 @@ def create_app():
                     await bridge.key(str(msg.get("key", "")),
                                      str(msg.get("code", "")))
                 elif msg.get("t") == "go":
-                    await bridge.navigate(str(msg["url"]))
-                    # Let the load commit, then bind the (possibly
-                    # swapped) page target and restart the screencast
-                    # on it — otherwise the viewer goes dark.
-                    await asyncio.sleep(1.5)
-                    await bridge.reattach()
-                    await bridge.start_screencast(on_frame)
+                    await do_go(str(msg["url"]))
         finally:
             if bridge is not None:
                 await bridge.close()
