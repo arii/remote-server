@@ -3,6 +3,10 @@ import { mergeNoteFor } from './jobsUtils';
 
 interface DangerAction {
   action: string;
+  // Row heading (the full name) plus the short button verb (#1002:
+  // the heading used to repeat verbatim on the button). The spoken
+  // name stays the full heading via TapToFire `name`.
+  title: string;
   label: string;
   consequence: string;
   // Inline-confirm finality note; only irreversible / session-loss
@@ -13,18 +17,21 @@ interface DangerAction {
 const DANGER: DangerAction[] = [
   {
     action: 'merge-approved',
-    label: 'Merge approved PR',
+    title: 'Merge approved PR',
+    label: 'Merge',
     consequence: 'Merges every approved, green PR.',
     confirm: 'This cannot be undone.',
   },
   {
     action: 'create-plan',
-    label: 'Write briefing plan',
+    title: 'Write briefing plan',
+    label: 'Write plan',
     consequence: 'Writes a dated plan file into .agents/plans.',
   },
   {
     action: 'deploy-buttons',
-    label: 'Redeploy this console',
+    title: 'Redeploy this console',
+    label: 'Redeploy',
     consequence: 'Pulls, rebuilds and restarts the console container.',
     confirm: 'The console will restart.',
   },
@@ -33,7 +40,8 @@ const DANGER: DangerAction[] = [
   // offer it (#444). recreate-code below is unaffected.
   {
     action: 'recreate-code',
-    label: 'Restart code editor',
+    title: 'Restart code editor',
+    label: 'Restart',
     consequence: 'Force-restarts the code-server container.',
     confirm: 'The code editor will restart.',
   },
@@ -81,7 +89,7 @@ export default function DangerZone({
           return (
             <li key={d.action} className="danger-row" data-testid={`danger-${d.action}`}>
               <div>
-                <span className="row-title">{d.label}</span>
+                <span className="row-title">{d.title}</span>
                 <p className="row-meta">
                   {mergeNote === null ? (
                     d.consequence
@@ -96,6 +104,7 @@ export default function DangerZone({
               </div>
               <TapToFire
                 label={d.label}
+                name={d.title}
                 confirm={d.confirm}
                 disabled={d.action === 'merge-approved' && (mergeReady === null || mergeReady === 0)}
                 onFire={() => onDangerAction(d.action, d.label)}
@@ -113,7 +122,8 @@ export default function DangerZone({
             </p>
           </div>
           <TapToFire
-            label="Clear finished"
+            label="Clear"
+            name="Clear finished runs"
             disabled={finishedCount === 0}
             onFire={() => onClear(false)}
           />
@@ -130,7 +140,8 @@ export default function DangerZone({
             </p>
           </div>
           <TapToFire
-            label="Clear everything"
+            label="Clear all"
+            name="Clear everything"
             confirm="All runs will be dropped."
             disabled={runCount === 0 || finishedCount !== runCount}
             onFire={() => onClear(true)}
@@ -142,7 +153,8 @@ export default function DangerZone({
             <p className="row-meta">Disconnects other viewers of the shared terminal.</p>
           </div>
           <TapToFire
-            label="Take over terminal"
+            label="Take over"
+            name="Take over terminal"
             confirm="Other viewers will be disconnected."
             onFire={onTakeover}
           />

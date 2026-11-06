@@ -89,8 +89,12 @@ export function JobListItem({
       </p>
       {(job.error || job.detail) && <p>{job.error || job.detail}</p>}
       <div className="actions">
-        <button type="button" onClick={() => onSelect(job.id)}>
-          View output
+        <button
+          type="button"
+          aria-label={`View output of ${labelOf(job)} ${job.id}`}
+          onClick={() => onSelect(job.id)}
+        >
+          Output
         </button>{' '}
         {job.done &&
           (danger ? (

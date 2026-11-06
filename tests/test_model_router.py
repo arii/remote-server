@@ -177,6 +177,24 @@ class TestModelRouter(unittest.TestCase):
                     spec = model_router.resolve_llm()
         self.assertEqual(spec["model"], "custom/model")
 
+    def test_generate_suffix_stripped_from_probe(self):
+        # OLLAMA_URL ships with the /api/generate path in compose;
+        # the tags probe must hit the bare host (#968 — the suffix
+        # made a healthy Ollama look down).
+        with env(OLLAMA_URL="http://ollama:11434/api/generate"):
+            with mock.patch("urllib.request.urlopen") as u:
+                u.return_value.__enter__.return_value.status = 200
+                self.assertTrue(model_router.ollama_reachable())
+        self.assertEqual(u.call_args[0][0],
+                         "http://ollama:11434/api/tags")
+
+    def test_spec_base_url_strips_generate_suffix(self):
+        with env(OLLAMA_URL="http://ollama:11434/api/generate"):
+            with mock.patch.object(model_router, "ollama_reachable",
+                                   return_value=True):
+                spec = model_router.resolve_llm()
+        self.assertEqual(spec["base_url"], "http://ollama:11434")
+
     def test_no_key_no_fallback(self):
         with env():
             with mock.patch.object(model_router, "ollama_reachable", return_value=False):
