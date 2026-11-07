@@ -6,7 +6,7 @@ stdlib-only import contract (no langchain needed for cli itself).
 
 System python runs everything except the venv-gated cases (entrypoints
 that import langchain at module top); those run under
-deep-agent/.venv/bin/python like test_chat_agent.py.
+deep-agent/.venv/bin/python.
 Run: python3 tests/test_cli.py
 """
 import base64
@@ -239,49 +239,6 @@ class TestEvalArgv(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestVenvEntrypointArgv(unittest.TestCase):
-    def test_chat_agent_usage_exact(self):
-        p = run_script("chat_agent.py")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(
-            p.stderr,
-            "usage: chat_agent.py owner/repo <session-id> <b64-prompt>"
-            " [b64-history]\n")
-        self.assertEqual(p.stdout, "")
-
-    def test_chat_agent_no_model_sorry(self):
-        import chat_agent
-
-        argv = ["chat_agent.py", "arii/remote-server", "s1", b64("hi")]
-        out = io.StringIO()
-        with mock.patch.object(sys, "argv", argv), \
-                mock.patch.object(chat_agent.model_router, "resolve_llm",
-                                  side_effect=RuntimeError("ollama down")), \
-                redirect_stdout(out):
-            code = chat_agent.main()
-        self.assertEqual(code, 1)
-        self.assertEqual(
-            out.getvalue(),
-            "Sorry, no model is available right now: ollama down\n")
-
-    def test_ask_investigator_usage_exact(self):
-        p = run_script("ask_investigator.py")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(
-            p.stderr,
-            "usage: ask_investigator.py owner/repo <b64-instruction>\n")
-        self.assertEqual(p.stdout, "")
-
-    def test_ask_investigator_bad_instruction(self):
-        p = run_script("ask_investigator.py", "arii/remote-server",
-                       b64("x" * 2001))
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "bad instruction\n")
-
-    def test_ask_investigator_bad_base64(self):
-        p = run_script("ask_investigator.py", "arii/remote-server", "a")
-        self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "bad base64 instruction\n")
-
     def test_resolve_conflicts_usage(self):
         p = run_script("resolve_conflicts.py")
         self.assertEqual(p.returncode, 2)

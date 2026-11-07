@@ -176,7 +176,7 @@ served file. Suggested wiring (peer's call):
 ## 7. LangSmith (opt-in cloud traces)
 
 `deep-agent/tracing.py` attaches one `LangChainTracer` to the
-`deep_chat.py` / `chat_agent.py` stream configs when — and only
+`deep_chat.py` stream configs when — and only
 when — `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are both
 set (`LANGSMITH_PROJECT` optional; these are the current env
 names, older ones are dead). Anything else returns no callbacks,

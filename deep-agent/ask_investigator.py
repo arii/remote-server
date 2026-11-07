@@ -1,53 +1,26 @@
-"""Ask investigator: LangChain agent for /buttons/api/ask.
+"""Ask investigator tool library (no CLI entry: use via AuditorGraph).
 
-Usage: ask_investigator.py owner/repo <base64-instruction>
-Prints progress lines, then a FINAL: line with the reply (same shape the
-server already parses for proposals). Read-only tools plus one
-allowlisted run_repo_command verify tool plus one SSRF-guarded
-fetch_url tool, all scoped to the repo's checkout. Local model
-first (qwen3:8b via Ollama).
-
-Every run is recorded to the ledger with tool results.
+Read-only tools plus one allowlisted run_repo_command verify tool
+plus one SSRF-guarded fetch_url tool, all scoped to the repo's
+checkout. Consumed as LangChain tools by auditor.py and
+issue_generator.py; there is no standalone runner.
 """
 
 import json
-import os
 import subprocess
 import sys
-import time
 
 import cli
 
 cli.bootstrap()
 
-from langchain.agents import create_agent  # noqa: E402
-from langchain_core.messages import HumanMessage, ToolMessage  # noqa: E402
 from langchain_core.tools import tool  # noqa: E402
-from langchain_ollama import ChatOllama  # noqa: E402
 
-import ledger  # noqa: E402
-import model_router  # noqa: E402
-import observe  # noqa: E402
 import retrieval  # noqa: E402
 import runs  # noqa: E402
 import s5tools  # noqa: E402
 import impact  # noqa: E402
 
-
-def _model_config():
-    """(model_id, ollama_url); blank env falls back to defaults.
-
-    Blank-tolerant read shared with model_router (cf. #620, where
-    set-but-empty env beat working defaults and produced provider
-    400s): ASK_MODEL/OLLAMA_URL resolve here, never as raw .get().
-    """
-    return (
-        model_router._env("ASK_MODEL", model_router.DEFAULT_OLLAMA_MODEL),
-        model_router._env("OLLAMA_URL", model_router.DEFAULT_OLLAMA_URL),
-    )
-
-
-MODEL_ID, OLLAMA_URL = _model_config()
 
 # Single-sourced from backend/exec/engine.py ALLOWED_TD_COMMANDS
 # (the truth): the hand mirror drifted behind the #395 shapes, so
@@ -348,31 +321,6 @@ def lighthouse_read(capture: str = "") -> str:
     return impact.lighthouse_read(target)["text"]
 
 
-SYSTEM = (
-    "You are helping Ari from his phone. Be terse, no filler. "
-    "Investigate read-only with your tools; never propose running "
-    "anything except via the PROPOSE protocol below.\n"
-    "If the instruction asks for a write action, investigate first, "
-    "then propose the exact change and STOP. Allowed proposal kinds: "
-    "creating a GitHub issue, running one allowlisted td command, or "
-    "dispatching implementation to a worktree session.\n"
-    "Emit a proposal ONLY in exactly this form, on its own lines:\n"
-    "PROPOSE issue\nTITLE: <one line>\nBODY:\n<markdown>\nEND PROPOSE\n"
-    "or\nPROPOSE td\nCOMMAND: <exact td command>\nEND PROPOSE\n"
-    "or\nPROPOSE dispatch\nREPO: <owner/name>\nBRANCH: <base branch>\n"
-    "TASK:\n<implementation brief>\nEND PROPOSE\n"
-    "A PROPOSE td COMMAND must be one of the allowed shapes "
-    "verbatim, changing only N to digits — never invent td "
-    "subcommands or flags.\n"
-    f"Allowed td commands (exact shapes):\n" + "\n".join(ALLOWED_TD) + "\n"
-    "If no write is needed, just answer — no PROPOSE block. "
-    "Always invoke tools through the function-calling interface. "
-    "Never write a tool call out as JSON text. "
-    "Keep replies readable on a phone: short paragraphs or a short "
-    "list, no wide tables."
-)
-
-
 def _short_line(content, limit=160):
     """First line of a tool result, capped for phone-sized tails.
 
@@ -381,139 +329,3 @@ def _short_line(content, limit=160):
     """
     line = content.strip().splitlines()[0]
     return line if len(line) <= limit else line[:limit] + "…"
-
-
-class _ProgressRecorder(observe.TraceRecorder):
-    """TraceRecorder that narrates each step to stdout.
-
-    Local LLM steps cost 60-120s each; without life signs a 5-10
-    minute run looks hung and every caller timeout fires blind.
-    Step lines are additive: parsers match REPORT/FINAL:/
-    tool_calls_made: only, so banner -> steps -> REPORT/FINAL stays
-    parseable, and a timeout-killed run (#475) leaves its steps on
-    record. Stdout, not stderr: run_pi_pipeline streams stdout to
-    the pi-progress tail.
-    """
-
-    def __init__(self, path):
-        super().__init__(path)
-        self.steps = 0
-        self._mark = time.time()
-
-    def _say(self, kind, name, elapsed):
-        self.steps += 1
-        try:
-            print(f"ask: step {self.steps} {kind} {name} "
-                  f"{elapsed:.1f}s", flush=True)
-        except (OSError, ValueError):
-            pass  # observability must not break runs
-        self._mark = time.time()
-
-    def model_response(self, usage):
-        super().model_response(usage)
-        self._say("model", MODEL_ID, time.time() - self._mark)
-
-    def tool_call(self, name, args, duration_s, ok, result=None,
-                  error=None):
-        super().tool_call(name, args, duration_s, ok, result=result,
-                          error=error)
-        self._say("tool", name, duration_s)
-
-
-def main() -> int:
-    if len(sys.argv) < 3 or not s5tools.valid_repo(sys.argv[1]):
-        return cli.usage_error(
-            "usage: ask_investigator.py owner/repo <b64-instruction>")
-    global _repo, _checkout
-    _repo = sys.argv[1]
-    _checkout = s5tools.checkout_for(_repo)
-    instruction = cli.b64decode(sys.argv[2])
-    if instruction is None:
-        return cli.usage_error("bad base64 instruction")
-    if not instruction.strip() or len(instruction) > 2000:
-        return cli.usage_error("bad instruction")
-    started = time.time()
-    # No-think is the production setting: on this CPU-only box a
-    # qwen3 thinking trace takes 15+ min per prompt, unshippable for
-    # a phone assistant. Set ASK_THINK=1 to re-enable for eval.
-    think = os.environ.get("ASK_THINK", "") == "1"
-    model = ChatOllama(
-        model=MODEL_ID,
-        base_url=OLLAMA_URL,
-        temperature=0,
-        model_kwargs={} if think else {"think": False},
-    )
-    thread = "ask-" + _repo.replace("/", "-")
-    recorder = _ProgressRecorder(
-        observe.default_trace_path("ask_investigator", thread))
-    recorder.run_start("ask_investigator.py", thread,
-                       f"ollama:{MODEL_ID}")
-    agent = create_agent(
-        model=model,
-        tools=[search_docs, read_repo_file, grep_repo, pr_state,
-               run_repo_command, fetch_url, search_web, search_turns,
-               run_ux_capture, diff_versions, ask_diff,
-               lighthouse_read],
-        system_prompt=f"Repo: {_repo}. " + SYSTEM,
-        middleware=observe.trace_middleware(recorder),
-    )
-    print(f"Investigating {_repo} (local model)…", flush=True)
-    try:
-        result = agent.invoke(
-            {"messages": [{"role": "user", "content": instruction}]},
-            # 20: trace middleware nodes consume budget (~4 steps per
-            # tool call, measured); preserves room for ~4 tool calls.
-            config={"recursion_limit": 20},
-        )
-    except Exception as exc:
-        recorder.run_end(False)
-        recorder.close()
-        _usage, _calls = recorder.totals()
-        ledger.record(
-            "ask_investigator.py",
-            f"ollama:{MODEL_ID}",
-            thread,
-            [HumanMessage(content=instruction)],
-            started,
-            extra={"trace": recorder.path, "error": str(exc)[:200]},
-            usage=_usage,
-            calls=_calls,
-        )
-        raise
-    recorder.run_end(True)
-    recorder.close()
-    print(f"trace: {recorder.path}", file=sys.stderr)
-    calls = sum(
-        len(getattr(m, "tool_calls", []) or [])
-        for m in result["messages"]
-    )
-    ledger.record(
-        "ask_investigator.py",
-        f"ollama:{MODEL_ID}",
-        thread,
-        result["messages"],
-        started,
-        extra={"trace": recorder.path},
-    )
-    print(f"tool_calls_made: {calls}")
-    elapsed = time.time() - started
-    word = "step" if recorder.steps == 1 else "steps"
-    print(f"done in {elapsed:.1f}s, {recorder.steps} {word}")
-    outcomes = [
-        _short_line(str(m.content))
-        for m in result["messages"]
-        if isinstance(m, ToolMessage)
-        and str(m.content).strip()
-    ]
-    print("REPORT (authoritative, from tool results):")
-    if outcomes:
-        for line in outcomes:
-            print(f"  {line}")
-    else:
-        print("  (no tools called)")
-    print("FINAL:", result["messages"][-1].content)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

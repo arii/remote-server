@@ -175,163 +175,29 @@ function labelOf(v: unknown): string {
   return '';
 }
 
-// #938: 2-line risk summary mirror of backend build_risk_summary
-// (backend/api/routers/pulls.py). Backend-provided riskSummary wins;
-// this mirror covers older payloads and ?mock=1 fixtures so every
-// card still shows a summary. Keep thresholds in sync both sides.
-function countOf(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : 0;
-}
-
+// #938/#1132: the 2-line risk summary is computed once by backend
+// build_risk_summary (backend/api/routers/pulls.py) and rendered
+// here verbatim — no frontend thresholds to drift. Missing fields
+// (older payloads) render empty with a low default, matching the
+// backend model defaults.
 export type RiskLevel = 'low' | 'medium' | 'high';
 
-export function buildRiskSummary(input: {
-  title?: string;
-  branch?: string;
-  isDraft?: boolean;
-  ciStatus?: string;
-  reviewDecision?: string;
-  mergeable?: string;
-  additions?: number;
-  deletions?: number;
-  changedFiles?: number;
-  conflicted?: boolean;
-}): { summary: string; level: RiskLevel } {
-  const title = input.title ?? '';
-  const branch = input.branch ?? '';
-  const additions = countOf(input.additions);
-  const deletions = countOf(input.deletions);
-  const changedFiles = countOf(input.changedFiles);
-  const total = additions + deletions;
-  const text = `${title} ${branch}`.toLowerCase();
-  const dep = ['dependabot', 'bump', 'deps', 'dependency', 'dependencies'].some(
-    (k) => text.includes(k),
-  );
-  const breaking = title.toLowerCase().includes('breaking') || title.includes('!:');
-  const ci = (input.ciStatus || 'unknown').toLowerCase();
-  const mergeableU = (input.mergeable || 'UNKNOWN').toUpperCase();
-  const filesWord = changedFiles === 1 ? 'file' : 'files';
-  let line1: string;
-  if (changedFiles === 0 && total === 0) {
-    line1 = 'No file changes detected · +0/-0';
-  } else if (dep && total <= 200 && changedFiles <= 10) {
-    line1 = `Minor dependency bump · ${changedFiles} ${filesWord} changed (+${additions}/-${deletions})`;
-  } else if (dep) {
-    line1 = `Dependency update · ${changedFiles} ${filesWord} changed (+${additions}/-${deletions})`;
-  } else {
-    const size = total <= 20 ? 'Small change' : total <= 150 ? 'Moderate change' : 'Large change';
-    line1 = `${size} · ${changedFiles} ${filesWord} changed (+${additions}/-${deletions})`;
-  }
-  let line2: string;
-  let level: RiskLevel;
-  if (input.isDraft) {
-    line2 = `Draft — not ready to merge; CI ${ci}`;
-    level = 'high';
-  } else if (ci === 'failing') {
-    line2 = 'CI failing — fix checks before merging';
-    level = 'high';
-  } else if (ci !== 'passing') {
-    line2 = `CI ${ci} — wait for checks before merging`;
-    level = 'medium';
-  } else if (input.conflicted || mergeableU === 'CONFLICTING') {
-    line2 = 'Merge conflicts — resolve before merging';
-    level = 'high';
-  } else if (!['MERGEABLE', 'CLEAN', ''].includes(mergeableU)) {
-    line2 = `Merge state ${mergeableU.toLowerCase()} — check before merging`;
-    level = 'medium';
-  } else if ((input.reviewDecision || '') === 'CHANGES_REQUESTED') {
-    line2 = 'Changes requested — address review feedback';
-    level = 'high';
-  } else if (breaking) {
-    line2 = 'Breaking change flagged — review carefully; CI green';
-    level = 'high';
-  } else if (changedFiles > 20 || total > 500) {
-    line2 = 'Higher risk: large diff — review carefully; 0 breaking changes detected; CI green';
-    level = 'high';
-  } else if (changedFiles > 10 || total > 200) {
-    line2 = 'Moderate risk — review diff before merging; 0 breaking changes detected; CI green';
-    level = 'medium';
-  } else {
-    line2 = 'Low risk; 0 breaking changes detected; CI green';
-    level = 'low';
-  }
-  return { summary: `${line1}\n${line2}`, level };
+function validRiskLevel(v: unknown): RiskLevel | null {
+  return v === 'low' || v === 'medium' || v === 'high' ? v : null;
 }
 
 export function prRiskSummary(pr: PrRow): string {
-  const provided = typeof pr.riskSummary === 'string' ? pr.riskSummary.trim() : '';
-  if (provided && provided.includes('\n')) return provided;
-  if (provided) return provided;
-  return buildRiskSummary({
-    title: pr.title,
-    branch: pr.branch,
-    isDraft: pr.isDraft,
-    ciStatus: pr.ciStatus,
-    reviewDecision: pr.reviewDecision,
-    mergeable: pr.mergeable,
-    additions: pr.additions,
-    deletions: pr.deletions,
-    changedFiles: pr.changedFiles,
-  }).summary;
+  return typeof pr.riskSummary === 'string' ? pr.riskSummary.trim() : '';
 }
 
 export function prRiskLevel(pr: PrRow): RiskLevel {
-  if (pr.riskLevel === 'low' || pr.riskLevel === 'medium' || pr.riskLevel === 'high') {
-    // A stale low from an older payload must not hide a draft/failing
-    // state the row now carries: recompute when the summary fallback
-    // disagrees on a blocking signal.
-    const computed = buildRiskSummary({
-      title: pr.title,
-      branch: pr.branch,
-      isDraft: pr.isDraft,
-      ciStatus: pr.ciStatus,
-      reviewDecision: pr.reviewDecision,
-      mergeable: pr.mergeable,
-      additions: pr.additions,
-      deletions: pr.deletions,
-      changedFiles: pr.changedFiles,
-    });
-    if (computed.level === 'high' && pr.isDraft) return 'high';
-    if (computed.level === 'high' && (pr.ciStatus || '').toLowerCase() === 'failing') return 'high';
-    return pr.riskLevel;
-  }
-  return buildRiskSummary({
-    title: pr.title,
-    branch: pr.branch,
-    isDraft: pr.isDraft,
-    ciStatus: pr.ciStatus,
-    reviewDecision: pr.reviewDecision,
-    mergeable: pr.mergeable,
-    additions: pr.additions,
-    deletions: pr.deletions,
-    changedFiles: pr.changedFiles,
-  }).level;
+  return validRiskLevel(pr.riskLevel) ?? 'low';
 }
 
 export function detailsRiskSummary(details: PrDetailsResponse): { summary: string; level: RiskLevel } {
-  const provided = typeof details.risk_summary === 'string' ? details.risk_summary.trim() : '';
-  if (provided) {
-    const lvl = details.risk_level;
-    if (lvl === 'low' || lvl === 'medium' || lvl === 'high') return { summary: provided, level: lvl };
-    if (provided.includes('Higher risk') || provided.includes('failing') || provided.includes('Draft')) {
-      return { summary: provided, level: 'high' };
-    }
-    if (provided.includes('Moderate risk') || provided.includes('wait for checks')) {
-      return { summary: provided, level: 'medium' };
-    }
-    return { summary: provided, level: 'low' };
-  }
-  return buildRiskSummary({
-    title: details.title,
-    branch: details.branch,
-    isDraft: details.draft,
-    ciStatus: details.ci,
-    mergeable: details.conflicted ? 'CONFLICTING' : details.merge === 'clean' ? 'MERGEABLE' : details.merge.toUpperCase(),
-    conflicted: details.conflicted,
-    additions: details.stats.additions,
-    deletions: details.stats.deletions,
-    changedFiles: details.stats.total_files,
-  });
+  const summary =
+    typeof details.risk_summary === 'string' ? details.risk_summary.trim() : '';
+  return { summary, level: validRiskLevel(details.risk_level) ?? 'low' };
 }
 
 export function RiskSummary({ pr }: { pr: PrRow }) {

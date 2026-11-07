@@ -66,7 +66,7 @@ def _usage_total(messages):
 def _model_provider(model):
     """Provider slot from a ledger model label, or None.
 
-    Ledger labels read `{provider}:{model}` (chat_agent, deep_chat,
+    Ledger labels read `{provider}:{model}` (deep_chat,
     ask_investigator already write these); only ollama + nebius
     count — a bare `qwen3:8b` keeps no provider rather than minting
     a bogus one (same rule as runs._row_provider). Never raises.

@@ -152,7 +152,7 @@ import sys
 sys.path.insert(0, "deep-agent")
 import model_router
 failures = []
-for mod in ("model_router.py", "ask_investigator.py", "chat_agent.py", "deep_chat.py"):
+for mod in ("model_router.py", "ask_investigator.py", "deep_chat.py"):
     with open(f"deep-agent/{mod}", encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
             low = line.lower()

@@ -39,7 +39,6 @@ MUSE_FREE_MODULES = [
     "backend/api/routers/briefing.py",
     "deep-agent/model_router.py",
     "deep-agent/ask_investigator.py",
-    "deep-agent/chat_agent.py",
     "deep-agent/deep_chat.py",
     "deep-agent/eval_lib.py",
     "deep-agent/eval_ask.py",
