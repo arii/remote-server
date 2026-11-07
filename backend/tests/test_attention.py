@@ -95,6 +95,55 @@ class AttentionShapeTest(unittest.TestCase):
         with self.assertRaises(HTTPException):
             attention.attention("a/b/c")
 
+    def test_skills_verification_item_when_tampered(self):
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [],
+            list_pending_approvals=lambda: [],
+            list_skills_verification_errors=lambda: [
+                "skill 'x': hash mismatch"],
+            ollama_up=lambda: True,
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        items = [i for i in body["items"]
+                 if i["kind"] == "skills-verification"]
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["id"], "skills-verification")
+        self.assertEqual(item["severity"], "crit")
+        self.assertIn("hash mismatch", item["detail"])
+        self.assertIn("UNVERIFIED", item["title"])
+
+    def test_skills_verification_absent_when_clean(self):
+        orig = self._patch(
+            get_workflow_health=lambda repo: {"workflows": []},
+            list_failed_jobs=lambda: [],
+            list_failed_webhooks=lambda: [],
+            list_skipped_webhooks=lambda: [],
+            list_pending_approvals=lambda: [],
+            list_skills_verification_errors=lambda: [],
+            ollama_up=lambda: True,
+        )
+        try:
+            body = attention.attention("remote-server")
+        finally:
+            self._restore(orig)
+        self.assertEqual(body["items"], [])
+
+    def test_publish_mirrors_boot_outcome(self):
+        attention.publish_skills_verification_errors(["a", "b"])
+        try:
+            self.assertEqual(
+                attention.list_skills_verification_errors(), ["a", "b"])
+        finally:
+            attention.publish_skills_verification_errors([])
+        self.assertEqual(attention.list_skills_verification_errors(), [])
+
     def test_identical_failing_runs_collapse(self):
         wfs = [{"id": i, "name": "CI", "diagnosed_cause": "boom"}
                for i in (1, 2, 3)]

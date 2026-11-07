@@ -32,12 +32,12 @@ Blocked: `blocked #126: <what you need>`. Green: `green: <pr-url> closes #126`.
 
 ## Mandatory Execution Sequence (Stage 3: Init Coder)
 
-1. **Initialize & Query RAG**: Call `td.init_and_rag` and `repo.read_agent_context` first. Never bulk-read files without a RAG query.
-2. **Isolate Worktree**: Call `worktree.create` for the assigned issue and target repo (`arii/boomtick`, `arii/remote-server`, `arii/tech-dancer`, `arii/hrm`, or `arii/glossy`). Fresh worktrees lack the untracked `.agents/skills/` — run `bash scripts/provision-skills.sh` (or `npm run skills:install`) before any `verify-skills.sh --repin`, or repin reports MISSING on empty air.
+1. **Initialize & Query RAG**: Call `td.init` then `td.rag` (init once, query separately — never one combined call) and `repo.read_agent_context` first. Never bulk-read files without a RAG query.
+2. **Isolate Worktree**: Run `td worktree create` for the assigned issue and target repo (`arii/boomtick`, `arii/remote-server`, `arii/tech-dancer`, `arii/hrm`, or `arii/glossy`). Fresh worktrees lack the untracked `.agents/skills/` — run `bash scripts/provision-skills.sh` (or `npm run skills:install`) before any `verify-skills.sh --repin`, or repin reports MISSING on empty air.
 3. **Implement & Test**: Edit only files listed in the issue's `Allowed Scope`. Run `repo.run_tests`.
 4. **Visual / UI Verification (if frontend changed)**: Use CDP cobrowsing (`cdpClick`, `cdpTypeText`) to verify interactive states.
 5. **Deterministic Gates**: Run `td.verify_scope` and `td.audit_worktree`. Fix any AST or allowlist violations.
-6. **Submit PR**: Call `agent.submit_pr` and clean up with `worktree.remove`.
+6. **Submit PR**: Call `agent.submit_pr` and clean up with `td worktree remove`.
 
 ## Hard don'ts
 

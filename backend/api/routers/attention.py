@@ -228,6 +228,25 @@ def ollama_up() -> bool:
     return up
 
 
+# Mirror of app.state.skills_verification_errors, published by the
+# server lifespan (server.py) so the attention seam stays a plain
+# module-level function tests can monkeypatch (issue #1134). The
+# lifespan runs the verifier once at boot; re-verifying per poll
+# would rehash every first-party skill on each Now view.
+_skills_verification_errors: list = []
+
+
+def publish_skills_verification_errors(errors: list) -> None:
+    """Lifespan entry: record the boot-time verification outcome."""
+    global _skills_verification_errors
+    _skills_verification_errors = [str(e) for e in (errors or [])]
+
+
+def list_skills_verification_errors() -> list:
+    """Injectable seam: first-party skill pin mismatches (#1120)."""
+    return list(_skills_verification_errors)
+
+
 def failover_budget() -> dict:
     """Injectable seam: spend/cap for the metered-failover item.
 
@@ -605,6 +624,22 @@ def _assemble_items(name: str, now: float) -> list[dict]:
                        "href": "api/prs?repo=" + name,
                        "destructive": False, "intent": ""},
             "created_at": float(e.get("ts", e.get("created_at", now)) or now),
+        })
+    # Tampered first-party skill pins (#1134): boot-time verifier
+    # outcome, surfaced here because nobody watches the server log.
+    # One collapsed item (stable snooze id); clean boot = no item.
+    skill_problems = list_skills_verification_errors()
+    if skill_problems:
+        detail = "; ".join(skill_problems)[:500]
+        items.append({
+            "id": "skills-verification",
+            "kind": "skills-verification",
+            "title": "First-party skill verification failed — agent turns run UNVERIFIED",
+            "detail": f"{detail} — fix the skill files or re-pin deep-agent/skills-lock.json (#1120).",
+            "repo": name,
+            "severity": "crit",
+            "action": {},
+            "created_at": now,
         })
     try:
         local_up = ollama_up()

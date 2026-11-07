@@ -300,6 +300,12 @@ describe('destructive POST actions (issue #508)', () => {
     expect(html).not.toContain('hold-disarmed');
     expect(html).toContain('class="btn-primary"');
   });
+
+  it('renders nothing for actionless items (issue #1134)', () => {
+    const noAction = item({ label: '', href: '' });
+    const html = renderToStaticMarkup(<ActionControl item={noAction} {...handlers} />);
+    expect(html).toBe('');
+  });
 });
 
 describe('source destination links (issue #896)', () => {

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Task-scoped Pi profile: triage
-# Scoped tools for searching open PRs, checking CI logs, and inspecting changed files.
+# Scoped tools for inspecting PRs (incl. diffs/changed files via
+# includeDiff), checking CI logs, and posting findings. Open-PR
+# search goes through `gh pr list` on bash. The old search_open_prs /
+# get_changed_files tools never existed on the MCP surface.
 set -euo pipefail
 
-exec pi --tools read,bash,mcp__boomtick__github_search_open_prs,mcp__boomtick__repo_read_ci_logs,mcp__boomtick__repo_get_changed_files "$@"
+exec pi --tools read,bash,mcp__boomtick__github_get_pr,mcp__boomtick__repo_read_ci_logs,mcp__boomtick__github_issue_comment "$@"
