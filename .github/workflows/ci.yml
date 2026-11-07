@@ -144,7 +144,10 @@ jobs:
         run: pnpm --filter frontend test
 
   backend:
-    name: backend tests + compile + lint
+    # Display name pinned by branch protection (required context
+    # "backend tests + type-check"): the steps inside are honestly
+    # named. Do not rename without updating protection first.
+    name: backend tests + type-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
