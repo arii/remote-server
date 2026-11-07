@@ -107,6 +107,48 @@ class TestComposeGuards(unittest.TestCase):
         self.assertLessEqual(int(m.group(1)), 600,
                              "idle reap must be 10 minutes or less")
 
+    def test_agent_control_shared_state(self):
+        """buttons + terminal must share one pause-state file (#1104).
+
+        /tmp is per-container, so the default split-brains takeover
+        pauses between the buttons API and the terminal pipeline.
+        Both services pin AGENT_CONTROL_STATE_FILE to the shared
+        buttons-data volume, and terminal mounts that volume.
+        """
+        with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        service = None
+        state_lines = {}
+        mounts_buttons_data = set()
+        for line in lines:
+            if line and not line.startswith((" ", "\t", "#")):
+                service = None
+                continue
+            svc = re.match(r"^  ([A-Za-z0-9_.-]+):\s*(#.*)?$", line)
+            if svc:
+                service = svc.group(1)
+                continue
+            if service in ("buttons", "terminal"):
+                if re.match(r"^\s*AGENT_CONTROL_STATE_FILE\s*:",
+                            line):
+                    state_lines.setdefault(service, []).append(
+                        line.strip())
+                if ("buttons-data:/var/lib/buttons" in line
+                        and not line.strip().startswith("#")):
+                    mounts_buttons_data.add(service)
+        for svc in ("buttons", "terminal"):
+            self.assertEqual(
+                state_lines.get(svc),
+                ["AGENT_CONTROL_STATE_FILE: "
+                 "/var/lib/buttons/agent_control_state.json"],
+                f"{svc} must pin the shared pause-state file exactly once")
+        self.assertIn(
+            "buttons", mounts_buttons_data,
+            "buttons must mount buttons-data at /var/lib/buttons")
+        self.assertIn(
+            "terminal", mounts_buttons_data,
+            "terminal must mount the shared buttons-data volume")
+
     def test_terminal_requirements_parity(self):
         """terminal/requirements.txt must include all backend deps and pytest."""
         backend_req = os.path.join(ROOT, "backend", "requirements.txt")

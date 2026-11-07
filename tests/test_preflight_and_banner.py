@@ -14,6 +14,24 @@ from contextlib import redirect_stdout
 import backend.preflight_digest as pfd
 
 
+def _load_preflight_script():
+    """Import scripts/verify-co-browsing-preflight.py by path.
+
+    The filename is not importable, so load it as a module the same
+    way a subprocess would — no side effects (main-guarded).
+    """
+    import importlib.util
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "scripts",
+                        "verify-co-browsing-preflight.py")
+    spec = importlib.util.spec_from_file_location(
+        "verify_co_browsing_preflight", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _full_js_toolchain_available():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     tsc = os.path.join(root, "frontend", "node_modules", ".bin", "tsc")
@@ -254,6 +272,22 @@ step failed with exit code 1; aborting
 """
         extracted = self.extract_error_line_js(output)
         self.assertIn("RuntimeError: connection refused to redis", extracted)
+
+
+class TestGridChromeArgs(unittest.TestCase):
+    def test_shm_flag_present(self):
+        """Grid Chrome caps must carry --disable-dev-shm-usage (#1104).
+
+        /dev/shm exhaustion SIGKILLs renderers; the flag is the same
+        hardening browser_view.py already applies. Single-sourced on
+        GRID_CHROME_ARGS so the caps and the pin cannot drift apart.
+        """
+        mod = _load_preflight_script()
+        args = list(mod.GRID_CHROME_ARGS)
+        self.assertIn("--user-data-dir=/data/shared-browser/agent",
+                      args)
+        self.assertIn("--enable-features=WebMCP", args)
+        self.assertIn("--disable-dev-shm-usage", args)
 
 
 if __name__ == "__main__":

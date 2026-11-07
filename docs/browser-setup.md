@@ -8,7 +8,8 @@ service. No VNC anywhere in the loop.
 - Agent CDP: Selenium Grid at `http://browser:4444` (compose
   network). Agents open a Grid session with the agent-profile caps
   (`--user-data-dir=/data/shared-browser/agent`,
-  `--enable-features=WebMCP`) and drive the per-session CDP
+  `--enable-features=WebMCP`, `--disable-dev-shm-usage`) and drive
+  the per-session CDP
   endpoint `/session/<id>/se/cdp`; the session is deleted
   afterwards (`SE_NODE_MAX_SESSIONS=1`, so a leaked session wedges
   the single slot). Idle sessions are reaped after 3600s
@@ -32,3 +33,13 @@ service. No VNC anywhere in the loop.
 Containerized `browserless/chromium` stays decommissioned. For the
 extension-pairing alternative see
 [`docs/browser-mcp-pairing.md`](browser-mcp-pairing.md).
+
+## Spec deviation (recorded, not rebuilt — issue #1104)
+
+`updated_guide.md` Issue 8 specifies `browserless/chromium` with a
+`/browser*` route. The tree instead runs Solution-A (this doc):
+headed Chromium via `selenium/standalone-chromium` (pinned digest),
+Grid sessions at `http://browser:4444`, and the CDP-direct viewer at
+`/cdp-stream`. This is deliberate — the preflight passes 6/6 on
+Solution-A — so follow-ups wire the gaps around it (#1104 pause
+state, frame headers, flags) rather than migrating to browserless.
