@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   dedupAttentionLines,
   deriveCardLabels,
+  failureNameSlot,
   isActionableAttention,
   isActionableLine,
   isNonRequiredWorkflowFailure,
@@ -36,6 +37,23 @@ describe('non-required workflow filter (issue #1109.1)', () => {
     expect(isActionableLine('- failing: console-e2e on main (push) — https://x/y')).toBe(false);
     expect(isActionableLine('Failing run: console-e2e on main (push) — likely cause: z')).toBe(false);
     expect(isActionableLine('- failing: CI on main (push) — failed: t')).toBe(true);
+  });
+  it('matches the run-name slot, never branch or cause text', () => {
+    expect(failureNameSlot('- failing: CI on console-e2e-flake-fix (push)')).toBe('CI');
+    expect(
+      failureNameSlot('Failing run: CI on main (push) — likely cause: console-e2e (…)'),
+    ).toBe('CI');
+    expect(failureNameSlot('unprefixed line stays whole')).toBe('unprefixed line stays whole');
+    // A required failure stays visible even when the branch or the
+    // cause mentions console-e2e; only the name filters.
+    expect(isActionableLine('- failing: CI on console-e2e-flake-fix (push)')).toBe(true);
+    expect(
+      isActionableLine('Failing run: CI on main (push) — likely cause: console-e2e (…)'),
+    ).toBe(true);
+    expect(isActionableLine('- failing: console E2E smoke on main (push)')).toBe(false);
+    expect(
+      isActionableAttention(item('failing-run', 'Failing workflow: console E2E smoke')),
+    ).toBe(false);
   });
 });
 

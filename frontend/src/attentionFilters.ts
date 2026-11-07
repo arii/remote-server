@@ -10,17 +10,32 @@ export function isNonRequiredWorkflowFailure(text: string): boolean {
   return NON_REQUIRED_WORKFLOWS.some((re) => re.test(text));
 }
 
+// Run-name slot: server lines read "- failing: {name} on {branch}
+// ({event})…" and "Failing run: {name} on {branch} ({event}) —
+// likely cause:…", item titles "Failing workflow: {name}". Match the
+// name slot only — a branch or job cause that mentions console-e2e
+// must never hide a required failure (a whole-line match would
+// all-clear while required CI is red). Unprefixed text falls back
+// to the whole string, i.e. fail-open.
+const RUN_NAME_RE = /^(?:- failing:|Failing run:|Failing workflow:)\s*(.+?)\s+on\s+/;
+
+export function failureNameSlot(text: string): string {
+  const m = RUN_NAME_RE.exec((text || '').trimStart());
+  return m ? m[1] : text;
+}
+
 // Now/attention feed: drop non-required workflow failures, keep
 // everything else (approvals, failed jobs, required CI).
 export function isActionableAttention(item: AttentionItem): boolean {
-  if (item.kind === 'failing-run' && isNonRequiredWorkflowFailure(item.title)) return false;
+  if (item.kind === 'failing-run' && isNonRequiredWorkflowFailure(failureNameSlot(item.title)))
+    return false;
   return true;
 }
 
 // Briefing string lines (attention + workflow_lines): same rule on
-// the raw line — run names ride in the text.
+// the run-name slot, never the whole line.
 export function isActionableLine(line: string): boolean {
-  return !isNonRequiredWorkflowFailure(line);
+  return !isNonRequiredWorkflowFailure(failureNameSlot(line));
 }
 
 // Briefing dedup (issue #1109.5): the server lists each failing run
