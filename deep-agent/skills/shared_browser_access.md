@@ -45,12 +45,13 @@ trigger_nodes:
 - The viewer attaches to YOUR live session when one exists: the human
   sees exactly what you see and their input lands in your page.
   First human input pauses you via the agent_control lock.
-- Idle sessions are reaped after 3600s. If the slot reports no free
-  session and no run is active, `DELETE` the stale session id.
+- Idle sessions are reaped after 600s (`SE_NODE_SESSION_TIMEOUT=600`).
+  If the slot reports no free session and no run is active, `DELETE`
+  the stale session id.
 
 ## 5. Human coordination
 - The human can take over at any moment: honor `PAUSED_BY_USER`
   (see `co_browsing_state_takeover`), re-snapshot after resume, never
   reuse pre-takeover element references.
-- When reporting what the browser shows, cite the noVNC URL from §1
-  so the human opens the exact live head.
+- When reporting what the browser shows, cite the `/cdp-stream`
+  live-view URL from §1 so the human opens the exact live head.

@@ -18,8 +18,20 @@
       "toolExposure": {
         "github_get_pr_diff": "direct",
         "github_search_open_prs": "direct",
+        "github_get_pr": "direct",
+        "github_issue_view": "direct",
+        "repo_read_agent_context": "direct",
         "repo_read_ci_logs": "direct",
         "repo_get_changed_files": "direct",
+        "repo_run_tests": "direct",
+        "td_init_and_rag": "direct",
+        "td_validate_issue": "direct",
+        "td_verify_scope": "direct",
+        "td_audit_worktree": "direct",
+        "worktree_create": "direct",
+        "worktree_list": "direct",
+        "worktree_remove": "direct",
+        "agent_submit_pr": "direct",
         "*.*": "hidden"
       }
     },
