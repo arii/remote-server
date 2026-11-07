@@ -73,8 +73,16 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
         self.assertTrue(ok)
 
     def test_backend_probe_fails_closed_on_dead_port(self):
-        old = os.environ.get("OLLAMA_URL")
+        # Fails closed only when NO backend is viable: dead Ollama URL
+        # and no Nebius key. (With NEBIUS_API_KEY set the default path
+        # legitimately resolves the metered fallback — that is the
+        # backend-switch contract, not a probe failure.)
+        old_url = os.environ.get("OLLAMA_URL")
+        old_provider = os.environ.get("S5_ISSUE_PROVIDER")
+        old_key = os.environ.get("NEBIUS_API_KEY")
         os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"
+        os.environ.pop("S5_ISSUE_PROVIDER", None)
+        os.environ.pop("NEBIUS_API_KEY", None)
         try:
             gen = issue_generator.IssueGeneratorGraph(
                 repo_root=tempfile.gettempdir())
@@ -82,17 +90,42 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("OLLAMA_URL", message)
         finally:
-            if old is None:
+            if old_url is None:
                 os.environ.pop("OLLAMA_URL", None)
             else:
-                os.environ["OLLAMA_URL"] = old
+                os.environ["OLLAMA_URL"] = old_url
+            if old_provider is not None:
+                os.environ["S5_ISSUE_PROVIDER"] = old_provider
+            if old_key is not None:
+                os.environ["NEBIUS_API_KEY"] = old_key
 
     def test_backend_probe_passes_on_live_port(self):
-        import socket
-        server = socket.socket()
-        server.bind(("127.0.0.1", 0))
-        server.listen(1)
-        port = server.getsockname()[1]
+        # "Live Ollama" means HTTP 200 on /api/tags (the probe
+        # model_router.ollama_reachable performs) — a bare socket
+        # is not a faithful stand-in.
+        import http.server
+        import threading
+
+        class TagsHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/api/tags":
+                    body = b'{"models": []}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), TagsHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
         old = os.environ.get("OLLAMA_URL")
         os.environ["OLLAMA_URL"] = f"http://127.0.0.1:{port}"
         try:
@@ -101,11 +134,107 @@ class TestEvidenceCitesRepoFile(unittest.TestCase):
             ok, _ = gen.check_backend(timeout=2)
             self.assertTrue(ok)
         finally:
-            server.close()
+            server.shutdown()
+            thread.join()
+            server.server_close()
             if old is None:
                 os.environ.pop("OLLAMA_URL", None)
             else:
                 os.environ["OLLAMA_URL"] = old
+
+
+    def test_issue_provider_nebius_skips_socket_probe(self):
+        import unittest.mock as mock
+        seen = {}
+
+        def fake_resolve(prefer=None):
+            seen["prefer"] = prefer
+            return {"provider": "nebius", "model": "m",
+                    "base_url": "https://b"}
+
+        old_provider = os.environ.get("S5_ISSUE_PROVIDER")
+        old_key = os.environ.get("NEBIUS_API_KEY")
+        old_url = os.environ.get("OLLAMA_URL")
+        os.environ["S5_ISSUE_PROVIDER"] = "nebius"
+        os.environ["NEBIUS_API_KEY"] = "test-key"
+        os.environ["OLLAMA_URL"] = "http://127.0.0.1:1"
+        try:
+            with mock.patch("model_router.resolve_llm",
+                            side_effect=fake_resolve):
+                gen = issue_generator.IssueGeneratorGraph(
+                    repo_root=tempfile.gettempdir())
+                ok, message = gen.check_backend(timeout=2)
+            self.assertTrue(ok)
+            self.assertIn("Nebius", message)
+            self.assertEqual(seen["prefer"], "nebius")
+        finally:
+            for key, val in (("S5_ISSUE_PROVIDER", old_provider),
+                             ("NEBIUS_API_KEY", old_key),
+                             ("OLLAMA_URL", old_url)):
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
+
+    def test_issue_provider_nebius_needs_key(self):
+        import unittest.mock as mock
+
+        def fake_resolve(prefer=None):
+            return {"provider": "nebius", "model": "m",
+                    "base_url": "https://b"}
+
+        old_provider = os.environ.get("S5_ISSUE_PROVIDER")
+        old_key = os.environ.get("NEBIUS_API_KEY")
+        os.environ["S5_ISSUE_PROVIDER"] = "nebius"
+        os.environ.pop("NEBIUS_API_KEY", None)
+        try:
+            with mock.patch("model_router.resolve_llm",
+                            side_effect=fake_resolve):
+                gen = issue_generator.IssueGeneratorGraph(
+                    repo_root=tempfile.gettempdir())
+                ok, message = gen.check_backend(timeout=2)
+            self.assertFalse(ok)
+            self.assertIn("NEBIUS_API_KEY", message)
+        finally:
+            if old_provider is None:
+                os.environ.pop("S5_ISSUE_PROVIDER", None)
+            else:
+                os.environ["S5_ISSUE_PROVIDER"] = old_provider
+            if old_key is not None:
+                os.environ["NEBIUS_API_KEY"] = old_key
+
+    def test_model_delegates_to_router_without_think(self):
+        import unittest.mock as mock
+        seen = {}
+
+        def fake_resolve(prefer=None):
+            seen["prefer"] = prefer
+            return {"provider": "ollama", "model": "m",
+                    "base_url": "http://ollama:11434"}
+
+        def fake_build(spec=None, think=True):
+            seen["spec"] = spec
+            seen["think"] = think
+            return ("fake-model", spec)
+
+        old_provider = os.environ.get("S5_ISSUE_PROVIDER")
+        os.environ["S5_ISSUE_PROVIDER"] = "ollama"
+        try:
+            with mock.patch("model_router.resolve_llm",
+                            side_effect=fake_resolve), \
+                 mock.patch("model_router.build_chat_model",
+                            side_effect=fake_build):
+                gen = issue_generator.IssueGeneratorGraph(
+                    repo_root=tempfile.gettempdir())
+                self.assertEqual(gen._model(), "fake-model")
+            self.assertEqual(seen["prefer"], "ollama")
+            self.assertFalse(seen["think"])
+            self.assertEqual(seen["spec"].get("provider"), "ollama")
+        finally:
+            if old_provider is None:
+                os.environ.pop("S5_ISSUE_PROVIDER", None)
+            else:
+                os.environ["S5_ISSUE_PROVIDER"] = old_provider
 
 
 class TestDraftPrompt(unittest.TestCase):

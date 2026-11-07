@@ -107,7 +107,8 @@ def _run_td(args, timeout=180):
 class IssueGeneratorGraph:
     """Closed-loop spec generator. Inject fakes for deterministic tests.
 
-    model_fn: () -> chat model (default ChatOllama qwen3:8b).
+    model_fn: () -> chat model (default model_router.build_chat_model
+      with think=False, backend from S5_ISSUE_PROVIDER or Ollama).
     investigate_fn(messages, tools) -> reply text (default
       langchain create_agent run).
     td_runner: (args) -> (returncode, stdout) (default _run_td).
@@ -175,20 +176,43 @@ class IssueGeneratorGraph:
     def _model(self):
         if self.model_fn is not None:
             return self.model_fn()
-        from langchain_ollama import ChatOllama
-        return ChatOllama(model=os.environ.get("S5_ISSUE_MODEL", "qwen3:8b"),
-                          base_url=_ollama_base_url())
+        import model_router
+        prefer = os.environ.get("S5_ISSUE_PROVIDER", "").strip() or None
+        spec = model_router.resolve_llm(prefer=prefer)
+        model, _ = model_router.build_chat_model(spec=spec, think=False)
+        return model
 
     def check_backend(self, timeout=5):
-        """Probe the sanctioned Ollama endpoint (issue #1085).
+        """Probe the resolved model backend (issue #1085).
 
         Returns (ok, message). Injected model_fn skips the probe.
+        The backend comes from model_router.resolve_llm() honoring
+        S5_ISSUE_PROVIDER: an Ollama spec probes the socket as before,
+        a Nebius spec only needs NEBIUS_API_KEY (no socket to probe).
         A miss names the sanctioned options instead of dying later
         with a bare ConnectError. Cloud fallback is deliberately NOT
         automatic: never spend metered money without being asked.
         """
         if self.model_fn is not None:
             return True, "injected model (probe skipped)"
+        import model_router
+        prefer = os.environ.get("S5_ISSUE_PROVIDER", "").strip() or None
+        try:
+            spec = model_router.resolve_llm(prefer=prefer)
+        except (RuntimeError, ValueError) as exc:
+            return False, (
+                f"STUCK: no usable model backend ({exc}). Set OLLAMA_URL "
+                "to a host serving Ollama (compose network: "
+                "http://ollama:11434), or set S5_ISSUE_PROVIDER=nebius "
+                "with NEBIUS_API_KEY for the metered fallback.")
+        if spec.get("provider") == "nebius":
+            if not os.environ.get("NEBIUS_API_KEY", "").strip():
+                return False, (
+                    "STUCK: Nebius backend resolved but NEBIUS_API_KEY "
+                    "is unset; set it (and S5_ISSUE_MODEL if the default "
+                    "model is wrong) or unset S5_ISSUE_PROVIDER.")
+            return True, (
+                f"Nebius backend selected ({spec.get('model', '?')})")
         url = _ollama_base_url()
         host_port = url.split("://", 1)[-1].rstrip("/")
         host, _, port_s = host_port.partition(":")
