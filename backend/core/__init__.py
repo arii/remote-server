@@ -101,7 +101,6 @@ def get_system_health() -> dict[str, Any]:
     failure surfaces as ``containers_error`` (#530); only a
     successful empty listing reads as zero containers."""
     import shutil
-    import subprocess
 
     path = "/home/ari" if os.path.exists("/home/ari") else "/"
     try:

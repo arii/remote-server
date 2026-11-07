@@ -346,7 +346,7 @@ def extract_ci_error_traces(raw_log: str, max_lines: int = 150) -> str:
     # Include exit code / summary tail if not already covered
     if last_end < len(lines) - 5:
         tail_lines = lines[-5:]
-        merged_lines.append(f"\n[... skipped to exit summary ...]\n" + "\n".join(tail_lines))
+        merged_lines.append("\n[... skipped to exit summary ...]\n" + "\n".join(tail_lines))
 
     result = "\n".join(merged_lines)
     result_lines = result.splitlines()

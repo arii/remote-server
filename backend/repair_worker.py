@@ -541,7 +541,6 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
 def cleanup_node(state: AgentState) -> Dict[str, Any]:
     """Clean up worktree and temporary directories."""
     worktree_dir = state.get("worktree_dir")
-    branch_name = state.get("branch_name")
 
     if worktree_dir and os.path.exists(worktree_dir):
         subprocess.run(["git", "worktree", "remove", "--force", worktree_dir], check=False)

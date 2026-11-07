@@ -182,7 +182,7 @@ class FanoutCapTest(unittest.TestCase):
         self.assertLessEqual(bs.ENRICHMENT_CAP, 15)
         doc = (bs.__doc__ or "") + (bs.fetch.__doc__ or "")
         self.assertIn("worst case", doc.lower())
-        cap_comment = f"2 * ENRICHMENT_CAP subprocesses"
+        cap_comment = "2 * ENRICHMENT_CAP subprocesses"
         import inspect
         source = inspect.getsource(bs)
         self.assertIn(cap_comment, source)

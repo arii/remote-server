@@ -1,7 +1,5 @@
-import os
 import subprocess
 import unittest
-from unittest.mock import patch, MagicMock
 
 class TestPullModels(unittest.TestCase):
     def test_script_syntax(self):

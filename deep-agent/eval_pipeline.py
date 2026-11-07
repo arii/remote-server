@@ -306,7 +306,6 @@ def eval_auditor_reject():
     APPROVED on audit cycle 2."""
     fixture = build_fixture()
     td = FixtureTd(fixture["repo"])
-    audits = []
 
     reviews = []
 

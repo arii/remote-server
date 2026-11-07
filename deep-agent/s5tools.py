@@ -200,7 +200,7 @@ def run(argv, cwd=None, timeout=DEFAULT_TIMEOUT):
         proc = subprocess.run(
             argv, cwd=cwd, capture_output=True, text=True, timeout=timeout
         )
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         raise RuntimeError(f"timed out after {timeout}s: {' '.join(argv[:3])}")
     except OSError as exc:
         raise RuntimeError(f"exec failed: {exc}")

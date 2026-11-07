@@ -20,7 +20,6 @@ from backend.api.routers.issues import (
     parse_issue_number,
     repair_state,
     repair_state_lock,
-    trigger_repair,
 )
 from backend.api.routers.pulls import _pr_action, ci_label
 from backend import pr_gates

@@ -3,7 +3,7 @@ name: CI
 # Builds the terminal image on every push/PR, validates the compose file,
 # lints the shell scripts, verifies the skills lock against upstream,
 # scans for leaked secrets, and runs the
-# backend + root + frontend test suites with the backend type-check.
+# backend + root + frontend test suites with the backend compile + ruff gates.
 #
 # Docker workflow replicates arii/BoomTick's pattern:
 # .github/actions/setup-docker-buildx (ghcr.io login + buildx),
@@ -144,6 +144,9 @@ jobs:
         run: pnpm --filter frontend test
 
   backend:
+    # Display name pinned by branch protection (required context
+    # "backend tests + type-check"): the steps inside are honestly
+    # named. Do not rename without updating protection first.
     name: backend tests + type-check
     runs-on: ubuntu-latest
     steps:
@@ -154,9 +157,11 @@ jobs:
       - name: install backend deps
         run: pip install -r backend/requirements.txt
       - name: install root-suite deps
-        run: pip install "pytest==9.1.1"
-      - name: type-check backend tree
-        run: npm run type-check
+        run: pip install "pytest==9.1.1" "ruff==0.17.4"
+      - name: compile-check backend tree
+        run: npm run compile-check
+      - name: lint Python (ruff pyflakes-class)
+        run: npm run lint:python
       - name: backend unit tests
         run: npm run test:backend
       - name: root unit tests
