@@ -483,6 +483,9 @@ export function ActionControl({
   onSection: (section: 'review' | 'jobs') => void;
   onTab: (tab: AttentionNavTab) => void;
 }) {
+  // Items without an action (e.g. informational crit items like the
+  // skills-verification notice) render no button — never a POST to "".
+  if (!item.action.label || !item.action.href) return null;
   async function handlePost() {
     try {
       await firePostAction(item);

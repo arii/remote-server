@@ -45,6 +45,7 @@ async def _lifespan(app):
 
         skill_problems = skills_lock.verify_skills()
         app.state.skills_verification_errors = skill_problems
+        attention.publish_skills_verification_errors(skill_problems)
         if skill_problems:
             banner = "\n".join(
                 [
@@ -57,6 +58,8 @@ async def _lifespan(app):
             print(banner, file=sys.stderr, flush=True)
     except Exception as exc:
         app.state.skills_verification_errors = [f"verifier error: {exc}"]
+        attention.publish_skills_verification_errors(
+            app.state.skills_verification_errors)
         print(
             f"FIRST-PARTY SKILLS VERIFICATION ERROR (issue #1120): {exc} "
             "— agent turns will run with skills UNVERIFIED.",

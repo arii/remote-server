@@ -1,11 +1,11 @@
 ---
 name: boomtick
-description: Instructions and schema reference for calling BoomTick MCP tools (workflow-runs, ci-logs, repo, and PR tools) without validation errors.
+description: Instructions and schema reference for calling BoomTick MCP tools (RAG, repo, GitHub, gates) without validation errors.
 ---
 
 # BoomTick MCP Tools & Schemas
 
-The BoomTick MCP server (`boomtick`) exposes tools for GitHub operations, repository inspections, agent session dispatch, and CI/workflow log inspections.
+The BoomTick MCP server (`boomtick`) exposes tools for RAG init/query, repository inspections, GitHub operations, deterministic gates, and PR submission.
 
 ## Working Directory & Repo-Override Convention
 
@@ -25,18 +25,22 @@ The BoomTick MCP server (`boomtick`) exposes tools for GitHub operations, reposi
 **Rule 1: Never pass explicit `null` for optional parameters.**
 Passing `branch: null`, `event: null`, or `repo: null` causes Zod validation errors (`Invalid input: expected string, received null`). Always **omit** keys you have no value for.
 
-### `mcp__boomtick__repo_get_workflow_runs`
-- **Description:** List recent GitHub Actions workflow runs for the repository.
-- **Parameters:**
-  - `repo` (string, optional): Target GitHub repository override (e.g. `"arii/remote-server"`).
-  - `branch` (string, optional): Filter workflow runs by branch name (e.g. `"main"`). Omit if not filtering.
-  - `event` (string, optional): Filter by event (e.g. `"push"`, `"pull_request"`). Omit if not filtering.
-- **Correct Call Examples:**
+**Rule 2: Only call tools on the live surface.** The server exposes
+exactly the tools below (post `td_init_and_rag` split + worktree
+removal). Anything else — `repo_get_workflow_runs`,
+`github_search_open_prs`, `github_get_pr_diff`,
+`github_get_merge_conflict_files`, `repo_get_changed_files`,
+`td_init_and_rag`, `worktree_create/list/remove` — does not exist:
+do not call it, do not document it back.
+
+### RAG: init once, query separately
+- `mcp__boomtick__td_init`: initialize a repo (fast-forward main,
+  sync deps, index RAG). All parameters optional (`repoRoot` to
+  override the git root).
+- `mcp__boomtick__td_rag`: query the RAG index without rebuilding.
+  `query` (string, required); `repoRoot`, `topK` optional.
   ```json
-  {"repo": "arii/remote-server"}
-  ```
-  ```json
-  {"repo": "arii/tech-dancer", "branch": "main"}
+  {"query": "where is the attention queue assembled?"}
   ```
 
 ### `mcp__boomtick__repo_read_ci_logs`
@@ -50,8 +54,21 @@ Passing `branch: null`, `event: null`, or `repo: null` causes Zod validation err
   {"prNumber": 42, "repo": "arii/tech-dancer"}
   ```
 
-### Common GitHub Tools
-- `mcp__boomtick__github_search_open_prs`: accepts `repo` (optional string).
-- `mcp__boomtick__github_get_pr`: accepts `prNumber` (required integer), `repo` (optional string).
-- `mcp__boomtick__github_get_pr_diff`: accepts `prNumber` (required integer), `repo` (optional string).
-- `mcp__boomtick__github_get_merge_conflict_files`: accepts `baseBranch`, `headRef`, `repo`.
+### GitHub Tools (all accept optional `repo` in `owner/repo` format)
+- `mcp__boomtick__github_get_pr`: `prNumber` (required integer).
+- `mcp__boomtick__github_issue_view`: `issueNumber` (required integer).
+- `mcp__boomtick__github_issue_update`: `issueNumber` (required integer).
+- `mcp__boomtick__github_issue_comment`: `issueNumber` (required integer).
+- `mcp__boomtick__github_create_issue`: `title` (required string).
+
+### Repo & Deterministic Gates
+- `mcp__boomtick__repo_read_agent_context`: repository index and metadata.
+- `mcp__boomtick__repo_run_tests`: run repository tests and checks.
+- `mcp__boomtick__td_validate_issue`: validate a design spec file.
+- `mcp__boomtick__td_verify_scope`: gate worktree changes against a spec.
+- `mcp__boomtick__td_audit_worktree`: slop/AST audit with blast-radius analysis.
+- `mcp__boomtick__agent_submit_pr`: submit a branch as a PR (draft by default).
+- `mcp__boomtick__boomtick_health`: MCP server health and configuration.
+
+Worktree lifecycle has no MCP tools — use the `td worktree`
+CLI (`create` / `list` / `remove`) instead.
