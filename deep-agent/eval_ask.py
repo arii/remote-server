@@ -1,9 +1,11 @@
-"""Eval gate for ask_investigator.py (manual, not part of unittest).
+"""Eval gate for the AuditorGraph ask entry (manual, not part of unittest).
 
-Runs live prompts against the local model and checks each reply for
-the expected tool use + answer anchor (or a well-formed PROPOSE block).
-Gate passes only when every *gating* case passes; cases with
-gating=False are reported but never fail the gate (calibration cases).
+Runs live prompts against the model via auditor.py's ask_once tool
+path (issue #1139; the ask_investigator CLI is gone) and checks each
+reply for the expected tool use + answer anchor (or a well-formed
+PROPOSE block). Gate passes only when every *gating* case passes;
+cases with gating=False are reported but never fail the gate
+(calibration cases).
 
 Verdicts per case: pass / fail / invalid. Invalid means the run never
 produced an agent answer (timeout, dead model, traceback, no ledger
@@ -12,9 +14,11 @@ row) — rerun it, don't read it as an agent failure.
 Usage: eval_ask.py [owner/repo] [--json out.json]
 
 Env: EVAL_TIMEOUT (per-case seconds, default 900), EVAL_LEDGER (ledger
-path), EVAL_PYTHON (child interpreter), ASK_MODEL / OLLAMA_URL /
-ASK_THINK (passed through to the agent; ASK_THINK=1 makes each prompt
-take 15+ min on this CPU-only box, so the gate warns about it).
+path), EVAL_PYTHON (child interpreter). The model resolves via
+model_router (Ollama when reachable, else Nebius); ASK_THINK=1
+re-enables thinking traces (each prompt takes 15+ min on this
+CPU-only box, so the gate warns about it). Eval threads are named
+test-ask-* so rows file metered=False and never touch the spend gate.
 """
 
 import base64
@@ -30,8 +34,8 @@ cli.bootstrap()
 
 import eval_lib  # noqa: E402
 
-SCRIPT = os.path.join(HERE, "ask_investigator.py")
-SCRIPT_NAME = "ask_investigator.py"
+SCRIPT = os.path.join(HERE, "auditor.py")
+SCRIPT_NAME = "auditor.py"
 
 # Case fields: name, prompt, tools (["*"] = any tool, [] = none
 # required), anchor (must match FINAL), must (extra patterns that must
@@ -228,9 +232,13 @@ def run_case(repo, case, exe, timeout, ledger):
     """Run one case. Returns a result dict (verdict + evidence)."""
     since = eval_lib.ledger_line_count(ledger)
     b64 = base64.b64encode(case["prompt"].encode()).decode()
+    # test-* prefix: harness rows file metered=False, so eval traffic
+    # never touches the spend gate (ledger._is_test_thread).
+    thread = "test-ask-" + re.sub(r"[^A-Za-z0-9-]", "-",
+                                  case["name"])[:64]
     started = time.time()
     code, stdout, stderr, timed_out = eval_lib.run_child(
-        [exe, SCRIPT, repo, b64], timeout
+        [exe, SCRIPT, repo, thread, b64], timeout
     )
     seconds = round(time.time() - started, 1)
     out = stdout + stderr
@@ -268,7 +276,8 @@ def main(argv=None) -> int:
     timeout = eval_lib.eval_timeout()
     ledger = eval_lib.ledger_path(HERE)
     print(f"eval_ask: repo={repo} exe={exe} timeout={timeout}s")
-    print(eval_lib.env_banner(["ASK_MODEL", "OLLAMA_URL", "ASK_THINK"]))
+    print(eval_lib.env_banner(["OLLAMA_URL", "NEBIUS_API_KEY",
+                               "ASK_THINK", "S5_AUDIT_MODEL"]))
     if os.environ.get("ASK_THINK", "") == "1":
         print("WARNING: ASK_THINK=1 enables thinking traces (~15+ min "
               "per prompt on CPU); expect timeouts.")
