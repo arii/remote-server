@@ -45,6 +45,14 @@ what).
    `tests/test_co_browsing_pause.py`).
 5. `resume_refresh` — `POST /api/agent/resume` returns to
    `RUNNING` with a re-snapshot scheduled.
+
+Agent-initiated handoffs (#1097) ride the same contract: the agent
+parks via `POST /api/agent/handoff/request` (reason + stuck URL),
+the drawer shows an explicit waiting banner instead of the paused
+one, and the human's Hand Back (`POST /api/agent/handoff/resolve`)
+clears the wait and resumes with the mandatory DOM re-snapshot —
+so the viewer shows the post-handoff state. See the
+`cobrowse_handoff_specialist` deep-agent skill for the owner loop.
 6. `td_impact` — `td audit-impact --preview-url` on a scratch
    worktree with a one-line CSS probe returns pure-JSON stdout
    with a reachable `visual_diff` (DOM counts, screenshot path).

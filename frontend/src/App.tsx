@@ -41,6 +41,7 @@ import {
   fetchSystemHealth,
   flushOutbox,
   resumeAgentBrowser,
+  resolveHandoff,
   prefetchTabPayloads,
   repoAction,
   restartContainer,
@@ -583,6 +584,9 @@ export default function App() {
         current_step: '',
         requires_dom_refresh: false,
         updated_at: 0,
+        handoff_reason: null,
+        handoff_url: null,
+        handoff_requested_at: null,
       });
       return () => {
         cancelled = true;
@@ -603,6 +607,17 @@ export default function App() {
     setBrowserError(null);
     try {
       setAgentBrowser(await resumeAgentBrowser());
+    } catch (err) {
+      setBrowserError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Human hands back after an agent-initiated handoff (#1097): clear
+  // the wait and resume with a DOM re-snapshot (post-handoff state).
+  async function onHandBackBrowser(): Promise<void> {
+    setBrowserError(null);
+    try {
+      setAgentBrowser(await resolveHandoff());
     } catch (err) {
       setBrowserError(err instanceof Error ? err.message : String(err));
     }
@@ -871,10 +886,13 @@ export default function App() {
         <CoBrowsingDrawer
           browserState={agentBrowser?.state ?? 'IDLE'}
           currentStep={agentBrowser?.current_step || null}
+          handoffReason={agentBrowser?.handoff_reason ?? null}
+          handoffUrl={agentBrowser?.handoff_url ?? null}
           iframeSrc={`${stackBase()}/cdp-stream/`}
           repo={repo}
           error={browserError}
           onResume={() => void onResumeBrowser()}
+          onHandBack={() => void onHandBackBrowser()}
           onClose={() => setBrowserOpen(false)}
         />
       )}

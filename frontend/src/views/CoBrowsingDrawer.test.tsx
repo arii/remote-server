@@ -31,6 +31,38 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(renderDrawer({ browserState: 'IDLE' })).not.toContain('cobrowse-takeover');
   });
 
+  it('names a pending handoff above every other banner (#1097)', () => {
+    expect(bannerTextFor('PAUSED_BY_USER', 'Paused (x)', 'login wall')).toBe(
+      'Waiting for you — login wall',
+    );
+    expect(bannerTextFor('RUNNING', 'driving', 'mfa prompt')).toContain('mfa prompt');
+  });
+
+  it('offers Hand Back instead of resume while a handoff waits', () => {
+    const waiting = renderDrawer({
+      browserState: 'PAUSED_BY_USER',
+      currentStep: 'Waiting for human handoff: login wall',
+      handoffReason: 'login wall',
+      handoffUrl: 'https://x/login',
+      onHandBack: () => {},
+    });
+    expect(waiting).toContain('Waiting for you — login wall');
+    expect(waiting).toContain('data-testid="cobrowse-handback"');
+    expect(waiting).toContain('Hand back');
+    expect(waiting).toContain('Stuck on: https://x/login');
+    expect(waiting).not.toContain('cobrowse-resume');
+  });
+
+  it('keeps resume when paused with no handoff pending', () => {
+    const paused = renderDrawer({
+      browserState: 'PAUSED_BY_USER',
+      handoffReason: null,
+      onHandBack: () => {},
+    });
+    expect(paused).toContain('data-testid="cobrowse-resume"');
+    expect(paused).not.toContain('cobrowse-handback');
+  });
+
   it('shows resume only while paused, and always the frame', () => {
     const paused = renderDrawer({ browserState: 'PAUSED_BY_USER', currentStep: 'Paused (user_takeover)' });
     expect(paused).toContain('data-testid="cobrowse-resume"');
