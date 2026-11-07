@@ -8,7 +8,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
-import skills_registry
 from skills_registry import SkillNotFoundError, SkillsRegistry
 
 REPO_SKILLS = os.path.join(os.path.dirname(__file__), "..", "deep-agent", "skills")

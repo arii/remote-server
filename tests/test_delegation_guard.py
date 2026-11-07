@@ -29,7 +29,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import coder
 import deep_chat
-import model_router
 
 try:
     from deepagents import create_deep_agent  # noqa: F401

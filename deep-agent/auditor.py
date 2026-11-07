@@ -9,7 +9,6 @@ Only stdlib at module top; langgraph/langchain lazy (deep-agent venv).
 import json
 import os
 import subprocess
-import sys
 import time
 
 import skills_registry
@@ -202,7 +201,7 @@ class AuditorGraph:
         """Compile the audit loop (needs langgraph)."""
         from langgraph.checkpoint.memory import InMemorySaver
         from langgraph.graph import END, START, StateGraph
-        from langgraph.types import Command, interrupt
+        from langgraph.types import interrupt
         from typing_extensions import TypedDict
 
         if getattr(self, "_checkpointer", None) is None:

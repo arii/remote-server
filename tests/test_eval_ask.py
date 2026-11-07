@@ -1,7 +1,6 @@
 """eval_ask.py + eval_lib.py unit tests. No LLM, no langchain (both
 modules are stdlib-only). Run: python3 tests/test_eval_ask.py"""
 import ast
-import base64
 import json
 import os
 import re
@@ -327,19 +326,33 @@ class TestAllowlistSync(unittest.TestCase):
             self.assertEqual(
                 assigns, [],
                 f"{name} hand-mirrors ALLOWED_TD again")
-            # The name must bind the engine truth via import.
-            imports = [
-                node for node in ast.walk(tree)
-                if isinstance(node, ast.ImportFrom)
-                and node.module == "backend.exec.engine"
-                for a in node.names
-                if a.name == "ALLOWED_TD_COMMANDS"
-                and a.asname == "ALLOWED_TD"
-            ]
-            self.assertEqual(
-                len(imports), 1,
-                f"{name}: ALLOWED_TD not imported from "
-                "backend.exec.engine")
+            if name == "deep_chat.py":
+                # The name must bind the engine truth via import.
+                imports = [
+                    node for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                    and node.module == "backend.exec.engine"
+                    for a in node.names
+                    if a.name == "ALLOWED_TD_COMMANDS"
+                    and a.asname == "ALLOWED_TD"
+                ]
+                self.assertEqual(
+                    len(imports), 1,
+                    f"{name}: ALLOWED_TD not imported from "
+                    "backend.exec.engine")
+            else:
+                # Post-CLI ask library (AuditorGraph tool functions
+                # only) consumes no td shapes: neither a mirror nor
+                # a dead binding may remain (#1131, #1136).
+                refs = [
+                    node for node in ast.walk(tree)
+                    if isinstance(node, ast.Name)
+                    and node.id == "ALLOWED_TD"
+                ]
+                self.assertEqual(
+                    refs, [],
+                    f"{name}: ALLOWED_TD referenced without "
+                    "consuming it")
         # The truth itself still carries the propose-td shape the
         # eval case anchors on, so a truth edit that drops it fails
         # here instead of silently stranding the eval.

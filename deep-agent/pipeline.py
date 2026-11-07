@@ -347,6 +347,10 @@ class Pipeline:
 
         worktree = ""
         audit_cycles = 0
+        # One refactor away from a NameError: the first loop pass
+        # reads `detail` only when audit_cycles is nonzero, so it
+        # survived uninitialized — initialize it outright. (#1136)
+        detail = ""
         while True:
             self._await_if_paused()
             ok, _code_state, worktree = self.stage_code(

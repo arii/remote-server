@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """Tests for preflight_digest.py and error banner extraction logic."""
 
-import io
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
-from contextlib import redirect_stdout
 
 import backend.preflight_digest as pfd
 

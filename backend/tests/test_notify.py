@@ -968,7 +968,7 @@ class DigestLogicTest(unittest.TestCase):
         N.NOTIFIER_STATE_PATH = os.path.join(tmp, "state.json")
         os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict"
         try:
-            state = N.check_notifications_and_digest(
+            N.check_notifications_and_digest(
                 fetcher=fetcher, sender=sender, now=1000.0)
             kinds = sorted(s["event_type"] for s in sent)
             self.assertEqual(kinds, ["ci_fail", "conflict"])

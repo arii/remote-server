@@ -674,8 +674,8 @@ class TestChatRegistration(unittest.TestCase):
     def test_diff_tool_invokes(self):
         import deep_chat
         with tempfile.TemporaryDirectory() as d:
-            b = write_capture(os.path.join(d, "b"))
-            a = write_capture(
+            write_capture(os.path.join(d, "b"))
+            write_capture(
                 os.path.join(d, "a"),
                 doc=result_doc(overflow=[{"tagName": "DIV"}]))
             by_name = {t.name: t for t in deep_chat.build_tools(
@@ -715,8 +715,8 @@ class TestChatRegistration(unittest.TestCase):
     def test_ask_tool_uses_model_path(self):
         import deep_chat
         with tempfile.TemporaryDirectory() as d:
-            b = write_capture(os.path.join(d, "b"))
-            a = write_capture(os.path.join(d, "a"))
+            write_capture(os.path.join(d, "b"))
+            write_capture(os.path.join(d, "a"))
             by_name = {t.name: t for t in deep_chat.build_tools(
                 d, impact_tools=True)}
             with mock.patch.object(
@@ -748,8 +748,8 @@ class TestAskToolsInvoke(unittest.TestCase):
             prev = ai._checkout
             ai._checkout = d
             try:
-                b = write_capture(os.path.join(d, "b"))
-                a = write_capture(os.path.join(d, "a"))
+                write_capture(os.path.join(d, "b"))
+                write_capture(os.path.join(d, "a"))
                 out = ai.diff_versions.invoke(
                     {"before": "b", "after": "a"})
                 self.assertIn("no findings", out)

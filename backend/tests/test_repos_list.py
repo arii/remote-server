@@ -55,7 +55,6 @@ class ReposListTest(unittest.TestCase):
     def _get(self, tmp, names_with_git, names_without_git=(),
              origins=None, branches=None, dirty=None,
              stack_with_git=False, missing_root=False):
-        import os
         from pathlib import Path
 
         from backend.core import list_repos

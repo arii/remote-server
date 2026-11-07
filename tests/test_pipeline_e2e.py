@@ -5,7 +5,6 @@ Full-graph evals need the deep-agent venv (langgraph) and run real
 git fixtures + real pytest; they skip otherwise. The real-td smoke
 test skips when no td binary is on PATH.
 """
-import json
 import os
 import shutil
 import sys
