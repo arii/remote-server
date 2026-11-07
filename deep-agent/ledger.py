@@ -63,8 +63,40 @@ def _usage_total(messages):
     return total
 
 
+def _model_provider(model):
+    """Provider slot from a ledger model label, or None.
+
+    Ledger labels read `{provider}:{model}` (chat_agent, deep_chat,
+    ask_investigator already write these); only ollama + nebius
+    count — a bare `qwen3:8b` keeps no provider rather than minting
+    a bogus one (same rule as runs._row_provider). Never raises.
+    """
+    if isinstance(model, str):
+        for prefix in ("ollama:", "nebius:"):
+            if model.startswith(prefix):
+                return prefix[:-1]
+    return None
+
+
+def _is_test_thread(thread_id):
+    """True for test-harness threads, which never meter.
+
+    Unit tests that forget to redirect LEDGER write here (the
+    test-thread-2 / coder-test-2 rows behind issue #1121); test
+    traffic must never fail-close the Nebius spend gate. Boundary
+    aware so real threads like `latest-run` never match. Never
+    raises.
+    """
+    try:
+        tid = str(thread_id or "")
+    except Exception:
+        return False
+    return (tid == "test" or tid.startswith("test-")
+            or tid.endswith("-test") or "-test-" in tid)
+
+
 def record(script, model, thread_id, messages, started, extra=None,
-           usage=None, calls=None):
+           usage=None, calls=None, provider=None):
     """Append one run entry; returns it. Never raises on odd inputs.
 
     usage: optional pre-aggregated {"input_tokens", "output_tokens",
@@ -73,6 +105,12 @@ def record(script, model, thread_id, messages, started, extra=None,
     calls: optional pre-aggregated [{"name", "args"}] list, used when
     the message list no longer carries the tool-call records
     (streaming reassembly, failure paths).
+    provider: backend that ran the turn ("ollama" | "nebius").
+    Explicit wins; otherwise derived from a `provider:model` label;
+    bare labels stay provider-less (fail-closed: only an explicit
+    ollama label or provider earns the free tag).
+    Test-harness threads (see _is_test_thread) always file
+    metered=False at zero cost — test traffic never meters.
     """
     try:
         derived = calls is None
@@ -132,11 +170,22 @@ def record(script, model, thread_id, messages, started, extra=None,
         # when the card moves. Old rows without these fields are
         # derived at read time (current-rate estimates, no rewrite).
         cost_usd, metered = pricing.quote(model, usage)
+        if provider is None:
+            provider = _model_provider(model)
+        if provider not in ("ollama", "nebius"):
+            provider = None
+        if provider == "ollama":
+            # The resolved backend is truth: a locally-run turn is
+            # free even when the model string carries no prefix.
+            metered, cost_usd = False, 0.0
+        if _is_test_thread(thread_id):
+            metered, cost_usd = False, 0.0
         entry = {
             "kind": "deep-agent-run",
             "ts": time.time(),
             "script": script,
             "model": model,
+            "provider": provider,
             "thread_id": thread_id,
             "duration_s": duration,
             "tool_calls": calls,

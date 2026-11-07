@@ -123,6 +123,7 @@ class IssueGeneratorGraph:
         self.td_runner = td_runner or _run_td
         self.max_loops = max_loops
         self.thread_id = thread_id or f"issuegen-{int(time.time())}"
+        self.last_spec = None
 
     # -- deterministic pieces (pure, unit-tested) --------------------
 
@@ -179,6 +180,10 @@ class IssueGeneratorGraph:
         import model_router
         prefer = os.environ.get("S5_ISSUE_PROVIDER", "").strip() or None
         spec = model_router.resolve_llm(prefer=prefer)
+        # Retain the resolved backend: ledger rows record the model
+        # that actually ran, not the S5_ISSUE_MODEL default (issue
+        # #1121). Injected model_fn (tests) leaves this unset.
+        self.last_spec = dict(spec)
         model, _ = model_router.build_chat_model(spec=spec, think=False)
         return model
 
@@ -405,15 +410,18 @@ class IssueGeneratorGraph:
             lines = decisions.build_decisions(
                 calls, results, reply,
                 reason="issue spec closed loop")
+            spec = getattr(outer, "last_spec", None) or {}
             ledger.record(
-                "issue_generator.py", os.environ.get(
+                "issue_generator.py",
+                spec.get("model") or os.environ.get(
                     "S5_ISSUE_MODEL", "qwen3:8b"),
                 outer.thread_id, [],
                 time.time(),
                 extra={"valid": state.get("valid"),
                        "attempts": state.get("attempts", 0),
                        "decisions": lines,
-                       "validation": state.get("validation", {})})
+                       "validation": state.get("validation", {})},
+                provider=spec.get("provider"))
             return {"persisted": True}
 
         builder = StateGraph(GenState)
@@ -529,13 +537,16 @@ def main(argv=None):
         print(f"Invalid spec: {error}")
     try:
         import ledger as _ledger
+        _spec = getattr(gen, "last_spec", None) or {}
         _ledger.record(
             "issue_generator.py",
-            os.environ.get("S5_ISSUE_MODEL", "qwen3:8b"),
+            _spec.get("model") or os.environ.get(
+                "S5_ISSUE_MODEL", "qwen3:8b"),
             gen.thread_id, [], time.time(),
             extra={"valid": False,
                    "attempts": state.get("attempts", 0),
-                   "errors": state.get("errors", [])})
+                   "errors": state.get("errors", [])},
+            provider=_spec.get("provider"))
     except ImportError:
         pass
     if "__interrupt__" in state:

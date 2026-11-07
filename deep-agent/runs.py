@@ -358,6 +358,85 @@ def _tombstone_lines(indexes, path):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _needs_1121_backfill(row):
+    """True for the poisoned rows behind issue #1121.
+
+    Narrow by construction: live rows with no provider on the entry
+    or derivable from the model label, a test-harness thread,
+    zero tokens, filed metered with no rate. Real spend (tokens >
+    0), rated rows, and rows with any provider evidence are never
+    touched — those stay fail-closed. Never raises.
+    """
+    try:
+        if not isinstance(row, dict) or _is_deleted(row):
+            return False
+        if row.get("provider") or ledger._model_provider(row.get("model")):
+            return False
+        if not ledger._is_test_thread(row.get("thread_id")):
+            return False
+        usage = row.get("usage") or {}
+        tokens = (int(usage.get("input_tokens") or 0)
+                  + int(usage.get("output_tokens") or 0)
+                  + int(usage.get("total_tokens") or 0))
+        return (tokens == 0 and row.get("metered") is True
+                and row.get("cost_usd") is None)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def backfill_test_providers(ledger_path=None, dry_run=False):
+    """Principled backfill for the #1121 poisoned rows.
+
+    Rewrites only _needs_1121_backfill rows in place (same locked
+    rewrite as _tombstone_lines, so a concurrent turn append cannot
+    interleave): stamps provider "ollama", metered False, cost 0.0,
+    and an extra backfill note. Historical test traffic on the old
+    local-Ollama default was free; the rows were never spend.
+    Returns {"matched": [indexes], "rewritten": n}. Dry run changes
+    nothing. Never raises.
+    """
+    path = ledger_path or LEDGER
+    try:
+        f = open(path, "r+", encoding="utf-8")
+    except OSError:
+        return {"matched": [], "rewritten": 0}
+    matched = []
+    with f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            lines = f.readlines()
+            for i, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if _needs_1121_backfill(row):
+                    matched.append(i)
+            if not matched or dry_run:
+                return {"matched": matched, "rewritten": 0}
+            for i in matched:
+                row = json.loads(lines[i])
+                row["provider"] = "ollama"
+                row["metered"] = False
+                row["cost_usd"] = 0.0
+                extra = row.get("extra")
+                if not isinstance(extra, dict):
+                    extra = {}
+                    row["extra"] = extra
+                extra["backfill"] = "1121: test-thread local run, never spend"
+                lines[i] = json.dumps(row) + "\n"
+            f.seek(0)
+            f.writelines(lines)
+            f.truncate()
+            return {"matched": matched, "rewritten": len(matched)}
+        except Exception:
+            return {"matched": matched, "rewritten": 0}
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
 def total_metered_spend(ledger_path=None):
     """Lifetime metered spend over the whole ledger (uncapped scan).
 
@@ -545,6 +624,12 @@ def _dur_txt(summary):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--backfill-1121":
+        dry = "--dry-run" in argv[1:]
+        result = backfill_test_providers(dry_run=dry)
+        print(json.dumps({"status": "backfilled" if not dry else "dry-run",
+                          **result}))
+        return 0
     if not argv:
         found = list_runs(limit=10)
         if not found:
