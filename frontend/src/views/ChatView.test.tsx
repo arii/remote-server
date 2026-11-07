@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -210,6 +210,33 @@ describe('409 means attach, not error (issue #1130)', () => {
     expect(isTurnInProgressError(new Error('Chat stream failed: 500'))).toBe(false);
     expect(isTurnInProgressError(new Error('network down'))).toBe(false);
     expect(isTurnInProgressError(null)).toBe(false);
+  });
+  it('rejects boundary lookalikes', () => {
+    expect(isTurnInProgressError(new Error('Chat stream failed: 4090'))).toBe(false);
+    expect(isTurnInProgressError(new Error('budget exceeded: 4096 tokens'))).toBe(false);
+  });
+});
+
+describe('409 attach keeps the user bubble (issue #1130)', () => {
+  it('restores the prompt after a strip', () => {
+    const stripped = stripFailedRetryExchange(
+      [
+        { role: 'user', text: 'hello' },
+        { role: 'assistant', text: 'partial' },
+      ],
+      'hello',
+    );
+    expect(restoreUserBubble(stripped, 'hello')).toEqual([{ role: 'user', text: 'hello' }]);
+  });
+  it('leaves an existing trailing bubble alone', () => {
+    const messages: ChatMessage[] = [{ role: 'user', text: 'hello' }];
+    expect(restoreUserBubble(messages, 'hello')).toBe(messages);
+  });
+  it('appends to an empty log without duplicating a different prompt', () => {
+    expect(restoreUserBubble([], 'hello')).toEqual([{ role: 'user', text: 'hello' }]);
+    expect(
+      restoreUserBubble([{ role: 'user', text: 'other' }], 'hello'),
+    ).toEqual([{ role: 'user', text: 'other' }, { role: 'user', text: 'hello' }]);
   });
 });
 

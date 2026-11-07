@@ -1188,6 +1188,19 @@ export function isStalled(lastEventMs: number, nowMs: number): boolean {
   return nowMs - lastEventMs > STALL_SECONDS * 1000;
 }
 
+// 409 attach (#1130): resumeStoredTurn only appends assistant-side
+// entries, so the stripped user bubble must come back first —
+// otherwise the prompt vanishes from the log, transcript, and
+// persistence. Idempotent: leaves an existing trailing bubble alone.
+export function restoreUserBubble(
+  messages: ChatMessage[],
+  text: string,
+): ChatMessage[] {
+  const last = messages[messages.length - 1];
+  if (last && last.role === 'user' && last.text === text) return messages;
+  return [...messages, { role: 'user' as const, text }];
+}
+
 // Retry re-sends the last prompt after a failed stream (deploy cut the
 // connection, backend hiccup). Shown only when there is something to
 // re-send and nothing running — never auto-runs.
@@ -2273,13 +2286,29 @@ export default function ChatView({
       if (isTurnInProgressError(err)) {
         // A turn is already live on this session (retry race or
         // double-send): attach to it instead of erroring. Drop the
-        // pair just appended so the resume path owns the trailing
-        // placeholder, then reuse the mount machinery — it reattaches
-        // to live output or backfills the finished answer. (#1130)
-        setMessages((m) => stripFailedRetryExchange(m, text));
+        // pair just appended, then restore the user bubble (the
+        // resume path only appends assistant-side entries) and reuse
+        // the mount machinery — it reattaches to live output or
+        // backfills the finished answer. If the turn vanished between
+        // the 409 and the status poll, offer resend instead of
+        // stranding silence. (#1130)
         const ctrl = new AbortController();
         abortRef.current = ctrl;
         try {
+          let action: ResumeAction | null = null;
+          try {
+            action = resumeActionForStatus(
+              await fetchChatSessionStatus(sessionId),
+              sessionId,
+            );
+          } catch {
+            action = null;
+          }
+          setMessages((m) => restoreUserBubble(stripFailedRetryExchange(m, text), text));
+          if (!action || action.kind === 'none') {
+            setInterrupted(text);
+            return;
+          }
           await resumeStoredTurn(sessionId, ctrl.signal, () => false);
         } finally {
           if (abortRef.current === ctrl) abortRef.current = null;
