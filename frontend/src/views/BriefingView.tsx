@@ -3,6 +3,7 @@ import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPrefe
 import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus, PlanListRow } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { isHistoryFailure, toHistoryRows } from './historyUtils';
+import { dedupAttentionLines, isActionableLine } from '../attentionFilters';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
 import RepoLabel from '../components/RepoLabel';
 
@@ -197,25 +198,40 @@ export function truncateChip(text: string, max: number = 32): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+// Visible failure lines (issues #1109.1, #1109.5): non-required
+// workflow failures (console-e2e smoke) never page the operator,
+// and run-level "Failing run:" attention lines defer to the Failing
+// runs section that owns them with its Investigate action.
+export function actionableAttention(data: BriefingResponse): string[] {
+  return dedupAttentionLines(
+    data.attention.filter(isActionableLine),
+    data.workflow_lines.filter(isActionableLine),
+  );
+}
+
+export function actionableWorkflowLines(data: BriefingResponse): string[] {
+  return data.workflow_lines.filter(isActionableLine);
+}
+
 // One-line condensation of briefing state, always visible.
 export function briefingSummary(data: BriefingResponse): string {
   if (briefingAllClear(data)) return 'All clear — nothing open.';
+  const attention = actionableAttention(data);
+  const runs = actionableWorkflowLines(data);
   const parts: string[] = [];
   if (data.prs.length > 0) {
     parts.push(`${data.prs.length} open PR${data.prs.length === 1 ? '' : 's'}`);
   }
-  if (data.attention.length > 0) {
-    parts.push(`${data.attention.length} flagged`);
+  if (attention.length > 0) {
+    parts.push(`${attention.length} flagged`);
   }
   if (data.conflicts_lines.length > 0) {
     parts.push(
       `${data.conflicts_lines.length} conflict${data.conflicts_lines.length === 1 ? '' : 's'}`,
     );
   }
-  if (data.workflow_lines.length > 0) {
-    parts.push(
-      `${data.workflow_lines.length} failing run${data.workflow_lines.length === 1 ? '' : 's'}`,
-    );
+  if (runs.length > 0) {
+    parts.push(`${runs.length} failing run${runs.length === 1 ? '' : 's'}`);
   }
   return parts.join(' · ');
 }
@@ -578,7 +594,7 @@ function PrefsControls() {
 // tapping a seed never auto-sends (#507).
 export function briefingActions(data: BriefingResponse): BriefingAction[] {
   const actions: BriefingAction[] = [];
-  if (data.workflow_lines.length > 0) {
+  if (actionableWorkflowLines(data).length > 0) {
     actions.push({
       label: 'Explain the failures',
       seed: 'What failed recently and how do I fix it?',
@@ -670,13 +686,13 @@ export function briefingAllClear(data: BriefingResponse): boolean {
   if (data.reviews_err && Object.keys(data.reviews_err).length > 0) return false;
   return (
     data.prs.length === 0 &&
-    data.attention.length === 0 &&
+    actionableAttention(data).length === 0 &&
     data.reviews_lines.length === 0 &&
     (data.board ?? []).length === 0 &&
     data.board_lines.length === 0 &&
     data.conflicts_lines.length === 0 &&
     data.overlaps_lines.length === 0 &&
-    data.workflow_lines.length === 0
+    actionableWorkflowLines(data).length === 0
   );
 }
 
@@ -723,6 +739,50 @@ export function groupBriefingLines(lines: readonly string[]): BriefingLineGroup[
   return groups;
 }
 
+// Failing-run URLs render as one short link, not a wrapping
+// paragraph of URL (issue #1109.4). Split on bare GitHub run URLs;
+// anything else (including a URL cut mid-string upstream) stays
+// plain text.
+const RUN_URL_RE = /(https:\/\/github\.com\/[^\s)]+\/actions\/runs\/\d+[^\s)]*)/g;
+
+export function splitRunUrls(cleaned: string): Array<{ text: string; url?: string }> {
+  const parts: Array<{ text: string; url?: string }> = [];
+  let rest = cleaned;
+  let match: RegExpExecArray | null;
+  RUN_URL_RE.lastIndex = 0;
+  while ((match = RUN_URL_RE.exec(rest)) !== null) {
+    const url = match[1].replace(/[.,;:!?]+$/, '');
+    const head = rest.slice(0, match.index);
+    if (head) parts.push({ text: head });
+    parts.push({ text: 'View run', url });
+    rest = rest.slice(match.index + url.length);
+    RUN_URL_RE.lastIndex = 0;
+  }
+  if (rest) parts.push({ text: rest });
+  return parts.length > 0 ? parts : [{ text: '' }];
+}
+
+function BriefingText({ text }: { text: string }) {
+  const cleaned = cleanBriefingLine(text);
+  const parts = splitRunUrls(cleaned);
+  // No URLs: return the bare string so surrounding markup (repeat
+  // counts, single-line sections) keeps its contiguous text.
+  if (parts.length === 1 && !parts[0].url) return parts[0].text;
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.url ? (
+          <a key={i} href={part.url} target="_blank" rel="noreferrer">
+            View run
+          </a>
+        ) : (
+          <span key={i}>{part.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 export function GroupedLines({
   lines,
   onInvestigate,
@@ -736,7 +796,7 @@ export function GroupedLines({
         // eslint-disable-next-line react/no-array-index-key
         <li key={i} className="detail">
           <p>
-            {cleanBriefingLine(g.text)}
+            <BriefingText text={g.text} />
             {g.count > 1 ? ` ×${g.count}` : ''}
           </p>
           {g.count > 1 && (
@@ -1458,7 +1518,7 @@ export function BriefingBody({
           <button type="button" className="btn-primary" onClick={() => onAskAgent(actions[0].seed)}>
             {actions[0].label}
           </button>
-          {data.workflow_lines.length > 0 && (
+          {actionableWorkflowLines(data).length > 0 && (
             <button type="button" className="btn-secondary" onClick={onOpenHistory}>
               View failures in History
             </button>
@@ -1498,7 +1558,7 @@ export function BriefingBody({
         </div>
       ) : (
         <>
-          <Section title="Needs attention" lines={data.attention} />
+          <Section title="Needs attention" lines={actionableAttention(data)} />
           {data.prs.length > 0 && (
             <section>
               <h3>Open pull requests</h3>
@@ -1528,7 +1588,7 @@ export function BriefingBody({
           <Section title="Conflicts" lines={data.conflicts_lines} err={data.conf_err} />
           <Section title="Overlaps" lines={data.overlaps_lines} />
           <RepairPicker repo={data.repo} prs={data.prs} onAskAgent={onAskAgent} />
-          {(data.workflow_lines.length > 0 || data.runs_err) && (
+          {(actionableWorkflowLines(data).length > 0 || data.runs_err) && (
             <section>
               <h3>Failing runs</h3>
               {data.runs_err && (
@@ -1537,7 +1597,7 @@ export function BriefingBody({
                 </p>
               )}
               <GroupedLines
-                lines={data.workflow_lines}
+                lines={actionableWorkflowLines(data)}
                 onInvestigate={(g) =>
                   onAskAgent(
                     `Investigate this repeated console failure (${g.count}×) in ${data.repo}: ${cleanBriefingLine(g.text)}`,

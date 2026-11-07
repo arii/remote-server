@@ -71,6 +71,7 @@ import {
 import { loadInbox } from './mocks/inbox';
 import {
   EMPTY_BADGE_COUNTS,
+  HEALTH_POLL_MS,
   historyErrorCount,
   jobsActiveCount,
   navBadge,
@@ -96,7 +97,9 @@ function stackBase(): string {
 
 // Header health revalidation cadence (issue #588): slow enough to
 // never storm, fast enough that outages surface within a minute.
-export const HEALTH_POLL_MS = 60_000;
+// Owned by tabBadges and re-exported so badge clocks and list polls
+// share one definition (issue #1116).
+export { HEALTH_POLL_MS };
 // Shared-browser agent-state poll while the drawer is open
 // (follow_up Issue 11): takeover must pause the agent within a
 // couple of seconds in both directions.

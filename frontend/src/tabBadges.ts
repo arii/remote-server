@@ -18,6 +18,11 @@ export interface NavBadgeCounts {
   queue: number | null;
 }
 
+// Shared list/badge poll cadence (60s + tab-visible refresh). Lives
+// here so App badges and the Review list refetch on the same clock
+// (issue #1116) instead of each hardcoding the interval.
+export const HEALTH_POLL_MS = 60_000;
+
 export const EMPTY_BADGE_COUNTS: NavBadgeCounts = {
   now: null,
   review: null,

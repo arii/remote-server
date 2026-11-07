@@ -11,6 +11,7 @@ import NowView, {
   AttentionSelectAll,
   attentionGroupKey,
   attentionTargetName,
+  cardDisplayTitle,
   DEPLOY_ACTION,
   fireHeroSegment,
   groupAttentionItems,
@@ -23,6 +24,7 @@ import NowView, {
   mergeServerSnoozed,
   NowEmptyState,
   NowHero,
+  partitionAttention,
   reconcileSnoozed,
   repoContextText,
   RepoTag,
@@ -140,6 +142,37 @@ describe('snoozedRows (issue #614)', () => {
       b: { until: 9, title: 'B' },
     };
     expect(snoozedRows(snoozed, ['b', 'c'])).toEqual([['a', snoozed.a]]);
+  });
+});
+
+describe('partitionAttention (issue #1109.6)', () => {
+  const item = (id: string): AttentionItem => ({
+    id,
+    kind: 'workflow',
+    title: 'console-e2e fails',
+    detail: '',
+    repo: 'remote-server',
+    severity: 'warn',
+    action: { label: 'x', method: 'GET', href: 'api/x', destructive: false, intent: 'x' },
+    created_at: 1,
+  });
+  it('passes everything through when nothing is snoozed', () => {
+    const items = [item('a'), item('b')];
+    expect(partitionAttention(items, {})).toEqual({ active: items, snoozed: [] });
+  });
+  it('moves snoozed members out of the actionable list', () => {
+    const items = [item('a'), item('b'), item('c')];
+    const snoozed = { b: { until: 9, title: 'B' }, c: { until: 9, title: 'C' } };
+    const { active, snoozed: moved } = partitionAttention(items, snoozed);
+    expect(active.map((i) => i.id)).toEqual(['a']);
+    expect(moved.map((i) => i.id)).toEqual(['b', 'c']);
+  });
+  it('keeps feed order within each side', () => {
+    const items = [item('s1'), item('a1'), item('s2')];
+    const snoozed = { s1: { until: 1, title: 'S1' }, s2: { until: 1, title: 'S2' } };
+    const { active, snoozed: moved } = partitionAttention(items, snoozed);
+    expect(active.map((i) => i.id)).toEqual(['a1']);
+    expect(moved.map((i) => i.id)).toEqual(['s1', 's2']);
   });
 });
 
@@ -667,6 +700,13 @@ describe('attention grouping (issue #839)', () => {
 
   it('keys groups on kind + title', () => {
     expect(attentionGroupKey(item())).toBe('failed-job‖check-notifications failed');
+  });
+
+  it('derives a card title from a bracket tag when the title is blank', () => {
+    expect(cardDisplayTitle(item({ title: '', detail: '[CI] 2 failing: build, e2e' }))).toBe('CI');
+    expect(cardDisplayTitle(item({ title: 'Attention', detail: '[E2E] smoke red' }))).toBe('E2E');
+    expect(cardDisplayTitle(item({ title: 'Failed job', detail: '[CI] x' }))).toBe('Failed job');
+    expect(cardDisplayTitle(item({ title: '', detail: 'plain detail' }))).toBe('');
   });
 
   it('folds repeats into one group in feed order with worst severity', () => {

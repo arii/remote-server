@@ -739,8 +739,27 @@ export function TraceTimeline({
 // Row title fallback (#960): the recorded final preview first,
 // else the user's own first prompt line, else the bare run id —
 // never an empty slot or a lone id when words exist.
+// Data-blob previews (issue #1109.7) read as dumps, not titles:
+// triage-style runs record "**repo** - triage_counts: 'open_prs…".
+// Those cards show the human action instead; the full blob stays
+// one tap away in the run detail.
+const BLOB_PREVIEW_RE = /^\*\*.+?\*\*\s*-\s*[A-Za-z_][\w]*\s*:/;
+
+export function runActionLabel(run: AgentRun): string {
+  const base = (run.script || '').split('/').pop()?.replace(/\.py$/, '') ?? '';
+  const words = base
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1));
+  return words.length > 0 ? words.join(' ') : run.id;
+}
+
 export function runTitle(run: AgentRun): string {
-  return run.preview || run.prompt_first_line || run.id;
+  const preview = (run.preview || '').trim();
+  if (preview && !BLOB_PREVIEW_RE.test(preview)) return preview;
+  if (run.prompt_first_line) return run.prompt_first_line;
+  if (!preview) return run.id;
+  return runActionLabel(run);
 }
 
 export function runMeta(run: AgentRun): string {

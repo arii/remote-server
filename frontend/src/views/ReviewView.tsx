@@ -23,6 +23,7 @@ import {
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
+import { HEALTH_POLL_MS } from '../tabBadges';
 import { approveBlockReason, approveMergeEligible, detailsMergeBlockReason, isDependabotPr, isOwnPr, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
@@ -1683,8 +1684,20 @@ export default function ReviewView({
     setError(null);
     setBulkSelected(new Set());
     void loadLists();
+    // Stale-list guard (issue #1116): the nav badge refetches on
+    // this same clock plus tab-visible; the list used to freeze at
+    // repo-select time, showing merged PRs and hiding open ones.
+    const timer = window.setInterval(() => {
+      void loadLists();
+    }, HEALTH_POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void loadLists();
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       loadGen.current++;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
