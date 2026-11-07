@@ -127,10 +127,16 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
     runs_data = json.loads(runs_out)
     runs_list = (runs_data.get("workflow_runs")
                  or runs_data.get("workflowRuns") or [])
+    # Repo-level signal only (issue #1150): pull_request-event runs are
+    # branch CI for unmerged PRs, not the repo's health. Surfacing them
+    # pins PR-branch failures (e.g. a release-train PR) as crit cards
+    # on the repo feed while main stays green. Push, schedule, and
+    # dispatch events still page.
     failing = [r for r in runs_list
-               if r.get("conclusion") == "failure"
-               or (r.get("conclusion") is None
-                   and r.get("status") == "failure")][:5]
+               if (r.get("conclusion") == "failure"
+                   or (r.get("conclusion") is None
+                       and r.get("status") == "failure"))
+               and r.get("event") != "pull_request"][:5]
     run_ids = [fr.get("id") for fr in failing]
     with ThreadPoolExecutor(max_workers=10) as pool:
         jobs_futs = [pool.submit(_fetch_run_jobs, gh, rid)
