@@ -15,7 +15,14 @@ import ChatView from './ChatView';
 type FrameState = 'loading' | 'live' | 'error';
 const FRAME_LOAD_TIMEOUT_MS = 20_000;
 
-export function bannerTextFor(state: AgentBrowserState, currentStep: string | null): string {
+export function bannerTextFor(
+  state: AgentBrowserState,
+  currentStep: string | null,
+  handoffReason: string | null = null,
+): string {
+  // A pending agent-initiated handoff outranks every other banner: a
+  // stalled wait must never look like a working session (#1097).
+  if (handoffReason) return `Waiting for you — ${handoffReason}`;
   if (state === 'PAUSED_BY_USER') return 'Manual control active — agent paused';
   if (state === 'RUNNING') {
     return currentStep
@@ -28,18 +35,24 @@ export function bannerTextFor(state: AgentBrowserState, currentStep: string | nu
 export default function CoBrowsingDrawer({
   browserState,
   currentStep,
+  handoffReason = null,
+  handoffUrl = null,
   iframeSrc,
   repo,
   error,
   onResume,
+  onHandBack = null,
   onClose,
 }: {
   browserState: AgentBrowserState;
   currentStep: string | null;
+  handoffReason?: string | null;
+  handoffUrl?: string | null;
   iframeSrc: string;
   repo: string;
   error: string | null;
   onResume: () => void;
+  onHandBack?: (() => void) | null;
   onClose: () => void;
 }) {
   const [frameState, setFrameState] = useState<FrameState>('loading');
@@ -62,8 +75,13 @@ export default function CoBrowsingDrawer({
         <div>
           <span className="row-title">Shared browser</span>{' '}
           <span className="row-meta" role="status" data-testid="cobrowse-status">
-            {bannerTextFor(browserState, currentStep)}
+            {bannerTextFor(browserState, currentStep, handoffReason)}
           </span>
+          {handoffReason && handoffUrl && (
+            <span className="row-meta" data-testid="cobrowse-handoff-url">
+              Stuck on: {handoffUrl}
+            </span>
+          )}
         </div>
         {error && (
           <p role="alert" data-testid="cobrowse-error">
@@ -71,10 +89,16 @@ export default function CoBrowsingDrawer({
           </p>
         )}
         <div className="actions">
-          {browserState === 'PAUSED_BY_USER' && (
-            <button type="button" data-testid="cobrowse-resume" onClick={onResume}>
-              Resume agent
+          {handoffReason && onHandBack ? (
+            <button type="button" data-testid="cobrowse-handback" onClick={onHandBack}>
+              Hand back
             </button>
+          ) : (
+            browserState === 'PAUSED_BY_USER' && (
+              <button type="button" data-testid="cobrowse-resume" onClick={onResume}>
+                Resume agent
+              </button>
+            )
           )}{' '}
           <button type="button" data-testid="cobrowse-close" onClick={onClose}>
             Close

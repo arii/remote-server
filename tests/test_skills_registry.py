@@ -68,13 +68,13 @@ class TestInjection(unittest.TestCase):
 
 
 class TestRepoSkills(unittest.TestCase):
-    def test_all_five_core_skills_present(self):
+    def test_all_core_skills_present(self):
         reg = SkillsRegistry(skills_dir=__import__("pathlib").Path(REPO_SKILLS))
         self.assertEqual(
             reg.skill_names(),
             ["architectural_audit_rubric", "co_browsing_state_takeover",
-             "coder_root_cause_analysis", "shared_browser_access",
-             "write_spec_issue"])
+             "cobrowse_handoff_specialist", "coder_root_cause_analysis",
+             "shared_browser_access", "write_spec_issue"])
 
     def test_repo_node_wiring(self):
         from pathlib import Path
