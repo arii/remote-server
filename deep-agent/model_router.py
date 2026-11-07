@@ -330,6 +330,29 @@ def chat_kwargs(spec):
 PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
 
 
+def build_chat_model(spec=None, think=False):
+    """Container-correct chat model (Ollama no-think default). Venv-only.
+
+    resolve_llm() picks the backend (Ollama when reachable, else the
+    Nebius fallback with spend-cap choke); chat_kwargs() supplies the
+    provider-correct constructor args including the in-container
+    Ollama base_url. Returns (model, spec).
+    """
+    import os  # noqa: E402
+
+    spec = dict(spec) if spec else resolve_llm()
+    kwargs = chat_kwargs(spec)
+    if spec.get("provider") == "ollama":
+        from langchain_ollama import ChatOllama  # noqa: E402
+
+        if not think:
+            kwargs["model_kwargs"] = {"think": False}
+        return ChatOllama(**kwargs), spec
+    from langchain_openai import ChatOpenAI  # noqa: E402
+
+    return ChatOpenAI(api_key=os.environ["NEBIUS_API_KEY"], **kwargs), spec
+
+
 def disable_general_purpose(spec):
     """Disable the auto-added general-purpose subagent for one model.
 
