@@ -885,7 +885,13 @@ def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
         _launch(run_id, action, repo, td_argv=list(td_argv) or None)
     except Exception as exc:
         # Same release as start_run: a failed launch must not wedge
-        # the engine.
+        # the engine. Record the error on the RUN record too (#1125:
+        # a launch failure — e.g. _repo_target rejecting a repo whose
+        # checkout git is corrupt — otherwise leaves exit 1 with
+        # EMPTY output, since execute_run never starts and the
+        # schedule result alone never reaches the run-detail
+        # endpoint).
+        registry.append(run_id, f"error: {exc}\n")
         registry.finish_run(run_id, 1)
         _record_schedule_result(
             sid, {"ok": False, "at": now, "error": str(exc)[:300]})
