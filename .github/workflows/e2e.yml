@@ -56,6 +56,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: install backend deps
         run: pip install -r backend/requirements.txt
@@ -66,9 +67,21 @@ jobs:
       - name: install boomtick td CLI
         run: pip install "git+https://github.com/arii/boomtick.git@cli-v0.20.0#subdirectory=cli"
 
+      - name: cache e2e npm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-e2e-npm-${{ hashFiles('tests/e2e/package-lock.json') }}
+
       - name: install e2e deps
         run: npm ci
         working-directory: tests/e2e
+
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('tests/e2e/package-lock.json') }}
 
       - name: typecheck suite
         run: npm run typecheck

@@ -88,6 +88,44 @@ class ValidateTdCommandTest(unittest.TestCase):
         self.assertIsNone(engine.validate_td_command("td gh audit-pr --pr 12"))
 
 
+class TdRunFailureMessageTest(unittest.TestCase):
+    """td prints handled errors as JSON on stdout with empty stderr
+    (observed: `td --json repo workflow-runs` exits 1 silently in CI).
+    Raising bare "command failed" buries the cause; surface td's own
+    message instead."""
+
+    @staticmethod
+    def _runner(proc):
+        class Runner:
+            def run(self, *args, **kwargs):
+                return proc
+        return Runner()
+
+    def test_json_error_on_stdout_names_cause(self):
+        proc = FakeProc(
+            returncode=1, stderr="",
+            stdout=('{"status": "error", "message": '
+                    '"Missing GITHUB_TOKEN environment variable.", '
+                    '"type": "ValueError", "code": 1}'))
+        with self.assertRaises(RuntimeError) as ctx:
+            engine.td_run("td --json repo workflow-runs",
+                          runner=self._runner(proc))
+        self.assertIn("Missing GITHUB_TOKEN", str(ctx.exception))
+
+    def test_stderr_last_line_still_wins(self):
+        proc = FakeProc(returncode=2, stderr="boom\nlast line\n",
+                        stdout='{"status": "error"}')
+        with self.assertRaises(RuntimeError) as ctx:
+            engine.td_run("td doctor", runner=self._runner(proc))
+        self.assertEqual(str(ctx.exception), "last line")
+
+    def test_empty_both_stays_command_failed(self):
+        proc = FakeProc(returncode=1, stdout="", stderr="")
+        with self.assertRaises(RuntimeError) as ctx:
+            engine.td_run("td doctor", runner=self._runner(proc))
+        self.assertEqual(str(ctx.exception), "command failed")
+
+
 class ValidatePlanArgvTest(unittest.TestCase):
     def test_accept_builder_shapes(self):
         # Everything build_plan_argv produces must validate: the
