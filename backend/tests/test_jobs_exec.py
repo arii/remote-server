@@ -40,6 +40,48 @@ class DeployHealthGateTest(unittest.TestCase):
         self.assertNotIn("/buttons/api/status", gate)
 
 
+class CheckNotificationsScheduledContextTest(unittest.TestCase):
+    def test_scheduled_argv_env_cwd_for_boomtick(self):
+        # #1125: the scheduled check-notifications fires failed with
+        # exit 1 + empty output while the manual CLI shape exited 0.
+        # Pin the scheduler's exact invocation context (argv, env,
+        # cwd — not the manual shape) so a context regression fails
+        # here instead of silently in the 15-minute schedule.
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick",
+            "arii/boomtick", "/srv/remote-server")
+        self.assertIsNone(err)
+        self.assertEqual(steps, [[
+            sys.executable, "-m", "backend.notify_check",
+            "--repo", "boomtick", "--gh", "arii/boomtick"]])
+        env = engine.step_env(steps)
+        cwd = engine.step_cwd(steps)
+        self.assertIsNotNone(env)
+        self.assertTrue(
+            env["PYTHONPATH"].split(os.pathsep)[0] ==
+            engine.ENGINE_ROOT)
+        self.assertEqual(cwd, engine.ENGINE_ROOT)
+
+    def test_scheduled_module_resolves_in_context(self):
+        # The historical failure mode (2026-11-04): cwd shadowing
+        # PYTHONPATH so `-m backend.notify_check` dies with
+        # No module named. Run the module's no-network entry
+        # (--help) in the exact scheduled env/cwd and require
+        # exit 0 with usage on record.
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick",
+            "arii/boomtick", "/srv/remote-server")
+        self.assertIsNone(err)
+        env = engine.step_env(steps)
+        cwd = engine.step_cwd(steps)
+        out: list = []
+        code = engine.run_step_pipe(
+            [sys.executable, "-m", "backend.notify_check", "--help"],
+            out.append, env=env, cwd=cwd, timeout=60)
+        self.assertEqual(code, 0)
+        self.assertIn("usage:", "".join(out))
+
+
 class ValidateTdCommandTest(unittest.TestCase):
     def test_accept_exact_shapes(self):
         self.assertEqual(
