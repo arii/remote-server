@@ -29,7 +29,7 @@ def case(**over):
     return base
 
 
-def entry(script="ask_investigator.py", thread="t", tools=(),
+def entry(script="auditor.py", thread="t", tools=(),
           usage=None):
     return {
         "script": script,
@@ -244,12 +244,12 @@ class TestEvalLib(unittest.TestCase):
         try:
             self.assertEqual(eval_lib.ledger_line_count(name), 5)
             rows = eval_lib.new_ledger_entries(
-                name, old_count, "ask_investigator.py")
+                name, old_count, "auditor.py")
             self.assertEqual(len(rows), 1)
             self.assertEqual(eval_lib.entry_tools(rows[0]), ["grep_repo"])
             # Thread filter for the chat gate.
             rows = eval_lib.new_ledger_entries(
-                name, 0, "ask_investigator.py", thread="nope")
+                name, 0, "auditor.py", thread="nope")
             self.assertEqual(rows, [])
         finally:
             os.unlink(name)
@@ -267,6 +267,28 @@ class TestEvalLib(unittest.TestCase):
         code, out, _, timed_out = eval_lib.run_child(
             [sys.executable, "-c", "print('hi')"], 30)
         self.assertEqual((code, out.strip(), timed_out), (0, "hi", False))
+
+    def test_run_case_passes_thread_and_prompt(self):
+        # #1139: run_case drives auditor.py as
+        # [exe, SCRIPT, repo, thread, b64] with a test-* thread (so
+        # harness rows file metered=False).
+        with tempfile.TemporaryDirectory() as d:
+            ledger = os.path.join(d, "ledger.jsonl")
+            child = os.path.join(d, "child.py")
+            with open(child, "w") as f:
+                f.write(
+                    "import sys, base64\n"
+                    "thread = sys.argv[2]\n"
+                    "prompt = base64.b64decode(sys.argv[3]).decode()\n"
+                    "print(f'FINAL: ok {thread} {prompt}')\n"
+                )
+            c = case(name="docs-howto", prompt="where docs?")
+            with mock.patch.object(eval_ask, "SCRIPT", child):
+                res = eval_ask.run_case("o/r", c, sys.executable, 60,
+                                        ledger)
+            self.assertEqual(res["verdict"], "pass")
+            self.assertIn("test-ask-docs-howto", res["final_preview"])
+            self.assertIn("where docs?", res["final_preview"])
 
     def test_run_case_wires_ledger_snapshot(self):
         # run_case attributes only rows written during the run: a fake
@@ -381,6 +403,32 @@ class TestAllowlistSync(unittest.TestCase):
                 {"kind": "td", "command": bad})
             self.assertFalse(ok, bad)
             self.assertIsNone(validate_td_command(bad), bad)
+
+    def test_auditor_imports_allowlist_without_mirror(self):
+        # #1139: the ask entry lives in auditor.py; the td shapes must
+        # arrive via the engine import, never a hand mirror.
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "deep-agent", "auditor.py"),
+                  encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        assigns = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "ALLOWED_TD"
+                    for t in node.targets)
+        ]
+        self.assertEqual(assigns, [],
+                         "auditor.py hand-mirrors ALLOWED_TD")
+        imports = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module == "backend.exec.engine"
+            for a in node.names
+            if a.name == "ALLOWED_TD_COMMANDS"
+        ]
+        self.assertEqual(len(imports), 1,
+                         "auditor.py: ALLOWED_TD not imported from "
+                         "backend.exec.engine")
 
     def test_propose_td_case_uses_allowlisted_shape(self):
         root = os.path.join(os.path.dirname(__file__), "..")
