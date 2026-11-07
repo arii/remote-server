@@ -711,5 +711,51 @@ class SuperviseSeedTest(unittest.TestCase):
             jobs_mod._supervise_seed_path()))
 
 
+class LaunchFailureRecordTest(unittest.TestCase):
+    """Issue #1125 arm 2: a failed schedule launch (e.g. _repo_target
+    rejecting a repo whose checkout git is corrupt) must surface in
+    the RUN record — exit 1 with the error text, never empty output.
+    execute_run never starts on this path, and the schedule result
+    alone never reaches the run-detail endpoint. Uses a bogus repo
+    name (same ValueError launch path) so the test never depends on
+    a genuinely corrupt checkout."""
+
+    def setUp(self):
+        from backend.exec.engine import RunRegistry
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_sched = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+        os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = os.path.join(
+            self.tmp.name, "sched.json")
+        self.old_registry = jobs_mod.registry
+        jobs_mod.registry = RunRegistry(
+            store_path=os.path.join(self.tmp.name, "runs.json"))
+        self._seed_patch = patch.object(
+            jobs_mod, "_notify_seed_repos", return_value=[])
+        self._seed_patch.start()
+
+    def tearDown(self):
+        self._seed_patch.stop()
+        jobs_mod.registry = self.old_registry
+        if self.old_sched is None:
+            os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.old_sched
+        self.tmp.cleanup()
+
+    def test_launch_failure_records_error_in_run(self):
+        sched = {"action": "check-notifications",
+                 "repo": "no-such-repo-xyz", "td_argv": [],
+                 "cadence": "quarter-hourly", "enabled": True,
+                 "next_run": 0, "last_run": None, "last_result": {}}
+        jobs_mod._fire_action_schedule("deadbeef1234", sched, now=9999.0)
+        runs = [r for r in jobs_mod.registry.runs.values()
+                if r.get("action") == "check-notifications"]
+        self.assertTrue(runs, "schedule fire created no run record")
+        run = runs[-1]
+        self.assertTrue(run.get("done"))
+        self.assertEqual(run.get("exit_code"), 1)
+        self.assertIn("unknown repo", run.get("output", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
