@@ -73,18 +73,24 @@ class TestNoHardcodedCheckout(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         self.assertNotIsInstance(targets[0].value, ast.Constant,
                                  "retrieval.DB_DIR is hardcoded")
+        # ask_investigator no longer builds Chroma inline (#1113):
+        # its search rides retrieval.search_td, so no chroma path
+        # literal may remain (comments excluded — the exclusion-list
+        # note still names the dir). Paths come from helpers.
         with open(os.path.join(DEEP_AGENT, "ask_investigator.py")) as fh:
             tree = ast.parse(fh.read())
-        keywords = [
-            kw for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            for kw in node.keywords
-            if kw.arg == "persist_directory"
+        literals = [
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
         ]
-        self.assertTrue(keywords, "no persist_directory call")
-        for kw in keywords:
-            self.assertNotIsInstance(
-                kw.value, ast.Constant, "hardcoded persist_directory")
+        for lit in literals:
+            lowered = lit.lower()
+            for banned in ("chroma_db", "chroma.sqlite3",
+                           "persist_directory", "s5-docs"):
+                self.assertNotIn(
+                    banned, lowered,
+                    f"hardcoded chroma literal: {lit!r}")
 
 
 class TestRepoRoot(unittest.TestCase):
