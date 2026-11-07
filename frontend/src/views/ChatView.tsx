@@ -1507,6 +1507,14 @@ export type ResumeAction =
   | { kind: 'approval' }
   | { kind: 'none' };
 
+// 409 from POST /api/chat/stream means a turn is already live on the
+// session (retry race, double-send). The caller must attach to that
+// turn instead of erroring — the requested work is running. (#1130)
+export function isTurnInProgressError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /: 409\b/.test(msg);
+}
+
 export function resumeActionForStatus(
   status: { session_id: string; state: string; text: string; approval?: unknown } | null | undefined,
   sessionId: string,
@@ -2262,6 +2270,22 @@ export default function ChatView({
       await streamLive(text, sessionId);
       await refreshRunsQuiet(fetchAgentRuns, setRuns);
     } catch (err) {
+      if (isTurnInProgressError(err)) {
+        // A turn is already live on this session (retry race or
+        // double-send): attach to it instead of erroring. Drop the
+        // pair just appended so the resume path owns the trailing
+        // placeholder, then reuse the mount machinery — it reattaches
+        // to live output or backfills the finished answer. (#1130)
+        setMessages((m) => stripFailedRetryExchange(m, text));
+        const ctrl = new AbortController();
+        abortRef.current = ctrl;
+        try {
+          await resumeStoredTurn(sessionId, ctrl.signal, () => false);
+        } finally {
+          if (abortRef.current === ctrl) abortRef.current = null;
+        }
+        return;
+      }
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStreaming(false);
