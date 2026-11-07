@@ -1720,6 +1720,11 @@ export interface AgentBrowserStatus {
   current_step: string;
   requires_dom_refresh: boolean;
   updated_at: number;
+  // Agent-initiated handoff (#1097): reason/url while the agent is
+  // parked waiting for the human; all null when nothing is pending.
+  handoff_reason: string | null;
+  handoff_url: string | null;
+  handoff_requested_at: number | null;
 }
 
 // Shared-browser control (follow_up Issue 11): direct fetchApi, NOT
@@ -1733,6 +1738,18 @@ export function fetchAgentBrowserState(): Promise<AgentBrowserStatus> {
 export async function resumeAgentBrowser(): Promise<AgentBrowserStatus> {
   const resp = await fetchApi('api/agent/resume', { method: 'POST' });
   return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/resume');
+}
+
+// Handoff resolve (#1097): the human acted, so clear the wait and
+// resume with a mandatory DOM re-snapshot (post-handoff state).
+// Real-time control like pause/resume: direct fetchApi, never queued.
+export async function resolveHandoff(note?: string): Promise<AgentBrowserStatus> {
+  const resp = await fetchApi('api/agent/handoff/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: note ?? null }),
+  });
+  return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/handoff/resolve');
 }
 
 export function postAgentTurn(

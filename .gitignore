@@ -76,6 +76,7 @@ deep-agent/*
 !deep-agent/eval_pipeline.py
 !deep-agent/skills_registry.py
 !deep-agent/skills/
+!deep-agent/cobrowse_handoff.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
 # Present on disk (host bind mount, safe across container recreates),
