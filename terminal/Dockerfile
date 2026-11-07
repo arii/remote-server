@@ -30,7 +30,7 @@ ARG PI_VERSION=1.4.0
 # release — never float main. A floating ref means rebuilds can pull
 # unaudited upstream. Bumped together with Dockerfile by the
 # release-train batch; see docs/release-train.md.
-ARG BOOMTICK_CLI_REF=cli-v0.20.0
+ARG BOOMTICK_CLI_REF=cli-v0.21.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
@@ -84,8 +84,8 @@ RUN apt-get update \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
- && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 16 \
- && echo "boomtick ${BOOMTICK_CLI_REF} ships 16 MCP schemas (floor matches the release)" \
+ && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 15 \
+ && echo "boomtick ${BOOMTICK_CLI_REF} ships 15 MCP schemas (floor matches the release)" \
  && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
  && npm install -g /tmp/*.tgz \
  && rm -rf /tmp/boomtick /tmp/*.tgz \
