@@ -97,14 +97,14 @@ Baked into the terminal image (`/usr/local/bin/`):
    ```bash
    pi-review "review the latest PR diff"
    ```
-   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr_diff,mcp__boomtick__github_get_pr_reviews "$@"`.
-   Scopes tools strictly to PR diffs and reviews.
+   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr,mcp__boomtick__github_issue_comment "$@"`.
+   Scopes tools strictly to PR diffs (via `includeDiff`) and reviews.
 3. **`pi-triage`** (issue & CI triage):
    ```bash
    pi-triage "triage failing runs on tech-dancer"
    ```
-   Runs `pi --tools read,bash,mcp__boomtick__github_search_open_prs,mcp__boomtick__repo_read_ci_logs,mcp__boomtick__repo_get_changed_files "$@"`.
-   Scopes tools to PR search, CI logs, and changed file inspection.
+   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr,mcp__boomtick__repo_read_ci_logs,mcp__boomtick__github_issue_comment "$@"`.
+   Scopes tools to PR inspection, CI logs, and posting findings (open-PR search goes through `gh pr list` on bash).
 
 ### Selective tool exposure in `mcp.json`
 
@@ -117,10 +117,21 @@ Tool exposure can also be configured per MCP server via `toolExposure` in
     "boomtick": {
       "exposure": "direct",
       "toolExposure": {
-        "github_get_pr_diff": "direct",
-        "github_search_open_prs": "direct",
+        "boomtick_health": "direct",
+        "repo_read_agent_context": "direct",
         "repo_read_ci_logs": "direct",
-        "repo_get_changed_files": "direct",
+        "repo_run_tests": "direct",
+        "github_get_pr": "direct",
+        "github_issue_view": "direct",
+        "github_issue_update": "direct",
+        "github_issue_comment": "direct",
+        "github_create_issue": "direct",
+        "agent_submit_pr": "direct",
+        "td_init": "direct",
+        "td_rag": "direct",
+        "td_validate_issue": "direct",
+        "td_verify_scope": "direct",
+        "td_audit_worktree": "direct",
         "*.*": "hidden"
       }
     }
@@ -130,7 +141,7 @@ Tool exposure can also be configured per MCP server via `toolExposure` in
 
 Pi flags can also override tool visibility on demand:
 - `--no-mcp`: disables all MCP servers and their schemas.
-- `--tools <list>`: explicitly allowlists tools (e.g. `pi --tools read,bash,mcp__boomtick__github_get_pr_diff`).
+- `--tools <list>`: explicitly allowlists tools (e.g. `pi --tools read,bash,mcp__boomtick__github_get_pr`).
 
 ## BoomTick MCP tools (active 2026-10-27)
 
