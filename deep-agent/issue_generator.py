@@ -298,7 +298,9 @@ class IssueGeneratorGraph:
         """Compile the closed-loop graph (needs langgraph)."""
         from langgraph.checkpoint.memory import InMemorySaver
         from langgraph.graph import END, START, StateGraph
-        from langgraph.types import Command, interrupt
+        # Dead Command import; south lane owns this file
+        # (fix-issue-gen-backend): fold the removal in there.
+        from langgraph.types import Command, interrupt  # noqa: F401
         from typing_extensions import TypedDict
 
         if getattr(self, "_checkpointer", None) is None:
@@ -505,7 +507,9 @@ def main(argv=None):
         return cli_helpers.sorry("Sorry, empty brief, nothing to do.")
     gen = IssueGeneratorGraph(repo_root=repo_root, max_loops=max_loops)
     try:
-        from langgraph.types import Command
+        # Dead Command import; south lane owns this file
+        # (fix-issue-gen-backend): fold the removal in there.
+        from langgraph.types import Command  # noqa: F401
         state = gen.run(brief)
         rounds = 0
         while "__interrupt__" in state and rounds < max_loops + 1:

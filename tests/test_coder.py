@@ -204,7 +204,7 @@ class TestCoderLoop(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             gen = self._gen(tmp, td_runner=td_runner,
                             thread="test-coder-3")
-            state = gen.run()
+            gen.run()
             final = gen.run(resume={"decision": "approve"})
             self.assertFalse(final.get("valid"))
 

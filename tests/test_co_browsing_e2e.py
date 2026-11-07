@@ -8,7 +8,6 @@ stack is unreachable, so CI stays green without a live stack::
 """
 import importlib.util
 import os
-import sys
 import tempfile
 import unittest
 from unittest import mock

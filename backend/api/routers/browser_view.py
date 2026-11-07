@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import os
 import threading
@@ -769,7 +768,6 @@ async def self_test():
     try:
         bridge = CDPBridge(session_id)
         await bridge.connect()
-        t_click = None
 
         async def on_frame(params):
             # The bridge acks each frame on receipt; this only records.
@@ -785,7 +783,6 @@ async def self_test():
                            "background = '#' + Math.floor(Math.random()*"
                            "16777215).toString(16);}, 100);"})
         await asyncio.sleep(4)
-        t_click = time.monotonic()
         await bridge.click(640, 200)
         await asyncio.sleep(3)
         # Typing round-trip on a real input (focus guaranteed by key()).
