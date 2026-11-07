@@ -134,7 +134,7 @@ class Pipeline:
                  spec_model_fn=None, auto_approve_plan=True,
                  submit_pr=False, max_audit_cycles=MAX_AUDIT_CYCLES_DEFAULT,
                  thread_id=None, verification_commands=None,
-                 drive_limit=DRIVE_LIMIT_DEFAULT):
+                 drive_limit=DRIVE_LIMIT_DEFAULT, preview_url=None):
         self.repo = os.path.abspath(repo)
         self.intent = intent
         self.issue_id = issue_id
@@ -152,6 +152,7 @@ class Pipeline:
         self.thread_id = thread_id or f"pipeline-{int(time.time())}"
         self.verification_commands = list(verification_commands or [])
         self.drive_limit = drive_limit
+        self.preview_url = preview_url
         self.events = []
 
     def log(self, stage, message):
@@ -257,6 +258,7 @@ class Pipeline:
             # CHANGES_REQUESTED so the pipeline (not the auditor's
             # internal loop) owns the repair cycle.
             max_loops=1,
+            preview_url=self.preview_url,
             thread_id=f"{self.thread_id}-audit-{int(time.time())}")
         state = drive_to_settled(
             gen.run, gen.run, self._audit_policy, limit=self.drive_limit)

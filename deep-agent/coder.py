@@ -192,17 +192,66 @@ def build_model(model_override=None):
     spec = model_router.resolve_llm()
     if model_override:
         spec = dict(spec, model=model_override)
-    kwargs = model_router.chat_kwargs(spec)
     think = os.environ.get("CODER_THINK", "") == "1"
-    if spec["provider"] == "ollama":
-        from langchain_ollama import ChatOllama  # noqa: E402
+    return model_router.build_chat_model(spec=spec, think=think)
 
-        if not think:
-            kwargs["model_kwargs"] = {"think": False}
-        return ChatOllama(**kwargs), spec
-    from langchain_openai import ChatOpenAI  # noqa: E402
 
-    return ChatOpenAI(api_key=os.environ["NEBIUS_API_KEY"], **kwargs), spec
+def _default_plan_fn(brief, worktree_root, context):
+    """Out-of-the-box planner: model proposes plan + files, parsed
+    deterministically. Injectable seam is build_model (monkeypatch in
+    tests); the graph signature stays (brief, root, context)."""
+    model, _spec = build_model()
+    context = dict(context or {})
+    system = (context.get("skills") or "")
+    if system:
+        system = system.strip() + "\n\n---\n\n"
+    prompt = (
+        f"{system}Propose an implementation plan for this brief. "
+        "Reply with a numbered step list, one step per line, each "
+        "naming its files like [files: path1, path2]. "
+        "Keep it to the brief; no questions.\n\n"
+        f"Brief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
+    )
+    text = _model_text(model.invoke(prompt))
+    return {
+        "plan": text.strip(),
+        "allowed_files": files_named(text),
+        "verification_commands": [],
+    }
+
+
+def _default_implement_fn(brief, plan, worktree_root, errors):
+    """Out-of-the-box implementer: model returns notes text."""
+    model, _spec = build_model()
+    prompt = (
+        "Implement this plan in the worktree using the repo tools. "
+        "Reply with short implementation notes when done.\n\n"
+        f"Brief:\n{brief}\n\nPlan:\n{plan}\n\n"
+        f"Worktree: {worktree_root}\nErrors so far: {errors}"
+    )
+    return _model_text(model.invoke(prompt)).strip()
+
+
+def _model_text(reply):
+    """Text out of a model reply (content str or message object)."""
+    if isinstance(reply, str):
+        return reply
+    return str(getattr(reply, "content", reply) or "")
+
+
+def _inject_replanner_skills():
+    """Node-targeted skills for validated_replanner_node at replan
+    time (import-time PLAN_PROMPT injection is static; the replan
+    context must re-query the registry). Returns "" when the registry
+    is unavailable or has nothing for the node."""
+    try:
+        import skills_registry as _skills_registry
+        injected = _skills_registry.SkillsRegistry(
+        ).inject_skills_for_node(
+            "validated_replanner_node", PLAN_PROMPT)
+        return injected if injected != PLAN_PROMPT else ""
+    except Exception:
+        return ""
 
 
 def build_check_tool(worktree):
@@ -947,8 +996,8 @@ class InitCoderGraph:
         self.repo = repo
         self.issue_id = issue_id
         self.brief = brief
-        self.plan_fn = plan_fn
-        self.implement_fn = implement_fn
+        self.plan_fn = plan_fn or _default_plan_fn
+        self.implement_fn = implement_fn or _default_implement_fn
         self.td_runner = (td_runner if td_runner is not None
                           else self._default_td_runner)
         self.cmd_runner = (cmd_runner if cmd_runner is not None
@@ -1170,11 +1219,15 @@ class InitCoderGraph:
         def replan_node(state):
             if outer.plan_fn is None:
                 return {"fatal": "plan_fn is required"}
+            context = {"errors": state.get("errors", []),
+                       "gate": state.get("gate", {}),
+                       "replan": True}
+            skills_text = _inject_replanner_skills()
+            if skills_text:
+                context["skills"] = skills_text
             result = outer.plan_fn(
                 outer.brief, state.get("worktree_root", ""),
-                {"errors": state.get("errors", []),
-                 "gate": state.get("gate", {}),
-                 "replan": True})
+                context)
             return {"plan": result.get("plan", ""),
                     "allowed_files": list(result.get("allowed_files", [])),
                     "verification_commands": list(

@@ -1,6 +1,9 @@
 ---
-name: dispatch-brief
+name: dispatch_brief
 description: How to scope an implementation or repair brief for propose_action(kind='dispatch'). Use when the turn will propose a worktree session.
+trigger_nodes:
+  - intent_implement
+  - intent_fix
 ---
 
 # Dispatch Brief

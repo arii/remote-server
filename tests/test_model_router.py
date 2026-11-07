@@ -392,5 +392,52 @@ class TestSpendCapGate(unittest.TestCase):
         self.assertNotIn("stream_usage", ollama)
 
 
+class TestBuildChatModel(unittest.TestCase):
+    """Container-correct constructor (#1103): no bare ChatOllama."""
+
+    def test_ollama_uses_container_base_url(self):
+        import sys
+        import types
+
+        calls = []
+        fake_mod = types.ModuleType("langchain_ollama")
+
+        class FakeOllama:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        fake_mod.ChatOllama = FakeOllama
+        spec = {"provider": "ollama", "model": "qwen3:8b",
+                "base_url": "http://ollama:11434"}
+        with unittest.mock.patch.dict(
+                sys.modules, {"langchain_ollama": fake_mod}):
+            _model, out = model_router.build_chat_model(spec=spec)
+        self.assertEqual(out, spec)
+        self.assertEqual(calls[0]["base_url"], "http://ollama:11434")
+        self.assertEqual(calls[0]["model_kwargs"], {"think": False})
+
+    def test_nebius_gets_key_and_low_effort(self):
+        import sys
+        import types
+
+        calls = []
+        fake_mod = types.ModuleType("langchain_openai")
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+        fake_mod.ChatOpenAI = FakeOpenAI
+        spec = {"provider": "nebius", "model": "m",
+                "base_url": "https://nebius.example/v1"}
+        with unittest.mock.patch.dict(
+                sys.modules, {"langchain_openai": fake_mod}):
+            with mock.patch.dict(os.environ, {"NEBIUS_API_KEY": "k"}):
+                _model, out = model_router.build_chat_model(spec=spec)
+        self.assertEqual(out["provider"], "nebius")
+        self.assertEqual(calls[0]["api_key"], "k")
+        self.assertEqual(calls[0]["reasoning_effort"], "low")
+
+
 if __name__ == "__main__":
     unittest.main()

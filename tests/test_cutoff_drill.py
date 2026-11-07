@@ -146,7 +146,9 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertIn("deep-agent/**", text)
 
     def test_skill_content_has_no_muse(self):
-        skills = REPO_ROOT / "deep-agent" / "agent_skills"
+        self.assertFalse((REPO_ROOT / "deep-agent" / "agent_skills").exists(),
+                         "agent_skills/ unified into deep-agent/skills/ (#1103)")
+        skills = REPO_ROOT / "deep-agent" / "skills"
         problems = []
         for path in sorted(skills.rglob("*")):
             if not path.is_file():
