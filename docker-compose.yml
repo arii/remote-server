@@ -328,6 +328,13 @@ services:
       # localhost is this container itself — the reachable default is
       # the ollama service alias (issue #966). Host override wins.
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
+      # RAG index dir unification (#1094): `td rag index` persists to
+      # <repo>/.td_rag/chroma_db, and the server + entrypoint both
+      # follow S5_CHROMA_DIR — pin it at the in-container td output
+      # dir so a good build is actually watched and served. Without
+      # this, zero-exit builds land sqlite where nobody watches and
+      # /health reports missing forever.
+      S5_CHROMA_DIR: /home/ari/remote-server/.td_rag/chroma_db
       # Shared pause-state with the terminal pipeline (#1104): the
       # agent_control file lives on the buttons-data volume (already
       # mounted at /var/lib/buttons below); terminal mounts the same

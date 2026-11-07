@@ -82,6 +82,16 @@ echo "started $(date -u +%FT%TZ)" > "$BUILDING"
     rm -f "$BUILDING"
     exit 1
   fi
+  # #1094: a zero-exit build with no embedding backend writes only
+  # meta (no sqlite). The server reads INDEX_DIR, so a missing or
+  # empty sqlite here is a failed build, not a success — record it
+  # loudly instead of serving missing forever.
+  if [[ ! -s "$INDEX_DIR/chroma.sqlite3" ]]; then
+    echo "buttons-entrypoint: ERROR: index build produced no sqlite at $INDEX_DIR/chroma.sqlite3; queries degrade until the index is rebuilt" >&2
+    echo "index build produced no sqlite at $INDEX_DIR/chroma.sqlite3 (see $LOG)" > "$FAILED"
+    rm -f "$BUILDING"
+    exit 1
+  fi
   rm -f "$BUILDING"
   echo "buttons-entrypoint: background index build done"
 ) >> "$LOG" 2>&1 &
