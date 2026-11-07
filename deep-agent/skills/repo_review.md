@@ -1,6 +1,8 @@
 ---
-name: repo-review
+name: repo_review
 description: Systematic read-only code review with the repo tools. Use when the user asks for a review of code, a PR, or a change.
+trigger_nodes:
+  - intent_review
 ---
 
 # Repo Review

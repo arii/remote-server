@@ -101,6 +101,49 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(pipeline_mod.final_interrupt([]), {})
 
 
+class TestPreviewUrlThreading(unittest.TestCase):
+    """Pipeline preview_url reaches AuditorGraph (#1103)."""
+
+    def _run_stage_audit(self, **kwargs):
+        import auditor
+
+        seen = {}
+
+        class RecordingGraph:
+            def __init__(self, worktree_root, **kw):
+                seen.update(kw)
+                seen["worktree_root"] = worktree_root
+
+            def run(self, resume=None):  # pragma: no cover - never driven
+                raise AssertionError("drive is stubbed in this test")
+
+        real_graph = auditor.AuditorGraph
+        real_drive = pipeline_mod.drive_to_settled
+        auditor.AuditorGraph = RecordingGraph
+        pipeline_mod.drive_to_settled = (
+            lambda first, resume_fn, policy, limit=None: {
+                "valid": True, "verdict": {"status": "APPROVED"}})
+        try:
+            pipe = pipeline_mod.Pipeline(
+                repo="/tmp", intent="preview test",
+                preview_url=kwargs.get("preview_url"))
+            return pipe, pipe.stage_audit("/tmp/wt"), seen
+        finally:
+            auditor.AuditorGraph = real_graph
+            pipeline_mod.drive_to_settled = real_drive
+
+    def test_preview_url_reaches_auditor(self):
+        _pipe, (status, _state, _detail), seen = self._run_stage_audit(
+            preview_url="https://preview/x")
+        self.assertEqual(status, "APPROVED")
+        self.assertEqual(seen.get("preview_url"), "https://preview/x")
+
+    def test_preview_url_defaults_to_none(self):
+        _pipe, (_status, _state, _detail), seen = self._run_stage_audit()
+        self.assertIn("preview_url", seen)
+        self.assertIsNone(seen["preview_url"])
+
+
 class TestRouting(unittest.TestCase):
     def test_approved_submits_and_cleans(self):
         pipe = ScriptedPipeline(

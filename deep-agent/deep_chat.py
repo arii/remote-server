@@ -65,7 +65,7 @@ import observe  # noqa: E402
 import runs  # noqa: E402
 import tracing  # noqa: E402
 import intent  # noqa: E402
-import skills  # noqa: E402
+import skills_registry  # noqa: E402
 import decisions  # noqa: E402
 import impact  # noqa: E402
 
@@ -1093,9 +1093,14 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
     recorder.run_start("deep_chat.py", thread_id,
                        f"{spec['provider']}:{spec['model']}")
     saver, _, _holder = open_checkpointer()
+    # Intent-routed skills now live in the unified registry
+    # (skills/*.md with intent_* trigger nodes); the one-line intent
+    # hint still prefixes the injection.
+    skill_base = intent.hint(turn_intent) or ""
+    intent_hint = skills_registry.SkillsRegistry(
+    ).inject_skills_for_node(f"intent_{turn_intent}", skill_base)
     agent = build_agent(repo, saver, model=model, recorder=recorder,
-                        intent_hint=skills.system_addition(turn_intent)
-                        or None, spec=spec)
+                        intent_hint=intent_hint or None, spec=spec)
     config = {"configurable": {"thread_id": thread_id}}
     trimmed = trim_thread_history(agent, config)
     if trimmed:

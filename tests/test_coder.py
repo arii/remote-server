@@ -8,7 +8,9 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
@@ -218,6 +220,73 @@ class TestCoderLoop(unittest.TestCase):
                 thread_id="coder-test-4")
             final = gen.run()
             self.assertIn("td worktree create failed", final.get("fatal"))
+
+
+class FakeModel:
+    def __init__(self, text):
+        self.text = text
+        self.prompts = []
+
+    def invoke(self, prompt):
+        self.prompts.append(prompt)
+        return self.text
+
+
+class TestCoderDefaults(unittest.TestCase):
+    """Out-of-the-box fns (#1103): stage_code runs without test stubs."""
+
+    def test_defaults_wired_without_stubs(self):
+        gen = coder.InitCoderGraph(
+            repo="/tmp", issue_id=7, brief="Fix it",
+            td_runner=lambda args, cwd: (0, "{}"))
+        self.assertIs(gen.plan_fn, coder._default_plan_fn)
+        self.assertIs(gen.implement_fn, coder._default_implement_fn)
+
+    def test_explicit_fns_still_win(self):
+        plan = lambda b, r, c: {"plan": "P"}  # noqa: E731
+        gen = coder.InitCoderGraph(
+            repo="/tmp", issue_id=7, brief="Fix it", plan_fn=plan,
+            td_runner=lambda args, cwd: (0, "{}"))
+        self.assertIs(gen.plan_fn, plan)
+
+    def test_default_plan_parses_files(self):
+        fake = FakeModel("1. Add check [files: a.py, b.py]\n2. Wire it up")
+        with mock.patch.object(
+                coder, "build_model", return_value=(fake, {})):
+            out = coder._default_plan_fn("Fix it", "/tmp/wt", {"errors": []})
+        self.assertIn("Add check", out["plan"])
+        self.assertEqual(sorted(out["allowed_files"]), ["a.py", "b.py"])
+        self.assertEqual(out["verification_commands"], [])
+
+    def test_default_implement_returns_notes(self):
+        fake = FakeModel("implemented + verified")
+        with mock.patch.object(
+                coder, "build_model", return_value=(fake, {})):
+            notes = coder._default_implement_fn(
+                "Fix it", "plan", "/tmp/wt", [])
+        self.assertEqual(notes, "implemented + verified")
+
+    def test_replan_queries_registry_for_node(self):
+        seen = []
+
+        class Registry:
+            def inject_skills_for_node(self, node, base):
+                seen.append((node, base))
+                return base + "\n## skills"
+
+        fake_mod = types.ModuleType("skills_registry")
+        fake_mod.SkillsRegistry = Registry
+        with mock.patch.dict(sys.modules, {"skills_registry": fake_mod}):
+            text = coder._inject_replanner_skills()
+        self.assertTrue(seen)
+        node, base = seen[0]
+        self.assertEqual(node, "validated_replanner_node")
+        self.assertIn("## skills", text)
+
+    def test_replan_injection_failure_is_silent(self):
+        fake_mod = types.ModuleType("skills_registry")
+        with mock.patch.dict(sys.modules, {"skills_registry": fake_mod}):
+            self.assertEqual(coder._inject_replanner_skills(), "")
 
 
 if __name__ == "__main__":

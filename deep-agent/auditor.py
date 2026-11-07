@@ -56,11 +56,13 @@ def run_td_gate(command, worktree_root, timeout=300, runner=None,
 
 
 def run_td_audit_impact(worktree_root, top_k=25, timeout=300,
-                        runner=None):
+                        runner=None, preview_url=None):
     """td audit-impact --json; returns (ok, payload-or-error)."""
+    extra = ["--top-k", str(top_k)]
+    if preview_url:
+        extra += ["--preview-url", preview_url]
     return run_td_gate("audit-impact", worktree_root, timeout=timeout,
-                       runner=runner,
-                       extra_args=["--top-k", str(top_k)])
+                       runner=runner, extra_args=extra)
 
 
 def collect_gate_violations(named_payloads):
@@ -87,7 +89,8 @@ class AuditorGraph:
 
     def __init__(self, worktree_root, audit_fn=None, td_runner=None,
                  max_loops=MAX_AUDIT_LOOPS_DEFAULT, thread_id=None,
-                 spec_file=None, verification_commands=None):
+                 spec_file=None, verification_commands=None,
+                 preview_url=None):
         self.worktree_root = os.path.abspath(worktree_root)
         self.audit_fn = audit_fn
         self.td_runner = td_runner
@@ -95,6 +98,8 @@ class AuditorGraph:
         self.thread_id = thread_id or f"audit-{int(time.time())}"
         self.spec_file = spec_file
         self.verification_commands = list(verification_commands or [])
+        self.preview_url = preview_url
+        self.last_model_spec = None
 
     def hard_gate(self):
         """Zero-LLM deterministic gate.
@@ -106,8 +111,12 @@ class AuditorGraph:
         checks = ["audit-code", "audit-impact"]
         payloads, errors = {}, []
         for name in checks:
+            extra = None
+            if name == "audit-impact" and self.preview_url:
+                extra = ["--preview-url", self.preview_url]
             ok, payload = run_td_gate(name, self.worktree_root,
-                                      runner=self.td_runner)
+                                      runner=self.td_runner,
+                                      extra_args=extra)
             if not ok:
                 return False, payloads, [payload]
             payloads[name] = payload
@@ -164,10 +173,14 @@ class AuditorGraph:
         if self.audit_fn is not None:
             return self.audit_fn(gate_payload)
         from langchain.agents import create_agent
-        from langchain_ollama import ChatOllama
+        import model_router
         import ask_investigator
-        model = ChatOllama(model=os.environ.get("S5_AUDIT_MODEL",
-                                                "qwen3:8b"))
+        override = os.environ.get("S5_AUDIT_MODEL", "").strip()
+        spec = model_router.resolve_llm()
+        if override:
+            spec = dict(spec, model=override)
+        model, _spec = model_router.build_chat_model(spec=spec)
+        self.last_model_spec = dict(_spec)
         agent = create_agent(
             model, [ask_investigator.search_docs,
                     ask_investigator.read_repo_file,
@@ -252,8 +265,10 @@ class AuditorGraph:
                 calls, [f"valid={state.get('valid')}"],
                 (state.get("findings", "") or "")[:500],
                 reason="audit loop closed")
+            model_label = ((outer.last_model_spec or {}).get("model")
+                           or os.environ.get("S5_AUDIT_MODEL", "qwen3:8b"))
             ledger.record(
-                "auditor.py", os.environ.get("S5_AUDIT_MODEL", "qwen3:8b"),
+                "auditor.py", model_label,
                 outer.thread_id, [], time.time(),
                 extra={"valid": state.get("valid"),
                        "worktree_root": outer.worktree_root,

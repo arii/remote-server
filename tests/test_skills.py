@@ -1,53 +1,45 @@
-"""skills.py unit tests. Stdlib only, no langchain. Run: python3
-tests/test_skills.py"""
+"""Unified skill registry wiring tests (#1103). Stdlib only, no langchain.
+
+The old intent loader (deep-agent/skills.py + agent_skills/) is gone:
+intent-routed skills now live in deep-agent/skills/*.md with
+intent_* trigger nodes, injected through SkillsRegistry.
+"""
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
-import skills
+from skills_registry import SkillsRegistry
+
+REPO_SKILLS = os.path.join(
+    os.path.dirname(__file__), "..", "deep-agent", "skills")
 
 
-class TestLoader(unittest.TestCase):
-    def test_lists_shipped_skills(self):
-        names = skills.list_skills()
-        self.assertIn("repo-review", names)
-        self.assertIn("dispatch-brief", names)
-
-    def test_load_returns_body(self):
-        body = skills.load_skill("repo-review")
-        self.assertIn("# Repo Review", body)
-        self.assertIn("read-only", body)
-
-    def test_missing_skill_tolerated(self):
-        self.assertEqual(skills.load_skill("no-such-skill"), "")
-        self.assertEqual(skills.load_skill("../escape"), "")
-        self.assertEqual(skills.load_skill(""), "")
-
-    def test_frontmatter_parsed(self):
-        name, desc, _ = skills.parse_skill_file(
-            skills.skill_path("repo-review"))
-        self.assertEqual(name, "repo-review")
-        self.assertTrue(desc)
+def _reg():
+    from pathlib import Path
+    return SkillsRegistry(skills_dir=Path(REPO_SKILLS))
 
 
-class TestIntentMap(unittest.TestCase):
-    def test_review_loads_repo_review(self):
-        addition = skills.system_addition("review")
-        self.assertIn("# Repo Review", addition)
+class TestIntentWiring(unittest.TestCase):
+    def test_review_injects_repo_review(self):
+        out = _reg().inject_skills_for_node("intent_review", "hint")
+        self.assertIn("# Repo Review", out)
+        self.assertIn("hint", out)
 
-    def test_implement_loads_dispatch_brief(self):
-        addition = skills.system_addition("implement")
-        self.assertIn("# Dispatch Brief", addition)
-        self.assertIn("dispatch", addition)
+    def test_implement_and_fix_inject_dispatch_brief(self):
+        for node in ("intent_implement", "intent_fix"):
+            out = _reg().inject_skills_for_node(node, "hint")
+            self.assertIn("# Dispatch Brief", out, node)
 
-    def test_fix_loads_dispatch_brief(self):
-        self.assertIn("# Dispatch Brief", skills.system_addition("fix"))
+    def test_unknown_intent_returns_base_unchanged(self):
+        self.assertEqual(
+            _reg().inject_skills_for_node("intent_explain", "hint"), "hint")
 
-    def test_explain_loads_nothing(self):
-        self.assertEqual(skills.system_addition("explain"), "")
-        self.assertEqual(skills.system_addition("bogus"), "")
+    def test_moved_skills_registered(self):
+        names = _reg().skill_names()
+        self.assertIn("dispatch_brief", names)
+        self.assertIn("repo_review", names)
 
 
 class TestToolSurfaceGuardrail(unittest.TestCase):
@@ -61,8 +53,9 @@ class TestToolSurfaceGuardrail(unittest.TestCase):
                    "search_docs", "propose_action"}
         banned = ("mcp__", "mcp.", "shell", "exec(", "subprocess",
                   "td --", "gh pr", "gh issue", "npx", "docker ")
-        for name in skills.list_skills():
-            body = skills.load_skill(name)
+        reg = _reg()
+        for name in ("dispatch_brief", "repo_review"):
+            body = reg.load_skill(name)
             self.assertTrue(body, name)
             for token in banned:
                 self.assertNotIn(token, body, f"{name}: {token!r}")

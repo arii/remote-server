@@ -54,6 +54,69 @@ class TestRunTdAuditImpact(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(error)
 
+    def test_preview_url_flows_to_impact(self):
+        seen = []
+
+        def runner(args):
+            seen.append(list(args))
+            return _gate_ok(args)
+
+        ok, _ = auditor.run_td_audit_impact(
+            "/tmp", runner=runner, preview_url="https://x/preview")
+        self.assertTrue(ok)
+        self.assertIn("--preview-url", seen[0])
+        self.assertIn("https://x/preview", seen[0])
+
+    def test_no_preview_url_omits_flag(self):
+        seen = []
+
+        def runner(args):
+            seen.append(list(args))
+            return _gate_ok(args)
+
+        ok, _ = auditor.run_td_audit_impact("/tmp", runner=runner)
+        self.assertTrue(ok)
+        self.assertNotIn("--preview-url", seen[0])
+
+
+class TestHardGatePreviewUrl(unittest.TestCase):
+    def test_gate_passes_preview_url(self):
+        seen = []
+
+        def td_runner(args):
+            seen.append(list(args))
+            return 0, json.dumps({"status": "success", "passed": True,
+                                  "impacted_files": [], "violations": []})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = auditor.AuditorGraph(
+                tmp, td_runner=td_runner,
+                preview_url="https://x/preview",
+                thread_id="audit-test-preview")
+            valid, payloads, errors = gen.hard_gate()
+        self.assertTrue(valid, errors)
+        impact = [a for a in seen if a[0] == "audit-impact"]
+        self.assertTrue(impact)
+        self.assertIn("--preview-url", impact[0])
+        self.assertIn("https://x/preview", impact[0])
+
+    def test_gate_omits_preview_url_by_default(self):
+        seen = []
+
+        def td_runner(args):
+            seen.append(list(args))
+            return 0, json.dumps({"status": "success", "passed": True,
+                                  "impacted_files": [], "violations": []})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = auditor.AuditorGraph(
+                tmp, td_runner=td_runner, thread_id="audit-test-noprev")
+            valid, _, errors = gen.hard_gate()
+        self.assertTrue(valid, errors)
+        impact = [a for a in seen if a[0] == "audit-impact"]
+        self.assertTrue(impact)
+        self.assertNotIn("--preview-url", impact[0])
+
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langgraph)")
 class TestAuditorGraph(unittest.TestCase):

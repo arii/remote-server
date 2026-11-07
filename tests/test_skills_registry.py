@@ -74,7 +74,8 @@ class TestRepoSkills(unittest.TestCase):
             reg.skill_names(),
             ["architectural_audit_rubric", "co_browsing_state_takeover",
              "cobrowse_handoff_specialist", "coder_root_cause_analysis",
-             "shared_browser_access", "write_spec_issue"])
+             "dispatch_brief", "repo_review", "shared_browser_access",
+             "write_spec_issue"])
 
     def test_repo_node_wiring(self):
         from pathlib import Path
