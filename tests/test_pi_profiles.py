@@ -77,6 +77,15 @@ class TestPiProfiles(unittest.TestCase):
         self.assertEqual(exposure.get("repo_read_ci_logs"), "direct")
         self.assertEqual(exposure.get("repo_get_changed_files"), "direct")
         self.assertEqual(exposure.get("*.*"), "hidden")
+        # Lane-required deterministic tools stay directly callable
+        # (#1105): the wildcard hides everything not listed here.
+        for tool in ("td_init_and_rag", "td_validate_issue",
+                     "td_verify_scope", "td_audit_worktree",
+                     "repo_read_agent_context", "repo_run_tests",
+                     "worktree_create", "worktree_list",
+                     "worktree_remove", "agent_submit_pr",
+                     "github_get_pr", "github_issue_view"):
+            self.assertEqual(exposure.get(tool), "direct", tool)
 
     def test_docs_describe_tool_profiles_and_benchmarks(self):
         docs_path = os.path.join(self.repo_root, "docs", "pi-setup.md")

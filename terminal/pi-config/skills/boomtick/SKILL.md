@@ -50,13 +50,6 @@ Passing `branch: null`, `event: null`, or `repo: null` causes Zod validation err
   {"prNumber": 42, "repo": "arii/tech-dancer"}
   ```
 
-### `mcp__boomtick__repo_logs`
-- **Description:** Read git commit or run logs for a PR.
-- **Parameters:**
-  - `prNumber` (integer, required)
-  - `grep` (string, optional)
-  - `repo` (string, optional)
-
 ### Common GitHub Tools
 - `mcp__boomtick__github_search_open_prs`: accepts `repo` (optional string).
 - `mcp__boomtick__github_get_pr`: accepts `prNumber` (required integer), `repo` (optional string).
