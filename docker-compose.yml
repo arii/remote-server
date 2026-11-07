@@ -215,14 +215,14 @@ services:
     volumes:
       - ollama-data:/root/.ollama
     # Box has 32GB RAM (26.8GB usable); a 14b model needs ~10GB.
-    # 14G limit + 12 CPU cap keeps local inference from starving the stack.
+    # 14G limit + 8 CPU cap keeps local inference from starving the desktop/stack.
     deploy:
       resources:
         limits:
-          cpus: '12.0'
+          cpus: '8.0'
           memory: 14G
         reservations:
-          memory: 8G
+          memory: 6G
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
