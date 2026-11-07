@@ -81,9 +81,21 @@ def _index_state() -> str:
         return "unknown"
 
 
+def _index_chunks():
+    """Embedding row count for /health. Never raises: None when the
+    deep-agent tree is unavailable or the sqlite is unreadable."""
+    try:
+        import retrieval
+
+        return retrieval.index_chunks()
+    except Exception:
+        return None
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "index": _index_state()}
+    return {"ok": True, "index": _index_state(),
+            "index_chunks": _index_chunks()}
 
 
 _DIST = os.path.join(

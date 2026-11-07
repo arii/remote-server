@@ -20,11 +20,17 @@
 # Env (all optional): APP_ROOT (/app),
 # S5_CHROMA_DIR (index dir), OLLAMA_URL, OLLAMA_WAIT_SECS (5; sleep
 # between Ollama readiness probes), OLLAMA_TRIES (36 probes),
-# SKIP_INDEX_BUILD=1 (one-off shells via `docker compose run`).
+# SKIP_INDEX_BUILD=1 (one-off shells via `docker compose run`),
+# CHUNK_FLOOR (min embedding rows for a servable index, default 1000:
+# healthy builds hold ~3700, the stale #1119 build held 311).
 set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/app}"
 INDEX_DIR="${S5_CHROMA_DIR:-$APP_ROOT/deep-agent/chroma_db}"
+STACK="${BUTTONS_STACK:-$APP_ROOT}"
+SQLITE="$INDEX_DIR/chroma.sqlite3"
+TD_META="$STACK/.td_rag/meta.json"
+FLOOR="${CHUNK_FLOOR:-1000}"
 # Bare Ollama host: OLLAMA_URL ships with the /api/generate path in
 # compose (repair-worker convention), so strip it before appending
 # probe paths — same normalization as model_router._ollama_base
@@ -44,7 +50,45 @@ if [[ "${SKIP_INDEX_BUILD:-}" == "1" ]]; then
   exec "$@"
 fi
 
-if [[ -s "$INDEX_DIR/chroma.sqlite3" && ! -e "$BUILDING" ]]; then
+# Rebuild policy (#1119): a non-empty sqlite is not proof of a
+# servable index (stale thin builds serve zero hits while /health
+# says ready). Skip only when the sqlite holds at least FLOOR
+# embedding rows AND, for git checkouts, td's recorded SHA matches
+# HEAD. Anything else — missing/thin sqlite, missing meta, SHA
+# behind — rebuilds. Non-git stacks skip on thickness alone (no
+# HEAD to compare against).
+_chunks() {
+  python3 -c 'import pathlib,sqlite3,sys
+try:
+    uri = pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro"
+    con = sqlite3.connect(uri, uri=True)
+    print(con.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0])
+except Exception:
+    pass' "$SQLITE" 2>/dev/null
+}
+_stack_head() {
+  git -C "$STACK" rev-parse HEAD 2>/dev/null || true
+}
+_meta_sha() {
+  python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("last_indexed_sha", ""))
+except Exception:
+    pass' "$TD_META" 2>/dev/null
+}
+_skip_build() {
+  [[ -s "$SQLITE" ]] || return 1
+  local chunks head sha
+  chunks=$(_chunks)
+  [[ "$chunks" =~ ^[0-9]+$ ]] && (( chunks >= FLOOR )) || return 1
+  head=$(_stack_head)
+  [[ -z "$head" ]] && return 0
+  sha=$(_meta_sha)
+  [[ -n "$sha" && "$sha" == "$head" ]] || return 1
+  return 0
+}
+
+if [[ ! -e "$BUILDING" ]] && _skip_build; then
   echo "buttons-entrypoint: index present at $INDEX_DIR, skipping rebuild"
   rm -f "$FAILED"
   exec "$@"
@@ -73,9 +117,10 @@ echo "started $(date -u +%FT%TZ)" > "$BUILDING"
   done
   # Index the mounted live checkout, not the baked copy: /app has
   # no .git and goes stale on every deploy (BUTTONS_STACK doctrine
-  # in the Dockerfile). --full: this path runs only when no usable
-  # sqlite exists, so incremental state (stale SHA with wiped
-  # artifacts) must not no-op the build.
+  # in the Dockerfile). --full: this path runs when the index is
+  # missing, thin, or behind HEAD, so incremental state (stale SHA
+  # with wiped artifacts, changed embedding backend) must not
+  # no-op the build.
   if ! td rag index --repo-root "${BUTTONS_STACK:-$APP_ROOT}" --full; then
     echo "buttons-entrypoint: ERROR: index build failed; queries degrade until the index is rebuilt" >&2
     echo "index build failed (see $LOG)" > "$FAILED"
@@ -92,6 +137,26 @@ echo "started $(date -u +%FT%TZ)" > "$BUILDING"
     rm -f "$BUILDING"
     exit 1
   fi
+  # #1119: a fresh build must also prove thickness — a thin sqlite
+  # serves zero hits while looking healthy. Record what this build
+  # proved in build_meta.json (SHA + chunk count) for the next boot
+  # and for operators.
+  CHUNKS=$(_chunks)
+  if ! [[ "$CHUNKS" =~ ^[0-9]+$ ]] || (( CHUNKS < FLOOR )); then
+    echo "buttons-entrypoint: ERROR: index build produced only ${CHUNKS:-unreadable} chunks (floor $FLOOR); queries degrade until the index is rebuilt" >&2
+    echo "index build produced only ${CHUNKS:-unreadable} chunks at $INDEX_DIR/chroma.sqlite3 (floor $FLOOR, see $LOG)" > "$FAILED"
+    rm -f "$BUILDING"
+    exit 1
+  fi
+  python3 - "$INDEX_DIR/build_meta.json" "$(_stack_head)" "$CHUNKS" "$FLOOR" <<'EOF'
+import datetime, json, sys
+out, sha, chunks, floor = (sys.argv[1], sys.argv[2],
+                           int(sys.argv[3]), int(sys.argv[4]))
+json.dump({"sha": sha or None, "chunks": chunks, "floor": floor,
+           "built_at": datetime.datetime.now(
+               datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+          open(out, "w"), indent=2)
+EOF
   rm -f "$BUILDING"
   echo "buttons-entrypoint: background index build done"
 ) >> "$LOG" 2>&1 &

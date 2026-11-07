@@ -328,6 +328,11 @@ services:
       # localhost is this container itself — the reachable default is
       # the ollama service alias (issue #966). Host override wins.
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
+      # Playwright browser home (#1118): must match the Dockerfile
+      # bake path — the runtime HOME (/home/ari) differs from the
+      # bake user (root), so the default ~/.cache lookup misses the
+      # baked chromium. Set in the deployed config, not just baked.
+      PLAYWRIGHT_BROWSERS_PATH: /opt/ms-playwright
       # RAG index dir unification (#1094): `td rag index` persists to
       # <repo>/.td_rag/chroma_db, and the server + entrypoint both
       # follow S5_CHROMA_DIR — pin it at the in-container td output

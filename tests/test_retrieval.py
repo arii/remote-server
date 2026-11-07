@@ -116,6 +116,60 @@ class TestIndexReadiness(unittest.TestCase):
             finally:
                 del os.environ["S5_CHROMA_DIR"]
 
+class TestIndexChunks(unittest.TestCase):
+    """index_chunks(): embedding row count or None. Stdlib-only."""
+
+    def _chunks_in(self, d, files):
+        import sqlite3
+        for name, content in files.items():
+            path = os.path.join(d, name)
+            if isinstance(content, int):
+                with sqlite3.connect(path) as con:
+                    con.execute(
+                        "CREATE TABLE embeddings "
+                        "(id INTEGER PRIMARY KEY)")
+                    con.executemany(
+                        "INSERT INTO embeddings (id) VALUES (?)",
+                        [(i,) for i in range(content)])
+                    con.commit()
+            else:
+                with open(path, "wb") as f:
+                    f.write(content)
+        os.environ["S5_CHROMA_DIR"] = d
+        try:
+            return retrieval.index_chunks()
+        finally:
+            del os.environ["S5_CHROMA_DIR"]
+
+    def test_counts_embedding_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(
+                self._chunks_in(d, {"chroma.sqlite3": 3728}), 3728)
+
+    def test_missing_or_garbage_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(self._chunks_in(d, {}))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(self._chunks_in(
+                d, {"chroma.sqlite3": b"not-a-database"}))
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(self._chunks_in(
+                d, {"other.sqlite3": 10}))
+
+    def test_wrong_schema_is_none(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "chroma.sqlite3")
+            with sqlite3.connect(path) as con:
+                con.execute("CREATE TABLE other (id INTEGER)")
+                con.commit()
+            os.environ["S5_CHROMA_DIR"] = d
+            try:
+                self.assertIsNone(retrieval.index_chunks())
+            finally:
+                del os.environ["S5_CHROMA_DIR"]
+
+
 class TestTdQuery(unittest.TestCase):
     """td rag query path: JSON parsing, errors, formatting."""
 

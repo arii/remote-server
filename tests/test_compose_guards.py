@@ -179,6 +179,33 @@ class TestComposeGuards(unittest.TestCase):
              "/home/ari/remote-server/.td_rag/chroma_db"],
             "buttons must pin S5_CHROMA_DIR at the td output dir")
 
+    def test_buttons_playwright_browsers_path(self):
+        """buttons must pin the baked browser home (#1118).
+
+        The bake runs as root while the runtime sets HOME=/home/ari,
+        so the default ~/.cache lookup misses the baked chromium.
+        The compose pin must match the Dockerfile bake path.
+        """
+        with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        service = None
+        browser_lines = []
+        for line in lines:
+            if line and not line.startswith((" ", "\t", "#")):
+                service = None
+                continue
+            svc = re.match(r"^  ([A-Za-z0-9_.-]+):\s*(#.*)?$", line)
+            if svc:
+                service = svc.group(1)
+                continue
+            if service == "buttons" and re.match(
+                    r"^\s*PLAYWRIGHT_BROWSERS_PATH\s*:", line):
+                browser_lines.append(line.strip())
+        self.assertEqual(
+            browser_lines,
+            ["PLAYWRIGHT_BROWSERS_PATH: /opt/ms-playwright"],
+            "buttons must pin PLAYWRIGHT_BROWSERS_PATH at the bake dir")
+
     def test_terminal_requirements_parity(self):
         """terminal/requirements.txt must include all backend deps and pytest."""
         backend_req = os.path.join(ROOT, "backend", "requirements.txt")
