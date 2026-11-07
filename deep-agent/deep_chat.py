@@ -694,10 +694,13 @@ def build_model(prefer=None):
     kwargs = model_router.chat_kwargs(spec)
     # No-think is the production setting: on this CPU-only box a qwen3
     # thinking trace takes 15+ min per prompt. CHAT_THINK=1 re-enables.
+    # Bounded context for the same reason: the default Ollama window
+    # lets long turns blow out CPU latency. OLLAMA_NUM_CTX overrides.
     think = os.environ.get("CHAT_THINK", "") == "1"
     if spec["provider"] == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402
 
+        kwargs["num_ctx"] = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
         if not think:
             kwargs["model_kwargs"] = {"think": False}
         return ChatOllama(**kwargs), spec
