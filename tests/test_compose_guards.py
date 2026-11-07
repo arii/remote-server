@@ -149,6 +149,36 @@ class TestComposeGuards(unittest.TestCase):
             "terminal", mounts_buttons_data,
             "terminal must mount the shared buttons-data volume")
 
+    def test_chroma_dir_unified_on_td_output(self):
+        """buttons must watch the sqlite `td rag index` produces (#1094).
+
+        td persists to <repo>/.td_rag/chroma_db; the server and the
+        entrypoint both follow S5_CHROMA_DIR, so the buttons service
+        pins it at the in-container td output dir. Otherwise a
+        zero-exit build lands sqlite where nobody watches and
+        /health reports missing forever.
+        """
+        with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        service = None
+        chroma_lines = []
+        for line in lines:
+            if line and not line.startswith((" ", "\t", "#")):
+                service = None
+                continue
+            svc = re.match(r"^  ([A-Za-z0-9_.-]+):\s*(#.*)?$", line)
+            if svc:
+                service = svc.group(1)
+                continue
+            if service == "buttons" and re.match(
+                    r"^\s*S5_CHROMA_DIR\s*:", line):
+                chroma_lines.append(line.strip())
+        self.assertEqual(
+            chroma_lines,
+            ["S5_CHROMA_DIR: "
+             "/home/ari/remote-server/.td_rag/chroma_db"],
+            "buttons must pin S5_CHROMA_DIR at the td output dir")
+
     def test_terminal_requirements_parity(self):
         """terminal/requirements.txt must include all backend deps and pytest."""
         backend_req = os.path.join(ROOT, "backend", "requirements.txt")

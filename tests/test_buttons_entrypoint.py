@@ -229,18 +229,30 @@ class TestEntrypointBehavior(unittest.TestCase):
                 self.assertIn("http://127.0.0.1:9", body)
                 self.assertNotIn("/api/generate", body)
 
-    def _fake_app(self, root, build_exit=0):
+    def _fake_app(self, root, build_exit=0, write_sqlite=True):
         """Fake APP_ROOT: a fake `td` on a shim PATH records its
-        argv and the index build outcome."""
+        argv and the index build outcome. With write_sqlite it also
+        drops the sqlite artifact a real build produces, into the
+        S5_CHROMA_DIR the entrypoint watches; without it the shim
+        reproduces #1094's silent success (exit 0, no sqlite)."""
         bindir = os.path.join(root, "fakebin")
         os.makedirs(bindir)
         log = os.path.join(root, "td.log")
         marker = os.path.join(root, "built.marker")
+        if write_sqlite:
+            write_step = (
+                'if [ -n "$S5_CHROMA_DIR" ]; then '
+                'printf "fake-sqlite-bytes" > '
+                '"$S5_CHROMA_DIR/chroma.sqlite3"; fi\n'
+            )
+        else:
+            write_step = ""
         _write_exe(
             os.path.join(bindir, "td"),
             "#!/bin/sh\n"
             f'echo "td-argv: $*" >> "{log}"\n'
             f'echo "built" > "{marker}"\n'
+            f"{write_step}"
             f"exit {build_exit}\n")
         return bindir, log, marker
 
@@ -322,6 +334,34 @@ class TestEntrypointBehavior(unittest.TestCase):
                 self.assertTrue(
                     _wait_for(marker),
                     "background rebuild never ran")
+
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_silent_success_marks_failed(self):
+        # #1094: `td rag index` exits 0 while writing only meta (no
+        # embedding backend, no sqlite). The entrypoint must not
+        # report success then: missing sqlite after a zero-exit
+        # build records .index_failed just like a hard failure.
+        with tempfile.TemporaryDirectory() as app_root:
+            bindir, _, _ = self._fake_app(
+                app_root, build_exit=0, write_sqlite=False)
+            with tempfile.TemporaryDirectory() as index_dir:
+                proc = _run(
+                    ["echo", "silent-marker"],
+                    {"APP_ROOT": app_root,
+                     "S5_CHROMA_DIR": index_dir,
+                     "PATH": bindir + os.pathsep + os.environ.get(
+                         "PATH", "")})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("server starting now", proc.stdout)
+                self.assertIn("silent-marker", proc.stdout)
+                failed = os.path.join(index_dir, ".index_failed")
+                self.assertTrue(
+                    _wait_for(failed),
+                    "silent success never recorded its failure")
+                self.assertTrue(_wait_gone(os.path.join(
+                    index_dir, ".index_building")))
+                with open(failed, encoding="utf-8") as f:
+                    self.assertIn("chroma.sqlite3", f.read())
 
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
     def test_build_failure_boots_then_marks_failed(self):
