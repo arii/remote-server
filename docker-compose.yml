@@ -137,6 +137,10 @@ services:
       # over SSH as you. Requires github.com in the host ~/.ssh/known_hosts
       # (see the doc) — a read-only mount cannot add it on first connect.
       - ${HOST_HOME:-/home/ari}/.ssh:/root/.ssh:ro
+      # Shared co-browse pause-state (#1104): buttons writes
+      # AGENT_CONTROL_STATE_FILE here; pipeline.py reads it. RW —
+      # resumption clears requires_dom_refresh in place.
+      - buttons-data:/var/lib/buttons
     environment:
       TERM: xterm-256color
       PATH: /root/.local/bin:/opt/venvs/td/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -161,6 +165,9 @@ services:
       # Shared headed browser (Solution A): Selenium Grid base for agent
       # CDP sessions. The service must exist; there is no fail-safe.
       BROWSER_ENDPOINT: http://browser:4444
+      # Same pause-state file as buttons (#1104); /tmp is per-container
+      # and would split-brain the pause across the takeover boundary.
+      AGENT_CONTROL_STATE_FILE: /var/lib/buttons/agent_control_state.json
     expose:
       - "7681" # compose network only; the only ingress is via oauth2-proxy
     depends_on:
@@ -321,6 +328,12 @@ services:
       # localhost is this container itself — the reachable default is
       # the ollama service alias (issue #966). Host override wins.
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
+      # Shared pause-state with the terminal pipeline (#1104): the
+      # agent_control file lives on the buttons-data volume (already
+      # mounted at /var/lib/buttons below); terminal mounts the same
+      # volume so takeover pauses pipeline runs across containers.
+      # /tmp is per-container and would split-brain the pause.
+      AGENT_CONTROL_STATE_FILE: /var/lib/buttons/agent_control_state.json
     expose:
       - "8000" # compose network only; ingress is via oauth2-proxy -> caddy
     # init reaps the entrypoint's background index build (#699).

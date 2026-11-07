@@ -2,9 +2,10 @@
 
 Atomic state transitions (RUNNING <-> PAUSED_BY_USER) backed by a
 shared JSON state file, so FastAPI and CLI worker processes
-(deep-agent/pipeline.py) read and write the same lock. Override the
-file location with AGENT_CONTROL_STATE_FILE when backend and workers
-do not share /tmp (e.g. point both at a checkout-relative path).
+(deep-agent/pipeline.py) read and write the same lock. Compose sets
+AGENT_CONTROL_STATE_FILE to /var/lib/buttons/agent_control_state.json
+on buttons and terminal (shared buttons-data volume); /tmp is
+per-container and would split-brain the pause (#1104).
 """
 
 from __future__ import annotations

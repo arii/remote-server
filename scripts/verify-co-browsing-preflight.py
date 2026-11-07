@@ -77,6 +77,16 @@ def http_post(url, timeout=10):
         raise MissingTool(f"{url} unreachable: {exc}")
 
 
+# Grid Chrome flags, single-sourced so tests pin them (#1104):
+# --disable-dev-shm-usage complements the container shm_size, same
+# as browser_view.py — /dev/shm exhaustion SIGKILLs renderers.
+GRID_CHROME_ARGS = [
+    "--user-data-dir=/data/shared-browser/agent",
+    "--enable-features=WebMCP",
+    "--disable-dev-shm-usage",
+]
+
+
 def grid_cdp_ws_url(session_id):
     """Per-session CDP websocket URL, the same way browser_cdp derives it."""
     parts = urllib.parse.urlsplit(BROWSER_HTTP)
@@ -96,10 +106,8 @@ def create_grid_session():
         data=json.dumps(
             {"capabilities": {"alwaysMatch": {
                 "browserName": "chrome",
-                "goog:chromeOptions": {"args": [
-                    "--user-data-dir=/data/shared-browser/agent",
-                    "--enable-features=WebMCP"]}}
-             }}).encode("utf-8"),
+                "goog:chromeOptions": {"args": list(GRID_CHROME_ARGS)}}}
+             }).encode("utf-8"),
         headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

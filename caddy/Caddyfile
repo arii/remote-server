@@ -26,7 +26,7 @@
 	# CDP input relay, no VNC in the loop. The viewer is served by
 	# the buttons backend at /cdp-stream (pass the prefix through).
 	handle /cdp-stream* {
-		header -X-FrameOptions
+		header -X-Frame-Options
 		reverse_proxy buttons:8000 {
 			transport http {
 				dial_timeout 10s
