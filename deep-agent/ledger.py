@@ -81,18 +81,17 @@ def _model_provider(model):
 def _is_test_thread(thread_id):
     """True for test-harness threads, which never meter.
 
-    Unit tests that forget to redirect LEDGER write here (the
-    test-thread-2 / coder-test-2 rows behind issue #1121); test
-    traffic must never fail-close the Nebius spend gate. Boundary
-    aware so real threads like `latest-run` never match. Never
-    raises.
+    Opt-in by prefix, never by substring: harness threads MUST be
+    named `test-*` (a substring rule would silently zero real
+    production spend on threads like `latest-test-run`). Unit
+    tests that forget to redirect LEDGER write here; test traffic
+    must never fail-close the Nebius spend gate. Never raises.
     """
     try:
         tid = str(thread_id or "")
     except Exception:
         return False
-    return (tid == "test" or tid.startswith("test-")
-            or tid.endswith("-test") or "-test-" in tid)
+    return tid == "test" or tid.startswith("test-")
 
 
 def record(script, model, thread_id, messages, started, extra=None,

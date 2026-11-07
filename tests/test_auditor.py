@@ -92,7 +92,7 @@ class TestHardGatePreviewUrl(unittest.TestCase):
             gen = auditor.AuditorGraph(
                 tmp, td_runner=td_runner,
                 preview_url="https://x/preview",
-                thread_id="audit-test-preview")
+                thread_id="test-audit-preview")
             valid, payloads, errors = gen.hard_gate()
         self.assertTrue(valid, errors)
         impact = [a for a in seen if a[0] == "audit-impact"]
@@ -110,7 +110,7 @@ class TestHardGatePreviewUrl(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             gen = auditor.AuditorGraph(
-                tmp, td_runner=td_runner, thread_id="audit-test-noprev")
+                tmp, td_runner=td_runner, thread_id="test-audit-noprev")
             valid, _, errors = gen.hard_gate()
         self.assertTrue(valid, errors)
         impact = [a for a in seen if a[0] == "audit-impact"]
@@ -131,7 +131,7 @@ class TestAuditorGraph(unittest.TestCase):
         ledger.LEDGER = self._ledger_prev
         self._ledger_tmp.cleanup()
 
-    def _gen(self, tmp, td_runner=None, thread="audit-test-1"):
+    def _gen(self, tmp, td_runner=None, thread="test-audit-1"):
         return auditor.AuditorGraph(
             tmp, audit_fn=lambda gate: "1. Fix the naming.",
             td_runner=td_runner or _gate_ok, thread_id=thread)
@@ -149,7 +149,7 @@ class TestAuditorGraph(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             gen = self._gen(tmp, td_runner=td_runner,
-                            thread="audit-test-fail")
+                            thread="test-audit-fail")
             final = gen.run()
             self.assertFalse(final.get("valid"))
             self.assertNotIn("__interrupt__", final)
@@ -171,7 +171,7 @@ class TestAuditorGraph(unittest.TestCase):
                 handle.write("# spec\n")
             gen = auditor.AuditorGraph(
                 tmp, audit_fn=lambda gate: "ok",
-                td_runner=td_runner, thread_id="audit-test-spec",
+                td_runner=td_runner, thread_id="test-audit-spec",
                 spec_file=spec)
             state = gen.run()
             self.assertIn("__interrupt__", state)
@@ -184,7 +184,7 @@ class TestAuditorGraph(unittest.TestCase):
             old = ledger.LEDGER
             ledger.LEDGER = ledger_path
             try:
-                gen = self._gen(tmp, thread="audit-test-verdict")
+                gen = self._gen(tmp, thread="test-audit-verdict")
                 gen.run()
                 final = gen.run(resume={"decision": "approve"})
             finally:
@@ -199,7 +199,7 @@ class TestAuditorGraph(unittest.TestCase):
             old = ledger.LEDGER
             ledger.LEDGER = ledger_path
             try:
-                gen = self._gen(tmp, thread="audit-test-ok")
+                gen = self._gen(tmp, thread="test-audit-ok")
                 state = gen.run()
                 self.assertIn("__interrupt__", state)
                 final = gen.run(resume={"decision": "approve"})
@@ -220,7 +220,7 @@ class TestAuditorGraph(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             gen = self._gen(tmp, td_runner=td_runner,
-                            thread="audit-test-reject")
+                            thread="test-audit-reject")
             state = gen.run()
             state = gen.run(resume={"decision": "reject",
                                     "notes": "say more"})

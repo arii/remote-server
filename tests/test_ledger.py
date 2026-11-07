@@ -159,7 +159,7 @@ class TestRecord(unittest.TestCase):
         self.assertIsNone(entry["cost_usd"])
 
     def test_test_threads_never_meter(self):
-        for thread in ("test-thread-2", "coder-test-2"):
+        for thread in ("test-thread-2", "test-coder-2"):
             entry = ledger.record(
                 "s.py", "nebius:zai-org/GLM-5.3-Flash", thread, [],
                 time.time(),
@@ -169,10 +169,15 @@ class TestRecord(unittest.TestCase):
             self.assertEqual(entry["cost_usd"], 0.0)
             self.assertEqual(entry["provider"], "nebius")
 
-    def test_thread_match_is_boundary_aware(self):
+    def test_thread_match_is_prefix_only(self):
         self.assertTrue(ledger._is_test_thread("test-thread-2"))
-        self.assertTrue(ledger._is_test_thread("coder-test-2"))
+        self.assertTrue(ledger._is_test_thread("test-coder-2"))
         self.assertTrue(ledger._is_test_thread("test"))
+        # Substrings must never match: a real production thread
+        # like these bills normally even on the metered path.
+        self.assertFalse(ledger._is_test_thread("coder-test-2"))
+        self.assertFalse(ledger._is_test_thread("latest-test-run"))
+        self.assertFalse(ledger._is_test_thread("sprint-test-plan"))
         self.assertFalse(ledger._is_test_thread("latest-run"))
         self.assertFalse(ledger._is_test_thread("issuegen-123"))
         self.assertFalse(ledger._is_test_thread(None))
