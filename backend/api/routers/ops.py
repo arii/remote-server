@@ -118,7 +118,12 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
     """
     from backend.exec.engine import td_run
 
-    runs_out = td_run("td --json repo workflow-runs", timeout=45)
+    # Explicit --repo: never depend on td's upward config discovery
+    # from the worker cwd (a missing github_repo reads as a silent
+    # exit-1 with empty stderr in CI).
+    runs_out = td_run(
+        f"td --json repo workflow-runs --repo {shlex.quote(gh)}",
+        timeout=45)
     runs_data = json.loads(runs_out)
     runs_list = (runs_data.get("workflow_runs")
                  or runs_data.get("workflowRuns") or [])
