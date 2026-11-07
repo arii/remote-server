@@ -55,6 +55,15 @@ ASK_TOOL_NAMES = (
 )
 
 
+class ModelUnavailableError(RuntimeError):
+    """Resolve/build-model failure (fail-closed, no model to ask).
+
+    Caught by the ask driver for the sorry/invalid shape. Deliberately
+    distinct from RuntimeError so agent/tool bugs never route here
+    (issue #1157).
+    """
+
+
 def _message_tool_calls(message):
     """Tool-call dicts on one agent message (object or plain dict)."""
     calls = (message.get("tool_calls") if isinstance(message, dict)
@@ -279,39 +288,59 @@ class AuditorGraph:
 
         if not s5tools.valid_repo(repo):
             raise ValueError(f"bad repo: {repo!r}")
+        # The ask tools read repo scope from module globals (the old
+        # CLI's pattern); restore on the way out so concurrent or later
+        # consumers never inherit eval scope (issue #1157).
+        prev_repo = getattr(ask_investigator, "_repo", "")
+        prev_checkout = getattr(ask_investigator, "_checkout", "")
         ask_investigator._repo = repo
         ask_investigator._checkout = s5tools.checkout_for(repo)
-        tools = [getattr(ask_investigator, name)
-                 for name in ASK_TOOL_NAMES]
-        from backend.exec.engine import (
-            ALLOWED_TD_COMMANDS as allowed_td)
-        system = (f"Repo: {repo}. " + ASK_SYSTEM.format(
-            allowed_td="\n".join(allowed_td)))
-        if agent_factory is None:
-            import model_router
+        try:
+            tools = [getattr(ask_investigator, name)
+                     for name in ASK_TOOL_NAMES]
+            from backend.exec.engine import (
+                ALLOWED_TD_COMMANDS as allowed_td)
+            system = (f"Repo: {repo}. " + ASK_SYSTEM.format(
+                allowed_td="\n".join(allowed_td)))
+            if agent_factory is None:
+                import model_router
 
-            spec = model_router.resolve_llm()
-            override = os.environ.get("S5_AUDIT_MODEL", "").strip()
-            if override:
-                spec = dict(spec, model=override)
-            think = os.environ.get("ASK_THINK", "") == "1"
-            model, resolved = model_router.build_chat_model(
-                spec=spec, think=think)
-            model_label = (f"{resolved.get('provider')}:"
-                           f"{resolved.get('model')}")
-            from langchain.agents import create_agent
+                try:
+                    spec = model_router.resolve_llm()
+                except RuntimeError as exc:
+                    raise ModelUnavailableError(str(exc)) from exc
+                override = os.environ.get("S5_AUDIT_MODEL", "").strip()
+                if override:
+                    spec = dict(spec, model=override)
+                think = os.environ.get("ASK_THINK", "") == "1"
+                try:
+                    model, resolved = model_router.build_chat_model(
+                        spec=spec, think=think)
+                except RuntimeError as exc:
+                    raise ModelUnavailableError(str(exc)) from exc
+                model_label = (f"{resolved.get('provider')}:"
+                               f"{resolved.get('model')}")
+                from langchain.agents import create_agent
 
-            agent = create_agent(model=model, tools=tools,
-                                 system_prompt=system)
-        else:
-            model_label = "test:model"
-            agent = agent_factory(tools, system)
-        result = agent.invoke(
-            {"messages": [{"role": "user", "content": prompt}]},
-            config={"recursion_limit": 20},
-        )
-        messages = result.get("messages", []) if isinstance(
-            result, dict) else []
+                agent = create_agent(model=model, tools=tools,
+                                     system_prompt=system)
+            else:
+                model_label = "test:model"
+                agent = agent_factory(tools, system)
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": prompt}]},
+                config={"recursion_limit": 20},
+            )
+        finally:
+            ask_investigator._repo = prev_repo
+            ask_investigator._checkout = prev_checkout
+        if not isinstance(result, dict) or not isinstance(
+                result.get("messages"), list):
+            # Flag, don't silently ledger an empty clean row: the
+            # driver records this as the run error (issue #1157).
+            raise ValueError(
+                f"malformed agent result: {type(result).__name__}")
+        messages = result["messages"]
         tool_names = [c.get("name", "?")
                       for m in messages
                       for c in _message_tool_calls(m)]
@@ -471,13 +500,24 @@ def main(argv=None) -> int:
     try:
         out = AuditorGraph(worktree_root=os.getcwd()).ask_once(
             prompt, repo)
-    except RuntimeError as exc:
-        # Model unavailable (resolve_llm fail-closed, dead backend
-        # mid-run): sorry on stdout + exit 1 with no ledger row is
-        # the documented invalid shape (eval_lib.INVALID_RE), not an
-        # agent failure.
+    except ModelUnavailableError as exc:
+        # No model to ask (resolve/build fail-closed): sorry on
+        # stdout + exit 1 with no ledger row is the documented
+        # invalid shape (eval_lib.INVALID_RE), not an agent failure.
         return cli.sorry(
             f"Sorry, no model is available right now: {exc}")
+    except RuntimeError as exc:
+        # Tool-impl / create_agent failure: a real agent failure, not
+        # infra. Clean error line (no traceback) + error row, so the
+        # gate verdicts FAIL instead of masking as invalid (#1157).
+        ledger.record(
+            "auditor.py", "unknown:model", thread,
+            [], started,
+            extra={"repo": repo, "mode": "ask", "prompt": prompt,
+                   "error": str(exc)[:200]},
+        )
+        print(f"error: {exc}", flush=True)
+        return 1
     except Exception as exc:
         try:
             ledger.record(

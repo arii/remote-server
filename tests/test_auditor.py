@@ -6,6 +6,7 @@ tests/test_auditor.py
 """
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -253,10 +254,12 @@ class TestAskOnce(unittest.TestCase):
         mod._checkout = ""
         return mod
 
-    def _run(self, messages, repo="arii/remote-server"):
+    def _run(self, messages, repo="arii/remote-server",
+             mod=None, factory=None):
         seen = {}
+        fake_messages = messages
 
-        def factory(tools, system):
+        def default_factory(tools, system):
             seen["tools"] = tools
             seen["system"] = system
 
@@ -264,17 +267,20 @@ class TestAskOnce(unittest.TestCase):
                 def invoke(self, payload, config=None):
                     seen["payload"] = payload
                     seen["config"] = config
-                    return {"messages": messages}
+                    return {"messages": fake_messages}
 
             return FakeAgent()
 
+        agent_factory = (factory if factory is not None
+                         else default_factory)
         old = sys.modules.get("ask_investigator")
-        sys.modules["ask_investigator"] = self._stub_ask_module()
+        sys.modules["ask_investigator"] = (
+            mod if mod is not None else self._stub_ask_module())
         try:
             gen = auditor.AuditorGraph("/tmp",
                                        thread_id="test-ask-unit")
             out = gen.ask_once("What is the state of PR #153?", repo,
-                               agent_factory=factory)
+                               agent_factory=agent_factory)
         finally:
             if old is None:
                 del sys.modules["ask_investigator"]
@@ -329,6 +335,74 @@ class TestAskOnce(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._run([{"role": "ai", "content": "x"}],
                       repo="not a repo")
+
+    def test_globals_restored_on_success(self):
+        stub = self._stub_ask_module()
+        stub._repo, stub._checkout = "sentinel-r", "sentinel-c"
+        self._run([{"role": "ai", "content": "ok"}], mod=stub)
+        self.assertEqual((stub._repo, stub._checkout),
+                         ("sentinel-r", "sentinel-c"))
+
+    def test_globals_restored_on_exception(self):
+        stub = self._stub_ask_module()
+        stub._repo, stub._checkout = "sentinel-r", "sentinel-c"
+
+        def factory(tools, system):
+            class FakeAgent:
+                def invoke(self, payload, config=None):
+                    raise RuntimeError("tool boom")
+
+            return FakeAgent()
+
+        with self.assertRaises(RuntimeError):
+            self._run([{"role": "ai", "content": "x"}], mod=stub,
+                      factory=factory)
+        self.assertEqual((stub._repo, stub._checkout),
+                         ("sentinel-r", "sentinel-c"))
+
+    def test_malformed_result_is_flagged(self):
+        for bad in (["not", "a", "dict"],
+                    {"no_messages": True},
+                    {"messages": "nope"}):
+            with self.subTest(bad=bad):
+                def factory(tools, system, _bad=bad):
+                    class FakeAgent:
+                        def invoke(self, payload, config=None):
+                            return _bad
+
+                    return FakeAgent()
+
+                old = sys.modules.get("ask_investigator")
+                sys.modules["ask_investigator"] = (
+                    self._stub_ask_module())
+                try:
+                    gen = auditor.AuditorGraph(
+                        "/tmp", thread_id="test-ask-malformed")
+                    with self.assertRaises(ValueError):
+                        gen.ask_once("q", "arii/remote-server",
+                                     agent_factory=factory)
+                finally:
+                    if old is None:
+                        del sys.modules["ask_investigator"]
+                    else:
+                        sys.modules["ask_investigator"] = old
+
+    def test_tool_names_match_live_module(self):
+        # Drift guard (#1157): the wired names must exist as exports
+        # on the real ask_investigator module. AST, not import: the
+        # live module pulls langchain at top.
+        import ast
+
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "deep-agent",
+                               "ask_investigator.py"),
+                  encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        defs = {node.name for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef,
+                                     ast.AsyncFunctionDef))}
+        missing = [n for n in auditor.ASK_TOOL_NAMES if n not in defs]
+        self.assertEqual(missing, [])
 
     def test_helpers_tolerate_object_messages(self):
         class Msg:
@@ -444,14 +518,36 @@ class TestAskMain(unittest.TestCase):
         self.assertEqual(rows[0]["thread_id"],
                          "test-ask-arii-remote-server")
 
-    def test_runtime_error_is_sorry_invalid(self):
+    def test_model_unavailable_is_sorry_invalid(self):
         run = self._stub_main(
-            ask_error=RuntimeError("Ollama unreachable at x"))
+            ask_error=auditor.ModelUnavailableError(
+                "Ollama unreachable at x"))
         code, out, rows = run(
             ["auditor.py", "arii/remote-server", "test-ask-y", "Zg=="])
         self.assertEqual(code, 1)
         self.assertIn("no model is available", out)
         self.assertEqual(rows, [])
+
+    def test_tool_runtime_error_is_failing_case_not_invalid(self):
+        # #1157: a tool-impl RuntimeError must surface as a failing
+        # case (clean error + error row), never as gate-passing
+        # invalid. Pinned through the real check_case verdict.
+        import eval_ask
+
+        run = self._stub_main(
+            ask_error=RuntimeError("tool boom"))
+        code, out, rows = run(
+            ["auditor.py", "arii/remote-server", "test-ask-y", "Zg=="])
+        self.assertEqual(code, 1)
+        self.assertIn("error: tool boom", out)
+        self.assertNotIn("Traceback", out)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("boom", rows[0]["extra"]["error"])
+        case = {"name": "t", "prompt": "p", "tools": [],
+                "anchor": re.compile(r"x")}
+        verdict, reasons = eval_ask.check_case(
+            case, code, out, "", [], True, False)
+        self.assertEqual(verdict, "fail", reasons)
 
     def test_unexpected_error_records_row_and_raises(self):
         import ledger as ledger_mod
