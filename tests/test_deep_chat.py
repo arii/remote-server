@@ -550,72 +550,50 @@ class TestToolSurface(unittest.TestCase):
                 {"pattern": "zzz-absent"}), "no matches")
             self.assertIn("a.txt", by_name["list_dir"].invoke({"path": ""}))
 
-    def test_search_docs_formats_and_degrades(self):
-        from types import SimpleNamespace
+    def test_search_docs_passthrough(self):
         from unittest import mock
 
         import retrieval
 
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        hit = SimpleNamespace(metadata={"repo": "r", "source": "s"},
-                              page_content="how to x")
-        fake = SimpleNamespace(invoke=lambda q: [hit])
-        with mock.patch.object(retrieval, "get_retriever",
-                               return_value=fake):
-            self.assertIn("[r/s]", by_name["search_docs"].invoke(
-                {"query": "how to"}))
-        broken = SimpleNamespace(
-            invoke=mock.Mock(side_effect=RuntimeError("down")))
-        with mock.patch.object(retrieval, "get_retriever",
-                               return_value=broken):
-            self.assertIn("unavailable", by_name["search_docs"].invoke(
-                {"query": "how to"}))
+        with mock.patch.object(retrieval, "search_td",
+                               return_value="[a.py:3] how to x") as search:
+            out = by_name["search_docs"].invoke({"query": "how to"})
+        self.assertEqual(out, "[a.py:3] how to x")
+        search.assert_called_once_with("how to", "/tmp", top_k=3)
 
-    def test_search_docs_warming_message(self):
+    def test_search_docs_td_failure_degrades(self):
         from unittest import mock
 
         import retrieval
 
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        with mock.patch.object(
-                retrieval, "get_retriever",
-                side_effect=retrieval.IndexNotReadyError(
-                    retrieval.WARMING_MESSAGE)):
-            self.assertEqual(
-                by_name["search_docs"].invoke({"query": "how to"}),
-                "RAG index is warming, retry shortly")
-
-    def test_search_docs_repo_filter_passed_through(self):
-        from types import SimpleNamespace
-        from unittest import mock
-
-        import retrieval
-
-        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        hit = SimpleNamespace(
-            metadata={"repo": "arii/tech-dancer", "source": "README.md"},
-            page_content="how to x")
-        fake = SimpleNamespace(invoke=lambda q: [hit])
-        with mock.patch.object(retrieval, "get_retriever",
-                               return_value=fake) as get:
-            out = by_name["search_docs"].invoke(
-                {"query": "how to", "repo": "tech-dancer"})
-        self.assertIn("[arii/tech-dancer/README.md]", out)
-        get.assert_called_once_with(k=3, repo="tech-dancer")
-
-    def test_search_docs_bad_repo_degrades(self):
-        from unittest import mock
-
-        import retrieval
-
-        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        with mock.patch.object(
-                retrieval, "get_retriever",
-                side_effect=ValueError("bad repo filter: '??'")):
+        with mock.patch.object(retrieval, "query_td_repo",
+                               side_effect=RuntimeError("td down")):
             self.assertIn(
                 "doc search unavailable",
-                by_name["search_docs"].invoke(
-                    {"query": "how to", "repo": "??"}))
+                by_name["search_docs"].invoke({"query": "how to"}))
+
+    def test_search_docs_repo_filter_passed_through(self):
+        from unittest import mock
+
+        import retrieval
+
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        with mock.patch.object(retrieval, "search_td",
+                               return_value="[README.md:1] how to x") as search:
+            out = by_name["search_docs"].invoke(
+                {"query": "how to", "repo": "tech-dancer"})
+        self.assertEqual(out, "[README.md:1] how to x")
+        search.assert_called_once_with(
+            "how to", "/srv/repos/tech-dancer", top_k=3)
+
+    def test_search_docs_bad_repo_degrades(self):
+        by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
+        self.assertIn(
+            "doc search unavailable",
+            by_name["search_docs"].invoke(
+                {"query": "how to", "repo": "??"}))
 
     def test_propose_action_tool(self):
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
@@ -1523,6 +1501,46 @@ class TestExtractPrefer(unittest.TestCase):
     def test_main_rejects_bad_prefer(self):
         rc = deep_chat.main(["deep_chat.py", "--prefer=bogus"])
         self.assertEqual(rc, 2)
+
+
+class TestBuildModelNumCtx(unittest.TestCase):
+    """build_model bounds the Ollama window (Part A: system python)."""
+
+    def _model_kwargs(self):
+        import types
+
+        seen = {}
+
+        class FakeChat:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+        stub = types.ModuleType("langchain_ollama")
+        stub.ChatOllama = FakeChat
+        old = sys.modules.get("langchain_ollama")
+        sys.modules["langchain_ollama"] = stub
+        try:
+            deep_chat.build_model(prefer="ollama")
+        finally:
+            if old is None:
+                del sys.modules["langchain_ollama"]
+            else:
+                sys.modules["langchain_ollama"] = old
+        return seen
+
+    def test_default_ctx_8192_think_off(self):
+        os.environ.pop("OLLAMA_NUM_CTX", None)
+        seen = self._model_kwargs()
+        self.assertEqual(seen.get("num_ctx"), 8192)
+        self.assertEqual(seen.get("model_kwargs"), {"think": False})
+
+    def test_env_override(self):
+        os.environ["OLLAMA_NUM_CTX"] = "4096"
+        try:
+            seen = self._model_kwargs()
+        finally:
+            del os.environ["OLLAMA_NUM_CTX"]
+        self.assertEqual(seen.get("num_ctx"), 4096)
 
 
 if __name__ == "__main__":

@@ -434,15 +434,17 @@ def build_tools(checkout, *, impact_tools=False):
         Args:
             query: Short question (2-10 words).
             repo: Optional owner/name (or bare checkout name) to
-                search one repo; blank searches all repos.
+                search one repo; blank searches this checkout.
         """
         try:
-            hits = retrieval.get_retriever(k=3, repo=repo).invoke(query)
-        except retrieval.IndexNotReadyError as exc:
-            return str(exc)
-        except Exception as exc:
+            if repo:
+                target = s5tools.checkout_for(
+                    retrieval.normalize_repo(repo))
+            else:
+                target = checkout
+        except ValueError as exc:
             return f"doc search unavailable: {exc}"
-        return retrieval.format_hits(hits)
+        return retrieval.search_td(query, target, top_k=3)
 
     @tool
     def propose_action(kind: str, title: str = "",
