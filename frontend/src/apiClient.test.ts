@@ -7,6 +7,7 @@ import {
   QueuedOfflineError,
   RequestTimeoutError,
   __clearAuthExpired,
+  __clearNetworkFailures,
   __clearOutbox,
   __clearPrCaches,
   abortAgentSession,
@@ -81,6 +82,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   __clearAuthExpired();
+  __clearNetworkFailures();
   __clearPrCaches();
   __clearOutbox();
   invalidateViewCaches();
@@ -1627,6 +1629,51 @@ describe('auth expiry (issue #1035)', () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it('trips the session banner after repeated opaque network failures (issue #1143)', async () => {
+    const seen: number[] = [];
+    const unsubscribe = subscribeAuthExpired(() => {
+      seen.push(1);
+    });
+    try {
+      vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+      for (let i = 0; i < 4; i += 1) {
+        await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+        expect(isAuthExpired()).toBe(false);
+      }
+      await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+      expect(isAuthExpired()).toBe(true);
+      expect(seen).toHaveLength(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('resets the network-failure run on any good response', async () => {
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+    for (let i = 0; i < 4; i += 1) {
+      await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+    }
+    expect(isAuthExpired()).toBe(false);
+    vi.stubGlobal('fetch', mockFetchJson({ jobs: [] }));
+    await fetchJobs();
+    __clearPrCaches();
+    invalidateViewCaches();
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+    for (let i = 0; i < 4; i += 1) {
+      await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+    }
+    expect(isAuthExpired()).toBe(false);
+  });
+
+  it('does not trip while the browser reports itself offline', async () => {
+    vi.stubGlobal('navigator', { onLine: false });
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+    for (let i = 0; i < 6; i += 1) {
+      await expect(fetchJobs()).rejects.toThrow('Failed to fetch');
+    }
+    expect(isAuthExpired()).toBe(false);
   });
 
   it('treats a 401 JSON body as auth expiry', async () => {
