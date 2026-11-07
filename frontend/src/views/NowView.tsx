@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import Dialog from '../components/Dialog';
 import TapToFire from '../components/TapToFire';
 import { isRollupRepo } from '../components/RepoPicker';
 import type { RepoInfo } from '../reviewTypes';
@@ -390,17 +391,18 @@ export function ReportDialog({
   }
   // Inline (non-modal) dialog: labelled, Escape-dismissible, focus lands in
   // the title field on open. No focus trap: the page behind stays usable.
+  // Escape, outside-tap, and focus return live in the shared Dialog
+  // wrapper (issue #1128); the inner form keeps its submit only.
   return (
+    <Dialog
+      open
+      onClose={onCancel}
+      modal={false}
+      label="Report a bug"
+      testId="report-dialog"
+      className="detail"
+    >
     <form
-      data-testid="report-dialog"
-      role="dialog"
-      aria-label="Report a bug"
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          onCancel();
-        }
-      }}
       onSubmit={(e) => {
         e.preventDefault();
         onSubmit(title.trim(), body, labels);
@@ -464,6 +466,7 @@ export function ReportDialog({
         </button>
       </div>
     </form>
+    </Dialog>
   );
 }
 

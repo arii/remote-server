@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import BranchField, { useBranchField } from '../components/BranchField';
 import CopyButton from '../components/CopyButton';
+import Dialog from '../components/Dialog';
 import RetryableError from '../components/RetryableError';
 import TapToFire from '../components/TapToFire';
 import TriageHint from '../components/TriageHint';
@@ -222,28 +223,22 @@ export function RunOutputDrawer({
   panelRef: React.RefObject<HTMLDivElement | null>;
 }) {
   // Side drawer for run output (#1013): fixed to the viewport edge
-  // so opening output never shifts the list underneath. Closed =
-  // unmounted (lazy). Escape closes; focus lands on Close.
+  // so opening output never shifts the list underneath. Escape,
+  // outside-tap, and focus return live in the shared Dialog
+  // wrapper (issue #1128); focus still lands on Close here.
   const closeRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!open) return;
     closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  if (!open) return null;
+  }, [open ]);
   return (
-    <div
+    <Dialog
+      open={open}
+      onClose={onClose}
+      modal={false}
+      label="Job output"
+      testId="jobs-output-drawer"
       className="jobs-drawer"
-      role="dialog"
-      aria-label="Job output"
-      data-testid="jobs-output-drawer"
     >
       <div className="jobs-drawer-head">
         <span className="row-title">Job output</span>
@@ -264,7 +259,7 @@ export function RunOutputDrawer({
           panelRef={panelRef}
         />
       </div>
-    </div>
+    </Dialog>
   );
 }
 

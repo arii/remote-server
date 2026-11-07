@@ -1,4 +1,5 @@
 import type { InboxFeed } from './apiClient';
+import { isActionableAttention } from './attentionFilters';
 import type { DispatchItem, JobRecord, LedgerEntry } from './apiTypes';
 import type { PrRow } from './reviewTypes';
 import { facetCounts, toHistoryRows } from './views/historyUtils';
@@ -37,9 +38,16 @@ export interface NavBadge {
   label: string;
 }
 
-/** Now badge: inbox items needing the operator. */
+/**
+ * Now badge: inbox items needing the operator. Counts the
+ * actionable queue, not the raw feed: non-required workflow
+ * failures never page (issue #1109.1), so the badge and the list
+ * the poll feeds stay reconciled (issue #1129). Snoozed items
+ * still count — they render in the snoozed section, only deferred.
+ */
 export function nowBadgeCount(feed: InboxFeed | null | undefined): number | null {
-  return feed ? feed.attention.length : null;
+  if (!feed) return null;
+  return feed.attention.filter(isActionableAttention).length;
 }
 
 /** Review badge: open pull requests for the viewed repo. */

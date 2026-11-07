@@ -48,6 +48,20 @@ export function isActionableLine(line: string): boolean {
 // — "[CI] 2 failing: build…" titles as "CI". One tag's worth; deeper
 // taxonomy stays out.
 const BRACKET_TAG_RE = /^\s*\[([^\]\n]{1,24})\]/;
+// Anywhere in the line (issue #1127): Review titles carry their
+// type mid-string — "[slop] polish the empty state".
+const ANY_BRACKET_TAG_RE = /\[([^\]\n]{1,24})\]/g;
+
+export function extractBracketTags(text: string): string[] {
+  const tags: string[] = [];
+  const re = new RegExp(ANY_BRACKET_TAG_RE);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text || '')) !== null) {
+    const tag = (m[1] || '').trim();
+    if (tag) tags.push(tag);
+  }
+  return tags;
+}
 
 export function deriveCardLabels(label: string, lines: string[]): string {
   if (label && label.trim() !== '' && label !== 'Attention') return label;

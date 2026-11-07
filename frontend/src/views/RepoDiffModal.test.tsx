@@ -116,11 +116,12 @@ describe('repo diff modal actions (issue #927)', () => {
 });
 
 describe('repo diff modal polish (issue #942)', () => {
-  it('renders as a real modal dialog on an overlay', () => {
+  it('renders as a native modal dialog, no hand-rolled overlay', () => {
     const html = renderToStaticMarkup(<RepoDiffModal {...props} data={data} error={null} />);
-    expect(html).toContain('data-testid="repo-diff-overlay"');
+    expect(html).toContain('<dialog');
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-modal="true"');
+    expect(html).not.toContain('repo-diff-overlay');
   });
 
   it('colors diff lines and keeps the full hunk header in its title', () => {
