@@ -5,8 +5,7 @@ Usage:
   deep_chat.py owner/repo <thread-id> --resume <approve|reject> [b64-message]
   deep_chat.py --validate-proposal <b64-json-proposal>
 
-What this proves over chat_agent.py (stateless one-shot on
-create_agent):
+What this proves over a stateless one-shot on create_agent:
 
 - create_deep_agent with a persistent SqliteSaver checkpointer keyed
   by thread_id, so conversation memory AND HITL pause state survive
@@ -921,7 +920,7 @@ def _stream(agent, first_input, config, model=None, spec=None,
     Returns (reply, tool_msgs, msgs, salvaged). On a tool-loop
     recursion cutoff with a model available, one final no-tools
     pass answers from gathered evidence instead of dying (same
-    salvage as chat_agent); without a model the error propagates.
+    tail-cap salvage pattern); without a model the error propagates.
     With a spec, the salvage pass gets one local retry on retryable
     cloud errors, recorded into the failover dict when given.
     """

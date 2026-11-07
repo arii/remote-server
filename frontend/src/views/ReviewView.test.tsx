@@ -17,7 +17,6 @@ import ReviewView, {
   ReviewListEmpty,
   RiskSummary,
   RowActionButton,
-  buildRiskSummary,
   dependabotBatchNotice,
   detailsRiskSummary,
   planDependabotBatch,
@@ -1287,17 +1286,14 @@ describe('inline diff + risk summary on cards (issue #938)', () => {
     changedFiles: 1,
   };
 
-  it('routine PR gets the low-risk 2-line summary', () => {
-    const { summary, level } = buildRiskSummary({
-      title: 'Fix thing', branch: 'fix-thing', ciStatus: 'passing',
-      mergeable: 'MERGEABLE', additions: 10, deletions: 2, changedFiles: 1,
-    });
-    expect(level).toBe('low');
-    expect(summary.split('\n')).toHaveLength(2);
-    expect(summary).toContain('1 file changed (+10/-2)');
-    expect(summary).toContain('Low risk; 0 breaking changes detected; CI green');
-    expect(prRiskSummary(basePr)).toBe(summary);
-    expect(prRiskLevel(basePr)).toBe('low');
+  it('renders the backend summary verbatim', () => {
+    const pr = {
+      ...basePr,
+      riskSummary: 'Small change · 1 file changed (+10/-2)\nLow risk; CI green',
+      riskLevel: 'low' as const,
+    };
+    expect(prRiskSummary(pr)).toBe(pr.riskSummary);
+    expect(prRiskLevel(pr)).toBe('low');
   });
 
   it('prefers the backend summary verbatim when present', () => {
@@ -1314,22 +1310,14 @@ describe('inline diff + risk summary on cards (issue #938)', () => {
     expect(html).toContain('CI green');
   });
 
-  it('falls back to the mirror for older payloads without stats', () => {
+  it('renders empty with a low default for older payloads', () => {
     const bare: PrRow = {
       number: 9, title: 'Fix', author: 'a', branch: 'b', isDraft: false,
       ciStatus: 'passing', ciLabel: 'passing', reviewDecision: '',
       mergeable: 'MERGEABLE', url: '',
     };
-    expect(prRiskSummary(bare).split('\n')[0]).toBe('No file changes detected · +0/-0');
-    expect(prRiskSummary(bare).split('\n')).toHaveLength(2);
-  });
-
-  it('flags draft, failing, large, and breaking as high', () => {
-    expect(buildRiskSummary({ title: 'WIP', isDraft: true, ciStatus: 'pending', additions: 1, changedFiles: 1 }).level).toBe('high');
-    expect(buildRiskSummary({ title: 'Fix', ciStatus: 'failing', additions: 1, changedFiles: 1 }).level).toBe('high');
-    expect(buildRiskSummary({ title: 'Big', ciStatus: 'passing', mergeable: 'MERGEABLE', additions: 400, deletions: 200, changedFiles: 25 }).level).toBe('high');
-    expect(buildRiskSummary({ title: 'feat!: drop API', ciStatus: 'passing', mergeable: 'MERGEABLE', additions: 5, deletions: 5, changedFiles: 2 }).summary).toContain('Breaking change flagged');
-    expect(buildRiskSummary({ title: 'Fix', ciStatus: 'pending', additions: 5, changedFiles: 1 }).level).toBe('medium');
+    expect(prRiskSummary(bare)).toBe('');
+    expect(prRiskLevel(bare)).toBe('low');
   });
 
   it('renders card and details diffs with distinct testids', () => {
@@ -1352,11 +1340,14 @@ describe('inline diff + risk summary on cards (issue #938)', () => {
       repo: 'demo', number: 7, title: 'Fix thing', branch: 'feat/x', base: 'main',
       ci: 'passing', failing: [], merge: 'clean', conflicted: false, draft: false,
       url: 'https://example.test/pr/7',
+      risk_summary: 'Small change · 1 file changed (+3/-1)\nLow risk; CI green',
+      risk_level: 'low',
       files: [{ path: 'a.py', additions: 3, deletions: 1, changes: 4 }],
       stats: { total_files: 1, additions: 3, deletions: 1 },
       ai_prompts: [],
     };
     expect(detailsRiskSummary(d).level).toBe('low');
+    expect(detailsRiskSummary(d).summary).toContain('CI green');
     const html = renderToStaticMarkup(
       <PrDetails repo="demo" details={d} mergeBlocked={null} mergeDisabled={false} onMerge={() => {}} onAskAgent={() => {}} />,
     );

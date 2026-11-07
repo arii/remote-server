@@ -21,7 +21,6 @@ import model_router
 
 try:
     import deep_chat
-    import chat_agent  # noqa: F401 -- langchain import at module top
     import langchain_core  # noqa: F401
     from langgraph.errors import GraphRecursionError  # noqa: F401
     HAS_AGENT_DEPS = True
@@ -427,83 +426,6 @@ class TestStreamSalvageFailover(unittest.TestCase):
                     LoopingAgent(), {"messages": []}, {},
                     model=Cloud())
         builder.assert_not_called()
-
-
-@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
-class TestChatAgentSalvageFailover(unittest.TestCase):
-    """chat_agent salvage pass fails over end to end through main()."""
-
-    def test_main_salvage_fails_over_to_local(self):
-        import tempfile
-
-        from langchain_core.messages import AIMessage
-
-        cloud_calls, local_calls = [], []
-
-        class Cloud:
-            def invoke(self, messages):
-                cloud_calls.append(messages)
-                raise CodedError(503, "Service Unavailable")
-
-        class Local:
-            def invoke(self, messages):
-                local_calls.append(messages)
-                return AIMessage(content="locally salvaged")
-
-        seen = {}
-
-        def fake_record(script, model_name, thread_id, messages,
-                        started, extra=None, usage=None, calls=None):
-            seen["model"] = model_name
-            seen["extra"] = extra
-            return {}
-
-        agent = mock.Mock()
-        agent.stream.side_effect = GraphRecursionError("limit reached")
-        argv = ["chat_agent.py", "arii/remote-server", "s-failover",
-               b64("how do I run it?")]
-        with tempfile.TemporaryDirectory() as tmp, \
-             mock.patch.object(sys, "argv", argv), \
-             mock.patch.dict(os.environ, {"NEBIUS_API_KEY": "test"}), \
-             mock.patch.object(chat_agent.model_router, "resolve_llm",
-                               return_value=dict(NEBIUS_SPEC)), \
-             mock.patch("langchain_openai.ChatOpenAI",
-                        return_value=Cloud()), \
-             mock.patch.object(chat_agent, "create_agent",
-                               return_value=agent), \
-             mock.patch.object(chat_agent.s5tools, "checkout_for",
-                               return_value=tmp), \
-             mock.patch.object(chat_agent.deep_chat, "build_model",
-                               return_value=(Local(),
-                                             dict(OLLAMA_SPEC))), \
-             mock.patch.object(chat_agent.ledger, "record",
-                               side_effect=fake_record):
-            out, err = io.StringIO(), io.StringIO()
-            with redirect_stdout(out), redirect_stderr(err):
-                code = chat_agent.main()
-        self.assertEqual(code, 0)
-        self.assertIn("locally salvaged", out.getvalue())
-        self.assertEqual(len(cloud_calls), 1)
-        self.assertEqual(len(local_calls), 1)
-        self.assertIs(local_calls[0], cloud_calls[0])
-        self.assertIn("retrying locally", err.getvalue())
-        # Turn ran on cloud; only the salvage leg went local.
-        self.assertEqual(seen["model"], "nebius:n-model")
-        self.assertTrue(seen["extra"]["salvaged"])
-        failover = seen["extra"]["failover"]
-        self.assertEqual(failover["from"], "nebius:n-model")
-        self.assertEqual(failover["to"], "ollama:qwen3:8b")
-
-    def test_helper_local_primary_never_retries(self):
-        model = SimpleNamespace(invoke=mock.Mock(
-            side_effect=CodedError(503, "Service Unavailable")))
-        with mock.patch.object(
-                chat_agent.deep_chat, "build_model") as builder:
-            with self.assertRaises(CodedError):
-                chat_agent._invoke_with_failover(
-                    model, dict(OLLAMA_SPEC), ["m"])
-        builder.assert_not_called()
-        model.invoke.assert_called_once_with(["m"])
 
 
 if __name__ == "__main__":

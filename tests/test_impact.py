@@ -650,40 +650,9 @@ class TestZeroGemini(unittest.TestCase):
         self.assertNotIn("API_KEY", text)
 
 
-class TestAskSetRegistration(unittest.TestCase):
-    # No venv needed: main()'s create_agent tools=[...] is inline;
-    # parse it via ast like test_ask_tools does.
-    def _tool_names(self):
-        import ast
-        src = os.path.join(os.path.dirname(__file__), "..",
-                           "deep-agent", "ask_investigator.py")
-        with open(src, encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-        names = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if getattr(getattr(node, "func", None), "id", "") \
-                    != "create_agent":
-                continue
-            for kw in node.keywords:
-                if kw.arg == "tools" \
-                        and isinstance(kw.value, ast.List):
-                    names.update(
-                        e.id for e in kw.value.elts
-                        if isinstance(e, ast.Name))
-        return names
-
-    def test_impact_tools_in_ask_set(self):
-        names = self._tool_names()
-        for tool in ("run_ux_capture", "diff_versions", "ask_diff",
-                     "lighthouse_read"):
-            self.assertIn(tool, names)
-        # The pre-existing set is untouched.
-        for tool in ("search_docs", "read_repo_file", "grep_repo",
-                     "pr_state", "run_repo_command", "fetch_url",
-                     "search_web", "search_turns"):
-            self.assertIn(tool, names)
+# Ask-set registration died with the ask CLI (#1131): the 12-tool
+# create_agent assembly lived only in main(). Impact-tool wiring is
+# still pinned via deep_chat.build_tools(impact_tools=True) below.
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
