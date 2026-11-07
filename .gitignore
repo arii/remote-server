@@ -76,6 +76,8 @@ deep-agent/*
 !deep-agent/eval_pipeline.py
 !deep-agent/skills_registry.py
 !deep-agent/skills/
+!deep-agent/skills_lock.py
+!deep-agent/skills-lock.json
 !deep-agent/cobrowse_handoff.py
 
 # Agent skills (Untracked) — provisioned per-machine, never committed.
