@@ -28,7 +28,7 @@ FROM python:3.11-slim
 # Release-train pin (issue #1081): one rollup PR per upstream boomtick
 # release — never float main. Bumped together with terminal/Dockerfile
 # by the release-train batch; see docs/release-train.md.
-ARG BOOMTICK_CLI_REF=cli-v0.20.0
+ARG BOOMTICK_CLI_REF=cli-v0.21.0
 ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 ARG NODE_VERSION=24.16.0

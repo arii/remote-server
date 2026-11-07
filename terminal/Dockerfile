@@ -30,7 +30,7 @@ ARG PI_VERSION=1.4.0
 # release — never float main. A floating ref means rebuilds can pull
 # unaudited upstream. Bumped together with Dockerfile by the
 # release-train batch; see docs/release-train.md.
-ARG BOOMTICK_CLI_REF=cli-v0.20.0
+ARG BOOMTICK_CLI_REF=cli-v0.21.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
