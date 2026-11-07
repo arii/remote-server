@@ -1508,6 +1508,7 @@ class TestBuildModelNumCtx(unittest.TestCase):
 
     def _model_kwargs(self):
         import types
+        from unittest import mock
 
         seen = {}
 
@@ -1519,8 +1520,12 @@ class TestBuildModelNumCtx(unittest.TestCase):
         stub.ChatOllama = FakeChat
         old = sys.modules.get("langchain_ollama")
         sys.modules["langchain_ollama"] = stub
+        spec = {"provider": "ollama", "model": "qwen3:8b",
+                "base_url": "http://ollama:11434"}
         try:
-            deep_chat.build_model(prefer="ollama")
+            with mock.patch.object(deep_chat.model_router,
+                                   "resolve_llm", return_value=spec):
+                deep_chat.build_model(prefer="ollama")
         finally:
             if old is None:
                 del sys.modules["langchain_ollama"]
