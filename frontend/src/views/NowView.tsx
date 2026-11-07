@@ -19,6 +19,7 @@ import {
 import type { InboxFeed, SnoozedRow, SystemHealthResponse } from '../apiClient';
 import type { JobRecord } from '../apiTypes';
 import type { AttentionItem } from '../attentionTypes';
+import { deriveCardLabels, isActionableAttention } from '../attentionFilters';
 import type { DeferredRow } from '../reviewTypes';
 import { loadInbox, loadInboxEmpty } from '../mocks/inbox';
 import { ContainerPills, HostTelemetry } from './ObservabilitySection';
@@ -157,6 +158,24 @@ export function mergeServerSnoozed(
     }
   }
   return reconcileSnoozed(next, liveIds, nowSec);
+}
+
+// Snooze-aware partition (issue #1109.6): the feed carries snoozed
+// items until the server drops them, so grouping the raw feed shows
+// one workflow twice with different counts (snoozed ×N plus an
+// active collapsed ×M). Active groups render from unsnoozed members
+// only; snoozed members join the snoozed section — each workflow
+// then has a single consistent count per section.
+export function partitionAttention(
+  items: AttentionItem[],
+  snoozed: Record<string, unknown>,
+): { active: AttentionItem[]; snoozed: AttentionItem[] } {
+  const active: AttentionItem[] = [];
+  const snoozedItems: AttentionItem[] = [];
+  for (const item of items) {
+    (snoozed[item.id] ? snoozedItems : active).push(item);
+  }
+  return { active, snoozed: snoozedItems };
 }
 
 // Stubs for snoozed ids missing from the live list (the undo row);
@@ -591,6 +610,14 @@ function groupWorstSeverity(items: AttentionItem[]): string {
     }
   }
   return worst;
+}
+
+// Card display title (issue #1109.8): the backend title stands, but a
+// blank (or bare "Attention") title reads back one bracket tag from
+// the body — "[CI] 2 failing: build…" titles as "CI" — instead of a
+// blank or generic chip.
+export function cardDisplayTitle(item: AttentionItem): string {
+  return deriveCardLabels(item.title, (item.detail || '').split('\n'));
 }
 
 export function groupAttentionItems(items: AttentionItem[]): AttentionGroup[] {
@@ -1478,9 +1505,25 @@ export default function NowView({
     });
   }
 
+  // Snoozed members leave the actionable list at render time
+  // (issue #1109.6): groups and bulk selection see active items
+  // only, so counts reconcile instead of double-showing.
+  // Non-required workflow failures never surface at all (issue
+  // #1109.1): console-e2e smoke stays out of the queue, groups,
+  // hero, and bulk selection until its gate flips to required.
+  const { active: activeAttention, snoozed: snoozedLive } = data
+    ? partitionAttention(data.attention, snoozed)
+    : { active: [], snoozed: [] };
+  // Missing card titles (issue #1109.8) read back a bracket tag from
+  // the body — "[CI] 2 failing: build…" titles as "CI" — instead of
+  // a blank or generic chip. Derived once so the hero, groups, and
+  // bulk selection all reconcile on the same titles.
+  const visibleAttention = activeAttention
+    .filter(isActionableAttention)
+    .map((item) => ({ ...item, title: cardDisplayTitle(item) }));
+
   function toggleSelectAll() {
-    if (!data) return;
-    const ids = data.attention.map((i) => i.id);
+    const ids = visibleAttention.map((i) => i.id);
     const all = ids.length > 0 && ids.every((id) => bulkSelected.has(id));
     setBulkSelected(all ? new Set() : new Set(ids));
   }
@@ -1609,25 +1652,13 @@ export default function NowView({
   const stubRows = data ? snoozedRows(snoozed, data.attention.map((i) => i.id)) : [];
   // Bulk checkboxes only earn their place with a real choice
   // (issue #935): a lone card hides them, longer lists pair them
-  // with the Select all header toggle.
-  const selectable = (data?.attention.length ?? 0) > 1;
+  // with the Select all header toggle. Only actionable rows count.
+  const selectable = visibleAttention.length > 1;
 
-  // One group member: its snoozed stub while snoozed, else the row.
-  // Shared by singleton groups and accordion members so a repeat
-  // snoozes exactly like a lone item.
+  // Group members are active-only by construction (see the
+  // partition above): the snoozed branch is gone, so a repeat can
+  // no longer show a stub inline and a stub below for one item.
   function renderMember(item: AttentionItem) {
-    if (snoozed[item.id]) {
-      return (
-        <SnoozedStub
-          key={item.id}
-          itemId={item.id}
-          title={item.title}
-          until={snoozed[item.id].until}
-          busy={snoozeBusy === item.id}
-          onUnsnooze={() => void onUnsnooze(item.id)}
-        />
-      );
-    }
     return (
       <AttentionRow
         key={item.id}
@@ -1672,7 +1703,9 @@ export default function NowView({
       {data && (
         <NowHero
           health={health}
-          feed={data}
+          // Hero counts actionable items only (issue #1109.6): the
+          // snoozed set renders below, never in "needing attention".
+          feed={{ ...data, attention: visibleAttention }}
           prCount={prCount}
           deployAt={deployAt}
           onDone={(title) => {
@@ -1746,7 +1779,7 @@ export default function NowView({
           )}
           <section aria-label="Attention" data-testid="now-attention">
             <h2>Attention</h2>
-          {stubRows.length > 0 && (
+          {(stubRows.length > 0 || snoozedLive.length > 0) && (
             <ul className="session-list" data-testid="now-snoozed">
               {stubRows.map(([id, entry]) => (
                 <SnoozedStub
@@ -1758,15 +1791,27 @@ export default function NowView({
                   onUnsnooze={() => void onUnsnooze(id)}
                 />
               ))}
+              {snoozedLive.map((item) => (
+                <SnoozedStub
+                  key={item.id}
+                  itemId={item.id}
+                  title={item.title}
+                  until={snoozed[item.id].until}
+                  busy={snoozeBusy === item.id}
+                  onUnsnooze={() => void onUnsnooze(item.id)}
+                />
+              ))}
             </ul>
           )}
-      {data.attention.length === 0 ? (
+      {visibleAttention.length === 0 &&
+      stubRows.length === 0 &&
+      snoozedLive.length === 0 ? (
         <NowEmptyState onRunCheck={() => setSection('jobs')} />
       ) : (
         <>
           {selectable && (
             <AttentionSelectAll
-              total={data.attention.length}
+              total={visibleAttention.length}
               selectedCount={bulkSelected.size}
               onToggle={toggleSelectAll}
             />
@@ -1780,7 +1825,7 @@ export default function NowView({
             />
           )}
           <ul className="session-list" data-testid="now-list">
-            {groupAttentionItems(data.attention).map((group, gi) =>
+            {groupAttentionItems(visibleAttention).map((group, gi) =>
               group.items.length === 1 ? (
                 renderMember(group.items[0])
               ) : (

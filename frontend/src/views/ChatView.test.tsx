@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, resumeActionForStatus, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -506,6 +506,42 @@ describe('run titles (issue #960)', () => {
     const html = paneHtml([pastRun({ id: 'run-9', preview: '', prompt_first_line: 'fix the deploy' })]);
     expect(html).toContain('fix the deploy');
     expect(html).not.toContain('>run-9<');
+  });
+});
+
+describe('run action labels (issue #1109.7)', () => {
+  const BLOB = "**console-app** - triage_counts: 'open_prs: 2…";
+
+  it('replaces a data-blob preview with the human action label', () => {
+    const run = pastRun({ script: 'run_triage.py', preview: BLOB, prompt_first_line: '' });
+    expect(runTitle(run)).toBe('Run Triage');
+    expect(runTitle(run)).not.toContain('triage_counts');
+  });
+
+  it('keeps an ordinary prose preview untouched', () => {
+    expect(runTitle(pastRun({ preview: 'fixed the deploy', prompt_first_line: '' }))).toBe(
+      'fixed the deploy',
+    );
+  });
+
+  it('still falls back to the prompt line over the action label', () => {
+    const run = pastRun({
+      script: 'run_triage.py',
+      preview: BLOB,
+      prompt_first_line: 'triage console-app',
+    });
+    expect(runTitle(run)).toBe('triage console-app');
+  });
+
+  it('falls back to the run id when no words exist', () => {
+    expect(runTitle(pastRun({ id: 'run-9', script: '', preview: '', prompt_first_line: '' }))).toBe(
+      'run-9',
+    );
+  });
+
+  it('humanises script file names', () => {
+    expect(runActionLabel(pastRun({ script: 'run_triage.py' }))).toBe('Run Triage');
+    expect(runActionLabel(pastRun({ script: 'deep_chat.py' }))).toBe('Deep Chat');
   });
 });
 

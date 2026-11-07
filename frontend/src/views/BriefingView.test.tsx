@@ -4,6 +4,8 @@ import type { DigestChannelResult, DigestSchedule, NotificationPreferences, Noti
 import type { BriefingResponse, LedgerEntry } from '../apiTypes';
 import {
   ACTIVITY_WINDOWS,
+  actionableAttention,
+  actionableWorkflowLines,
   activityWindowSeconds,
   boardStatusForBranch,
   BriefingBody,
@@ -35,6 +37,7 @@ import {
   prReviewVerdict,
   RepairPicker,
   reviewsErrText,
+  splitRunUrls,
   visibleBoardItems,
 } from './BriefingView';
 import { isHistoryFailure } from './historyUtils';
@@ -778,6 +781,33 @@ describe('actionable briefing (issue #839)', () => {
     expect(html).toMatch(/<button[^>]*data-testid="briefing-verdict"/);
     expect(html).toContain('Open #12 in Review');
     expect(html).not.toContain('href=');
+  });
+
+  it('filters non-required runs from actionable lines (issue #1109.1)', () => {
+    const data = briefing({
+      attention: ['Failing run: console-e2e on main (push) — likely cause: t'],
+      workflow_lines: [
+        '- failing: console-e2e on main (push) — failed: t',
+        '- failing: CI on main (push) — failed: t',
+      ],
+    });
+    expect(actionableWorkflowLines(data)).toEqual(['- failing: CI on main (push) — failed: t']);
+    expect(actionableAttention(data)).toEqual([]);
+    // A required failure on a console-e2e-named branch stays visible.
+    const branched = briefing({
+      workflow_lines: ['- failing: CI on console-e2e-flake-fix (push) — failed: t'],
+    });
+    expect(actionableWorkflowLines(branched)).toEqual([
+      '- failing: CI on console-e2e-flake-fix (push) — failed: t',
+    ]);
+  });
+
+  it('splits run URLs into View run links (issue #1109.4)', () => {
+    expect(splitRunUrls('plain line')).toEqual([{ text: 'plain line' }]);
+    expect(splitRunUrls('- failing: CI on main (push) https://github.com/o/r/actions/runs/1')).toEqual([
+      { text: '- failing: CI on main (push) ' },
+      { text: 'View run', url: 'https://github.com/o/r/actions/runs/1' },
+    ]);
   });
 });
 
