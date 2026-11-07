@@ -265,7 +265,8 @@ class AuditorGraph:
                 calls, [f"valid={state.get('valid')}"],
                 (state.get("findings", "") or "")[:500],
                 reason="audit loop closed")
-            model_label = ((outer.last_model_spec or {}).get("model")
+            model_spec = outer.last_model_spec or {}
+            model_label = (model_spec.get("model")
                            or os.environ.get("S5_AUDIT_MODEL", "qwen3:8b"))
             ledger.record(
                 "auditor.py", model_label,
@@ -274,7 +275,8 @@ class AuditorGraph:
                        "worktree_root": outer.worktree_root,
                        "decisions": lines,
                        "verdict": verdict,
-                       "gate": state.get("gate", {})})
+                       "gate": state.get("gate", {})},
+                provider=model_spec.get("provider"))
             return {"persisted": True, "verdict": verdict}
 
         builder = StateGraph(AuditState)

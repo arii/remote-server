@@ -216,6 +216,136 @@ class TestRuns(unittest.TestCase):
             self.assertAlmostEqual(total["spent"], 0.0016)
             self.assertEqual(total["unknown"], 1)
 
+    def test_backfill_rewrites_only_poison_rows(self):
+        zero = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        usage = {"input_tokens": 2000, "output_tokens": 1000,
+                 "total_tokens": 3000}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                # The issue #1121 shape: bare model, test thread,
+                # zero tokens, metered with no rate.
+                _row(model="qwen3:8b", thread_id="test-thread-2",
+                     usage=zero, cost_usd=None, metered=True),
+                _row(model="qwen3:8b", thread_id="test-coder-2",
+                     usage=zero, cost_usd=None, metered=True),
+                # Untouched: rated, real-thread bare (fail-closed),
+                # token-bearing test row, deleted tombstone.
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     usage=usage, cost_usd=0.0008, metered=True),
+                _row(model="qwen3:8b", thread_id="real-1",
+                     usage=zero, cost_usd=None, metered=True),
+                _row(model="qwen3:8b", thread_id="test-thread-9",
+                     usage=usage, cost_usd=None, metered=True),
+                {"deleted": True, "ts": 1.0},
+            ])
+            result = runs.backfill_test_providers(ledger_path=path)
+            self.assertEqual(result["matched"], [0, 1])
+            self.assertEqual(result["rewritten"], 2)
+            with open(path, encoding="utf-8") as f:
+                rows = [json.loads(line) for line in f if line.strip()]
+            # No provider stamped: zero tokens cost zero on any
+            # backend, so none is claimed.
+            self.assertNotIn("provider", rows[0])
+            self.assertFalse(rows[0]["metered"])
+            self.assertEqual(rows[0]["cost_usd"], 0.0)
+            self.assertIn("regardless of backend",
+                          rows[0]["extra"]["backfill"])
+            self.assertNotIn("provider", rows[3])
+            self.assertTrue(rows[3]["metered"])
+            self.assertNotIn("provider", rows[4])
+            total = runs.total_metered_spend(ledger_path=path)
+            # Real-thread bare row + token-bearing test row stay
+            # unknown (fail-closed); only the poison is cured.
+            self.assertEqual(total["unknown"], 2)
+
+    def test_backfill_ignores_missing_and_partial_usage(self):
+        # Finding 2: a missing or partial usage dict is no evidence
+        # of zero spend — those rows stay fail-closed.
+        with tempfile.TemporaryDirectory() as d:
+            base = _row(model="qwen3:8b", thread_id="test-thread-2",
+                        cost_usd=None, metered=True)
+            missing = dict(base)
+            del missing["usage"]
+            partial = dict(base)
+            partial["usage"] = {"input_tokens": 0}
+            path = self._ledger(d, [missing, partial])
+            result = runs.backfill_test_providers(ledger_path=path)
+            self.assertEqual(result, {"matched": [], "rewritten": 0})
+
+    def test_backfill_ignores_substring_threads(self):
+        # Finding 1: only the test- prefix opts in; real threads
+        # containing -test- are never touched.
+        zero = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="qwen3:8b", thread_id="latest-test-run",
+                     usage=zero, cost_usd=None, metered=True),
+                _row(model="qwen3:8b", thread_id="coder-test-2",
+                     usage=zero, cost_usd=None, metered=True),
+            ])
+            result = runs.backfill_test_providers(ledger_path=path)
+            self.assertEqual(result, {"matched": [], "rewritten": 0})
+            total = runs.total_metered_spend(ledger_path=path)
+            self.assertEqual(total["unknown"], 2)
+
+    def test_backfill_note_fix_drops_provider_stamp(self):
+        # Finding 3: first-revision rows lose the asserted provider
+        # and gain the corrected note; second run is a no-op.
+        row = _row(model="qwen3:8b", thread_id="test-thread-2",
+                   usage={"input_tokens": 0, "output_tokens": 0,
+                          "total_tokens": 0},
+                   provider="ollama", cost_usd=0.0, metered=False,
+                   extra={"backfill": "1121: test-thread local run"})
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [row])
+            result = runs.backfill_test_providers(ledger_path=path)
+            self.assertEqual(result, {"matched": [0], "rewritten": 1})
+            with open(path, encoding="utf-8") as f:
+                fixed = json.loads(f.read().strip())
+            self.assertNotIn("provider", fixed)
+            self.assertIn("regardless of backend",
+                          fixed["extra"]["backfill"])
+            again = runs.backfill_test_providers(ledger_path=path)
+            self.assertEqual(again, {"matched": [], "rewritten": 0})
+
+    def test_gate_path_bare_model_with_nebius_provider(self):
+        # Finding 5: the actual gate path — a bare model recorded
+        # with an explicit nebius provider and real tokens stays
+        # unknown (fail-closed), and a rated equivalent spends.
+        usage = {"input_tokens": 2000, "output_tokens": 1000,
+                 "total_tokens": 3000}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="qwen3:8b", thread_id="real-1", usage=usage,
+                     provider="nebius", cost_usd=None, metered=True),
+                _row(model="nebius:zai-org/GLM-5.3-Flash",
+                     thread_id="real-2", usage=usage,
+                     provider="nebius", cost_usd=0.0008, metered=True),
+            ])
+            total = runs.total_metered_spend(ledger_path=path)
+            self.assertEqual(total["unknown"], 1)
+            self.assertAlmostEqual(total["spent"], 0.0008)
+
+    def test_backfill_dry_run_and_idempotent(self):
+        zero = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        with tempfile.TemporaryDirectory() as d:
+            path = self._ledger(d, [
+                _row(model="qwen3:8b", thread_id="test-thread-2",
+                     usage=zero, cost_usd=None, metered=True),
+            ])
+            before = open(path, encoding="utf-8").read()
+            result = runs.backfill_test_providers(
+                ledger_path=path, dry_run=True)
+            self.assertEqual(result["matched"], [0])
+            self.assertEqual(result["rewritten"], 0)
+            self.assertEqual(open(path, encoding="utf-8").read(), before)
+            self.assertEqual(
+                runs.backfill_test_providers(ledger_path=path)["rewritten"],
+                1)
+            self.assertEqual(
+                runs.backfill_test_providers(ledger_path=path)["matched"],
+                [])
+
     def test_spend_survives_delete_and_clear(self):
         usage = {"input_tokens": 2000, "output_tokens": 1000,
                  "total_tokens": 3000}

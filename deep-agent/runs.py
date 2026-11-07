@@ -358,6 +358,142 @@ def _tombstone_lines(indexes, path):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _explicit_zero_usage(row):
+    """True only with an explicit all-zero token usage record.
+
+    A missing or partial usage dict is no evidence of zero spend
+    (crash, streaming failure): those rows stay fail-closed. Never
+    raises.
+    """
+    try:
+        usage = row.get("usage")
+        if not isinstance(usage, dict):
+            return False
+        triple = ("input_tokens", "output_tokens", "total_tokens")
+        if any(key not in usage for key in triple):
+            return False
+        return all(int(usage[key] or 0) == 0 for key in triple)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _needs_1121_note_fix(row):
+    """True for rows stamped by the first backfill revision.
+
+    That revision asserted provider "ollama" as fact; the evidence
+    only supports zero tokens, which costs zero on any backend.
+    These rows get the corrected note and lose the provider stamp.
+    Never raises.
+    """
+    try:
+        if not isinstance(row, dict) or _is_deleted(row):
+            return False
+        extra = row.get("extra")
+        return (isinstance(extra, dict)
+                and isinstance(extra.get("backfill"), str)
+                and extra["backfill"].startswith("1121:")
+                and "regardless of backend" not in extra["backfill"])
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _needs_1121_backfill(row):
+    """True for the poisoned rows behind issue #1121.
+
+    Narrow by construction: live rows with no provider on the
+    entry or derivable from the model label, a `test-`-prefixed
+    harness thread, an explicit all-zero token usage record,
+    filed metered with no rate. Real spend, rated rows, partial
+    or missing usage, and rows with any provider evidence are
+    never touched — those stay fail-closed. Never raises.
+    """
+    try:
+        if not isinstance(row, dict) or _is_deleted(row):
+            return False
+        if row.get("provider") or ledger._model_provider(row.get("model")):
+            return False
+        if not ledger._is_test_thread(row.get("thread_id")):
+            return False
+        if not _explicit_zero_usage(row):
+            return False
+        return row.get("metered") is True and row.get("cost_usd") is None
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def backfill_test_providers(ledger_path=None, dry_run=False):
+    """Principled backfill for the #1121 poisoned rows.
+
+    Rewrites only _needs_1121_backfill rows plus _needs_1121_note_fix
+    rows from the first revision. Zero tokens cost zero on every
+    backend (rates are per-token), so no provider is stamped — the
+    rows file metered False, cost 0.0, with an audit note. The
+    rewrite is atomic (locked read, tmp file, os.replace, the
+    _persist_locked pattern), so a concurrent turn append and an
+    ENOSPC mid-write can never leave a half-written ledger: on
+    failure the original is untouched and the error goes to
+    stderr. Returns {"matched": [indexes], "rewritten": n}. Dry
+    run changes nothing. Never raises.
+    """
+    path = ledger_path or LEDGER
+    try:
+        f = open(path, encoding="utf-8")
+    except OSError as exc:
+        print(f"backfill: cannot open {path} ({exc})", file=sys.stderr)
+        return {"matched": [], "rewritten": 0}
+    with f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            lines = f.readlines()
+        except OSError as exc:
+            print(f"backfill: cannot read {path} ({exc})", file=sys.stderr)
+            return {"matched": [], "rewritten": 0}
+        finally:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+    matched = []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if _needs_1121_backfill(row) or _needs_1121_note_fix(row):
+            matched.append(i)
+    if not matched or dry_run:
+        return {"matched": matched, "rewritten": 0}
+    for i in matched:
+        row = json.loads(lines[i])
+        row["metered"] = False
+        row["cost_usd"] = 0.0
+        row.pop("provider", None)
+        extra = row.get("extra")
+        if not isinstance(extra, dict):
+            extra = {}
+            row["extra"] = extra
+        extra["backfill"] = ("1121: test-harness row, zero tokens — "
+                             "cost 0 regardless of backend; provider "
+                             "not recorded by the pre-1121 writer")
+        lines[i] = json.dumps(row) + "\n"
+    tmp = path + ".backfill.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as out:
+            out.writelines(lines)
+        os.replace(tmp, path)
+        return {"matched": matched, "rewritten": len(matched)}
+    except OSError as exc:
+        print(f"backfill: cannot write {path} ({exc}); "
+              "original untouched", file=sys.stderr)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return {"matched": matched, "rewritten": 0}
+
+
 def total_metered_spend(ledger_path=None):
     """Lifetime metered spend over the whole ledger (uncapped scan).
 
@@ -545,6 +681,12 @@ def _dur_txt(summary):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--backfill-1121":
+        dry = "--dry-run" in argv[1:]
+        result = backfill_test_providers(dry_run=dry)
+        print(json.dumps({"status": "backfilled" if not dry else "dry-run",
+                          **result}))
+        return 0
     if not argv:
         found = list_runs(limit=10)
         if not found:

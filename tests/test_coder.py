@@ -120,7 +120,7 @@ class TestProvisionAndGate(unittest.TestCase):
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv (langgraph)")
 class TestCoderLoop(unittest.TestCase):
     def _gen(self, tmp, plan=None, implement="done",
-             td_runner=None, cmds=None, thread="coder-test-1"):
+             td_runner=None, cmds=None, thread="test-coder-1"):
         def plan_fn(brief, root, context):
             return dict(plan or {"plan": "P",
                                  "allowed_files": [],
@@ -181,7 +181,7 @@ class TestCoderLoop(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             gen = self._gen(tmp, td_runner=td_runner,
-                            thread="coder-test-2")
+                            thread="test-coder-2")
             state = gen.run()
             state = gen.run(resume={"decision": "approve"})
             if "__interrupt__" in state:
@@ -203,7 +203,7 @@ class TestCoderLoop(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             gen = self._gen(tmp, td_runner=td_runner,
-                            thread="coder-test-3")
+                            thread="test-coder-3")
             state = gen.run()
             final = gen.run(resume={"decision": "approve"})
             self.assertFalse(final.get("valid"))
@@ -217,7 +217,7 @@ class TestCoderLoop(unittest.TestCase):
                 repo=tmp, issue_id=7, brief="x", td_runner=td_runner,
                 plan_fn=lambda b, r, c: {"plan": "P"},
                 implement_fn=lambda b, p, r, e: "done",
-                thread_id="coder-test-4")
+                thread_id="test-coder-4")
             final = gen.run()
             self.assertIn("td worktree create failed", final.get("fatal"))
 

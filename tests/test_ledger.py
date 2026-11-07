@@ -123,6 +123,65 @@ class TestRecord(unittest.TestCase):
         self.assertFalse(entry["metered"])
         self.assertEqual(entry["cost_usd"], 0.0)
 
+    def test_records_explicit_provider(self):
+        entry = ledger.record(
+            "s.py", "qwen3:8b", "real-thread-1", [], time.time(),
+            usage={"input_tokens": 2000, "output_tokens": 1000,
+                   "total_tokens": 3000},
+            provider="nebius")
+        self.assertEqual(entry["provider"], "nebius")
+        self.assertTrue(entry["metered"])
+
+    def test_explicit_ollama_provider_is_free(self):
+        entry = ledger.record(
+            "s.py", "qwen3:8b", "real-thread-1", [], time.time(),
+            usage={"input_tokens": 2000, "output_tokens": 1000,
+                   "total_tokens": 3000},
+            provider="ollama")
+        self.assertEqual(entry["provider"], "ollama")
+        self.assertFalse(entry["metered"])
+        self.assertEqual(entry["cost_usd"], 0.0)
+
+    def test_derives_provider_from_prefix(self):
+        entry = ledger.record(
+            "s.py", "ollama:qwen3:8b", "t", [], time.time())
+        self.assertEqual(entry["provider"], "ollama")
+
+    def test_bare_model_stays_providerless_fail_closed(self):
+        # Regression fixture for issue #1121: a bare label with no
+        # provider stays metered-unknown (fail-closed), never free.
+        entry = ledger.record(
+            "s.py", "qwen3:8b", "real-thread-1", [], time.time(),
+            usage={"input_tokens": 0, "output_tokens": 0,
+                   "total_tokens": 0})
+        self.assertIsNone(entry["provider"])
+        self.assertTrue(entry["metered"])
+        self.assertIsNone(entry["cost_usd"])
+
+    def test_test_threads_never_meter(self):
+        for thread in ("test-thread-2", "test-coder-2"):
+            entry = ledger.record(
+                "s.py", "nebius:zai-org/GLM-5.3-Flash", thread, [],
+                time.time(),
+                usage={"input_tokens": 2000, "output_tokens": 1000,
+                       "total_tokens": 3000})
+            self.assertFalse(entry["metered"])
+            self.assertEqual(entry["cost_usd"], 0.0)
+            self.assertEqual(entry["provider"], "nebius")
+
+    def test_thread_match_is_prefix_only(self):
+        self.assertTrue(ledger._is_test_thread("test-thread-2"))
+        self.assertTrue(ledger._is_test_thread("test-coder-2"))
+        self.assertTrue(ledger._is_test_thread("test"))
+        # Substrings must never match: a real production thread
+        # like these bills normally even on the metered path.
+        self.assertFalse(ledger._is_test_thread("coder-test-2"))
+        self.assertFalse(ledger._is_test_thread("latest-test-run"))
+        self.assertFalse(ledger._is_test_thread("sprint-test-plan"))
+        self.assertFalse(ledger._is_test_thread("latest-run"))
+        self.assertFalse(ledger._is_test_thread("issuegen-123"))
+        self.assertFalse(ledger._is_test_thread(None))
+
     def test_happy_path(self):
         msgs = [
             ai("thinking", usage={"input_tokens": 10, "output_tokens": 5,
