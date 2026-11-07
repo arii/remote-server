@@ -27,6 +27,32 @@ FAILED_MESSAGE = "RAG index build failed; doc search unavailable"
 MISSING_MESSAGE = "RAG index is missing; rebuild it (deep-agent/build_index.py)"
 
 
+def index_chunks():
+    """Embedding row count in the watched sqlite, or None. Stdlib-only.
+
+    Ground truth for "servable": a non-empty sqlite can still hold a
+    stale thin build (issue #1119). Counts every row in the embeddings
+    table (this index is single-purpose); any failure — missing file,
+    unreadable schema, locked db — is None, never a raise, so /health
+    stays total.
+    """
+    try:
+        import sqlite3
+        from urllib.request import pathname2url
+
+        path = os.path.join(chroma_dir(), SQLITE_NAME)
+        if not os.path.isfile(path):
+            return None
+        with sqlite3.connect(
+                "file:%s?mode=ro" % pathname2url(path),
+                uri=True) as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM embeddings").fetchone()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+
+
 class IndexNotReadyError(RuntimeError):
     """The RAG index cannot serve queries yet (warming/failed/missing)."""
 

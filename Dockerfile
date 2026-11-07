@@ -66,6 +66,13 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
  && pnpm --version \
  && echo "node/pnpm live for td ux"
 ENV PATH="/opt/venvs/td/bin:${PATH}"
+# Playwright browser home (#1118): the bake runs as root while the
+# buttons runtime sets HOME=/home/ari, so the default ~/.cache lookup
+# resolves differently at bake vs run time ("no chromium under the
+# browsers path" live while build smoke passes). One explicit path
+# for both: the bake below lands here and every runtime lookup
+# follows it via impact_pass._browser_dirs().
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 WORKDIR /app
 # Root ux deps only (tsx/playwright/axe for td ux): the SPA's own
 # deps stay in the build stage. Filter value must match the root

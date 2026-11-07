@@ -55,6 +55,12 @@ class RouterSmokeTest(unittest.TestCase):
         self.assertIn(
             body["index"],
             {"ready", "warming", "failed", "missing", "unknown"})
+        # /health also reports the embedding row count (#1119): an
+        # int when the sqlite is readable, else null. Ready alone is
+        # not proof of servability.
+        self.assertIn("index_chunks", body)
+        self.assertTrue(body["index_chunks"] is None
+                        or isinstance(body["index_chunks"], int))
         # /api/system/health serves the real SystemHealth model.
         resp = client.get("/api/system/health")
         self.assertEqual(resp.status_code, 200)

@@ -9,6 +9,7 @@ assert the fast boot synchronously, then poll the readiness markers
 Cases needing a passing Ollama probe skip without one; all other
 cases point OLLAMA_URL at a closed port.
 """
+import json
 import os
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 ENTRYPOINT = os.path.join(ROOT, "scripts", "buttons-entrypoint.sh")
 
 SCRUB = ("SKIP_INDEX_BUILD", "S5_CHROMA_DIR", "APP_ROOT",
+         "BUTTONS_STACK", "CHUNK_FLOOR",
          "DEEP_AGENT_VENV", "OLLAMA_WAIT_SECS", "OLLAMA_TRIES")
 CLOSED_PORT_URL = "http://127.0.0.1:9/"
 
@@ -51,6 +53,49 @@ def _write_exe(path, content):
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     os.chmod(path, 0o755)
+
+
+def _write_sqlite(path, rows):
+    """Real chroma-shaped sqlite: embeddings table with N rows."""
+    import sqlite3
+    if os.path.exists(path):
+        os.unlink(path)
+    with sqlite3.connect(path) as con:
+        con.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY)")
+        con.executemany("INSERT INTO embeddings (id) VALUES (?)",
+                        [(i,) for i in range(rows)])
+        con.commit()
+
+
+def _git_init_stack(root):
+    """Turn root into a git checkout with one commit; return its SHA."""
+    subprocess.run(["git", "init", "-q", root], check=True,
+                   capture_output=True, timeout=60)
+    subprocess.run(["git", "-C", root, "config", "user.email",
+                    "test@example.com"], check=True,
+                   capture_output=True, timeout=60)
+    subprocess.run(["git", "-C", root, "config", "user.name",
+                    "test"], check=True,
+                   capture_output=True, timeout=60)
+    with open(os.path.join(root, "probe.txt"), "w",
+              encoding="utf-8") as f:
+        f.write("probe\n")
+    subprocess.run(["git", "-C", root, "add", "probe.txt"],
+                   check=True, capture_output=True, timeout=60)
+    subprocess.run(["git", "-C", root, "commit", "-qm", "seed"],
+                   check=True, capture_output=True, timeout=60)
+    proc = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True,
+                          timeout=60)
+    return proc.stdout.strip()
+
+
+def _write_td_meta(stack_root, sha):
+    meta_dir = os.path.join(stack_root, ".td_rag")
+    os.makedirs(meta_dir, exist_ok=True)
+    with open(os.path.join(meta_dir, "meta.json"), "w",
+              encoding="utf-8") as f:
+        f.write('{"last_indexed_sha": "%s"}' % sha)
 
 
 def _wait_for(path, timeout=20):
@@ -113,6 +158,16 @@ class TestEntrypointWiring(unittest.TestCase):
             capture_output=True, text=True, timeout=120)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
+    def test_dockerfile_pins_browsers_path_before_bake(self):
+        with open(os.path.join(
+                ROOT, "Dockerfile"), encoding="utf-8") as f:
+            body = f.read()
+        pin = "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright"
+        self.assertIn(pin, body)
+        self.assertLess(body.index(pin),
+                        body.index("playwright install"),
+                        "the bake must run under the pinned path")
+
 
 @unittest.skipUnless(
     shutil.which("bash") and shutil.which("curl"),
@@ -130,9 +185,8 @@ class TestEntrypointBehavior(unittest.TestCase):
 
     def test_present_index_skips_build(self):
         with tempfile.TemporaryDirectory() as index_dir:
-            with open(os.path.join(
-                    index_dir, "chroma.sqlite3"), "wb") as f:
-                f.write(b"fake-index-bytes")
+            _write_sqlite(os.path.join(
+                index_dir, "chroma.sqlite3"), 1500)
             proc = _run(
                 ["echo", "present-marker"],
                 {"S5_CHROMA_DIR": index_dir,
@@ -229,20 +283,24 @@ class TestEntrypointBehavior(unittest.TestCase):
                 self.assertIn("http://127.0.0.1:9", body)
                 self.assertNotIn("/api/generate", body)
 
-    def _fake_app(self, root, build_exit=0, write_sqlite=True):
+    def _fake_app(self, root, build_exit=0, write_sqlite=True,
+                  sqlite_rows=1500):
         """Fake APP_ROOT: a fake `td` on a shim PATH records its
         argv and the index build outcome. With write_sqlite it also
-        drops the sqlite artifact a real build produces, into the
-        S5_CHROMA_DIR the entrypoint watches; without it the shim
-        reproduces #1094's silent success (exit 0, no sqlite)."""
+        drops a real chroma-shaped sqlite (sqlite_rows embedding
+        rows) into the S5_CHROMA_DIR the entrypoint watches; without
+        it the shim reproduces #1094's silent success (exit 0, no
+        sqlite)."""
         bindir = os.path.join(root, "fakebin")
         os.makedirs(bindir)
         log = os.path.join(root, "td.log")
         marker = os.path.join(root, "built.marker")
+        seed = os.path.join(root, "seed.sqlite3")
         if write_sqlite:
+            _write_sqlite(seed, sqlite_rows)
             write_step = (
                 'if [ -n "$S5_CHROMA_DIR" ]; then '
-                'printf "fake-sqlite-bytes" > '
+                f'cp "{seed}" '
                 '"$S5_CHROMA_DIR/chroma.sqlite3"; fi\n'
             )
         else:
@@ -362,6 +420,114 @@ class TestEntrypointBehavior(unittest.TestCase):
                     index_dir, ".index_building")))
                 with open(failed, encoding="utf-8") as f:
                     self.assertIn("chroma.sqlite3", f.read())
+
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_thin_sqlite_rebuilds_in_background(self):
+        # #1119: a non-empty sqlite is not proof of servability — 50
+        # rows (floor 1000) must trigger a rebuild, and the rebuild
+        # must record build_meta.json with the proved chunk count.
+        with tempfile.TemporaryDirectory() as app_root:
+            bindir, _, _ = self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as index_dir:
+                _write_sqlite(os.path.join(
+                    index_dir, "chroma.sqlite3"), 50)
+                proc = _run(
+                    ["echo", "thin-marker"],
+                    {"APP_ROOT": app_root,
+                     "S5_CHROMA_DIR": index_dir,
+                     "PATH": bindir + os.pathsep + os.environ.get(
+                         "PATH", "")})
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("thin-marker", proc.stdout)
+                self.assertTrue(
+                    _wait_gone(os.path.join(
+                        index_dir, ".index_building")))
+                self.assertFalse(os.path.exists(os.path.join(
+                    index_dir, ".index_failed")))
+                meta_path = os.path.join(index_dir, "build_meta.json")
+                self.assertTrue(os.path.isfile(meta_path))
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+                self.assertGreaterEqual(meta["chunks"], 1000)
+
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_behind_sha_rebuilds_in_git_stack(self):
+        # td meta records an older SHA than the stack HEAD: the index
+        # no longer matches the tree, so it must rebuild even though
+        # the sqlite is thick.
+        with tempfile.TemporaryDirectory() as app_root:
+            bindir, log, marker = self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as stack_root:
+                _git_init_stack(stack_root)
+                _write_td_meta(stack_root, "0" * 40)
+                with tempfile.TemporaryDirectory() as index_dir:
+                    _write_sqlite(os.path.join(
+                        index_dir, "chroma.sqlite3"), 1500)
+                    proc = _run(
+                        ["echo", "behind-marker"],
+                        {"APP_ROOT": app_root,
+                         "BUTTONS_STACK": stack_root,
+                         "S5_CHROMA_DIR": index_dir,
+                         "PATH": bindir + os.pathsep + os.environ.get(
+                             "PATH", "")})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertIn("behind-marker", proc.stdout)
+                    self.assertTrue(
+                        _wait_for(marker),
+                        "background rebuild never ran")
+                    with open(log, encoding="utf-8") as f:
+                        self.assertIn("rag", f.read())
+
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_fresh_git_stack_skips_build(self):
+        # sqlite thick AND td meta SHA matches stack HEAD: the one
+        # case where a rebuild is provably unnecessary.
+        with tempfile.TemporaryDirectory() as app_root:
+            self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as stack_root:
+                head = _git_init_stack(stack_root)
+                _write_td_meta(stack_root, head)
+                with tempfile.TemporaryDirectory() as index_dir:
+                    _write_sqlite(os.path.join(
+                        index_dir, "chroma.sqlite3"), 1500)
+                    proc = _run(
+                        ["echo", "fresh-marker"],
+                        {"APP_ROOT": app_root,
+                         "BUTTONS_STACK": stack_root,
+                         "S5_CHROMA_DIR": index_dir,
+                         "PATH": os.path.join(
+                             app_root,
+                             "fakebin") + os.pathsep + os.environ.get(
+                             "PATH", "")})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertIn("fresh-marker", proc.stdout)
+                    self.assertIn("skipping rebuild", proc.stdout)
+
+    @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
+    def test_missing_meta_rebuilds_in_git_stack(self):
+        # No td meta in a git stack: freshness is unprovable, so a
+        # thick sqlite alone must not skip the build (#1119).
+        with tempfile.TemporaryDirectory() as app_root:
+            bindir, log, marker = self._fake_app(app_root)
+            with tempfile.TemporaryDirectory() as stack_root:
+                _git_init_stack(stack_root)
+                with tempfile.TemporaryDirectory() as index_dir:
+                    _write_sqlite(os.path.join(
+                        index_dir, "chroma.sqlite3"), 1500)
+                    proc = _run(
+                        ["echo", "nometa-marker"],
+                        {"APP_ROOT": app_root,
+                         "BUTTONS_STACK": stack_root,
+                         "S5_CHROMA_DIR": index_dir,
+                         "PATH": bindir + os.pathsep + os.environ.get(
+                             "PATH", "")})
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertIn("nometa-marker", proc.stdout)
+                    self.assertTrue(
+                        _wait_for(marker),
+                        "background rebuild never ran")
+                    with open(log, encoding="utf-8") as f:
+                        self.assertIn("rag", f.read())
 
     @unittest.skipUnless(_ollama_up(), "needs reachable Ollama")
     def test_build_failure_boots_then_marks_failed(self):
