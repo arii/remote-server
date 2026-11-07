@@ -162,65 +162,49 @@ class TestAskTools(unittest.TestCase):
                 "REJECTED: bad query",
             )
 
-    def test_search_docs_formats_hits(self):
-        hits = [
-            SimpleNamespace(metadata={"repo": "r", "source": "s"},
-                            page_content="how to run"),
-            SimpleNamespace(metadata={}, page_content=""),
-        ]
-        retriever = mock.Mock()
-        retriever.invoke.return_value = hits
-        with mock.patch.object(ai, "_retriever_for",
-                               return_value=retriever):
+    def test_search_docs_passthrough(self):
+        with mock.patch.object(ai.retrieval, "search_td",
+                               return_value="[a.py:3] how to run") as search:
             out = ai.search_docs.invoke({"query": "run server"})
-        self.assertIn("[r/s] how to run", out)
-        retriever.invoke.assert_called_once_with("run server")
+        self.assertEqual(out, "[a.py:3] how to run")
+        search.assert_called_once_with(
+            "run server", ai._checkout, top_k=3)
+
+    def test_search_docs_blank_repo_uses_checkout(self):
+        ai._checkout = "/tmp/checkout"
+        self.addCleanup(setattr, ai, "_checkout", "")
+        with mock.patch.object(ai.retrieval, "search_td",
+                               return_value="no doc hits") as search:
+            out = ai.search_docs.invoke({"query": "run server"})
+        self.assertEqual(out, "no doc hits")
+        search.assert_called_once_with(
+            "run server", "/tmp/checkout", top_k=3)
 
     def test_search_docs_unavailable(self):
-        retriever = mock.Mock()
-        retriever.invoke.side_effect = RuntimeError("no chroma")
-        with mock.patch.object(ai, "_retriever_for",
-                               return_value=retriever):
+        with mock.patch.object(ai.retrieval, "query_td_repo",
+                               side_effect=RuntimeError("td down")):
             self.assertIn(
                 "doc search unavailable",
                 ai.search_docs.invoke({"query": "run server"}),
             )
 
-    def test_search_docs_warming_message(self):
-        import retrieval
-
-        with mock.patch.object(
-                ai, "_retriever_for",
-                side_effect=retrieval.IndexNotReadyError(
-                    retrieval.WARMING_MESSAGE)):
-            self.assertEqual(
-                ai.search_docs.invoke({"query": "run server"}),
-                "RAG index is warming, retry shortly",
-            )
-
     def test_search_docs_repo_filter_passed_through(self):
-        hits = [
-            SimpleNamespace(metadata={"repo": "arii/portfolio",
-                                      "source": "README.md"},
-                            page_content="how to run"),
-        ]
-        retriever = mock.Mock()
-        retriever.invoke.return_value = hits
-        with mock.patch.object(ai, "_retriever_for",
-                               return_value=retriever) as get:
+        with mock.patch.object(ai.retrieval, "search_td",
+                               return_value="[x] how to run") as search:
             out = ai.search_docs.invoke(
                 {"query": "run server", "repo": "portfolio"})
-        self.assertIn("[arii/portfolio/README.md]", out)
-        get.assert_called_once_with("arii/portfolio")
+        self.assertEqual(out, "[x] how to run")
+        search.assert_called_once_with(
+            "run server", "/srv/repos/portfolio", top_k=3)
 
     def test_search_docs_bad_repo_rejected(self):
-        with mock.patch.object(ai, "_retriever_for") as get:
+        with mock.patch.object(ai.retrieval, "search_td") as search:
             self.assertEqual(
                 ai.search_docs.invoke(
                     {"query": "run server", "repo": "??"}),
                 "REJECTED: bad repo filter",
             )
-        get.assert_not_called()
+        search.assert_not_called()
 
     def test_grep_skips_index_and_log_noise(self):
         # Regression: code-locate failed 4/5 live because .boomtick /
