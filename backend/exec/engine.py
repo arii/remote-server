@@ -369,6 +369,24 @@ def validate_review_pr_argv(tokens):
     return tokens[2] == "--post"
 
 
+def _td_failure_message(stderr, stdout):
+    """Failure text for a nonzero td/gh call: last stderr line, else
+    the handled-error payload td prints as JSON on stdout (td exits
+    nonzero with empty stderr for those, which used to surface as the
+    opaque "command failed" and made CI failures undebuggable)."""
+    text = (stderr or "").strip() if isinstance(stderr, str) else ""
+    if text:
+        return text.splitlines()[-1]
+    raw = (stdout or "").strip() if isinstance(stdout, str) else ""
+    try:
+        payload = json.loads(raw) if raw else None
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("message"):
+        return str(payload["message"])[:200]
+    return "command failed"
+
+
 def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     """Run one fixed td/gh command string; return stdout.
 
@@ -390,11 +408,7 @@ def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
         cwd=stack_dir(),
     )
     if proc.returncode != 0:
-        raise RuntimeError(
-            (proc.stderr or "").strip().splitlines()[-1]
-            if (proc.stderr or "").strip()
-            else "command failed"
-        )
+        raise RuntimeError(_td_failure_message(proc.stderr, proc.stdout))
     return proc.stdout
 
 
@@ -419,11 +433,8 @@ async def td_run_async(cmd, timeout=TD_RUN_TIMEOUT):
         await proc.wait()
         raise RuntimeError(f"command timed out after {timeout}s")
     if proc.returncode != 0:
-        text = err.decode("utf-8", "replace")
-        raise RuntimeError(
-            text.strip().splitlines()[-1] if text.strip()
-            else "command failed"
-        )
+        raise RuntimeError(_td_failure_message(
+            err.decode("utf-8", "replace"), out.decode("utf-8", "replace")))
     return out.decode("utf-8", "replace")
 
 

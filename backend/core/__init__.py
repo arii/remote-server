@@ -452,6 +452,11 @@ def validate_action_branch(repo: str, branch, run=None) -> str:
     name = branch.strip()
     if not name:
         return ""
+    # Detached-HEAD checkouts (CI runners) report the branch as HEAD,
+    # which never exists under refs/heads — treat as the current
+    # checkout, same as omitted, instead of 400ing every dispatch.
+    if name == "HEAD":
+        return ""
     if (not BRANCH_NAME_RE.match(name) or ".." in name
             or "//" in name or name.endswith((".lock", "/", "."))):
         raise ValueError(f"invalid branch name: {branch!r}")

@@ -21,7 +21,19 @@ import {
   repairVerifyLine,
   shouldResetPaneOnClear,
   tdBlockReason,
+  tdCommandLabel,
 } from './jobsUtils';
+
+describe('td command labels', () => {
+  it('names the Doctor and Preflight checks', () => {
+    expect(tdCommandLabel('td doctor')).toBe('Doctor');
+    expect(tdCommandLabel('td preflight')).toBe('Preflight');
+  });
+
+  it('passes anything else through untouched', () => {
+    expect(tdCommandLabel('td context-warm')).toBe('td context-warm');
+  });
+});
 
 describe('td block reasons', () => {
   it('fails open when PR state is unknown', () => {

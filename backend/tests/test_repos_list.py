@@ -286,6 +286,18 @@ class ValidateActionBranchTest(unittest.TestCase):
                     validate_action_branch("demo", "main", run=_proc)
                 self.assertIn("unknown branch", str(ctx.exception))
 
+    def test_HEAD_means_current_checkout(self):
+        # Detached-HEAD checkouts (CI) report the branch as HEAD, which
+        # never exists under refs/heads — treat as omitted, not unknown
+        # (e2e jobs-run 400d "unknown branch: 'HEAD'" on every CI run).
+        from backend.core import validate_action_branch
+
+        def boom(cmd, **kwargs):
+            raise AssertionError(f"git must not run: {cmd}")
+
+        with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": "/nonexistent-root-xyz"}):
+            self.assertEqual(validate_action_branch("demo", "HEAD", run=boom), "")
+
 
 if __name__ == "__main__":
     unittest.main()

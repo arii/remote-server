@@ -40,6 +40,7 @@ import {
   prFieldSeed,
   resultLine,
   shouldResetPaneOnClear,
+  tdCommandLabel,
   uxAuditPagesFromInput,
   uxAuditSiteRepo,
 } from './jobsUtils';
@@ -1119,7 +1120,10 @@ export default function JobsView({
       handledTdNonce.current = pendingTdCommand.nonce;
       const { command, nonce } = pendingTdCommand;
       onPendingTdHandled?.(nonce);
-      void guarded(() => launch(command, () => startTdRun(command, repo, branch)), command);
+      void guarded(
+        () => launch(tdCommandLabel(command), () => startTdRun(command, repo, branch)),
+        command,
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingTdCommand]);
