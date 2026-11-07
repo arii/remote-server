@@ -109,6 +109,18 @@ class ChatOpsTest(unittest.TestCase):
         _core.get_repo_status = lambda name: {"repo": name}
         import backend.api.routers.ops as _opsmod
         _opsmod.get_repo_status = lambda name: {"repo": name}
+        # In-memory run registry (#1151): the jobs singleton rehydrates
+        # the persisted runs store when one exists, so a confirmed
+        # clear with no id returns 200 (clears the newest stored run)
+        # anywhere a server has run, while pristine CI sees an empty
+        # registry and 404s. Swapping in a store-less registry makes
+        # the suite hermetic and stops clear_run from persisting into
+        # the real store mid-test. Supported unit-test pattern per
+        # engine.RunRegistry (store_path=None).
+        import backend.api.routers.jobs as _jobsmod
+        from backend.exec.engine import RunRegistry
+        self._orig_registry = _jobsmod.registry
+        _jobsmod.registry = RunRegistry()
 
     def tearDown(self):
         if self._orig_ledger is None:
@@ -137,6 +149,8 @@ class ChatOpsTest(unittest.TestCase):
         _core.get_repo_status = self._orig_status
         import backend.api.routers.ops as _opsmod
         del _opsmod.get_repo_status
+        import backend.api.routers.jobs as _jobsmod
+        _jobsmod.registry = self._orig_registry
 
     def _sse_events(self, resp):
         events = []
