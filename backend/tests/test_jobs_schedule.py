@@ -757,5 +757,48 @@ class LaunchFailureRecordTest(unittest.TestCase):
         self.assertIn("unknown repo", run.get("output", ""))
 
 
+class StartDispatchFailureTest(unittest.TestCase):
+    """Issue #1152: the manual/API fire path (_start_dispatch) must
+    leave non-empty output when the launch fails — mirror of the
+    #1149 scheduled-path fix. Asserts only non-emptiness (not the
+    message text), per the issue. Uses a bogus repo name (same
+    ValueError launch path) so the test never depends on a genuinely
+    corrupt checkout."""
+
+    def setUp(self):
+        from backend.exec.engine import RunRegistry
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_sched = os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH")
+        os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = os.path.join(
+            self.tmp.name, "sched.json")
+        self.old_registry = jobs_mod.registry
+        jobs_mod.registry = RunRegistry(
+            store_path=os.path.join(self.tmp.name, "runs.json"))
+        self._seed_patch = patch.object(
+            jobs_mod, "_notify_seed_repos", return_value=[])
+        self._seed_patch.start()
+
+    def tearDown(self):
+        self._seed_patch.stop()
+        jobs_mod.registry = self.old_registry
+        if self.old_sched is None:
+            os.environ.pop("BUTTONS_JOBS_SCHEDULE_PATH", None)
+        else:
+            os.environ["BUTTONS_JOBS_SCHEDULE_PATH"] = self.old_sched
+        self.tmp.cleanup()
+
+    def test_dispatch_launch_failure_leaves_output(self):
+        with self.assertRaises(ValueError):
+            jobs_mod._start_dispatch(
+                "check-notifications", "no-such-repo-xyz")
+        runs = [r for r in jobs_mod.registry.runs.values()
+                if r.get("action") == "check-notifications"]
+        self.assertTrue(runs, "dispatch created no run record")
+        run = runs[-1]
+        self.assertTrue(run.get("done"))
+        self.assertEqual(run.get("exit_code"), 1)
+        self.assertTrue(run.get("output", "").strip())
+
+
 if __name__ == "__main__":
     unittest.main()

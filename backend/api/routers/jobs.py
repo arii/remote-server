@@ -251,9 +251,14 @@ def _start_dispatch(action: str, repo: str, td_argv=None) -> dict:
         )
     try:
         _launch(run_id, action, repo, td_argv=td_argv)
-    except Exception:
+    except Exception as exc:
         # _launch runs after start_run took a slot; release it so a
-        # failed launch can't wedge the engine (#294).
+        # failed launch can't wedge the engine (#294). Record the
+        # error on the RUN record too (#1152, mirror of #1149 for
+        # the scheduled path): otherwise a launch failure — e.g.
+        # _repo_target rejecting a corrupt checkout — finishes exit
+        # 1 with EMPTY output.
+        registry.append(run_id, f"error: {exc}\n")
         registry.finish_run(run_id, 1)
         raise
     return {"id": run_id,
