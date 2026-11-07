@@ -187,6 +187,60 @@ class FetchParallelTest(unittest.TestCase):
         self.assertEqual(second["updated_at"], "2026-11-03T09:05:00Z")
 
 
+class PullRequestRunsExcludedTest(unittest.TestCase):
+    """PR-branch failures must not page the repo feed (#1150).
+
+    td lists runs for every event, so a failing release-train PR run
+    used to pin a crit card while main stayed green (#1129 instance).
+    """
+
+    def setUp(self):
+        self._orig = engine.td_run
+
+    def tearDown(self):
+        engine.td_run = self._orig
+
+    def _fetch(self, runs):
+        def fake(cmd, timeout=None):
+            if "workflow-runs" in cmd:
+                return json.dumps({"workflow_runs": runs})
+            return json.dumps([])
+        engine.td_run = fake
+        return ops.fetch_workflow_health("remote-server",
+                                         "arii/remote-server")
+
+    def test_mixed_pr_and_push_keeps_push_only(self):
+        data = self._fetch([
+            {"id": 101, "name": "CI", "head_branch": "release-train",
+             "event": "pull_request", "conclusion": "failure",
+             "html_url": "https://example.invalid/runs/101"},
+            {"id": 102, "name": "CI", "head_branch": "main",
+             "event": "push", "conclusion": "failure",
+             "html_url": "https://example.invalid/runs/102"},
+        ])
+        self.assertEqual(data["status"], "failing")
+        self.assertEqual([w["id"] for w in data["workflows"]], [102])
+
+    def test_only_pr_failures_reads_healthy(self):
+        data = self._fetch([
+            {"id": 101, "name": "CI", "head_branch": "release-train",
+             "event": "pull_request", "conclusion": "failure",
+             "html_url": "https://example.invalid/runs/101"},
+        ])
+        self.assertEqual(data["status"], "healthy")
+        self.assertEqual(data["total_failing"], 0)
+        self.assertEqual(data["workflows"], [])
+
+    def test_schedule_and_dispatch_still_page(self):
+        data = self._fetch([
+            {"id": 101, "name": "Nightly", "head_branch": "main",
+             "event": "schedule", "conclusion": "failure",
+             "html_url": "https://example.invalid/runs/101"},
+        ])
+        self.assertEqual(data["status"], "failing")
+        self.assertEqual([w["id"] for w in data["workflows"]], [101])
+
+
 class FixtureTimestampsTest(unittest.TestCase):
     def test_fixture_runs_carry_timestamps(self):
         """The fixture path also plumbs timestamps through (#455)."""
