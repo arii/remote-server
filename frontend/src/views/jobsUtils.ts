@@ -3,6 +3,15 @@ import type { IssueRow } from '../reviewTypes';
 
 // The human result of a run: last meaningful output line, skipping the
 // `$ ...` command echoes the engine prepends. Empty when nothing surfaced.
+// Display label for a palette-dispatched td command: the raw argv
+// ("td doctor") reads as a command, not a finished check, in the
+// progress/notice path (e2e jobs-run asserts "Finished Doctor: …").
+export function tdCommandLabel(command: string): string {
+  if (command === 'td doctor') return 'Doctor';
+  if (command === 'td preflight') return 'Preflight';
+  return command;
+}
+
 export function resultLine(output: string): string {
   const lines = output
     .split('\n')

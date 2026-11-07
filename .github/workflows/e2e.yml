@@ -94,6 +94,12 @@ jobs:
       - name: run console E2E suite
         run: npx playwright test
         working-directory: tests/e2e
+        # The backend shells td for workflow-health; td needs a token
+        # (proven by CI log: "Missing GITHUB_TOKEN environment
+        # variable"). Explicit beats assuming the runner exports it
+        # into the playwright webServer env.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: upload playwright report
         if: failure()
