@@ -110,10 +110,40 @@ export function throwIfAuthExpired(resp: Response, path: string): void {
     notifyAuthExpired();
     throw new AuthExpiredError(path);
   }
+  // Any real response proves the pipe is up (even an HTTP error).
+  noteNetworkSuccess();
   if (authExpiredFlag && resp.ok && !resp.redirected) {
     authExpiredFlag = false;
     for (const listener of [...authExpiredListeners]) listener();
   }
+}
+
+// Session-expiry trip on repeated opaque network failures (#1143):
+// an expired oauth2-proxy session turns every API fetch into a
+// CORS-opaque TypeError — no Response to inspect, so the 401 /
+// redirect detection above never fires and the console serves stale
+// data forever. After a short run of consecutive network-shaped
+// failures, assume the session is gone and raise the same re-login
+// banner (it auto-retires on the next good response). Skipped while
+// the browser reports itself offline (dead network, not dead
+// session); a down backend may briefly mislabel, but the banner
+// clears itself on recovery.
+let consecutiveNetworkFailures = 0;
+const NETWORK_FAILURE_TRIP = 5;
+
+function noteNetworkFailure(): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  consecutiveNetworkFailures += 1;
+  if (consecutiveNetworkFailures >= NETWORK_FAILURE_TRIP) notifyAuthExpired();
+}
+
+function noteNetworkSuccess(): void {
+  consecutiveNetworkFailures = 0;
+}
+
+/** Test seam: reset the network-failure run between cases. */
+export function __clearNetworkFailures(): void {
+  consecutiveNetworkFailures = 0;
 }
 
 type AuthExpiredListener = () => void;
@@ -445,6 +475,10 @@ async function fetchApi(
     // Auth expiry already broadcast above; re-notifying would just
     // double-refresh failure listeners.
     if (!(err instanceof AuthExpiredError)) notifyApiFailure();
+    // Network-shaped failures (CORS-opaque TypeErrors) feed the
+    // session-expiry trip (#1143); timeouts and aborts are server
+    // slowness or user navigation, not auth shape.
+    if (err instanceof TypeError) noteNetworkFailure();
     if (err instanceof DOMException && err.name === 'TimeoutError') {
       throw new RequestTimeoutError(method, path, timeoutMs);
     }
