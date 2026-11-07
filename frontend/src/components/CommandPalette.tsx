@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Dialog from './Dialog';
 import { commandSection, filterCommands, type PaletteCommand } from './commandRegistry';
 
 // The palette chord (Ctrl+K / Cmd+K) lives in shortcuts.ts beside
@@ -77,8 +78,6 @@ export default function CommandPalette({
     });
   }, [filtered.length]);
 
-  if (!open) return null;
-
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -101,20 +100,14 @@ export default function CommandPalette({
   const activeId = cursor !== null && filtered[cursor] ? `palette-item-${filtered[cursor].id}` : undefined;
 
   return (
-    <div
-      className="palette-overlay"
-      data-testid="palette-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Dialog
+      open={open}
+      onClose={onClose}
+      label="Command palette"
+      testId="command-palette"
+      className="palette"
     >
-      <div
-        className="palette"
-        role="dialog"
-        aria-label="Command palette"
-        data-testid="command-palette"
-        onKeyDown={onKeyDown}
-      >
+      <div onKeyDown={onKeyDown}>
         <input
           ref={inputRef}
           className="palette-input"
@@ -176,6 +169,6 @@ export default function CommandPalette({
           Up/Down move · Enter runs · Esc closes · &gt; actions · @ repos · # review · / chat
         </p>
       </div>
-    </div>
+    </Dialog>
   );
 }

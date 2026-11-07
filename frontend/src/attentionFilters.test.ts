@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   dedupAttentionLines,
   deriveCardLabels,
+  extractBracketTags,
   failureNameSlot,
   isActionableAttention,
   isActionableLine,
@@ -83,5 +84,17 @@ describe('deriveCardLabels (issue #1109.8)', () => {
   });
   it('keeps the fallback when no line carries a tag', () => {
     expect(deriveCardLabels('Attention', ['plain line'])).toBe('Attention');
+  });
+});
+
+describe('extractBracketTags (issue #1127)', () => {
+  it('reads type tags anywhere in the line', () => {
+    expect(extractBracketTags('[slop] polish the empty state')).toEqual(['slop']);
+    expect(extractBracketTags('Rework [deep-agent] planner')).toEqual(['deep-agent']);
+    expect(extractBracketTags('[CI] [e2e] both red')).toEqual(['CI', 'e2e']);
+  });
+  it('returns nothing without brackets', () => {
+    expect(extractBracketTags('plain line')).toEqual([]);
+    expect(extractBracketTags('')).toEqual([]);
   });
 });

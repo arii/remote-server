@@ -1386,21 +1386,34 @@ describe('repo picker labels', () => {
     expect(label).toContain('dirty');
     expect(label.length).toBeLessThan('arii/remote-server · on main (dirty)'.length);
   });
-  it('trigger names the checkout only; rows carry branch state (issue #961)', () => {
+  it('selects the checkout by native option; no custom menu (issue #1124)', () => {
     const html = renderToStaticMarkup(
       <RepoPicker repos={[dirty]} value="remote-server" onChange={() => {}} />,
     );
-    expect(html).toContain('>remote-server</button>');
+    expect(html).toContain('<select');
+    expect(html).toContain('value="remote-server"');
+    expect(html).toContain('selected=""');
     expect(html).toContain('title="arii/remote-server');
-    // Closed menu: branch/dirty rows and search render on open only.
+    // No hand-rolled menu, search, or buttons remain.
     expect(html).not.toContain('repo-menu');
     expect(html).not.toContain('repo-search');
+    expect(html).not.toContain('</button>');
   });
-  it('trigger reads All repos for the rollup (issue #610)', () => {
+  it('select reads All repos for the rollup (issue #610)', () => {
     const html = renderToStaticMarkup(
       <RepoPicker repos={[dirty]} value="all" onChange={() => {}} />,
     );
-    expect(html).toContain('>All repos</button>');
+    expect(html).toContain('value="all"');
+    expect(html).toContain('selected=""');
+    expect(html).toContain('>All repos</option>');
+  });
+  it('unknown values keep a visible fallback option (issue #1124)', () => {
+    const html = renderToStaticMarkup(
+      <RepoPicker repos={[dirty]} value="gone-repo" onChange={() => {}} />,
+    );
+    expect(html).toContain('value="gone-repo"');
+    expect(html).toContain('selected=""');
+    expect(html).toContain('>gone-repo</option>');
   });
   it('row secondary names branch and lag state (issue #961)', () => {
     expect(repoRowSecondary(dirty)).toBe('main · dirty');

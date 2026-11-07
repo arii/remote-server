@@ -1,3 +1,4 @@
+import Dialog from './Dialog';
 import { APP_SHORTCUTS } from '../shortcuts';
 
 // Visible hint bar for the app-level shortcuts (#808): one quiet
@@ -13,8 +14,9 @@ export function ShortcutHint() {
 // Cheatsheet overlay: rows render from APP_SHORTCUTS, so the list
 // can never drift from the handler. Plain semantic markup reusing
 // the app's row/action classes (no custom styling). Inline like the
-// report dialog: no focus trap, Escape closes via the app handler,
-// and focus lands on Close for keyboard users.
+// report dialog: no focus trap; Escape, outside-tap, and focus
+// return live in the shared Dialog wrapper, and focus lands on
+// Close for keyboard users.
 export function ShortcutCheatsheet({
   open,
   onClose,
@@ -22,13 +24,14 @@ export function ShortcutCheatsheet({
   open: boolean;
   onClose: () => void;
 }) {
-  if (!open) return null;
   return (
-    <section
+    <Dialog
+      open={open}
+      onClose={onClose}
+      modal={false}
+      label="Keyboard shortcuts"
+      testId="shortcut-cheatsheet"
       className="detail"
-      role="dialog"
-      aria-label="Keyboard shortcuts"
-      data-testid="shortcut-cheatsheet"
     >
       <span className="row-title">Keyboard shortcuts</span>
       <dl>
@@ -46,6 +49,6 @@ export function ShortcutCheatsheet({
           Close
         </button>
       </div>
-    </section>
+    </Dialog>
   );
 }

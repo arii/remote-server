@@ -33,6 +33,16 @@ describe('nowBadgeCount', () => {
     expect(nowBadgeCount(null)).toBeNull();
     expect(nowBadgeCount(undefined)).toBeNull();
   });
+
+  it('skips non-required failures like the Now list does (issue #1129)', () => {
+    const feed = {
+      attention: [
+        { id: 'a0', kind: 'approval', title: 'Approve this' },
+        { id: 'a1', kind: 'failing-run', title: 'Failing workflow: console-e2e smoke' },
+      ],
+    } as InboxFeed;
+    expect(nowBadgeCount(feed)).toBe(1);
+  });
 });
 
 describe('reviewBadgeCount', () => {

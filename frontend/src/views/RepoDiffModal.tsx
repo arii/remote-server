@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import Dialog from '../components/Dialog';
 import type { RepoAction, RepoActionResponse } from '../apiClient';
 
 interface RepoDiffFileData {
@@ -259,55 +260,13 @@ export default function RepoDiffModal({
   const [syncArmed, setSyncArmed] = useState(false);
   const [openFiles, setOpenFiles] = useState<Set<string>>(() => new Set());
   const [filter, setFilter] = useState('');
-  const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
 
-  // Modal chrome (issue #942): focus lands on Close, Tab cycles
-  // inside the panel, Escape closes, and focus returns to the
-  // control that opened the modal on unmount. The open modal also
-  // locks page scroll (#1018) so the page behind stays put.
+  // Focus lands on Close (issue #942); Tab cycle, Escape, scroll
+  // lock, and focus return now live in the shared Dialog wrapper
+  // (issue #1128) instead of hand-rolled here.
   useEffect(() => {
-    const prev = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
-    const prevOverflow = typeof document === 'undefined' ? '' : document.body.style.overflow;
-    if (typeof document !== 'undefined') document.body.style.overflow = 'hidden';
     closeRef.current?.focus();
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const items = Array.from(
-        panel.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary',
-        ),
-      ).filter((el) => el.offsetParent !== null || el === document.activeElement);
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey && (active === first || !panel.contains(active))) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      } else if (!panel.contains(active)) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      if (typeof document !== 'undefined') document.body.style.overflow = prevOverflow;
-      prev?.focus?.();
-    };
   }, []);
 
   async function run(action: RepoAction) {
@@ -380,21 +339,13 @@ export default function RepoDiffModal({
   }
 
   return (
-    <div
-      className="diff-overlay"
-      data-testid="repo-diff-overlay"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Dialog
+      open
+      onClose={onClose}
+      label={`Diff for ${repo}`}
+      testId="repo-diff-modal"
+      className="detail diff-modal"
     >
-      <section
-        ref={panelRef}
-        className="detail diff-modal"
-        role="dialog"
-        aria-modal="true"
-        data-testid="repo-diff-modal"
-        aria-label={`Diff for ${repo}`}
-      >
         <span className="row-title">
           Diff · {repo} @ {branch}
         </span>
@@ -627,7 +578,6 @@ export default function RepoDiffModal({
             Close
           </button>
         </div>
-      </section>
-    </div>
+    </Dialog>
   );
 }

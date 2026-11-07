@@ -23,6 +23,7 @@ import {
 } from '../apiClient';
 import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
+import { extractBracketTags } from '../attentionFilters';
 import { HEALTH_POLL_MS } from '../tabBadges';
 import { approveBlockReason, approveMergeEligible, detailsMergeBlockReason, isDependabotPr, isOwnPr, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
@@ -937,13 +938,25 @@ export const ISSUE_TABS: Array<{ id: IssueTab; label: string }> = [
   { id: 'needs-triage', label: 'Needs Triage' },
 ];
 
+// Type tags that read as a bug or an enhancement even though the
+// keyword rules miss them (issue #1127): slop is a quality defect,
+// proposal/skills name new capability. Area tags (cobrowse,
+// deep-agent, rag) stay label-driven and keep their rows in the
+// triage queue.
+const BUG_TAGS = new Set(['slop']);
+const FEATURE_TAGS = new Set(['proposal', 'skills']);
+
 export function issueInTab(issue: IssueRow, tab: IssueTab): boolean {
   if (tab === 'all') return true;
   const names = issueLabelNames(issue.labels);
-  const text = names.join(' ').toLowerCase();
-  if (tab === 'bugs') return /\bbug/.test(text);
-  if (tab === 'enhancements') return text.includes('enhancement') || text.includes('feature');
-  return names.length === 0 || /triage/i.test(text);
+  const tags = extractBracketTags(issue.title ?? '').map((t) => t.toLowerCase());
+  const text = [...names, ...tags].join(' ').toLowerCase();
+  const isBug = /\bbug/.test(text) || tags.some((t) => BUG_TAGS.has(t));
+  const isEnhancement =
+    text.includes('enhancement') || text.includes('feature') || tags.some((t) => FEATURE_TAGS.has(t));
+  if (tab === 'bugs') return isBug;
+  if (tab === 'enhancements') return isEnhancement;
+  return (names.length === 0 && !isBug && !isEnhancement) || /triage/i.test(text);
 }
 
 // Inline severity from labels (#962): critical/high/medium/low

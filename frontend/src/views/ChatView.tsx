@@ -166,6 +166,9 @@ export function insertMention(
   return { text: next, cursor: found.start + inserted.length };
 }
 
+// Stays a listbox popup, not a Dialog (issue #1128): an inline
+// mention list is not a dialog — a native <dialog> would trap
+// focus and steal the composer caret on every keystroke.
 export function MentionDropdown({
   files,
   truncated,

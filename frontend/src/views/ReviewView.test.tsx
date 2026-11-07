@@ -1517,6 +1517,19 @@ describe('issues quick filters, badges, and agent seeds (issue #962)', () => {
     expect(issueInTab(bug, 'all')).toBe(true);
   });
 
+  it('consults title bracket tags when labels say nothing (issue #1127)', () => {
+    const row = (title: string): IssueRow => ({ number: 1, title, labels: [] });
+    expect(issueInTab(row('[slop] polish the empty state'), 'bugs')).toBe(true);
+    expect(issueInTab(row('[slop] polish the empty state'), 'needs-triage')).toBe(false);
+    expect(issueInTab(row('[skills] add a triage skill'), 'enhancements')).toBe(true);
+    expect(issueInTab(row('[proposal] new queue view'), 'enhancements')).toBe(true);
+    expect(issueInTab(row('[bug] crash on save'), 'bugs')).toBe(true);
+    // Area tags stay label-driven: still need triage.
+    expect(issueInTab(row('[cobrowse] take over the tab'), 'bugs')).toBe(false);
+    expect(issueInTab(row('[cobrowse] take over the tab'), 'enhancements')).toBe(false);
+    expect(issueInTab(row('[cobrowse] take over the tab'), 'needs-triage')).toBe(true);
+  });
+
   it('reads severity from labels, null when absent', () => {
     expect(issueSeverity(bug.labels)).toBe('critical');
     expect(issueSeverity([{ name: 'p1' }])).toBe('high');
