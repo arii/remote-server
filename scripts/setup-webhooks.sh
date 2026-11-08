@@ -42,11 +42,10 @@ command -v python3 >/dev/null 2>&1 || {
   exit 1
 }
 
-# Same sourcing pattern as the buttons TD prefix: .env is optional
-# (a missing file just leaves the required vars unset, caught below).
-set -a
-[ -f "$ROOT/.env" ] && . "$ROOT/.env"
-set +a
+# Parse .env without executing it (missing file leaves vars unset, caught below).
+# shellcheck source=scripts/lib/load_env.sh
+. "$ROOT/scripts/lib/load_env.sh"
+load_env_file "$ROOT/.env" TERMINAL_DOMAIN TERMINAL_PORT WEBHOOK_SECRET
 
 GH_ERR="$(mktemp /tmp/gh_setup_err.XXXXXX)"
 trap 'rm -f "$GH_ERR"' EXIT

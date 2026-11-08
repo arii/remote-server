@@ -4,14 +4,10 @@
 # Usage: ./pull-models.sh [model ...]   (defaults to $OLLAMA_MODELS from .env)
 set -euo pipefail
 
-# Compose loads .env for interpolation, but a bare host script does not —
-# source it so OLLAMA_MODELS from .env works when no args are given.
-if [[ -f .env ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env
-  set +a
-fi
+# Parse .env without executing it (no Compose interpolation for bare host scripts).
+# shellcheck source=scripts/lib/load_env.sh
+. scripts/lib/load_env.sh
+load_env_file .env OLLAMA_MODELS OLLAMA_NUM_CTX OLLAMA_TEMPERATURE
 
 MODELS="${*:-${OLLAMA_MODELS:-}}"
 if [[ -z "$MODELS" ]]; then
@@ -22,7 +18,8 @@ fi
 OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-16384}"
 OLLAMA_TEMPERATURE="${OLLAMA_TEMPERATURE:-0.2}"
 
-for m in $MODELS; do
+read -ra MODEL_LIST <<< "$MODELS"
+for m in "${MODEL_LIST[@]}"; do
   # Determine base model and whether custom Modelfile tuning applies
   base_model="$m"
   target_model="$m"
