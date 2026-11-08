@@ -32,8 +32,13 @@ Keys meet the 48px Material touch height at phone width. */
 #kbd.hg-theme-default .hg-button span{color:#fff;opacity:1}
 #kbd.hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
 </style>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/css/index.css">
-<script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/index.js"></script>
+<!-- Vendored same-origin (backend serves ./vendor/): the page must
+load with zero external requests — a render-blocking CDN script
+stalls onLoad (and the console's cobrowse iframe state) whenever
+the CDN is unreachable. MIT simple-keyboard 3.8.205, pristine
+upstream bytes in simple-keyboard-3.8.205.{js,css}. -->
+<link rel="stylesheet" href="vendor/simple-keyboard-3.8.205.css">
+<script src="vendor/simple-keyboard-3.8.205.js"></script>
 </head><body>
 <div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
 <div id="stats">fps: - | last activity→frame: - ms</div>

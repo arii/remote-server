@@ -40,6 +40,27 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("localStorage.getItem('kbd-pos')", html)
         self.assertNotIn("box.scrollIntoView", html)
 
+    def test_viewer_assets_are_vendored_no_cdn(self):
+        # The viewer must load with zero external requests: a
+        # render-blocking CDN <script> stalls the whole page (and the
+        # console iframe's onLoad) whenever the CDN is unreachable —
+        # this reddened the console E2E smoke on a CI DNS hiccup.
+        html = browser_view.VIEWER_HTML
+        self.assertNotIn("cdn.jsdelivr.net", html)
+        self.assertNotIn('src="http', html)
+        self.assertNotIn('href="http', html)
+        self.assertIn("vendor/simple-keyboard-3.8.205.js", html)
+        self.assertIn("vendor/simple-keyboard-3.8.205.css", html)
+        client = TestClient(browser_view.create_app())
+        js = client.get("/vendor/simple-keyboard-3.8.205.js")
+        self.assertEqual(js.status_code, 200)
+        self.assertIn("javascript", js.headers["content-type"])
+        self.assertIn("simple-keyboard v3.8.205", js.text)
+        css = client.get("/vendor/simple-keyboard-3.8.205.css")
+        self.assertEqual(css.status_code, 200)
+        self.assertIn("text/css", css.headers["content-type"])
+        self.assertIn("hg-button", css.text)
+
     def test_viewer_no_store_is_edge_owned(self):
         # No-store lives in the Caddy /cdp-stream* handle, not app
         # code (edge concern, like X-Frame-Options): the app must not

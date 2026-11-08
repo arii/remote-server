@@ -68,6 +68,17 @@ VIEWER_HTML = (
     Path(__file__).with_name("browser_viewer.html").read_text(encoding="utf-8")
 )
 
+# simple-keyboard is vendored, not CDN-loaded: the viewer page must
+# render with zero external requests. A render-blocking CDN <script>
+# stalls the whole page (and the console iframe's onLoad) whenever
+# the CDN is unreachable — this reddened the console E2E smoke when
+# CI DNS hiccuped, and stalls phones on flaky networks the same way.
+# Pristine upstream bytes (MIT, hodgef/simple-keyboard). Upgrade by
+# replacing both files and the two refs in browser_viewer.html, then
+# updating the version assertions in test_browser_view.py.
+VENDOR_JS = Path(__file__).with_name("simple-keyboard-3.8.205.js").read_bytes()
+VENDOR_CSS = Path(__file__).with_name("simple-keyboard-3.8.205.css").read_bytes()
+
 
 def _grid_session_create():
     # --disable-dev-shm-usage complements the 2gb shm_size: when raster
@@ -596,14 +607,24 @@ def create_app():
     async def app(scope, receive, send):
         path = scope.get("path", "")
         if scope["type"] == "http":
-            body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
+            # Vendored keyboard assets ride the same mount (relative
+            # refs in the page, prefix-agnostic match like /ws): same
+            # origin, no extra route or Caddy rule. Cache headers stay
+            # edge-owned (Caddy no-store covers this handle).
+            if path.endswith("/vendor/simple-keyboard-3.8.205.js"):
+                body, content_type = VENDOR_JS, b"application/javascript"
+            elif path.endswith("/vendor/simple-keyboard-3.8.205.css"):
+                body, content_type = VENDOR_CSS, b"text/css"
+            else:
+                body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
+                content_type = b"text/html; charset=utf-8"
             # No-store is edge-owned (Caddy sets Cache-Control on the
             # /cdp-stream* handle); the app must not set it.
             await send(
                 {
                     "type": "http.response.start",
                     "status": 200,
-                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
+                    "headers": [(b"content-type", content_type)],
                 }
             )
             await send({"type": "http.response.body", "body": body})
