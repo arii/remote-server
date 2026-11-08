@@ -21,6 +21,15 @@ class ViewerMountTest(unittest.TestCase):
         self.assertNotIn("__DEFAULT_URL__", resp.text)
         self.assertIn(browser_view.DEFAULT_URL, resp.text)
 
+    def test_viewer_page_is_not_cached(self):
+        # The viewer ships new JS with deploys: a cached copy
+        # silently pins old behavior (e.g. a dead URL box) with
+        # zero errors to diagnose.
+        client = TestClient(browser_view.create_app())
+        resp = client.get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("no-store", resp.headers.get("cache-control", ""))
+
     def test_default_url_is_neutral_not_console(self):
         # Issue #1023: first paint must not recurse into Buttons
         # itself — a neutral page paints immediately and reads
@@ -77,6 +86,9 @@ class FakeBridge:
     async def click(self, x, y):
         self.calls.append(("click", x, y))
 
+    async def move(self, x, y):
+        self.calls.append(("move", x, y))
+
     async def key(self, key, code):
         self.calls.append(("key", key, code))
 
@@ -100,8 +112,10 @@ class SharedViewerSessionTest(unittest.TestCase):
     def setUp(self):
         self._sid = browser_view._viewer_session_id
         self._ref = browser_view._viewer_refcount
+        self._vp = browser_view._viewer_viewport
         browser_view._viewer_session_id = None
         browser_view._viewer_refcount = 0
+        browser_view._viewer_viewport = None
         self._bridge = mock.patch.object(
             browser_view, "CDPBridge", FakeBridge)
         self._bridge.start()
@@ -111,6 +125,7 @@ class SharedViewerSessionTest(unittest.TestCase):
     def _restore(self):
         browser_view._viewer_session_id = self._sid
         browser_view._viewer_refcount = self._ref
+        browser_view._viewer_viewport = self._vp
 
     def test_two_tabs_share_one_session(self):
         # Issue #1026: first tab creates, second tab attaches to the
@@ -149,6 +164,17 @@ class SharedViewerSessionTest(unittest.TestCase):
             time.sleep(0.05)
         return False
 
+    def _wait_count(self, mocked, want, timeout=10):
+        # The pause call runs on a worker thread via a fire-and-
+        # forget task: poll for it instead of asserting a race.
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if mocked.call_count >= want:
+                return True
+            time.sleep(0.05)
+        return False
+
     def test_click_dispatched_with_human_pause(self):
         # Rank 1: the shared ws-loop point (click -> human pause ->
         # recover_once -> bridge.click) must be wired; a break here
@@ -180,6 +206,9 @@ class SharedViewerSessionTest(unittest.TestCase):
                 self.assertTrue(
                     self._wait_calls(shared, ("click", 960, 200)),
                     f"click never reached bridge: {shared.calls}")
+                self.assertTrue(
+                    self._wait_count(paused, 1),
+                    "pause task never ran")
                 self.assertEqual(paused.call_count, 1)
 
     def test_key_dispatched_with_human_pause(self):
@@ -210,6 +239,9 @@ class SharedViewerSessionTest(unittest.TestCase):
                 self.assertTrue(
                     self._wait_calls(shared, ("key", "a", "KeyA")),
                     f"key never reached bridge: {shared.calls}")
+                self.assertTrue(
+                    self._wait_count(paused, 1),
+                    "pause task never ran")
                 self.assertEqual(paused.call_count, 1)
 
     def test_wheel_dispatched_without_human_pause(self):
@@ -243,6 +275,163 @@ class SharedViewerSessionTest(unittest.TestCase):
                     self._wait_calls(shared, ("wheel", 10, 20, 0, 120)),
                     f"wheel never reached bridge: {shared.calls}")
                 self.assertEqual(paused.call_count, 0)
+
+    def test_move_dispatched_without_human_pause(self):
+        # Hover is look-around input like the wheel: it must reach
+        # the bridge without tripping the agent-takeover pause.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False) as paused:
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "move",
+                                          "x": 640, "y": 400}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("move", 640, 400)),
+                    f"move never reached bridge: {shared.calls}")
+                self.assertEqual(paused.call_count, 0)
+
+    def test_malformed_frames_do_not_kill_socket(self):
+        # One bad frame (non-dict JSON, missing coords, missing
+        # url) must not raise out of the receive loop: the next
+        # good input still lands and the socket stays open.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=True):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text("[1, 2]")
+                ws.send_text(_json.dumps({"t": "click"}))
+                ws.send_text(_json.dumps({"t": "go"}))
+                ws.send_text(_json.dumps({"t": "click",
+                                          "x": 7, "y": 9}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("click", 7, 9)),
+                    f"socket died on malformed input: {shared.calls}")
+
+    def test_pause_failure_rearms_next_input(self):
+        # A transient pause-API failure must not latch the session
+        # unpaused-forever: the next input retries the pause call.
+        import json as _json
+        import time as _time
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 side_effect=[False, True]) as paused:
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "click",
+                                          "x": 1, "y": 1}))
+                deadline = _time.time() + 10
+                while paused.call_count < 1 and _time.time() < deadline:
+                    _time.sleep(0.05)
+                self.assertEqual(paused.call_count, 1)
+                ws.send_text(_json.dumps({"t": "click",
+                                          "x": 2, "y": 2}))
+                deadline = _time.time() + 10
+                while paused.call_count < 2 and _time.time() < deadline:
+                    _time.sleep(0.05)
+                self.assertEqual(
+                    paused.call_count, 2,
+                    "failed pause did not re-arm the next input")
+
+    def test_viewer_shared_adopts_owner_viewport(self):
+        # A desktop tab joining a phone-owned session adopts the
+        # owner's 390px mobile emulation instead of re-emulating
+        # the shared Grid session to 1280px (metrics flap for all).
+        import json as _json
+        phone_ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like "
+                    "Mac OS X) AppleWebKit/605.1.15 (KHTML, like "
+                    "Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+        made = []
+
+        def factory(session_id, viewport=None, mobile=False):
+            bridge = FakeBridge(session_id, viewport=viewport,
+                                mobile=mobile)
+            made.append(bridge)
+            return bridge
+
+        client = TestClient(browser_view.create_app())
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                side_effect=factory), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=True):
+            with client.websocket_connect(
+                    "/ws", headers={"user-agent": phone_ua}) as ws1:
+                first = _json.loads(ws1.receive_text())
+                self.assertEqual(first["kind"], "own")
+                self.assertTrue(made[0].mobile)
+                with client.websocket_connect("/ws") as ws2:
+                    second = _json.loads(ws2.receive_text())
+                    self.assertEqual(second["kind"], "viewer-shared")
+                    self.assertEqual(second["session"],
+                                     first["session"])
+                self.assertTrue(
+                    made[1].mobile,
+                    "joiner kept desktop emulation: "
+                    f"{made[1].viewport}")
+                self.assertEqual(made[1].viewport, made[0].viewport)
 
     def test_touch_sequence_dispatched(self):
         # One-finger drag: touchstart -> touchmove -> touchend.
@@ -315,6 +504,9 @@ class SharedViewerSessionTest(unittest.TestCase):
                 self.assertTrue(
                     self._wait_calls(shared, ("type_text", "hello")),
                     f"type never reached bridge: {shared.calls}")
+                self.assertTrue(
+                    self._wait_count(paused, 1),
+                    "pause task never ran")
                 self.assertEqual(paused.call_count, 1)
 
     def test_go_navigates_and_restarts_screencast(self):
@@ -415,6 +607,19 @@ class SharedViewerSessionTest(unittest.TestCase):
                 browser_view._viewer_teardown("AAA", "own")))
             self.assertFalse(_aio.run(
                 browser_view._viewer_teardown("AGENT", "agent")))
+
+    def test_viewport_record_follows_session_lifecycle(self):
+        # The canonical viewport is stored at create, served only
+        # for the recorded session, and cleared with it — a new
+        # owner never inherits a stale emulation.
+        browser_view._viewer_create(
+            "AAA", {"width": 390, "height": 844}, True)
+        self.assertEqual(
+            browser_view._viewer_viewport_for("AAA"),
+            ({"width": 390, "height": 844}, True))
+        self.assertIsNone(browser_view._viewer_viewport_for("BBB"))
+        self.assertTrue(browser_view._viewer_release("AAA"))
+        self.assertIsNone(browser_view._viewer_viewport_for("AAA"))
 
     def test_stale_record_creates_fresh(self):
         # A dead stored session is cleared; the viewer creates anew
@@ -678,6 +883,20 @@ class BridgeKeyTest(unittest.TestCase):
         self.assertEqual(seen.get("Input.insertText"),
                          {"text": "hello world"})
 
+    def test_move_sends_mouse_moved_without_buttons(self):
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        seen = {}
+
+        async def fake_call(method, params=None, timeout=15):
+            seen[method] = params
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.move(640, 400))
+        self.assertEqual(seen.get("Input.dispatchMouseEvent"),
+                         {"x": 640, "y": 400, "type": "mouseMoved"})
+
     def test_wheel_sends_mouse_wheel_deltas(self):
         import asyncio
         bridge = browser_view.CDPBridge("sid")
@@ -865,6 +1084,23 @@ class ViewerHtmlTest(unittest.TestCase):
 
 
 class MobileViewportTest(unittest.TestCase):
+    def setUp(self):
+        # Module-global isolation like SharedViewerSessionTest: a
+        # stale record must never reach the real _viewer_claim
+        # network path from a viewport unit test.
+        self._sid = browser_view._viewer_session_id
+        self._ref = browser_view._viewer_refcount
+        self._vp = browser_view._viewer_viewport
+        browser_view._viewer_session_id = None
+        browser_view._viewer_refcount = 0
+        browser_view._viewer_viewport = None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        browser_view._viewer_session_id = self._sid
+        browser_view._viewer_refcount = self._ref
+        browser_view._viewer_viewport = self._vp
+
     PHONE_UAS = (
         # iPhone Safari.
         ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -993,8 +1229,13 @@ class MobileViewportTest(unittest.TestCase):
              mock.patch.object(browser_view, "_grid_session_delete"), \
              client.websocket_connect(
                  "/ws",
-                 headers={"user-agent": self.PHONE_UAS[1]}):
-            pass
+                 headers={"user-agent": self.PHONE_UAS[1]}) as ws:
+            # Receive the attached frame: entering + exiting the
+            # socket without reading lets the client close win the
+            # race against server-side bridge construction.
+            import json as _json
+            first = _json.loads(ws.receive_text())
+            self.assertEqual(first["kind"], "own")
         self.assertEqual(seen["viewport"],
                          {"width": 390, "height": 844})
         self.assertTrue(seen["mobile"])

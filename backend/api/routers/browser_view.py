@@ -28,7 +28,9 @@ MOBILE_VIEWPORT = {"width": 390, "height": 844}
 def is_phone_user_agent(user_agent):
     """True when a viewer User-Agent looks like a phone (or phone-
     sized tablet): the Mobi token covers mobile Chrome/Safari/Firefox,
-    the rest catch platform UAs that omit it."""
+    the rest catch platform UAs that omit it. Known gap (accepted):
+    iPads in desktop mode send a Macintosh UA with no iPad token and
+    are indistinguishable from a Mac — they get the desktop view."""
     ua = user_agent or ""
     return any(token in ua for token in
                ("Mobi", "Android", "iPhone", "iPad"))
@@ -119,6 +121,12 @@ AGENT_SESSION_MARKER = "boomtick:agentSession"
 _viewer_lock = threading.Lock()
 _viewer_session_id: "str | None" = None
 _viewer_refcount = 0
+#: Canonical viewport for the shared session: the owner's
+#: (viewport, mobile). Joining tabs adopt it so a desktop tab
+#: joining a phone-owned session does not re-emulate the shared
+#: Grid session out from under the phone (and vice versa) —
+#: last-writer-wins metrics flap the screencast size for all.
+_viewer_viewport: "dict | None" = None
 
 
 def _grid_session_alive(session_id):
@@ -138,7 +146,7 @@ def _viewer_claim():
     Returns the session id (refcounted) or None. Stale records are
     cleared so the next claim creates fresh.
     """
-    global _viewer_session_id, _viewer_refcount
+    global _viewer_session_id, _viewer_refcount, _viewer_viewport
     with _viewer_lock:
         sid = _viewer_session_id
         if sid is None:
@@ -151,23 +159,47 @@ def _viewer_claim():
             if _viewer_session_id == sid:
                 _viewer_session_id = None
                 _viewer_refcount = 0
+                _viewer_viewport = None
             return None
         _viewer_refcount += 1
         return sid
 
 
-def _viewer_create(session_id):
-    """Record a fresh viewer-owned session (refcount starts at 1)."""
-    global _viewer_session_id, _viewer_refcount
+def _viewer_create(session_id, viewport=None, mobile=False):
+    """Record a fresh viewer-owned session (refcount starts at 1).
+
+    The owner's viewport is canonical for the session lifetime;
+    joiners adopt it (see bridge construction) instead of
+    re-emulating with their own.
+    """
+    global _viewer_session_id, _viewer_refcount, _viewer_viewport
     with _viewer_lock:
         _viewer_session_id = session_id
         _viewer_refcount = 1
+        _viewer_viewport = {"viewport": dict(viewport)
+                           if viewport is not None
+                           else dict(VIEWPORT),
+                           "mobile": bool(mobile)}
+
+
+def _viewer_viewport_for(session_id):
+    """Canonical (viewport, mobile) for a shared session, or None.
+
+    None when the record is stale (owner predates this worker, or
+    the session id does not match): callers fall back to computing
+    their own via viewport_for.
+    """
+    with _viewer_lock:
+        if _viewer_session_id != session_id or _viewer_viewport is None:
+            return None
+        return (dict(_viewer_viewport["viewport"]),
+                _viewer_viewport["mobile"])
 
 
 def _viewer_release(session_id):
     """Drop one viewer reference; True when the session must be
     deleted (last viewer out and the record is still ours)."""
-    global _viewer_session_id, _viewer_refcount
+    global _viewer_session_id, _viewer_refcount, _viewer_viewport
     with _viewer_lock:
         if _viewer_session_id != session_id:
             return False
@@ -175,6 +207,7 @@ def _viewer_release(session_id):
         if _viewer_refcount <= 0:
             _viewer_session_id = None
             _viewer_refcount = 0
+            _viewer_viewport = None
             return True
         return False
 
@@ -601,8 +634,13 @@ def create_app():
                         session_id = claimed
                         kind = "viewer-shared"
                     else:
-                        _viewer_create(session_id)
                         kind = "own"
+                        # Record the owner's viewport as canonical:
+                        # joiners adopt it below so heterogeneous
+                        # tabs never re-emulate the shared session.
+                        _viewer_create(
+                            session_id,
+                            *viewport_for(kind, user_agent))
         except Exception:
             try:
                 await _ws_send_text(
@@ -641,16 +679,6 @@ def create_app():
             await _ws_send_text(
                 send, lock, json.dumps({"type": "frame", "data": params["data"]})
             )
-
-        def _request_pause():
-            # Fire-and-forget: input must never wait on the agent
-            # API — a hung pause stalled the first click by up to
-            # 10s. Marked up front so it fires exactly once.
-            nonlocal paused
-            if not paused:
-                paused = True
-                asyncio.get_running_loop().create_task(
-                    asyncio.to_thread(_pause_agent))
 
         async def recover_once(op):
             # One reattach + screencast restart, then retry: a swapped
@@ -704,6 +732,15 @@ def create_app():
 
         try:
             viewport, mobile = viewport_for(kind, user_agent)
+            if kind == "viewer-shared":
+                # Adopt the owner's canonical viewport: a desktop
+                # tab joining a phone-owned session must not
+                # re-emulate the shared Grid session to 1280px
+                # (and vice versa). None when the owner predates
+                # this worker — then compute our own as before.
+                adopted = _viewer_viewport_for(session_id)
+                if adopted is not None:
+                    viewport, mobile = adopted
             bridge = CDPBridge(session_id, viewport=viewport,
                                mobile=mobile)
             try:
@@ -759,10 +796,18 @@ def create_app():
                     break
                 if event["type"] != "websocket.receive":
                     continue
-                msg = json.loads(event.get("text") or "{}")
+                try:
+                    msg = json.loads(event.get("text") or "{}")
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("t") == "click":
-                    _request_pause()
-                    x, y = int(msg["x"]), int(msg["y"])
+                    await human_input()
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
                     await recover_once(lambda: bridge.click(x, y))
                 elif msg.get("t") == "move":
                     try:
@@ -791,15 +836,17 @@ def create_app():
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
                     await recover_once(lambda: bridge.key(key, code))
                 elif msg.get("t") == "type":
-                    _request_pause()
+                    await human_input()
                     text = str(msg.get("text", ""))
                     if not text:
                         continue
                     await recover_once(
                         lambda: bridge.type_text(text))
                 elif msg.get("t") == "go":
-                    _request_pause()
-                    url = str(msg["url"])
+                    await human_input()
+                    url = str(msg.get("url") or "")
+                    if not url:
+                        continue
                     await recover_once(lambda: do_go(url))
         finally:
             if bridge is not None:

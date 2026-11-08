@@ -151,28 +151,49 @@ let touchId = null;
 cv.addEventListener('touchstart', (e) => {
   if (!sendable() || touchId !== null) return;
   const t = e.changedTouches[0];
-  touchId = t.identifier;
   e.preventDefault();
   const p = pos(t);
   lastClick = performance.now();
-  ws.send(JSON.stringify({t: 'touch', phase: 'start', ...p}));
+  // Drop-start symmetry: only record the touch when its start was
+  // actually sent, so a later end can never stick the remote touch.
+  try { ws.send(JSON.stringify({t: 'touch', phase: 'start', ...p})); }
+  catch (_) { return; }
+  touchId = t.identifier;
 }, {passive: false});
+// Move traffic is rAF-coalesced like mousemove: only the latest
+// position per frame crosses the socket, so drags cannot
+// head-of-line-block clicks behind a wall of move frames.
+let touchMovePending = false, touchMoveQueued = null;
 cv.addEventListener('touchmove', (e) => {
   if (!sendable() || touchId === null) return;
   for (const t of e.changedTouches) {
     if (t.identifier !== touchId) continue;
     e.preventDefault();
-    ws.send(JSON.stringify({t: 'touch', phase: 'move', ...pos(t)}));
+    touchMoveQueued = pos(t);
   }
+  if (touchMovePending || !touchMoveQueued) return;
+  touchMovePending = true;
+  requestAnimationFrame(() => {
+    touchMovePending = false;
+    if (touchMoveQueued && sendable() && touchId !== null) {
+      lastClick = performance.now();
+      try { ws.send(JSON.stringify({t: 'touch', phase: 'move', ...touchMoveQueued})); }
+      catch (_) {}
+    }
+    touchMoveQueued = null;
+  });
 }, {passive: false});
 function touchEnd(e) {
   if (touchId === null) return;
   for (const t of e.changedTouches) {
     if (t.identifier !== touchId) continue;
     touchId = null;
-    if (!sendable()) return;
     lastClick = performance.now();
-    ws.send(JSON.stringify({t: 'touch', phase: 'end', ...pos(t)}));
+    // Best-effort end: the start went out, so always attempt the
+    // matching end (a dead socket throws, caught, nothing sticks
+    // locally either way).
+    try { if (sendable()) ws.send(JSON.stringify({t: 'touch', phase: 'end', ...pos(t)})); }
+    catch (_) {}
   }
 }
 cv.addEventListener('touchend', touchEnd);
@@ -198,6 +219,15 @@ function typeText(text) {
 document.addEventListener('keydown', (e) => {
   if (e.target && e.target.id === 'url') return;
   if (e.key === 'Tab' || e.key === 'Escape') return;
+  // Browser and OS shortcuts must always reach the viewer tab: a
+  // wedged remote page must never cost the user reload (Ctrl+R,
+  // F5), clipboard, or function keys. Plain keys only from here.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (/^F\d+$/.test(e.key)) return;
+  // Enter/Space on a focused control activates the control; do
+  // not ALSO drive the remote page (double action).
+  if ((e.key === 'Enter' || e.key === ' ') && e.target &&
+      (e.target.tagName === 'BUTTON' || e.target.type === 'submit')) return;
   if (!sendable()) return;
   e.preventDefault();
   sendKey(e.key, e.code || e.key);
@@ -205,22 +235,31 @@ document.addEventListener('keydown', (e) => {
 // Off-the-shelf on-screen keyboard (simple-keyboard, MIT): the remote
 // page gets real CDP input, so tapping the Keyboard button works on a
 // phone with no native keyboard involved. Special keys reuse the key
-// path; printable keys commit as bulk text via Input.insertText.
+// path; printable keys commit via one Input.insertText call per tap.
 (function initKbd() {
   const box = document.getElementById('kbd');
   const btn = document.getElementById('kb');
-  // UMD global is SimpleKeyboard; the constructor rides .default
-  // (fallback to a bare Keyboard global for other builds).
-  const lib = window.SimpleKeyboard || window.Keyboard;
-  const Kbd = (lib && (lib.default || lib.SimpleKeyboard))
-    || (typeof Keyboard === 'function' && Keyboard);
-  if (typeof Kbd !== 'function') { btn.hidden = true; return; }
-  const kbd = new Kbd({
-    // Render inside #kbd (not document.body) so the dark-theme
-    // overrides below match and the Keyboard toggle hides it.
-    rootElement: box,
-    theme: "hg-theme-default",
-    onKeyPress: (button) => {
+  // Mount rides the .simple-keyboard class hook on #kbd (verified in
+  // the pinned bundle: the constructor takes no rootElement, it
+  // finds the mount node by that class). Gate on window.SimpleKeyboard
+  // only: Chrome's DOM Keyboard interface is a non-constructible
+  // function, so the old bare-global fallback bricked nav wiring
+  // when the CDN failed. Construction stays guarded for the same
+  // reason — a dead keyboard must never kill URL navigation.
+  const lib = window.SimpleKeyboard;
+  const Kbd = lib && (lib.default || lib.SimpleKeyboard);
+  let kbd = null;
+  if (typeof Kbd === 'function') {
+    try {
+      kbd = new Kbd({theme: "hg-theme-default",
+        onKeyPress: onPress});
+    } catch (_) { kbd = null; }
+  }
+  if (!kbd || typeof kbd.setOptions !== 'function') {
+    btn.hidden = true;
+    return;
+  }
+  function onPress(button) {
       if (button === '{enter}') { sendKey('Enter', 'Enter'); return; }
       if (button === '{bksp}') { sendKey('Backspace', 'Backspace'); return; }
       if (button === '{tab}') { sendKey('Tab', 'Tab'); return; }
@@ -232,8 +271,7 @@ document.addEventListener('keydown', (e) => {
       if (button === '{space}') { typeText(' '); return; }
       if (/^\{.+\}$/.test(button)) return;
       typeText(button);
-    }
-  });
+  }
   btn.addEventListener('click', () => {
     box.hidden = !box.hidden;
     btn.setAttribute('aria-expanded', String(!box.hidden));
