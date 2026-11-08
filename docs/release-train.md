@@ -5,8 +5,8 @@ per file, or per failing check.
 
 ## What the rollup pins
 
-- `Dockerfile` + `terminal/Dockerfile`: `ARG BOOMTICK_CLI_REF` set to
-  the current `cli-vX.Y.Z` tag. Never `main`.
+- `Dockerfile` + `terminal/Dockerfile`: `ARG BOOMTICK_CLI_REF` floats
+  on `main` (latest-only; the per-release pin was retired).
 - `.github/workflows/e2e.yml`: the `install boomtick td CLI` step pins
   the same tag.
 - `skills-lock.json`: repinned via `bash scripts/verify-skills.sh
