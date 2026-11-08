@@ -75,10 +75,10 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif;padding:env(safe
 #kbd[hidden]{display:none}
 /* On-screen keyboard in the viewer dark theme: the stock
 simple-keyboard palette is pale gray on white and unreadable here. */
-#kbd .hg-theme-default{background:#1c1c1e}
-#kbd .hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9)}
-#kbd .hg-theme-default .hg-button span{color:#fff;opacity:1}
-#kbd .hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
+#kbd.hg-theme-default{background:#1c1c1e}
+#kbd.hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9)}
+#kbd.hg-theme-default .hg-button span{color:#fff;opacity:1}
+#kbd.hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/css/index.css">
 <script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/index.js"></script>
@@ -277,6 +277,10 @@ document.addEventListener('keydown', (e) => {
     || (typeof Keyboard === 'function' && Keyboard);
   if (typeof Kbd !== 'function') { btn.hidden = true; return; }
   const kbd = new Kbd({
+    // Render inside #kbd (not document.body) so the dark-theme
+    // overrides below match and the Keyboard toggle hides it.
+    rootElement: box,
+    theme: "hg-theme-default",
     onKeyPress: (button) => {
       if (button === '{enter}') { sendKey('Enter', 'Enter'); return; }
       if (button === '{bksp}') { sendKey('Backspace', 'Backspace'); return; }
