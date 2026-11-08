@@ -2,6 +2,7 @@
   "description": "S5 home AI server: scripts-only package (no dependencies). Short names for the docker compose / git commands the buttons page also runs, so bring-up, clean-up, and rebuilds stop being lengthy shell commands. Requires docker compose and git on PATH, plus node/npm only as the script runner.",
   "name": "remote-server",
   "private": true,
+  "packageManager": "pnpm@10.28.2",
   "scripts": {
     "browser-relay:logs": "docker compose logs --tail=100 browser-relay",
     "browser-relay:recreate": "docker exec remote-buttons-1 docker compose -f /home/ari/remote-server/docker-compose.yml up -d --no-deps browser-relay",
