@@ -74,6 +74,21 @@ test.describe('responsive console layout', () => {
     expect(xs[2]).toBeGreaterThan(xs[1]);
   });
 
+  test('tool row never clips at 390px', async ({ page }) => {
+    // Audit: Commands/Terminal/Code/Browser together are wider
+    // than a 390px phone — the group must wrap so no tool hides
+    // off-viewport where only a blind sideways swipe reaches it.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    await expect(page.getByTestId('topbar')).toBeVisible();
+    for (const t of ['palette-open', 'tool-terminal', 'tool-code', 'tool-browser']) {
+      const box = await page.getByTestId(t).boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    }
+  });
+
   test('drawer stacks chat below the browser under 1100px', async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 900 });
     await page.goto('/');

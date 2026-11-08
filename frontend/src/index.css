@@ -1182,6 +1182,12 @@ label.row-meta { display: grid; gap: 0.3rem; }
   .layout { padding: 0.75rem 0.75rem 5rem; }
   .topbar { position: static; margin-bottom: 0.5rem; }
   .topbar-group { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
+  /* Tool row (Commands/Terminal/Code/Browser) is wider than a 390px
+     phone even squeezed: unlike the view tabs it must wrap to a
+     second line so nothing is reachable only by blind sideways
+     swipe. The bar itself is static on phones, so the extra row
+     costs no sticky-chrome space. */
+  .topbar-group.topbar-tools { flex-wrap: wrap; overflow-x: visible; }
   .topnav { flex-wrap: nowrap; overflow-x: auto; }
   .bottombar {
     gap: 0.25rem;
