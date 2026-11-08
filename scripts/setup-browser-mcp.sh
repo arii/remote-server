@@ -107,14 +107,16 @@ EOF
 echo "Created rules: ${TROUBLESHOOTING_MD}"
 
 # 6. Configure mcp_config.json in both config/ and antigravity-cli/
-python3 - <<EOF
+# Quoted heredoc: paths arrive via environment, never shell interpolation.
+export LAUNCHER CONFIG_DIR AGY_CLI_DIR
+python3 - <<'EOF'
 import json
 import os
 
-launcher = "${LAUNCHER}"
+launcher = os.environ["LAUNCHER"]
 targets = [
-    "${CONFIG_DIR}/mcp_config.json",
-    "${AGY_CLI_DIR}/mcp_config.json",
+    os.path.join(os.environ["CONFIG_DIR"], "mcp_config.json"),
+    os.path.join(os.environ["AGY_CLI_DIR"], "mcp_config.json"),
 ]
 
 for cfg_path in targets:
