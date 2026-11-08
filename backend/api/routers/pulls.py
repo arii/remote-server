@@ -29,23 +29,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.api.cache import SWRCache
 from backend.gh import repo_gh, run_gh, run_gh_json
-from backend.pr_gates import (FAILING_CONCLUSIONS, ci_label,
-                              evaluate_merge_gates, merge_argv)
+from backend.pr_gates import (
+    FAILING_CONCLUSIONS,
+    ci_label,
+    evaluate_merge_gates,
+    merge_argv,
+)
 from backend import context_filter
 
 router = APIRouter(prefix="/api", tags=["pulls"])
 
-PR_LIST_FIELDS = ("number,title,isDraft,mergeable,reviewDecision,"
-                  "headRefName,statusCheckRollup,url,author,updatedAt,"
-                  "additions,deletions,changedFiles")
-PR_VIEW_FIELDS = ("number,title,headRefName,baseRefName,mergeable,"
-                  "mergeStateStatus,reviewDecision,statusCheckRollup,"
-                  "updatedAt,author,isDraft,url,files")
+PR_LIST_FIELDS = (
+    "number,title,isDraft,mergeable,reviewDecision,"
+    "headRefName,statusCheckRollup,url,author,updatedAt,"
+    "additions,deletions,changedFiles"
+)
+PR_VIEW_FIELDS = (
+    "number,title,headRefName,baseRefName,mergeable,"
+    "mergeStateStatus,reviewDecision,statusCheckRollup,"
+    "updatedAt,author,isDraft,url,files"
+)
 
 # fix-ci was a fifth member until #428: it shelled to
 # `td agent fix-ci --execute`, a dead backend dispatch.
-PR_ACTIONS = ("merge", "update", "approve",
-              "request-changes")
+PR_ACTIONS = ("merge", "update", "approve", "request-changes")
 
 # Max chars for a request-changes review body (#616).
 REVIEW_BODY_MAX = 2000
@@ -67,8 +74,9 @@ def _as_count(value: object) -> int:
 
 def _is_dep_bump(title: str, branch: str) -> bool:
     text = f"{title} {branch}".lower()
-    return any(k in text for k in (
-        "dependabot", "bump", "deps", "dependency", "dependencies"))
+    return any(
+        k in text for k in ("dependabot", "bump", "deps", "dependency", "dependencies")
+    )
 
 
 def _is_breaking(title: str) -> bool:
@@ -76,12 +84,19 @@ def _is_breaking(title: str) -> bool:
     return "breaking" in text or "!:" in text
 
 
-def build_risk_summary(*, title: str = "", branch: str = "",
-                       is_draft: bool = False, ci_status: str = "unknown",
-                       review_decision: str = "", mergeable: str = "UNKNOWN",
-                       additions: int = 0, deletions: int = 0,
-                       changed_files: int = 0,
-                       conflicted: bool = False) -> tuple[str, str]:
+def build_risk_summary(
+    *,
+    title: str = "",
+    branch: str = "",
+    is_draft: bool = False,
+    ci_status: str = "unknown",
+    review_decision: str = "",
+    mergeable: str = "UNKNOWN",
+    additions: int = 0,
+    deletions: int = 0,
+    changed_files: int = 0,
+    conflicted: bool = False,
+) -> tuple[str, str]:
     """Deterministic 2-line risk summary for a Review card (#938).
 
     Returns (summary, level) where summary is exactly two lines
@@ -102,13 +117,17 @@ def build_risk_summary(*, title: str = "", branch: str = "",
     if changed_files == 0 and total == 0:
         line1 = "No file changes detected · +0/-0"
     elif dep and total <= 200 and changed_files <= 10:
-        line1 = (f"Minor dependency bump · {changed_files} "
-                 f"file{'s' if changed_files != 1 else ''} changed "
-                 f"(+{additions}/-{deletions})")
+        line1 = (
+            f"Minor dependency bump · {changed_files} "
+            f"file{'s' if changed_files != 1 else ''} changed "
+            f"(+{additions}/-{deletions})"
+        )
     elif dep:
-        line1 = (f"Dependency update · {changed_files} "
-                 f"file{'s' if changed_files != 1 else ''} changed "
-                 f"(+{additions}/-{deletions})")
+        line1 = (
+            f"Dependency update · {changed_files} "
+            f"file{'s' if changed_files != 1 else ''} changed "
+            f"(+{additions}/-{deletions})"
+        )
     else:
         if total <= 20:
             size = "Small change"
@@ -116,9 +135,11 @@ def build_risk_summary(*, title: str = "", branch: str = "",
             size = "Moderate change"
         else:
             size = "Large change"
-        line1 = (f"{size} · {changed_files} "
-                 f"file{'s' if changed_files != 1 else ''} changed "
-                 f"(+{additions}/-{deletions})")
+        line1 = (
+            f"{size} · {changed_files} "
+            f"file{'s' if changed_files != 1 else ''} changed "
+            f"(+{additions}/-{deletions})"
+        )
 
     if is_draft:
         line2, level = f"Draft — not ready to merge; CI {ci}", "high"
@@ -131,7 +152,8 @@ def build_risk_summary(*, title: str = "", branch: str = "",
     elif mergeable_u not in ("MERGEABLE", "CLEAN", ""):
         line2, level = (
             f"Merge state {mergeable_u.lower()} — check before merging",
-            "medium")
+            "medium",
+        )
     elif (review_decision or "") == "CHANGES_REQUESTED":
         line2, level = "Changes requested — address review feedback", "high"
     elif breaking:
@@ -139,11 +161,15 @@ def build_risk_summary(*, title: str = "", branch: str = "",
     elif changed_files > 20 or total > 500:
         line2, level = (
             "Higher risk: large diff — review carefully; "
-            "0 breaking changes detected; CI green", "high")
+            "0 breaking changes detected; CI green",
+            "high",
+        )
     elif changed_files > 10 or total > 200:
         line2, level = (
             "Moderate risk — review diff before merging; "
-            "0 breaking changes detected; CI green", "medium")
+            "0 breaking changes detected; CI green",
+            "medium",
+        )
     else:
         line2, level = "Low risk; 0 breaking changes detected; CI green", "low"
     return f"{line1}\n{line2}", level
@@ -308,10 +334,23 @@ def _fetch_prs(gh: str, name: str, runner=None) -> dict:
     HTTPException(500) on gh failure (background refreshes swallow
     it and keep the stale entry)."""
     try:
-        raw = run_gh_json(gh, ["pr", "list", "--repo", gh,
-                               "--state", "open", "--limit", "50",
-                               "--json", PR_LIST_FIELDS],
-                          timeout=60, runner=_gh(runner))
+        raw = run_gh_json(
+            gh,
+            [
+                "pr",
+                "list",
+                "--repo",
+                gh,
+                "--state",
+                "open",
+                "--limit",
+                "50",
+                "--json",
+                PR_LIST_FIELDS,
+            ],
+            timeout=60,
+            runner=_gh(runner),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     rows = []
@@ -319,9 +358,11 @@ def _fetch_prs(gh: str, name: str, runner=None) -> dict:
         if not isinstance(pr, dict):
             continue
         author_val = pr.get("author")
-        author = (author_val.get("login")
-                  if isinstance(author_val, dict)
-                  else (author_val or ""))
+        author = (
+            author_val.get("login")
+            if isinstance(author_val, dict)
+            else (author_val or "")
+        )
         label = ci_label(pr.get("statusCheckRollup"))
         review_decision = str(pr.get("reviewDecision") or "")
         additions = _as_count(pr.get("additions"))
@@ -335,29 +376,33 @@ def _fetch_prs(gh: str, name: str, runner=None) -> dict:
             ci_status=label,
             review_decision=review_decision,
             mergeable=mergeable,
-            additions=additions, deletions=deletions,
-            changed_files=changed_files)
-        rows.append({
-            "number": pr.get("number"),
-            "title": pr.get("title", ""),
-            "author": author,
-            "branch": pr.get("headRefName", ""),
-            "isDraft": bool(pr.get("isDraft")),
-            "ciStatus": label,
-            "ciLabel": label,
-            "reviewDecision": review_decision,
-            # #848: any reported decision means reviews are in play
-            # for this PR; blank means no required-review rule.
-            "reviewRequired": review_decision != "",
-            "mergeable": mergeable,
-            "url": pr.get("url", ""),
-            "updatedAt": pr.get("updatedAt") or "",
-            "additions": additions,
-            "deletions": deletions,
-            "changedFiles": changed_files,
-            "riskSummary": risk_summary,
-            "riskLevel": risk_level,
-        })
+            additions=additions,
+            deletions=deletions,
+            changed_files=changed_files,
+        )
+        rows.append(
+            {
+                "number": pr.get("number"),
+                "title": pr.get("title", ""),
+                "author": author,
+                "branch": pr.get("headRefName", ""),
+                "isDraft": bool(pr.get("isDraft")),
+                "ciStatus": label,
+                "ciLabel": label,
+                "reviewDecision": review_decision,
+                # #848: any reported decision means reviews are in play
+                # for this PR; blank means no required-review rule.
+                "reviewRequired": review_decision != "",
+                "mergeable": mergeable,
+                "url": pr.get("url", ""),
+                "updatedAt": pr.get("updatedAt") or "",
+                "additions": additions,
+                "deletions": deletions,
+                "changedFiles": changed_files,
+                "riskSummary": risk_summary,
+                "riskLevel": risk_level,
+            }
+        )
     return {"repo": name, "prs": rows, "viewer": _gh_viewer(runner)}
 
 
@@ -371,27 +416,31 @@ def prs(repo: str = "remote-server", runner=None) -> dict:
     if runner is not None:
         # Test seam: uncached, exactly as before (plus markers).
         data = _fetch_prs(gh, name, runner)
-        return {**data, "cached": False, "stale": False,
-                "generated_at": time.time()}
+        return {**data, "cached": False, "stale": False, "generated_at": time.time()}
     return _PRS_CACHE.read(name, lambda: _fetch_prs(gh, name, None))
 
 
-PR_VIEW_GATE_FIELDS = ("statusCheckRollup,mergeStateStatus,"
-                         "reviewDecision")
+PR_VIEW_GATE_FIELDS = "statusCheckRollup,mergeStateStatus,reviewDecision"
 
 
 def _pr_view(gh: str, pr_number: int, runner=None) -> tuple:
     """Fresh (CI label, merge state, review decision) for gating."""
-    view = run_gh_json(gh, ["pr", "view", str(pr_number), "--repo", gh,
-                            "--json", PR_VIEW_GATE_FIELDS],
-                       timeout=60, runner=_gh(runner))
-    return (ci_label(view.get("statusCheckRollup")),
-            str(view.get("mergeStateStatus") or "?").lower(),
-            str(view.get("reviewDecision") or ""))
+    view = run_gh_json(
+        gh,
+        ["pr", "view", str(pr_number), "--repo", gh, "--json", PR_VIEW_GATE_FIELDS],
+        timeout=60,
+        runner=_gh(runner),
+    )
+    return (
+        ci_label(view.get("statusCheckRollup")),
+        str(view.get("mergeStateStatus") or "?").lower(),
+        str(view.get("reviewDecision") or ""),
+    )
 
 
-def _pr_action(gh: str, pr_number: int, action: str,
-               runner=None, body: str = "") -> dict:
+def _pr_action(
+    gh: str, pr_number: int, action: str, runner=None, body: str = ""
+) -> dict:
     """Port of buttons/server.py::_pr_action: gating + gh/td argv.
     ValueError = gate refused (400)."""
     run = _gh(runner)
@@ -400,9 +449,11 @@ def _pr_action(gh: str, pr_number: int, action: str,
         # --repo is explicit: #544 showed an unscoped verb resolves
         # against the backend cwd, not the gated repo.
         try:
-            out = run_gh(gh, ["pr", "review", str(pr_number),
-                              "--repo", gh, "--approve"],
-                         runner=run)
+            out = run_gh(
+                gh,
+                ["pr", "review", str(pr_number), "--repo", gh, "--approve"],
+                runner=run,
+            )
         except RuntimeError as exc:
             # #848: GitHub forbids self-approval ("Can not approve
             # your own pull request"). Translate to a gate refusal
@@ -411,33 +462,44 @@ def _pr_action(gh: str, pr_number: int, action: str,
                 raise ValueError(
                     "GitHub forbids approving your own PR — ask a "
                     "teammate for a review, or merge directly if the "
-                    "repo allows it")
+                    "repo allows it"
+                )
             raise
         return {"ok": True, "output": out[-2000:]}
     if action == "request-changes":
         if not body or not body.strip():
-            raise ValueError(
-                "request-changes requires a review body")
+            raise ValueError("request-changes requires a review body")
         if len(body) > REVIEW_BODY_MAX:
-            raise ValueError(
-                f"review body too long (max {REVIEW_BODY_MAX} chars)")
-        out = run_gh(gh, ["pr", "review", str(pr_number),
-                          "--repo", gh, "--request-changes",
-                          "-b", body],
-                     runner=run)
+            raise ValueError(f"review body too long (max {REVIEW_BODY_MAX} chars)")
+        out = run_gh(
+            gh,
+            [
+                "pr",
+                "review",
+                str(pr_number),
+                "--repo",
+                gh,
+                "--request-changes",
+                "-b",
+                body,
+            ],
+            runner=run,
+        )
         return {"ok": True, "output": out[-2000:]}
     if action == "merge":
-        view = run_gh_json(gh, ["pr", "view", str(pr_number),
-                                "--repo", gh,
-                                "--json", PR_VIEW_GATE_FIELDS],
-                           timeout=60, runner=run)
+        view = run_gh_json(
+            gh,
+            ["pr", "view", str(pr_number), "--repo", gh, "--json", PR_VIEW_GATE_FIELDS],
+            timeout=60,
+            runner=run,
+        )
         ok, fails, facts = evaluate_merge_gates(view)
         if not ok:
             gates = {gate for gate, _, _ in fails}
             if gates & {"ci", "merge"}:
                 raise ValueError(
-                    f"not mergeable: CI {facts['ci']}, "
-                    f"merge {facts['merge']}")
+                    f"not mergeable: CI {facts['ci']}, merge {facts['merge']}"
+                )
             # #848: demand an approval only when the target repo does.
             # REVIEW_REQUIRED is GitHub's own required-but-missing signal;
             # CHANGES_REQUESTED is an explicit human veto. A blank decision
@@ -446,19 +508,23 @@ def _pr_action(gh: str, pr_number: int, action: str,
             if facts["review"] == "REVIEW_REQUIRED":
                 raise ValueError(
                     "not mergeable: approval required by branch rules "
-                    "(review is REVIEW_REQUIRED)")
-            raise ValueError(
-                "not mergeable: changes were requested on this PR")
+                    "(review is REVIEW_REQUIRED)"
+                )
+            raise ValueError("not mergeable: changes were requested on this PR")
         out = run_gh(gh, merge_argv(gh, pr_number), runner=run)
         return {"ok": True, "output": out[-2000:]}
     if action == "update":
         _ci, merge, _review = _pr_view(gh, pr_number, run)
         if merge != "behind":
-            raise ValueError(f"cannot update: merge state is {merge} "
-                             "(only behind branches update this way)")
-        out = run_gh(gh, ["api",
-                          f"repos/{gh}/pulls/{pr_number}/update-branch",
-                          "--method", "PUT"], runner=run)
+            raise ValueError(
+                f"cannot update: merge state is {merge} "
+                "(only behind branches update this way)"
+            )
+        out = run_gh(
+            gh,
+            ["api", f"repos/{gh}/pulls/{pr_number}/update-branch", "--method", "PUT"],
+            runner=run,
+        )
         return {"ok": True, "output": out[-2000:]}
     # pr_action allowlists before calling; direct callers with any
     # other action (including retired fix-ci, #428) fail here.
@@ -466,8 +532,7 @@ def _pr_action(gh: str, pr_number: int, action: str,
 
 
 @router.get("/pr-details", response_model=PrDetails)
-def pr_details(repo: str = "remote-server", pr: int = 0,
-               runner=None) -> dict:
+def pr_details(repo: str = "remote-server", pr: int = 0, runner=None) -> dict:
     try:
         gh = repo_gh(repo)
     except ValueError as exc:
@@ -475,69 +540,107 @@ def pr_details(repo: str = "remote-server", pr: int = 0,
     if isinstance(pr, bool) or pr <= 0:
         raise HTTPException(status_code=400, detail="invalid pr")
     try:
-        view = run_gh_json(gh, ["pr", "view", str(pr), "--repo", gh,
-                                "--json", PR_VIEW_FIELDS],
-                           timeout=45, runner=_gh(runner))
+        view = run_gh_json(
+            gh,
+            ["pr", "view", str(pr), "--repo", gh, "--json", PR_VIEW_FIELDS],
+            timeout=45,
+            runner=_gh(runner),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     rollup = view.get("statusCheckRollup")
     label = ci_label(rollup)
-    failing = [c.get("name", "?") for c in (rollup or [])
-               if isinstance(c, dict)
-               and c.get("conclusion") in FAILING_CONCLUSIONS]
+    failing = [
+        c.get("name", "?")
+        for c in (rollup or [])
+        if isinstance(c, dict) and c.get("conclusion") in FAILING_CONCLUSIONS
+    ]
     merge = str(view.get("mergeStateStatus") or "?").lower()
-    files = [{"path": rf.get("path") or "?",
-              "additions": rf.get("additions", 0),
-              "deletions": rf.get("deletions", 0),
-              "changes": rf.get("additions", 0) + rf.get("deletions", 0)}
-             for rf in (view.get("files") or [])
-             if isinstance(rf, dict)]
+    files = [
+        {
+            "path": rf.get("path") or "?",
+            "additions": rf.get("additions", 0),
+            "deletions": rf.get("deletions", 0),
+            "changes": rf.get("additions", 0) + rf.get("deletions", 0),
+        }
+        for rf in (view.get("files") or [])
+        if isinstance(rf, dict)
+    ]
     file_list = ", ".join(f["path"] for f in files[:10])
     prompts = [
-        {"id": "security", "label": "Security Audit",
-         "prompt": f"Audit PR #{pr} for security vulnerabilities, "
-                   f"injection risks, and auth flaws across changed "
-                   f"files: {file_list}"},
-        {"id": "architecture", "label": "Architecture Review",
-         "prompt": f"Review design decisions, coupling, and modularity "
-                   f"in PR #{pr} ({view.get('title')})."},
-        {"id": "discipline", "label": "Code Discipline Review",
-         "prompt": f"Check PR #{pr} for workaround chains (e.g. "
-                   f"`cmd || variant-cmd`, try/except ladders, or "
-                   f"fallback chains papering over failures). A "
-                   f"workaround chain is a review-blocking finding, not "
-                   f"a nit — flag any instance and demand root-cause "
-                   f"fixes."},
-        {"id": "test_gaps", "label": "Test Gap Analysis",
-         "prompt": f"Determine untested paths and recommend automated "
-                   f"tests for PR #{pr}."},
-        {"id": "summary", "label": "Review Comments",
-         "prompt": f"Synthesize line-level findings and approval "
-                   f"readiness for PR #{pr}. Explicitly block on any "
-                   f"workaround chains (`cmd || variant-cmd` or fallback "
-                   f"ladders)."},
+        {
+            "id": "security",
+            "label": "Security Audit",
+            "prompt": f"Audit PR #{pr} for security vulnerabilities, "
+            f"injection risks, and auth flaws across changed "
+            f"files: {file_list}",
+        },
+        {
+            "id": "architecture",
+            "label": "Architecture Review",
+            "prompt": f"Review design decisions, coupling, and modularity "
+            f"in PR #{pr} ({view.get('title')}).",
+        },
+        {
+            "id": "discipline",
+            "label": "Code Discipline Review",
+            "prompt": f"Check PR #{pr} for workaround chains (e.g. "
+            f"`cmd || variant-cmd`, try/except ladders, or "
+            f"fallback chains papering over failures). A "
+            f"workaround chain is a review-blocking finding, not "
+            f"a nit — flag any instance and demand root-cause "
+            f"fixes.",
+        },
+        {
+            "id": "test_gaps",
+            "label": "Test Gap Analysis",
+            "prompt": f"Determine untested paths and recommend automated "
+            f"tests for PR #{pr}.",
+        },
+        {
+            "id": "summary",
+            "label": "Review Comments",
+            "prompt": f"Synthesize line-level findings and approval "
+            f"readiness for PR #{pr}. Explicitly block on any "
+            f"workaround chains (`cmd || variant-cmd` or fallback "
+            f"ladders).",
+        },
     ]
-    stats = {"total_files": len(files),
-             "additions": sum(f["additions"] for f in files),
-             "deletions": sum(f["deletions"] for f in files)}
+    stats = {
+        "total_files": len(files),
+        "additions": sum(f["additions"] for f in files),
+        "deletions": sum(f["deletions"] for f in files),
+    }
     risk_summary, risk_level = build_risk_summary(
         title=str(view.get("title") or ""),
         branch=str(view.get("headRefName") or ""),
         is_draft=bool(view.get("isDraft")),
         ci_status=label,
         review_decision=str(view.get("reviewDecision") or ""),
-        mergeable=("CONFLICTING" if merge == "dirty" else
-                   "MERGEABLE" if merge == "clean" else merge.upper()),
-        additions=stats["additions"], deletions=stats["deletions"],
+        mergeable=(
+            "CONFLICTING"
+            if merge == "dirty"
+            else "MERGEABLE"
+            if merge == "clean"
+            else merge.upper()
+        ),
+        additions=stats["additions"],
+        deletions=stats["deletions"],
         changed_files=stats["total_files"],
-        conflicted=merge == "dirty")
+        conflicted=merge == "dirty",
+    )
     return {
-        "repo": repo, "number": pr, "title": view.get("title", ""),
+        "repo": repo,
+        "number": pr,
+        "title": view.get("title", ""),
         "branch": view.get("headRefName", ""),
-        "base": view.get("baseRefName", ""), "ci": label,
-        "failing": failing, "merge": merge,
+        "base": view.get("baseRefName", ""),
+        "ci": label,
+        "failing": failing,
+        "merge": merge,
         "conflicted": merge == "dirty",
-        "draft": bool(view.get("isDraft")), "url": view.get("url"),
+        "draft": bool(view.get("isDraft")),
+        "url": view.get("url"),
         "files": files,
         "stats": stats,
         "ai_prompts": prompts,
@@ -555,33 +658,34 @@ class PrDiff(BaseModel):
     number: int = 0
     diff: str = ""
     truncated: bool = False
-    hidden_structural: HiddenStructural = Field(
-        default_factory=HiddenStructural)
+    hidden_structural: HiddenStructural = Field(default_factory=HiddenStructural)
 
 
 @router.get("/pr-diff", response_model=PrDiff)
-def pr_diff(repo: str = "remote-server", pr: int = 0,
-            runner=None) -> dict:
+def pr_diff(repo: str = "remote-server", pr: int = 0, runner=None) -> dict:
     try:
         gh = repo_gh(repo)
     except ValueError:
         raise HTTPException(status_code=400, detail="bad repo")
-    if (isinstance(pr, bool) or not isinstance(pr, int)
-            or pr <= 0):
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
         raise HTTPException(status_code=400, detail="invalid pr")
     try:
-        raw = run_gh(gh, ["pr", "diff", str(pr), "--repo", gh],
-                     timeout=60, runner=runner)
+        raw = run_gh(
+            gh, ["pr", "diff", str(pr), "--repo", gh], timeout=60, runner=runner
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     diff = context_filter.filter_diff(raw, max_file_lines=120)
     hidden = context_filter.structural_hidden_files(raw or "")
     shape = {"count": len(hidden), "files": hidden}
     if len(diff) > 30000:
-        return {"number": pr, "diff": diff[:30000], "truncated": True,
-                "hidden_structural": shape}
-    return {"number": pr, "diff": diff, "truncated": False,
-            "hidden_structural": shape}
+        return {
+            "number": pr,
+            "diff": diff[:30000],
+            "truncated": True,
+            "hidden_structural": shape,
+        }
+    return {"number": pr, "diff": diff, "truncated": False, "hidden_structural": shape}
 
 
 @router.post("/pr-action", response_model=PrActionResult)
@@ -595,9 +699,12 @@ def pr_action(body: PrActionRequest) -> dict:
     if body.action == "fix-ci":
         raise HTTPException(
             status_code=400,
-            detail=("fix-ci was retired (#428): the CI-fix backend "
-                    "is dead; file an issue and dispatch the repair "
-                    "worker from Jobs, or push a fix to the branch"))
+            detail=(
+                "fix-ci was retired (#428): the CI-fix backend "
+                "is dead; file an issue and dispatch the repair "
+                "worker from Jobs, or push a fix to the branch"
+            ),
+        )
     if body.action == "merge":
         require_confirm(body, "pr-merge")
     elif body.action == "approve":
@@ -606,12 +713,13 @@ def pr_action(body: PrActionRequest) -> dict:
         require_confirm(body, "pr-request-changes")
     # Strict validation, same as legacy: int PR number only (bools
     # are ints in Python, so excluded), allowlisted action.
-    if (not isinstance(body.pr_number, int)
-            or isinstance(body.pr_number, bool)
-            or body.pr_number <= 0
-            or body.action not in PR_ACTIONS):
-        raise HTTPException(
-            status_code=400, detail="bad pr_number, action or repo")
+    if (
+        not isinstance(body.pr_number, int)
+        or isinstance(body.pr_number, bool)
+        or body.pr_number <= 0
+        or body.action not in PR_ACTIONS
+    ):
+        raise HTTPException(status_code=400, detail="bad pr_number, action or repo")
     try:
         gh = repo_gh(body.repo)
     except ValueError as exc:
@@ -623,8 +731,7 @@ def pr_action(body: PrActionRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        out = _pr_action(gh, body.pr_number, body.action,
-                         body=body.body)
+        out = _pr_action(gh, body.pr_number, body.action, body=body.body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -636,5 +743,6 @@ def pr_action(body: PrActionRequest) -> dict:
     name = gh.split("/", 1)[1]
     invalidate_prs_cache(name)
     from backend.api.routers import inbox as inbox_mod
+
     inbox_mod.invalidate_inbox_cache(name)
     return out
