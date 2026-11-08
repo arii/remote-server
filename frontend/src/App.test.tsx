@@ -968,6 +968,13 @@ describe('app', () => {
     expect(html).toContain('History');
   });
 
+  it('skip link targets the main landmark (issue #1164)', () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('class="skip-link"');
+    expect(html).toContain('href="#main-content"');
+    expect(html).toContain('id="main-content"');
+  });
+
   it('keep-alive tabs mount lazily (issue #897)', () => {
     // Unvisited Briefing/History stay unmounted on first paint;
     // they mount on first visit and persist hidden afterwards.
