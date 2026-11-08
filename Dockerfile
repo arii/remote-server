@@ -33,7 +33,11 @@ ARG DOCKER_VERSION=27.4.1
 ARG COMPOSE_VERSION=v2.32.4
 ARG NODE_VERSION=24.16.0
 ARG PNPM_VERSION
-RUN apt-get update \
+RUN mkdir -p /usr/share/keyrings \
+ && python3 -c "import urllib.request; urllib.request.urlretrieve('https://cli.github.com/packages/githubcli-archive-keyring.gpg', '/usr/share/keyrings/githubcli-archive-keyring.gpg')" \
+ && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
  && apt-get install -y --no-install-recommends git gh curl ca-certificates openssh-client xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /home/ari \
