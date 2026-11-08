@@ -1,0 +1,52 @@
+# Keeps every pinned boomtick CLI ref on the latest cli-* release.
+#
+# Pins live in four places and must move together (no legacy versions):
+#   Dockerfile (ARG BOOMTICK_CLI_REF), terminal/Dockerfile (ARG),
+#   .github/workflows/e2e.yml (pip install @ref), tests/e2e/run.sh (same).
+# Runs weekly plus on demand; opens one PR when a newer cli-* tag exists.
+name: bump-boomtick-cli
+
+on:
+  schedule:
+    - cron: '31 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve latest cli release and bump pins
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/arii/boomtick/tags --paginate -q '.[].name' \
+            | grep -E '^cli-v[0-9]' | sort -V | tail -1)
+          if [ -z "$TAG" ]; then echo "no cli-* tag found"; exit 1; fi
+          echo "latest cli tag: $TAG"
+          sed -i -E "s/^(ARG BOOMTICK_CLI_REF=)cli-v[0-9.]+/\\1$TAG/" Dockerfile terminal/Dockerfile
+          sed -i -E "s|(github.com:arii/boomtick.git@)cli-v[0-9.]+|\\1$TAG|" .github/workflows/e2e.yml tests/e2e/run.sh
+          if git diff --quiet; then
+            echo "pins already at latest ($TAG); nothing to do"
+            exit 0
+          fi
+          BRANCH="cli-ref-bump-$TAG"
+          git config user.name "arii"
+          git config user.email "arii"
+          git checkout -B "$BRANCH"
+          git add Dockerfile terminal/Dockerfile .github/workflows/e2e.yml tests/e2e/run.sh
+          git commit -m "chore(deps): bump boomtick CLI ref to $TAG"
+          git push -u origin "$BRANCH" --force-with-lease
+          if gh pr list --head "$BRANCH" --json number --jq -e '.[0].number' >/dev/null; then
+            echo "PR already open for $BRANCH"
+          else
+            gh pr create --title "chore(deps): bump boomtick CLI ref to $TAG" \
+              --body "Weekly cli-ref bump: all pins move to $TAG (latest cli-* release). No behavior change beyond the newer CLI." \
+              --head "$BRANCH" --base main
+          fi
