@@ -24,6 +24,7 @@ same allowlists, timeouts, and output truncation as the original.
 
 import difflib
 import json
+import logging
 import os
 import re
 import threading
@@ -52,6 +53,8 @@ RID_RE = re.compile(r"^[0-9a-f]{12}$")
 RUN_TAIL = 6000
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+
+logger = logging.getLogger(__name__)
 
 # Durable run history (#461): the snapshot path rehydrates on boot,
 # so the Jobs view survives console restarts.
@@ -136,14 +139,22 @@ def _job_rows_locked() -> list:
     lock: the push generators snapshot inside the condition wait,
     which a locking helper could not do (threading.Lock is not
     reentrant, and snapshot-then-read would race)."""
-    ordered = sorted(registry.runs.values(),
-                     key=lambda r: r.get("seq", 0), reverse=True)
-    return [{"id": r["id"], "kind": r.get("action", ""),
-             "name": r.get("action", ""), "repo": r.get("repo", ""),
-             "done": r["done"], "exit_code": r.get("exit_code"),
-             "at": r.get("started_at"),
-             "td_argv": r.get("td_argv", [])}
-            for r in ordered]
+    ordered = sorted(
+        registry.runs.values(), key=lambda r: r.get("seq", 0), reverse=True
+    )
+    return [
+        {
+            "id": r["id"],
+            "kind": r.get("action", ""),
+            "name": r.get("action", ""),
+            "repo": r.get("repo", ""),
+            "done": r["done"],
+            "exit_code": r.get("exit_code"),
+            "at": r.get("started_at"),
+            "td_argv": r.get("td_argv", []),
+        }
+        for r in ordered
+    ]
 
 
 def _job_rows() -> list:
@@ -179,7 +190,8 @@ def _jobs_events(heartbeat: float = JOBS_STREAM_HEARTBEAT):
         # state-based, and wait_for evaluates it before waiting.
         with registry._cond:
             registry._cond.wait_for(
-                lambda: _job_rows_locked() != last, timeout=heartbeat)
+                lambda: _job_rows_locked() != last, timeout=heartbeat
+            )
             rows = _job_rows_locked()
             changed = rows != last
             last = rows
@@ -191,9 +203,9 @@ def _jobs_events(heartbeat: float = JOBS_STREAM_HEARTBEAT):
 
 @router.get("/stream")
 def jobs_stream() -> StreamingResponse:
-    return StreamingResponse(_jobs_events(),
-                             media_type="text/event-stream",
-                             headers=SSE_HEADERS)
+    return StreamingResponse(
+        _jobs_events(), media_type="text/event-stream", headers=SSE_HEADERS
+    )
 
 
 @router.post("/clear", response_model=ClearResult)
@@ -218,20 +230,18 @@ def _repo_target(repo: str) -> tuple[str, str]:
     except (ValueError, FileNotFoundError, RuntimeError):
         raise ValueError("unknown repo")
     gh = f"arii/{name}"
-    td_cwd = "/srv/remote-server" if name == "remote-server" \
-        else f"/srv/repos/{name}"
+    td_cwd = "/srv/remote-server" if name == "remote-server" else f"/srv/repos/{name}"
     return gh, td_cwd
 
 
-def _launch(run_id: str, action: str, repo: str,
-            td_argv=None) -> None:
-    (gh, td_cwd) = _repo_target(repo) \
-        if action in REPO_SCOPED_ACTIONS else ("", "")
+def _launch(run_id: str, action: str, repo: str, td_argv=None) -> None:
+    (gh, td_cwd) = _repo_target(repo) if action in REPO_SCOPED_ACTIONS else ("", "")
     worker = threading.Thread(
         target=execute_run,
         args=(registry, run_id, action, repo, gh, td_cwd),
         kwargs={"td_argv": td_argv},
-        daemon=True)
+        daemon=True,
+    )
     worker.start()
 
 
@@ -261,9 +271,11 @@ def _start_dispatch(action: str, repo: str, td_argv=None) -> dict:
         registry.append(run_id, f"error: {exc}\n")
         registry.finish_run(run_id, 1)
         raise
-    return {"id": run_id,
-            "queued": bool(registry.runs.get(run_id, {}).get("queued")),
-            "position": registry.queue_position(run_id)}
+    return {
+        "id": run_id,
+        "queued": bool(registry.runs.get(run_id, {}).get("queued")),
+        "position": registry.queue_position(run_id),
+    }
 
 
 @router.post("/run", response_model=RunStarted)
@@ -324,11 +336,14 @@ def _run_progress_locked(rid: str) -> dict | None:
     if run is None:
         return None
     out = run.get("output", "")
-    return {"done": run["done"], "output": out[-RUN_TAIL:],
-            "exit_code": run.get("exit_code"),
-            "action": run.get("action", ""),
-            "repo": run.get("repo", ""),
-            "td_argv": run.get("td_argv", [])}
+    return {
+        "done": run["done"],
+        "output": out[-RUN_TAIL:],
+        "exit_code": run.get("exit_code"),
+        "action": run.get("action", ""),
+        "repo": run.get("repo", ""),
+        "td_argv": run.get("td_argv", []),
+    }
 
 
 # Compare cap: ~1MB total input (500K per side, tail-kept). The
@@ -369,11 +384,16 @@ def compare_runs(a: str = "", b: str = "") -> dict:
     if len(out_b) > COMPARE_MAX_PER_SIDE:
         out_b = out_b[-COMPARE_MAX_PER_SIDE:]
         truncated = True
-    diff = "\n".join(difflib.unified_diff(
-        out_a.splitlines(), out_b.splitlines(),
-        fromfile=f"a/{a}", tofile=f"b/{b}", lineterm=""))
-    return {"a_id": a, "b_id": b, "unified_diff": diff,
-            "truncated": truncated}
+    diff = "\n".join(
+        difflib.unified_diff(
+            out_a.splitlines(),
+            out_b.splitlines(),
+            fromfile=f"a/{a}",
+            tofile=f"b/{b}",
+            lineterm="",
+        )
+    )
+    return {"a_id": a, "b_id": b, "unified_diff": diff, "truncated": truncated}
 
 
 @router.get("/runs/{rid}", response_model=RunProgress)
@@ -392,8 +412,7 @@ class CancelRunResult(BaseModel):
     id: str = ""
 
 
-@router.post("/runs/{rid}/cancel", status_code=202,
-             response_model=CancelRunResult)
+@router.post("/runs/{rid}/cancel", status_code=202, response_model=CancelRunResult)
 def cancel_run(rid: str) -> dict:
     """Cancel a running run (#589): flag + SIGTERM the step tree.
 
@@ -420,8 +439,8 @@ def _run_events(rid: str, heartbeat: float = JOBS_STREAM_HEARTBEAT):
     while True:
         with registry._cond:
             registry._cond.wait_for(
-                lambda: _run_progress_locked(rid) != last,
-                timeout=heartbeat)
+                lambda: _run_progress_locked(rid) != last, timeout=heartbeat
+            )
             payload = _run_progress_locked(rid)
             changed = payload != last
             last = payload
@@ -445,9 +464,9 @@ def run_stream(rid: str) -> StreamingResponse:
     with registry._lock:
         if registry.runs.get(rid) is None:
             raise HTTPException(status_code=404, detail="unknown run")
-    return StreamingResponse(_run_events(rid),
-                             media_type="text/event-stream",
-                             headers=SSE_HEADERS)
+    return StreamingResponse(
+        _run_events(rid), media_type="text/event-stream", headers=SSE_HEADERS
+    )
 
 
 def _ux_audit_module():
@@ -493,15 +512,13 @@ def start_run_ux_audit(body: RunUxAuditRequest) -> dict:
     try:
         ux_audit = _ux_audit_module()
     except ImportError as exc:
-        raise HTTPException(status_code=500,
-                            detail=f"ux audit unavailable: {exc}")
+        raise HTTPException(status_code=500, detail=f"ux audit unavailable: {exc}")
     try:
         ux_audit.site_config(body.site)
     except ValueError:
         raise HTTPException(status_code=400, detail="unknown site")
     pages = body.max_pages
-    if isinstance(pages, bool) or not isinstance(pages, int) \
-            or not 1 <= pages <= 200:
+    if isinstance(pages, bool) or not isinstance(pages, int) or not 1 <= pages <= 200:
         raise HTTPException(status_code=400, detail="bad max_pages")
     argv = ["ux-audit", body.site, "--max-pages", str(pages)]
     return _start_dispatch("ux-audit", "remote-server", td_argv=argv)
@@ -515,8 +532,7 @@ def ux_audit_groups(site: str = "") -> dict:
     try:
         ux_audit = _ux_audit_module()
     except ImportError as exc:
-        raise HTTPException(status_code=500,
-                            detail=f"ux audit unavailable: {exc}")
+        raise HTTPException(status_code=500, detail=f"ux audit unavailable: {exc}")
     try:
         groups = ux_audit.report_groups(site)
     except ValueError:
@@ -596,8 +612,7 @@ def _plans_dir(repo: str) -> Path:
         get_repo_status(name)
     except (ValueError, FileNotFoundError, RuntimeError):
         raise ValueError("unknown repo")
-    base = Path(stack_dir()) if name == "remote-server" \
-        else resolve_repo_path(name)
+    base = Path(stack_dir()) if name == "remote-server" else resolve_repo_path(name)
     return base / ".agents" / "plans"
 
 
@@ -615,8 +630,9 @@ def list_plans(repo: str = "remote-server") -> dict:
                     st = child.stat()
                 except OSError:
                     continue
-                rows.append({"name": child.name, "size": st.st_size,
-                             "mtime": st.st_mtime})
+                rows.append(
+                    {"name": child.name, "size": st.st_size, "mtime": st.st_mtime}
+                )
     return {"repo": repo, "plans": rows[:50]}
 
 
@@ -646,8 +662,11 @@ def read_plan(name: str, repo: str = "remote-server") -> dict:
 # one here). Destructive actions are a hard exclusion: confirm
 # gates need a live operator. quarter-hourly exists for the notify
 # check loop (#822): 15 min balances push timeliness vs gh load.
-ACTION_SCHEDULE_INTERVALS = {"daily": 24 * 3600, "weekly": 7 * 24 * 3600,
-                             "quarter-hourly": 15 * 60}
+ACTION_SCHEDULE_INTERVALS = {
+    "daily": 24 * 3600,
+    "weekly": 7 * 24 * 3600,
+    "quarter-hourly": 15 * 60,
+}
 
 DEFAULT_ACTION_SCHEDULE_PATH = "/var/lib/buttons/jobs_schedules.json"
 
@@ -657,8 +676,7 @@ action_schedule_lock = threading.Lock()
 def action_schedule_path() -> str:
     """Current action-schedule file path (env override read
     dynamically so tests can point it at tmp)."""
-    return os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH",
-                          DEFAULT_ACTION_SCHEDULE_PATH)
+    return os.environ.get("BUTTONS_JOBS_SCHEDULE_PATH", DEFAULT_ACTION_SCHEDULE_PATH)
 
 
 def load_action_schedules() -> dict:
@@ -666,10 +684,9 @@ def load_action_schedules() -> dict:
         with open(action_schedule_path(), encoding="utf-8") as f:
             state = json.load(f)
         if isinstance(state, dict):
-            return {k: v for k, v in state.items()
-                    if isinstance(v, dict)}
-    except Exception:
-        pass
+            return {k: v for k, v in state.items() if isinstance(v, dict)}
+    except Exception as exc:
+        logger.warning("action schedules read failed: %s", exc)
     return {}
 
 
@@ -724,8 +741,8 @@ def create_action_schedule(body: ActionScheduleRequest) -> dict:
         valid = ", ".join(sorted(ACTION_SCHEDULE_INTERVALS))
         raise HTTPException(
             status_code=400,
-            detail=f"cadence must be {valid} "
-                   f"(delete the schedule to stop it)")
+            detail=f"cadence must be {valid} (delete the schedule to stop it)",
+        )
     action = (body.action or "").strip()
     if action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail="unknown action")
@@ -733,33 +750,29 @@ def create_action_schedule(body: ActionScheduleRequest) -> dict:
         raise HTTPException(
             status_code=400,
             detail=f"action '{action}' is destructive and cannot be "
-                   f"scheduled — confirm gates need a live operator; "
-                   f"launch it manually from Jobs")
+            f"scheduled — confirm gates need a live operator; "
+            f"launch it manually from Jobs",
+        )
     td_argv = list(body.td_argv or [])
     if td_argv:
         if action == "run-td":
             tokens = validate_td_command(" ".join(td_argv))
             if tokens is None or tokens != td_argv:
-                raise HTTPException(
-                    status_code=400, detail="bad td command")
+                raise HTTPException(status_code=400, detail="bad td command")
         elif action == "ux-audit":
             # Periodic re-audits (#850): the site argv replays
             # through the same step builder as a manual dispatch.
             if not validate_ux_audit_argv(td_argv):
-                raise HTTPException(
-                    status_code=400, detail="bad ux-audit argv")
+                raise HTTPException(status_code=400, detail="bad ux-audit argv")
         else:
             raise HTTPException(
                 status_code=400,
-                detail="td_argv is only valid with action "
-                       "run-td or ux-audit")
+                detail="td_argv is only valid with action run-td or ux-audit",
+            )
     elif action == "run-td":
-        raise HTTPException(
-            status_code=400, detail="run-td schedules need td_argv")
+        raise HTTPException(status_code=400, detail="run-td schedules need td_argv")
     elif action == "ux-audit":
-        raise HTTPException(
-            status_code=400,
-            detail="ux-audit schedules need td_argv")
+        raise HTTPException(status_code=400, detail="ux-audit schedules need td_argv")
     repo = (body.repo or "remote-server").strip() or "remote-server"
     if action in REPO_SCOPED_ACTIONS:
         try:
@@ -768,16 +781,22 @@ def create_action_schedule(body: ActionScheduleRequest) -> dict:
             raise HTTPException(status_code=400, detail="unknown repo")
     now = time.time()
     sid = uuid.uuid4().hex[:12]
-    sched = {"action": action, "td_argv": td_argv, "repo": repo,
-             "cadence": cadence,
-             "next_run": now + ACTION_SCHEDULE_INTERVALS[cadence],
-             "last_run": None, "last_result": {},
-             "enabled": bool(body.enabled)}
+    sched = {
+        "action": action,
+        "td_argv": td_argv,
+        "repo": repo,
+        "cadence": cadence,
+        "next_run": now + ACTION_SCHEDULE_INTERVALS[cadence],
+        "last_run": None,
+        "last_result": {},
+        "enabled": bool(body.enabled),
+    }
     with action_schedule_lock:
         state = load_action_schedules()
         state[sid] = sched
         save_action_schedules(state)
     from backend.api.routers.issues import _ensure_schedule_ticker
+
     _ensure_schedule_ticker()
     return {"ok": True, "schedule": {"id": sid, **sched}}
 
@@ -786,8 +805,7 @@ def create_action_schedule(body: ActionScheduleRequest) -> dict:
 def list_action_schedules() -> dict:
     with action_schedule_lock:
         state = load_action_schedules()
-    return {"schedules": [{"id": sid, **state[sid]}
-                          for sid in sorted(state)]}
+    return {"schedules": [{"id": sid, **state[sid]} for sid in sorted(state)]}
 
 
 @router.delete("/schedule/{sid}", response_model=ActionScheduleDeleted)
@@ -795,8 +813,7 @@ def delete_action_schedule(sid: str) -> dict:
     with action_schedule_lock:
         state = load_action_schedules()
         if sid not in state:
-            raise HTTPException(
-                status_code=404, detail="unknown schedule")
+            raise HTTPException(status_code=404, detail="unknown schedule")
         del state[sid]
         save_action_schedules(state)
     return {"ok": True}
@@ -810,21 +827,18 @@ def _set_schedule_enabled(sid: str, enabled: bool) -> dict:
     with action_schedule_lock:
         state = load_action_schedules()
         if sid not in state or not isinstance(state[sid], dict):
-            raise HTTPException(
-                status_code=404, detail="unknown schedule")
+            raise HTTPException(status_code=404, detail="unknown schedule")
         state[sid]["enabled"] = enabled
         save_action_schedules(state)
         return {"ok": True, "schedule": {"id": sid, **state[sid]}}
 
 
-@router.post("/schedule/{sid}/pause",
-             response_model=ActionScheduleResult)
+@router.post("/schedule/{sid}/pause", response_model=ActionScheduleResult)
 def pause_action_schedule(sid: str) -> dict:
     return _set_schedule_enabled(sid, False)
 
 
-@router.post("/schedule/{sid}/resume",
-             response_model=ActionScheduleResult)
+@router.post("/schedule/{sid}/resume", response_model=ActionScheduleResult)
 def resume_action_schedule(sid: str) -> dict:
     return _set_schedule_enabled(sid, True)
 
@@ -839,8 +853,7 @@ def _claim_due_action_schedules(now: float) -> list:
         changed = False
         for sid in sorted(state):
             sched = state[sid]
-            interval = ACTION_SCHEDULE_INTERVALS.get(
-                sched.get("cadence", ""))
+            interval = ACTION_SCHEDULE_INTERVALS.get(sched.get("cadence", ""))
             if interval is None:
                 continue
             # Paused schedules skip without advancing: next_run,
@@ -877,10 +890,10 @@ def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
     repo = sched.get("repo", "remote-server")
     td_argv = sched.get("td_argv") or []
     run_id, err = registry.start_run(
-        action, repo, td_argv=list(td_argv) if td_argv else None)
+        action, repo, td_argv=list(td_argv) if td_argv else None
+    )
     if err:
-        _record_schedule_result(
-            sid, {"ok": False, "at": now, "error": str(err)[:300]})
+        _record_schedule_result(sid, {"ok": False, "at": now, "error": str(err)[:300]})
         return
     try:
         _launch(run_id, action, repo, td_argv=list(td_argv) or None)
@@ -894,11 +907,9 @@ def _fire_action_schedule(sid: str, sched: dict, now: float) -> None:
         # endpoint).
         registry.append(run_id, f"error: {exc}\n")
         registry.finish_run(run_id, 1)
-        _record_schedule_result(
-            sid, {"ok": False, "at": now, "error": str(exc)[:300]})
+        _record_schedule_result(sid, {"ok": False, "at": now, "error": str(exc)[:300]})
         return
-    _record_schedule_result(
-        sid, {"ok": True, "at": now, "run_id": run_id})
+    _record_schedule_result(sid, {"ok": True, "at": now, "run_id": run_id})
 
 
 # Default notify-check seeds (#822): one quarter-hourly
@@ -997,21 +1008,25 @@ def _ensure_default_notify_schedules(now: float | None = None) -> int:
             if not missing:
                 return 0
             state = load_action_schedules()
-            live = {s.get("repo") for s in state.values()
-                    if isinstance(s, dict)
-                    and s.get("action") == NOTIFY_SEED_ACTION}
+            live = {
+                s.get("repo")
+                for s in state.values()
+                if isinstance(s, dict) and s.get("action") == NOTIFY_SEED_ACTION
+            }
             fresh = [r for r in missing if r not in live]
             base = len(live) * NOTIFY_SEED_STAGGER
             for idx, name in enumerate(fresh):
                 sid = uuid.uuid4().hex[:12]
-                state[sid] = {"action": NOTIFY_SEED_ACTION,
-                              "td_argv": [], "repo": name,
-                              "cadence": NOTIFY_SEED_CADENCE,
-                              "next_run": at + base
-                              + idx * NOTIFY_SEED_STAGGER,
-                              "last_run": None,
-                              "last_result": {},
-                              "enabled": True}
+                state[sid] = {
+                    "action": NOTIFY_SEED_ACTION,
+                    "td_argv": [],
+                    "repo": name,
+                    "cadence": NOTIFY_SEED_CADENCE,
+                    "next_run": at + base + idx * NOTIFY_SEED_STAGGER,
+                    "last_run": None,
+                    "last_result": {},
+                    "enabled": True,
+                }
             if fresh:
                 save_action_schedules(state)
             _save_notify_seeded(done | set(missing))
@@ -1038,8 +1053,7 @@ def _autofile_seed_path() -> str:
     return action_schedule_path() + ".autofile-seeded"
 
 
-def _ensure_default_autofile_schedules(
-        now: float | None = None) -> int:
+def _ensure_default_autofile_schedules(now: float | None = None) -> int:
     """Seed one autofile schedule per checkout. Same contract as
     the notify seed: operator deletes stick, new checkouts seed on
     a later tick, the first seed is due immediately, rows stagger
@@ -1049,8 +1063,7 @@ def _ensure_default_autofile_schedules(
         repos = _notify_seed_repos()
         if not repos:
             return 0
-        missing = [r for r in repos
-                   if r not in _load_seed_names(_autofile_seed_path())]
+        missing = [r for r in repos if r not in _load_seed_names(_autofile_seed_path())]
         if not missing:
             return 0
         at = time.time() if now is None else now
@@ -1060,26 +1073,31 @@ def _ensure_default_autofile_schedules(
             if not missing:
                 return 0
             state = load_action_schedules()
-            live = {s.get("repo") for s in state.values()
-                    if isinstance(s, dict)
-                    and s.get("action") == AUTOFILE_SEED_ACTION}
+            live = {
+                s.get("repo")
+                for s in state.values()
+                if isinstance(s, dict) and s.get("action") == AUTOFILE_SEED_ACTION
+            }
             fresh = [r for r in missing if r not in live]
             base = len(live) * NOTIFY_SEED_STAGGER
             for idx, name in enumerate(fresh):
                 sid = uuid.uuid4().hex[:12]
-                state[sid] = {"action": AUTOFILE_SEED_ACTION,
-                              "td_argv": [], "repo": name,
-                              "cadence": AUTOFILE_SEED_CADENCE,
-                              "next_run": at + base
-                              + idx * NOTIFY_SEED_STAGGER
-                              + AUTOFILE_SEED_OFFSET,
-                              "last_run": None,
-                              "last_result": {},
-                              "enabled": True}
+                state[sid] = {
+                    "action": AUTOFILE_SEED_ACTION,
+                    "td_argv": [],
+                    "repo": name,
+                    "cadence": AUTOFILE_SEED_CADENCE,
+                    "next_run": at
+                    + base
+                    + idx * NOTIFY_SEED_STAGGER
+                    + AUTOFILE_SEED_OFFSET,
+                    "last_run": None,
+                    "last_result": {},
+                    "enabled": True,
+                }
             if fresh:
                 save_action_schedules(state)
-            _save_seed_names(_autofile_seed_path(),
-                             done | set(missing))
+            _save_seed_names(_autofile_seed_path(), done | set(missing))
         return len(fresh)
     except Exception:
         return 0
@@ -1106,8 +1124,7 @@ def _impact_seed_path() -> str:
     return action_schedule_path() + ".impact-seeded"
 
 
-def _ensure_default_impact_schedules(
-        now: float | None = None) -> int:
+def _ensure_default_impact_schedules(now: float | None = None) -> int:
     """Seed the one console-wide impact schedule. Returns 1 on the
     first seed, 0 after. Never raises."""
     try:
@@ -1120,19 +1137,23 @@ def _ensure_default_impact_schedules(
             if _load_seed_names(_impact_seed_path()):
                 return 0
             state = load_action_schedules()
-            live = any(isinstance(s, dict)
-                       and s.get("action") == IMPACT_SEED_ACTION
-                       for s in state.values())
+            live = any(
+                isinstance(s, dict) and s.get("action") == IMPACT_SEED_ACTION
+                for s in state.values()
+            )
             fresh = [] if live else [IMPACT_SEED_REPO]
             for name in fresh:
                 sid = uuid.uuid4().hex[:12]
-                state[sid] = {"action": IMPACT_SEED_ACTION,
-                              "td_argv": [], "repo": name,
-                              "cadence": IMPACT_SEED_CADENCE,
-                              "next_run": at + IMPACT_SEED_OFFSET,
-                              "last_run": None,
-                              "last_result": {},
-                              "enabled": True}
+                state[sid] = {
+                    "action": IMPACT_SEED_ACTION,
+                    "td_argv": [],
+                    "repo": name,
+                    "cadence": IMPACT_SEED_CADENCE,
+                    "next_run": at + IMPACT_SEED_OFFSET,
+                    "last_run": None,
+                    "last_result": {},
+                    "enabled": True,
+                }
             if fresh:
                 save_action_schedules(state)
             _save_seed_names(_impact_seed_path(), [IMPACT_SEED_ACTION])
@@ -1157,16 +1178,16 @@ def _supervise_seed_path() -> str:
     return action_schedule_path() + ".supervise-seeded"
 
 
-def _ensure_default_supervise_schedules(
-        now: float | None = None) -> int:
+def _ensure_default_supervise_schedules(now: float | None = None) -> int:
     """Seed one supervise schedule per checkout. Same contract as
     the autofile seed. Never raises."""
     try:
         repos = _notify_seed_repos()
         if not repos:
             return 0
-        missing = [r for r in repos
-                   if r not in _load_seed_names(_supervise_seed_path())]
+        missing = [
+            r for r in repos if r not in _load_seed_names(_supervise_seed_path())
+        ]
         if not missing:
             return 0
         at = time.time() if now is None else now
@@ -1176,26 +1197,31 @@ def _ensure_default_supervise_schedules(
             if not missing:
                 return 0
             state = load_action_schedules()
-            live = {s.get("repo") for s in state.values()
-                    if isinstance(s, dict)
-                    and s.get("action") == SUPERVISE_SEED_ACTION}
+            live = {
+                s.get("repo")
+                for s in state.values()
+                if isinstance(s, dict) and s.get("action") == SUPERVISE_SEED_ACTION
+            }
             fresh = [r for r in missing if r not in live]
             base = len(live) * NOTIFY_SEED_STAGGER
             for idx, name in enumerate(fresh):
                 sid = uuid.uuid4().hex[:12]
-                state[sid] = {"action": SUPERVISE_SEED_ACTION,
-                              "td_argv": [], "repo": name,
-                              "cadence": SUPERVISE_SEED_CADENCE,
-                              "next_run": at + base
-                              + idx * NOTIFY_SEED_STAGGER
-                              + SUPERVISE_SEED_OFFSET,
-                              "last_run": None,
-                              "last_result": {},
-                              "enabled": True}
+                state[sid] = {
+                    "action": SUPERVISE_SEED_ACTION,
+                    "td_argv": [],
+                    "repo": name,
+                    "cadence": SUPERVISE_SEED_CADENCE,
+                    "next_run": at
+                    + base
+                    + idx * NOTIFY_SEED_STAGGER
+                    + SUPERVISE_SEED_OFFSET,
+                    "last_run": None,
+                    "last_result": {},
+                    "enabled": True,
+                }
             if fresh:
                 save_action_schedules(state)
-            _save_seed_names(_supervise_seed_path(),
-                             done | set(missing))
+            _save_seed_names(_supervise_seed_path(), done | set(missing))
         return len(fresh)
     except Exception:
         return 0

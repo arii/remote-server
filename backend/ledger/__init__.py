@@ -16,6 +16,8 @@ import os
 import threading
 import time
 
+from cli import repo_root
+
 DEFAULT_LEDGER_PATH = "/var/lib/buttons/ledger.jsonl"
 LEDGER_MAX_BYTES = 2_000_000
 LEDGER_PRUNE_LINES = 2000
@@ -49,15 +51,13 @@ def append(entry: dict) -> None:
     append must not fail the action it records — the ledger is
     audit, not gate."""
     try:
-        line = json.dumps({"ts": time.time(), **entry},
-                          sort_keys=True) + "\n"
+        line = json.dumps({"ts": time.time(), **entry}, sort_keys=True) + "\n"
         with ledger_lock:
             path = ledger_path()
             d = os.path.dirname(path)
             if d:
                 os.makedirs(d, exist_ok=True)
-            if os.path.exists(path) \
-                    and os.path.getsize(path) > LEDGER_MAX_BYTES:
+            if os.path.exists(path) and os.path.getsize(path) > LEDGER_MAX_BYTES:
                 with open(path) as f:
                     lines = f.readlines()
                 with open(path, "w") as f:
@@ -68,8 +68,9 @@ def append(entry: dict) -> None:
         print(f"ledger append failed: {exc}", flush=True)
 
 
-def read(kind: str = "all", limit: int = 50,
-         since: float = 0, source: str = "all") -> list:
+def read(
+    kind: str = "all", limit: int = 50, since: float = 0, source: str = "all"
+) -> list:
     """Newest-first entries, kind-filtered. [] on any failure.
     Unparseable lines are skipped, the rest are kept. since > 0
     drops entries with numeric ts older than since (before the
@@ -122,8 +123,12 @@ def _read_console_rows(kind: str, since: float) -> list:
 
 
 def _dropped_by_since(ts, since: float) -> bool:
-    return (since > 0 and isinstance(ts, (int, float))
-            and not isinstance(ts, bool) and ts < since)
+    return (
+        since > 0
+        and isinstance(ts, (int, float))
+        and not isinstance(ts, bool)
+        and ts < since
+    )
 
 
 def _ts_sort_key(entry: dict) -> tuple:
@@ -138,18 +143,15 @@ def _ts_sort_key(entry: dict) -> tuple:
 def cli_ledger_path() -> str:
     """CLI-ledger path, mirroring deep-agent/ledger.py's resolution
     (EVAL_LEDGER > DEEP_AGENT_STATE_DIR > module-adjacent default).
-    Duplicated rather than imported: deep-agent/ is a hyphenated dir
-    whose sibling imports need sys.path games (see
-    test_cli_path_parity_with_deep_agent, which pins the two)."""
+    Root via deep-agent/cli.py's repo_root (pinned to ledger.py's
+    state_dir by test_cli_path_parity_with_deep_agent)."""
     direct = os.environ.get("EVAL_LEDGER")
     if direct:
         return direct
     state = os.environ.get("DEEP_AGENT_STATE_DIR")
     if state:
         return os.path.join(state, "ledger.jsonl")
-    here = os.path.abspath(__file__)
-    root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
-    return os.path.join(root, "deep-agent", "ledger.jsonl")
+    return os.path.join(repo_root(), "deep-agent", "ledger.jsonl")
 
 
 def _normalize_cli_turn(entry: dict):
@@ -162,8 +164,7 @@ def _normalize_cli_turn(entry: dict):
     if not isinstance(usage, dict):
         usage = None
     calls = entry.get("tool_calls") or []
-    tools = [c.get("name") for c in calls
-             if isinstance(c, dict) and c.get("name")]
+    tools = [c.get("name") for c in calls if isinstance(c, dict) and c.get("name")]
     return {
         "kind": "cli-turn",
         "ts": entry.get("ts"),
