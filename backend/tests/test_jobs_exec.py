@@ -81,6 +81,91 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("usage:", "".join(out))
 
+    def test_scheduled_full_run_boomtick_exit_zero(self):
+        # #1125 DoD: reproduce the scheduled-context invocation for
+        # boomtick (scheduler argv/env/cwd, not the manual CLI shape)
+        # end to end and require exit 0. Hermetic: a stub `gh` on a
+        # private PATH answers the two brief calls, and the state
+        # and run-store paths point at tmp, so there is no network
+        # and no host mutation.
+        import tempfile
+
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick",
+            "arii/boomtick", "/srv/remote-server")
+        self.assertIsNone(err)
+        env = engine.step_env(steps)
+        cwd = engine.step_cwd(steps)
+        with tempfile.TemporaryDirectory(
+                prefix="notify1125") as tmp:
+            bindir = os.path.join(tmp, "bin")
+            os.makedirs(bindir)
+            gh_stub = os.path.join(bindir, "gh")
+            with open(gh_stub, "w") as f:
+                f.write("#!/bin/sh\n")
+                f.write('if [ "$1" = "run" ]; then\n')
+                f.write("  echo '[{\"name\":\"CI\",\"headBranch\":\"main\","
+                        "\"conclusion\":\"success\",\"event\":\"push\","
+                        "\"url\":\"https://example.invalid/r/1\"}]'\n")
+                f.write("else\n")
+                f.write("  echo '[]'\n")
+                f.write("fi\n")
+            os.chmod(gh_stub, 0o755)
+            child_env = dict(env or {})
+            child_env["PATH"] = (bindir + os.pathsep
+                                 + os.environ.get("PATH", ""))
+            child_env["BUTTONS_NOTIFIER_STATE_PATH"] = os.path.join(
+                tmp, "notifier_state.json")
+            child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
+                tmp, "jobs_runs.json")
+            child_env["DIGEST_INTERVAL_HOURS"] = "0"
+            for var in ("NTFY_TOPIC", "NTFY_TOKEN",
+                        "NOTIFICATION_WEBHOOK_URL",
+                        "BUTTONS_PUBLIC_URL"):
+                child_env.pop(var, None)
+            out: list = []
+            code = engine.run_step_pipe(
+                steps[0], out.append, env=child_env, cwd=cwd,
+                timeout=120)
+        text = "".join(out)
+        self.assertEqual(code, 0)
+        self.assertIn("notify-check repo=boomtick", text)
+        self.assertIn("pushes=0", text)
+
+    def test_scheduled_failure_surfaces_stderr_for_boomtick(self):
+        # #1125 "or" clause: a failing scheduled run must surface
+        # its stderr in the run record instead of empty output. A
+        # corrupt notifier state (valid JSON, wrong shape — one of
+        # the issue's suspects) makes the real module exit nonzero
+        # in the exact scheduled env/cwd/argv; the record must carry
+        # both the stdout summary and the traceback.
+        import tempfile
+
+        steps, err = engine.action_steps(
+            "check-notifications", "boomtick",
+            "arii/boomtick", "/srv/remote-server")
+        self.assertIsNone(err)
+        env = engine.step_env(steps)
+        cwd = engine.step_cwd(steps)
+        with tempfile.TemporaryDirectory(
+                prefix="notify1125") as tmp:
+            state_path = os.path.join(tmp, "notifier_state.json")
+            with open(state_path, "w") as f:
+                f.write('{"ci": []}')
+            child_env = dict(env or {})
+            child_env["BUTTONS_NOTIFIER_STATE_PATH"] = state_path
+            child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
+                tmp, "jobs_runs.json")
+            out: list = []
+            code = engine.run_step_pipe(
+                steps[0], out.append, env=child_env, cwd=cwd,
+                timeout=120)
+        text = "".join(out)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(text.strip())
+        self.assertIn("notify-check repo=boomtick failed:", text)
+        self.assertIn("AttributeError", text)
+
 
 class ValidateTdCommandTest(unittest.TestCase):
     def test_accept_exact_shapes(self):
@@ -1065,7 +1150,25 @@ class ExecuteRunTest(_LedgerTmpDir, unittest.TestCase):
         run = reg.runs[rid]
         self.assertTrue(run["done"])
         self.assertEqual(run["exit_code"], 1)
-        self.assertIn("printed nothing", run["output"])
+        self.assertIn("exited 1 with no output", run["output"])
+
+    def test_silent_check_notifications_failure_records_exit(self):
+        # #1125: a scheduled check-notifications step that fails
+        # with no output must still leave a diagnosable record —
+        # never a bare exit code with empty output.
+        reg = RunRegistry(store_path=None)
+        rid, err = reg.start_run("check-notifications", "boomtick")
+        self.assertIsNone(err)
+        engine.execute_run(
+            reg, rid, "check-notifications", "boomtick",
+            "arii/boomtick", "/srv/remote-server",
+            runner=lambda argv: (1, ""))
+        run = reg.runs[rid]
+        self.assertTrue(run["done"])
+        self.assertEqual(run["exit_code"], 1)
+        self.assertTrue(run["output"].strip())
+        self.assertIn("$ ", run["output"])
+        self.assertIn("exited 1 with no output", run["output"])
 
     def test_finished_run_is_ledgered(self):
         import json
