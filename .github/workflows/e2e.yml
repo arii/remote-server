@@ -60,11 +60,10 @@ jobs:
       - name: install backend deps
         run: pip install -r backend/requirements.txt
 
-      # The backend shells out to td (workflow-health, td doctor
-      # dispatches). Pin the boomtick CLI release — never float main
-      # here (release-train, issue #1081; same rollup as the Dockerfiles).
+      # The backend shells out to td; install current upstream
+      # (latest-only, same float as the Dockerfiles).
       - name: install boomtick td CLI
-        run: pip install "git+https://github.com/arii/boomtick.git@cli-v0.21.0#subdirectory=cli"
+        run: pip install "git+https://github.com/arii/boomtick.git@main#subdirectory=cli"
 
       - name: cache e2e npm store
         uses: actions/cache@v4
