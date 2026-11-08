@@ -581,6 +581,49 @@ services:
     logging: *default-logging
     restart: unless-stopped
 
+  # Ambient chat & RAG (standalone Open WebUI, verified subpath-proof
+  # 2026-11-08 on v0.13.2: serves /webui via strip_prefix plus root
+  # /api /ws /_app /static /auth /oauth /assets /load /manifest
+  # /favicon /splash handles — see caddy/Caddyfile. No new DNS: the
+  # stock image hardcodes absolute paths, so a source build was
+  # rejected in favor of edge routing).
+  # --auth none equivalent: WEBUI_AUTH=false, the GitHub OAuth gate is
+  # the boundary (same as code-server/ttyd). Models: local Ollama plus
+  # Nebius Token Factory (configured in-UI under Admin > Connections;
+  # env defaults below point at both). No published ports.
+  open-webui:
+    # Pinned 2026-11-08: v0.13.2 digest of the build verified live
+    # behind /webui (title renders, zero 404s, ws connects).
+    image: ghcr.io/open-webui/open-webui:v0.13.2@sha256:4f1dd4d81ef1445d4e4bfb4a7a55838dfb1de38a834a0fbe7615d92990333a71
+    container_name: remote-openwebui-1
+    volumes:
+      - open-webui-data:/app/backend/data
+    environment:
+      - WEBUI_AUTH=false
+      - OLLAMA_BASE_URL=http://remote-ollama:11434
+      - OPENAI_API_BASE_URLS=${NEBIUS_BASE_URL}
+      - OPENAI_API_KEYS=${NEBIUS_API_KEY}
+    expose:
+      - "8080" # compose network only; ingress is via oauth2-proxy -> caddy (/webui)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s # model-list + migration pass on fresh volumes
+    depends_on:
+      ollama:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          memory: 256M
+    logging: *default-logging
+    restart: unless-stopped
+
 volumes:
   tailscale-state:
   ollama-data:
@@ -592,6 +635,7 @@ volumes:
   buttons-data:
   code-server-data:
   code-server-config:
+  open-webui-data:
 
 # ---------------------------------------------------------------------------
 # ON HOLD — remaining agent harness decisions deferred (2026-10-22).

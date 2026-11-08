@@ -60,6 +60,53 @@
 		}
 	}
 
+	# Open WebUI (ambient chat & RAG) at /webui: the stock image
+	# hardcodes root-absolute frontend paths, so Caddy strips the
+	# prefix only for the page and passes the app's root paths
+	# through (verified live 2026-11-08 on v0.13.2: title renders,
+	# zero 404s, websocket connects; no source build needed, no DNS).
+	# Public entry: https://<host>:8443/webui/ (behind the gate).
+	handle /webui {
+		redir * /webui/
+	}
+	handle /webui* {
+		uri strip_prefix /webui
+		reverse_proxy open-webui:8080
+	}
+	handle /api/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /ws/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /_app/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /static/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /auth/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /oauth/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /assets/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /load {
+		reverse_proxy open-webui:8080
+	}
+	handle /manifest* {
+		reverse_proxy open-webui:8080
+	}
+	handle /favicon* {
+		reverse_proxy open-webui:8080
+	}
+	handle /splash* {
+		reverse_proxy open-webui:8080
+	}
+
 	# Repo previews: one block per /<name>, no strip (the app serves its
 	# own basePath). Template:
 	#   handle /<name>* {
