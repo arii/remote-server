@@ -82,7 +82,10 @@
 	handle /static/* {
 		reverse_proxy open-webui:8080
 	}
-	handle /auth/* {
+	# Star (not /*): the app full-navigates to the bare /auth
+	# route (hardcoded redirect, same class as #25971), which /*
+	# would not match — bare exact paths must route here too.
+	handle /auth* {
 		reverse_proxy open-webui:8080
 	}
 	handle /oauth/* {
