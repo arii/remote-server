@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 import os
@@ -21,6 +22,29 @@ import urllib.request
 
 GRID_BASE = "http://browser:4444"
 VIEWPORT = {"width": 1280, "height": 800}
+MOBILE_VIEWPORT = {"width": 390, "height": 844}
+
+
+def is_phone_user_agent(user_agent):
+    """True when a viewer User-Agent looks like a phone (or phone-
+    sized tablet): the Mobi token covers mobile Chrome/Safari/Firefox,
+    the rest catch platform UAs that omit it. Known gap (accepted):
+    iPads in desktop mode send a Macintosh UA with no iPad token and
+    are indistinguishable from a Mac — they get the desktop view."""
+    ua = user_agent or ""
+    return any(token in ua for token in ("Mobi", "Android", "iPhone", "iPad"))
+
+
+def viewport_for(kind, user_agent):
+    """(viewport, mobile) for a viewer session. Phone viewers with
+    their OWN session get a 390x844 mobile viewport with touch
+    emulation; shared/agent sessions keep the desktop viewport so
+    every tab sees the same page. Pure (no I/O): unit-testable."""
+    if kind == "own" and is_phone_user_agent(user_agent):
+        return dict(MOBILE_VIEWPORT), True
+    return dict(VIEWPORT), False
+
+
 # Requested device pixels per CSS pixel. This MUST be 1: the
 # viewer maps pointer coords as frame_px / advertised_dsf, which
 # only lands when frames equal CSS px in every world — override
@@ -43,6 +67,23 @@ DEFAULT_URL = "https://example.com"
 VIEWER_HTML = (
     Path(__file__).with_name("browser_viewer.html").read_text(encoding="utf-8")
 )
+
+# simple-keyboard is vendored, not CDN-loaded: the viewer page must
+# render with zero external requests. A render-blocking CDN <script>
+# stalls the whole page (and the console iframe's onLoad) whenever
+# the CDN is unreachable — this reddened the console E2E smoke when
+# CI DNS hiccuped, and stalls phones on flaky networks the same way.
+# Pristine upstream bytes (MIT, hodgef/simple-keyboard) under vendor/
+# (fallow-ignored: minified third-party code trips complexity, dupes,
+# and unused-file findings by design). Upgrade by replacing both
+# files and the two refs in browser_viewer.html, then updating the
+# version assertions in test_browser_view.py.
+VENDOR_JS = (
+    Path(__file__).parent / "vendor" / "simple-keyboard-3.8.205.js"
+).read_bytes()
+VENDOR_CSS = (
+    Path(__file__).parent / "vendor" / "simple-keyboard-3.8.205.css"
+).read_bytes()
 
 
 def _grid_session_create():
@@ -99,6 +140,12 @@ AGENT_SESSION_MARKER = "boomtick:agentSession"
 _viewer_lock = threading.Lock()
 _viewer_session_id: "str | None" = None
 _viewer_refcount = 0
+#: Canonical viewport for the shared session: the owner's
+#: (viewport, mobile). Joining tabs adopt it so a desktop tab
+#: joining a phone-owned session does not re-emulate the shared
+#: Grid session out from under the phone (and vice versa) —
+#: last-writer-wins metrics flap the screencast size for all.
+_viewer_viewport: "dict | None" = None
 
 
 def _grid_session_alive(session_id):
@@ -118,7 +165,7 @@ def _viewer_claim():
     Returns the session id (refcounted) or None. Stale records are
     cleared so the next claim creates fresh.
     """
-    global _viewer_session_id, _viewer_refcount
+    global _viewer_session_id, _viewer_refcount, _viewer_viewport
     with _viewer_lock:
         sid = _viewer_session_id
         if sid is None:
@@ -131,23 +178,46 @@ def _viewer_claim():
             if _viewer_session_id == sid:
                 _viewer_session_id = None
                 _viewer_refcount = 0
+                _viewer_viewport = None
             return None
         _viewer_refcount += 1
         return sid
 
 
-def _viewer_create(session_id):
-    """Record a fresh viewer-owned session (refcount starts at 1)."""
-    global _viewer_session_id, _viewer_refcount
+def _viewer_create(session_id, viewport=None, mobile=False):
+    """Record a fresh viewer-owned session (refcount starts at 1).
+
+    The owner's viewport is canonical for the session lifetime;
+    joiners adopt it (see bridge construction) instead of
+    re-emulating with their own.
+    """
+    global _viewer_session_id, _viewer_refcount, _viewer_viewport
     with _viewer_lock:
         _viewer_session_id = session_id
         _viewer_refcount = 1
+        _viewer_viewport = {
+            "viewport": dict(viewport) if viewport is not None else dict(VIEWPORT),
+            "mobile": bool(mobile),
+        }
+
+
+def _viewer_viewport_for(session_id):
+    """Canonical (viewport, mobile) for a shared session, or None.
+
+    None when the record is stale (owner predates this worker, or
+    the session id does not match): callers fall back to computing
+    their own via viewport_for.
+    """
+    with _viewer_lock:
+        if _viewer_session_id != session_id or _viewer_viewport is None:
+            return None
+        return (dict(_viewer_viewport["viewport"]), _viewer_viewport["mobile"])
 
 
 def _viewer_release(session_id):
     """Drop one viewer reference; True when the session must be
     deleted (last viewer out and the record is still ours)."""
-    global _viewer_session_id, _viewer_refcount
+    global _viewer_session_id, _viewer_refcount, _viewer_viewport
     with _viewer_lock:
         if _viewer_session_id != session_id:
             return False
@@ -155,6 +225,7 @@ def _viewer_release(session_id):
         if _viewer_refcount <= 0:
             _viewer_session_id = None
             _viewer_refcount = 0
+            _viewer_viewport = None
             return True
         return False
 
@@ -235,8 +306,13 @@ class CDPBridge:
     renderer or balloon server memory.
     """
 
-    def __init__(self, session_id):
+    def __init__(self, session_id, viewport=None, mobile=False):
         self.session_id = session_id
+        # The emulated viewport travels with the bridge: reattach
+        # metrics and screencast sizing both follow it, so a phone
+        # viewer stays 390x844 across target swaps and restarts.
+        self.viewport = dict(viewport) if viewport is not None else dict(VIEWPORT)
+        self.mobile = mobile
         self._id = 0
         # Fire-and-forget ack ids live far above call ids so an ack
         # response can never collide with a tracked call future.
@@ -283,13 +359,21 @@ class CDPBridge:
         await self.call(
             "Emulation.setDeviceMetricsOverride",
             {
-                "width": VIEWPORT["width"],
-                "height": VIEWPORT["height"],
+                "width": self.viewport["width"],
+                "height": self.viewport["height"],
                 "deviceScaleFactor": DSF,
-                "mobile": False,
+                "mobile": self.mobile,
             },
         )
-        # Trust but verify: the override may not apply (headless
+        if self.mobile:
+            # Phone-owned sessions get touch input: without this,
+            # taps land as mouse events and mobile pages misbehave.
+            # Best-effort: a Grid that rejects it must not fail the
+            # attach the desktop path just completed.
+            with contextlib.suppress(Exception):
+                await self.call(
+                    "Emulation.setTouchEmulationEnabled", {"enabled": True}
+                )  # Trust but verify: the override may not apply (headless
         # quirks, swapped targets). Advertise the measured ratio so
         # clicks never land at half coords again; on any error keep
         # the previous value (DSF until the first measure lands).
@@ -403,8 +487,8 @@ class CDPBridge:
             {
                 "format": "jpeg",
                 "quality": 70,
-                "maxWidth": int(VIEWPORT["width"] * scale),
-                "maxHeight": int(VIEWPORT["height"] * scale),
+                "maxWidth": int(self.viewport["width"] * scale),
+                "maxHeight": int(self.viewport["height"] * scale),
                 "everyNthFrame": 1,
             },
         )
@@ -424,6 +508,37 @@ class CDPBridge:
         base = {"x": x, "y": y, "button": "left", "clickCount": 1}
         await self.call("Input.dispatchMouseEvent", {**base, "type": "mousePressed"})
         await self.call("Input.dispatchMouseEvent", {**base, "type": "mouseReleased"})
+
+    async def move(self, x, y):
+        # Hover-only: no buttons, no agent pause. Lets the remote
+        # page fire :hover and repaint under the cursor.
+        await self.call(
+            "Input.dispatchMouseEvent", {"x": x, "y": y, "type": "mouseMoved"}
+        )
+
+    async def wheel(self, x, y, dx, dy):
+        # Scroll the remote page, not the viewer chrome. No agent
+        # pause: scrolling is look-around input, like a hover.
+        await self.call(
+            "Input.dispatchMouseEvent",
+            {"x": x, "y": y, "type": "mouseWheel", "deltaX": dx, "deltaY": dy},
+        )
+
+    async def touch(self, phase, x, y):
+        # One-finger drag-scroll. touchEnd carries no points: the
+        # finger is gone by definition.
+        if phase == "end":
+            await self.call(
+                "Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []}
+            )
+            return
+        await self.call(
+            "Input.dispatchTouchEvent",
+            {
+                "type": "touchStart" if phase == "start" else "touchMove",
+                "touchPoints": [{"x": x, "y": y}],
+            },
+        )
 
     async def ensure_focus(self):
         # Keystrokes drop when nothing is focused: focus the active
@@ -466,6 +581,15 @@ class CDPBridge:
                 params["text"] = "\r" if key == "Enter" else ""
             await self.call("Input.dispatchKeyEvent", params)
 
+    async def type_text(self, text):
+        # Bulk commit from the on-screen keyboard: text that never
+        # existed as key presses takes the protocol-blessed IME path.
+        # Focus first, same best-effort deal as key(): a fresh tab
+        # has nothing focused, and insertText needs a target.
+        with contextlib.suppress(Exception):
+            await self.ensure_focus()
+        await self.call("Input.insertText", {"text": text})
+
     async def navigate(self, url):
         await self.call("Page.navigate", {"url": url})
 
@@ -489,12 +613,24 @@ def create_app():
     async def app(scope, receive, send):
         path = scope.get("path", "")
         if scope["type"] == "http":
-            body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
+            # Vendored keyboard assets ride the same mount (relative
+            # refs in the page, prefix-agnostic match like /ws): same
+            # origin, no extra route or Caddy rule. Cache headers stay
+            # edge-owned (Caddy no-store covers this handle).
+            if path.endswith("/vendor/simple-keyboard-3.8.205.js"):
+                body, content_type = VENDOR_JS, b"application/javascript"
+            elif path.endswith("/vendor/simple-keyboard-3.8.205.css"):
+                body, content_type = VENDOR_CSS, b"text/css"
+            else:
+                body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
+                content_type = b"text/html; charset=utf-8"
+            # No-store is edge-owned (Caddy sets Cache-Control on the
+            # /cdp-stream* handle); the app must not set it.
             await send(
                 {
                     "type": "http.response.start",
                     "status": 200,
-                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
+                    "headers": [(b"content-type", content_type)],
                 }
             )
             await send({"type": "http.response.body", "body": body})
@@ -503,6 +639,17 @@ def create_app():
             await send({"type": "websocket.close", "code": 4404})
             return
         await send({"type": "websocket.accept"})
+        # Phone detection for viewport choice: read the viewer UA
+        # from the handshake headers (kind=='own' + phone => 390x844
+        # mobile emulation; shared/agent sessions stay desktop so
+        # every tab sees the same page).
+        user_agent = ""
+        for _name, _value in scope.get("headers", []):
+            # errors="ignore": a malformed header must not break the
+            # handshake (and decode then cannot raise, so no handler).
+            if _name.decode("latin-1", "ignore").lower() == "user-agent":
+                user_agent = _value.decode("latin-1", "ignore")
+                break
         # Shared autonomy: attach to the live agent session when one
         # exists; otherwise open our own (deleted on disconnect).
         # A full Grid (single slot) or a down Grid raises here: tell
@@ -531,8 +678,11 @@ def create_app():
                         session_id = claimed
                         kind = "viewer-shared"
                     else:
-                        _viewer_create(session_id)
                         kind = "own"
+                        # Record the owner's viewport as canonical:
+                        # joiners adopt it below so heterogeneous
+                        # tabs never re-emulate the shared session.
+                        _viewer_create(session_id, *viewport_for(kind, user_agent))
         except Exception:
             try:
                 await _ws_send_text(
@@ -628,7 +778,17 @@ def create_app():
                 pass
 
         try:
-            bridge = CDPBridge(session_id)
+            viewport, mobile = viewport_for(kind, user_agent)
+            if kind == "viewer-shared":
+                # Adopt the owner's canonical viewport: a desktop
+                # tab joining a phone-owned session must not
+                # re-emulate the shared Grid session to 1280px
+                # (and vice versa). None when the owner predates
+                # this worker — then compute our own as before.
+                adopted = _viewer_viewport_for(session_id)
+                if adopted is not None:
+                    viewport, mobile = adopted
+            bridge = CDPBridge(session_id, viewport=viewport, mobile=mobile)
             try:
                 await bridge.connect()
             except Exception as exc:
@@ -682,17 +842,56 @@ def create_app():
                     break
                 if event["type"] != "websocket.receive":
                     continue
-                msg = json.loads(event.get("text") or "{}")
+                try:
+                    msg = json.loads(event.get("text") or "{}")
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
                 if msg.get("t") == "click":
                     await human_input()
-                    x, y = int(msg["x"]), int(msg["y"])
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
                     await recover_once(lambda: bridge.click(x, y))
+                elif msg.get("t") == "move":
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.move(x, y))
+                elif msg.get("t") == "wheel":
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                        dx, dy = int(msg.get("dx", 0)), int(msg.get("dy", 0))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.wheel(x, y, dx, dy))
+                elif msg.get("t") == "touch":
+                    phase = str(msg.get("phase", ""))
+                    if phase not in ("start", "move", "end"):
+                        continue
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.touch(phase, x, y))
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
                     await recover_once(lambda: bridge.key(key, code))
+                elif msg.get("t") == "type":
+                    await human_input()
+                    text = str(msg.get("text", ""))
+                    if not text:
+                        continue
+                    await recover_once(lambda: bridge.type_text(text))
                 elif msg.get("t") == "go":
-                    url = str(msg["url"])
+                    await human_input()
+                    url = str(msg.get("url") or "")
+                    if not url:
+                        continue
                     await recover_once(lambda: do_go(url))
         finally:
             if bridge is not None:

@@ -25,13 +25,69 @@
 	# CDP-direct shared viewer: raw screencast over one websocket +
 	# CDP input relay, no VNC in the loop. The viewer is served by
 	# the buttons backend at /cdp-stream (pass the prefix through).
+	# Bare path redirects to the slash form:
+	# the backend mount 404s without it.
+	handle /cdp-stream {
+		redir * /cdp-stream/
+	}
 	handle /cdp-stream* {
 		header -X-Frame-Options
+		# No-store: the viewer ships new JS with deploys and a cached
+		# copy silently pins old behavior (e.g. a dead URL box) with
+		# zero errors to diagnose. Edge-owned; the app must not set it.
+		header Cache-Control "no-store"
 		reverse_proxy buttons:8000 {
 			transport http {
 				dial_timeout 10s
 			}
 		}
+	}
+
+	# Open WebUI (ambient chat & RAG) at /webui: the stock image
+	# hardcodes root-absolute frontend paths, so Caddy strips the
+	# prefix only for the page and passes the app's root paths
+	# through (verified live 2026-11-08 on v0.13.2: title renders,
+	# zero 404s, websocket connects; no source build needed, no DNS).
+	# Public entry: https://<host>:8443/webui/ (behind the gate).
+	handle /webui {
+		redir * /webui/
+	}
+	handle /webui* {
+		uri strip_prefix /webui
+		reverse_proxy open-webui:8080
+	}
+	handle /api/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /ws/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /_app/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /static/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /auth/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /oauth/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /assets/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /load {
+		reverse_proxy open-webui:8080
+	}
+	handle /manifest* {
+		reverse_proxy open-webui:8080
+	}
+	handle /favicon* {
+		reverse_proxy open-webui:8080
+	}
+	handle /splash* {
+		reverse_proxy open-webui:8080
 	}
 
 	# Repo previews: one block per /<name>, no strip (the app serves its
