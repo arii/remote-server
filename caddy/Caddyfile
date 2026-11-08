@@ -25,9 +25,31 @@
 	# CDP-direct shared viewer: raw screencast over one websocket +
 	# CDP input relay, no VNC in the loop. The viewer is served by
 	# the buttons backend at /cdp-stream (pass the prefix through).
+	# Bare path redirects to the slash form (same convention as /cobrowse):
+	# the backend mount 404s without it.
+	handle /cdp-stream {
+		redir * /cdp-stream/
+	}
 	handle /cdp-stream* {
 		header -X-Frame-Options
 		reverse_proxy buttons:8000 {
+			transport http {
+				dial_timeout 10s
+			}
+		}
+	}
+
+	# Neko trial (user-requested evaluation): neko serves its own /neko
+	# prefix (NEKO_PATH_PREFIX), so pass through unstripped like /cdp-stream.
+	# Signaling rides this route; WebRTC media uses host UDP 52000-52100
+	# (needs the same range forwarded on the router). Public entry:
+	# https://<host>:8443/neko/ (behind the oauth2-proxy gate).
+	handle /neko {
+		redir * /neko/
+	}
+	handle /neko* {
+		header -X-Frame-Options
+		reverse_proxy neko:8080 {
 			transport http {
 				dial_timeout 10s
 			}
@@ -45,6 +67,16 @@
 	# Public entry: https://<host>:8443/hrm (behind the oauth2-proxy gate).
 	handle /hrm* {
 		reverse_proxy terminal:3000
+	}
+
+	# Co-browse preview (dev server :3001 inside the terminal container).
+	# Public entry: https://<host>:8443/cobrowse (behind the oauth2-proxy gate).
+	handle /cobrowse {
+		redir * /cobrowse/
+	}
+
+	handle /cobrowse* {
+		reverse_proxy terminal:3001
 	}
 
 	handle {

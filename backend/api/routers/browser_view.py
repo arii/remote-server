@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 from pathlib import Path
 import os
@@ -21,6 +22,26 @@ import urllib.request
 
 GRID_BASE = "http://browser:4444"
 VIEWPORT = {"width": 1280, "height": 800}
+MOBILE_VIEWPORT = {"width": 390, "height": 844}
+
+
+def is_phone_user_agent(user_agent):
+    """True when a viewer User-Agent looks like a phone (or phone-
+    sized tablet): the Mobi token covers mobile Chrome/Safari/Firefox,
+    the rest catch platform UAs that omit it."""
+    ua = user_agent or ""
+    return any(token in ua for token in
+               ("Mobi", "Android", "iPhone", "iPad"))
+
+
+def viewport_for(kind, user_agent):
+    """(viewport, mobile) for a viewer session. Phone viewers with
+    their OWN session get a 390x844 mobile viewport with touch
+    emulation; shared/agent sessions keep the desktop viewport so
+    every tab sees the same page. Pure (no I/O): unit-testable."""
+    if kind == "own" and is_phone_user_agent(user_agent):
+        return dict(MOBILE_VIEWPORT), True
+    return dict(VIEWPORT), False
 # Requested device pixels per CSS pixel. This MUST be 1: the
 # viewer maps pointer coords as frame_px / advertised_dsf, which
 # only lands when frames equal CSS px in every world — override
@@ -43,7 +64,6 @@ DEFAULT_URL = "https://example.com"
 VIEWER_HTML = (
     Path(__file__).with_name("browser_viewer.html").read_text(encoding="utf-8")
 )
-
 
 def _grid_session_create():
     # --disable-dev-shm-usage complements the 2gb shm_size: when raster
@@ -235,8 +255,14 @@ class CDPBridge:
     renderer or balloon server memory.
     """
 
-    def __init__(self, session_id):
+    def __init__(self, session_id, viewport=None, mobile=False):
         self.session_id = session_id
+        # The emulated viewport travels with the bridge: reattach
+        # metrics and screencast sizing both follow it, so a phone
+        # viewer stays 390x844 across target swaps and restarts.
+        self.viewport = dict(viewport) if viewport is not None \
+            else dict(VIEWPORT)
+        self.mobile = mobile
         self._id = 0
         # Fire-and-forget ack ids live far above call ids so an ack
         # response can never collide with a tracked call future.
@@ -280,16 +306,19 @@ class CDPBridge:
         )
         self.cdp_session = attached["sessionId"]
         # Crisp text: render at device pixels, input stays in CSS px.
-        await self.call(
-            "Emulation.setDeviceMetricsOverride",
-            {
-                "width": VIEWPORT["width"],
-                "height": VIEWPORT["height"],
-                "deviceScaleFactor": DSF,
-                "mobile": False,
-            },
-        )
-        # Trust but verify: the override may not apply (headless
+        await self.call("Emulation.setDeviceMetricsOverride",
+                        {"width": self.viewport["width"],
+                         "height": self.viewport["height"],
+                         "deviceScaleFactor": DSF,
+                         "mobile": self.mobile})
+        if self.mobile:
+            # Phone-owned sessions get touch input: without this,
+            # taps land as mouse events and mobile pages misbehave.
+            # Best-effort: a Grid that rejects it must not fail the
+            # attach the desktop path just completed.
+            with contextlib.suppress(Exception):
+                await self.call("Emulation.setTouchEmulationEnabled",
+                                {"enabled": True})        # Trust but verify: the override may not apply (headless
         # quirks, swapped targets). Advertise the measured ratio so
         # clicks never land at half coords again; on any error keep
         # the previous value (DSF until the first measure lands).
@@ -397,18 +426,13 @@ class CDPBridge:
         # Size the capture from the MEASURED ratio, not the request:
         # clamping below device px would reintroduce a scale the
         # viewer does not know about.
-        scale = self.dsf if isinstance(self.dsf, (int, float)) and self.dsf > 0 else 1
-        await self.call(
-            "Page.startScreencast",
-            {
-                "format": "jpeg",
-                "quality": 70,
-                "maxWidth": int(VIEWPORT["width"] * scale),
-                "maxHeight": int(VIEWPORT["height"] * scale),
-                "everyNthFrame": 1,
-            },
-        )
-
+        scale = self.dsf if isinstance(self.dsf, (int, float)) \
+            and self.dsf > 0 else 1
+        await self.call("Page.startScreencast",
+                        {"format": "jpeg", "quality": 70,
+                         "maxWidth": int(self.viewport["width"] * scale),
+                         "maxHeight": int(self.viewport["height"] * scale),
+                         "everyNthFrame": 1})
     async def ack_frame(self, session_id):
         self._ack_id += 1
         envelope = {
@@ -424,6 +448,31 @@ class CDPBridge:
         base = {"x": x, "y": y, "button": "left", "clickCount": 1}
         await self.call("Input.dispatchMouseEvent", {**base, "type": "mousePressed"})
         await self.call("Input.dispatchMouseEvent", {**base, "type": "mouseReleased"})
+
+    async def move(self, x, y):
+        # Hover-only: no buttons, no agent pause. Lets the remote
+        # page fire :hover and repaint under the cursor.
+        await self.call("Input.dispatchMouseEvent",
+                        {"x": x, "y": y, "type": "mouseMoved"})
+
+    async def wheel(self, x, y, dx, dy):
+        # Scroll the remote page, not the viewer chrome. No agent
+        # pause: scrolling is look-around input, like a hover.
+        await self.call("Input.dispatchMouseEvent",
+                        {"x": x, "y": y, "type": "mouseWheel",
+                         "deltaX": dx, "deltaY": dy})
+
+    async def touch(self, phase, x, y):
+        # One-finger drag-scroll. touchEnd carries no points: the
+        # finger is gone by definition.
+        if phase == "end":
+            await self.call("Input.dispatchTouchEvent",
+                            {"type": "touchEnd", "touchPoints": []})
+            return
+        await self.call("Input.dispatchTouchEvent",
+                        {"type": "touchStart" if phase == "start"
+                         else "touchMove",
+                         "touchPoints": [{"x": x, "y": y}]})
 
     async def ensure_focus(self):
         # Keystrokes drop when nothing is focused: focus the active
@@ -466,6 +515,15 @@ class CDPBridge:
                 params["text"] = "\r" if key == "Enter" else ""
             await self.call("Input.dispatchKeyEvent", params)
 
+    async def type_text(self, text):
+        # Bulk commit from the on-screen keyboard: text that never
+        # existed as key presses takes the protocol-blessed IME path.
+        # Focus first, same best-effort deal as key(): a fresh tab
+        # has nothing focused, and insertText needs a target.
+        with contextlib.suppress(Exception):
+            await self.ensure_focus()
+        await self.call("Input.insertText", {"text": text})
+
     async def navigate(self, url):
         await self.call("Page.navigate", {"url": url})
 
@@ -490,19 +548,31 @@ def create_app():
         path = scope.get("path", "")
         if scope["type"] == "http":
             body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
-                }
-            )
+            # No-store: the viewer ships new JS with deploys and a
+            # cached copy silently pins old behavior (e.g. a dead URL
+            # box) with zero errors to diagnose.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type",
+                                     b"text/html; charset=utf-8"),
+                                    (b"cache-control", b"no-store")]})
             await send({"type": "http.response.body", "body": body})
             return
         if scope["type"] != "websocket" or not path.endswith("/ws"):
             await send({"type": "websocket.close", "code": 4404})
             return
         await send({"type": "websocket.accept"})
+        # Phone detection for viewport choice: read the viewer UA
+        # from the handshake headers (kind=='own' + phone => 390x844
+        # mobile emulation; shared/agent sessions stay desktop so
+        # every tab sees the same page).
+        user_agent = ""
+        for _name, _value in scope.get("headers", []):
+            # errors="ignore": a malformed header must not break the
+            # handshake (and decode then cannot raise, so no handler).
+            if _name.decode("latin-1", "ignore").lower() \
+                    == "user-agent":
+                user_agent = _value.decode("latin-1", "ignore")
+                break
         # Shared autonomy: attach to the live agent session when one
         # exists; otherwise open our own (deleted on disconnect).
         # A full Grid (single slot) or a down Grid raises here: tell
@@ -572,10 +642,15 @@ def create_app():
                 send, lock, json.dumps({"type": "frame", "data": params["data"]})
             )
 
-        async def human_input():
+        def _request_pause():
+            # Fire-and-forget: input must never wait on the agent
+            # API — a hung pause stalled the first click by up to
+            # 10s. Marked up front so it fires exactly once.
             nonlocal paused
             if not paused:
-                paused = await asyncio.to_thread(_pause_agent)
+                paused = True
+                asyncio.get_running_loop().create_task(
+                    asyncio.to_thread(_pause_agent))
 
         async def recover_once(op):
             # One reattach + screencast restart, then retry: a swapped
@@ -628,7 +703,9 @@ def create_app():
                 pass
 
         try:
-            bridge = CDPBridge(session_id)
+            viewport, mobile = viewport_for(kind, user_agent)
+            bridge = CDPBridge(session_id, viewport=viewport,
+                               mobile=mobile)
             try:
                 await bridge.connect()
             except Exception as exc:
@@ -684,14 +761,44 @@ def create_app():
                     continue
                 msg = json.loads(event.get("text") or "{}")
                 if msg.get("t") == "click":
-                    await human_input()
+                    _request_pause()
                     x, y = int(msg["x"]), int(msg["y"])
                     await recover_once(lambda: bridge.click(x, y))
+                elif msg.get("t") == "move":
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.move(x, y))
+                elif msg.get("t") == "wheel":
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                        dx, dy = int(msg.get("dx", 0)), int(msg.get("dy", 0))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.wheel(x, y, dx, dy))
+                elif msg.get("t") == "touch":
+                    phase = str(msg.get("phase", ""))
+                    if phase not in ("start", "move", "end"):
+                        continue
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.touch(phase, x, y))
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
                     await recover_once(lambda: bridge.key(key, code))
+                elif msg.get("t") == "type":
+                    _request_pause()
+                    text = str(msg.get("text", ""))
+                    if not text:
+                        continue
+                    await recover_once(
+                        lambda: bridge.type_text(text))
                 elif msg.get("t") == "go":
+                    _request_pause()
                     url = str(msg["url"])
                     await recover_once(lambda: do_go(url))
         finally:

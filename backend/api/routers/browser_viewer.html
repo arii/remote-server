@@ -1,17 +1,31 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Browser viewer</title>
 <style>
-body{margin:0;background:#111;color:#eee;font-family:sans-serif}
-#bar{display:flex;gap:8px;padding:8px;align-items:center}
-#nav{display:flex;gap:8px;flex:1}
-#url{flex:1;padding:6px;background:#1c1c1e;color:#fff;border:1px solid #000;border-radius:8px}
-#go{background:#3a3a3c;color:#fff;border:1px solid #000;border-radius:8px;padding:6px 12px}
-#stats{padding:0 8px 8px;font-size:13px;color:#9f9}
-#screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
-</style></head><body>
-<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address"><button id="go" type="submit">Go</button></form><span id="state">connecting…</span></div>
-<div id="stats">fps: - | last input→frame: - ms</div>
-<canvas id="screen"></canvas>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+*:focus-visible{outline:2px solid #0a84ff;outline-offset:1px}
+#bar{display:flex;gap:8px;padding:8px;align-items:center;flex-wrap:wrap}
+#nav{display:flex;gap:8px;flex:1;min-width:0}
+#url{flex:1;min-width:0;padding:6px;font-size:16px;min-height:44px;box-sizing:border-box}
+#go,#kb{min-height:44px}
+#state{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#stats{padding:0 8px 8px;font-size:14px;color:#9f9;font-variant-numeric:tabular-nums}
+#screen{display:block;max-width:100vw;height:auto;border-top:1px solid #333;cursor:default;touch-action:none}
+#kbd{max-width:100vw}
+#kbd[hidden]{display:none}
+/* On-screen keyboard in the viewer dark theme: the stock
+simple-keyboard palette is pale gray on white and unreadable here. */
+#kbd .hg-theme-default{background:#1c1c1e}
+#kbd .hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9)}
+#kbd .hg-theme-default .hg-button span{color:#fff;opacity:1}
+#kbd .hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/css/index.css">
+<script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/index.js"></script>
+</head><body>
+<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
+<div id="stats">fps: - | last activity→frame: - ms</div>
+<canvas id="screen" width="1280" height="800"></canvas>
+<div id="kbd" class="simple-keyboard" hidden></div>
 <script>
 const base = location.pathname.replace(/\/$/, '');
 const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
@@ -26,6 +40,11 @@ let dsf = 1;
 let ws = null;
 let reconnectTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
+function setControlsEnabled(on) {
+  for (const id of ['url', 'go', 'kb']) {
+    document.getElementById(id).disabled = !on;
+  }
+}
 function connect() {
   clearTimeout(reconnectTimer);
   try {
@@ -33,12 +52,14 @@ function connect() {
   } catch (_) {
     // Synchronous constructor throw (no path re-dials otherwise):
     // show the gap and retry like a clean close.
-    document.getElementById('state').textContent = 'reconnecting…';
+    document.getElementById('state').textContent = 'reconnecting — input paused…';
+    setControlsEnabled(false);
     reconnectTimer = setTimeout(connect, 2000);
     return;
   }
   ws.onopen = () => {
     document.getElementById('state').textContent = 'live';
+    setControlsEnabled(true);
     cv.style.opacity = '';
     frames = 0; t0 = performance.now();
   };
@@ -47,9 +68,11 @@ function connect() {
     if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
     if (m.type === 'attached') {
       dsf = m.dsf || 1;
-      const label = m.kind === 'agent' ? 'shared agent session '
-        : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
-      document.getElementById('state').textContent = label + m.session;
+      const label = m.kind === 'agent' ? 'shared agent session'
+        : m.kind === 'viewer-shared' ? 'shared browser tab' : 'own session';
+      const st = document.getElementById('state');
+      st.textContent = label + ' · live';
+      st.title = 'session ' + m.session;
       return;
     }
     if (m.type === 'status' || m.type === 'reattached') {
@@ -65,10 +88,13 @@ function connect() {
         if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
         ctx.drawImage(img, 0, 0); frames++;
         const el = (performance.now() - t0) / 1000;
-        if (el >= 2) {
+        // Throttle the readout to 1 Hz: per-frame DOM writes flicker
+        // and cost layout on every screencast frame.
+        if (el >= 2 && (!img._lastStats || performance.now() - img._lastStats > 1000)) {
+          img._lastStats = performance.now();
           document.querySelector('#stats').textContent =
             'fps: ' + (frames / el).toFixed(1) +
-            ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
+            ' | last activity→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
         }
         URL.revokeObjectURL(img.src);
       };
@@ -78,9 +104,11 @@ function connect() {
   };
   ws.onclose = () => {
     // Dim the canvas: a frozen last frame must not pose as live
-    // while the socket is down.
+    // while the socket is down. Controls lock too so taps during
+    // the gap are visibly paused, not silently dropped.
     cv.style.opacity = '0.35';
-    document.getElementById('state').textContent = 'reconnecting…';
+    document.getElementById('state').textContent = 'reconnecting — input paused…';
+    setControlsEnabled(false);
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 2000);
   };
@@ -93,12 +121,121 @@ function pos(e) {
   return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
           y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
 }
-cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
-cv.addEventListener('keydown', (e) => {
+// Hover/cursor feedback: stream pointer moves (rAF-throttled) as
+// CDP mouseMoved so the remote page hovers, links highlight, and
+// the screencast repaints under the cursor like a local tab. Moves never
+// pause the agent — only click/key/go do.
+let movePending = false, moveQueued = null;
+cv.addEventListener('mousemove', (e) => {
   if (!sendable()) return;
-  e.preventDefault(); lastClick = performance.now();
-  ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
+  moveQueued = pos(e);
+  if (movePending) return;
+  movePending = true;
+  requestAnimationFrame(() => {
+    movePending = false;
+    if (moveQueued && sendable()) { lastClick = performance.now(); ws.send(JSON.stringify({t: 'move', ...moveQueued})); }
+  });
 });
+cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+// Wheel scrolls the remote page instead of the viewer chrome.
+cv.addEventListener('wheel', (e) => {
+  if (!sendable()) return;
+  e.preventDefault();
+  const f = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'wheel', ...pos(e), dx: Math.round(e.deltaX * f), dy: Math.round(e.deltaY * f)}));
+}, {passive: false});
+// One-finger drag scrolls the remote page (touch-action:none in CSS
+// keeps the viewer chrome itself from panning/zooming instead).
+let touchId = null;
+cv.addEventListener('touchstart', (e) => {
+  if (!sendable() || touchId !== null) return;
+  const t = e.changedTouches[0];
+  touchId = t.identifier;
+  e.preventDefault();
+  const p = pos(t);
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'touch', phase: 'start', ...p}));
+}, {passive: false});
+cv.addEventListener('touchmove', (e) => {
+  if (!sendable() || touchId === null) return;
+  for (const t of e.changedTouches) {
+    if (t.identifier !== touchId) continue;
+    e.preventDefault();
+    ws.send(JSON.stringify({t: 'touch', phase: 'move', ...pos(t)}));
+  }
+}, {passive: false});
+function touchEnd(e) {
+  if (touchId === null) return;
+  for (const t of e.changedTouches) {
+    if (t.identifier !== touchId) continue;
+    touchId = null;
+    if (!sendable()) return;
+    lastClick = performance.now();
+    ws.send(JSON.stringify({t: 'touch', phase: 'end', ...pos(t)}));
+  }
+}
+cv.addEventListener('touchend', touchEnd);
+cv.addEventListener('touchcancel', touchEnd);
+function sendKey(key, code) {
+  if (!sendable()) return;
+  // Mobile IMEs report Unidentified/229 composition placeholders on
+  // keydown with no usable data — the text itself arrives through the
+  // on-screen keyboard below, so drop these instead of erroring.
+  if (key === 'Unidentified' || key === 'Process') return;
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'key', key, code}));
+}
+function typeText(text) {
+  if (!sendable() || !text) return;
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'type', text}));
+}
+// Document-level so physical keyboards keep working after the focus
+// moves to the URL box or the Keyboard toggle; the URL box itself is
+// excluded so typing an address never drives the remote page. Tab
+// and Escape always propagate (focus trap otherwise).
+document.addEventListener('keydown', (e) => {
+  if (e.target && e.target.id === 'url') return;
+  if (e.key === 'Tab' || e.key === 'Escape') return;
+  if (!sendable()) return;
+  e.preventDefault();
+  sendKey(e.key, e.code || e.key);
+});
+// Off-the-shelf on-screen keyboard (simple-keyboard, MIT): the remote
+// page gets real CDP input, so tapping the Keyboard button works on a
+// phone with no native keyboard involved. Special keys reuse the key
+// path; printable keys commit as bulk text via Input.insertText.
+(function initKbd() {
+  const box = document.getElementById('kbd');
+  const btn = document.getElementById('kb');
+  // UMD global is SimpleKeyboard; the constructor rides .default
+  // (fallback to a bare Keyboard global for other builds).
+  const lib = window.SimpleKeyboard || window.Keyboard;
+  const Kbd = (lib && (lib.default || lib.SimpleKeyboard))
+    || (typeof Keyboard === 'function' && Keyboard);
+  if (typeof Kbd !== 'function') { btn.hidden = true; return; }
+  const kbd = new Kbd({
+    onKeyPress: (button) => {
+      if (button === '{enter}') { sendKey('Enter', 'Enter'); return; }
+      if (button === '{bksp}') { sendKey('Backspace', 'Backspace'); return; }
+      if (button === '{tab}') { sendKey('Tab', 'Tab'); return; }
+      if (button === '{shift}' || button === '{lock}') {
+        const cur = kbd.options.layoutName || 'default';
+        kbd.setOptions({layoutName: cur === 'default' ? 'shift' : 'default'});
+        return;
+      }
+      if (button === '{space}') { typeText(' '); return; }
+      if (/^\{.+\}$/.test(button)) return;
+      typeText(button);
+    }
+  });
+  btn.addEventListener('click', () => {
+    box.hidden = !box.hidden;
+    btn.setAttribute('aria-expanded', String(!box.hidden));
+    if (!box.hidden) box.scrollIntoView({block: 'nearest'});
+  });
+})();
 function normalizeUrl(raw) {
   // Chrome-omnibox-lite: trim first; keep explicit schemes and
   // chrome pages; bare hostnames ride https://; bare host:port
