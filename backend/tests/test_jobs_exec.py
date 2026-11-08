@@ -511,7 +511,7 @@ class RouterTest(unittest.TestCase):
         ) as launched, mock.patch(
             # Repo validation reads real checkouts; this test is
             # about the run flow, so the repo is stubbed.
-            "backend.core.get_repo_status",
+            "backend.core.git_helpers.get_repo_status",
             return_value={"repo": "remote-server"},
         ):
             resp = self.client.post(
@@ -557,10 +557,10 @@ class RouterTest(unittest.TestCase):
         with mock.patch(
             "backend.api.routers.jobs._launch"
         ), mock.patch(
-            "backend.core.get_repo_status",
+            "backend.core.git_helpers.get_repo_status",
             return_value={"repo": "remote-server"},
         ), mock.patch(
-            "backend.core.validate_action_branch",
+            "backend.core.git_helpers.validate_action_branch",
             side_effect=fake_branch,
         ):
             resp = self.client.post(
@@ -580,10 +580,10 @@ class RouterTest(unittest.TestCase):
         with mock.patch(
             "backend.api.routers.jobs._launch"
         ), mock.patch(
-            "backend.core.get_repo_status",
+            "backend.core.git_helpers.get_repo_status",
             return_value={"repo": "remote-server"},
         ), mock.patch(
-            "backend.core.validate_action_branch",
+            "backend.core.git_helpers.validate_action_branch",
             side_effect=ValueError("unknown branch: 'gone'"),
         ):
             resp = self.client.post(
@@ -605,10 +605,10 @@ class RouterTest(unittest.TestCase):
         with mock.patch(
             "backend.api.routers.jobs._launch"
         ), mock.patch(
-            "backend.core.get_repo_status",
+            "backend.core.git_helpers.get_repo_status",
             return_value={"repo": "remote-server"},
         ), mock.patch(
-            "backend.core.validate_action_branch",
+            "backend.core.git_helpers.validate_action_branch",
             return_value="",
         ) as branch_mock:
             resp = self.client.post(
@@ -626,10 +626,10 @@ class RouterTest(unittest.TestCase):
         with mock.patch(
             "backend.api.routers.jobs._launch"
         ) as launched, mock.patch(
-            "backend.core.get_repo_status",
+            "backend.core.git_helpers.get_repo_status",
             return_value={"repo": "remote-server"},
         ), mock.patch(
-            "backend.core.validate_action_branch",
+            "backend.core.git_helpers.validate_action_branch",
             return_value="main",
         ) as branch_mock:
             resp = self.client.post(
@@ -1427,7 +1427,7 @@ class FinishGuaranteeTest(_LedgerTmpDir, unittest.TestCase):
             ), mock.patch(
                 # Stub the checkout so the test asserts the
                 # launch failure, not the absence of /srv/repos.
-                "backend.core.get_repo_status",
+                "backend.core.git_helpers.get_repo_status",
                 return_value={"repo": "remote-server"},
             ):
                 resp = client.post(path, json=payload)
@@ -1793,7 +1793,7 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         with mock.patch.object(jobs_router, "_launch"), mock.patch(
-            "backend.core.get_repo_status",
+            "backend.core.git_helpers.get_repo_status",
             return_value={"repo": "boomtick"},
         ):
             resp = self.client.post(
@@ -1856,7 +1856,7 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
                 with mock.patch(
                     "backend.api.routers.issues._ensure_schedule_ticker"
                 ), mock.patch(
-                    "backend.core.get_repo_status",
+                    "backend.core.git_helpers.get_repo_status",
                     return_value={"repo": "boomtick"},
                 ):
                     resp = self.client.post(
@@ -1888,7 +1888,7 @@ class TriageFanoutTest(_LedgerTmpDir, unittest.TestCase):
                 with mock.patch(
                     "backend.api.routers.issues._ensure_schedule_ticker"
                 ), mock.patch(
-                    "backend.core.get_repo_status",
+                    "backend.core.git_helpers.get_repo_status",
                     return_value={"repo": "boomtick"},
                 ):
                     resp = self.client.post(
@@ -3050,7 +3050,7 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         with mock.patch.object(jobs_router, "_launch") as launched, \
-                mock.patch("backend.core.get_repo_status",
+                mock.patch("backend.core.git_helpers.get_repo_status",
                            return_value={"repo": "remote-server"}):
             resp = self.client.post(
                 "/api/jobs/run-review",
@@ -3080,7 +3080,7 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         with mock.patch.object(jobs_router, "_launch") as launched, \
-                mock.patch("backend.core.get_repo_status",
+                mock.patch("backend.core.git_helpers.get_repo_status",
                            return_value={"repo": "remote-server"}):
             resp = self.client.post(
                 "/api/jobs/run-review",
@@ -3097,14 +3097,14 @@ class ReviewPrActionTest(_LedgerTmpDir, unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         with mock.patch.object(jobs_router, "_launch"), \
-                mock.patch("backend.core.get_repo_status",
+                mock.patch("backend.core.git_helpers.get_repo_status",
                            side_effect=ValueError("nope")):
             resp = self.client.post(
                 "/api/jobs/run-review",
                 json={"repo": "ghost", "pr": 12})
             self.assertEqual(resp.status_code, 400)
         with mock.patch.object(jobs_router, "_launch"), \
-                mock.patch("backend.core.get_repo_status",
+                mock.patch("backend.core.git_helpers.get_repo_status",
                            return_value={"repo": "remote-server"}):
             for pr in (0, -3):
                 resp = self.client.post(
@@ -3194,7 +3194,7 @@ class SuperviseActionTest(_LedgerTmpDir, unittest.TestCase):
         import backend.api.routers.jobs as jobs_router
 
         with mock.patch.object(jobs_router, "_launch") as launched, \
-                mock.patch("backend.core.get_repo_status",
+                mock.patch("backend.core.git_helpers.get_repo_status",
                            return_value={"repo": "remote-server"}):
             resp = self.client.post(
                 "/api/jobs/run",

@@ -10,8 +10,8 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from backend.core import (DIFF_CAP, DIFF_FILES_SHOWN,
-                          STATUS_SHORT_LINES_CAP, get_repo_diff)
+from backend.core.git_helpers import (DIFF_CAP, DIFF_FILES_SHOWN,
+                                         STATUS_SHORT_LINES_CAP, get_repo_diff)
 
 
 def _proc(rc=0, out="", err=""):
@@ -38,7 +38,7 @@ class RepoDiffCoreTest(unittest.TestCase):
         path = os.path.join(tmp, "demo")
         os.makedirs(os.path.join(path, ".git"))
         with mock.patch(
-                "backend.core.get_repos_dir", return_value=Path(tmp)):
+                "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             return get_repo_diff("demo", run=_fake_run_factory(**kwargs))
 
     def test_clean_repo_empty_payload(self):
@@ -78,7 +78,7 @@ class RepoDiffCoreTest(unittest.TestCase):
     def test_missing_checkout_raises_not_found(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 with self.assertRaises(FileNotFoundError):
                     get_repo_diff("nope", run=_fake_run_factory())
 
@@ -91,7 +91,7 @@ class RepoDiffCoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "demo", ".git"))
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 with self.assertRaises(RuntimeError):
                     get_repo_diff("demo", run=failing)
 
@@ -130,7 +130,7 @@ class RepoDiffFilesTest(unittest.TestCase):
         os.makedirs(os.path.join(path, ".git"))
         fake = _head_aware_fake(**kwargs)
         with mock.patch(
-                "backend.core.get_repos_dir", return_value=Path(tmp)):
+                "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             body = get_repo_diff("demo", run=fake)
         return body, fake
 
@@ -216,7 +216,7 @@ class RepoDiffRealGitTest(unittest.TestCase):
             with open(os.path.join(path, "a.py"), "a") as fh:
                 fh.write("y = 2\n")
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 body = get_repo_diff("demo")
         self.assertFalse(body["clean"])
         self.assertIn("a.py", body["status_short"])
@@ -286,7 +286,7 @@ class RepoDiffUnbornHeadTest(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=path, env=env,
                            check=True)
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 body = get_repo_diff("demo")
         self.assertFalse(body["clean"])
         self.assertIn("first.py", body["status_short"])

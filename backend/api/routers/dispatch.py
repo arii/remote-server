@@ -96,7 +96,7 @@ def queue() -> dict:
 @router.get("/gates", response_model=GatesResponse)
 def gates(repo: str = "remote-server", issue: str = "") -> dict:
     from backend.api.routers.issues import parse_issue_number
-    from backend.core import validate_repo_name
+    from backend.core.validation import validate_repo_name
 
     try:
         name = validate_repo_name(repo)
@@ -120,11 +120,11 @@ def enqueue(body: EnqueueRequest) -> dict:
 
 @router.post("/start", response_model=StartResult)
 def start(body: StartRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, START_INTENT)
     from backend.api.routers.issues import parse_issue_number
-    from backend.core import validate_repo_name
+    from backend.core.validation import validate_repo_name
 
     try:
         name = validate_repo_name(body.repo)
@@ -145,7 +145,7 @@ def cancel(body: CancelRequest) -> dict:
     """Drop a queued/terminal item. No confirm: cancel stops work,
     same rule as the jobs run cancel."""
     from backend.api.routers.issues import parse_issue_number
-    from backend.core import validate_repo_name
+    from backend.core.validation import validate_repo_name
 
     try:
         name = validate_repo_name(body.repo)

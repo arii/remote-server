@@ -18,7 +18,7 @@ from unittest import mock
 
 from backend import autofile
 from backend import webhook_heal as H
-from backend import notify as N
+from backend.notify import webhook as N
 
 try:
     from fastapi import FastAPI

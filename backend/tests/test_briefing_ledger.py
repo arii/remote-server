@@ -440,7 +440,7 @@ class FixtureResolveTest(unittest.TestCase):
     """Resolver rules for the briefing fixture override (#453)."""
 
     def test_explicit_env_wins_without_opt_in(self):
-        from backend.core import resolve_briefing_fixture_path
+        from backend.core.env_config import resolve_briefing_fixture_path
 
         with mock.patch.dict(os.environ, {
                 "BUTTONS_FIXTURE_BRIEFING": " /x/y.json ",
@@ -452,7 +452,7 @@ class FixtureResolveTest(unittest.TestCase):
                              "/x/y.json")
 
     def test_candidate_gated_behind_opt_in(self):
-        from backend.core import (
+        from backend.core.env_config import (
             briefing_fixture_candidate,
             resolve_briefing_fixture_path,
         )
@@ -472,7 +472,7 @@ class FixtureResolveTest(unittest.TestCase):
                                  stray)
 
     def test_opt_in_truthy_values(self):
-        from backend.core import fixture_auto_discover_enabled
+        from backend.core.env_config import fixture_auto_discover_enabled
 
         for value in ("1", "true", "TRUE", "yes", "on", " On "):
             with mock.patch.dict(os.environ, {
@@ -486,7 +486,7 @@ class FixtureResolveTest(unittest.TestCase):
                                  value)
 
     def test_nothing_configured_resolves_empty(self):
-        from backend.core import resolve_briefing_fixture_path
+        from backend.core.env_config import resolve_briefing_fixture_path
 
         with mock.patch.dict(os.environ, {}):
             os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)

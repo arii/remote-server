@@ -576,7 +576,7 @@ def pr_diff(repo: str = "remote-server", pr: int = 0,
 
 @router.post("/pr-action", response_model=PrActionResult)
 def pr_action(body: PrActionRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     # Retired (#428): fix-ci shelled to `td agent fix-ci
     # --execute`, whose backend is dead. Named explicitly (not
@@ -606,7 +606,7 @@ def pr_action(body: PrActionRequest) -> dict:
         gh = repo_gh(body.repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    from backend.core import validate_action_branch
+    from backend.core.git_helpers import validate_action_branch
 
     try:
         validate_action_branch(body.repo, body.branch)

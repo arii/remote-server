@@ -39,7 +39,7 @@ from backend import webhook_heal
 from backend.api.routers import agents
 from backend.api.routers import ops
 from backend.api.routers.jobs import registry
-from backend.core import validate_repo_name
+from backend.core.validation import validate_repo_name
 
 logger = logging.getLogger(__name__)
 

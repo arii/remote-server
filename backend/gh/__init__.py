@@ -32,7 +32,7 @@ def validate_gh(gh: str) -> str:
 def repo_gh(name: str) -> str:
     """gh path for a validated repo basename (same convention as the
     briefing router: arii/<name>)."""
-    from backend.core import validate_repo_name
+    from backend.core.validation import validate_repo_name
 
     return validate_gh(f"arii/{validate_repo_name(name)}")
 

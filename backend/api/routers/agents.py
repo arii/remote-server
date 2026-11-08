@@ -78,7 +78,7 @@ def agent_budget() -> dict:
 
 @router.post("/runs/clear", response_model=ClearRunsResult)
 def clear_agent_runs(body: ConfirmRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "agents-clear")
     return {"ok": True, "cleared": runs.clear_finished_runs()}
@@ -86,7 +86,7 @@ def clear_agent_runs(body: ConfirmRequest) -> dict:
 
 @router.delete("/runs/{run_id}", response_model=DeleteRunResult)
 def delete_agent_run(run_id: str, body: ConfirmRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "agents-delete")
     if not runs.delete_run(run_id):

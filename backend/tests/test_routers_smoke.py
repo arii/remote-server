@@ -69,7 +69,8 @@ class RouterSmokeTest(unittest.TestCase):
         self.assertIn("containers", body)
 
     def test_core_routines(self):
-        from backend.core import resolve_repo_path, to_json
+        from backend.core.env_config import to_json
+        from backend.core.repos import resolve_repo_path
 
         self.assertEqual(to_json({"b": 1, "a": 2}), '{"a": 2, "b": 1}')
         self.assertTrue(str(resolve_repo_path("arii/tech-dancer")).endswith("tech-dancer"))

@@ -57,7 +57,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend import proposals as proposal_exec
-from backend.core import get_checkout_path, validate_repo_name
+from backend.core.repos import get_checkout_path
+from backend.core.validation import validate_repo_name
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -146,7 +147,7 @@ def get_repo_info(repo: str) -> dict:
     real checkouts.
     """
     name = validate_repo_name(repo)
-    from backend.core import get_repo_status
+    from backend.core.git_helpers import get_repo_status
 
     try:
         get_repo_status(name)

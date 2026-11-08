@@ -25,12 +25,12 @@ import urllib.request
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.core import (
+from backend.core.containers import get_system_health
+from backend.core.env_config import (
     briefing_fixture_candidate,
-    get_system_health,
     resolve_briefing_fixture_path,
-    validate_repo_name,
 )
+from backend.core.validation import validate_repo_name
 from backend.exec.engine import stack_dir
 from backend.ledger import LEDGER_KINDS, clear as ledger_clear
 from backend.ledger import read as ledger_read
@@ -701,7 +701,7 @@ def ledger(kind: str = "all", limit: int = 50,
 
 @router.post("/ledger/clear", response_model=LedgerClearResult)
 def ledger_clear_route(body: LedgerClearRequest | None = None) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     # Same deliberate-confirm gate as jobs/clear (#454): the body
     # defaults to None (not a required model) so a bare POST with no

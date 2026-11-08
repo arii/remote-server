@@ -57,7 +57,7 @@ class ReposListTest(unittest.TestCase):
              stack_with_git=False, missing_root=False):
         from pathlib import Path
 
-        from backend.core import list_repos
+        from backend.core.git_helpers import list_repos
 
         root = Path(tmp) / "repos"
         stack = Path(tmp) / "stack"
@@ -121,7 +121,7 @@ class ReposListTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from backend.core import list_repos
+        from backend.core.git_helpers import list_repos
 
         def fake_run(cmd, **kwargs):
             path = cmd[cmd.index("-C") + 1]
@@ -178,7 +178,7 @@ class ReposListTest(unittest.TestCase):
             self.assertEqual(by_name["noorigin"]["full"], "arii/noorigin")
             # unsafe names never reach git
             (root / "bad;name").mkdir(exist_ok=True)
-            from backend.core import list_repos
+            from backend.core.git_helpers import list_repos
             got2 = list_repos(repos_dir=root, stack_dir=stack,
                               run=_fake_run_factory(
                                   {"good": "git@github.com:arii/good.git",
@@ -192,7 +192,7 @@ class ReposListTest(unittest.TestCase):
 
 class ReposDirFallbackTest(unittest.TestCase):
     def test_missing_configured_root_falls_through(self):
-        from backend.core import get_repos_dir
+        from backend.core.repos import get_repos_dir
         with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": "/nonexistent-root-xyz"}):
             got = get_repos_dir()
         if Path("/srv/repos").is_dir():
@@ -211,7 +211,7 @@ class ValidateActionBranchTest(unittest.TestCase):
         return root
 
     def test_blank_is_absent_without_touching_git(self):
-        from backend.core import validate_action_branch
+        from backend.core.git_helpers import validate_action_branch
 
         def boom(cmd, **kwargs):
             raise AssertionError(f"git must not run: {cmd}")
@@ -224,7 +224,7 @@ class ValidateActionBranchTest(unittest.TestCase):
     def test_malformed_names_rejected(self):
         import tempfile
 
-        from backend.core import validate_action_branch
+        from backend.core.git_helpers import validate_action_branch
 
         def boom(cmd, **kwargs):
             raise AssertionError(f"git must not run: {cmd}")
@@ -241,7 +241,7 @@ class ValidateActionBranchTest(unittest.TestCase):
     def test_unknown_branch_rejected(self):
         import tempfile
 
-        from backend.core import validate_action_branch
+        from backend.core.git_helpers import validate_action_branch
 
         def missing(cmd, **kwargs):
             self.assertIn("refs/heads/gone", cmd)
@@ -257,7 +257,7 @@ class ValidateActionBranchTest(unittest.TestCase):
     def test_known_branch_returned_stripped(self):
         import tempfile
 
-        from backend.core import validate_action_branch
+        from backend.core.git_helpers import validate_action_branch
 
         seen = []
 
@@ -277,7 +277,7 @@ class ValidateActionBranchTest(unittest.TestCase):
     def test_missing_checkout_reads_as_unknown_branch(self):
         import tempfile
 
-        from backend.core import validate_action_branch
+        from backend.core.git_helpers import validate_action_branch
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"BUTTONS_REPOS_DIR": tmp}):
@@ -289,7 +289,7 @@ class ValidateActionBranchTest(unittest.TestCase):
         # Detached-HEAD checkouts (CI) report the branch as HEAD, which
         # never exists under refs/heads — treat as omitted, not unknown
         # (e2e jobs-run 400d "unknown branch: 'HEAD'" on every CI run).
-        from backend.core import validate_action_branch
+        from backend.core.git_helpers import validate_action_branch
 
         def boom(cmd, **kwargs):
             raise AssertionError(f"git must not run: {cmd}")
