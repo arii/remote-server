@@ -1031,7 +1031,8 @@ def _ensure_default_notify_schedules(now: float | None = None) -> int:
                 save_action_schedules(state)
             _save_notify_seeded(done | set(missing))
         return len(fresh)
-    except Exception:
+    except Exception as exc:
+        logger.warning("notify seed failed, reporting 0: %s", exc)
         return 0
 
 
@@ -1099,7 +1100,8 @@ def _ensure_default_autofile_schedules(now: float | None = None) -> int:
                 save_action_schedules(state)
             _save_seed_names(_autofile_seed_path(), done | set(missing))
         return len(fresh)
-    except Exception:
+    except Exception as exc:
+        logger.warning("autofile seed failed, reporting 0: %s", exc)
         return 0
 
 
@@ -1158,7 +1160,8 @@ def _ensure_default_impact_schedules(now: float | None = None) -> int:
                 save_action_schedules(state)
             _save_seed_names(_impact_seed_path(), [IMPACT_SEED_ACTION])
         return len(fresh)
-    except Exception:
+    except Exception as exc:
+        logger.warning("impact seed failed, reporting 0: %s", exc)
         return 0
 
 
@@ -1223,7 +1226,8 @@ def _ensure_default_supervise_schedules(now: float | None = None) -> int:
                 save_action_schedules(state)
             _save_seed_names(_supervise_seed_path(), done | set(missing))
         return len(fresh)
-    except Exception:
+    except Exception as exc:
+        logger.warning("supervise seed failed, reporting 0: %s", exc)
         return 0
 
 

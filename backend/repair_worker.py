@@ -175,7 +175,9 @@ def ollama_model(raw: Optional[str] = None) -> str:
     return _env("OLLAMA_MODEL", DEFAULT_MODEL)
 
 
-def _query_ollama(prompt: str, model: Optional[str] = None, url: Optional[str] = None) -> str:
+def _query_ollama(
+    prompt: str, model: Optional[str] = None, url: Optional[str] = None
+) -> str:
     """Send prompt to Ollama generate endpoint and return response text.
 
     Model and endpoint resolve at call time from OLLAMA_MODEL / OLLAMA_URL
@@ -287,17 +289,32 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
     repo = normalize_repo(state.get("repo"))
 
     if not issue_body and issue_number:
-        cmd = ["gh", "issue", "view", str(issue_number), "--json", "body",
-               "--repo", repo]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        cmd = [
+            "gh",
+            "issue",
+            "view",
+            str(issue_number),
+            "--json",
+            "body",
+            "--repo",
+            repo,
+        ]
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
         if proc.returncode == 0:
             try:
                 parsed_json = json.loads(proc.stdout)
                 issue_body = parsed_json.get("body", "")
-            except Exception:
-                issue_body = proc.stdout
+            except Exception as exc:
+                raise RuntimeError(
+                    f"issue #{issue_number} body is not valid JSON "
+                    f"(fetch corruption, not a spec error): {exc}"
+                ) from exc
         else:
-            raise RuntimeError(f"Failed to fetch issue #{issue_number}: {proc.stderr.strip()}")
+            raise RuntimeError(
+                f"Failed to fetch issue #{issue_number}: {proc.stderr.strip()}"
+            )
 
     try:
         spec = parse_task_spec(issue_body)
@@ -318,7 +335,8 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
         raise RuntimeError(
             "verification command not allowlisted: "
             f"{verification_cmd[:200]!r} "
-            f"(allowed: {VERIFY_VERB_HELP})")
+            f"(allowed: {VERIFY_VERB_HELP})"
+        )
     return {
         "issue_body": issue_body,
         "target_files": spec.get("target_files", []),
@@ -329,12 +347,18 @@ def parse_issue_node(state: AgentState) -> Dict[str, Any]:
 def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
     """Set up an isolated git worktree and read target file contents."""
     issue_number = state.get("issue_number", 0)
-    branch_name = state.get("branch_name") or f"repair/issue-{issue_number}-{int(time.time())}"
-    worktree_dir = state.get("worktree_dir") or tempfile.mkdtemp(prefix=f"repair-issue-{issue_number}-")
+    branch_name = (
+        state.get("branch_name") or f"repair/issue-{issue_number}-{int(time.time())}"
+    )
+    worktree_dir = state.get("worktree_dir") or tempfile.mkdtemp(
+        prefix=f"repair-issue-{issue_number}-"
+    )
 
     # Create worktree
     cmd = ["git", "worktree", "add", "-b", branch_name, worktree_dir, "HEAD"]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to create git worktree: {proc.stderr.strip()}")
 
@@ -343,8 +367,7 @@ def setup_worktree_node(state: AgentState) -> Dict[str, Any]:
     for rel_path in state.get("target_files", []):
         full_path = _worktree_path(worktree_dir, rel_path)
         if full_path is None:
-            raise RuntimeError(
-                f"target escapes the worktree: {rel_path[:200]!r}")
+            raise RuntimeError(f"target escapes the worktree: {rel_path[:200]!r}")
         if os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 file_contents[rel_path] = f.read()
@@ -373,7 +396,11 @@ def edit_file_node(state: AgentState) -> Dict[str, Any]:
         if current_errors:
             # Bound context to most recent diagnostic output (max 50 lines / 3000 chars) to prevent context bloat
             err_lines = current_errors.strip().splitlines()
-            truncated_errors = "\n".join(err_lines[-50:]) if len(err_lines) > 50 else current_errors.strip()
+            truncated_errors = (
+                "\n".join(err_lines[-50:])
+                if len(err_lines) > 50
+                else current_errors.strip()
+            )
             if len(truncated_errors) > 3000:
                 truncated_errors = truncated_errors[-3000:]
             prompt += (
@@ -421,8 +448,9 @@ def ast_check_node(state: AgentState) -> Dict[str, Any]:
     for file_path, code in file_contents.items():
         res = validate_source_syntax(file_path, code)
         if res.get("degraded"):
-            logging.warning("syntax gate degraded for %s: %s",
-                            file_path, res["degraded"])
+            logging.warning(
+                "syntax gate degraded for %s: %s", file_path, res["degraded"]
+            )
         if not res.get("valid", True):
             err_line = res.get("line")
             err_msg = res.get("error", "Syntax error")
@@ -439,8 +467,7 @@ def ast_check_node(state: AgentState) -> Dict[str, Any]:
     for file_path, code in file_contents.items():
         full_path = _worktree_path(worktree_dir, file_path)
         if full_path is None:
-            raise RuntimeError(
-                f"target escapes the worktree: {file_path[:200]!r}")
+            raise RuntimeError(f"target escapes the worktree: {file_path[:200]!r}")
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(code)
@@ -470,7 +497,8 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
             "current_errors": (
                 "verification command not allowlisted: "
                 f"{verification_cmd[:200]!r} "
-                f"(allowed: {VERIFY_VERB_HELP})"),
+                f"(allowed: {VERIFY_VERB_HELP})"
+            ),
             "retry_count": MAX_RETRIES,
         }
     try:
@@ -488,7 +516,8 @@ def verify_code_node(state: AgentState) -> Dict[str, Any]:
             "tests_passed": False,
             "current_errors": (
                 "verification command timed out after "
-                f"{VERIFY_TIMEOUT}s: {verification_cmd[:200]}"),
+                f"{VERIFY_TIMEOUT}s: {verification_cmd[:200]}"
+            ),
             "retry_count": retry_count + 1,
         }
 
@@ -528,9 +557,22 @@ def create_pr_node(state: AgentState) -> Dict[str, Any]:
         f"Target Files: {', '.join(state.get('target_files', []))}\n"
         f"Verification Command: `{state.get('verification_cmd', '')}`\n"
     )
-    cmd = ["gh", "pr", "create", "--title", pr_title, "--body", pr_body, "--head", branch_name,
-           "--repo", repo]
-    proc = subprocess.run(cmd, cwd=worktree_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    cmd = [
+        "gh",
+        "pr",
+        "create",
+        "--title",
+        pr_title,
+        "--body",
+        pr_body,
+        "--head",
+        branch_name,
+        "--repo",
+        repo,
+    ]
+    proc = subprocess.run(
+        cmd, cwd=worktree_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"Failed to create PR: {proc.stderr.strip()}")
 
@@ -542,7 +584,9 @@ def cleanup_node(state: AgentState) -> Dict[str, Any]:
     worktree_dir = state.get("worktree_dir")
 
     if worktree_dir and os.path.exists(worktree_dir):
-        subprocess.run(["git", "worktree", "remove", "--force", worktree_dir], check=False)
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", worktree_dir], check=False
+        )
         if os.path.exists(worktree_dir):
             shutil.rmtree(worktree_dir, ignore_errors=True)
 
@@ -573,7 +617,9 @@ def route_after_verify(state: AgentState) -> str:
 def build_repair_graph():
     """Construct and compile the LangGraph factory line state machine."""
     if StateGraph is None:
-        logging.warning("langgraph is not installed. Full LangGraph factory line repair worker requires langgraph.")
+        logging.warning(
+            "langgraph is not installed. Full LangGraph factory line repair worker requires langgraph."
+        )
         return None
 
     workflow = StateGraph(AgentState)
@@ -618,8 +664,9 @@ def build_repair_graph():
     return workflow.compile()
 
 
-def run_repair(issue_number: int, issue_body: Optional[str] = None,
-               repo: Optional[str] = None) -> bool:
+def run_repair(
+    issue_number: int, issue_body: Optional[str] = None, repo: Optional[str] = None
+) -> bool:
     """Run the autonomous repair pipeline for a given issue.
 
     ``repo`` is a basename ("boomtick") or full path
@@ -670,19 +717,31 @@ def run_repair(issue_number: int, issue_body: Optional[str] = None,
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Deterministic Autonomous Repair Worker")
-    parser.add_argument("--issue", type=int, required=True, help="GitHub issue number to repair")
-    parser.add_argument("--body", type=str, default="", help="Optional task specification markdown body")
-    parser.add_argument("--repo", type=str, default=DEFAULT_REPO,
-                        help="Repo basename (boomtick) or full path (arii/boomtick); "
-                             "scopes the gh issue/PR calls")
+    parser = argparse.ArgumentParser(
+        description="Deterministic Autonomous Repair Worker"
+    )
+    parser.add_argument(
+        "--issue", type=int, required=True, help="GitHub issue number to repair"
+    )
+    parser.add_argument(
+        "--body", type=str, default="", help="Optional task specification markdown body"
+    )
+    parser.add_argument(
+        "--repo",
+        type=str,
+        default=DEFAULT_REPO,
+        help="Repo basename (boomtick) or full path (arii/boomtick); "
+        "scopes the gh issue/PR calls",
+    )
     args = parser.parse_args(argv)
 
     try:
         repo = normalize_repo(args.repo)
     except ValueError as exc:
         parser.error(str(exc))
-    success = run_repair(issue_number=args.issue, issue_body=args.body or None, repo=repo)
+    success = run_repair(
+        issue_number=args.issue, issue_body=args.body or None, repo=repo
+    )
     sys.exit(0 if success else 1)
 
 

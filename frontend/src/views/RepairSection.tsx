@@ -118,9 +118,15 @@ export default function RepairSection({
     (async () => {
       try {
         const live = await fetchIssues(repo);
-        if (!cancelled) setIssues(live.issues);
-      } catch {
-        if (!cancelled) setIssues([]);
+        if (!cancelled) {
+          setIssues(live.issues);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setIssues([]);
+          setError(err instanceof Error ? err.message : String(err));
+        }
       }
     })();
     return () => {
