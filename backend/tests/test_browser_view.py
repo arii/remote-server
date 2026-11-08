@@ -3,6 +3,7 @@
 import unittest
 from unittest import mock
 
+import cli
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -47,7 +48,7 @@ class ViewerMountTest(unittest.TestCase):
         import pathlib
         import re
 
-        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        repo_root = pathlib.Path(cli.repo_root())
         caddyfile = (repo_root / "caddy" / "Caddyfile").read_text()
         handle = re.search(r"handle /cdp-stream\* \{(.*?)\n\t\}", caddyfile, re.S)
         self.assertIsNotNone(handle, "missing /cdp-stream* handle")
