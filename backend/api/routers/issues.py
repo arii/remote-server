@@ -492,18 +492,22 @@ def _schedule_tick_loop() -> None:
         except Exception:
             pass
         # Shared tick (see #636): scheduled digests ride this loop
-        # rather than running a second ticker. Repair-owned loop;
-        # digest firing lives in backend.notify.
+        # rather than running a second ticker. Repair-owned loop.
+        # Read off the package (not the defining submodule): the import
+        # re-runs every tick so schedule tests can patch
+        # backend.notify.fire_due_digest and have it land here.
         try:
-            from backend.notify import fire_due_digest
-            fire_due_digest()
+            from backend import notify as _notify_pkg
+            _notify_pkg.fire_due_digest()
         except Exception:
             pass
         # Third job on the shared tick (#652): budget-watch alerts
         # ride this loop like digests — never a second ticker.
+        # Same package-attr read so backend.notify.fire_budget_watch
+        # patches land here too.
         try:
-            from backend.notify import fire_budget_watch
-            fire_budget_watch()
+            from backend import notify as _notify_pkg2
+            _notify_pkg2.fire_budget_watch()
         except Exception:
             pass
         # Fourth job on the shared tick (#655): scheduled jobs
@@ -534,7 +538,7 @@ ALL_ISSUES = "all"
 
 def list_issue_repo_names() -> list:
     """Injectable seam: known checkout names in picker order."""
-    from backend.core import list_repos
+    from backend.core.git_helpers import list_repos
 
     return [r.get("name", "") for r in list_repos()
             if isinstance(r, dict) and r.get("name")]
@@ -772,7 +776,7 @@ def repair_verify_command(issue: str = "",
 @router.post("/repair/dispatch", response_model=RepairDispatchResult)
 def repair_dispatch(body: RepairDispatchRequest) -> dict:
     global _repair_proc, _repair_abort
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "repair-dispatch")
     issue_number = parse_issue_number(body.issue)
@@ -787,7 +791,7 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     repo_name = gh.partition("/")[2]
-    from backend.core import validate_action_branch
+    from backend.core.git_helpers import validate_action_branch
 
     try:
         validate_action_branch(repo_name, body.branch)

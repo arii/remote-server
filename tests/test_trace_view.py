@@ -1,5 +1,7 @@
 """trace_view.py + runs.py tests. Stdlib-only, no venv, no model calls.
-Run: python3 tests/test_trace_view.py"""
+Run from the repo root with deep-agent/ importable:
+PYTHONPATH=./deep-agent python3 tests/test_trace_view.py
+(or npm run test:root, which sets that)."""
 import json
 import os
 import subprocess
@@ -7,14 +9,13 @@ import sys
 import tempfile
 import unittest
 
-DEEP_AGENT = os.path.join(os.path.dirname(__file__), "..", "deep-agent")
-FIXTURES = os.path.join(DEEP_AGENT, "tests", "fixtures")
-TRACE_VIEW = os.path.join(DEEP_AGENT, "trace_view.py")
-
-sys.path.insert(0, DEEP_AGENT)
-
 import runs
 import trace_view
+
+# Root-relative literals (tests always run with cwd=repo root): no sys.path
+# hacks, no __file__ discovery.
+FIXTURES = os.path.join("deep-agent", "tests", "fixtures")
+TRACE_VIEW = os.path.join("deep-agent", "trace_view.py")
 
 
 def write_trace(d, name, lines):

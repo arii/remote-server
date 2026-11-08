@@ -1,12 +1,8 @@
 """deep-agent/triage_common.py unit tests. Stdlib only: no langchain,
 no subprocess, no network. Run: python3 tests/test_triage_common.py"""
-import os
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest import mock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import triage_common
 

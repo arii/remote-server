@@ -7,7 +7,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 
-from backend.core import require_confirm
+from backend.core.validation import require_confirm
 from backend.api.routers import attention
 
 

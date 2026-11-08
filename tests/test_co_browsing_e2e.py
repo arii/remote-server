@@ -12,8 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts",
-                       "verify-co-browsing-preflight.py")
+_SCRIPT = os.path.join("scripts", "verify-co-browsing-preflight.py")
 _spec = importlib.util.spec_from_file_location("verify_cobrowsing", _SCRIPT)
 preflight = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(preflight)

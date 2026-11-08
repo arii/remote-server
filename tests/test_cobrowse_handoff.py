@@ -8,15 +8,11 @@ no browser needed.
 import importlib.util
 import json
 import os
-import sys
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 _spec = importlib.util.spec_from_file_location(
     "cobrowse_handoff",
-    os.path.join(os.path.dirname(__file__), "..", "deep-agent",
-                 "cobrowse_handoff.py"),
+    os.path.join("deep-agent", "cobrowse_handoff.py"),
 )
 ch = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ch)

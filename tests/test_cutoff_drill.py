@@ -16,14 +16,9 @@ CI (cutoff-proof.yml) against a local Ollama service.
 
 import os
 import re
-import sys
 import unittest
 from pathlib import Path
 from unittest import mock
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT / "deep-agent"))
 
 from backend.exec import agent_turn  # noqa: E402
 
@@ -49,7 +44,7 @@ MUSE_FREE_MODULES = [
 def muse_hits(path):
     """(lineno, line) pairs mentioning muse outside .muse/ paths."""
     hits = []
-    text = (REPO_ROOT / path).read_text(encoding="utf-8")
+    text = Path(path).read_text(encoding="utf-8")
     for n, line in enumerate(text.splitlines(), 1):
         if MUSE_RE.search(line) and ".muse" not in line.lower():
             hits.append((n, line.strip()[:120]))
@@ -111,7 +106,7 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertEqual(problems, [])
 
     def test_drill_proof_mode_scrubs_credentials(self):
-        text = (REPO_ROOT / "scripts" / "cutoff-drill.sh").read_text(
+        text = Path("scripts/cutoff-drill.sh").read_text(
             encoding="utf-8")
         self.assertIn("--proof", text)
         for var in ("NEBIUS_API_KEY", "GEMINI_API_KEY"):
@@ -135,8 +130,7 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertIn("NEBIUS_API_KEY", str(ctx.exception))
 
     def test_proof_workflow_wires_drill(self):
-        path = (REPO_ROOT / ".github" / "workflows"
-                / "cutoff-proof.yml")
+        path = Path(".github/workflows/cutoff-proof.yml")
         self.assertTrue(path.is_file(), "cutoff-proof.yml missing")
         text = path.read_text(encoding="utf-8")
         self.assertIn("cutoff-drill.sh --proof", text)
@@ -145,9 +139,9 @@ class TestCutoffDrill(unittest.TestCase):
         self.assertIn("deep-agent/**", text)
 
     def test_skill_content_has_no_muse(self):
-        self.assertFalse((REPO_ROOT / "deep-agent" / "agent_skills").exists(),
+        self.assertFalse(Path("deep-agent/agent_skills").exists(),
                          "agent_skills/ unified into deep-agent/skills/ (#1103)")
-        skills = REPO_ROOT / "deep-agent" / "skills"
+        skills = Path("deep-agent/skills")
         problems = []
         for path in sorted(skills.rglob("*")):
             if not path.is_file():
@@ -158,7 +152,7 @@ class TestCutoffDrill(unittest.TestCase):
                 continue
             for n, line in enumerate(text.splitlines(), 1):
                 if MUSE_RE.search(line):
-                    rel = path.relative_to(REPO_ROOT)
+                    rel = path
                     problems.append(f"{rel}:{n}: {line.strip()[:120]}")
         self.assertEqual(problems, [])
 

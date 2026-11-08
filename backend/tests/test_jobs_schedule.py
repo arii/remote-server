@@ -515,7 +515,7 @@ class NotifySeedTest(unittest.TestCase):
         jobs_mod.registry.finish_run(rid, 0)
 
     def test_notify_seed_repos_skips_unknown(self):
-        with patch("backend.core.list_repos",
+        with patch("backend.core.git_helpers.list_repos",
                    return_value=[{"name": "remote-server"},
                                  {"name": "ghost"}]), \
                 patch.object(jobs_mod, "_repo_target",

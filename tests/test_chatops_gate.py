@@ -9,7 +9,6 @@ import os
 import unittest
 
 WORKFLOW = os.path.join(
-    os.path.dirname(__file__), "..",
     ".github", "workflows", "chatops-trigger.yml")
 
 ROLES = ("OWNER", "MEMBER", "COLLABORATOR")

@@ -2,7 +2,7 @@
 
 One repo per invocation: fetches that repo's failing runs + open PR
 merge states, runs them through
-backend.notify.check_notifications_and_digest (ci_fail/conflict
+backend.notify.digest.check_notifications_and_digest (ci_fail/conflict
 pushes + interval digest, state-deduped, #532 no-stamp-on-failure),
 and prints a short audit trail to stdout (the jobs run output).
 
@@ -30,8 +30,9 @@ def main(argv=None) -> int:
                              "(default: arii/<repo>)")
     args = parser.parse_args(argv)
 
-    from backend.notify import check_notifications_and_digest, \
-        collect_notify_brief, send_notification
+    from backend.notify.digest import check_notifications_and_digest, \
+        collect_notify_brief
+    from backend.notify.prefs_state import send_notification
 
     gh = args.gh.strip() or f"arii/{args.repo.strip()}"
     repo_name = args.repo.strip() or "remote-server"

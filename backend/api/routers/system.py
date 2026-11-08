@@ -3,14 +3,14 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from backend.core import (
+from backend.core.containers import (
     CONTAINER_LOGS_TAIL_MAX,
     get_container_logs,
     get_container_stats,
     get_system_health,
-    require_confirm,
     restart_container,
 )
+from backend.core.validation import require_confirm
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api/system", tags=["system"])

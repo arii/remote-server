@@ -14,10 +14,10 @@ import tempfile
 import threading
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-WATCH = os.path.join(ROOT, "scripts", "edge-liveness-watch.sh")
-INSTALL = os.path.join(ROOT, "scripts", "install-edge-liveness-cron.sh")
-DOC = os.path.join(ROOT, "docs", "durability.md")
+WATCH = os.path.abspath(
+    os.path.join("scripts", "edge-liveness-watch.sh"))
+INSTALL = os.path.join("scripts", "install-edge-liveness-cron.sh")
+DOC = os.path.join("docs", "durability.md")
 
 
 class _PingHandler(http.server.BaseHTTPRequestHandler):
@@ -48,7 +48,7 @@ def _run_watch(env, tmpdir):
     full_env.update(env)
     full_env["EDGE_LIVENESS_STATE"] = os.path.join(tmpdir, "failures")
     return subprocess.run(
-        ["bash", os.path.abspath(WATCH)],
+        ["bash", WATCH],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

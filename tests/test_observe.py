@@ -4,13 +4,10 @@ fake requests/handlers/state. Recorder core is stdlib-only.
 Run: deep-agent/.venv/bin/python tests/test_observe.py"""
 import json
 import os
-import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import observe
 

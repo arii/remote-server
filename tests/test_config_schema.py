@@ -8,11 +8,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from backend import validate_config
-
-ROOT = os.path.join(os.path.dirname(__file__), "..")
 
 
 def write(root, rel, text):
@@ -132,7 +128,7 @@ class TestLiveTree(unittest.TestCase):
         proc = subprocess.run(
             [sys.executable, "-m", "backend.validate_config"],
             capture_output=True, text=True, timeout=120,
-            cwd=os.path.abspath(ROOT),
+            cwd=".",
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertNotIn("FAIL", proc.stdout)

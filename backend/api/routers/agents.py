@@ -6,19 +6,10 @@ trace events. Summaries carry provider + latency + cost + repo
 slots, null-safe for local/unmetered turns and pre-repo rows.
 """
 
-import os
-import sys
-
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from fastapi import HTTPException
-
-sys.path.insert(0, os.path.join(
-    os.path.dirname(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "deep-agent"))
 
 import runs  # noqa: E402
 import pricing  # noqa: E402
@@ -87,7 +78,7 @@ def agent_budget() -> dict:
 
 @router.post("/runs/clear", response_model=ClearRunsResult)
 def clear_agent_runs(body: ConfirmRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "agents-clear")
     return {"ok": True, "cleared": runs.clear_finished_runs()}
@@ -95,7 +86,7 @@ def clear_agent_runs(body: ConfirmRequest) -> dict:
 
 @router.delete("/runs/{run_id}", response_model=DeleteRunResult)
 def delete_agent_run(run_id: str, body: ConfirmRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "agents-delete")
     if not runs.delete_run(run_id):

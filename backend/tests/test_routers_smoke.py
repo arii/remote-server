@@ -17,9 +17,8 @@ class RouterSmokeTest(unittest.TestCase):
         import ast
         from pathlib import Path
 
-        root = Path(__file__).resolve().parents[1]
         for name in ("agents", "repo", "system", "jobs"):
-            src = (root / "api" / "routers" / f"{name}.py").read_text()
+            src = (Path("backend") / "api" / "routers" / f"{name}.py").read_text()
             tree = ast.parse(src)
             prefixes = [
                 n.value
@@ -30,7 +29,7 @@ class RouterSmokeTest(unittest.TestCase):
             self.assertIn("/health", prefixes, name)
             if name != "system":
                 self.assertIn('"ok"', src)
-        server_src = (root / "server.py").read_text()
+        server_src = (Path("backend") / "server.py").read_text()
         for name in ("agents", "repo", "system", "jobs"):
             self.assertIn(name, server_src)
         self.assertIn("FastAPI", server_src)
@@ -70,7 +69,8 @@ class RouterSmokeTest(unittest.TestCase):
         self.assertIn("containers", body)
 
     def test_core_routines(self):
-        from backend.core import resolve_repo_path, to_json
+        from backend.core.env_config import to_json
+        from backend.core.repos import resolve_repo_path
 
         self.assertEqual(to_json({"b": 1, "a": 2}), '{"a": 2, "b": 1}')
         self.assertTrue(str(resolve_repo_path("arii/tech-dancer")).endswith("tech-dancer"))

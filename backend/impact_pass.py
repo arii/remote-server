@@ -154,11 +154,7 @@ def toolchain_errors(checks):
 
 
 def _load_impact():
-    """deep-agent/impact on sys.path (review.py pattern)."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    deep_agent = os.path.join(os.path.dirname(here), "deep-agent")
-    if deep_agent not in sys.path:
-        sys.path.insert(0, deep_agent)
+    """deep-agent impact helpers, imported as-is."""
     import impact
 
     return impact

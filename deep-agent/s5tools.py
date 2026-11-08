@@ -76,12 +76,17 @@ def check_env(checkout):
     behind it) so pytest collection imports the repo's own
     packages — without this an agent burns whole runs retrying a
     collection error it cannot fix, because the allowlist forbids
-    env-prefix commands (#1160 gap 1). Harmless for non-python
+    env-prefix commands (#1160 gap 1). The deep-agent/ sibling dir
+    follows the root so cross-component imports (s5tools, runs)
+    resolve exactly as under the npm test scripts, which export
+    PYTHONPATH=./deep-agent. Harmless for non-python
     commands (node/go/git ignore PYTHONPATH). Never raises.
     """
     try:
         base = os.environ.get("PYTHONPATH", "")
-        path = checkout + (os.pathsep + base if base else "")
+        path = (checkout + os.pathsep
+                + os.path.join(checkout, "deep-agent")
+                + (os.pathsep + base if base else ""))
         return {"PYTHONPATH": path}
     except Exception:
         return {"PYTHONPATH": checkout}

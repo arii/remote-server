@@ -103,9 +103,9 @@ class ChatOpsTest(unittest.TestCase):
         chat.deep_agent_python = lambda: os.path.abspath(chat.__file__)
         chat.deep_agent_script = lambda name: os.path.abspath(chat.__file__)
         chat.pending_resumes.clear()
-        from backend.core import get_repo_status as _real_status
+        from backend.core.git_helpers import get_repo_status as _real_status
         self._orig_status = _real_status
-        import backend.core as _core
+        import backend.core.git_helpers as _core
         _core.get_repo_status = lambda name: {"repo": name}
         import backend.api.routers.ops as _opsmod
         _opsmod.get_repo_status = lambda name: {"repo": name}
@@ -145,7 +145,7 @@ class ChatOpsTest(unittest.TestCase):
         proposals.run_dispatch = self._orig_dispatch
         proposals.run_gh_pr_comment = self._orig_pr_comment
         proposals.run_gh_pr_review = self._orig_pr_review
-        import backend.core as _core
+        import backend.core.git_helpers as _core
         _core.get_repo_status = self._orig_status
         import backend.api.routers.ops as _opsmod
         del _opsmod.get_repo_status

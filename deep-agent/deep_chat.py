@@ -117,9 +117,18 @@ EXIT_NEEDS_APPROVAL = 3
 # ALLOWED_TD is the engine's list itself, never a copy (same
 # pattern as ask_investigator.py #521).
 # engine.py is stdlib-only, so the stdlib-only import contract holds.
-if cli.repo_root() not in sys.path:
-    sys.path.insert(0, cli.repo_root())
-from backend.exec.engine import ALLOWED_TD_COMMANDS as ALLOWED_TD  # noqa: E402
+# Imported lazily in _td_res(): CLI validation paths (bad prompt/repo)
+# must run with stdlib+siblings only, no repo root on sys.path.
+_TD_RES_CACHE = None
+
+
+def _td_res():
+    """Compiled allowlist shapes, loaded on first proposal validation."""
+    global _TD_RES_CACHE
+    if _TD_RES_CACHE is None:
+        from backend.exec.engine import ALLOWED_TD_COMMANDS as ALLOWED_TD
+        _TD_RES_CACHE = [_td_shape_re(s) for s in ALLOWED_TD]
+    return _TD_RES_CACHE
 
 # The buttons confirm pattern: Approve tap -> approve, Decline tap ->
 # reject. Batched mode (deepagents default): one interrupt per model
@@ -205,8 +214,6 @@ def _td_shape_re(shape):
     return re.compile(r"\s+".join(parts) + r"\Z")
 
 
-_TD_RES = [_td_shape_re(s) for s in ALLOWED_TD]
-
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 DISPATCH_TASK_LIMIT = 4000
 
@@ -259,7 +266,7 @@ def validate_proposal(payload):
                 or len(command) > 300:
             return False, "REJECTED: td needs a command (1-300 chars)"
         command = " ".join(command.split())
-        for rx in _TD_RES:
+        for rx in _td_res():
             if rx.match(command):
                 return True, (
                     f"PROPOSE td\nCOMMAND: {command}\nEND PROPOSE"

@@ -17,8 +17,8 @@ import tempfile
 import threading
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-HOOK = os.path.join(ROOT, "scripts", "certbot-deploy-hook.sh")
+HOOK = os.path.abspath(
+    os.path.join("scripts", "certbot-deploy-hook.sh"))
 
 
 class _PingHandler(http.server.BaseHTTPRequestHandler):
@@ -90,7 +90,7 @@ def _run_hook(env, timeout=90):
         full_env.pop(var, None)
     full_env.update(env)
     return subprocess.run(
-        ["bash", os.path.abspath(HOOK)],
+        ["bash", HOOK],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

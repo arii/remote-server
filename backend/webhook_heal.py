@@ -1,6 +1,6 @@
 """Webhook-pull healing ladder (#855).
 
-`backend.notify.webhook_pull` used to skip dirty/diverged checkouts
+`backend.notify.webhook.webhook_pull` used to skip dirty/diverged checkouts
 forever: every push re-observed the same lag, the checkout never
 moved, and the only recovery was hand-fixing git state. This module
 owns the heal-or-escalate ladder so no skipped pull rots silently:

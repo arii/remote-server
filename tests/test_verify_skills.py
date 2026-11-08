@@ -12,8 +12,7 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-SCRIPT = os.path.join(ROOT, "scripts", "verify-skills.sh")
+SCRIPT = os.path.abspath(os.path.join("scripts", "verify-skills.sh"))
 
 
 def _sha256(data):
@@ -94,7 +93,8 @@ class VerifySkillsTest(unittest.TestCase):
 
     def test_git_tracked_project_skill_passes(self):
         proc = subprocess.run(
-            ["git", "-C", ROOT, "ls-files", ".agents/skills/*/SKILL.md"],
+            ["git", "-C", os.path.abspath("."), "ls-files",
+             ".agents/skills/*/SKILL.md"],
             capture_output=True, text=True,
         )
         tracked = [line.strip() for line in proc.stdout.splitlines() if line.strip()]

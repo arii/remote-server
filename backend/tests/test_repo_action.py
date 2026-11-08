@@ -10,8 +10,8 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from backend.core import (repo_discard_untracked, repo_stash,
-                          repo_sync)
+from backend.core.git_helpers import (repo_discard_untracked, repo_stash,
+                                         repo_sync)
 
 
 def _proc(rc=0, out="", err=""):
@@ -62,7 +62,7 @@ class RepoStashTest(unittest.TestCase):
     def _stash(self, tmp, fake):
         _checkout(tmp)
         with mock.patch(
-                "backend.core.get_repos_dir", return_value=Path(tmp)):
+                "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             return repo_stash("demo", run=fake)
 
     def test_clean_tree_is_noop(self):
@@ -98,7 +98,7 @@ class RepoStashTest(unittest.TestCase):
     def test_missing_checkout_raises_not_found(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 with self.assertRaises(FileNotFoundError):
                     repo_stash("nope", run=FakeGit())
 
@@ -120,7 +120,7 @@ class RepoStashTest(unittest.TestCase):
             with open(os.path.join(path, "new.txt"), "w") as fh:
                 fh.write("untracked\n")
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 body = repo_stash("demo")
             self.assertTrue(body["ok"])
             self.assertTrue(body["clean"])
@@ -134,7 +134,7 @@ class RepoDiscardTest(unittest.TestCase):
     def _discard(self, tmp, fake):
         _checkout(tmp)
         with mock.patch(
-                "backend.core.get_repos_dir", return_value=Path(tmp)):
+                "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             return repo_discard_untracked("demo", run=fake)
 
     def test_no_untracked_is_noop(self):
@@ -183,7 +183,7 @@ class RepoDiscardTest(unittest.TestCase):
             with open(drop, "w") as fh:
                 fh.write("junk\n")
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 body = repo_discard_untracked("demo")
             self.assertTrue(body["ok"])
             self.assertFalse(os.path.exists(drop))
@@ -195,7 +195,7 @@ class RepoSyncTest(unittest.TestCase):
     def _sync(self, tmp, fake):
         _checkout(tmp)
         with mock.patch(
-                "backend.core.get_repos_dir", return_value=Path(tmp)):
+                "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             return repo_sync("demo", run=fake)
 
     def _clean_fake(self, **procs):
@@ -263,7 +263,7 @@ class RepoSyncTest(unittest.TestCase):
                             "--allow-empty"], cwd=path, env=env,
                            check=True)
             with mock.patch(
-                    "backend.core.get_repos_dir", return_value=Path(tmp)):
+                    "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
                 body = repo_sync("demo")
             self.assertFalse(body["ok"])
             self.assertIn("check network", body["detail"])

@@ -1,12 +1,9 @@
 import unittest
 import os
-import sys
 import json
 import subprocess
 import tempfile
 import shutil
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 class TestBrowserMcp(unittest.TestCase):
@@ -21,7 +18,7 @@ class TestBrowserMcp(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_setup_browser_mcp_script(self):
-        setup_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/setup-browser-mcp.sh"))
+        setup_script = os.path.abspath(os.path.join("scripts", "setup-browser-mcp.sh"))
         res = subprocess.run(["bash", setup_script], env=self.env, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"setup-browser-mcp.sh failed: {res.stderr}")
 
@@ -57,7 +54,7 @@ class TestBrowserMcp(unittest.TestCase):
         self.assertIn("browsermcp", cfg["mcpServers"])
 
     def test_update_permissions_script(self):
-        update_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/update-permissions.sh"))
+        update_script = os.path.abspath(os.path.join("scripts", "update-permissions.sh"))
         res = subprocess.run(["bash", update_script], env=self.env, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"update-permissions.sh failed: {res.stderr}")
 
@@ -77,13 +74,13 @@ class TestBrowserMcp(unittest.TestCase):
         self.assertIn("command(pnpm)", allows)
 
     def test_allow_boomtick_mcp_deprecation_wrapper(self):
-        dep_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/allow-boomtick-mcp.sh"))
+        dep_script = os.path.abspath(os.path.join("scripts", "allow-boomtick-mcp.sh"))
         res = subprocess.run(["bash", dep_script], env=self.env, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"allow-boomtick-mcp.sh failed: {res.stderr}")
         self.assertIn("deprecated", res.stderr)
 
     def test_setup_browsermcp_tunnel_script(self):
-        setup_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "../scripts/setup-browsermcp-tunnel.sh"))
+        setup_script = os.path.abspath(os.path.join("scripts", "setup-browsermcp-tunnel.sh"))
         env = self.env.copy()
         env["OFFLINE"] = "1"
         res = subprocess.run(["bash", setup_script], env=env, capture_output=True, text=True)

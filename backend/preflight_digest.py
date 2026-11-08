@@ -80,7 +80,7 @@ def _detail(node):
     for k, pick in (("stderr", 0), ("stdout", -1)):
         v = node.get(k)
         if isinstance(v, str) and v.strip():
-            lines = [l.strip() for l in v.strip().splitlines() if l.strip()]
+            lines = [ln.strip() for ln in v.strip().splitlines() if ln.strip()]
             if lines:
                 return lines[pick][:160]
     counts = []

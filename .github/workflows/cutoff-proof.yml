@@ -67,6 +67,10 @@ jobs:
           curl -sf http://localhost:11434/api/tags | grep -q qwen3
 
       - name: static cutoff suite
+        env:
+          # test_cutoff_drill imports deep-agent siblings (model_router):
+          # the entry point declares the path (no in-code sys.path hacks).
+          PYTHONPATH: deep-agent
         run: python3 -m unittest tests.test_cutoff_drill
 
       - name: keyless proof drill

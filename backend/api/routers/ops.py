@@ -28,13 +28,12 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.core import (
+from backend.core.containers import get_system_health
+from backend.core.env_config import (
     briefing_fixture_candidate,
-    get_system_health,
-    require_confirm,
     resolve_briefing_fixture_path,
-    validate_repo_name,
 )
+from backend.core.validation import require_confirm, validate_repo_name
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["ops"])
@@ -347,7 +346,7 @@ def workflow_health(repo: str = "remote-server") -> dict:
         name = validate_repo_name(repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    from backend.core import get_repo_status
+    from backend.core.git_helpers import get_repo_status
 
     try:
         get_repo_status(name)
@@ -370,7 +369,7 @@ def workflow_health(repo: str = "remote-server") -> dict:
 @router.post("/clear", response_model=ClearResult)
 def clear(body: ClearRequest) -> dict:
     from backend.api.routers.jobs import registry
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "run-clear")
 

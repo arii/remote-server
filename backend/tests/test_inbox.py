@@ -64,8 +64,7 @@ class MergeReadinessFixtureTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        fixture = (Path(__file__).resolve().parents[2]
-                   / "frontend" / "src" / "mergeReadiness.fixtures.json")
+        fixture = (Path("frontend") / "src" / "mergeReadiness.fixtures.json")
         with open(fixture, encoding="utf-8") as fh:
             cls.cases = json.load(fh)["cases"]
 
@@ -409,7 +408,7 @@ class InboxCacheTest(unittest.TestCase):
                 os.environ["BUTTONS_DEFERRED_PATH"] = old
 
     def test_webhook_pull_invalidates_on_success_only(self):
-        from backend import notify as N
+        from backend.notify import webhook as N
 
         repo = "arii/remote-server"
         orig_pull, orig_append = N.webhook_pull, N.ledger.append

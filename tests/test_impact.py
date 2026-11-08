@@ -9,13 +9,10 @@ import json
 import os
 import struct
 import subprocess
-import sys
 import tempfile
 import unittest
 import zlib
 from unittest import mock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import impact
 
@@ -629,8 +626,7 @@ class TestZeroGemini(unittest.TestCase):
         # docstring + comments may say "zero-Gemini"/"never
         # Gemini" (this assertion allows those spellings); any
         # other mention (key, client, model id) fails.
-        src = os.path.join(os.path.dirname(__file__), "..",
-                           "deep-agent", "impact.py")
+        src = os.path.join("deep-agent", "impact.py")
         with open(src, encoding="utf-8") as f:
             text = f.read()
         scrubbed = text.replace("Zero-Gemini", "").replace(
@@ -640,8 +636,7 @@ class TestZeroGemini(unittest.TestCase):
     def test_model_path_is_router_backed(self):
         # ask_diff resolves its model only through
         # deep_chat.build_model (Ollama first, Nebius fallback).
-        src = os.path.join(os.path.dirname(__file__), "..",
-                           "deep-agent", "impact.py")
+        src = os.path.join("deep-agent", "impact.py")
         with open(src, encoding="utf-8") as f:
             text = f.read()
         self.assertIn("deep_chat.build_model", text)
@@ -737,8 +732,7 @@ class TestAskToolsInvoke(unittest.TestCase):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "ask_investigator",
-            os.path.join(os.path.dirname(__file__), "..",
-                         "deep-agent", "ask_investigator.py"))
+            os.path.join("deep-agent", "ask_investigator.py"))
         cls.ai = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.ai)
 

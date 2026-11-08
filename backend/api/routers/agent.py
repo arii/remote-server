@@ -117,7 +117,8 @@ def _repo_target(repo: str) -> tuple[str, str]:
     the terminal container, so it must be the /srv bind-mount path
     even when the buttons-side resolver returns /home/ari paths.
     """
-    from backend.core import get_repo_status, validate_repo_name
+    from backend.core.git_helpers import get_repo_status
+    from backend.core.validation import validate_repo_name
 
     try:
         name = validate_repo_name(repo)
@@ -219,7 +220,7 @@ async def _turn_events(provider: str, repo: str, cwd: str,
 
 @router.post("/turn")
 async def agent_turn_route(body: TurnRequest) -> StreamingResponse:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     if body.provider not in agent_turn.PROVIDERS:
         raise HTTPException(status_code=400, detail="unknown provider")

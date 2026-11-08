@@ -8,7 +8,6 @@ issue_generator.py; there is no standalone runner.
 
 import json
 import subprocess
-import sys
 
 import cli
 
@@ -21,9 +20,6 @@ import runs  # noqa: E402
 import s5tools  # noqa: E402
 import impact  # noqa: E402
 
-
-if cli.repo_root() not in sys.path:
-    sys.path.insert(0, cli.repo_root())
 
 _repo = ""
 _checkout = ""

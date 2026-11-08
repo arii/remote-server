@@ -133,8 +133,10 @@ REPO_SCOPED_ACTIONS = (
     "supervise",
 )
 
-ENGINE_ROOT = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Repo root: every entry point runs with cwd=repo root (server /app,
+# run_check worktrees, tests), so the cwd IS the root. No __file__
+# climbing (see scripts/verify-python-paths.py).
+ENGINE_ROOT = os.getcwd()
 
 
 def stack_dir() -> str:

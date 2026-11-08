@@ -10,7 +10,7 @@ import glob
 import os
 import unittest
 
-DEEP_AGENT = os.path.join(os.path.dirname(__file__), "..", "deep-agent")
+DEEP_AGENT = "deep-agent"
 
 
 def _chat_constructions(path):

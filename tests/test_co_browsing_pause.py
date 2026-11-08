@@ -6,13 +6,10 @@ takeover, and times out while still paused.
 """
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import pipeline as pipeline_mod
 from pipeline import Pipeline

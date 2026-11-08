@@ -36,18 +36,21 @@ TURN_BODY = {"provider": "muse", "repo": "testrepo",
 
 
 def _patch_repo(test):
-    import backend.core as core
+    import backend.core.git_helpers as git_helpers
+    import backend.core.repos as repos
+    import backend.core.validation as validation
 
-    test._orig = (core.validate_repo_name, core.get_repo_status,
-                  core.resolve_repo_path)
-    core.validate_repo_name = lambda name: name
-    core.get_repo_status = lambda name: {"repo": name}
-    core.resolve_repo_path = lambda name: __import__(
+    test._orig = (validation.validate_repo_name,
+                  git_helpers.get_repo_status,
+                  repos.resolve_repo_path)
+    validation.validate_repo_name = lambda name: name
+    git_helpers.get_repo_status = lambda name: {"repo": name}
+    repos.resolve_repo_path = lambda name: __import__(
         "pathlib").Path("/tmp") / name
-    test.addCleanup(setattr, core, "validate_repo_name",
+    test.addCleanup(setattr, validation, "validate_repo_name",
                     test._orig[0])
-    test.addCleanup(setattr, core, "get_repo_status", test._orig[1])
-    test.addCleanup(setattr, core, "resolve_repo_path",
+    test.addCleanup(setattr, git_helpers, "get_repo_status", test._orig[1])
+    test.addCleanup(setattr, repos, "resolve_repo_path",
                     test._orig[2])
 
 

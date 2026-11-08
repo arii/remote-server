@@ -440,7 +440,7 @@ class FixtureResolveTest(unittest.TestCase):
     """Resolver rules for the briefing fixture override (#453)."""
 
     def test_explicit_env_wins_without_opt_in(self):
-        from backend.core import resolve_briefing_fixture_path
+        from backend.core.env_config import resolve_briefing_fixture_path
 
         with mock.patch.dict(os.environ, {
                 "BUTTONS_FIXTURE_BRIEFING": " /x/y.json ",
@@ -452,7 +452,7 @@ class FixtureResolveTest(unittest.TestCase):
                              "/x/y.json")
 
     def test_candidate_gated_behind_opt_in(self):
-        from backend.core import (
+        from backend.core.env_config import (
             briefing_fixture_candidate,
             resolve_briefing_fixture_path,
         )
@@ -472,7 +472,7 @@ class FixtureResolveTest(unittest.TestCase):
                                  stray)
 
     def test_opt_in_truthy_values(self):
-        from backend.core import fixture_auto_discover_enabled
+        from backend.core.env_config import fixture_auto_discover_enabled
 
         for value in ("1", "true", "TRUE", "yes", "on", " On "):
             with mock.patch.dict(os.environ, {
@@ -486,7 +486,7 @@ class FixtureResolveTest(unittest.TestCase):
                                  value)
 
     def test_nothing_configured_resolves_empty(self):
-        from backend.core import resolve_briefing_fixture_path
+        from backend.core.env_config import resolve_briefing_fixture_path
 
         with mock.patch.dict(os.environ, {}):
             os.environ.pop("BUTTONS_FIXTURE_BRIEFING", None)
@@ -505,9 +505,7 @@ class BriefingScriptSmokeTest(unittest.TestCase):
     """
 
     def test_script_imports_resolve(self):
-        root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        script = os.path.join(root, "backend", "briefing_summary.py")
+        script = os.path.join("backend", "briefing_summary.py")
         # No args -> usage to stderr, exit 2 (the script has no --help).
         # Any ModuleNotFoundError would traceback and exit 1 instead.
         proc = subprocess.run(
@@ -682,24 +680,17 @@ class CliLedgerUnionTest(unittest.TestCase):
 
     def test_cli_path_parity_with_deep_agent(self):
         # backend/ledger duplicates deep-agent/ledger.py's path
-        # resolution (hyphenated dir + sys.path games make the import
-        # awkward); pin the two to each other.
+        # resolution (hyphenated dir makes the import awkward);
+        # pin the two to each other.
         import importlib.util
 
-        here = os.path.abspath(ledger.__file__)
-        root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
-        deep_agent = os.path.join(root, "deep-agent")
-        sys.path.insert(0, deep_agent)
-        try:
-            spec = importlib.util.spec_from_file_location(
-                "cli_ledger_parity",
-                os.path.join(deep_agent, "ledger.py"))
-            self.assertIsNotNone(spec)
-            self.assertIsNotNone(spec.loader)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-        finally:
-            sys.path.remove(deep_agent)
+        spec = importlib.util.spec_from_file_location(
+            "cli_ledger_parity",
+            os.path.join("deep-agent", "ledger.py"))
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
 
         def cli_resolve():
             return (os.environ.get("EVAL_LEDGER") or os.path.join(
@@ -819,9 +810,7 @@ class LedgerKindCoverageTest(unittest.TestCase):
         # Issue #457: the allowlist drifted from the writers
         # ("agent-turn" written, "agent" listed). Every kind string
         # passed to ledger.append must be queryable via LEDGER_KINDS.
-        backend_dir = os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))
-        kinds, unresolved = _written_ledger_kinds(backend_dir)
+        kinds, unresolved = _written_ledger_kinds("backend")
         self.assertEqual(unresolved, [],
                          f"unresolvable ledger.append kinds: {unresolved}")
         self.assertIn("agent-turn", kinds,

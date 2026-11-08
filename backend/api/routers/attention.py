@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -40,15 +39,9 @@ from backend import webhook_heal
 from backend.api.routers import agents
 from backend.api.routers import ops
 from backend.api.routers.jobs import registry
-from backend.core import validate_repo_name
+from backend.core.validation import validate_repo_name
 
 logger = logging.getLogger(__name__)
-
-REPO_ROOT = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-sys.path.insert(0, os.path.join(REPO_ROOT, "deep-agent"))
 
 import model_router  # noqa: E402
 

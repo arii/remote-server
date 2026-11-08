@@ -55,7 +55,6 @@ except ImportError:
         )
     except ImportError:
         # Fallback when running from different relative paths
-        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         from ast_validator import validate_source_syntax  # type: ignore
         from parse_task_spec import (  # type: ignore
             SCAFFOLD_HINT,

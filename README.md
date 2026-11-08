@@ -150,7 +150,8 @@ docs/                     guides & runbooks (see Docs above)
 - Let's Encrypt privkey is mounted read-only from the host certbot dir;
   the key never leaves the host. Whole-dir mount (not file mounts) so
   renewals don't go stale; the deploy-hook restarts the proxy on renewal.
-- Tailscale is VPN-only here — no `tailscale funnel` (that would be a second
-  public ingress); the serve fallback is documented, not enabled.
+- Tailscale is VPN-only by default — no `tailscale funnel` (that would be a
+  second public ingress); the tailnet serve fallback is opt-in via `TS_SERVE=1`
+  (see `scripts/tailscale-entrypoint.sh`).
 - Keep images pinned and updated; re-read `docs/remote-access.md` "what I
   could not verify" before trusting version-sensitive flags.

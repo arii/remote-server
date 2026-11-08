@@ -9,11 +9,6 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api.routers import agent, agent_control, agents, attention, briefing, browser_view, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEEP_AGENT = os.path.join(REPO_ROOT, "deep-agent")
-if _DEEP_AGENT not in sys.path:
-    sys.path.insert(0, _DEEP_AGENT)
-
 
 @asynccontextmanager
 async def _lifespan(app):
@@ -130,9 +125,9 @@ def health() -> dict:
             "index_chunks": _index_chunks()}
 
 
-_DIST = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "frontend", "dist")
+# Built SPA dir: entry points run with cwd=repo root (/app in the image),
+# so abspath() of the literal is exact with no __file__ climbing.
+_DIST = os.path.abspath(os.path.join("frontend", "dist"))
 
 
 def mount_spa(target, dist_dir=_DIST):

@@ -26,7 +26,8 @@ from backend.api.cache import SWRCache
 from backend.api.routers import attention, pulls
 from backend.api.routers.attention import AttentionItem
 from backend.api.routers.jobs import registry
-from backend.core import list_repos, validate_repo_name
+from backend.core.git_helpers import list_repos
+from backend.core.validation import validate_repo_name
 
 router = APIRouter(prefix="/api", tags=["inbox"])
 

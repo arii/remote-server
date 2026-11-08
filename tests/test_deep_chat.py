@@ -12,8 +12,6 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 import deep_chat
 
 try:
@@ -306,13 +304,19 @@ class TestInterruptContract(unittest.TestCase):
 
 
 class TestCliValidation(unittest.TestCase):
-    SCRIPT = os.path.join(
-        os.path.dirname(__file__), "..", "deep-agent", "deep_chat.py")
+    SCRIPT = os.path.join("deep-agent", "deep_chat.py")
 
     def run_script(self, *args):
+        # Mirror prod (chat.py deep_agent_env): the child needs the repo
+        # root for backend.exec.engine plus deep-agent/ for siblings.
+        # cwd is the repo root by contract, so derive both from it.
+        root = os.getcwd()
+        env = {**os.environ,
+               "PYTHONPATH": (root + os.pathsep
+                              + os.path.join(root, "deep-agent"))}
         return subprocess.run(
             [sys.executable, self.SCRIPT, *args],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, env=env,
         )
 
     def test_bad_repo(self):
