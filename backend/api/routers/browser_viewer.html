@@ -58,6 +58,7 @@ const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
 let dsf = 1;
 let ws = null;
 let reconnectTimer = 0;
+let noFrameTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
 function setControlsEnabled(on) {
   for (const id of ['url', 'go', 'kb', 'kb-fab']) {
@@ -90,8 +91,16 @@ function connect() {
       const label = m.kind === 'agent' ? 'shared agent session'
         : m.kind === 'viewer-shared' ? 'shared browser tab' : 'own session';
       const st = document.getElementById('state');
-      st.textContent = label + ' · live';
+      st.dataset.label = label + ' · live';
+      st.textContent = st.dataset.label;
       st.title = 'session ' + m.session;
+      // A live socket with no frames means the Grid side is not
+      // producing (single slot held elsewhere, or a stuck session):
+      // say so instead of a black canvas that reads as broken.
+      clearTimeout(noFrameTimer);
+      noFrameTimer = setTimeout(() => {
+        if (frames === 0) st.textContent = st.dataset.label + ' (no frames yet — slot may be busy)';
+      }, 12000);
       return;
     }
     if (m.type === 'status' || m.type === 'reattached') {
@@ -104,6 +113,12 @@ function connect() {
     }
     if (m.type === 'frame') {
       img.onload = () => {
+        // First frame clears a stale slot-busy hint, if shown.
+        if (frames === 0) {
+          clearTimeout(noFrameTimer);
+          const st = document.getElementById('state');
+          if (st.dataset.label) st.textContent = st.dataset.label;
+        }
         if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
         ctx.drawImage(img, 0, 0); frames++;
         const el = (performance.now() - t0) / 1000;
@@ -129,6 +144,7 @@ function connect() {
     document.getElementById('state').textContent = 'reconnecting — input paused…';
     setControlsEnabled(false);
     clearTimeout(reconnectTimer);
+    clearTimeout(noFrameTimer);
     reconnectTimer = setTimeout(connect, 2000);
   };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };

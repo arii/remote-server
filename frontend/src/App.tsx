@@ -823,7 +823,7 @@ export default function App() {
             />
           ))}
         </nav>
-        <div className="topbar-group">
+        <div className="topbar-group topbar-tools">
           <button
             type="button"
             data-testid="palette-open"

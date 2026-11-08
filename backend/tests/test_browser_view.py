@@ -61,6 +61,16 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("text/css", css.headers["content-type"])
         self.assertIn("hg-button", css.text)
 
+    def test_viewer_names_busy_slot(self):
+        # A live socket with no frames (single Grid slot held
+        # elsewhere, or a stuck session) must say so instead of a
+        # black canvas that reads as broken. The hint clears on the
+        # first frame and never outlives a reconnect.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("no frames yet", html)
+        self.assertIn("st.dataset.label", html)
+        self.assertIn("clearTimeout(noFrameTimer)", html)
+
     def test_viewer_no_store_is_edge_owned(self):
         # No-store lives in the Caddy /cdp-stream* handle, not app
         # code (edge concern, like X-Frame-Options): the app must not
