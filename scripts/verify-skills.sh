@@ -9,7 +9,8 @@
 #   verify (default)  every locked skill is installed at
 #                     .agents/skills/<name>/SKILL.md with a matching hash;
 #                     any extra untracked skill dir fails (git-tracked project
-#                     skills such as lane-coder are reviewed via PRs instead).
+#                     skills such as lane-coder and swarm are reviewed via
+#                     PRs instead).
 #   --repin           rewrite computedHash values from the installed files
 #                     (the bump procedure: reinstall/upgrade, review the diff,
 #                     re-pin, commit the lock).

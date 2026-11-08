@@ -114,7 +114,19 @@ h1, h2, h3 { text-wrap: balance; }
   gap: 0.5rem 0.75rem;
   min-width: 0;
 }
-.topbar-group a { font-size: 0.9rem; }
+/* Tool links read as chips (#1182): Terminal/Code are anchors for
+   href semantics, so they miss the base button chrome — give them
+   the same surface/border/radius as their button siblings. */
+.topbar-group a {
+  font-size: 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.8rem;
+  color: var(--text);
+  text-decoration: none;
+}
+.topbar-group a:hover { border-color: var(--accent); }
 .topbar-group a, .topbar-group button {
   min-height: 44px;
   display: inline-flex;
@@ -666,6 +678,16 @@ li.history-row.selected { outline: 2px solid var(--accent); outline-offset: 2px;
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
+/* Pressed toggles everywhere (#1183): pickers that only set
+   aria-pressed (chat backend/scope) get the topnav pressed fill.
+   More specific facet/topnav rules above/below keep their own
+   treatment — this fills in everything else. */
+button[aria-pressed="true"] {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: #fff;
+  font-weight: 650;
+}
 /* Inspector rail: selected-row detail blocks reuse Detail grammar. */
 .inspector .Detail pre {
   margin: 0.5rem 0 0;
@@ -784,7 +806,9 @@ a.link-chip:hover { border-color: var(--accent); }
 .attention-head { display: flex; align-items: flex-start; gap: 0.5rem; }
 .attention-head .row-title { flex: 1 1 auto; min-width: 0; }
 .attention-check { flex: none; width: 1.15rem; height: 1.15rem; margin-top: 0.15rem; cursor: pointer; }
-.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
+/* Select-all rides one line (#1178): label-qualified to beat
+   `label.row-meta` (0,1,1) without reordering or markup churn. */
+label.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
 .attention-select-all input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 
 /* Ask-agent preview (issue #935): the disclosure summary carries
@@ -1114,6 +1138,10 @@ button.btn-link {
   text-align: left;
 }
 button.btn-link:hover:not(:disabled) { text-decoration: underline; }
+/* Hero deep-links keep tap targets (#1177): the now-hero segments
+   are real buttons, so they get the 44px minimum even though the
+   generic inline btn-link stays zero-chrome elsewhere. */
+.now-hero button.btn-link { min-height: 44px; padding: 0.45rem 0.2rem; }
 button.btn-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
 select, input[type="text"], input:not([type]), textarea {
@@ -1147,6 +1175,9 @@ label.row-meta { display: grid; gap: 0.3rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 /* Phone-first: keyboard triage hints are unactionable on touch. */
 @media (pointer: coarse) { .triage-hint { display: none; } }
+/* Keyboard-shortcut hint is unactionable on touch (#1179): same
+   phone-first rule as the triage hints. */
+@media (pointer: coarse) { .shortcut-hint { display: none; } }
 
 /* Narrow phone chrome (issue #1033): one slim pinned bar at a time.
    The header scrolls away with the page; the tab row rides one

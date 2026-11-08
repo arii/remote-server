@@ -112,9 +112,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # pnpm version comes from packageManager alone (td doctor);
+      # passing version: here too fails the setup with "multiple versions".
       - uses: pnpm/action-setup@v6
-        with:
-          version: 10
       - uses: actions/setup-node@v7
         with:
           node-version: 24.16.0
@@ -129,9 +129,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # pnpm version comes from packageManager alone (td doctor);
+      # passing version: here too fails the setup with "multiple versions".
       - uses: pnpm/action-setup@v6
-        with:
-          version: 10
       - uses: actions/setup-node@v7
         with:
           node-version: 24.16.0
@@ -169,11 +169,26 @@ jobs:
       - name: validate configs
         run: python3 -m backend.validate_config
 
+  format:
+    name: ruff format (diff-aware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: install ruff
+        run: pip install "ruff==0.17.4"
+      - name: diff-aware format check
+        run: bash scripts/check-format-diff.sh
+
   report:
     name: comment CI failures on the PR
     # A failing PR yields a PR comment, never a new issue per failure
     # (issue #1081). One marker comment per PR, updated per run.
-    needs: [shell, compose, terminal-image, skills-lock, secret-scan, audit, frontend, backend]
+    needs: [shell, compose, terminal-image, skills-lock, secret-scan, audit, frontend, backend, format]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:

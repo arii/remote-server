@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { SystemHealthResponse, WorkflowHealthResponse, WorkflowRun } from '../apiClient';
-import { ContainerPills, HostTelemetry, RunRow, WorkflowRunsBody, telemetryText } from './ObservabilitySection';
+import { ContainerPills, HostTelemetry, RunRow, WorkflowRunsBody, runAge, telemetryText } from './ObservabilitySection';
 
 describe('run trace link (issue #584)', () => {
   const run = {
@@ -212,5 +212,78 @@ describe('observability actionable rows (issue #907)', () => {
     );
     expect(html).toContain('data-testid="workflow-runs-error"');
     expect(html).not.toContain('observability-retry');
+  });
+});
+
+describe('run age (issue #1180)', () => {
+  const NOW = Date.parse('2026-11-01T12:00:00Z');
+
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function run(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+    return {
+      id: 41760116751,
+      name: 'CI',
+      branch: 'fix/x',
+      event: 'push',
+      conclusion: 'failure',
+      url: 'https://github.com/o/r/actions/runs/41760116751',
+      diagnosed_cause: 'Tests failed.',
+      ...overrides,
+    } as WorkflowRun;
+  }
+
+  const iso = (ms: number): string => new Date(ms).toISOString();
+
+  it('runAge names just-now, minutes, hours, and days', () => {
+    expect(runAge(iso(NOW - 10_000))).toBe('just now');
+    expect(runAge(iso(NOW - 5 * 60_000))).toBe('5m ago');
+    expect(runAge(iso(NOW - 3 * 3_600_000))).toBe('3h ago');
+    expect(runAge(iso(NOW - 2 * 86_400_000))).toBe('2d ago');
+  });
+
+  it('runAge admits unknown time for a missing or garbage stamp', () => {
+    expect(runAge(undefined)).toBe('unknown time');
+    expect(runAge('not-a-date')).toBe('unknown time');
+  });
+
+  it('RunRow shows the run id with its age from created_at', () => {
+    const html = renderToStaticMarkup(
+      <RunRow run={run({ created_at: iso(NOW - 5 * 60_000) })} />,
+    );
+    expect(html).toContain('data-testid="observability-run-age-41760116751"');
+    expect(html).toContain('#41760116751 · 5m ago');
+  });
+
+  it('RunRow prefers created_at over updated_at', () => {
+    const html = renderToStaticMarkup(
+      <RunRow
+        run={run({
+          created_at: iso(NOW - 5 * 60_000),
+          updated_at: iso(NOW - 3 * 3_600_000),
+        })}
+      />,
+    );
+    expect(html).toContain('5m ago');
+    expect(html).not.toContain('3h ago');
+  });
+
+  it('RunRow falls back to updated_at without created_at', () => {
+    const html = renderToStaticMarkup(
+      <RunRow run={run({ updated_at: iso(NOW - 2 * 60_000) })} />,
+    );
+    expect(html).toContain('#41760116751 · 2m ago');
+  });
+
+  it('RunRow admits unknown time without any stamp', () => {
+    const html = renderToStaticMarkup(<RunRow run={run()} />);
+    expect(html).toContain('data-testid="observability-run-age-41760116751"');
+    expect(html).toContain('unknown time');
   });
 });

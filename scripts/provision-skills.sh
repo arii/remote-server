@@ -9,9 +9,14 @@
 # NOTE: this deliberately does NOT use `npx skills experimental_install`.
 # That tool computes directory digests and refuses our lock ("swarm has
 # changed since skills-lock.json was written") even though
-# verify-skills.sh --check-upstream proves all 26 hashes match upstream
+# verify-skills.sh --check-upstream proves all 25 hashes match upstream
 # HEAD. Our lock pins raw SKILL.md SHA-256 (written by `muse skills`);
 # the npx tool uses incompatible lock semantics and would rewrite it.
+#
+# swarm is intentionally NOT in this lock: it is a project skill now
+# (tracked at .agents/skills/swarm/SKILL.md with the quickjs-missing
+# fallback), reviewed via PRs like lane-coder — provisioning must never
+# overwrite the tracked copy with upstream (#1176).
 #
 #   provision-skills.sh [--fail-open]
 #
