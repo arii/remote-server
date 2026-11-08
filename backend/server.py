@@ -73,7 +73,8 @@ async def _lifespan(app):
     except Exception as exc:
         app.state.skills_verification_errors = [f"verifier error: {exc}"]
         attention.publish_skills_verification_errors(
-            app.state.skills_verification_errors)
+            app.state.skills_verification_errors
+        )
         print(
             f"FIRST-PARTY SKILLS VERIFICATION ERROR (issue #1120): {exc} "
             "— agent turns will run with skills UNVERIFIED.",
@@ -83,8 +84,7 @@ async def _lifespan(app):
     try:
         import threading
 
-        thread = threading.Thread(
-            target=briefing.warm_briefing_cache, daemon=True)
+        thread = threading.Thread(target=briefing.warm_briefing_cache, daemon=True)
         thread.start()
     except Exception:
         pass
@@ -141,8 +141,7 @@ def _index_chunks():
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "index": _index_state(),
-            "index_chunks": _index_chunks()}
+    return {"ok": True, "index": _index_state(), "index_chunks": _index_chunks()}
 
 
 # Built SPA dir: entry points run with cwd=repo root (/app in the image),
