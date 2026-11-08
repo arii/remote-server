@@ -26,11 +26,9 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
-# Release-train pin (issue #1081): one rollup PR per upstream boomtick
-# release — never float main. A floating ref means rebuilds can pull
-# unaudited upstream. Bumped together with Dockerfile by the
-# release-train batch; see docs/release-train.md.
-ARG BOOMTICK_CLI_REF=cli-v0.21.0
+# Boomtick CLI floats on main (latest-only): the image always
+# consumes current upstream instead of a release tag.
+ARG BOOMTICK_CLI_REF=main
 
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
