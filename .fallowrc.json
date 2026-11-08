@@ -9,7 +9,8 @@
     "terminal/**",
     ".agents/**",
     ".claude/**",
-    ".github/skills/**"
+    ".github/skills/**",
+    "backend/api/routers/vendor/**"
   ],
   "rules": {
     "unused-export": "warn",

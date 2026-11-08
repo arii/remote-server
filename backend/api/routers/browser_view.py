@@ -73,11 +73,17 @@ VIEWER_HTML = (
 # stalls the whole page (and the console iframe's onLoad) whenever
 # the CDN is unreachable — this reddened the console E2E smoke when
 # CI DNS hiccuped, and stalls phones on flaky networks the same way.
-# Pristine upstream bytes (MIT, hodgef/simple-keyboard). Upgrade by
-# replacing both files and the two refs in browser_viewer.html, then
-# updating the version assertions in test_browser_view.py.
-VENDOR_JS = Path(__file__).with_name("simple-keyboard-3.8.205.js").read_bytes()
-VENDOR_CSS = Path(__file__).with_name("simple-keyboard-3.8.205.css").read_bytes()
+# Pristine upstream bytes (MIT, hodgef/simple-keyboard) under vendor/
+# (fallow-ignored: minified third-party code trips complexity, dupes,
+# and unused-file findings by design). Upgrade by replacing both
+# files and the two refs in browser_viewer.html, then updating the
+# version assertions in test_browser_view.py.
+VENDOR_JS = (
+    Path(__file__).parent / "vendor" / "simple-keyboard-3.8.205.js"
+).read_bytes()
+VENDOR_CSS = (
+    Path(__file__).parent / "vendor" / "simple-keyboard-3.8.205.css"
+).read_bytes()
 
 
 def _grid_session_create():
