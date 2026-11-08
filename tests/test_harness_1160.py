@@ -21,8 +21,6 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 import auditor
 import coder
 import ledger
@@ -72,14 +70,16 @@ def _install_fake_langchain(test):
 
 class TestCheckEnv(unittest.TestCase):
     def test_checkout_leads_pythonpath(self):
+        # Root leads, deep-agent/ follows (parity with the npm test
+        # scripts' PYTHONPATH=./deep-agent), ambient kept behind.
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(s5tools.check_env("/repo"),
-                             {"PYTHONPATH": "/repo"})
+                             {"PYTHONPATH": "/repo:/repo/deep-agent"})
 
     def test_existing_pythonpath_kept_behind(self):
         with mock.patch.dict(os.environ, {"PYTHONPATH": "/a:/b"}):
             self.assertEqual(s5tools.check_env("/repo"),
-                             {"PYTHONPATH": "/repo:/a:/b"})
+                             {"PYTHONPATH": "/repo:/repo/deep-agent:/a:/b"})
 
     def test_run_repo_command_sets_pythonpath(self):
         with tempfile.TemporaryDirectory() as checkout:

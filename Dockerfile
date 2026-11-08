@@ -79,6 +79,12 @@ ENV PATH="/opt/venvs/td/bin:${PATH}"
 # for both: the bake below lands here and every runtime lookup
 # follows it via impact_pass._browser_dirs().
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+# Module search path (no in-code sys.path hacks anywhere): script-file entry
+# (impact_pass.py --check runs as /app/backend/..., so the script dir — not
+# the repo root — lands on sys.path) plus backend runtime cross-component
+# imports (routers/agents.py `import runs`, proposals.py `import s5tools`
+# both live in deep-agent/).
+ENV PYTHONPATH=/app:/app/deep-agent
 WORKDIR /app
 # Root ux deps only (tsx/playwright/axe for td ux): the SPA's own
 # deps stay in the build stage. Filter value must match the root

@@ -216,11 +216,6 @@ def build_plan(repo, pr, meta, files, diff_text):
     }
 
 
-def _deep_agent_dir():
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(os.path.dirname(here), "deep-agent")
-
-
 def gather_context(repo, paths, limit=CONTEXT_CAP):
     """Best-effort repo context via s5tools (list_dir/grep_repo).
 
@@ -228,9 +223,6 @@ def gather_context(repo, paths, limit=CONTEXT_CAP):
     unavailable — the review still runs on the diff alone.
     """
     try:
-        deep_agent = _deep_agent_dir()
-        if deep_agent not in sys.path:
-            sys.path.insert(0, deep_agent)
         import s5tools
     except Exception as exc:
         print(f"review: s5tools unavailable ({_short(exc)}); "
@@ -258,9 +250,6 @@ def gather_context(repo, paths, limit=CONTEXT_CAP):
 
 def _default_model_factory(prefer):
     """(model, spec) via deep_chat.build_model. Venv-only at call time."""
-    deep_agent = _deep_agent_dir()
-    if deep_agent not in sys.path:
-        sys.path.insert(0, deep_agent)
     import deep_chat
     return deep_chat.build_model(prefer=prefer)
 

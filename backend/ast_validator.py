@@ -163,9 +163,8 @@ def _ts_lib_dir() -> Optional[str]:
     env = os.environ.get("TS_LIB_DIR", "").strip()
     if env and os.path.isfile(os.path.join(env, "typescript.js")):
         return env
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    dev = os.path.join(repo, "frontend", "node_modules", "typescript",
-                       "lib")
+    dev = os.path.abspath(os.path.join(
+        "frontend", "node_modules", "typescript", "lib"))
     if os.path.isfile(os.path.join(dev, "typescript.js")):
         return dev
     return None
@@ -274,9 +273,9 @@ def _validate_javascript_typescript(file_path: str, code: str) -> Dict[str, Any]
                 line_match = re.search(r":(\d+)", err_output)
                 line_num = int(line_match.group(1)) if line_match else None
                 first_err_line = err_output.strip().splitlines()[-1] if err_output.strip() else "Syntax error"
-                for l in err_output.splitlines():
-                    if "SyntaxError" in l or "Error" in l:
-                        first_err_line = l.strip()
+                for err_line in err_output.splitlines():
+                    if "SyntaxError" in err_line or "Error" in err_line:
+                        first_err_line = err_line.strip()
                         break
                 error_msg = f"{first_err_line} (line {line_num})" if line_num else first_err_line
                 return {"valid": False, "error": error_msg, "line": line_num,

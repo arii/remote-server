@@ -277,9 +277,10 @@ def guard_prompt(prompt: str) -> str:
 # untouched, and a missing template file degrades to no-op.
 SPEC_TASK_MARKERS = ("design spec", "spec issue", "write a spec",
                      "write_spec_issue", "spec template")
-SPEC_SKILL_PATH = os.path.normpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "deep-agent", "skills", "write_spec_issue.md"))
+# Root-relative: every entry point runs with cwd=repo root (server /app,
+# tests, run_check worktrees). No __file__ climbing (see scripts gating).
+SPEC_SKILL_PATH = os.path.join(
+    "deep-agent", "skills", "write_spec_issue.md")
 
 
 def is_spec_task(prompt: str) -> bool:

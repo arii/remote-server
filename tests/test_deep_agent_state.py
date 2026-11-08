@@ -7,11 +7,8 @@ Run: python -m unittest tests.test_deep_agent_state
 """
 import importlib
 import os
-import sys
 import tempfile
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import ledger
 import observe

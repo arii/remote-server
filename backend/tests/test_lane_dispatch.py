@@ -694,11 +694,9 @@ class DispatchRouterTest(_QueueStoreTmpDir, unittest.TestCase):
     def test_router_registered_in_server(self):
         from pathlib import Path
 
-        root = Path(__file__).resolve().parents[1]
-        server_src = (root / "server.py").read_text()
+        server_src = Path("backend/server.py").read_text()
         self.assertIn("dispatch", server_src)
-        router_src = (root / "api" / "routers" / "dispatch.py") \
-            .read_text()
+        router_src = Path("backend/api/routers/dispatch.py").read_text()
         self.assertIn("/api/dispatch", router_src)
         self.assertIn("/health", router_src)
         self.assertIn('"ok"', router_src)

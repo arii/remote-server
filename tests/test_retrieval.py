@@ -2,11 +2,8 @@
 so the whole module imports without the deep-agent venv. No model
 calls. Run: python3 tests/test_retrieval.py"""
 import os
-import sys
 import tempfile
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import retrieval
 

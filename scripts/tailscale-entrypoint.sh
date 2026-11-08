@@ -4,11 +4,10 @@
 #
 # NOTE: the web terminal does NOT go through Tailscale — it is served publicly
 # via Ari's DDNS + certbot on ${TERMINAL_PORT} (see docker-compose.yml).
-# If the public port is ever blocked (restrictive hotel/cafe network), the
-# manual fallback is: docker exec <tailscale-container> tailscale serve \
-#   --https=443 --set-path / http://127.0.0.1:${TERMINAL_PORT}
-# then open https://<machine>.<tailnet>.ts.net in the phone browser
-# (Tailscale app on).
+# If the public port is ever blocked (restrictive hotel/cafe network),
+# set TS_SERVE=1 to expose the edge over the tailnet instead:
+# https://<machine>.<tailnet>.ts.net in the phone browser (Tailscale app
+# on). Default off: VPN-only. No funnel — the tailnet is the boundary.
 #
 # Requires a REUSABLE TS_AUTHKEY (entrypoint re-runs `tailscale up` on restart).
 set -eu
@@ -34,5 +33,18 @@ tailscale up \
 
 echo "tailscale up as: $(tailscale ip -4)"
 tailscale status || true
+
+# Opt-in tailnet serving (default off). TS_SERVE=1 exposes the edge over
+# https://<machine>.<tailnet>.ts.net/ for networks where the public DDNS
+# port is blocked. Target defaults to the oauth2-proxy public listener;
+# override with TS_SERVE_TARGET (any http:// URL reachable from this
+# host-network container). Idempotent: re-running serve re-applies it.
+if [ "${TS_SERVE:-}" = "1" ]; then
+  : "${TERMINAL_PORT:?TS_SERVE=1 needs TERMINAL_PORT}"
+  SERVE_TARGET="${TS_SERVE_TARGET:-http://127.0.0.1:${TERMINAL_PORT}}"
+  tailscale serve --https=443 --set-path / "$SERVE_TARGET"
+  echo "tailscale serving $SERVE_TARGET"
+  tailscale serve status || true
+fi
 
 wait "$TAILSCALED_PID"

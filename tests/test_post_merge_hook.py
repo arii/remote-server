@@ -12,8 +12,7 @@ import subprocess
 import tempfile
 import unittest
 
-HOOK = os.path.join(os.path.dirname(__file__), "..", "hooks",
-                    "post-merge")
+HOOK = os.path.abspath(os.path.join("hooks", "post-merge"))
 
 
 def _git(cwd, *args, env=None):
@@ -49,7 +48,7 @@ def _run_hook(cwd, extra_env=None):
         env.update(extra_env)
     bash = shutil.which("bash") or "/bin/bash"
     return subprocess.run(
-        [bash, os.path.abspath(HOOK)], cwd=cwd, env=env,
+        [bash, HOOK], cwd=cwd, env=env,
         capture_output=True, text=True)
 
 

@@ -9,13 +9,10 @@ import base64
 import io
 import json
 import os
-import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import model_router
 

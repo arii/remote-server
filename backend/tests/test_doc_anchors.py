@@ -19,8 +19,7 @@ import re
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-GUIDE = REPO_ROOT / "docs" / "agent-integration-guide.md"
+GUIDE = Path("docs") / "agent-integration-guide.md"
 
 # (cited file, needle grepped in that file, token named in the guide).
 # Needles carry `def `/`class ` context so short names (health, main)
@@ -63,7 +62,7 @@ BARE_LINE_PIN = re.compile(r"(?<![\w/.:])\:\d{2,}")
 
 def assert_anchor(path, needle):
     """Fail unless needle still exists in the cited file."""
-    text = (REPO_ROOT / path).read_text()
+    text = Path(path).read_text()
     if needle not in text:
         raise AssertionError(f"rotted anchor: {needle!r} not found in {path}")
 

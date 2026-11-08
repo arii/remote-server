@@ -14,12 +14,7 @@ modules. All model/tool seams are injectable for deterministic evals.
 import json
 import os
 import subprocess
-import sys
 import time
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
 
 MAX_AUDIT_CYCLES_DEFAULT = 2
 DRIVE_LIMIT_DEFAULT = 25

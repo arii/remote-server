@@ -1,9 +1,5 @@
 """deep-agent/decisions.py unit tests. Stdlib-only, no langchain."""
-import os
-import sys
 import unittest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import decisions
 

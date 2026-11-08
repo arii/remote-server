@@ -9,8 +9,7 @@ import unittest
 
 class TestPiProfiles(unittest.TestCase):
     def setUp(self):
-        self.repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.bin_dir = os.path.join(self.repo_root, "terminal", "bin")
+        self.bin_dir = os.path.join("terminal", "bin")
 
     def test_profile_scripts_exist_and_executable(self):
         scripts = ["pi-code", "pi-review", "pi-triage"]
@@ -51,27 +50,27 @@ class TestPiProfiles(unittest.TestCase):
         self.assertNotIn("get_changed_files", exec_line)
 
     def test_dockerfile_installs_profiles(self):
-        dockerfile_path = os.path.join(self.repo_root, "terminal", "Dockerfile")
+        dockerfile_path = os.path.join("terminal", "Dockerfile")
         with open(dockerfile_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("COPY bin/ /usr/local/bin/", content)
         self.assertIn("chmod +x /usr/local/bin/pi-*", content)
 
     def test_dockerfile_installs_tmux_and_vim(self):
-        dockerfile_path = os.path.join(self.repo_root, "terminal", "Dockerfile")
+        dockerfile_path = os.path.join("terminal", "Dockerfile")
         with open(dockerfile_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("tmux", content)
         self.assertIn(" vim ", content)
 
     def test_dockerfile_installs_vimrc(self):
-        dockerfile_path = os.path.join(self.repo_root, "terminal", "Dockerfile")
+        dockerfile_path = os.path.join("terminal", "Dockerfile")
         with open(dockerfile_path, "r", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("COPY vimrc.local /etc/vim/vimrc.local", content)
 
     def test_mcp_config_valid_and_selective_exposure(self):
-        mcp_path = os.path.join(self.repo_root, "terminal", "pi-config", "mcp.json")
+        mcp_path = os.path.join("terminal", "pi-config", "mcp.json")
         with open(mcp_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.assertIn("mcpServers", data)
@@ -100,7 +99,7 @@ class TestPiProfiles(unittest.TestCase):
             self.assertEqual(exposure.get(tool), "direct", tool)
 
     def test_docs_describe_tool_profiles_and_benchmarks(self):
-        docs_path = os.path.join(self.repo_root, "docs", "pi-setup.md")
+        docs_path = os.path.join("docs", "pi-setup.md")
         with open(docs_path, "r", encoding="utf-8") as f:
             docs = f.read()
         self.assertIn("pi-code", docs)

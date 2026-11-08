@@ -26,7 +26,6 @@ import difflib
 import json
 import os
 import re
-import sys
 import threading
 import time
 import uuid
@@ -455,11 +454,6 @@ def _ux_audit_module():
     this works without the venv; same seam style as the review
     module's s5tools import). Raises ImportError when the
     deep-agent tree is missing."""
-    from backend.exec.engine import deep_agent_dir
-
-    deep_agent = deep_agent_dir()
-    if deep_agent not in sys.path:
-        sys.path.insert(0, deep_agent)
     import ux_audit
 
     return ux_audit

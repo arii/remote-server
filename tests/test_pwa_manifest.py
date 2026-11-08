@@ -21,7 +21,7 @@ import struct
 import tempfile
 import unittest
 
-FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")
+FRONTEND = "frontend"
 PUBLIC = os.path.join(FRONTEND, "public")
 MANIFEST = os.path.join(PUBLIC, "manifest.json")
 INDEX = os.path.join(FRONTEND, "index.html")
@@ -98,8 +98,7 @@ class PwaManifestTests(unittest.TestCase):
         # The manifest is fetched without credentials, so oauth2-proxy
         # must let GET manifest/icons through without a 302 to GitHub
         # (#943). The app shell and /api stay gated.
-        compose = os.path.join(
-            os.path.dirname(__file__), "..", "docker-compose.yml")
+        compose = "docker-compose.yml"
         with open(compose, encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn(

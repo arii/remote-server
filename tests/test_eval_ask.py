@@ -9,9 +9,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 import eval_ask
 import eval_lib
 import deep_chat
@@ -332,10 +329,9 @@ class TestAllowlistSync(unittest.TestCase):
         self.fail(f"{var} not found in {path}")
 
     def test_allowlist_single_sourced_from_truth(self):
-        root = os.path.join(os.path.dirname(__file__), "..")
         for name in ("ask_investigator.py", "deep_chat.py"):
             with self.subTest(name), open(os.path.join(
-                    root, "deep-agent", name),
+                    "deep-agent", name),
                     encoding="utf-8") as f:
                 tree = ast.parse(f.read())
             # No hand mirror: ALLOWED_TD must not be a local Assign.
@@ -380,7 +376,7 @@ class TestAllowlistSync(unittest.TestCase):
         # here instead of silently stranding the eval.
         # (read-pr-reviews since #428 retired the fix-ci anchor.)
         truth = self.load_list(
-            os.path.join(root, "backend", "exec", "engine.py"),
+            os.path.join("backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
         self.assertIn("td gh read-pr-reviews --pr N", truth)
 
@@ -389,7 +385,10 @@ class TestAllowlistSync(unittest.TestCase):
         # is the engine's list itself and every chat-accepted shape
         # runs; retired shapes stay rejected on both sides.
         # (deep_chat + engine are stdlib-only: safe to import here.)
-        self.assertIs(deep_chat.ALLOWED_TD, ALLOWED_TD_COMMANDS)
+        self.assertEqual(
+            [rx.pattern for rx in deep_chat._td_res()],
+            [deep_chat._td_shape_re(s).pattern
+             for s in ALLOWED_TD_COMMANDS])
         for shape in ALLOWED_TD_COMMANDS:
             cmd = shape.replace("N", "153")
             ok, _ = deep_chat.validate_proposal(
@@ -407,8 +406,7 @@ class TestAllowlistSync(unittest.TestCase):
     def test_auditor_imports_allowlist_without_mirror(self):
         # #1139: the ask entry lives in auditor.py; the td shapes must
         # arrive via the engine import, never a hand mirror.
-        root = os.path.join(os.path.dirname(__file__), "..")
-        with open(os.path.join(root, "deep-agent", "auditor.py"),
+        with open(os.path.join("deep-agent", "auditor.py"),
                   encoding="utf-8") as f:
             tree = ast.parse(f.read())
         assigns = [
@@ -431,9 +429,8 @@ class TestAllowlistSync(unittest.TestCase):
                          "backend.exec.engine")
 
     def test_propose_td_case_uses_allowlisted_shape(self):
-        root = os.path.join(os.path.dirname(__file__), "..")
         truth = self.load_list(
-            os.path.join(root, "backend", "exec", "engine.py"),
+            os.path.join("backend", "exec", "engine.py"),
             "ALLOWED_TD_COMMANDS")
         td_case = [c for c in eval_ask.PROMPTS
                    if c["name"] == "propose-td"][0]

@@ -15,8 +15,7 @@ import time
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-OFFER = REPO_ROOT / "terminal" / "bin" / "muse-resume-offer"
+OFFER = Path("terminal/bin/muse-resume-offer")
 
 
 def make_store(tmp, sessions):

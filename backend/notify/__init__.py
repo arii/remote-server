@@ -401,13 +401,6 @@ def _budget_cap_spend():
     stays silent instead of paging anyone.
     """
     try:
-        import sys
-        deep_agent = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))),
-            "deep-agent")
-        if deep_agent not in sys.path:
-            sys.path.insert(0, deep_agent)
         import pricing
         import runs
         cap = pricing.spend_cap()

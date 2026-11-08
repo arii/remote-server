@@ -18,8 +18,8 @@ import time
 import unittest
 import urllib.request
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-ENTRYPOINT = os.path.join(ROOT, "scripts", "buttons-entrypoint.sh")
+ENTRYPOINT = os.path.abspath(
+    os.path.join("scripts", "buttons-entrypoint.sh"))
 
 SCRUB = ("SKIP_INDEX_BUILD", "S5_CHROMA_DIR", "APP_ROOT",
          "BUTTONS_STACK", "CHUNK_FLOOR",
@@ -123,7 +123,7 @@ class TestEntrypointWiring(unittest.TestCase):
         self.assertTrue(os.access(ENTRYPOINT, os.X_OK))
 
     def test_dockerfile_wires_entrypoint(self):
-        with open(os.path.join(ROOT, "Dockerfile")) as f:
+        with open("Dockerfile") as f:
             body = f.read()
         self.assertIn(
             "COPY scripts/buttons-entrypoint.sh "
@@ -133,7 +133,7 @@ class TestEntrypointWiring(unittest.TestCase):
             body)
 
     def test_dockerignore_keeps_scripts(self):
-        with open(os.path.join(ROOT, ".dockerignore")) as f:
+        with open(".dockerignore") as f:
             lines = [
                 line.strip()
                 for line in f
@@ -158,8 +158,7 @@ class TestEntrypointWiring(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_dockerfile_pins_browsers_path_before_bake(self):
-        with open(os.path.join(
-                ROOT, "Dockerfile"), encoding="utf-8") as f:
+        with open("Dockerfile", encoding="utf-8") as f:
             body = f.read()
         pin = "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright"
         self.assertIn(pin, body)

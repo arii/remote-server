@@ -20,8 +20,6 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 try:
     import triage_fanout
     HAS_AGENT_DEPS = True

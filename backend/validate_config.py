@@ -126,7 +126,7 @@ def validate_file(root, rel, section, schema):
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.getcwd()  # entry points run with cwd=repo root; no climbing.
     if args and args[0] == "--root":
         if len(args) < 2:
             sys.stderr.write("usage: validate-config [--root DIR]\n")

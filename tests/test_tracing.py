@@ -1,11 +1,8 @@
 """tracing.py unit tests. No network, no langchain needed (the
 tracer import is guarded). Run: python3 tests/test_tracing.py"""
 import os
-import sys
 import unittest
 from unittest import mock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
 
 import tracing
 

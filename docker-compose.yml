@@ -259,6 +259,8 @@ services:
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY} # reusable auth key from Tailscale admin console
       TS_HOSTNAME: ${TS_HOSTNAME:-s5}
+      TS_SERVE: ${TS_SERVE:-} # opt-in: also serve the edge over the tailnet (see entrypoint)
+      TS_SERVE_TARGET: ${TS_SERVE_TARGET:-} # optional serve target override (default: proxy listener)
     entrypoint: ["/usr/local/bin/tailscale-entrypoint.sh"]
     deploy:
       resources:

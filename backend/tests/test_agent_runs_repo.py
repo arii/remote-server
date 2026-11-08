@@ -2,24 +2,16 @@
 
 import importlib.util
 import os
-import sys
 import unittest
 
 
 def _load_runs():
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.dirname(os.path.dirname(here))
-    deep_agent = os.path.join(root, "deep-agent")
-    sys.path.insert(0, deep_agent)
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "runs_repo_summary", os.path.join(deep_agent, "runs.py"))
-        assert spec is not None and spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-    finally:
-        sys.path.remove(deep_agent)
+    spec = importlib.util.spec_from_file_location(
+        "runs_repo_summary", os.path.join("deep-agent", "runs.py"))
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 runs = _load_runs()

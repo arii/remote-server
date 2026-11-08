@@ -18,8 +18,6 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 
 def _stub_module(name, **attrs):
     mod = types.ModuleType(name)
@@ -90,8 +88,8 @@ finally:
     for _key in _STUBS:
         sys.modules.pop(_key, None)
 
-import ledger
-import observe
+import ledger  # noqa: E402 -- after stub dance: stubs must install first
+import observe  # noqa: E402 -- after stub dance: stubs must install first
 
 
 def _runtime_stubs():

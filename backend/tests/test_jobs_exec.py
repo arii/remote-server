@@ -2364,7 +2364,11 @@ class StepEnvTest(unittest.TestCase):
             "check-notifications", "boomtick", "arii/boomtick", "")
         self.assertIsNone(err)
         env = engine.step_env(steps)
-        self.assertEqual(env, {"PYTHONPATH": engine.ENGINE_ROOT})
+        # ENGINE_ROOT must lead (ambient PYTHONPATH entries, e.g. the
+        # ./deep-agent test prefix, stay behind it per check_env).
+        self.assertTrue(env["PYTHONPATH"] == engine.ENGINE_ROOT
+                        or env["PYTHONPATH"].startswith(
+                            engine.ENGINE_ROOT + os.pathsep))
 
     def test_non_python_dash_m_is_untouched(self):
         # `free -m` (megabytes) must not match the python -m rule.
@@ -2706,9 +2710,6 @@ class ImpactPassRunnerTest(_LedgerTmpDir, unittest.TestCase):
         os.environ["IMPACT_PASS_CHECKOUT"] = self.checkout
         os.environ["IMPACT_PASS_ROUTES"] = "/:desktop"
         self._fixture_toolchain()
-        deep_agent = os.path.join(engine.ENGINE_ROOT, "deep-agent")
-        if deep_agent not in sys.path:
-            sys.path.insert(0, deep_agent)
         import impact
 
         from backend import ledger

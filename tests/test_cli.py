@@ -18,14 +18,12 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 import cli
 import deep_chat
 import eval_ask
 import eval_chat
 
-DEEP_AGENT = os.path.join(os.path.dirname(__file__), "..", "deep-agent")
+DEEP_AGENT = "deep-agent"
 
 try:
     import langchain  # noqa: F401

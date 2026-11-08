@@ -12,8 +12,6 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 import ledger
 
 
@@ -281,8 +279,7 @@ class TestLedgerPath(unittest.TestCase):
         # same EVAL_LEDGER knob the eval scorer reads. Env is read at
         # import, so this runs a child interpreter.
         import subprocess
-        deep_agent = os.path.join(os.path.dirname(__file__), "..",
-                                  "deep-agent")
+        deep_agent = os.path.abspath("deep-agent")
         env = dict(os.environ, EVAL_LEDGER="/tmp/eval-t.jsonl")
         p = subprocess.run(
             [sys.executable, "-c",

@@ -64,8 +64,7 @@ class MergeReadinessFixtureTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        fixture = (Path(__file__).resolve().parents[2]
-                   / "frontend" / "src" / "mergeReadiness.fixtures.json")
+        fixture = (Path("frontend") / "src" / "mergeReadiness.fixtures.json")
         with open(fixture, encoding="utf-8") as fh:
             cls.cases = json.load(fh)["cases"]
 

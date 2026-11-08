@@ -2,15 +2,12 @@
 
 Run: python3 -m unittest tests.test_skills_registry"""
 import os
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 from skills_registry import SkillNotFoundError, SkillsRegistry
 
-REPO_SKILLS = os.path.join(os.path.dirname(__file__), "..", "deep-agent", "skills")
+REPO_SKILLS = os.path.join("deep-agent", "skills")
 
 
 def write_skill(tmp, name, frontmatter, body):

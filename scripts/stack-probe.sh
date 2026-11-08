@@ -27,8 +27,11 @@ report "$?" "grid status reachable (ready flag present)"
 curl -s -m 10 -o /dev/null -w "%{http_code}" http://buttons:8000/health 2>/dev/null | grep -q 200
 report "$?" "buttons /health returns 200"
 
-td rag query --query "health probe" >/dev/null 2>&1
-report "$?" "td rag query runs"
+# Canary: exit code alone cannot catch a stale/empty index (query
+# succeeds with zero hits, as boomtick's did 2026-11-08). Require hits.
+td rag query --query "oauth2 proxy github" --json 2>/dev/null | python3 -c \
+  "import json,sys; sys.exit(0 if json.load(sys.stdin).get('count',0) > 0 else 1)" >/dev/null 2>&1
+report "$?" "td rag query returns hits (index non-empty)"
 
 curl -s -m 10 http://ollama:11434/api/tags 2>/dev/null | grep -q '"models"'
 report "$?" "ollama /api/tags lists models"
