@@ -7,7 +7,26 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import agent, agent_control, agents, attention, briefing, browser_view, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import (
+    agent,
+    agent_control,
+    agents,
+    attention,
+    briefing,
+    browser_view,
+    chat,
+    deferred,
+    dispatch,
+    inbox,
+    issues,
+    jobs,
+    notify,
+    openwebui_shell,
+    ops,
+    pulls,
+    repo,
+    system,
+)
 
 
 @asynccontextmanager
@@ -83,6 +102,7 @@ app.include_router(repo.repos_router)
 app.include_router(system.router)
 app.include_router(jobs.router)
 app.include_router(notify.router)
+app.include_router(openwebui_shell.router)
 app.include_router(chat.router)
 app.include_router(ops.router)
 app.include_router(pulls.router)
