@@ -69,6 +69,24 @@ def allowed_commands_text():
     return ", ".join(" ".join(p) for p in CHECK_PREFIXES)
 
 
+def check_env(checkout):
+    """Child env for verification commands run in checkout.
+
+    The checkout root leads PYTHONPATH (existing entries kept
+    behind it) so pytest collection imports the repo's own
+    packages — without this an agent burns whole runs retrying a
+    collection error it cannot fix, because the allowlist forbids
+    env-prefix commands (#1160 gap 1). Harmless for non-python
+    commands (node/go/git ignore PYTHONPATH). Never raises.
+    """
+    try:
+        base = os.environ.get("PYTHONPATH", "")
+        path = checkout + (os.pathsep + base if base else "")
+        return {"PYTHONPATH": path}
+    except Exception:
+        return {"PYTHONPATH": checkout}
+
+
 def run_repo_command(checkout, command):
     """Run an allowlisted verification command in checkout. Never
     raises: returns "exit=<n>\\n<tail>", "REJECTED: ...", "TIMEOUT
@@ -84,7 +102,8 @@ def run_repo_command(checkout, command):
     try:
         proc = subprocess.run(
             argv, cwd=checkout, capture_output=True, text=True,
-            timeout=CHECK_TIMEOUT)
+            timeout=CHECK_TIMEOUT, env={**os.environ,
+                                        **check_env(checkout)})
     except subprocess.TimeoutExpired:
         return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
     except OSError as exc:

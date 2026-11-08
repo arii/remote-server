@@ -52,6 +52,7 @@ from s5tools import (  # noqa: E402,F401
     CHECK_TIMEOUT,
     TEST_FILE_RE,
     check_allowed,
+    check_env,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +62,18 @@ CODER_DB = os.path.join(HERE, ".coder_threads", "coder.db")
 RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
 DEFAULT_VERIFY_ROUNDS = 2
+
+# Dithering guard (#1160 gap 3): this many consecutive identical
+# failing run_check calls means the agent is spinning, not
+# progressing — the tool tells it to stop, and the verify loop
+# refuses further re-prompts.
+DITHER_THRESHOLD = 5
+
+DITHER_NOTICE = (
+    "DITHERING: this exact command has failed {streak} times in a "
+    "row. Stop retrying it unchanged — fix the code, or run a "
+    "different check. Further identical retries will keep failing."
+)
 
 # Re-prompt sent when a coder turn finishes with no passing run_check
 # in the trace. Same thread, so the agent sees its own prior work.
@@ -259,6 +272,9 @@ def build_check_tool(worktree):
     from langchain_core.tools import tool  # noqa: E402
 
     allowed = ", ".join(" ".join(p) for p in CHECK_PREFIXES)
+    # Per-tool dither streak: consecutive identical failing
+    # commands. Any different command (or a pass) resets it.
+    spin = {"last": None, "streak": 0}
 
     @tool
     def run_check(command: str) -> str:
@@ -279,13 +295,22 @@ def build_check_tool(worktree):
         try:
             proc = subprocess.run(
                 argv, cwd=worktree, capture_output=True, text=True,
-                timeout=CHECK_TIMEOUT)
+                timeout=CHECK_TIMEOUT,
+                env={**os.environ, **check_env(worktree)})
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except OSError as exc:
             return f"exec failed: {exc}"
         out = ((proc.stdout or "") + (proc.stderr or ""))[-CHECK_OUTPUT_LIMIT:]
-        return f"exit={proc.returncode}\n{out}"
+        result = f"exit={proc.returncode}\n{out}"
+        if proc.returncode != 0 and command == spin["last"]:
+            spin["streak"] += 1
+        else:
+            spin["streak"] = 0 if proc.returncode == 0 else 1
+        spin["last"] = command
+        if spin["streak"] >= DITHER_THRESHOLD:
+            result += "\n" + DITHER_NOTICE.format(streak=spin["streak"])
+        return result
 
     run_check.description = run_check.description.format(allowed=allowed)
     return run_check
@@ -435,6 +460,68 @@ def trace_has_passing_check(trace_path):
     return False
 
 
+def trace_check_history(trace_path):
+    """[(command, exit_code)] for run_check calls in a trace, in order.
+
+    Only strictly consecutive tool_call events count toward a
+    streak: any other tool call between two checks (an edit, a
+    read) means the agent changed approach, not dithered. Never
+    raises: unreadable traces read as empty (no dither).
+    """
+    history = []
+    try:
+        with open(trace_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") != "tool_call":
+                    continue
+                if event.get("name") != "run_check":
+                    history = []
+                    continue
+                preview = event.get("result_preview", "")
+                match = re.match(r"exit=(\d+)",
+                                 preview or "")
+                code = int(match.group(1)) if match else -1
+                history.append((event.get("args_preview", ""), code))
+    except (OSError, TypeError):
+        return []
+    return history
+
+
+def find_dithered_command(history, threshold=DITHER_THRESHOLD):
+    """Dithering command in a check history, or None. Pure.
+
+    Returns the command when the last `threshold` entries are the
+    same command, all failing (nonzero exit); otherwise None. A
+    pass, a different command, or too few entries read as no
+    dither. Never raises.
+    """
+    try:
+        tail = list(history or [])[-threshold:]
+        if len(tail) < threshold:
+            return None
+        command = tail[0][0]
+        if all(entry[0] == command and entry[1] != 0 for entry in tail):
+            return command
+        return None
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def trace_has_dither(trace_path, threshold=DITHER_THRESHOLD):
+    """True when a trace ends in a dithering check streak. Never raises."""
+    try:
+        return find_dithered_command(
+            trace_check_history(trace_path), threshold) is not None
+    except Exception:  # noqa: BLE001 - dither check never breaks a turn
+        return False
+
+
 def run_bounded(fn, timeout):
     """Run fn() on a daemon thread with a wall-clock timeout.
 
@@ -469,17 +556,22 @@ def run_bounded(fn, timeout):
 
 
 def run_with_verify(initial_invoke, reinvoke, has_passing_check,
-                    max_rounds):
+                    max_rounds, dithered=None):
     """One invoke plus bounded verify re-invokes.
 
     initial_invoke() runs first; while has_passing_check() is false,
     reinvoke() runs up to max_rounds times. Returns
-    (result, verify_rounds, verified).
+    (result, verify_rounds, verified). When dithered() reports a
+    repeated-identical-failure streak, re-invokes stop early
+    (#1160 gap 3: fail fast instead of burning verify rounds on a
+    spinning agent).
     """
     result = initial_invoke()
     rounds = 0
     verified = has_passing_check()
     while not verified and rounds < max_rounds:
+        if dithered is not None and dithered():
+            break
         rounds += 1
         result = reinvoke()
         verified = has_passing_check()
@@ -549,6 +641,7 @@ def run_coder(worktree, brief, system, thread, timeout):
                 timeout),
             lambda: trace_has_passing_check(recorder.path),
             max_rounds,
+            dithered=lambda: trace_has_dither(recorder.path),
         )
     except TimeoutError:
         recorder.run_end(False)
@@ -843,12 +936,40 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder resume via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
-    saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
+    saver, persistent, holder = deep_chat.open_checkpointer(CODER_DB)
     agent = build_plan_agent(worktree, system, model=model,
                              recorder=recorder, checkpointer=saver,
                              spec=spec)
     config = {"configurable": {"thread_id": thread}}
     pending = deep_chat._pending_interrupts(agent, config)
+    if not pending and not persistent:
+        # Cross-process resume with a memory-only checkpointer: the
+        # pause lives in another process, so no interrupt is visible
+        # here — but the human-approved plan text is ledgered, and
+        # the explicit approve verdict carries the approval. Continue
+        # from the ledger plan instead of stranding it (#1160
+        # gap 2). A persistent checkpointer with no pending approval
+        # still fails closed below (nothing was ever paused).
+        _ = holder
+        recorder.event("plan_decision", verdict="approve",
+                       resume="ledger-plan-cross-process")
+        recorder.run_end(True)
+        recorder.close()
+        resume_usage, resume_calls = recorder.totals()
+        ledger.record(
+            "coder.py", label, thread,
+            [HumanMessage(content=brief),
+             AIMessage(content=plan["plan"] or "(plan approved)")],
+            started,
+            extra={"worktree": worktree, "coder_phase": "plan_approved",
+                   "trace": recorder.path,
+                   "ledger_resume": True},
+            usage=resume_usage, calls=resume_calls,
+        )
+        return _implement_and_finish(
+            worktree, brief, system, thread, timeout,
+            extra={"coder_phase": "implement", "plan_approved": True,
+                   "ledger_resume": True})
     if not pending:
         recorder.run_end(False)
         recorder.close()
