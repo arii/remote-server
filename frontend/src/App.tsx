@@ -786,7 +786,8 @@ export default function App() {
         : null;
 
   return (
-    <main className="layout">
+    <main className="layout" id="main-content">
+      <a href="#main-content" className="skip-link">Skip to content</a>
       <h1 className="sr-only">Operator console</h1>
       <header className="topbar" data-testid="topbar">
         <div className="topbar-group">
