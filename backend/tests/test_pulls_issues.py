@@ -742,14 +742,15 @@ class ApproveMergeGate848Test(unittest.TestCase):
         self.assertFalse(rows[9]["reviewRequired"])
         self.assertEqual(out["viewer"], "octo")
 
-    def test_viewer_failure_fails_open(self):
+    def test_viewer_failure_fails_closed(self):
         runner = FakeRunner().on(
             ["gh", "pr", "list"],
             FakeProc(stdout=gh_list_prs())).on(
             ["gh", "api", "user"],
             FakeProc(stderr="auth error", returncode=1))
         out = pulls_mod.prs(repo="remote-server", runner=runner)
-        self.assertEqual(out["viewer"], "")
+        self.assertEqual(out["viewer"], pulls_mod.VIEWER_UNKNOWN)
+        self.assertNotEqual(out["viewer"], "")
         self.assertEqual(len(out["prs"]), 1)
 
     def test_viewer_rejects_garbage(self):
@@ -759,7 +760,7 @@ class ApproveMergeGate848Test(unittest.TestCase):
                 FakeProc(stdout=gh_list_prs())).on(
                 ["gh", "api", "user"], FakeProc(stdout=stdout))
             out = pulls_mod.prs(repo="remote-server", runner=runner)
-            self.assertEqual(out["viewer"], "",
+            self.assertEqual(out["viewer"], pulls_mod.VIEWER_UNKNOWN,
                              f"stdout={stdout!r}")
 
 

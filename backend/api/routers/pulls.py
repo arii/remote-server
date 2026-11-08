@@ -50,6 +50,14 @@ PR_ACTIONS = ("merge", "update", "approve",
 # Max chars for a request-changes review body (#616).
 REVIEW_BODY_MAX = 2000
 
+# Sentinel the list endpoint reports as `viewer` when the gh login
+# cannot be determined (gh outage, auth failure). Never "": a blank
+# viewer reads as "not yours" in the UI and would lift the
+# self-approval block exactly when GitHub cannot enforce it. Fail
+# closed: an unknown viewer disables Approve; the endpoint's
+# readable 400 on self-approval stays the backstop.
+VIEWER_UNKNOWN = "unknown"
+
 
 def _as_count(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
@@ -179,9 +187,10 @@ class PrList(BaseModel):
     prs: list = Field(default_factory=list)
     # #848: login gh authenticates as. The UI compares it to each
     # row's author to disable Approve on self-authored PRs with an
-    # inline reason. Blank when unknown: Approve stays enabled and
-    # the endpoint's readable 400 is the fallback.
-    viewer: str = ""
+    # inline reason. VIEWER_UNKNOWN when the login cannot be
+    # determined: the UI disables Approve (fail closed) and the
+    # endpoint's readable 400 stays the backstop.
+    viewer: str = VIEWER_UNKNOWN
     # Freshness markers (#888, same shape as briefing): True on
     # cache hits so the view can show a refresh indicator. Additive
     # only — older clients ignore the new keys.
@@ -247,9 +256,10 @@ def _gh_viewer(runner=None) -> str:
 
     Runs `gh api user` directly instead of via run_gh: the viewer
     endpoint is account-scoped, and run_gh's #544 guard requires a
-    --repo argv the call has no use for. Fail-open: any failure
-    returns "" and the UI keeps Approve enabled (the endpoint's
-    readable 400 stays the fallback)."""
+    --repo argv the call has no use for. Fail-closed: any failure
+    returns VIEWER_UNKNOWN (never "") so the UI disables Approve
+    instead of reading the outage as "not yours" (the endpoint's
+    readable 400 stays the backstop)."""
     run = _gh(runner)
     try:
         proc = run.run(
@@ -260,14 +270,14 @@ def _gh_viewer(runner=None) -> str:
             text=True,
         )
     except Exception:
-        return ""
+        return VIEWER_UNKNOWN
     if proc.returncode != 0:
-        return ""
+        return VIEWER_UNKNOWN
     out = (proc.stdout or "").strip()
     if len(out) >= 2 and out.startswith('"') and out.endswith('"'):
         out = out[1:-1]
     if not out or "/" in out or any(c.isspace() for c in out):
-        return ""
+        return VIEWER_UNKNOWN
     return out
 
 
