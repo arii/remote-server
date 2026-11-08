@@ -27,7 +27,8 @@ import type {
   TraceEvent,
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
-import { parseJson, pumpSse } from './sse';
+import { createSseReconciler, createTokenFlusher, parseJson, pumpSse } from './sse';
+import type { SseReconciler } from './sse';
 import AgentDrawer from './AgentDrawer';
 import RepoLabel from '../components/RepoLabel';
 
@@ -1652,29 +1653,40 @@ export async function pumpStream(
   onPhase: (message: string | null) => void,
   onDone: (text: string) => void,
   onEvent: () => void,
+  opts?: { reconciler?: SseReconciler },
 ): Promise<void> {
-  await pumpSse(reader, (ev) => {
-    onEvent();
-    if (ev.name === 'error') {
-      const message = parseJson<{ error?: string }>(ev.data)?.error;
-      throw new Error(message && message.length > 0 ? message : ev.data);
-    }
-    if (ev.name === 'token') {
-      onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
-    }
-    if (ev.name === 'approval') {
-      const payload = parseJson<ApprovalPayload>(ev.data);
-      if (payload) onApproval(payload);
-    }
-    if (ev.name === 'phase') {
-      const msg = parseJson<{ message?: string }>(ev.data)?.message;
-      onPhase(msg && msg.length > 0 ? msg : null);
-    }
-    if (ev.name === 'done') {
-      onPhase(null);
-      onDone(parseJson<{ text?: string }>(ev.data)?.text ?? '');
-    }
-  });
+  // Default reconciler drops in-stream redeliveries; a caller-shared
+  // one additionally drops frames an earlier pump already applied
+  // (issue #1208). No-seq frames always pass (old servers). Error
+  // frames always deliver (pumpSse) — a redelivered error still ends
+  // the turn loudly instead of stranding it.
+  const reconciler = opts?.reconciler ?? createSseReconciler();
+  await pumpSse(
+    reader,
+    (ev) => {
+      onEvent();
+      if (ev.name === 'error') {
+        const message = parseJson<{ error?: string }>(ev.data)?.error;
+        throw new Error(message && message.length > 0 ? message : ev.data);
+      }
+      if (ev.name === 'token') {
+        onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
+      }
+      if (ev.name === 'approval') {
+        const payload = parseJson<ApprovalPayload>(ev.data);
+        if (payload) onApproval(payload);
+      }
+      if (ev.name === 'phase') {
+        const msg = parseJson<{ message?: string }>(ev.data)?.message;
+        onPhase(msg && msg.length > 0 ? msg : null);
+      }
+      if (ev.name === 'done') {
+        onPhase(null);
+        onDone(parseJson<{ text?: string }>(ev.data)?.text ?? '');
+      }
+    },
+    { isFresh: (ev) => reconciler.fresh(ev) },
+  );
 }
 
 // Seed staging (#507): Briefing/Now/Review "Ask agent" seeds land
@@ -2065,18 +2077,36 @@ export default function ChatView({
     }
   }
 
+  // Burst batching (issue #1208): token callbacks coalesce into one
+  // state commit per animation frame instead of one commit per token,
+  // so a reattach replay burst renders once per frame. flush() lands
+  // pending text synchronously — every stream exit flushes, so no
+  // path strands text in the frame budget.
+  const tokenFlusherRef = useRef<ReturnType<typeof createTokenFlusher> | null>(
+    null,
+  );
+  function tokenFlusher() {
+    if (tokenFlusherRef.current === null) {
+      tokenFlusherRef.current = createTokenFlusher((text, count) => {
+        setTokenCount((c) => c + count);
+        setMessages((m) => {
+          const next = [...m];
+          const last = next[next.length - 1];
+          if (!last || last.role !== 'assistant') return m;
+          next[next.length - 1] = { role: 'assistant', text: last.text + text };
+          return next;
+        });
+      });
+    }
+    return tokenFlusherRef.current;
+  }
+
   function appendToken(token: string) {
-    if (!token) return;
-    setTokenCount((c) => c + 1);
-    setMessages((m) => {
-      const next = [...m];
-      const last = next[next.length - 1];
-      next[next.length - 1] = { role: 'assistant', text: last.text + token };
-      return next;
-    });
+    tokenFlusher().push(token);
   }
 
   function backfillDone(text: string) {
+    tokenFlusher().flush();
     if (!text) return;
     setMessages((m) => {
       const next = [...m];
@@ -2109,6 +2139,7 @@ export default function ChatView({
     } catch (err) {
       if ((err as Error).name !== 'AbortError') throw err;
     } finally {
+      tokenFlusher().flush();
       abortRef.current = null;
     }
   }
@@ -2146,6 +2177,7 @@ export default function ChatView({
       stalledRef.current = false;
       setElapsed(Math.floor(status.elapsed ?? 0));
       setTokenCount(0);
+      tokenFlusher().cancel();
       setPhase(status.phase || null);
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -2174,6 +2206,7 @@ export default function ChatView({
         }
       } finally {
         outerSignal.removeEventListener('abort', onOuterAbort);
+        tokenFlusher().flush();
         if (abortRef.current === ctrl) abortRef.current = null;
         if (!isCancelled()) setStreaming(false);
       }
@@ -2240,6 +2273,7 @@ export default function ChatView({
     stalledRef.current = false;
     setElapsed(0);
     setTokenCount(0);
+    tokenFlusher().cancel();
     setStreaming(true);
     setMessages((m) => [...m, { role: 'assistant', text: '' }]);
     try {
@@ -2470,6 +2504,11 @@ export default function ChatView({
   }
 
   function stopStream() {
+    // Land pending burst text in the current bubble BEFORE aborting:
+    // the abort rejects the pump asynchronously, and a late flush
+    // would append the old turn's text to whatever bubble the retry
+    // opens next.
+    tokenFlusher().flush();
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);

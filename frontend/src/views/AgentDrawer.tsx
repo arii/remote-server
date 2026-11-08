@@ -16,7 +16,8 @@ import {
 } from './agentSessionStore';
 import type { AgentTurn } from './agentSessionStore';
 import { useMock } from './mockViews';
-import { parseJson, pumpSse } from './sse';
+import { createSseReconciler, createTokenFlusher, parseJson, pumpSse } from './sse';
+import type { SseReconciler } from './sse';
 
 // Mirrors backend PROVIDERS (agent_turn.py): the picker renders
 // these instantly and live status refines them.
@@ -51,11 +52,18 @@ export async function pumpTurn(
   onToken: (token: string) => void,
   onWarning?: (secondsLeft: number) => void,
   onProgress?: (text: string) => void,
+  opts?: { reconciler?: SseReconciler },
 ): Promise<{ sessionId: string; text: string; truncated: boolean }> {
   let sessionId = '';
   let text = '';
   let truncated = false;
-  await pumpSse(reader, (ev) => {
+  // Default reconciler drops in-stream redeliveries; a caller-shared
+  // one additionally drops frames an earlier pump already applied
+  // (issue #1208). No-seq frames always pass (old servers).
+  const reconciler = opts?.reconciler ?? createSseReconciler();
+  await pumpSse(
+    reader,
+    (ev) => {
     if (ev.name === 'error') {
       let detail = ev.data;
       let code: string | undefined;
@@ -114,7 +122,9 @@ export async function pumpTurn(
         if (data.truncated) truncated = true;
       }
     }
-  });
+    },
+    { isFresh: (ev) => reconciler.fresh(ev) },
+  );
   return { sessionId, text, truncated };
 }
 
@@ -424,17 +434,35 @@ export default function AgentDrawer({
 
   const streamedRef = useRef(0);
 
+  // Burst batching (issue #1208): same frame-coalesced commits as
+  // ChatView — one state commit per frame instead of one per token.
+  // Every pump exit flushes synchronously (see sendTurn), so no path
+  // strands text in the frame budget.
+  const answerFlusherRef = useRef<ReturnType<typeof createTokenFlusher> | null>(
+    null,
+  );
+  function answerFlusher() {
+    if (answerFlusherRef.current === null) {
+      answerFlusherRef.current = createTokenFlusher((text) => {
+        streamedRef.current += text.length;
+        tokenRef.current = Date.now();
+        setTurns((t) => {
+          const next = [...t];
+          const last = next[next.length - 1];
+          if (!last || last.role !== 'assistant') return t;
+          next[next.length - 1] = {
+            role: 'assistant',
+            text: last.text + text,
+          };
+          return next;
+        });
+      });
+    }
+    return answerFlusherRef.current;
+  }
+
   function appendAnswer(token: string) {
-    if (!token) return;
-    streamedRef.current += token.length;
-    tokenRef.current = Date.now();
-    setTurns((t) => {
-      const next = [...t];
-      const last = next[next.length - 1];
-      if (!last || last.role !== 'assistant') return t;
-      next[next.length - 1] = { role: 'assistant', text: last.text + token };
-      return next;
-    });
+    answerFlusher().push(token);
   }
 
   function backfillAnswer(text: string) {
@@ -464,6 +492,9 @@ export default function AgentDrawer({
   // suffix appends. The settled snapshot trimmed the live typing
   // placeholder, so a user-final transcript opens the bubble first.
   function applyServerTranscript(server: string) {
+    // Exact deltas need exact state: land any pending burst text
+    // first, or the suffix diff double-counts the unflushed tail.
+    answerFlusher().flush();
     setTurns((t) => {
       const last = t[t.length - 1];
       if (!last || last.role !== 'assistant') {
@@ -554,6 +585,7 @@ export default function AgentDrawer({
       );
       if (!resp.ok || !resp.body) throw new Error(`Agent turn failed: ${resp.status}`);
       streamedRef.current = 0;
+      answerFlusher().cancel();
       const {
         sessionId,
         text: full,
@@ -564,10 +596,18 @@ export default function AgentDrawer({
         (secs) => setWarningSecs(secs),
         (line) => setProgress((p) => [...p.slice(-49), line]),
       );
+      // Land burst text before the full-text backfill below: without
+      // this the backfill sees an empty bubble and the flush then
+      // appends the same tail twice.
+      answerFlusher().flush();
       if (sessionId) sidRef.current = sessionId;
       backfillAnswer(full);
       if (truncated) appendAnswer('\n\n[output truncated — the turn exceeded the size cap]');
     } catch (err) {
+      // Land pending burst text before dropEmptyBubble below: an
+      // unflushed tail reads as an empty bubble and would be dropped
+      // (or mis-attached) instead of kept.
+      answerFlusher().flush();
       if ((err as Error).name !== 'AbortError') {
         setError(err instanceof Error ? err.message : String(err));
         const code = (err as { code?: unknown }).code;
@@ -592,6 +632,7 @@ export default function AgentDrawer({
         dropEmptyBubble();
       }
     } finally {
+      answerFlusher().flush();
       abortRef.current = null;
       setWorking(false);
     }

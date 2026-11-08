@@ -15,6 +15,7 @@ import type {
   PrListResponse,
   ReposResponse,
 } from './reviewTypes';
+import { createSseReconciler } from './views/sse';
 
 interface DiskSummary {
   summary?: string;
@@ -1239,10 +1240,14 @@ export function subscribeJobsPush(
     handler.onLive(false);
     return () => {};
   }
+  // Drop stale snapshots after a drop + reconnect so an old frame
+  // never re-renders over newer rows (issue #1208).
+  const reconciler = createSseReconciler();
   const src = create(jobsStreamUrl());
   const onJobs = (e: { data: string }) => {
     const jobs = parseFrameJobs(e.data);
     if (jobs === null) return;
+    if (!reconciler.fresh({ name: 'jobs', data: e.data })) return;
     handler.onLive(true);
     handler.onJobs(jobs);
   };
@@ -1275,10 +1280,14 @@ export function subscribeRunPush(
     return () => {};
   }
   let done = false;
+  // Drop stale progress after a drop + reconnect so an old frame
+  // never regresses the tail (issue #1208).
+  const reconciler = createSseReconciler();
   const src = create(jobRunStreamUrl(rid));
   const onProgress = (e: { data: string }) => {
     const p = parseFrameProgress(e.data);
     if (p === null) return;
+    if (!reconciler.fresh({ name: 'progress', data: e.data })) return;
     if (p.done) {
       done = true;
       src.close();
