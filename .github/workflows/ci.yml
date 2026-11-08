@@ -112,8 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # pnpm version comes from packageManager alone (td doctor);
-      # passing version: here too fails the setup with "multiple versions".
+      # packageManager is the single pnpm source; a version: here fails the setup.
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -129,8 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # pnpm version comes from packageManager alone (td doctor);
-      # passing version: here too fails the setup with "multiple versions".
+      # packageManager is the single pnpm source; a version: here fails the setup.
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:

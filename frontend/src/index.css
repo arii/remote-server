@@ -114,9 +114,8 @@ h1, h2, h3 { text-wrap: balance; }
   gap: 0.5rem 0.75rem;
   min-width: 0;
 }
-/* Tool links read as chips (#1182): Terminal/Code are anchors for
-   href semantics, so they miss the base button chrome — give them
-   the same surface/border/radius as their button siblings. */
+/* Terminal/Code are anchors, so they miss base button chrome;
+   give them the same surface as their button siblings. */
 .topbar-group a {
   font-size: 0.9rem;
   background: var(--surface-2);
@@ -678,10 +677,8 @@ li.history-row.selected { outline: 2px solid var(--accent); outline-offset: 2px;
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-/* Pressed toggles everywhere (#1183): pickers that only set
-   aria-pressed (chat backend/scope) get the topnav pressed fill.
-   More specific facet/topnav rules above/below keep their own
-   treatment — this fills in everything else. */
+/* Pressed pickers with only aria-pressed get the topnav fill;
+   the more specific facet/topnav rules still win. */
 button[aria-pressed="true"] {
   background: var(--accent-solid);
   border-color: var(--accent-solid);
@@ -806,9 +803,8 @@ a.link-chip:hover { border-color: var(--accent); }
 .attention-head { display: flex; align-items: flex-start; gap: 0.5rem; }
 .attention-head .row-title { flex: 1 1 auto; min-width: 0; }
 .attention-check { flex: none; width: 1.15rem; height: 1.15rem; margin-top: 0.15rem; cursor: pointer; }
-/* Select-all rides one line (#1178): double-qualified to beat
-   `label.row-meta` outright — a single label qualifier only ties
-   (0,1,1) and loses to source order. */
+/* Double-qualified to beat label.row-meta outright; a single
+   qualifier only ties and loses to source order. */
 label.row-meta.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
 .attention-select-all input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 
@@ -1139,9 +1135,8 @@ button.btn-link {
   text-align: left;
 }
 button.btn-link:hover:not(:disabled) { text-decoration: underline; }
-/* Hero deep-links keep tap targets (#1177): the now-hero segments
-   are real buttons, so they get the 44px minimum even though the
-   generic inline btn-link stays zero-chrome elsewhere. */
+/* Now-hero segments keep the 44px minimum; inline btn-link
+   stays zero-chrome everywhere else. */
 .now-hero button.btn-link { min-height: 44px; padding: 0.45rem 0.2rem; }
 button.btn-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
@@ -1174,11 +1169,8 @@ label.row-meta { display: grid; gap: 0.3rem; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
-/* Phone-first: keyboard triage hints are unactionable on touch. */
-@media (pointer: coarse) { .triage-hint { display: none; } }
-/* Keyboard-shortcut hint is unactionable on touch (#1179): same
-   phone-first rule as the triage hints. */
-@media (pointer: coarse) { .shortcut-hint { display: none; } }
+/* Phone-first: keyboard and triage hints are unactionable on touch. */
+@media (pointer: coarse) { .triage-hint, .shortcut-hint { display: none; } }
 
 /* Narrow phone chrome (issue #1033): one slim pinned bar at a time.
    The header scrolls away with the page; the tab row rides one
