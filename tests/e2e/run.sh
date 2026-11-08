@@ -31,7 +31,7 @@ fi
 # (release-train, issue #1081).
 if ! command -v td >/dev/null 2>&1; then
   echo "==> installing boomtick td CLI (pinned)" >&2
-  pip install "git+https://github.com/arii/boomtick.git@cli-v0.19.3#subdirectory=cli"
+  pip install "git+https://github.com/arii/boomtick.git@cli-v0.21.0#subdirectory=cli"
 fi
 
 echo "==> ensuring chromium" >&2

@@ -88,7 +88,7 @@ class TestAskTools(unittest.TestCase):
             )
 
     def test_pr_state_success_and_failures(self):
-        # Payload mirrors `td --json gh pr-view` (boomtick cli-v0.18.0).
+        # Payload mirrors `td --json gh pr-view` (boomtick cli-v0.21.0).
         payload = json.dumps({
             "status": "success", "prNumber": 153, "title": "x",
             "state": "OPEN", "draft": False,
