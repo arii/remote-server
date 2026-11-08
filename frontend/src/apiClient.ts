@@ -1194,10 +1194,22 @@ function defaultEventSource(url: string): EventSourceLike {
   return new EventSource(url) as unknown as EventSourceLike;
 }
 
+function isJobRecord(row: unknown): row is JobRecord {
+  return (
+    typeof row === 'object' &&
+    row !== null &&
+    typeof (row as { id?: unknown }).id === 'string'
+  );
+}
+
+// Jobs frames carry whole lists: like parseFrameProgress, each
+// element is narrowed instead of cast — rows without a string id
+// are dropped, the rest pass through untouched.
 function parseFrameJobs(data: string): JobRecord[] | null {
   try {
     const body = JSON.parse(data) as { jobs?: unknown };
-    return Array.isArray(body.jobs) ? (body.jobs as JobRecord[]) : null;
+    if (!Array.isArray(body.jobs)) return null;
+    return body.jobs.filter(isJobRecord);
   } catch {
     return null;
   }
@@ -1914,9 +1926,13 @@ export interface DigestChannelResult {
   error?: string;
 }
 
+// Suppressed sends: the backend answers {suppressed: reason}
+// instead of per-channel results — never an error, never a stamp.
+export type DigestResults = Record<string, DigestChannelResult | string>;
+
 export interface DigestResult {
   ok: boolean;
-  results: Record<string, DigestChannelResult>;
+  results: DigestResults;
   digest: string;
 }
 

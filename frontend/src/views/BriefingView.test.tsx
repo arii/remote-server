@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
+import type { DigestSchedule, NotificationPreferences, NotificationsStatus } from '../apiClient';
 import type { BriefingResponse, LedgerEntry } from '../apiTypes';
 import {
   ACTIVITY_WINDOWS,
@@ -400,7 +400,7 @@ describe('notification preferences (issue #656)', () => {
 
   it('reports suppressed digests honestly, never as sent', () => {
     const line = digestResultLine(
-      { suppressed: "event 'digest' muted" } as unknown as Record<string, DigestChannelResult>,
+      { suppressed: "event 'digest' muted" },
       'STAMP',
     );
     expect(line).toBe("Digest not sent — event 'digest' muted.");
