@@ -173,6 +173,7 @@ class AuditorGraph:
         self.verification_commands = list(verification_commands or [])
         self.preview_url = preview_url
         self.last_model_spec = None
+        self.last_review_usage = None
 
     def hard_gate(self):
         """Zero-LLM deterministic gate.
@@ -268,8 +269,28 @@ class AuditorGraph:
             {"messages": [{"role": "user", "content": user_content}]})
         messages = result.get("messages", []) if isinstance(
             result, dict) else []
+        self.record_review_usage(messages)
         texts = [getattr(m, "content", "") or "" for m in messages]
         return "\n\n".join(t for t in texts if t) or "no findings"
+
+    def record_review_usage(self, messages):
+        """Stash summed review-turn token usage for the persist row.
+
+        Review LLM calls were metered nowhere (only coder
+        implement+fixup rows carried spend, so per-task cost was
+        incomplete — #1160): the persist node files this usage, so
+        review tokens price like any other turn. Pure aggregation
+        over message usage_metadata; None until a real review runs
+        (injected audit_fn in tests records no usage). Never
+        raises.
+        """
+        try:
+            import ledger
+
+            self.last_review_usage = ledger._usage_total(messages)
+        except Exception:
+            self.last_review_usage = None
+        return self.last_review_usage
 
     def ask_once(self, prompt, repo="", agent_factory=None):
         """One ask through the AuditorGraph tool path (issue #1139).
@@ -429,6 +450,7 @@ class AuditorGraph:
                        "decisions": lines,
                        "verdict": verdict,
                        "gate": state.get("gate", {})},
+                usage=outer.last_review_usage,
                 provider=model_spec.get("provider"))
             return {"persisted": True, "verdict": verdict}
 
