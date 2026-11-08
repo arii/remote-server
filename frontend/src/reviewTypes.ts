@@ -42,8 +42,9 @@ export interface PrRow {
 export interface PrListResponse {
   repo: string;
   prs: PrRow[];
-  // #848: login gh acts as; blank/unknown when the backend could not
-  // determine it (Approve stays enabled, endpoint 400 is fallback).
+  // #848: login gh acts as; VIEWER_UNKNOWN when the backend could
+  // not determine it (gh outage/auth failure) — Approve stays
+  // disabled then, endpoint 400 is backstop.
   viewer?: string;
 }
 
@@ -149,6 +150,15 @@ export function mergeBlockReason(p: PrRow): string | null {
 // with "Can not approve your own pull request"). The backend reports
 // its gh login as PrListResponse.viewer; a matching author means the
 // Approve tap would fail, so the chip disables with the reason inline.
+// Fail-closed: when the backend cannot determine the login it sends
+// VIEWER_UNKNOWN (never "") — unknown is not "not yours", so Approve
+// stays disabled instead of letting a gh outage lift the block.
+export const VIEWER_UNKNOWN = 'unknown';
+
+export function isViewerUnknown(viewer?: string): boolean {
+  return typeof viewer === 'string' && viewer.toLowerCase() === VIEWER_UNKNOWN;
+}
+
 export function isOwnPr(p: PrRow, viewer?: string): boolean {
   if (!viewer || !p.author) return false;
   return p.author.toLowerCase() === viewer.toLowerCase();
@@ -157,6 +167,7 @@ export function isOwnPr(p: PrRow, viewer?: string): boolean {
 export function approveBlockReason(p: PrRow, viewer?: string): string | null {
   if (p.isDraft) return 'is a draft';
   if (p.reviewDecision === 'APPROVED') return 'already approved';
+  if (isViewerUnknown(viewer)) return 'viewer unknown — cannot rule out self-approval';
   if (isOwnPr(p, viewer)) return 'you authored this PR — GitHub forbids self-approval';
   return null;
 }
