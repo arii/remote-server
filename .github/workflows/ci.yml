@@ -2,7 +2,7 @@ name: CI
 
 # Builds the terminal image on every push/PR, validates the compose file,
 # lints the shell scripts, verifies the skills lock against upstream,
-# scans for leaked secrets, and runs the
+# rejects shadow skill copies, scans for leaked secrets, and runs the
 # backend + root + frontend test suites with the backend compile + ruff gates.
 #
 # Docker workflow replicates arii/BoomTick's pattern:
@@ -93,6 +93,14 @@ jobs:
       - uses: actions/checkout@v7
       - name: check lock matches upstream skill sources
         run: bash scripts/verify-skills.sh --check-upstream
+
+  skill-shadows:
+    name: no shadow skill copies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: fail on real files under .claude/skills
+        run: bash scripts/check-no-shadow-skills.sh
 
   secret-scan:
     name: scan for leaked secrets
@@ -186,7 +194,7 @@ jobs:
     name: comment CI failures on the PR
     # A failing PR yields a PR comment, never a new issue per failure
     # (issue #1081). One marker comment per PR, updated per run.
-    needs: [shell, compose, terminal-image, skills-lock, secret-scan, audit, frontend, backend, format]
+    needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, backend, format]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
