@@ -13,6 +13,8 @@
     "code-server:logs": "docker compose logs --tail=100 code-server",
     "code-server:recreate": "docker exec remote-buttons-1 docker compose -f /home/ari/remote-server/docker-compose.yml up -d --no-deps code-server",
     "compile-check": "python3 -m compileall -q backend",
+    "format:check": "bash scripts/check-format-diff.sh",
+    "typecheck:python": "mypy backend deep-agent",
     "lint:python": "ruff check --select F,E4,E7,E9 backend deep-agent tests scripts && python3 scripts/verify-python-paths.py",
     "lint": "bash -n scripts/*.sh && (command -v shellcheck >/dev/null 2>&1 && shellcheck -S warning scripts/*.sh || true) && npm run compile-check && npm run lint:python && pnpm --filter frontend lint",
     "build": "pnpm --filter frontend build",

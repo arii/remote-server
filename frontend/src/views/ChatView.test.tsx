@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import ChatView, { appendDictationText, applyDictationResult, budgetLine, CHAT_BACKEND_OPTIONS, CHAT_DRAFT_KEY, CHAT_MESSAGES_KEY, CHAT_SESSION_KEY, ChatHistory, CHAT_PROMPT_CHIPS, chipPickAction, clearChatDraft, clearChatSessionId, dictationCtor, dictationErrorHint, dictationSupported, DictateButton, DictationHint, extractDictationText, insertMention, interruptedPrompt, isChatMessage, isStalled, isTurnInProgressError, loadChatDraft, loadChatMessages, loadChatSessionId, matchSlashCommands, MentionDropdown, mentionQueryAt, meteredTotal, PromptChips, pumpStream, repoMetricsLine, RepoMetricsStrip, refreshRunsQuiet, resolveChatSessionId, restoreUserBubble, resumeActionForStatus, runActionLabel, runCost, runDecisions, runTitle, runLatency, runMatchesRepo, filterRunsByRepo, shortRunRepo, runMeta, RunsPane, saveChatDraft, saveChatMessages, saveChatSessionId, settledChatMessages, shouldAutoRetryStall, shouldShowChatEdit, shouldShowChatRegenerate, shouldShowChatRetry, SLASH_COMMANDS, SlashMenu, slashQueryAt, STALL_SECONDS, stageSeed, StreamProgress, streamProgress, stripFailedRetryExchange, CHAT_TEMPLATES_KEY, insertTemplateAt, loadPromptTemplates, makeTemplateFromDraft, savePromptTemplates, SEED_TEMPLATES, TEMPLATE_TEXT_SLOT, TemplatePanel, templateLabelForDraft, TraceTimeline, transcriptFilename, transcriptMarkdown, turnPrompt } from './ChatView';
 import type { DictationResultEvent, SlashActions } from './ChatView';
 import type { BudgetStatus } from '../apiClient';
 import type { AgentRun, AgentRunDetail } from '../apiClient';
@@ -1969,5 +1971,49 @@ describe('composer auto route line (issue #933)', () => {
     const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
     expect(html).toContain('data-testid="chat-route-hint"');
     expect(html).toContain('class="chat-route-auto"');
+  });
+});
+
+describe('pressed toggle fill (issue #1183)', () => {
+  const noop = () => {};
+  // Stylesheet under test: these suites render to static markup
+  // without a DOM, so the rule text is asserted directly (vitest
+  // empties ?raw CSS imports in this repo).
+  const indexCss = readFileSync(fileURLToPath(new URL('../index.css', import.meta.url)), 'utf8');
+
+  function pickerHtml(): string {
+    const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    const start = html.indexOf('data-testid="chat-backend-picker"');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = html.indexOf('data-testid="chat-send"');
+    expect(end).toBeGreaterThan(start);
+    return html.slice(start, end);
+  }
+
+  it('backend picker exposes one pressed toggle per option', () => {
+    // The generic pressed-fill rule keys off aria-pressed alone, so
+    // every option must carry the attribute — exactly one true.
+    for (const o of CHAT_BACKEND_OPTIONS) {
+      expect(pickerHtml()).toContain(`data-testid="chat-backend-${o.value}"`);
+    }
+    const picker = pickerHtml();
+    expect(picker.split('aria-pressed=').length - 1).toBe(CHAT_BACKEND_OPTIONS.length);
+    expect(picker.split('aria-pressed="true"').length - 1).toBe(1);
+  });
+
+  it('default backend lights the Auto toggle', () => {
+    const auto = pickerHtml().match(/data-testid="chat-backend-auto"[^>]*aria-pressed="true"/);
+    expect(auto).not.toBeNull();
+  });
+
+  it('stylesheet gives every bare pressed toggle the accent fill', () => {
+    // Generic, deliberately unscoped: pickers that only set
+    // aria-pressed (backend, scope) inherit the pressed fill without
+    // per-picker rules.
+    const rule = indexCss.match(/^button\[aria-pressed="true"\] \{[^}]*\}/m);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('background: var(--accent-solid)');
+    expect(rule![0]).toContain('border-color: var(--accent-solid)');
+    expect(rule![0]).toContain('color: #fff');
   });
 });

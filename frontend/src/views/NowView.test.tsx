@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import NowView, {
   ActionControl,
   AskAgentControl,
@@ -1119,5 +1121,89 @@ describe('report-a-bug dialog compactness (issue #1027)', () => {
     expect(html).toContain('data-testid="report-label-bug"');
     expect(html).toContain('data-testid="report-label-enhancement"');
     expect(html).toContain('label-chip');
+  });
+});
+
+describe('hero deep-link tap targets (issue #1177)', () => {
+  const noop = () => {};
+  const indexCss = readFileSync(fileURLToPath(new URL('../index.css', import.meta.url)), 'utf8');
+
+  function heroHtml(): string {
+    const item: AttentionItem = {
+      id: 'a1',
+      kind: 'failed-job',
+      title: 'Failed job',
+      detail: 'd',
+      repo: 'remote-server',
+      severity: 'warn',
+      action: { label: 'View jobs', method: 'GET', href: 'api/jobs', destructive: false, intent: '' },
+      created_at: 1,
+    };
+    return renderToStaticMarkup(
+      <NowHero
+        health={{
+          disk: {},
+          memory: {},
+          containers: [{ name: 'c', service: 'c', state: 'running', status: 'up', health: 'healthy' }],
+          containers_error: null,
+        } as SystemHealthResponse}
+        feed={{
+          repo: 'remote-server',
+          updated_at: 1,
+          attention: [item],
+          merge_ready: { count: 0, top: [] },
+          runs: { active: { id: 'r1', action: 'briefing', started: 1 }, recent: [] },
+        } as InboxFeed}
+        prCount={2}
+        deployAt={null}
+        onDone={noop}
+        onError={noop}
+        onSection={noop}
+        onTab={noop}
+        onAttention={noop}
+        onHistoryDeploys={noop}
+      />,
+    );
+  }
+
+  it('count segments render as real buttons inside the hero strip', () => {
+    const html = heroHtml();
+    const hero = html.indexOf('data-testid="now-hero"');
+    expect(hero).toBeGreaterThanOrEqual(0);
+    const seg = html.match(/<button[^>]*data-testid="now-hero-seg-attention"[^>]*>/);
+    expect(seg).not.toBeNull();
+    expect(seg!.index).toBeGreaterThan(hero);
+    expect(seg![0]).toContain('btn-link');
+  });
+
+  it('stylesheet keeps hero link-buttons at the tap minimum', () => {
+    // Generic btn-link stays zero-chrome elsewhere; only the hero
+    // segments get the 44px minimum.
+    const rule = indexCss.match(/^\.now-hero button\.btn-link \{[^}]*\}/m);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('min-height: 44px');
+  });
+});
+
+describe('attention select-all line (issue #1178)', () => {
+  const noop = () => {};
+  const indexCss = readFileSync(fileURLToPath(new URL('../index.css', import.meta.url)), 'utf8');
+
+  it('renders as a label carrying the select-all hook', () => {
+    const html = renderToStaticMarkup(
+      <AttentionSelectAll total={3} selectedCount={0} onToggle={noop} />,
+    );
+    const label = html.match(/<label[^>]*>/);
+    expect(label).not.toBeNull();
+    expect(label![0]).toContain('attention-select-all');
+  });
+
+  it('stylesheet qualifies the hook with label to beat label.row-meta', () => {
+    // Bare .attention-select-all (0,1,0) loses to label.row-meta
+    // (0,1,1) and renders as grid; the label-qualified rule ties
+    // specificity and wins by order, keeping one line.
+    const rule = indexCss.match(/^label\.attention-select-all \{[^}]*\}/m);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('display: inline-flex');
   });
 });

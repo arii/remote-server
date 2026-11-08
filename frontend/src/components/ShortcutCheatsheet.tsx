@@ -5,7 +5,7 @@ import { APP_SHORTCUTS } from '../shortcuts';
 // line under the tab navs so keyboard users can discover the keys.
 export function ShortcutHint() {
   return (
-    <p className="row-meta" data-testid="shortcut-hint">
+    <p className="row-meta shortcut-hint" data-testid="shortcut-hint">
       Press <kbd>?</kbd> for keyboard shortcuts
     </p>
   );

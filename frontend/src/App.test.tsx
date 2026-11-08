@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import App, { HEALTH_POLL_MS, NAV_ENTRIES, navPressed, nextBarHidden, RollupGate, singleFlight } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
@@ -34,6 +36,9 @@ import ChatView, {
   traceSummary,
 } from './views/ChatView';
 import HistoryView from './views/HistoryView';
+// Stylesheet under test: static-markup suites have no DOM, so the
+// rule text is asserted directly (vitest empties ?raw CSS here).
+const indexCss = readFileSync(fileURLToPath(new URL('./index.css', import.meta.url)), 'utf8');
 import JobsView from './views/JobsView';
 import {
   attachIdFromConflict,
@@ -1592,5 +1597,49 @@ describe('bottom-bar auto-hide (issue #1033)', () => {
       hidden: true,
       downPx: 0,
     });
+  });
+});
+
+describe('topbar tool chips (issue #1182)', () => {
+  it('Terminal and Code stay href anchors in the tools group', () => {
+    // Anchors keep href semantics; the chip look comes from the
+    // stylesheet, so converting them to buttons would break this.
+    const html = renderToStaticMarkup(<App />);
+    for (const [testId, label] of [
+      ['tool-terminal', 'Terminal'],
+      ['tool-code', 'Code'],
+    ] as const) {
+      const anchor = html.match(new RegExp(`<a [^>]*data-testid="${testId}"[^>]*>${label}</a>`));
+      expect(anchor).not.toBeNull();
+      expect(anchor![0]).toContain('href=');
+    }
+  });
+
+  it('stylesheet paints topbar anchors as chips like their button siblings', () => {
+    const rule = indexCss.match(/^\.topbar-group a \{[^}]*\}/m);
+    expect(rule).not.toBeNull();
+    expect(rule![0]).toContain('background: var(--surface-2)');
+    expect(rule![0]).toContain('border: 1px solid var(--border)');
+    expect(rule![0]).toContain('border-radius: 8px');
+    expect(rule![0]).toContain('padding: 0.45rem 0.8rem');
+    expect(rule![0]).toContain('text-decoration: none');
+  });
+});
+
+describe('shortcut hint touch rule (issue #1179)', () => {
+  it('hint carries the shortcut-hint class hook', () => {
+    const html = renderToStaticMarkup(<ShortcutHint />);
+    expect(html).toContain('data-testid="shortcut-hint"');
+    const cls = html.match(/class="([^"]*)"/);
+    expect(cls).not.toBeNull();
+    expect(cls![1].split(/\s+/)).toContain('shortcut-hint');
+  });
+
+  it('stylesheet hides the hint on coarse pointers', () => {
+    // Phone-first, mirroring the triage-hint rule: keyboard hints
+    // are unactionable on touch.
+    const media = indexCss.match(/@media \(pointer: coarse\) \{[^}]*\.shortcut-hint[^}]*\}/);
+    expect(media).not.toBeNull();
+    expect(media![0]).toContain('display: none');
   });
 });

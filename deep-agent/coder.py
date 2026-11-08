@@ -63,16 +63,25 @@ RECURSION_LIMIT = 100
 DEFAULT_TIMEOUT = 1800
 DEFAULT_VERIFY_ROUNDS = 2
 
-# Dithering guard (#1160 gap 3): this many consecutive identical
-# failing run_check calls means the agent is spinning, not
-# progressing — the tool tells it to stop, and the verify loop
-# refuses further re-prompts.
+# Dithering guard (#1160 gap 3, #1176): this many consecutive
+# identical unproductive run_check calls means the agent is spinning,
+# not progressing — the tool tells it to stop, and the verify loop
+# refuses further re-prompts. Unproductive is failing (nonzero exit)
+# or an empty success (exit 0 with no output: the command is not
+# seeing what the agent expects). A success with output still resets.
 DITHER_THRESHOLD = 5
 
 DITHER_NOTICE = (
     "DITHERING: this exact command has failed {streak} times in a "
     "row. Stop retrying it unchanged — fix the code, or run a "
     "different check. Further identical retries will keep failing."
+)
+
+DITHER_EMPTY_NOTICE = (
+    "DITHERING: this exact command has returned empty output "
+    "{streak} times in a row. Stop retrying it unchanged — it is "
+    "not seeing what you expect (wrong path, ignored directory?). "
+    "Fix the invocation, or run a different check."
 )
 
 # Re-prompt sent when a coder turn finishes with no passing run_check
@@ -103,7 +112,8 @@ PLAN_LIMIT = 8000
 # and CODER_PLAN=never escapes it.
 FILE_TOKEN_RE = re.compile(
     r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+"
-    r"|[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,4})\b")
+    r"|[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,4})\b"
+)
 URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 PROSE_ABBREVS = frozenset({"e.g", "i.e"})
 
@@ -124,12 +134,15 @@ try:
     import skills_registry as _skills_registry
 
     PLAN_PROMPT = _skills_registry.SkillsRegistry().inject_skills_for_node(
-        "validated_replanner_node", PLAN_PROMPT)
+        "validated_replanner_node", PLAN_PROMPT
+    )
 except Exception:
     pass
 
-PLAN_NUDGE = ("Call the propose_plan tool now with your numbered plan "
-              "(steps + files + checks each). Do not write code.")
+PLAN_NUDGE = (
+    "Call the propose_plan tool now with your numbered plan "
+    "(steps + files + checks each). Do not write code."
+)
 
 
 def files_named(*texts):
@@ -164,8 +177,7 @@ def validate_plan(plan):
     if not isinstance(plan, str) or not plan.strip():
         return False, "REJECTED: plan must be non-empty text"
     if len(plan) > PLAN_LIMIT:
-        return False, ("REJECTED: plan is too long "
-                       f"(max {PLAN_LIMIT} chars)")
+        return False, (f"REJECTED: plan is too long (max {PLAN_LIMIT} chars)")
     return True, "PLAN recorded:\n" + plan.strip()
 
 
@@ -181,8 +193,7 @@ def parse_args(argv):
     parser.add_argument("--model", default=None)
     parser.add_argument("--worktree", default=None)
     parser.add_argument("--thread", default=None)
-    parser.add_argument("--resume", default=None,
-                        choices=["approve", "reject"])
+    parser.add_argument("--resume", default=None, choices=["approve", "reject"])
     parser.add_argument("brief", nargs="?")
     args = parser.parse_args(argv)
     if not args.brief and not args.resume:
@@ -215,7 +226,7 @@ def _default_plan_fn(brief, worktree_root, context):
     tests); the graph signature stays (brief, root, context)."""
     model, _spec = build_model()
     context = dict(context or {})
-    system = (context.get("skills") or "")
+    system = context.get("skills") or ""
     if system:
         system = system.strip() + "\n\n---\n\n"
     prompt = (
@@ -259,9 +270,10 @@ def _inject_replanner_skills():
     is unavailable or has nothing for the node."""
     try:
         import skills_registry as _skills_registry
-        injected = _skills_registry.SkillsRegistry(
-        ).inject_skills_for_node(
-            "validated_replanner_node", PLAN_PROMPT)
+
+        injected = _skills_registry.SkillsRegistry().inject_skills_for_node(
+            "validated_replanner_node", PLAN_PROMPT
+        )
         return injected if injected != PLAN_PROMPT else ""
     except Exception:
         return ""
@@ -272,8 +284,9 @@ def build_check_tool(worktree):
     from langchain_core.tools import tool  # noqa: E402
 
     allowed = ", ".join(" ".join(p) for p in CHECK_PREFIXES)
-    # Per-tool dither streak: consecutive identical failing
-    # commands. Any different command (or a pass) resets it.
+    # Per-tool dither streak: consecutive identical failing or
+    # empty-success commands. Any different command (or a success with
+    # output) resets it.
     spin = {"last": None, "streak": 0}
 
     @tool
@@ -294,31 +307,45 @@ def build_check_tool(worktree):
 
         try:
             proc = subprocess.run(
-                argv, cwd=worktree, capture_output=True, text=True,
+                argv,
+                cwd=worktree,
+                capture_output=True,
+                text=True,
                 timeout=CHECK_TIMEOUT,
-                env={**os.environ, **check_env(worktree)})
+                env={**os.environ, **check_env(worktree)},
+            )
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
         except OSError as exc:
             return f"exec failed: {exc}"
         out = ((proc.stdout or "") + (proc.stderr or ""))[-CHECK_OUTPUT_LIMIT:]
         result = f"exit={proc.returncode}\n{out}"
-        if proc.returncode != 0 and command == spin["last"]:
+        empty_success = proc.returncode == 0 and not out.strip()
+        if command == spin["last"] and (proc.returncode != 0 or empty_success):
             spin["streak"] += 1
         else:
-            spin["streak"] = 0 if proc.returncode == 0 else 1
+            spin["streak"] = 0 if proc.returncode == 0 and not empty_success else 1
         spin["last"] = command
         if spin["streak"] >= DITHER_THRESHOLD:
-            result += "\n" + DITHER_NOTICE.format(streak=spin["streak"])
+            notice = DITHER_EMPTY_NOTICE if empty_success else DITHER_NOTICE
+            result += "\n" + notice.format(streak=spin["streak"])
         return result
 
     run_check.description = run_check.description.format(allowed=allowed)
     return run_check
 
 
-def build_agent(worktree, system, model=None, recorder=None,
-                checkpointer=None, tools=None, interrupt_on=None,
-                permissions=None, spec=None):
+def build_agent(
+    worktree,
+    system,
+    model=None,
+    recorder=None,
+    checkpointer=None,
+    tools=None,
+    interrupt_on=None,
+    permissions=None,
+    spec=None,
+):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
     tools defaults to [run_check]; interrupt_on/permissions pass
@@ -346,8 +373,7 @@ def build_agent(worktree, system, model=None, recorder=None,
         kwargs["middleware"] = observe.trace_middleware(recorder)
     return create_deep_agent(
         model=model,
-        tools=(list(tools) if tools is not None
-               else [build_check_tool(worktree)]),
+        tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
         system_prompt=system,
         backend=FilesystemBackend(root_dir=worktree, virtual_mode=True),
         interrupt_on=interrupt_on,
@@ -390,8 +416,9 @@ def build_plan_tool():
     return propose_plan
 
 
-def build_plan_agent(worktree, system, model=None, recorder=None,
-                     checkpointer=None, spec=None):
+def build_plan_agent(
+    worktree, system, model=None, recorder=None, checkpointer=None, spec=None
+):
     """Planning agent: propose_plan only, writes denied, pauses on it.
 
     Same model/backend/threading as the implement agent; the write
@@ -400,15 +427,22 @@ def build_plan_agent(worktree, system, model=None, recorder=None,
     through to build_agent for the general-purpose disable. Venv-only.
     """
     from deepagents.middleware.filesystem import (  # noqa: E402
-        FilesystemPermission)
+        FilesystemPermission,
+    )
 
     return build_agent(
-        worktree, system, model=model, recorder=recorder,
-        checkpointer=checkpointer, tools=[build_plan_tool()],
+        worktree,
+        system,
+        model=model,
+        recorder=recorder,
+        checkpointer=checkpointer,
+        tools=[build_plan_tool()],
         interrupt_on=dict(CODER_INTERRUPT_ON),
-        permissions=[FilesystemPermission(operations=["write"],
-                                          paths=["/**"], mode="deny")],
-        spec=spec)
+        permissions=[
+            FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")
+        ],
+        spec=spec,
+    )
 
 
 def _timeout():
@@ -424,8 +458,7 @@ def verify_rounds():
     Default 2; 0 disables the gate (legacy single-invoke behavior).
     """
     try:
-        return max(0, int(os.environ.get("CODER_VERIFY_ROUNDS",
-                                         DEFAULT_VERIFY_ROUNDS)))
+        return max(0, int(os.environ.get("CODER_VERIFY_ROUNDS", DEFAULT_VERIFY_ROUNDS)))
     except ValueError:
         return DEFAULT_VERIFY_ROUNDS
 
@@ -461,7 +494,7 @@ def trace_has_passing_check(trace_path):
 
 
 def trace_check_history(trace_path):
-    """[(command, exit_code)] for run_check calls in a trace, in order.
+    """[(command, exit_code, output_empty)] for run_check calls, in order.
 
     Only strictly consecutive tool_call events count toward a
     streak: any other tool call between two checks (an edit, a
@@ -484,29 +517,53 @@ def trace_check_history(trace_path):
                     history = []
                     continue
                 preview = event.get("result_preview", "")
-                match = re.match(r"exit=(\d+)",
-                                 preview or "")
+                text = preview if isinstance(preview, str) else ""
+                match = re.match(r"exit=(\d+)", text)
                 code = int(match.group(1)) if match else -1
-                history.append((event.get("args_preview", ""), code))
+                empty = code == 0 and (
+                    text == "exit=0"
+                    or (
+                        text.startswith("exit=0\n")
+                        and not text[len("exit=0\n") :].strip()
+                    )
+                )
+                history.append((event.get("args_preview", ""), code, empty))
     except (OSError, TypeError):
         return []
     return history
+
+
+def _entry_unproductive(entry):
+    """True when a history entry shows no useful output. Pure.
+
+    Failing entries (nonzero exit) are always unproductive. Successful
+    entries count only when the trace records empty output — but
+    legacy 2-tuples carry no output info, so a recorded pass still
+    breaks the streak for them (the pre-#1176 contract). Never raises.
+    """
+    try:
+        if len(entry) < 3:
+            return entry[1] != 0
+        return entry[1] != 0 or bool(entry[2])
+    except (TypeError, ValueError, IndexError):
+        return False
 
 
 def find_dithered_command(history, threshold=DITHER_THRESHOLD):
     """Dithering command in a check history, or None. Pure.
 
     Returns the command when the last `threshold` entries are the
-    same command, all failing (nonzero exit); otherwise None. A
-    pass, a different command, or too few entries read as no
-    dither. Never raises.
+    same command, all unproductive (failing, or succeeding with
+    empty output); otherwise None. A success with output, a
+    different command, or too few entries read as no dither.
+    Never raises.
     """
     try:
         tail = list(history or [])[-threshold:]
         if len(tail) < threshold:
             return None
         command = tail[0][0]
-        if all(entry[0] == command and entry[1] != 0 for entry in tail):
+        if all(entry[0] == command and _entry_unproductive(entry) for entry in tail):
             return command
         return None
     except (TypeError, ValueError, IndexError):
@@ -516,8 +573,10 @@ def find_dithered_command(history, threshold=DITHER_THRESHOLD):
 def trace_has_dither(trace_path, threshold=DITHER_THRESHOLD):
     """True when a trace ends in a dithering check streak. Never raises."""
     try:
-        return find_dithered_command(
-            trace_check_history(trace_path), threshold) is not None
+        return (
+            find_dithered_command(trace_check_history(trace_path), threshold)
+            is not None
+        )
     except Exception:  # noqa: BLE001 - dither check never breaks a turn
         return False
 
@@ -555,16 +614,17 @@ def run_bounded(fn, timeout):
     return box.get("result")
 
 
-def run_with_verify(initial_invoke, reinvoke, has_passing_check,
-                    max_rounds, dithered=None):
+def run_with_verify(
+    initial_invoke, reinvoke, has_passing_check, max_rounds, dithered=None
+):
     """One invoke plus bounded verify re-invokes.
 
     initial_invoke() runs first; while has_passing_check() is false,
     reinvoke() runs up to max_rounds times. Returns
     (result, verify_rounds, verified). When dithered() reports a
-    repeated-identical-failure streak, re-invokes stop early
-    (#1160 gap 3: fail fast instead of burning verify rounds on a
-    spinning agent).
+    repeated-identical-unproductive streak (failing or empty-success
+    repeats), re-invokes stop early (#1160 gap 3: fail fast instead
+    of burning verify rounds on a spinning agent).
     """
     result = initial_invoke()
     rounds = 0
@@ -585,8 +645,7 @@ def extract_reply(result):
         if out_messages:
             last = out_messages[-1]
             content = getattr(last, "content", last)
-            text = (content if isinstance(content, str)
-                    else json.dumps(content)[:2000])
+            text = content if isinstance(content, str) else json.dumps(content)[:2000]
             return text.strip()
     except Exception:  # noqa: BLE001 - summary best effort
         pass
@@ -615,30 +674,31 @@ def run_coder(worktree, brief, system, thread, timeout):
     import deep_chat  # noqa: E402
 
     started = time.time()
-    recorder = observe.TraceRecorder(
-        observe.default_trace_path("coder", thread))
+    recorder = observe.TraceRecorder(observe.default_trace_path("coder", thread))
     model, spec = build_model(os.environ.get("CODER_MODEL") or None)
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
     saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-    agent = build_agent(worktree, system, model=model, recorder=recorder,
-                        checkpointer=saver, spec=spec)
+    agent = build_agent(
+        worktree, system, model=model, recorder=recorder, checkpointer=saver, spec=spec
+    )
     config = {"configurable": {"thread_id": thread}}
 
     def _invoke(msgs):
         return agent.invoke(
-            {"messages": msgs},
-            config={**config, "recursion_limit": RECURSION_LIMIT})
+            {"messages": msgs}, config={**config, "recursion_limit": RECURSION_LIMIT}
+        )
 
     max_rounds = verify_rounds()
     try:
         result, rounds, verified = run_with_verify(
             lambda: run_bounded(
-                lambda: _invoke([HumanMessage(content=brief)]), timeout),
+                lambda: _invoke([HumanMessage(content=brief)]), timeout
+            ),
             lambda: run_bounded(
-                lambda: _invoke([HumanMessage(content=VERIFY_NUDGE)]),
-                timeout),
+                lambda: _invoke([HumanMessage(content=VERIFY_NUDGE)]), timeout
+            ),
             lambda: trace_has_passing_check(recorder.path),
             max_rounds,
             dithered=lambda: trace_has_dither(recorder.path),
@@ -691,12 +751,15 @@ def latest_plan(thread):
     if best is None:
         return None
     extra = best.get("extra") or {}
-    return {"ts": best.get("ts"), "model": best.get("model") or "unknown",
-            "brief": extra.get("brief") or "",
-            "worktree": extra.get("worktree") or "",
-            "system": extra.get("system") or "",
-            "plan": extra.get("plan") or "",
-            "trace": extra.get("trace") or ""}
+    return {
+        "ts": best.get("ts"),
+        "model": best.get("model") or "unknown",
+        "brief": extra.get("brief") or "",
+        "worktree": extra.get("worktree") or "",
+        "system": extra.get("system") or "",
+        "plan": extra.get("plan") or "",
+        "trace": extra.get("trace") or "",
+    }
 
 
 def plan_is_stale(ts, now, cap):
@@ -735,58 +798,71 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
     """
     import observe  # noqa: E402
     from langchain_core.messages import (  # noqa: E402
-        AIMessage, HumanMessage)
+        AIMessage,
+        HumanMessage,
+    )
 
     import deep_chat  # noqa: E402
     import ledger  # noqa: E402
 
     started = time.time()
-    recorder = observe.TraceRecorder(
-        observe.default_trace_path("coder_plan", thread))
+    recorder = observe.TraceRecorder(observe.default_trace_path("coder_plan", thread))
     model, spec = build_model(os.environ.get("CODER_MODEL") or None)
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder plan via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
     saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-    agent = build_plan_agent(worktree, system, model=model,
-                             recorder=recorder, checkpointer=saver,
-                             spec=spec)
+    agent = build_plan_agent(
+        worktree, system, model=model, recorder=recorder, checkpointer=saver, spec=spec
+    )
     config = {"configurable": {"thread_id": thread}}
 
     def _invoke(msgs):
         return agent.invoke(
-            {"messages": msgs},
-            config={**config, "recursion_limit": RECURSION_LIMIT})
+            {"messages": msgs}, config={**config, "recursion_limit": RECURSION_LIMIT}
+        )
 
     try:
-        run_bounded(lambda: _invoke(
-            [HumanMessage(
-                content=PLAN_PROMPT.format(brief=brief))]), timeout)
+        run_bounded(
+            lambda: _invoke([HumanMessage(content=PLAN_PROMPT.format(brief=brief))]),
+            timeout,
+        )
         pending = deep_chat._pending_interrupts(agent, config)
         if not pending:
-            run_bounded(lambda: _invoke(
-                [HumanMessage(content=PLAN_NUDGE)]), timeout)
+            run_bounded(lambda: _invoke([HumanMessage(content=PLAN_NUDGE)]), timeout)
             pending = deep_chat._pending_interrupts(agent, config)
     except TimeoutError:
         recorder.run_end(False)
         recorder.close()
         ledger.record(
-            "coder.py", label, thread,
-            [HumanMessage(content=brief)], started,
-            extra={"worktree": worktree, "coder_phase": "plan_failed",
-                   "trace": recorder.path,
-                   "error": f"plan timed out after {timeout}s"},
+            "coder.py",
+            label,
+            thread,
+            [HumanMessage(content=brief)],
+            started,
+            extra={
+                "worktree": worktree,
+                "coder_phase": "plan_failed",
+                "trace": recorder.path,
+                "error": f"plan timed out after {timeout}s",
+            },
         )
-        return cli.sorry(
-            f"Sorry, the coder plan step timed out after {timeout}s.")
+        return cli.sorry(f"Sorry, the coder plan step timed out after {timeout}s.")
     except Exception as exc:  # noqa: BLE001 - sorry contract
         recorder.run_end(False)
         recorder.close()
         ledger.record(
-            "coder.py", label, thread,
-            [HumanMessage(content=brief)], started,
-            extra={"worktree": worktree, "coder_phase": "plan_failed",
-                   "trace": recorder.path, "error": str(exc)[:200]},
+            "coder.py",
+            label,
+            thread,
+            [HumanMessage(content=brief)],
+            started,
+            extra={
+                "worktree": worktree,
+                "coder_phase": "plan_failed",
+                "trace": recorder.path,
+                "error": str(exc)[:200],
+            },
         )
         return cli.sorry(f"Sorry, the coder plan step failed: {exc}")
     _ = holder
@@ -794,74 +870,96 @@ def plan_and_pause(worktree, brief, system, thread, timeout):
         recorder.run_end(False)
         recorder.close()
         ledger.record(
-            "coder.py", label, thread,
-            [HumanMessage(content=brief)], started,
-            extra={"worktree": worktree, "coder_phase": "plan_failed",
-                   "trace": recorder.path,
-                   "error": "plan step did not call propose_plan"},
+            "coder.py",
+            label,
+            thread,
+            [HumanMessage(content=brief)],
+            started,
+            extra={
+                "worktree": worktree,
+                "coder_phase": "plan_failed",
+                "trace": recorder.path,
+                "error": "plan step did not call propose_plan",
+            },
         )
-        return cli.sorry("Sorry, the coder plan step produced no plan "
-                         "for approval.")
+        return cli.sorry("Sorry, the coder plan step produced no plan for approval.")
     plan_text = ""
     requests = _plan_requests(pending)
     if requests and isinstance(requests[0], dict):
         plan_text = (requests[0].get("args") or {}).get("plan") or ""
-    recorder.event("plan", plan_preview=str(plan_text)[:2000],
-                   interrupt_id=pending[0].get("id"))
+    recorder.event(
+        "plan", plan_preview=str(plan_text)[:2000], interrupt_id=pending[0].get("id")
+    )
     recorder.run_end(True)
     recorder.close()
     usage, calls = recorder.totals()
     print(f"trace: {recorder.path}", file=sys.stderr)
     ledger.record(
-        "coder.py", label, thread,
-        [HumanMessage(content=brief),
-         AIMessage(content=plan_text or "(empty plan)")],
+        "coder.py",
+        label,
+        thread,
+        [HumanMessage(content=brief), AIMessage(content=plan_text or "(empty plan)")],
         started,
-        extra={"worktree": worktree, "brief": brief, "system": system,
-               "plan": str(plan_text)[:PLAN_LIMIT],
-               "coder_phase": "plan_pending", "trace": recorder.path},
-        usage=usage, calls=calls,
+        extra={
+            "worktree": worktree,
+            "brief": brief,
+            "system": system,
+            "plan": str(plan_text)[:PLAN_LIMIT],
+            "coder_phase": "plan_pending",
+            "trace": recorder.path,
+        },
+        usage=usage,
+        calls=calls,
     )
     return deep_chat._emit_interrupt(thread, pending)
 
 
-def _implement_and_finish(worktree, brief, system, thread, timeout,
-                          extra=None):
+def _implement_and_finish(worktree, brief, system, thread, timeout, extra=None):
     """run_coder plus the ledger row + stdout summary. Returns exit code."""
     import ledger  # noqa: E402
     from langchain_core.messages import (  # noqa: E402
-        AIMessage, HumanMessage)
+        AIMessage,
+        HumanMessage,
+    )
 
     label = "unknown"
     try:
-        (summary, usage, calls, started, label, trace, verified,
-         rounds) = run_coder(
-            worktree, brief, system, thread, timeout)
+        (summary, usage, calls, started, label, trace, verified, rounds) = run_coder(
+            worktree, brief, system, thread, timeout
+        )
     except Exception as exc:  # noqa: BLE001 - sorry contract
         ledger.record(
-            "coder.py", label,
-            thread, [{"role": "user", "content": brief}],
+            "coder.py",
+            label,
+            thread,
+            [{"role": "user", "content": brief}],
             time.time(),
-            extra={"worktree": worktree, "error": str(exc)[:200],
-                   **(extra or {})},
+            extra={"worktree": worktree, "error": str(exc)[:200], **(extra or {})},
         )
         return cli.sorry(f"Sorry, the coder failed: {exc}")
     ledger.record(
-        "coder.py", label, thread,
-        [HumanMessage(content=brief),
-         AIMessage(content=summary)],
+        "coder.py",
+        label,
+        thread,
+        [HumanMessage(content=brief), AIMessage(content=summary)],
         started,
-        extra={"worktree": worktree, "trace": trace,
-               "verified": verified, "verify_rounds": rounds,
-               **(extra or {})},
-        usage=usage, calls=calls,
+        extra={
+            "worktree": worktree,
+            "trace": trace,
+            "verified": verified,
+            "verify_rounds": rounds,
+            **(extra or {}),
+        },
+        usage=usage,
+        calls=calls,
     )
     print(summary or "(empty summary)")
     return 0
 
 
-def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
-                system_prompt_override=None):
+def _cmd_resume(
+    worktree_arg, thread, verdict, brief_override=None, system_prompt_override=None
+):
     """Resume a paused coder plan. Returns an exit code.
 
     reject: ledger plan_rejected, no agent touched, no edits,
@@ -872,56 +970,70 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
     """
     import observe  # noqa: E402
     from langchain_core.messages import (  # noqa: E402
-        AIMessage, HumanMessage)
+        AIMessage,
+        HumanMessage,
+    )
 
     import deep_chat  # noqa: E402
     import ledger  # noqa: E402
 
     if verdict not in ("approve", "reject"):
-        return cli.usage_error(
-            f"bad verdict {verdict!r}: want 'approve'/'reject'")
+        return cli.usage_error(f"bad verdict {verdict!r}: want 'approve'/'reject'")
     started = time.time()
     plan = latest_plan(thread)
     if plan is None:
         return cli.sorry(f"Sorry, no pending plan for thread {thread!r}.")
-    worktree = os.path.abspath(
-        worktree_arg or plan["worktree"] or os.getcwd())
+    worktree = os.path.abspath(worktree_arg or plan["worktree"] or os.getcwd())
     if not os.path.isdir(worktree):
         return cli.sorry(f"Sorry, no worktree at {worktree}.")
     if verdict == "reject":
         recorder = observe.TraceRecorder(
-            observe.default_trace_path("coder_resume", thread))
+            observe.default_trace_path("coder_resume", thread)
+        )
         recorder.run_start("coder.py", thread, plan["model"])
         recorder.event("plan_decision", verdict="reject")
         recorder.run_end(True)
         recorder.close()
         ledger.record(
-            "coder.py", plan["model"], thread,
-            [HumanMessage(content=plan["brief"] or "(brief unavailable)"),
-             AIMessage(content="plan rejected")],
+            "coder.py",
+            plan["model"],
+            thread,
+            [
+                HumanMessage(content=plan["brief"] or "(brief unavailable)"),
+                AIMessage(content="plan rejected"),
+            ],
             started,
-            extra={"worktree": worktree, "coder_phase": "plan_rejected",
-                   "trace": recorder.path},
+            extra={
+                "worktree": worktree,
+                "coder_phase": "plan_rejected",
+                "trace": recorder.path,
+            },
         )
         print("plan rejected, no changes made")
         return 0
     timeout = _timeout()
     if plan_is_stale(plan["ts"], time.time(), timeout):
         ledger.record(
-            "coder.py", plan["model"], thread,
+            "coder.py",
+            plan["model"],
+            thread,
             [HumanMessage(content=plan["brief"] or "(brief unavailable)")],
             started,
-            extra={"worktree": worktree, "coder_phase": "plan_stale",
-                   "error": f"plan older than {timeout}s"},
+            extra={
+                "worktree": worktree,
+                "coder_phase": "plan_stale",
+                "error": f"plan older than {timeout}s",
+            },
         )
         return cli.sorry(
             f"Sorry, the plan for thread {thread!r} expired "
-            f"(older than {timeout}s); re-dispatch the task.")
+            f"(older than {timeout}s); re-dispatch the task."
+        )
     brief = brief_override or plan["brief"]
     if not brief:
         return cli.sorry(
-            f"Sorry, the plan for thread {thread!r} has no brief; "
-            "re-dispatch the task.")
+            f"Sorry, the plan for thread {thread!r} has no brief; re-dispatch the task."
+        )
     if system_prompt_override and system_prompt_override.strip():
         system = build_system(worktree, system_prompt_override)
     elif plan["system"]:
@@ -930,16 +1042,15 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
         system = build_system(worktree, "")
     # Complete the paused planning turn on its own agent first, so
     # the thread carries plan→approve before implementation starts.
-    recorder = observe.TraceRecorder(
-        observe.default_trace_path("coder_resume", thread))
+    recorder = observe.TraceRecorder(observe.default_trace_path("coder_resume", thread))
     model, spec = build_model(os.environ.get("CODER_MODEL") or None)
     label = f"{spec['provider']}:{spec['model']}"
     print(f"coder resume via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
     saver, persistent, holder = deep_chat.open_checkpointer(CODER_DB)
-    agent = build_plan_agent(worktree, system, model=model,
-                             recorder=recorder, checkpointer=saver,
-                             spec=spec)
+    agent = build_plan_agent(
+        worktree, system, model=model, recorder=recorder, checkpointer=saver, spec=spec
+    )
     config = {"configurable": {"thread_id": thread}}
     pending = deep_chat._pending_interrupts(agent, config)
     if not pending and not persistent:
@@ -951,62 +1062,98 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
         # gap 2). A persistent checkpointer with no pending approval
         # still fails closed below (nothing was ever paused).
         _ = holder
-        recorder.event("plan_decision", verdict="approve",
-                       resume="ledger-plan-cross-process")
+        recorder.event(
+            "plan_decision", verdict="approve", resume="ledger-plan-cross-process"
+        )
         recorder.run_end(True)
         recorder.close()
         resume_usage, resume_calls = recorder.totals()
         ledger.record(
-            "coder.py", label, thread,
-            [HumanMessage(content=brief),
-             AIMessage(content=plan["plan"] or "(plan approved)")],
+            "coder.py",
+            label,
+            thread,
+            [
+                HumanMessage(content=brief),
+                AIMessage(content=plan["plan"] or "(plan approved)"),
+            ],
             started,
-            extra={"worktree": worktree, "coder_phase": "plan_approved",
-                   "trace": recorder.path,
-                   "ledger_resume": True},
-            usage=resume_usage, calls=resume_calls,
+            extra={
+                "worktree": worktree,
+                "coder_phase": "plan_approved",
+                "trace": recorder.path,
+                "ledger_resume": True,
+            },
+            usage=resume_usage,
+            calls=resume_calls,
         )
         return _implement_and_finish(
-            worktree, brief, system, thread, timeout,
-            extra={"coder_phase": "implement", "plan_approved": True,
-                   "ledger_resume": True})
+            worktree,
+            brief,
+            system,
+            thread,
+            timeout,
+            extra={
+                "coder_phase": "implement",
+                "plan_approved": True,
+                "ledger_resume": True,
+            },
+        )
     if not pending:
         recorder.run_end(False)
         recorder.close()
-        return cli.sorry(
-            f"Sorry, no pending approval for thread {thread!r}.")
+        return cli.sorry(f"Sorry, no pending approval for thread {thread!r}.")
     from langgraph.types import Command  # noqa: E402
 
     count = len(_plan_requests(pending)) or 1
 
     def _invoke(payload):
         return agent.invoke(
-            payload,
-            config={**config, "recursion_limit": RECURSION_LIMIT})
+            payload, config={**config, "recursion_limit": RECURSION_LIMIT}
+        )
 
     try:
-        run_bounded(lambda: _invoke(Command(resume=deep_chat.resume_payload(
-            [deep_chat.decision_for_verdict("approve")] * count))), timeout)
+        run_bounded(
+            lambda: _invoke(
+                Command(
+                    resume=deep_chat.resume_payload(
+                        [deep_chat.decision_for_verdict("approve")] * count
+                    )
+                )
+            ),
+            timeout,
+        )
     except TimeoutError:
         recorder.run_end(False)
         recorder.close()
         ledger.record(
-            "coder.py", label, thread,
-            [HumanMessage(content=brief)], started,
-            extra={"worktree": worktree, "coder_phase": "resume_failed",
-                   "trace": recorder.path,
-                   "error": f"resume timed out after {timeout}s"},
+            "coder.py",
+            label,
+            thread,
+            [HumanMessage(content=brief)],
+            started,
+            extra={
+                "worktree": worktree,
+                "coder_phase": "resume_failed",
+                "trace": recorder.path,
+                "error": f"resume timed out after {timeout}s",
+            },
         )
-        return cli.sorry(
-            f"Sorry, the coder resume timed out after {timeout}s.")
+        return cli.sorry(f"Sorry, the coder resume timed out after {timeout}s.")
     except Exception as exc:  # noqa: BLE001 - sorry contract
         recorder.run_end(False)
         recorder.close()
         ledger.record(
-            "coder.py", label, thread,
-            [HumanMessage(content=brief)], started,
-            extra={"worktree": worktree, "coder_phase": "resume_failed",
-                   "trace": recorder.path, "error": str(exc)[:200]},
+            "coder.py",
+            label,
+            thread,
+            [HumanMessage(content=brief)],
+            started,
+            extra={
+                "worktree": worktree,
+                "coder_phase": "resume_failed",
+                "trace": recorder.path,
+                "error": str(exc)[:200],
+            },
         )
         return cli.sorry(f"Sorry, the coder resume failed: {exc}")
     _ = holder
@@ -1015,17 +1162,30 @@ def _cmd_resume(worktree_arg, thread, verdict, brief_override=None,
     recorder.close()
     resume_usage, resume_calls = recorder.totals()
     ledger.record(
-        "coder.py", label, thread,
-        [HumanMessage(content=brief),
-         AIMessage(content=plan["plan"] or "(plan approved)")],
+        "coder.py",
+        label,
+        thread,
+        [
+            HumanMessage(content=brief),
+            AIMessage(content=plan["plan"] or "(plan approved)"),
+        ],
         started,
-        extra={"worktree": worktree, "coder_phase": "plan_approved",
-               "trace": recorder.path},
-        usage=resume_usage, calls=resume_calls,
+        extra={
+            "worktree": worktree,
+            "coder_phase": "plan_approved",
+            "trace": recorder.path,
+        },
+        usage=resume_usage,
+        calls=resume_calls,
     )
     return _implement_and_finish(
-        worktree, brief, system, thread, timeout,
-        extra={"coder_phase": "implement", "plan_approved": True})
+        worktree,
+        brief,
+        system,
+        thread,
+        timeout,
+        extra={"coder_phase": "implement", "plan_approved": True},
+    )
 
 
 def main(argv=None) -> int:
@@ -1034,24 +1194,27 @@ def main(argv=None) -> int:
         if not args.thread:
             return cli.usage_error("--thread is required with --resume")
         return _cmd_resume(
-            args.worktree, args.thread, args.resume,
+            args.worktree,
+            args.thread,
+            args.resume,
             brief_override=args.brief,
-            system_prompt_override=args.system_prompt or None)
+            system_prompt_override=args.system_prompt or None,
+        )
     worktree = os.path.abspath(args.worktree or os.getcwd())
     if not os.path.isdir(worktree):
         return cli.sorry(f"Sorry, no worktree at {worktree}.")
     thread = args.thread or f"coder-{os.getpid()}-{int(time.time())}"
     system = build_system(worktree, args.system_prompt)
     timeout = _timeout()
-    print(f"thread: {thread} worktree: {worktree} timeout: {timeout}s",
-          file=sys.stderr, flush=True)
+    print(
+        f"thread: {thread} worktree: {worktree} timeout: {timeout}s",
+        file=sys.stderr,
+        flush=True,
+    )
     if needs_plan(args.brief, args.system_prompt):
-        print("brief clears the plan bar: planning first",
-              file=sys.stderr, flush=True)
-        return plan_and_pause(worktree, args.brief, system, thread,
-                              timeout)
-    return _implement_and_finish(worktree, args.brief, system, thread,
-                                 timeout)
+        print("brief clears the plan bar: planning first", file=sys.stderr, flush=True)
+        return plan_and_pause(worktree, args.brief, system, thread, timeout)
+    return _implement_and_finish(worktree, args.brief, system, thread, timeout)
 
 
 if __name__ == "__main__":
@@ -1090,13 +1253,33 @@ def read_worktree_file(worktree_root, path, limit=20000):
 
 def gate_spec_markdown(brief, allowed_files):
     """Minimal verify-scope spec from a brief + allowed file list."""
-    lines = ["# Task", "", "## Problem Statement", brief.strip(), "",
-             "## Goal", brief.strip(), "", "## Scope", "", "## Definition of Done",
-             "done.", "", "## Scope & File Boundaries", "### Allowed Files"]
+    lines = [
+        "# Task",
+        "",
+        "## Problem Statement",
+        brief.strip(),
+        "",
+        "## Goal",
+        brief.strip(),
+        "",
+        "## Scope",
+        "",
+        "## Definition of Done",
+        "done.",
+        "",
+        "## Scope & File Boundaries",
+        "### Allowed Files",
+    ]
     for path in allowed_files or []:
         lines.append(f"- `{path}`")
-    lines += ["### Forbidden Files", "- (none declared)", "",
-              "## Acceptance Criteria", "- [ ] Gates pass", ""]
+    lines += [
+        "### Forbidden Files",
+        "- (none declared)",
+        "",
+        "## Acceptance Criteria",
+        "- [ ] Gates pass",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -1110,19 +1293,30 @@ class InitCoderGraph:
     cmd_runner(checkout, command) -> s5tools.run_repo_command-shaped str
     """
 
-    def __init__(self, repo, issue_id, brief, plan_fn=None,
-                 implement_fn=None, td_runner=None, cmd_runner=None,
-                 max_fix_loops=3, max_replans=1, thread_id=None):
+    def __init__(
+        self,
+        repo,
+        issue_id,
+        brief,
+        plan_fn=None,
+        implement_fn=None,
+        td_runner=None,
+        cmd_runner=None,
+        max_fix_loops=3,
+        max_replans=1,
+        thread_id=None,
+    ):
         import s5tools  # noqa: E402  (stdlib-only module)
+
         self.repo = repo
         self.issue_id = issue_id
         self.brief = brief
         self.plan_fn = plan_fn or _default_plan_fn
         self.implement_fn = implement_fn or _default_implement_fn
-        self.td_runner = (td_runner if td_runner is not None
-                          else self._default_td_runner)
-        self.cmd_runner = (cmd_runner if cmd_runner is not None
-                           else s5tools.run_repo_command)
+        self.td_runner = td_runner if td_runner is not None else self._default_td_runner
+        self.cmd_runner = (
+            cmd_runner if cmd_runner is not None else s5tools.run_repo_command
+        )
         self.max_fix_loops = max_fix_loops
         self.max_replans = max_replans
         self.thread_id = thread_id or f"coder-{issue_id}-{int(time.time())}"
@@ -1130,6 +1324,7 @@ class InitCoderGraph:
     @staticmethod
     def _default_td_runner(args, cwd):
         import s5tools
+
         out = s5tools.td(["--json"] + list(args), cwd)
         return 0, out
 
@@ -1139,8 +1334,8 @@ class InitCoderGraph:
         """td worktree create --issue; returns (root, error-or-None)."""
         try:
             code, out = self.td_runner(
-                ["worktree", "create", "--issue", str(self.issue_id)],
-                self.repo)
+                ["worktree", "create", "--issue", str(self.issue_id)], self.repo
+            )
         except Exception as exc:
             return None, f"td worktree create failed: {exc}"
         try:
@@ -1148,8 +1343,7 @@ class InitCoderGraph:
         except ValueError:
             return None, f"td returned non-JSON: {out[:200]}"
         if code != 0 or not isinstance(payload, dict):
-            return None, (f"td worktree create exited {code}: "
-                           f"{out[:200]}")
+            return None, (f"td worktree create exited {code}: {out[:200]}")
         root = payload.get("path")
         if not root or not os.path.isdir(root):
             return None, f"td returned no worktree path: {out[:200]}"
@@ -1162,22 +1356,35 @@ class InitCoderGraph:
         "commands": [{command, exit}], "errors": [...]}.
         """
         import tempfile
+
         errors = []
         spec_text = gate_spec_markdown(self.brief, allowed_files)
         handle = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".md", delete=False, encoding="utf-8")
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
         commands_out = []
         try:
             handle.write(spec_text)
             handle.close()
             try:
                 code, out = self.td_runner(
-                    ["verify-scope", "--spec-file", handle.name,
-                     "--worktree", worktree_root], worktree_root)
+                    [
+                        "verify-scope",
+                        "--spec-file",
+                        handle.name,
+                        "--worktree",
+                        worktree_root,
+                    ],
+                    worktree_root,
+                )
             except Exception as exc:
-                return {"passed": False, "scope": {}, "audit": {},
-                        "commands": [],
-                        "errors": [f"verify-scope failed: {exc}"]}
+                return {
+                    "passed": False,
+                    "scope": {},
+                    "audit": {},
+                    "commands": [],
+                    "errors": [f"verify-scope failed: {exc}"],
+                }
             try:
                 scope = json.loads(out) if out else {}
             except ValueError:
@@ -1189,12 +1396,16 @@ class InitCoderGraph:
                     errors.append(f"verify-scope exited {code}")
             try:
                 code, out = self.td_runner(
-                    ["audit-code", "--worktree", worktree_root],
-                    worktree_root)
+                    ["audit-code", "--worktree", worktree_root], worktree_root
+                )
             except Exception as exc:
-                return {"passed": False, "scope": scope, "audit": {},
-                        "commands": [],
-                        "errors": errors + [f"audit-code failed: {exc}"]}
+                return {
+                    "passed": False,
+                    "scope": scope,
+                    "audit": {},
+                    "commands": [],
+                    "errors": errors + [f"audit-code failed: {exc}"],
+                }
             try:
                 audit = json.loads(out) if out else {}
             except ValueError:
@@ -1203,30 +1414,36 @@ class InitCoderGraph:
                 for item in audit.get("ast_violations", []):
                     errors.append(
                         f"audit: {item.get('file')}:{item.get('line')}: "
-                        f"{item.get('rule')}: {item.get('message')}")
+                        f"{item.get('rule')}: {item.get('message')}"
+                    )
                 for item in audit.get("slop_findings", []):
                     errors.append(
                         f"slop: {item.get('script')}: "
-                        f"{str(item.get('summary', ''))[:200]}")
+                        f"{str(item.get('summary', ''))[:200]}"
+                    )
                 if code != 0 and not errors:
                     errors.append(f"audit-code exited {code}")
             for command in verification_commands or []:
                 result = self.cmd_runner(worktree_root, command)
                 match = re.match(r"exit=(\d+)", result or "")
                 exit_code = int(match.group(1)) if match else -1
-                commands_out.append({"command": command,
-                                     "exit": exit_code})
+                commands_out.append({"command": command, "exit": exit_code})
                 if exit_code != 0:
                     errors.append(
-                        f"command failed (exit={exit_code}): {command} "
-                        f"{result[-300:]}")
+                        f"command failed (exit={exit_code}): {command} {result[-300:]}"
+                    )
         finally:
             try:
                 os.unlink(handle.name)
             except OSError:
                 pass
-        return {"passed": not errors, "scope": scope, "audit": audit,
-                "commands": commands_out, "errors": errors}
+        return {
+            "passed": not errors,
+            "scope": scope,
+            "audit": audit,
+            "commands": commands_out,
+            "errors": errors,
+        }
 
     # -- graph ------------------------------------------------------------
 
@@ -1263,9 +1480,14 @@ class InitCoderGraph:
             root, error = outer.provision_worktree()
             if error:
                 return {"fatal": error}
-            return {"worktree_root": root, "fix_attempts": 0,
-                    "replans": 0, "plan_attempts": 0, "errors": [],
-                    "valid": False}
+            return {
+                "worktree_root": root,
+                "fix_attempts": 0,
+                "replans": 0,
+                "plan_attempts": 0,
+                "errors": [],
+                "valid": False,
+            }
 
         def plan_node(state):
             if state.get("plan") and not state.get("errors"):
@@ -1273,52 +1495,63 @@ class InitCoderGraph:
             if outer.plan_fn is None:
                 return {"fatal": "plan_fn is required"}
             result = outer.plan_fn(
-                outer.brief, state.get("worktree_root", ""),
-                {"errors": state.get("errors", [])})
+                outer.brief,
+                state.get("worktree_root", ""),
+                {"errors": state.get("errors", [])},
+            )
             allowed = list(result.get("allowed_files", []))
             commands = list(result.get("verification_commands", []))
-            return {"plan": result.get("plan", ""),
-                    "allowed_files": allowed,
-                    "verification_commands": commands,
-                    "approved": False}
+            return {
+                "plan": result.get("plan", ""),
+                "allowed_files": allowed,
+                "verification_commands": commands,
+                "approved": False,
+            }
 
         def plan_review_node(state):
             if state.get("approved"):
                 return {}
             if state.get("plan_attempts", 0) >= 3:
                 return {"fatal": "plan rejected too many times"}
-            reply = interrupt({"plan": state.get("plan", ""),
-                               "issue_id": outer.issue_id})
+            reply = interrupt(
+                {"plan": state.get("plan", ""), "issue_id": outer.issue_id}
+            )
             decision = (reply or {}).get("decision", "approve")
             if decision == "approve":
-                return {"approved": True,
-                        "plan_attempts": state.get("plan_attempts", 0) + 1}
+                return {
+                    "approved": True,
+                    "plan_attempts": state.get("plan_attempts", 0) + 1,
+                }
             notes = (reply or {}).get("notes", "")
             errors = list(state.get("errors", []))
             if notes:
                 errors.append(f"plan revision requested: {notes}")
-            return {"approved": False, "errors": errors,
-                    "plan_attempts": state.get("plan_attempts", 0) + 1}
+            return {
+                "approved": False,
+                "errors": errors,
+                "plan_attempts": state.get("plan_attempts", 0) + 1,
+            }
 
         def implement_node(state):
-            if (state.get("implementation_notes")
-                    and not state.get("errors")):
+            if state.get("implementation_notes") and not state.get("errors"):
                 return {}
             if outer.implement_fn is None:
                 return {"fatal": "implement_fn is required"}
             notes = outer.implement_fn(
-                outer.brief, state.get("plan", ""),
+                outer.brief,
+                state.get("plan", ""),
                 state.get("worktree_root", ""),
-                state.get("errors", []))
+                state.get("errors", []),
+            )
             return {"implementation_notes": notes}
 
         def gate_node(state):
             gate = outer.run_gate(
                 state.get("worktree_root", ""),
                 state.get("allowed_files", []),
-                state.get("verification_commands", []))
-            update = {"gate": gate, "errors": gate["errors"],
-                      "valid": gate["passed"]}
+                state.get("verification_commands", []),
+            )
+            update = {"gate": gate, "errors": gate["errors"], "valid": gate["passed"]}
             if gate["passed"]:
                 return update
             return update
@@ -1340,43 +1573,56 @@ class InitCoderGraph:
         def replan_node(state):
             if outer.plan_fn is None:
                 return {"fatal": "plan_fn is required"}
-            context = {"errors": state.get("errors", []),
-                       "gate": state.get("gate", {}),
-                       "replan": True}
+            context = {
+                "errors": state.get("errors", []),
+                "gate": state.get("gate", {}),
+                "replan": True,
+            }
             skills_text = _inject_replanner_skills()
             if skills_text:
                 context["skills"] = skills_text
-            result = outer.plan_fn(
-                outer.brief, state.get("worktree_root", ""),
-                context)
-            return {"plan": result.get("plan", ""),
-                    "allowed_files": list(result.get("allowed_files", [])),
-                    "verification_commands": list(
-                        result.get("verification_commands", [])),
-                    "approved": False,
-                    "implementation_notes": "",
-                    "errors": [],
-                    "replans": state.get("replans", 0) + 1,
-                    "fix_attempts": 0}
+            result = outer.plan_fn(outer.brief, state.get("worktree_root", ""), context)
+            return {
+                "plan": result.get("plan", ""),
+                "allowed_files": list(result.get("allowed_files", [])),
+                "verification_commands": list(result.get("verification_commands", [])),
+                "approved": False,
+                "implementation_notes": "",
+                "errors": [],
+                "replans": state.get("replans", 0) + 1,
+                "fix_attempts": 0,
+            }
 
         def persist_node(state):
             import decisions
             import ledger
-            calls = [{"name": "td worktree create",
-                      "args": f"--issue {outer.issue_id}"},
-                     {"name": "td verify-scope + td audit-code",
-                      "args": f"attempts={state.get('fix_attempts', 0)}"}]
+
+            calls = [
+                {"name": "td worktree create", "args": f"--issue {outer.issue_id}"},
+                {
+                    "name": "td verify-scope + td audit-code",
+                    "args": f"attempts={state.get('fix_attempts', 0)}",
+                },
+            ]
             lines = decisions.build_decisions(
-                calls, [f"valid={state.get('valid')}"],
+                calls,
+                [f"valid={state.get('valid')}"],
                 (state.get("implementation_notes", "") or "")[:500],
-                reason="coder loop closed")
+                reason="coder loop closed",
+            )
             ledger.record(
-                "coder.py", os.environ.get("S5_CODER_MODEL", "qwen3:8b"),
-                outer.thread_id, [], time.time(),
-                extra={"valid": state.get("valid"),
-                       "issue_id": outer.issue_id,
-                       "worktree_root": state.get("worktree_root", ""),
-                       "decisions": lines})
+                "coder.py",
+                os.environ.get("S5_CODER_MODEL", "qwen3:8b"),
+                outer.thread_id,
+                [],
+                time.time(),
+                extra={
+                    "valid": state.get("valid"),
+                    "issue_id": outer.issue_id,
+                    "worktree_root": state.get("worktree_root", ""),
+                    "decisions": lines,
+                },
+            )
             return {"persisted": True}
 
         builder = StateGraph(CoderState)
@@ -1390,24 +1636,39 @@ class InitCoderGraph:
         builder.add_node("persist", persist_node)
         builder.add_edge(START, "init")
         builder.add_conditional_edges(
-            "init", lambda s: END if s.get("fatal") else "plan",
-            {"plan": "plan", END: END})
+            "init",
+            lambda s: END if s.get("fatal") else "plan",
+            {"plan": "plan", END: END},
+        )
         builder.add_conditional_edges(
-            "plan", lambda s: END if s.get("fatal") else "plan_review",
-            {"plan_review": "plan_review", END: END})
+            "plan",
+            lambda s: END if s.get("fatal") else "plan_review",
+            {"plan_review": "plan_review", END: END},
+        )
         builder.add_conditional_edges(
             "plan_review",
-            lambda s: END if s.get("fatal")
-            else ("implement" if s.get("approved") else "plan"),
-            {"implement": "implement", "plan": "plan", END: END})
+            lambda s: (
+                END
+                if s.get("fatal")
+                else ("implement" if s.get("approved") else "plan")
+            ),
+            {"implement": "implement", "plan": "plan", END: END},
+        )
         builder.add_conditional_edges(
             "implement",
             lambda s: END if s.get("fatal") else "deterministic_gate",
-            {"deterministic_gate": "deterministic_gate", END: END})
-        builder.add_conditional_edges("deterministic_gate", route_after_gate,
-                                      {"persist": "persist",
-                                       "implement": "fix_loop", "replan": "validated_replanner",
-                                       END: END})
+            {"deterministic_gate": "deterministic_gate", END: END},
+        )
+        builder.add_conditional_edges(
+            "deterministic_gate",
+            route_after_gate,
+            {
+                "persist": "persist",
+                "implement": "fix_loop",
+                "replan": "validated_replanner",
+                END: END,
+            },
+        )
         builder.add_edge("fix_loop", "implement")
         builder.add_edge("validated_replanner", "plan_review")
         builder.add_edge("persist", END)
@@ -1416,6 +1677,7 @@ class InitCoderGraph:
     def run(self, resume=None):
         """Invoke to completion (or interrupt); resume via Command."""
         from langgraph.types import Command
+
         graph = self.build_graph()
         config = {"configurable": {"thread_id": self.thread_id}}
         if resume is None:

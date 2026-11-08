@@ -213,6 +213,164 @@ class TestDitherGuard(unittest.TestCase):
         self.assertEqual((result, rounds, verified), ("r1", 0, True))
 
 
+class TestDitherGuard1176(unittest.TestCase):
+    """Independent tests for the #1176 dither-guard extension.
+
+    The guard now treats an empty success (exit 0 with no output)
+    as unproductive: histories are 3-tuples (command, exit_code,
+    output_empty), and five consecutive identical empty successes
+    flag dither. Legacy 2-tuples keep the old contract (a recorded
+    pass breaks the streak). Behavior only: these tests pin
+    observable inputs/outputs, not internals.
+    """
+    CMD = "python3 -m pytest tests/test_x.py"
+
+    def test_five_identical_failures_flag_dither(self):
+        cmd = self.CMD
+        self.assertEqual(
+            coder.find_dithered_command([(cmd, 1, False)] * 5), cmd)
+        self.assertEqual(
+            coder.find_dithered_command([(cmd, 1, False)] * 7), cmd)
+        self.assertIsNone(
+            coder.find_dithered_command([(cmd, 1, False)] * 4))
+
+    def test_five_empty_successes_flag_dither(self):
+        cmd = self.CMD
+        self.assertEqual(
+            coder.find_dithered_command([(cmd, 0, True)] * 5), cmd)
+        self.assertEqual(
+            coder.find_dithered_command([(cmd, 0, True)] * 7), cmd)
+        self.assertIsNone(
+            coder.find_dithered_command([(cmd, 0, True)] * 4))
+
+    def test_success_with_output_breaks_streak(self):
+        cmd = self.CMD
+        fail = (cmd, 1, False)
+        empty_ok = (cmd, 0, True)
+        productive = (cmd, 0, False)
+        self.assertIsNone(
+            coder.find_dithered_command([fail] * 4 + [productive]))
+        self.assertIsNone(
+            coder.find_dithered_command([empty_ok] * 4 + [productive]))
+        self.assertIsNone(
+            coder.find_dithered_command(
+                [fail] * 4 + [productive] + [fail] * 4))
+        # A productive run earlier in history does not hide a later
+        # streak: only the last `threshold` entries decide.
+        self.assertEqual(
+            coder.find_dithered_command([productive] + [fail] * 5), cmd)
+        self.assertEqual(
+            coder.find_dithered_command([productive] + [empty_ok] * 5),
+            cmd)
+
+    def test_legacy_2tuples_keep_old_contract(self):
+        cmd = self.CMD
+        self.assertEqual(
+            coder.find_dithered_command([(cmd, 1)] * 5), cmd)
+        # A recorded pass breaks the streak even with no output info.
+        self.assertIsNone(
+            coder.find_dithered_command([(cmd, 1)] * 4 + [(cmd, 0)]))
+        self.assertIsNone(coder.find_dithered_command([(cmd, 0)] * 5))
+        self.assertTrue(coder._entry_unproductive((cmd, 1)))
+        self.assertFalse(coder._entry_unproductive((cmd, 0)))
+        self.assertTrue(coder._entry_unproductive((cmd, 1, False)))
+        self.assertTrue(coder._entry_unproductive((cmd, 0, True)))
+        self.assertFalse(coder._entry_unproductive((cmd, 0, False)))
+        self.assertFalse(coder._entry_unproductive(None))
+        self.assertFalse(coder._entry_unproductive(()))
+        self.assertFalse(coder._entry_unproductive(123))
+
+    def test_mixed_commands_do_not_flag(self):
+        cmd = self.CMD
+        other = "git status"
+        self.assertIsNone(
+            coder.find_dithered_command(
+                [(cmd, 1, False)] * 4 + [(other, 1, False)]))
+        self.assertIsNone(
+            coder.find_dithered_command(
+                [(cmd, 0, True)] * 4 + [(other, 0, True)]))
+        alternating = [(cmd, 1, False), (other, 1, False)] * 5
+        self.assertIsNone(coder.find_dithered_command(alternating))
+        self.assertIsNone(coder.find_dithered_command([]))
+        self.assertIsNone(coder.find_dithered_command(None))
+
+    def _write_trace(self, directory, previews, command=None):
+        path = os.path.join(directory, "trace.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for preview in previews:
+                event = {"type": "tool_call", "name": "run_check",
+                         "args_preview": command or self.CMD,
+                         "result_preview": preview, "ok": True}
+                f.write(json.dumps(event) + "\n")
+        return path
+
+    def test_trace_history_parses_exit_codes_and_emptiness(self):
+        cmd = self.CMD
+        with tempfile.TemporaryDirectory() as d:
+            path = self._write_trace(d, [
+                "exit=1\nboom",
+                "exit=0",
+                "exit=0\n",
+                "exit=0\n   \n",
+                "exit=0\nsome output",
+            ])
+            history = coder.trace_check_history(path)
+        self.assertEqual(history, [
+            (cmd, 1, False),
+            (cmd, 0, True),
+            (cmd, 0, True),
+            (cmd, 0, True),
+            (cmd, 0, False),
+        ])
+
+    def test_trace_history_unparseable_preview_reads_as_unknown(self):
+        cmd = self.CMD
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "trace.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(
+                    {"type": "tool_call", "name": "run_check",
+                     "args_preview": cmd, "ok": True}) + "\n")
+                f.write(json.dumps(
+                    {"type": "tool_call", "name": "run_check",
+                     "args_preview": cmd,
+                     "result_preview": None, "ok": True}) + "\n")
+            history = coder.trace_check_history(path)
+        self.assertEqual(history, [(cmd, -1, False), (cmd, -1, False)])
+
+    def test_trace_empty_success_streak_flags_dither_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            spinning = self._write_trace(d, ["exit=0"] * 5)
+            self.assertTrue(coder.trace_has_dither(spinning))
+            broken = self._write_trace(d, ["exit=0"] * 4
+                                       + ["exit=0\nsome output"])
+            self.assertFalse(coder.trace_has_dither(broken))
+            self.assertFalse(coder.trace_has_dither(
+                os.path.join(d, "missing.jsonl")))
+
+    def test_trace_other_tool_call_resets_empty_success_streak(self):
+        cmd = self.CMD
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "trace.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                for _ in range(3):
+                    f.write(json.dumps(
+                        {"type": "tool_call", "name": "run_check",
+                         "args_preview": cmd,
+                         "result_preview": "exit=0", "ok": True})
+                        + "\n")
+                f.write(json.dumps(
+                    {"type": "tool_call", "name": "edit_file",
+                     "args_preview": "a.py", "ok": True}) + "\n")
+                for _ in range(4):
+                    f.write(json.dumps(
+                        {"type": "tool_call", "name": "run_check",
+                         "args_preview": cmd,
+                         "result_preview": "exit=0", "ok": True})
+                        + "\n")
+            self.assertFalse(coder.trace_has_dither(path))
+
+
 class TestResumeFallback(unittest.TestCase):
     def _plan_ledger(self, directory, thread, worktree):
         path = os.path.join(directory, "ledger.jsonl")

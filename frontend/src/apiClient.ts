@@ -728,6 +728,8 @@ export interface WorkflowRun {
   event: string;
   conclusion: string;
   url: string;
+  created_at?: string;
+  updated_at?: string;
   diagnosed_cause: string;
   annotations?: Array<Record<string, unknown>>;
   jobs?: Array<Record<string, unknown>>;
