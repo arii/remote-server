@@ -1,0 +1,126 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
+<style>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif}
+#bar{display:flex;gap:8px;padding:8px;align-items:center}
+#nav{display:flex;gap:8px;flex:1}
+#url{flex:1;padding:6px;background:#1c1c1e;color:#fff;border:1px solid #000;border-radius:8px}
+#go{background:#3a3a3c;color:#fff;border:1px solid #000;border-radius:8px;padding:6px 12px}
+#stats{padding:0 8px 8px;font-size:13px;color:#9f9}
+#screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
+</style></head><body>
+<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address"><button id="go" type="submit">Go</button></form><span id="state">connecting…</span></div>
+<div id="stats">fps: - | last input→frame: - ms</div>
+<canvas id="screen"></canvas>
+<script>
+const base = location.pathname.replace(/\/$/, '');
+const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
+// Auto-reconnect: deploys and Grid restarts drop the socket, and a
+// dead socket silently eats clicks — so a close re-dials after a
+// beat instead of stranding the canvas. Sends are guarded on
+// readyState so input during the gap is dropped, never thrown.
+const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
+cv.tabIndex = 0;
+const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
+let dsf = 1;
+let ws = null;
+let reconnectTimer = 0;
+function sendable() { return ws && ws.readyState === 1; }
+function connect() {
+  clearTimeout(reconnectTimer);
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch (_) {
+    // Synchronous constructor throw (no path re-dials otherwise):
+    // show the gap and retry like a clean close.
+    document.getElementById('state').textContent = 'reconnecting…';
+    reconnectTimer = setTimeout(connect, 2000);
+    return;
+  }
+  ws.onopen = () => {
+    document.getElementById('state').textContent = 'live';
+    cv.style.opacity = '';
+    frames = 0; t0 = performance.now();
+  };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
+    if (m.type === 'attached') {
+      dsf = m.dsf || 1;
+      const label = m.kind === 'agent' ? 'shared agent session '
+        : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
+      document.getElementById('state').textContent = label + m.session;
+      return;
+    }
+    if (m.type === 'status' || m.type === 'reattached') {
+      document.getElementById('state').textContent = m.msg || m.type;
+      return;
+    }
+    if (m.type === 'error') {
+      document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
+      return;
+    }
+    if (m.type === 'frame') {
+      img.onload = () => {
+        if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
+        ctx.drawImage(img, 0, 0); frames++;
+        const el = (performance.now() - t0) / 1000;
+        if (el >= 2) {
+          document.querySelector('#stats').textContent =
+            'fps: ' + (frames / el).toFixed(1) +
+            ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
+        }
+        URL.revokeObjectURL(img.src);
+      };
+      img.src = URL.createObjectURL(new Blob(
+        [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
+    }
+  };
+  ws.onclose = () => {
+    // Dim the canvas: a frozen last frame must not pose as live
+    // while the socket is down.
+    cv.style.opacity = '0.35';
+    document.getElementById('state').textContent = 'reconnecting…';
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (_) {} };
+}
+connect();
+function pos(e) {
+  const r = cv.getBoundingClientRect();
+  // Canvas backing store is device pixels; CDP input is CSS pixels.
+  return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
+          y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
+}
+cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+cv.addEventListener('keydown', (e) => {
+  if (!sendable()) return;
+  e.preventDefault(); lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
+});
+function normalizeUrl(raw) {
+  // Chrome-omnibox-lite: trim first; keep explicit schemes and
+  // chrome pages; bare hostnames ride https://; bare host:port
+  // rides http:// (alt ports are near-always plain-http local
+  // services); spaced input is left for the engine to reject
+  // visibly rather than mangled here.
+  const v = (raw || '').trim();
+  if (!v || /\s/.test(v)) return v;
+  if (/^https?:\/\//i.test(v)) return v;
+  if (/^(about|data|blob):/i.test(v)) return v;
+  if (/^[^/:?\s]+:\d+(\/|$|\?)/.test(v)) return 'http://' + v;
+  return 'https://' + v;
+}
+function go() {
+  if (!sendable()) return;
+  const box = document.getElementById('url');
+  const url = normalizeUrl(box.value);
+  if (!url) return;
+  box.value = url;
+  ws.send(JSON.stringify({t: 'go', url}));
+}
+// Form submit (not button click) so Enter in the address box and
+// the Go button take the same path — keyboard and touch alike.
+document.getElementById('nav').onsubmit = (e) => { e.preventDefault(); go(); };
+</script></body></html>

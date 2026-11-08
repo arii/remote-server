@@ -7,11 +7,13 @@ live agent session when one exists, else opens its own (deleted on
 disconnect). Human input pauses the agent via the agent_control API,
 so the drawer needs no takeover overlay.
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+from pathlib import Path
 import os
 import threading
 import time
@@ -38,156 +40,42 @@ DSF = 1
 # Buttons-inside-Buttons as first paint is disorienting).
 DEFAULT_URL = "https://example.com"
 
-VIEWER_HTML = r"""<!doctype html>
-<html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
-<style>
-body{margin:0;background:#111;color:#eee;font-family:sans-serif}
-#bar{display:flex;gap:8px;padding:8px;align-items:center}
-#nav{display:flex;gap:8px;flex:1}
-#url{flex:1;padding:6px}
-#stats{padding:0 8px 8px;font-size:13px;color:#9f9}
-#screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
-</style></head><body>
-<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address"><button id="go" type="submit">Go</button></form><span id="state">connecting…</span></div>
-<div id="stats">fps: - | last input→frame: - ms</div>
-<canvas id="screen"></canvas>
-<script>
-const base = location.pathname.replace(/\/$/, '');
-const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
-// Auto-reconnect: deploys and Grid restarts drop the socket, and a
-// dead socket silently eats clicks — so a close re-dials after a
-// beat instead of stranding the canvas. Sends are guarded on
-// readyState so input during the gap is dropped, never thrown.
-const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
-cv.tabIndex = 0;
-const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
-let dsf = 1;
-let ws = null;
-let reconnectTimer = 0;
-function sendable() { return ws && ws.readyState === 1; }
-function connect() {
-  clearTimeout(reconnectTimer);
-  try {
-    ws = new WebSocket(wsUrl);
-  } catch (_) {
-    // Synchronous constructor throw (no path re-dials otherwise):
-    // show the gap and retry like a clean close.
-    document.getElementById('state').textContent = 'reconnecting…';
-    reconnectTimer = setTimeout(connect, 2000);
-    return;
-  }
-  ws.onopen = () => {
-    document.getElementById('state').textContent = 'live';
-    cv.style.opacity = '';
-    frames = 0; t0 = performance.now();
-  };
-  ws.onmessage = (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
-    if (m.type === 'attached') {
-      dsf = m.dsf || 1;
-      const label = m.kind === 'agent' ? 'shared agent session '
-        : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
-      document.getElementById('state').textContent = label + m.session;
-      return;
-    }
-    if (m.type === 'status' || m.type === 'reattached') {
-      document.getElementById('state').textContent = m.msg || m.type;
-      return;
-    }
-    if (m.type === 'error') {
-      document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
-      return;
-    }
-    if (m.type === 'frame') {
-      img.onload = () => {
-        if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
-        ctx.drawImage(img, 0, 0); frames++;
-        const el = (performance.now() - t0) / 1000;
-        if (el >= 2) {
-          document.querySelector('#stats').textContent =
-            'fps: ' + (frames / el).toFixed(1) +
-            ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
-        }
-        URL.revokeObjectURL(img.src);
-      };
-      img.src = URL.createObjectURL(new Blob(
-        [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
-    }
-  };
-  ws.onclose = () => {
-    // Dim the canvas: a frozen last frame must not pose as live
-    // while the socket is down.
-    cv.style.opacity = '0.35';
-    document.getElementById('state').textContent = 'reconnecting…';
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 2000);
-  };
-  ws.onerror = () => { try { ws.close(); } catch (_) {} };
-}
-connect();
-function pos(e) {
-  const r = cv.getBoundingClientRect();
-  // Canvas backing store is device pixels; CDP input is CSS pixels.
-  return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
-          y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
-}
-cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
-cv.addEventListener('keydown', (e) => {
-  if (!sendable()) return;
-  e.preventDefault(); lastClick = performance.now();
-  ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
-});
-function normalizeUrl(raw) {
-  // Chrome-omnibox-lite: trim first; keep explicit schemes and
-  // chrome pages; bare hostnames ride https://; bare host:port
-  // rides http:// (alt ports are near-always plain-http local
-  // services); spaced input is left for the engine to reject
-  // visibly rather than mangled here.
-  const v = (raw || '').trim();
-  if (!v || /\s/.test(v)) return v;
-  if (/^https?:\/\//i.test(v)) return v;
-  if (/^(about|data|blob):/i.test(v)) return v;
-  if (/^[^/:?\s]+:\d+(\/|$|\?)/.test(v)) return 'http://' + v;
-  return 'https://' + v;
-}
-function go() {
-  if (!sendable()) return;
-  const box = document.getElementById('url');
-  const url = normalizeUrl(box.value);
-  if (!url) return;
-  box.value = url;
-  ws.send(JSON.stringify({t: 'go', url}));
-}
-// Form submit (not button click) so Enter in the address box and
-// the Go button take the same path — keyboard and touch alike.
-document.getElementById('nav').onsubmit = (e) => { e.preventDefault(); go(); };
-</script></body></html>
-"""
+VIEWER_HTML = (
+    Path(__file__).with_name("browser_viewer.html").read_text(encoding="utf-8")
+)
 
 
 def _grid_session_create():
     # --disable-dev-shm-usage complements the 2gb shm_size: when raster
     # buffers spike, Chromium falls back to /tmp instead of SIGBUS/SIGKILL
     # on /dev/shm exhaustion (the #1 silent renderer crash in Docker).
-    caps = {"browserName": "chrome",
-            "goog:chromeOptions": {"args": [
+    caps = {
+        "browserName": "chrome",
+        "goog:chromeOptions": {
+            "args": [
                 "--user-data-dir=/data/shared-browser/agent",
                 "--disable-dev-shm-usage",
-                "--enable-features=WebMCP"]}}
+                "--enable-features=WebMCP",
+            ]
+        },
+    }
     req = urllib.request.Request(
         GRID_BASE + "/session",
         data=json.dumps({"capabilities": {"alwaysMatch": caps}}).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json"},
+    )
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.load(resp)["value"]["sessionId"]
 
 
 def _grid_session_delete(session_id):
     try:
-        urllib.request.urlopen(urllib.request.Request(
-            GRID_BASE + f"/session/{session_id}", method="DELETE"),
-            timeout=15)
+        urllib.request.urlopen(
+            urllib.request.Request(
+                GRID_BASE + f"/session/{session_id}", method="DELETE"
+            ),
+            timeout=15,
+        )
     except Exception:
         pass
 
@@ -217,8 +105,8 @@ def _grid_session_alive(session_id):
     """True when Grid still has the session (cheap read-only probe)."""
     try:
         with urllib.request.urlopen(
-                GRID_BASE + f"/session/{session_id}/url",
-                timeout=10) as resp:
+            GRID_BASE + f"/session/{session_id}/url", timeout=10
+        ) as resp:
             return resp.status == 200
     except Exception:
         return False
@@ -277,6 +165,7 @@ async def _viewer_teardown(session_id, kind):
     own nothing. Split out so the policy is unit-testable — the
     websocket finally only calls it."""
     import asyncio as aio
+
     if kind not in ("own", "viewer-shared"):
         return False
     last_out = await aio.to_thread(_viewer_release, session_id)
@@ -288,8 +177,7 @@ async def _viewer_teardown(session_id, kind):
 def _grid_live_session():
     """Return an existing *agent* Grid session id, if any."""
     try:
-        with urllib.request.urlopen(
-                GRID_BASE + "/status", timeout=10) as resp:
+        with urllib.request.urlopen(GRID_BASE + "/status", timeout=10) as resp:
             value = json.load(resp)["value"]
     except Exception:
         return None
@@ -310,8 +198,10 @@ AGENT_API = os.environ.get("AGENT_API", "http://127.0.0.1:8000/api/agent")
 def _pause_agent():
     try:
         req = urllib.request.Request(
-            AGENT_API.rstrip("/") + "/pause", data=b"{}",
-            headers={"Content-Type": "application/json"})
+            AGENT_API.rstrip("/") + "/pause",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=10):
             pass
         return True
@@ -319,9 +209,19 @@ def _pause_agent():
         return False
 
 
-KEYCODES = {"Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27,
-            "Delete": 46, "ArrowLeft": 37, "ArrowUp": 38,
-            "ArrowRight": 39, "ArrowDown": 40, "Home": 36, "End": 35}
+KEYCODES = {
+    "Enter": 13,
+    "Backspace": 8,
+    "Tab": 9,
+    "Escape": 27,
+    "Delete": 46,
+    "ArrowLeft": 37,
+    "ArrowUp": 38,
+    "ArrowRight": 39,
+    "ArrowDown": 40,
+    "Home": 36,
+    "End": 35,
+}
 
 
 class CDPBridge:
@@ -340,7 +240,7 @@ class CDPBridge:
         self._id = 0
         # Fire-and-forget ack ids live far above call ids so an ack
         # response can never collide with a tracked call future.
-        self._ack_id = 10 ** 9
+        self._ack_id = 10**9
         self._pending = {}
         self.ws = None
         self._latest_params = None
@@ -357,6 +257,7 @@ class CDPBridge:
 
     async def connect(self):
         import websockets
+
         self.ws = await websockets.connect(self._ws_url(), max_size=8 << 20)
         asyncio.get_event_loop().create_task(self._reader())
         await self.reattach()
@@ -368,22 +269,26 @@ class CDPBridge:
         # the page target, leaving the old session (and its screencast)
         # pointed at a dead target with zero frames and dead input.
         targets = await self.call("Target.getTargets")
-        pages = [t for t in targets["targetInfos"]
-                 if t["type"] == "page"]
+        pages = [t for t in targets["targetInfos"] if t["type"] == "page"]
         if not pages:
             # Crash/nav gap with no page target yet: raw StopIteration
             # would surface as an inscrutable 500-class failure.
             raise RuntimeError("no page target to attach")
         page = pages[0]
-        attached = await self.call("Target.attachToTarget",
-                                   {"targetId": page["targetId"],
-                                    "flatten": True})
+        attached = await self.call(
+            "Target.attachToTarget", {"targetId": page["targetId"], "flatten": True}
+        )
         self.cdp_session = attached["sessionId"]
         # Crisp text: render at device pixels, input stays in CSS px.
-        await self.call("Emulation.setDeviceMetricsOverride",
-                        {"width": VIEWPORT["width"],
-                         "height": VIEWPORT["height"],
-                         "deviceScaleFactor": DSF, "mobile": False})
+        await self.call(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": VIEWPORT["width"],
+                "height": VIEWPORT["height"],
+                "deviceScaleFactor": DSF,
+                "mobile": False,
+            },
+        )
         # Trust but verify: the override may not apply (headless
         # quirks, swapped targets). Advertise the measured ratio so
         # clicks never land at half coords again; on any error keep
@@ -391,8 +296,8 @@ class CDPBridge:
         try:
             dpr = await self.call(
                 "Runtime.evaluate",
-                {"expression": "window.devicePixelRatio",
-                 "returnByValue": True})
+                {"expression": "window.devicePixelRatio", "returnByValue": True},
+            )
             measured = (dpr or {}).get("result", {}).get("value")
             if isinstance(measured, (int, float)) and measured > 0:
                 self.dsf = float(measured)
@@ -401,6 +306,7 @@ class CDPBridge:
 
     async def _reader(self):
         from websockets.exceptions import ConnectionClosed
+
         try:
             async for raw in self.ws:
                 self.on_message(json.loads(raw))
@@ -421,12 +327,12 @@ class CDPBridge:
                     loop = asyncio.get_event_loop()
                 except Exception:
                     return
-                loop.create_task(
-                    self._ack_and_dispatch(msg.get("params", {})))
+                loop.create_task(self._ack_and_dispatch(msg.get("params", {})))
             return
         if "targetCrashed" in method:
             cb = getattr(self, "_crash_cb", None)
             if cb is not None:
+
                 async def _run():
                     try:
                         res = cb()
@@ -434,6 +340,7 @@ class CDPBridge:
                             await res
                     except Exception:
                         pass
+
                 try:
                     asyncio.get_event_loop().create_task(_run())
                 except Exception:
@@ -468,11 +375,11 @@ class CDPBridge:
 
     async def call(self, method, params=None, timeout=15):
         import asyncio as aio
+
         self._id += 1
         fut = aio.get_event_loop().create_future()
         self._pending[self._id] = fut
-        envelope = {"id": self._id, "method": method,
-                    "params": params or {}}
+        envelope = {"id": self._id, "method": method, "params": params or {}}
         if getattr(self, "cdp_session", None):
             envelope["sessionId"] = self.cdp_session
         await self.ws.send(json.dumps(envelope))
@@ -490,40 +397,50 @@ class CDPBridge:
         # Size the capture from the MEASURED ratio, not the request:
         # clamping below device px would reintroduce a scale the
         # viewer does not know about.
-        scale = self.dsf if isinstance(self.dsf, (int, float)) \
-            and self.dsf > 0 else 1
-        await self.call("Page.startScreencast",
-                        {"format": "jpeg", "quality": 70,
-                         "maxWidth": int(VIEWPORT["width"] * scale),
-                         "maxHeight": int(VIEWPORT["height"] * scale),
-                         "everyNthFrame": 1})
+        scale = self.dsf if isinstance(self.dsf, (int, float)) and self.dsf > 0 else 1
+        await self.call(
+            "Page.startScreencast",
+            {
+                "format": "jpeg",
+                "quality": 70,
+                "maxWidth": int(VIEWPORT["width"] * scale),
+                "maxHeight": int(VIEWPORT["height"] * scale),
+                "everyNthFrame": 1,
+            },
+        )
 
     async def ack_frame(self, session_id):
         self._ack_id += 1
-        envelope = {"id": self._ack_id,
-                    "method": "Page.screencastFrameAck",
-                    "params": {"sessionId": session_id}}
+        envelope = {
+            "id": self._ack_id,
+            "method": "Page.screencastFrameAck",
+            "params": {"sessionId": session_id},
+        }
         if getattr(self, "cdp_session", None):
             envelope["sessionId"] = self.cdp_session
         await self.ws.send(json.dumps(envelope))
 
     async def click(self, x, y):
         base = {"x": x, "y": y, "button": "left", "clickCount": 1}
-        await self.call("Input.dispatchMouseEvent",
-                       {**base, "type": "mousePressed"})
-        await self.call("Input.dispatchMouseEvent",
-                       {**base, "type": "mouseReleased"})
+        await self.call("Input.dispatchMouseEvent", {**base, "type": "mousePressed"})
+        await self.call("Input.dispatchMouseEvent", {**base, "type": "mouseReleased"})
 
     async def ensure_focus(self):
         # Keystrokes drop when nothing is focused: focus the active
         # element, else the first field, else the body.
-        await self.call("Runtime.evaluate", {"expression": (
-            "(()=>{const a=document.activeElement;"
-            "if(a&&a!==document.body)return a.tagName;"
-            "(document.querySelector("
-            "'input,textarea,[contenteditable=\"true\"]')"
-            "||document.body).focus();"
-            "return document.activeElement.tagName;})()")})
+        await self.call(
+            "Runtime.evaluate",
+            {
+                "expression": (
+                    "(()=>{const a=document.activeElement;"
+                    "if(a&&a!==document.body)return a.tagName;"
+                    "(document.querySelector("
+                    "'input,textarea,[contenteditable=\"true\"]')"
+                    "||document.body).focus();"
+                    "return document.activeElement.tagName;})()"
+                )
+            },
+        )
 
     async def key(self, key, code):
         try:
@@ -539,8 +456,12 @@ class CDPBridge:
         if vk is None:
             raise ValueError(f"unknown key: {key!r}")
         for typ in ("keyDown", "keyUp"):
-            params = {"type": typ, "key": key,
-                      "windowsVirtualKeyCode": vk, "code": code or key}
+            params = {
+                "type": typ,
+                "key": key,
+                "windowsVirtualKeyCode": vk,
+                "code": code or key,
+            }
             if typ == "keyDown":
                 params["text"] = "\r" if key == "Enter" else ""
             await self.call("Input.dispatchKeyEvent", params)
@@ -564,13 +485,18 @@ def create_app():
     """Raw ASGI app (no framework router: the baked FastAPI/Starlette
     combo in terminal images rejects websocket routes at the
     handshake; raw ASGI speaks directly to uvicorn)."""
+
     async def app(scope, receive, send):
         path = scope.get("path", "")
         if scope["type"] == "http":
             body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
-            await send({"type": "http.response.start", "status": 200,
-                        "headers": [(b"content-type",
-                                     b"text/html; charset=utf-8")]})
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
+                }
+            )
             await send({"type": "http.response.body", "body": body})
             return
         if scope["type"] != "websocket" or not path.endswith("/ws"):
@@ -593,15 +519,13 @@ def create_app():
                     kind = "viewer-shared"
                 else:
                     try:
-                        session_id = await asyncio.to_thread(
-                            _grid_session_create)
+                        session_id = await asyncio.to_thread(_grid_session_create)
                     except Exception:
                         # Lost the create race: another tab just
                         # stored the shared session — attach to it
                         # instead of reporting busy for a slot we
                         # now share.
-                        claimed = await asyncio.to_thread(
-                            _viewer_claim)
+                        claimed = await asyncio.to_thread(_viewer_claim)
                         if claimed is None:
                             raise
                         session_id = claimed
@@ -612,18 +536,31 @@ def create_app():
         except Exception:
             try:
                 await _ws_send_text(
-                    send, asyncio.Lock(),
-                    json.dumps({"type": "error",
-                                "msg": ("browser busy — no free Grid "
-                                        "slot; retry shortly")}))
+                    send,
+                    asyncio.Lock(),
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "msg": ("browser busy — no free Grid slot; retry shortly"),
+                        }
+                    ),
+                )
             except Exception:
                 pass
             await send({"type": "websocket.close", "code": 1013})
             return
         await _ws_send_text(
-            send, asyncio.Lock(),
-            json.dumps({"type": "attached", "kind": kind,
-                        "session": session_id[:8], "dsf": DSF}))
+            send,
+            asyncio.Lock(),
+            json.dumps(
+                {
+                    "type": "attached",
+                    "kind": kind,
+                    "session": session_id[:8],
+                    "dsf": DSF,
+                }
+            ),
+        )
         bridge = None
         paused = False
         lock = asyncio.Lock()
@@ -632,8 +569,8 @@ def create_app():
             # Ack-first + latest-wins live in the bridge: this only
             # flushes the coalesced frame to the viewer.
             await _ws_send_text(
-                send, lock,
-                json.dumps({"type": "frame", "data": params["data"]}))
+                send, lock, json.dumps({"type": "frame", "data": params["data"]})
+            )
 
         async def human_input():
             nonlocal paused
@@ -648,8 +585,8 @@ def create_app():
             async def report(msg):
                 try:
                     await _ws_send_text(
-                        send, lock,
-                        json.dumps({"type": "error", "msg": msg}))
+                        send, lock, json.dumps({"type": "error", "msg": msg})
+                    )
                 except Exception:
                     pass
 
@@ -678,12 +615,15 @@ def create_app():
                 return
             try:
                 await _ws_send_text(
-                    send, lock,
-                    json.dumps({"type": "dsf", "dsf": bridge.dsf}))
+                    send, lock, json.dumps({"type": "dsf", "dsf": bridge.dsf})
+                )
                 await _ws_send_text(
-                    send, lock,
-                    json.dumps({"type": "reattached",
-                                "msg": "reattached after target crash"}))
+                    send,
+                    lock,
+                    json.dumps(
+                        {"type": "reattached", "msg": "reattached after target crash"}
+                    ),
+                )
             except Exception:
                 pass
 
@@ -697,9 +637,12 @@ def create_app():
                 # close so the viewer re-dials instead of hanging.
                 try:
                     await _ws_send_text(
-                        send, lock,
-                        json.dumps({"type": "error",
-                                    "msg": f"browser connect failed: {exc}"}))
+                        send,
+                        lock,
+                        json.dumps(
+                            {"type": "error", "msg": f"browser connect failed: {exc}"}
+                        ),
+                    )
                 except Exception:
                     pass
                 await send({"type": "websocket.close", "code": 1011})
@@ -708,8 +651,8 @@ def create_app():
             # Measured ratio beats the assumed DSF: the viewer maps
             # pointer coords with this, before the first frame lands.
             await _ws_send_text(
-                send, lock,
-                json.dumps({"type": "dsf", "dsf": bridge.dsf}))
+                send, lock, json.dumps({"type": "dsf", "dsf": bridge.dsf})
+            )
             await bridge.start_screencast(on_frame)
 
             async def do_go(url):
@@ -722,8 +665,8 @@ def create_app():
                 # Reattach re-measures: push the fresh divisor or
                 # post-nav clicks use the stale one and mis-land.
                 await _ws_send_text(
-                    send, lock,
-                    json.dumps({"type": "dsf", "dsf": bridge.dsf}))
+                    send, lock, json.dumps({"type": "dsf", "dsf": bridge.dsf})
+                )
                 await bridge.start_screencast(on_frame)
 
             if kind == "own":
@@ -746,8 +689,7 @@ def create_app():
                     await recover_once(lambda: bridge.click(x, y))
                 elif msg.get("t") == "key":
                     await human_input()
-                    key, code = (str(msg.get("key", "")),
-                                 str(msg.get("code", "")))
+                    key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
                     await recover_once(lambda: bridge.key(key, code))
                 elif msg.get("t") == "go":
                     url = str(msg["url"])
@@ -779,9 +721,12 @@ async def self_test():
         # Screencast is repaint-driven: force continuous visual change.
         await bridge.call(
             "Runtime.evaluate",
-            {"expression": "setInterval(() => {document.body.style."
-                           "background = '#' + Math.floor(Math.random()*"
-                           "16777215).toString(16);}, 100);"})
+            {
+                "expression": "setInterval(() => {document.body.style."
+                "background = '#' + Math.floor(Math.random()*"
+                "16777215).toString(16);}, 100);"
+            },
+        )
         await asyncio.sleep(4)
         await bridge.click(640, 200)
         await asyncio.sleep(3)
@@ -791,8 +736,8 @@ async def self_test():
         for ch in "hi42":
             await bridge.key(ch, "Key" + ch.upper())
         typed = await bridge.call(
-            "Runtime.evaluate",
-            {"expression": "document.getElementById('t').value"})
+            "Runtime.evaluate", {"expression": "document.getElementById('t').value"}
+        )
         await bridge.close()
     finally:
         await asyncio.to_thread(_grid_session_delete, session_id)
@@ -801,11 +746,12 @@ async def self_test():
     fps = n / span if span > 0 else 0.0
     sizes = sorted(s for _, s in got)
     typed_value = (typed or {}).get("result", {}).get("value")
-    print(f"frames={n} span_s={span:.1f} fps={fps:.1f} "
-          f"median_bytes={sizes[len(sizes)//2] if sizes else 0} "
-          f"typed={typed_value!r}")
-    print("OK" if (n >= 10 and fps >= 5
-                   and typed_value == "hi42") else "WEAK")
+    print(
+        f"frames={n} span_s={span:.1f} fps={fps:.1f} "
+        f"median_bytes={sizes[len(sizes) // 2] if sizes else 0} "
+        f"typed={typed_value!r}"
+    )
+    print("OK" if (n >= 10 and fps >= 5 and typed_value == "hi42") else "WEAK")
 
 
 def main():
@@ -817,6 +763,7 @@ def main():
         asyncio.run(self_test())
         return
     import uvicorn
+
     uvicorn.run(create_app(), host="0.0.0.0", port=args.port, log_level="warning")
 
 

@@ -1198,11 +1198,12 @@ describe('attention select-all line (issue #1178)', () => {
     expect(label![0]).toContain('attention-select-all');
   });
 
-  it('stylesheet qualifies the hook with label to beat label.row-meta', () => {
+  it('stylesheet double-qualifies the hook to beat label.row-meta', () => {
     // Bare .attention-select-all (0,1,0) loses to label.row-meta
-    // (0,1,1) and renders as grid; the label-qualified rule ties
-    // specificity and wins by order, keeping one line.
-    const rule = indexCss.match(/^label\.attention-select-all \{[^}]*\}/m);
+    // (0,1,1) and renders as grid; a single label qualifier only ties
+    // (0,1,1) and loses to source order. The double-qualified rule
+    // wins outright, keeping one line.
+    const rule = indexCss.match(/^label\.row-meta\.attention-select-all \{[^}]*\}/m);
     expect(rule).not.toBeNull();
     expect(rule![0]).toContain('display: inline-flex');
   });
