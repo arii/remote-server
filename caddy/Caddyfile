@@ -69,16 +69,6 @@
 		reverse_proxy terminal:3000
 	}
 
-	# Co-browse preview (dev server :3001 inside the terminal container).
-	# Public entry: https://<host>:8443/cobrowse (behind the oauth2-proxy gate).
-	handle /cobrowse {
-		redir * /cobrowse/
-	}
-
-	handle /cobrowse* {
-		reverse_proxy terminal:3001
-	}
-
 	handle {
 		reverse_proxy terminal:7681
 	}
