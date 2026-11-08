@@ -15,7 +15,7 @@ try:
 
     from backend.api.routers import chat
     from backend.api.routers import repo as repo_router
-    from backend.core import list_repo_files
+    from backend.core.repos import list_repo_files
 
     HAS_CLIENT = True
 except ImportError:
@@ -73,7 +73,7 @@ def _fixture_repos_dir(tmp):
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class RepoFilesTest(unittest.TestCase):
     def _list(self, tmp, repo="demo", prefix="", **kwargs):
-        with mock.patch("backend.core.get_repos_dir",
+        with mock.patch("backend.core.repos.get_repos_dir",
                         return_value=Path(tmp)):
             return list_repo_files(repo, prefix, **kwargs)
 
@@ -141,7 +141,7 @@ class RepoFilesTest(unittest.TestCase):
         client = TestClient(app)
         with tempfile.TemporaryDirectory() as tmp:
             _fixture_repos_dir(tmp)
-            with mock.patch("backend.core.get_repos_dir",
+            with mock.patch("backend.core.repos.get_repos_dir",
                             return_value=Path(tmp)):
                 resp = client.get("/api/repo/files",
                                   params={"repo": "demo", "prefix": "sub/"})
@@ -190,7 +190,7 @@ class InjectMentionsTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         _fixture_repos_dir(self.tmp)
         self._patcher = mock.patch(
-            "backend.core.get_repos_dir", return_value=Path(self.tmp))
+            "backend.core.repos.get_repos_dir", return_value=Path(self.tmp))
         self._patcher.start()
 
     def tearDown(self):
@@ -223,7 +223,7 @@ class InjectMentionsTest(unittest.TestCase):
         self.assertIn("[@blob.bin: unreadable]", out)
 
     def test_per_file_cap_marks_truncation(self):
-        from backend.core import get_checkout_path
+        from backend.core.repos import get_checkout_path
         text, reason = chat.read_mention_file(
             get_checkout_path("demo"), "big.txt")
         self.assertIsNone(reason)
@@ -279,7 +279,7 @@ class MentionRouteTest(unittest.TestCase):
         self.fixture = tempfile.mkdtemp()
         self.root = _fixture_repos_dir(self.fixture)
         self._patcher = mock.patch(
-            "backend.core.get_repos_dir",
+            "backend.core.repos.get_repos_dir",
             return_value=Path(self.fixture))
         self._patcher.start()
 

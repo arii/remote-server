@@ -408,7 +408,7 @@ class InboxCacheTest(unittest.TestCase):
                 os.environ["BUTTONS_DEFERRED_PATH"] = old
 
     def test_webhook_pull_invalidates_on_success_only(self):
-        from backend import notify as N
+        from backend.notify import webhook as N
 
         repo = "arii/remote-server"
         orig_pull, orig_append = N.webhook_pull, N.ledger.append

@@ -611,7 +611,7 @@ class PrActionTest(unittest.TestCase):
         with patch.object(
                 pulls_mod, "_pr_action",
                 return_value={"ok": True, "output": "posted"}) as m, \
-                patch("backend.core.validate_action_branch",
+                patch("backend.core.git_helpers.validate_action_branch",
                       return_value="main") as branch_mock:
             out = pulls_mod.pr_action(pulls_mod.PrActionRequest(
                 repo="remote-server", pr_number=7, action="approve",
@@ -625,7 +625,7 @@ class PrActionTest(unittest.TestCase):
         from fastapi import HTTPException
 
         with patch.object(pulls_mod, "_pr_action") as m, \
-                patch("backend.core.validate_action_branch",
+                patch("backend.core.git_helpers.validate_action_branch",
                       side_effect=ValueError("unknown branch: 'gone'")):
             with self.assertRaises(HTTPException) as ctx:
                 pulls_mod.pr_action(pulls_mod.PrActionRequest(
@@ -641,7 +641,7 @@ class PrActionTest(unittest.TestCase):
         with patch.object(
                 pulls_mod, "_pr_action",
                 return_value={"ok": True, "output": "posted"}), \
-                patch("backend.core.validate_action_branch",
+                patch("backend.core.git_helpers.validate_action_branch",
                       return_value="") as branch_mock:
             out = pulls_mod.pr_action(pulls_mod.PrActionRequest(
                 repo="remote-server", pr_number=7, action="approve",
@@ -1287,7 +1287,7 @@ class RepairTest(unittest.TestCase):
                                   "error": ""}), \
                     patch.object(issues_mod,
                                  "trigger_repair") as fired, \
-                    patch("backend.core.validate_action_branch",
+                    patch("backend.core.git_helpers.validate_action_branch",
                           return_value="main") as branch_mock:
                 out = issues_mod.repair_dispatch(
                     issues_mod.RepairDispatchRequest(
@@ -1309,7 +1309,7 @@ class RepairTest(unittest.TestCase):
                 issues_mod, "_repair_verify_preview",
                 return_value={"allowlisted": True, "error": ""}), \
                 patch.object(issues_mod, "trigger_repair") as fired, \
-                patch("backend.core.validate_action_branch",
+                patch("backend.core.git_helpers.validate_action_branch",
                       side_effect=ValueError("unknown branch: 'gone'")):
             with self.assertRaises(HTTPException) as ctx:
                 issues_mod.repair_dispatch(
@@ -1571,7 +1571,7 @@ class RepairDispatchGuardTest(unittest.TestCase):
                                   "error": ""}), \
                     patch.object(issues_mod,
                                  "trigger_repair") as fired, \
-                    patch("backend.core.validate_action_branch",
+                    patch("backend.core.git_helpers.validate_action_branch",
                           return_value="main") as branch_mock:
                 out = issues_mod.repair_dispatch(
                     issues_mod.RepairDispatchRequest(
@@ -2435,7 +2435,10 @@ class PrsCacheTest(unittest.TestCase):
                 os.environ["BUTTONS_DEFERRED_PATH"] = old
 
     def test_webhook_pull_invalidates_on_success_only(self):
-        from backend import notify as N
+        # Rebind on the defining submodule: webhook_worker reads
+        # webhook_pull from its own globals, so a package-level
+        # rebind would no longer intercept post-split.
+        from backend.notify import webhook as N
 
         repo = "arii/remote-server"
         orig_pull, orig_append = N.webhook_pull, N.ledger.append

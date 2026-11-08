@@ -16,7 +16,10 @@ try:
     from fastapi.testclient import TestClient
 
     from backend.api.routers import notify as notify_router
-    from backend import notify as N
+    from backend.notify import budget as notify_budget
+    from backend.notify import digest as notify_digest
+    from backend.notify import prefs_state as notify_prefs
+    from backend.notify import webhook as notify_webhook
 
     HAS_CLIENT = True
 except ImportError:
@@ -187,20 +190,20 @@ class ResolveRepoPathTest(unittest.TestCase):
 
 class WebhookWorkerTest(unittest.TestCase):
     def test_crash_releases_pending_and_records_state(self):
-        orig_pull = N.webhook_pull
-        N.webhook_pull = lambda path: (_ for _ in ()).throw(
+        orig_pull = notify_webhook.webhook_pull
+        notify_webhook.webhook_pull = lambda path: (_ for _ in ()).throw(
             RuntimeError("boom"))
-        N.webhook_pending.add("arii/x")
+        notify_webhook.webhook_pending.add("arii/x")
         appended = []
-        orig_append = N.ledger.append
-        N.ledger.append = appended.append
+        orig_append = notify_webhook.ledger.append
+        notify_webhook.ledger.append = appended.append
         try:
-            N.webhook_worker("arii/x", "/tmp")
+            notify_webhook.webhook_worker("arii/x", "/tmp")
         finally:
-            N.webhook_pull = orig_pull
-            N.ledger.append = orig_append
-        self.assertNotIn("arii/x", N.webhook_pending)
-        state = N.webhook_state.get("arii/x", {})
+            notify_webhook.webhook_pull = orig_pull
+            notify_webhook.ledger.append = orig_append
+        self.assertNotIn("arii/x", notify_webhook.webhook_pending)
+        state = notify_webhook.webhook_state.get("arii/x", {})
         self.assertFalse(state.get("ok"))
         self.assertIn("boom", state.get("detail", ""))
         self.assertIsNone(state.get("observed"))
@@ -210,40 +213,40 @@ class WebhookWorkerTest(unittest.TestCase):
         self.assertIsNone(appended[0]["observed"])
 
     def test_success_appends_ledger(self):
-        orig_pull = N.webhook_pull
+        orig_pull = notify_webhook.webhook_pull
         obs = {"ok": True, "detail": "observed", "origin": "ooo",
                "head": "aaa", "lag": 0, "ahead": 0}
-        N.webhook_pull = lambda path: (True, "up to date", False, obs)
+        notify_webhook.webhook_pull = lambda path: (True, "up to date", False, obs)
         appended = []
-        orig_append = N.ledger.append
-        N.ledger.append = appended.append
+        orig_append = notify_webhook.ledger.append
+        notify_webhook.ledger.append = appended.append
         try:
-            N.webhook_worker("arii/x", "/tmp")
+            notify_webhook.webhook_worker("arii/x", "/tmp")
         finally:
-            N.webhook_pull = orig_pull
-            N.ledger.append = orig_append
+            notify_webhook.webhook_pull = orig_pull
+            notify_webhook.ledger.append = orig_append
         self.assertEqual(len(appended), 1)
         self.assertTrue(appended[0]["ok"])
         self.assertEqual(appended[0]["repo"], "arii/x")
         self.assertEqual(appended[0]["observed"], obs)
-        state = N.webhook_state.get("arii/x", {})
+        state = notify_webhook.webhook_state.get("arii/x", {})
         self.assertEqual(state.get("observed"), obs)
 
     def test_skip_records_observed_positions(self):
-        orig_pull = N.webhook_pull
+        orig_pull = notify_webhook.webhook_pull
         obs = {"ok": True, "detail": "observed", "origin": "ooo",
                "head": "aaa", "lag": 3, "ahead": 0}
         detail = ("skipped: tree dirty \u2014 behind by 3 "
                   "(local changes)")
-        N.webhook_pull = lambda path: (True, detail, False, obs)
+        notify_webhook.webhook_pull = lambda path: (True, detail, False, obs)
         appended = []
-        orig_append = N.ledger.append
-        N.ledger.append = appended.append
+        orig_append = notify_webhook.ledger.append
+        notify_webhook.ledger.append = appended.append
         try:
-            N.webhook_worker("arii/x", "/tmp")
+            notify_webhook.webhook_worker("arii/x", "/tmp")
         finally:
-            N.webhook_pull = orig_pull
-            N.ledger.append = orig_append
+            notify_webhook.webhook_pull = orig_pull
+            notify_webhook.ledger.append = orig_append
         self.assertEqual(len(appended), 1)
         self.assertTrue(appended[0]["ok"])
         self.assertFalse(appended[0]["advanced"])
@@ -265,7 +268,7 @@ class WebhookPullSkipTest(unittest.TestCase):
         orig = subprocess.run
         subprocess.run = fake_run
         try:
-            return N.webhook_pull("/tmp"), calls
+            return notify_webhook.webhook_pull("/tmp"), calls
         finally:
             subprocess.run = orig
 
@@ -407,9 +410,9 @@ class WebhookPullSkipTest(unittest.TestCase):
         ]
         # Jitter pinned to zero (#855): the sleep stays exactly the
         # base delay; the jitter bounds live in test_webhook_heal.
-        with mock.patch.object(N.time, "sleep",
+        with mock.patch.object(notify_webhook.time, "sleep",
                                side_effect=sleeps.append), \
-                mock.patch.object(N.webhook_heal.random, "uniform",
+                mock.patch.object(notify_webhook.webhook_heal.random, "uniform",
                                   return_value=0.0):
             (ok, detail, advanced, observed), calls = self._pull(script)
         self.assertTrue(ok)
@@ -418,7 +421,7 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertTrue(observed["ok"])
         fetches = [c for c in calls if c[-2:] == ["fetch", "origin"]]
         self.assertEqual(len(fetches), 2)
-        self.assertEqual(sleeps, [N.WEBHOOK_FETCH_RETRY_DELAY])
+        self.assertEqual(sleeps, [notify_webhook.WEBHOOK_FETCH_RETRY_DELAY])
 
     def test_persistent_ref_lock_fails_after_retries(self):
         # #406: a lock that never clears still fails — with the last
@@ -428,9 +431,9 @@ class WebhookPullSkipTest(unittest.TestCase):
                     "'refs/remotes/origin/main': unable to "
                     "update local ref")
         script = [(0, "aaa\n", "")] + [(1, "", lock_err)] * 3
-        with mock.patch.object(N.time, "sleep",
+        with mock.patch.object(notify_webhook.time, "sleep",
                                side_effect=sleeps.append), \
-                mock.patch.object(N.webhook_heal.random, "uniform",
+                mock.patch.object(notify_webhook.webhook_heal.random, "uniform",
                                   return_value=0.0):
             (ok, detail, advanced, observed), calls = self._pull(script)
         self.assertFalse(ok)
@@ -438,16 +441,16 @@ class WebhookPullSkipTest(unittest.TestCase):
         self.assertFalse(advanced)
         self.assertFalse(observed["ok"])
         fetches = [c for c in calls if c[-2:] == ["fetch", "origin"]]
-        self.assertEqual(len(fetches), N.WEBHOOK_FETCH_RETRIES + 1)
+        self.assertEqual(len(fetches), notify_webhook.WEBHOOK_FETCH_RETRIES + 1)
         self.assertEqual(
             sleeps,
-            [N.WEBHOOK_FETCH_RETRY_DELAY] * N.WEBHOOK_FETCH_RETRIES)
+            [notify_webhook.WEBHOOK_FETCH_RETRY_DELAY] * notify_webhook.WEBHOOK_FETCH_RETRIES)
 
     def test_non_lock_fetch_failure_does_not_retry(self):
         # #406: network/auth failures are never retried — a bigger
         # retry budget there would mask the cause.
         sleeps = []
-        with mock.patch.object(N.time, "sleep",
+        with mock.patch.object(notify_webhook.time, "sleep",
                                side_effect=sleeps.append):
             (ok, detail, advanced, observed), calls = self._pull([
                 (0, "aaa\n", ""),
@@ -614,7 +617,7 @@ class FetchLockContentionTest(unittest.TestCase):
             "origin/main.lock': File exists.",
             "fatal: index.lock exists",
         ):
-            self.assertTrue(N._fetch_lock_contended(stderr), stderr)
+            self.assertTrue(notify_webhook._fetch_lock_contended(stderr), stderr)
 
     def test_real_failures_do_not_match(self):
         # #406: network/auth/generic failures fail fast, never retry.
@@ -626,7 +629,7 @@ class FetchLockContentionTest(unittest.TestCase):
             "error: some other failure",
             "fetch failed",
         ):
-            self.assertFalse(N._fetch_lock_contended(stderr), stderr)
+            self.assertFalse(notify_webhook._fetch_lock_contended(stderr), stderr)
 
 
 @unittest.skipUnless(shutil.which("git"), "git binary not available")
@@ -696,7 +699,7 @@ class WebhookPullRealGitTest(unittest.TestCase):
         target = os.path.join(self.work, "other.txt")
         with open(target, "ab") as f:
             f.write(b"local-dirt\n")
-        ok, detail, advanced, observed = N.webhook_pull(self.work)
+        ok, detail, advanced, observed = notify_webhook.webhook_pull(self.work)
         self.assertTrue(ok)
         self.assertTrue(advanced)
         self.assertTrue(observed["ok"])
@@ -718,7 +721,7 @@ class WebhookPullRealGitTest(unittest.TestCase):
             f.write("local-commit\n")
         self._git(["commit", "-am", "local"], cwd=self.work)
         local = self._head()
-        ok, detail, advanced, observed = N.webhook_pull(self.work)
+        ok, detail, advanced, observed = notify_webhook.webhook_pull(self.work)
         self.assertTrue(ok)
         self.assertFalse(advanced)
         self.assertTrue(observed["ok"])
@@ -732,7 +735,7 @@ class WebhookPullRealGitTest(unittest.TestCase):
         self.assertEqual(self._head(), local)
 
     def test_clean_tree_still_fast_forwards(self):
-        ok, detail, advanced, observed = N.webhook_pull(self.work)
+        ok, detail, advanced, observed = notify_webhook.webhook_pull(self.work)
         self.assertTrue(ok)
         self.assertTrue(advanced)
         self.assertTrue(observed["ok"])
@@ -807,7 +810,7 @@ class WebhookPullNonMainDefaultTest(unittest.TestCase):
         missing = self._git_raw(["rev-parse", "--verify",
                                  "origin/main"], cwd=work)
         self.assertNotEqual(missing.returncode, 0)
-        ok, detail, advanced, observed = N.webhook_pull(work)
+        ok, detail, advanced, observed = notify_webhook.webhook_pull(work)
         self.assertTrue(ok, detail)
         self.assertTrue(advanced, detail)
         self.assertEqual(observed["target"], "origin/leader")
@@ -831,7 +834,7 @@ class WebhookPullNonMainDefaultTest(unittest.TestCase):
         self._git(["remote", "set-head", "origin", "-d"], cwd=work)
         self._git(["update-ref", "-d",
                    "refs/remotes/origin/leader"], cwd=work)
-        ok, detail, advanced, observed = N.webhook_pull(work)
+        ok, detail, advanced, observed = notify_webhook.webhook_pull(work)
         self.assertTrue(ok, detail)
         self.assertEqual(detail, "skipped: no remote default branch")
         self.assertFalse(advanced)
@@ -849,12 +852,12 @@ class NotificationsEndpointsTest(unittest.TestCase):
             os.environ.pop(k, None)
         import tempfile
         self._tmp = tempfile.mkdtemp()
-        self._old_state_path = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self._tmp, "state.json")
+        self._old_state_path = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self._tmp, "state.json")
         self.client = _make_client()
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state_path
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state_path
 
     def test_status_defaults(self):
         r = self.client.get("/api/notifications/status")
@@ -891,7 +894,7 @@ class NotificationsEndpointsTest(unittest.TestCase):
 
     def test_test_endpoint_ok_reflects_send(self):
         sent = {"ntfy": {"ok": True, "status": 200}}
-        with mock.patch.object(N, "send_notification",
+        with mock.patch.object(notify_prefs, "send_notification",
                                return_value=sent):
             r = self.client.post("/api/notifications/test")
         self.assertEqual(r.status_code, 200)
@@ -902,7 +905,7 @@ class NotificationsEndpointsTest(unittest.TestCase):
 
     def test_test_endpoint_failed_send_reports_failure(self):
         failed = {"ntfy": {"ok": False, "error": "boom"}}
-        with mock.patch.object(N, "send_notification",
+        with mock.patch.object(notify_prefs, "send_notification",
                                return_value=failed):
             r = self.client.post("/api/notifications/test")
         self.assertEqual(r.status_code, 200)
@@ -911,7 +914,7 @@ class NotificationsEndpointsTest(unittest.TestCase):
         self.assertEqual(body["results"], failed)
 
     def test_trigger_digest_records_last_sent(self):
-        before = N.load_notifier_state().get("last_digest", 0)
+        before = notify_prefs.load_notifier_state().get("last_digest", 0)
         r = self.client.post("/api/notifications/trigger-digest")
         self.assertEqual(r.status_code, 200)
         body = r.json()
@@ -921,7 +924,7 @@ class NotificationsEndpointsTest(unittest.TestCase):
         # line from per-channel results, never from ok.
         self.assertIn("results", body)
         self.assertIsInstance(body["results"], dict)
-        after = N.load_notifier_state().get("last_digest", 0)
+        after = notify_prefs.load_notifier_state().get("last_digest", 0)
         self.assertGreaterEqual(after, before)
         self.assertGreater(after, 0)
         # Display path: status reflects the recorded last_digest.
@@ -931,11 +934,11 @@ class NotificationsEndpointsTest(unittest.TestCase):
 
 class DigestLogicTest(unittest.TestCase):
     def test_clear_message(self):
-        msg = N.build_digest_text(summaries=[], total_repos=3)
+        msg = notify_digest.build_digest_text(summaries=[], total_repos=3)
         self.assertIn("3 repos clear", msg)
 
     def test_summary_format(self):
-        msg = N.build_digest_text(
+        msg = notify_digest.build_digest_text(
             summaries=[("arii/a", 2, 1, 0)], total_repos=2)
         self.assertIn("arii/a: 2 PRs, 1 failing CI, 0 conflicts", msg)
         self.assertIn("Summary across 2 repos", msg)
@@ -943,7 +946,7 @@ class DigestLogicTest(unittest.TestCase):
     def test_digest_interval_validation(self):
         os.environ["DIGEST_INTERVAL_HOURS"] = "not-a-number"
         try:
-            self.assertEqual(N.digest_interval_hours(), 12.0)
+            self.assertEqual(notify_digest.digest_interval_hours(), 12.0)
         finally:
             os.environ.pop("DIGEST_INTERVAL_HOURS", None)
 
@@ -964,11 +967,11 @@ class DigestLogicTest(unittest.TestCase):
 
         import tempfile
         tmp = tempfile.mkdtemp()
-        old_path = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(tmp, "state.json")
+        old_path = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(tmp, "state.json")
         os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict"
         try:
-            N.check_notifications_and_digest(
+            notify_digest.check_notifications_and_digest(
                 fetcher=fetcher, sender=sender, now=1000.0)
             kinds = sorted(s["event_type"] for s in sent)
             self.assertEqual(kinds, ["ci_fail", "conflict"])
@@ -976,13 +979,13 @@ class DigestLogicTest(unittest.TestCase):
             # digest scheduled far future so nothing new.
             os.environ["DIGEST_INTERVAL_HOURS"] = "100000"
             sent.clear()
-            N.check_notifications_and_digest(
+            notify_digest.check_notifications_and_digest(
                 fetcher=fetcher, sender=sender, now=1001.0)
             self.assertEqual(sent, [])
         finally:
             os.environ.pop("NOTIFY_EVENTS", None)
             os.environ.pop("DIGEST_INTERVAL_HOURS", None)
-            N.NOTIFIER_STATE_PATH = old_path
+            notify_prefs.NOTIFIER_STATE_PATH = old_path
 
 
 class DigestScheduleTest(unittest.TestCase):
@@ -998,60 +1001,60 @@ class DigestScheduleTest(unittest.TestCase):
         import time
 
         before = time.time()
-        daily = N.set_digest_cadence("daily", now=before)
+        daily = notify_digest.set_digest_cadence("daily", now=before)
         self.assertEqual(daily["cadence"], "daily")
         self.assertGreaterEqual(daily["next_run"], before + 86300)
         self.assertLessEqual(daily["next_run"], before + 86500)
-        weekly = N.set_digest_cadence("weekly", now=before)
+        weekly = notify_digest.set_digest_cadence("weekly", now=before)
         self.assertGreaterEqual(
             weekly["next_run"], before + 7 * 86400 - 100)
-        off = N.set_digest_cadence("off", now=before)
+        off = notify_digest.set_digest_cadence("off", now=before)
         self.assertEqual(
             (off["cadence"], off["next_run"]), ("off", None))
 
     def test_rejects_bad_cadence(self):
         with self.assertRaises(ValueError):
-            N.set_digest_cadence("hourly")
+            notify_digest.set_digest_cadence("hourly")
 
     def test_due_fires_and_stamps_success(self):
-        N.set_digest_cadence("daily", now=1000.0)
+        notify_digest.set_digest_cadence("daily", now=1000.0)
         with mock.patch.object(
-                N, "send_notification",
+                notify_digest, "send_notification",
                 return_value={"ntfy": {"ok": True, "status": 200}}
         ) as sender:
-            fired = N.fire_due_digest(now=1000.0 + 86401)
+            fired = notify_digest.fire_due_digest(now=1000.0 + 86401)
         self.assertTrue(fired)
         sender.assert_called_once()
         title = sender.call_args[0][0]
         self.assertIn("Scheduled", title)
-        state = N.digest_schedule_status()
+        state = notify_digest.digest_schedule_status()
         self.assertGreater(state["next_run"], 1000.0 + 86401)
         self.assertEqual(state["last_sent"], 1000.0 + 86401)
         self.assertTrue(state["last_result"]["ok"])
 
     def test_not_due_and_off_skip_send(self):
-        N.set_digest_cadence("daily", now=1000.0)
+        notify_digest.set_digest_cadence("daily", now=1000.0)
         with mock.patch.object(
-                N, "send_notification",
+                notify_digest, "send_notification",
                 return_value={"ntfy": {"ok": True}}) as sender:
-            self.assertFalse(N.fire_due_digest(now=1000.0 + 100))
+            self.assertFalse(notify_digest.fire_due_digest(now=1000.0 + 100))
             self.assertEqual(sender.call_count, 0)
-        N.set_digest_cadence("off", now=1000.0)
+        notify_digest.set_digest_cadence("off", now=1000.0)
         with mock.patch.object(
-                N, "send_notification",
+                notify_digest, "send_notification",
                 return_value={"ntfy": {"ok": True}}) as sender:
-            self.assertFalse(N.fire_due_digest(now=1000.0 + 10**7))
+            self.assertFalse(notify_digest.fire_due_digest(now=1000.0 + 10**7))
             self.assertEqual(sender.call_count, 0)
 
     def test_failed_send_stamps_failure_not_sent(self):
-        N.set_digest_cadence("daily", now=1000.0)
+        notify_digest.set_digest_cadence("daily", now=1000.0)
         with mock.patch.object(
-                N, "send_notification",
+                notify_digest, "send_notification",
                 return_value={"ntfy": {"ok": False,
                                       "error": "boom"}}):
-            fired = N.fire_due_digest(now=1000.0 + 86401)
+            fired = notify_digest.fire_due_digest(now=1000.0 + 86401)
         self.assertTrue(fired)
-        state = N.digest_schedule_status()
+        state = notify_digest.digest_schedule_status()
         self.assertIsNone(state["last_sent"])
         self.assertFalse(state["last_result"]["ok"])
         self.assertIn("boom", state["last_result"]["error"])
@@ -1059,21 +1062,21 @@ class DigestScheduleTest(unittest.TestCase):
         self.assertGreater(state["next_run"], 1000.0 + 86401)
 
     def test_unconfigured_channels_stamp_failure(self):
-        N.set_digest_cadence("daily", now=1000.0)
-        with mock.patch.object(N, "send_notification",
+        notify_digest.set_digest_cadence("daily", now=1000.0)
+        with mock.patch.object(notify_digest, "send_notification",
                                return_value={}):
-            self.assertTrue(N.fire_due_digest(now=1000.0 + 86401))
-        state = N.digest_schedule_status()
+            self.assertTrue(notify_digest.fire_due_digest(now=1000.0 + 86401))
+        state = notify_digest.digest_schedule_status()
         self.assertIsNone(state["last_sent"])
         self.assertFalse(state["last_result"]["ok"])
 
     def test_fire_never_raises(self):
-        N.set_digest_cadence("daily", now=1000.0)
+        notify_digest.set_digest_cadence("daily", now=1000.0)
         with mock.patch.object(
-                N, "send_notification",
+                notify_digest, "send_notification",
                 side_effect=RuntimeError("down")):
-            self.assertTrue(N.fire_due_digest(now=1000.0 + 86401))
-        state = N.digest_schedule_status()
+            self.assertTrue(notify_digest.fire_due_digest(now=1000.0 + 86401))
+        state = notify_digest.digest_schedule_status()
         self.assertIsNone(state["last_sent"])
         self.assertFalse(state["last_result"]["ok"])
 
@@ -1123,15 +1126,15 @@ class NotificationPrefsTest(unittest.TestCase):
 
         self.time = time_mod
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self._old_sched = os.environ.get("BUTTONS_DIGEST_SCHEDULE_PATH")
         os.environ["BUTTONS_DIGEST_SCHEDULE_PATH"] = os.path.join(
             self.tmp, "sched.json")
         self.client = _make_client()
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
         if self._old_sched is None:
             os.environ.pop("BUTTONS_DIGEST_SCHEDULE_PATH", None)
         else:
@@ -1158,7 +1161,7 @@ class NotificationPrefsTest(unittest.TestCase):
         # keys, writes never emit them. (The retired literal is
         # intentionally not spelled here — the issue keeps the repo
         # grep-clean; an ad-hoc probe verified the exact stale key.)
-        with open(N.NOTIFIER_STATE_PATH, "w") as f:
+        with open(notify_prefs.NOTIFIER_STATE_PATH, "w") as f:
             json.dump({"muted_events": [],
                        "retired_hold_window": {"start": "22:00",
                                                "end": "07:00"}}, f)
@@ -1169,21 +1172,21 @@ class NotificationPrefsTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["muted_events"], ["ci_fail"])
         self.assertNotIn("retired_hold_window", r.json())
-        res = N.send_notification("t", "m", event_type="conflict")
+        res = notify_prefs.send_notification("t", "m", event_type="conflict")
         self.assertNotIn("suppressed", res)
 
     def test_mute_suppresses_and_restores(self):
         r = self._set_prefs({"muted_events": ["ci_fail"]})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["muted_events"], ["ci_fail"])
-        res = N.send_notification("t", "m", event_type="ci_fail")
+        res = notify_prefs.send_notification("t", "m", event_type="ci_fail")
         self.assertEqual(res, {"suppressed": "event 'ci_fail' muted"})
         # Other classes unaffected.
-        self.assertNotIn("suppressed", N.send_notification(
+        self.assertNotIn("suppressed", notify_prefs.send_notification(
             "t", "m", event_type="conflict"))
         r = self._set_prefs({"muted_events": []})
         self.assertEqual(r.json()["muted_events"], [])
-        self.assertNotIn("suppressed", N.send_notification(
+        self.assertNotIn("suppressed", notify_prefs.send_notification(
             "t", "m", event_type="ci_fail"))
 
     def test_unknown_event_rejected(self):
@@ -1201,16 +1204,16 @@ class NotificationPrefsTest(unittest.TestCase):
         r = self.client.post("/api/notifications/trigger-digest")
         self.assertEqual(r.status_code, 200)
         self.assertIn("suppressed", r.json()["results"])
-        self.assertEqual(N.load_notifier_state().get("last_digest", 0), 0)
+        self.assertEqual(notify_prefs.load_notifier_state().get("last_digest", 0), 0)
         self._set_prefs({"muted_events": []})
         r = self.client.post("/api/notifications/trigger-digest")
         self.assertNotIn("suppressed", r.json()["results"])
         self.assertGreater(
-            N.load_notifier_state().get("last_digest", 0), 0)
+            notify_prefs.load_notifier_state().get("last_digest", 0), 0)
 
     def test_suppressed_failure_text(self):
         self.assertEqual(
-            N._digest_failure_text(
+            notify_digest._digest_failure_text(
                 {"suppressed": "event 'digest' muted"}, ""),
             "event 'digest' muted")
 
@@ -1218,17 +1221,17 @@ class NotificationPrefsTest(unittest.TestCase):
 class BudgetWatchTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self.sent = []
         self.spend = (None, 0.0)
         cap_spend = mock.patch.object(
-            N, "_budget_cap_spend", side_effect=lambda: self.spend)
+            notify_budget, "_budget_cap_spend", side_effect=lambda: self.spend)
         cap_spend.start()
         self.addCleanup(cap_spend.stop)
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
 
     def _sender(self, result=None):
         def send(title, message, **kw):
@@ -1240,20 +1243,20 @@ class BudgetWatchTest(unittest.TestCase):
         return send
 
     def _alert(self):
-        return N.load_notifier_state().get("last_budget_alert")
+        return notify_prefs.load_notifier_state().get("last_budget_alert")
 
     def test_band_boundaries(self):
-        self.assertIsNone(N._budget_band(None, 999.0))
-        self.assertIsNone(N._budget_band(10.0, 7.999))
-        self.assertEqual(N._budget_band(10.0, 8.0), "warning")
-        self.assertEqual(N._budget_band(10.0, 9.999), "warning")
-        self.assertEqual(N._budget_band(10.0, 10.0), "blocked")
-        self.assertEqual(N._budget_band(10.0, 12.0), "blocked")
-        self.assertEqual(N._budget_band(0.0, 0.0), "blocked")
+        self.assertIsNone(notify_budget._budget_band(None, 999.0))
+        self.assertIsNone(notify_budget._budget_band(10.0, 7.999))
+        self.assertEqual(notify_budget._budget_band(10.0, 8.0), "warning")
+        self.assertEqual(notify_budget._budget_band(10.0, 9.999), "warning")
+        self.assertEqual(notify_budget._budget_band(10.0, 10.0), "blocked")
+        self.assertEqual(notify_budget._budget_band(10.0, 12.0), "blocked")
+        self.assertEqual(notify_budget._budget_band(0.0, 0.0), "blocked")
 
     def test_warn_crossing_fires_once(self):
         self.spend = (10.0, 8.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1000.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 1)
         push = self.sent[0]
@@ -1269,7 +1272,7 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_blocked_crossing_fires_once(self):
         self.spend = (10.0, 10.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1000.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 1)
         push = self.sent[0]
@@ -1282,19 +1285,19 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_warn_then_blocked_fires_both(self):
         self.spend = (10.0, 8.0)
-        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        notify_budget.fire_budget_watch(now=1000.0, sender=self._sender())
         self.spend = (10.0, 10.0)
-        N.fire_budget_watch(now=1060.0, sender=self._sender())
+        notify_budget.fire_budget_watch(now=1060.0, sender=self._sender())
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self._alert(),
                          {"band": "blocked", "at": 1060.0})
 
     def test_no_repeat_while_in_band(self):
         self.spend = (10.0, 8.5)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1000.0, sender=self._sender()))
         for tick in (1060.0, 1120.0):
-            self.assertFalse(N.fire_budget_watch(
+            self.assertFalse(notify_budget.fire_budget_watch(
                 now=tick, sender=self._sender()))
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self._alert(),
@@ -1302,17 +1305,17 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_rearm_on_cap_raise_then_recross(self):
         self.spend = (10.0, 8.0)
-        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        notify_budget.fire_budget_watch(now=1000.0, sender=self._sender())
         # Cap raised: spend drops below every threshold, silent
         # re-arm (stamp cleared).
         self.spend = (20.0, 8.0)
-        self.assertFalse(N.fire_budget_watch(
+        self.assertFalse(notify_budget.fire_budget_watch(
             now=1060.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 1)
         self.assertIsNone(self._alert())
         # Re-crossing fires again.
         self.spend = (20.0, 16.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1120.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self._alert(),
@@ -1320,17 +1323,17 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_downward_move_silently_rearms(self):
         self.spend = (10.0, 10.0)
-        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        notify_budget.fire_budget_watch(now=1000.0, sender=self._sender())
         # Cap raised into the warning band: no push (drops never
         # push), stored band steps down so a re-crossing fires.
         self.spend = (12.0, 10.0)
-        self.assertFalse(N.fire_budget_watch(
+        self.assertFalse(notify_budget.fire_budget_watch(
             now=1060.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self._alert(),
                          {"band": "warning", "at": 1060.0})
         self.spend = (12.0, 12.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1120.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self._alert(),
@@ -1338,14 +1341,14 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_uncapped_silence(self):
         self.spend = (None, 999.0)
-        self.assertFalse(N.fire_budget_watch(
+        self.assertFalse(notify_budget.fire_budget_watch(
             now=1000.0, sender=self._sender()))
         self.assertEqual(self.sent, [])
         self.assertIsNone(self._alert())
 
     def test_below_threshold_silence(self):
         self.spend = (10.0, 1.0)
-        self.assertFalse(N.fire_budget_watch(
+        self.assertFalse(notify_budget.fire_budget_watch(
             now=1000.0, sender=self._sender()))
         self.assertEqual(self.sent, [])
         self.assertIsNone(self._alert())
@@ -1356,10 +1359,10 @@ class BudgetWatchTest(unittest.TestCase):
         def boom(*a, **k):
             raise RuntimeError("ntfy down")
 
-        self.assertTrue(N.fire_budget_watch(now=1000.0, sender=boom))
+        self.assertTrue(notify_budget.fire_budget_watch(now=1000.0, sender=boom))
         self.assertIsNone(self._alert())
         # Next tick retries and stamps on success.
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1060.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self._alert(),
@@ -1368,21 +1371,21 @@ class BudgetWatchTest(unittest.TestCase):
     def test_fire_never_raises_on_broken_state(self):
         self.spend = (10.0, 8.0)
         with mock.patch.object(
-                N, "load_notifier_state",
+                notify_budget, "load_notifier_state",
                 side_effect=RuntimeError("disk gone")):
-            self.assertFalse(N.fire_budget_watch(
+            self.assertFalse(notify_budget.fire_budget_watch(
                 now=1000.0, sender=self._sender()))
         self.assertEqual(self.sent, [])
 
     def test_suppressed_send_never_stamps_then_fires(self):
         self.spend = (10.0, 8.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1000.0,
             sender=self._sender({"suppressed": "muted"})))
         self.assertEqual(len(self.sent), 1)
         self.assertIsNone(self._alert())
         # Next tick the same band fires (held, not dropped).
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1060.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self._alert(),
@@ -1390,12 +1393,12 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_failed_send_retries_next_tick(self):
         self.spend = (10.0, 8.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1000.0,
             sender=self._sender({"ntfy": {"ok": False,
                                           "error": "boom"}})))
         self.assertIsNone(self._alert())
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1060.0, sender=self._sender()))
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self._alert(),
@@ -1403,7 +1406,7 @@ class BudgetWatchTest(unittest.TestCase):
 
     def test_partial_channel_ok_stamps(self):
         self.spend = (10.0, 8.0)
-        self.assertTrue(N.fire_budget_watch(
+        self.assertTrue(notify_budget.fire_budget_watch(
             now=1000.0,
             sender=self._sender({"ntfy": {"ok": True, "status": 200},
                                  "webhook": {"ok": False,
@@ -1417,7 +1420,7 @@ class BudgetWatchTest(unittest.TestCase):
         body = client.get("/api/notifications/status").json()
         self.assertIsNone(body["budget_alert"])
         self.spend = (10.0, 8.0)
-        N.fire_budget_watch(now=1000.0, sender=self._sender())
+        notify_budget.fire_budget_watch(now=1000.0, sender=self._sender())
         body = client.get("/api/notifications/status").json()
         self.assertEqual(body["budget_alert"],
                          {"band": "warning", "at": 1000.0})
@@ -1432,16 +1435,16 @@ class DigestStampGateTest(unittest.TestCase):
                   "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS"):
             os.environ.pop(k, None)
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self.client = _make_client()
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
 
     def _send(self, results):
         return mock.patch.object(
-            N, "send_notification", return_value=results)
+            notify_prefs, "send_notification", return_value=results)
 
     def test_failed_manual_digest_skips_stamp_and_reports_failure(self):
         failed = {"ntfy": {"ok": False, "error": "boom"},
@@ -1455,20 +1458,20 @@ class DigestStampGateTest(unittest.TestCase):
         self.assertIn("boom", json.dumps(body["results"]))
         self.assertIn("down", json.dumps(body["results"]))
         self.assertEqual(
-            N.load_notifier_state().get("last_digest", 0), 0)
+            notify_prefs.load_notifier_state().get("last_digest", 0), 0)
 
     def test_failed_manual_digest_leaves_scheduled_digest_armed(self):
         with self._send({"ntfy": {"ok": False, "error": "boom"}}):
             self.client.post("/api/notifications/trigger-digest")
         self.assertEqual(
-            N.load_notifier_state().get("last_digest", 0), 0)
+            notify_prefs.load_notifier_state().get("last_digest", 0), 0)
         sent = []
 
         def sender(**kw):
             sent.append(kw)
             return {"ntfy": {"ok": True, "status": 200}}
 
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {}, sender=sender, now=10_000_000.0)
         self.assertEqual(len(sent), 1)
         self.assertEqual(state.get("last_digest"), 10_000_000.0)
@@ -1480,7 +1483,7 @@ class DigestStampGateTest(unittest.TestCase):
             r = self.client.post("/api/notifications/trigger-digest")
         self.assertTrue(r.json()["ok"])
         self.assertGreater(
-            N.load_notifier_state().get("last_digest", 0), 0)
+            notify_prefs.load_notifier_state().get("last_digest", 0), 0)
 
     def test_failed_scheduled_digest_retries_next_cycle(self):
         calls = []
@@ -1489,7 +1492,7 @@ class DigestStampGateTest(unittest.TestCase):
             calls.append(kw)
             return {"ntfy": {"ok": False, "error": "boom"}}
 
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {}, sender=failing, now=10_000_000.0)
         self.assertEqual(len(calls), 1)
         self.assertEqual(state.get("last_digest", 0), 0)
@@ -1498,21 +1501,21 @@ class DigestStampGateTest(unittest.TestCase):
             calls.append(kw)
             return {"ntfy": {"ok": True, "status": 200}}
 
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {}, sender=succeeding, now=10_000_060.0)
         self.assertEqual(len(calls), 2)
         self.assertEqual(state.get("last_digest"), 10_000_060.0)
 
     def test_delivered_table(self):
-        self.assertFalse(N.delivered({"suppressed": "muted"}))
-        self.assertTrue(N.delivered({}))
-        self.assertFalse(N.delivered(None))
+        self.assertFalse(notify_digest.delivered({"suppressed": "muted"}))
+        self.assertTrue(notify_digest.delivered({}))
+        self.assertFalse(notify_digest.delivered(None))
         self.assertFalse(
-            N.delivered({"ntfy": {"ok": False, "error": "x"}}))
+            notify_digest.delivered({"ntfy": {"ok": False, "error": "x"}}))
         self.assertTrue(
-            N.delivered({"ntfy": {"ok": True, "status": 200},
+            notify_digest.delivered({"ntfy": {"ok": True, "status": 200},
                          "webhook": {"ok": False, "error": "x"}}))
-        self.assertTrue(N.delivered({"ntfy": {"ok": True}}))
+        self.assertTrue(notify_digest.delivered({"ntfy": {"ok": True}}))
 
 
 class NotifyLoopTest(unittest.TestCase):
@@ -1527,12 +1530,12 @@ class NotifyLoopTest(unittest.TestCase):
         os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict"
         os.environ["DIGEST_INTERVAL_HOURS"] = "100000"
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self.sent = []
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
         for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
                   "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS"):
             os.environ.pop(k, None)
@@ -1551,16 +1554,16 @@ class NotifyLoopTest(unittest.TestCase):
         }}
 
     def test_fresh_ci_fail_and_conflict_push(self):
-        N.check_notifications_and_digest(
+        notify_digest.check_notifications_and_digest(
             fetcher=self._brief, sender=self._sender(), now=1000.0)
         kinds = sorted(s["event_type"] for s in self.sent)
         self.assertEqual(kinds, ["ci_fail", "conflict"])
 
     def test_quiet_second_tick_sends_nothing(self):
-        N.check_notifications_and_digest(
+        notify_digest.check_notifications_and_digest(
             fetcher=self._brief, sender=self._sender(), now=1000.0)
         self.sent.clear()
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=self._brief, sender=self._sender(), now=1001.0)
         self.assertEqual(self.sent, [])
         self.assertEqual(
@@ -1571,7 +1574,7 @@ class NotifyLoopTest(unittest.TestCase):
     def test_digest_stamps_only_on_delivery(self):
         os.environ["DIGEST_INTERVAL_HOURS"] = "1"
         ok = {"ntfy": {"ok": True, "status": 200}}
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {}, sender=self._sender(ok),
             now=10_000_000.0)
         self.assertEqual(state["last_digest"], 10_000_000.0)
@@ -1581,12 +1584,12 @@ class NotifyLoopTest(unittest.TestCase):
 
     def test_digest_suppressed_or_failed_never_stamps(self):
         os.environ["DIGEST_INTERVAL_HOURS"] = "1"
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {},
             sender=self._sender({"suppressed": "muted"}),
             now=10_000_000.0)
         self.assertEqual(state.get("last_digest", 0), 0)
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {},
             sender=self._sender(
                 {"ntfy": {"ok": False, "error": "boom"}}),
@@ -1594,18 +1597,18 @@ class NotifyLoopTest(unittest.TestCase):
         self.assertEqual(state.get("last_digest", 0), 0)
 
     def test_unknown_brief_skips_and_preserves_state(self):
-        N.check_notifications_and_digest(
+        notify_digest.check_notifications_and_digest(
             fetcher=self._brief, sender=self._sender(), now=1000.0)
         self.sent.clear()
         # Fetch failure: None brief — no pushes, stored keys kept.
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {"arii/a": None},
             sender=self._sender(), now=1001.0)
         self.assertEqual(self.sent, [])
         self.assertEqual(state["ci"]["arii/a"], {"ci:main": "boom"})
         self.assertEqual(state["conflicts"]["arii/a"], {"7": "fix"})
         # Recovery with identical data: still quiet (no push storm).
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=self._brief, sender=self._sender(), now=1002.0)
         self.assertEqual(self.sent, [])
         # Recovery with a genuinely new failure: pushes once.
@@ -1614,7 +1617,7 @@ class NotifyLoopTest(unittest.TestCase):
             brief["arii/a"]["failing_runs"].append(
                 {"name": "lint", "branch": "main", "failed": "x"})
             return brief
-        N.check_notifications_and_digest(
+        notify_digest.check_notifications_and_digest(
             fetcher=evolved, sender=self._sender(), now=1003.0)
         self.assertEqual(
             [s["event_type"] for s in self.sent], ["ci_fail"])
@@ -1624,7 +1627,7 @@ class CollectNotifyBriefTest(unittest.TestCase):
     """gh brief collection for the scheduled check (issue #822)."""
 
     def test_maps_runs_and_conflicts(self):
-        from backend.notify import collect_notify_brief
+        from backend.notify.digest import collect_notify_brief
 
         calls = []
 
@@ -1663,7 +1666,7 @@ class CollectNotifyBriefTest(unittest.TestCase):
             self.assertIn("url", fields)
 
     def test_gh_failure_returns_none(self):
-        from backend.notify import collect_notify_brief
+        from backend.notify.digest import collect_notify_brief
 
         class Failing:
             def run(self, argv, **kw):
@@ -1673,7 +1676,7 @@ class CollectNotifyBriefTest(unittest.TestCase):
             collect_notify_brief("a", "arii/a", runner=Failing()))
 
     def test_non_list_payload_returns_none(self):
-        from backend.notify import collect_notify_brief
+        from backend.notify.digest import collect_notify_brief
 
         class Odd:
             def run(self, argv, **kw):
@@ -1705,9 +1708,9 @@ class NotifyCheckCliTest(unittest.TestCase):
                     "last_digest": 123.0}
 
         buf = io.StringIO()
-        with mock.patch.object(N, "collect_notify_brief",
+        with mock.patch.object(notify_digest, "collect_notify_brief",
                                side_effect=fake_collect), \
-                mock.patch.object(N, "check_notifications_and_digest",
+                mock.patch.object(notify_digest, "check_notifications_and_digest",
                                   side_effect=fake_check):
             with redirect_stdout(buf):
                 code = notify_check.main(
@@ -1725,8 +1728,8 @@ class JobFailLegTest(unittest.TestCase):
         import tempfile
 
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self._old_events = os.environ.get("NOTIFY_EVENTS")
         os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict,job_fail"
         self._old_runs = os.environ.get("BUTTONS_JOBS_RUNS_PATH")
@@ -1734,7 +1737,7 @@ class JobFailLegTest(unittest.TestCase):
             self.tmp, "runs.json")
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
         if self._old_events is None:
             os.environ.pop("NOTIFY_EVENTS", None)
         else:
@@ -1758,7 +1761,7 @@ class JobFailLegTest(unittest.TestCase):
             sent.append(kw)
             return {}
 
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {"r": {}}, sender=sender, now=1000.0,
             runs_lister=lambda: runs)
         return sent, state
@@ -1821,7 +1824,7 @@ class JobFailLegTest(unittest.TestCase):
             sent.append(kw)
             return {}
 
-        state = N.check_notifications_and_digest(
+        state = notify_digest.check_notifications_and_digest(
             fetcher=lambda: {"r": {}}, sender=sender, now=1000.0)
         self.assertEqual(sent, [])
         self.assertEqual(state.get("job_fail", {}).get("r", {}), {})
@@ -1838,12 +1841,12 @@ class DeepLinkLegsTest(unittest.TestCase):
         os.environ["NOTIFY_EVENTS"] = "ci_fail,conflict,job_fail"
         os.environ["DIGEST_INTERVAL_HOURS"] = "100000"
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self.sent = []
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
         for k in ("NTFY_TOPIC", "NOTIFICATION_WEBHOOK_URL",
                   "DIGEST_INTERVAL_HOURS", "NOTIFY_EVENTS",
                   "BUTTONS_PUBLIC_URL"):
@@ -1870,7 +1873,7 @@ class DeepLinkLegsTest(unittest.TestCase):
                 "finished_at": 100.0, "output": "boom\n"}
 
     def _tick(self, briefs, runs=(), now=1000.0):
-        return N.check_notifications_and_digest(
+        return notify_digest.check_notifications_and_digest(
             fetcher=lambda: briefs, sender=self._sender(),
             now=now, runs_lister=lambda: list(runs))
 
@@ -1928,14 +1931,14 @@ class DeepLinkLegsTest(unittest.TestCase):
         self.assertIsNone(pushes[0]["click_url"])
 
     def test_console_url_helpers(self):
-        self.assertIsNone(N.console_url("/api/briefing"))
+        self.assertIsNone(notify_prefs.console_url("/api/briefing"))
         os.environ["BUTTONS_PUBLIC_URL"] = "https://c.example/"
-        self.assertEqual(N.console_url("/api/briefing"),
+        self.assertEqual(notify_prefs.console_url("/api/briefing"),
                          "https://c.example/api/briefing")
-        self.assertEqual(N.console_url("api/briefing"),
+        self.assertEqual(notify_prefs.console_url("api/briefing"),
                          "https://c.example/api/briefing")
         os.environ["BUTTONS_PUBLIC_URL"] = "  "
-        self.assertIsNone(N.console_url("/api/briefing"))
+        self.assertIsNone(notify_prefs.console_url("/api/briefing"))
 
 
 class SendClickTransportTest(unittest.TestCase):
@@ -1949,12 +1952,12 @@ class SendClickTransportTest(unittest.TestCase):
         os.environ["NOTIFICATION_WEBHOOK_URL"] = \
             "https://hooks.example/push"
         self.tmp = tempfile.mkdtemp()
-        self._old_state = N.NOTIFIER_STATE_PATH
-        N.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
+        self._old_state = notify_prefs.NOTIFIER_STATE_PATH
+        notify_prefs.NOTIFIER_STATE_PATH = os.path.join(self.tmp, "state.json")
         self.requests = []
 
     def tearDown(self):
-        N.NOTIFIER_STATE_PATH = self._old_state
+        notify_prefs.NOTIFIER_STATE_PATH = self._old_state
         for k in ("NTFY_TOPIC", "NTFY_URL", "NTFY_TOKEN",
                   "NOTIFICATION_WEBHOOK_URL"):
             os.environ.pop(k, None)
@@ -1979,7 +1982,7 @@ class SendClickTransportTest(unittest.TestCase):
 
     def test_click_header_and_link_line(self):
         with self._urlopen():
-            res = N.send_notification(
+            res = notify_prefs.send_notification(
                 "t", "hello", event_type="ci_fail",
                 click_url="https://gh/run/1")
         self.assertTrue(res["ntfy"]["ok"])
@@ -1993,7 +1996,7 @@ class SendClickTransportTest(unittest.TestCase):
 
     def test_absent_click_sends_clean(self):
         with self._urlopen():
-            N.send_notification("t", "hello", event_type="info")
+            notify_prefs.send_notification("t", "hello", event_type="info")
         ntfy = self.requests[0]
         self.assertIsNone(ntfy.get_header("Click"))
         self.assertEqual(ntfy.data, b"hello")

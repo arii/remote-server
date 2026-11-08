@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest import mock
 
-from backend.core import get_container_stats, get_system_health
+from backend.core.containers import get_container_stats, get_system_health
 
 
 def _compose_ps_argv():

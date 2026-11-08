@@ -10,7 +10,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from backend.core import get_repo_metrics
+from backend.core.git_helpers import get_repo_metrics
 
 
 def _proc(rc=0, out="", err=""):
@@ -44,7 +44,7 @@ class RepoMetricsCoreTest(unittest.TestCase):
         path = os.path.join(tmp, "demo")
         os.makedirs(os.path.join(path, ".git"))
         with mock.patch(
-                "backend.core.get_repos_dir", return_value=Path(tmp)):
+                "backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             return get_repo_metrics("demo",
                                     run=_fake_run_factory(**kwargs))
 
@@ -83,7 +83,7 @@ class RepoMetricsCoreTest(unittest.TestCase):
     def test_missing_checkout_raises_not_found(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch(
-                    "backend.core.get_repos_dir",
+                    "backend.core.repos.get_repos_dir",
                     return_value=Path(tmp)):
                 with self.assertRaises(FileNotFoundError):
                     get_repo_metrics("nope", run=_fake_run_factory())
@@ -97,7 +97,7 @@ class RepoMetricsCoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "demo", ".git"))
             with mock.patch(
-                    "backend.core.get_repos_dir",
+                    "backend.core.repos.get_repos_dir",
                     return_value=Path(tmp)):
                 with self.assertRaises(RuntimeError):
                     get_repo_metrics("demo", run=failing)
@@ -111,7 +111,7 @@ class RepoMetricsCoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "demo", ".git"))
             with mock.patch(
-                    "backend.core.get_repos_dir",
+                    "backend.core.repos.get_repos_dir",
                     return_value=Path(tmp)):
                 with self.assertRaises(RuntimeError):
                     get_repo_metrics("demo", run=failing)
@@ -134,7 +134,7 @@ class RepoMetricsRealGitTest(unittest.TestCase):
             with open(os.path.join(path, "a.py"), "a") as fh:
                 fh.write("y = 2\n")
             with mock.patch(
-                    "backend.core.get_repos_dir",
+                    "backend.core.repos.get_repos_dir",
                     return_value=Path(tmp)):
                 body = get_repo_metrics("demo")
         self.assertFalse(body["clean"])

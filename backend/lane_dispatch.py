@@ -209,7 +209,7 @@ def enqueue(repo: str, issue, parse_number=None,
     #883); "" when the enqueuer has none (manual numbers).
     """
     if validate_repo is None:
-        from backend.core import validate_repo_name as validate_repo
+        from backend.core.validation import validate_repo_name as validate_repo
     if parse_number is None:
         from backend.api.routers.issues import \
             parse_issue_number as parse_number
@@ -287,7 +287,7 @@ def read_repo_gates(repo: str, gh_runner=None) -> dict:
     tests. Returns {"ok", "base", "required_checks", "error"} — ok
     False keeps dispatch blocked with the reason visible.
     """
-    from backend.core import validate_repo_name
+    from backend.core.validation import validate_repo_name
     from backend.gh import repo_gh, run_gh_json
 
     try:
@@ -335,7 +335,7 @@ def readiness(repo: str, issue: int, repo_status=None,
     reasons: list[str] = []
     gates: dict = {}
     if repo_status is None:
-        from backend.core import get_repo_status as repo_status
+        from backend.core.git_helpers import get_repo_status as repo_status
     if verify_preview is None:
         from backend.api.routers.issues import \
             _repair_verify_preview as verify_preview

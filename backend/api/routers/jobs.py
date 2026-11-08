@@ -198,7 +198,7 @@ def jobs_stream() -> StreamingResponse:
 
 @router.post("/clear", response_model=ClearResult)
 def clear_jobs(body: ClearRequest) -> dict:
-    from backend.core import require_confirm
+    from backend.core.validation import require_confirm
 
     require_confirm(body, "jobs-clear")
     count, err = registry.clear_jobs(all_jobs=bool(body.all))
@@ -209,7 +209,8 @@ def clear_jobs(body: ClearRequest) -> dict:
 
 def _repo_target(repo: str) -> tuple[str, str]:
     """Validate a repo name; return (gh, td_cwd). Raises ValueError."""
-    from backend.core import get_repo_status, validate_repo_name
+    from backend.core.git_helpers import get_repo_status
+    from backend.core.validation import validate_repo_name
 
     name = validate_repo_name(repo)
     try:
@@ -270,7 +271,7 @@ def start_run(body: RunRequest) -> dict:
     if body.action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail="unknown action")
     if body.action in DESTRUCTIVE_ACTIONS:
-        from backend.core import require_confirm
+        from backend.core.validation import require_confirm
 
         require_confirm(body, "jobs-run")
     if body.action in REPO_SCOPED_ACTIONS:
@@ -278,7 +279,7 @@ def start_run(body: RunRequest) -> dict:
             _repo_target(body.repo)
         except ValueError:
             raise HTTPException(status_code=400, detail="unknown repo")
-    from backend.core import validate_action_branch
+    from backend.core.git_helpers import validate_action_branch
 
     try:
         validate_action_branch(body.repo, body.branch)
@@ -298,7 +299,7 @@ def start_run_td(body: RunTdRequest) -> dict:
         _repo_target(body.repo)
     except ValueError:
         raise HTTPException(status_code=400, detail="bad repo or command")
-    from backend.core import validate_action_branch
+    from backend.core.git_helpers import validate_action_branch
 
     try:
         validate_action_branch(body.repo, body.branch)
@@ -585,8 +586,9 @@ class PlanRead(BaseModel):
 
 def _plans_dir(repo: str) -> Path:
     """Validated .agents/plans dir for a repo. Raises ValueError."""
-    from backend.core import get_repo_status, resolve_repo_path, \
-        validate_repo_name
+    from backend.core.git_helpers import get_repo_status
+    from backend.core.repos import resolve_repo_path
+    from backend.core.validation import validate_repo_name
     from backend.exec.engine import stack_dir
 
     try:
@@ -917,7 +919,7 @@ def _notify_seed_repos() -> list:
     never seed an error-every-15-min schedule."""
     names: list = []
     try:
-        from backend.core import list_repos
+        from backend.core.git_helpers import list_repos
 
         for row in list_repos():
             name = row.get("name") if isinstance(row, dict) else None

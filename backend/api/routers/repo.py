@@ -3,10 +3,12 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.core import (get_repo_diff, get_repo_metrics,
-                          get_repo_status, list_repos,
-                          list_repo_files, repo_discard_untracked,
-                          repo_stash, repo_sync, require_confirm)
+from backend.core.git_helpers import (get_repo_diff, get_repo_metrics,
+                                         get_repo_status, list_repos,
+                                         repo_discard_untracked, repo_stash,
+                                         repo_sync)
+from backend.core.repos import list_repo_files
+from backend.core.validation import require_confirm
 
 router = APIRouter(prefix="/api/repo", tags=["repo"])
 

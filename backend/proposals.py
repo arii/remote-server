@@ -33,7 +33,8 @@ import re
 import subprocess
 import sys
 
-from backend.core import get_checkout_path, validate_repo_name
+from backend.core.repos import get_checkout_path
+from backend.core.validation import validate_repo_name
 from backend.exec.engine import validate_td_command
 from backend.gh import run_gh, validate_gh
 

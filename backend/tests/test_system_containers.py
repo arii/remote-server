@@ -5,7 +5,7 @@ import os
 import subprocess
 import unittest
 
-from backend.core import get_container_logs, restart_container
+from backend.core.containers import get_container_logs, restart_container
 
 
 def _compose_ps_argv():

@@ -24,7 +24,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.core import validate_repo_name
+from backend.core.validation import validate_repo_name
 
 router = APIRouter(prefix="/api", tags=["deferred"])
 

@@ -276,7 +276,7 @@ class FixtureTimestampsTest(unittest.TestCase):
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class EndpointCacheTest(unittest.TestCase):
     def setUp(self):
-        import backend.core as core
+        import backend.core.git_helpers as core
 
         self._orig_status = core.get_repo_status
         self._orig_fetch = ops.fetch_workflow_health
@@ -294,7 +294,7 @@ class EndpointCacheTest(unittest.TestCase):
                 "workflows": []}
 
     def tearDown(self):
-        import backend.core as core
+        import backend.core.git_helpers as core
 
         core.get_repo_status = self._orig_status
         ops.fetch_workflow_health = self._orig_fetch
