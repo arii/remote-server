@@ -81,13 +81,46 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("usage:", "".join(out))
 
+    def _hermetic_child_env(self, env, tmp):
+        # Hermetic scheduled-context child env: a stub `gh` on a
+        # private PATH answers the two brief calls (a real `gh`
+        # varies by ambient auth — CI cannot read sibling repos —
+        # which would make a fetched brief environment-dependent),
+        # state/store paths point at tmp, notify events are pinned,
+        # and digest + push sinks are off: no network, no host
+        # mutation, no ambient-env dependence.
+        bindir = os.path.join(tmp, "bin")
+        os.makedirs(bindir)
+        gh_stub = os.path.join(bindir, "gh")
+        with open(gh_stub, "w") as f:
+            f.write("#!/bin/sh\n")
+            f.write('if [ "$1" = "run" ]; then\n')
+            f.write("  echo '[{\"name\":\"CI\",\"headBranch\":\"main\","
+                    "\"conclusion\":\"success\",\"event\":\"push\","
+                    "\"url\":\"https://example.invalid/r/1\"}]'\n")
+            f.write("else\n")
+            f.write("  echo '[]'\n")
+            f.write("fi\n")
+        os.chmod(gh_stub, 0o755)
+        child_env = dict(env or {})
+        child_env["PATH"] = (bindir + os.pathsep
+                             + os.environ.get("PATH", ""))
+        child_env["BUTTONS_NOTIFIER_STATE_PATH"] = os.path.join(
+            tmp, "notifier_state.json")
+        child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
+            tmp, "jobs_runs.json")
+        child_env["DIGEST_INTERVAL_HOURS"] = "0"
+        child_env["NOTIFY_EVENTS"] = "ci_fail,conflict,job_fail"
+        for var in ("NTFY_TOPIC", "NTFY_TOKEN",
+                    "NOTIFICATION_WEBHOOK_URL",
+                    "BUTTONS_PUBLIC_URL"):
+            child_env.pop(var, None)
+        return child_env
+
     def test_scheduled_full_run_boomtick_exit_zero(self):
         # #1125 DoD: reproduce the scheduled-context invocation for
         # boomtick (scheduler argv/env/cwd, not the manual CLI shape)
-        # end to end and require exit 0. Hermetic: a stub `gh` on a
-        # private PATH answers the two brief calls, and the state
-        # and run-store paths point at tmp, so there is no network
-        # and no host mutation.
+        # end to end and require exit 0.
         import tempfile
 
         steps, err = engine.action_steps(
@@ -98,31 +131,7 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         cwd = engine.step_cwd(steps)
         with tempfile.TemporaryDirectory(
                 prefix="notify1125") as tmp:
-            bindir = os.path.join(tmp, "bin")
-            os.makedirs(bindir)
-            gh_stub = os.path.join(bindir, "gh")
-            with open(gh_stub, "w") as f:
-                f.write("#!/bin/sh\n")
-                f.write('if [ "$1" = "run" ]; then\n')
-                f.write("  echo '[{\"name\":\"CI\",\"headBranch\":\"main\","
-                        "\"conclusion\":\"success\",\"event\":\"push\","
-                        "\"url\":\"https://example.invalid/r/1\"}]'\n")
-                f.write("else\n")
-                f.write("  echo '[]'\n")
-                f.write("fi\n")
-            os.chmod(gh_stub, 0o755)
-            child_env = dict(env or {})
-            child_env["PATH"] = (bindir + os.pathsep
-                                 + os.environ.get("PATH", ""))
-            child_env["BUTTONS_NOTIFIER_STATE_PATH"] = os.path.join(
-                tmp, "notifier_state.json")
-            child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
-                tmp, "jobs_runs.json")
-            child_env["DIGEST_INTERVAL_HOURS"] = "0"
-            for var in ("NTFY_TOPIC", "NTFY_TOKEN",
-                        "NOTIFICATION_WEBHOOK_URL",
-                        "BUTTONS_PUBLIC_URL"):
-                child_env.pop(var, None)
+            child_env = self._hermetic_child_env(env, tmp)
             out: list = []
             code = engine.run_step_pipe(
                 steps[0], out.append, env=child_env, cwd=cwd,
@@ -149,13 +158,10 @@ class CheckNotificationsScheduledContextTest(unittest.TestCase):
         cwd = engine.step_cwd(steps)
         with tempfile.TemporaryDirectory(
                 prefix="notify1125") as tmp:
-            state_path = os.path.join(tmp, "notifier_state.json")
-            with open(state_path, "w") as f:
+            child_env = self._hermetic_child_env(env, tmp)
+            with open(child_env["BUTTONS_NOTIFIER_STATE_PATH"],
+                      "w") as f:
                 f.write('{"ci": []}')
-            child_env = dict(env or {})
-            child_env["BUTTONS_NOTIFIER_STATE_PATH"] = state_path
-            child_env["BUTTONS_JOBS_RUNS_PATH"] = os.path.join(
-                tmp, "jobs_runs.json")
             out: list = []
             code = engine.run_step_pipe(
                 steps[0], out.append, env=child_env, cwd=cwd,
