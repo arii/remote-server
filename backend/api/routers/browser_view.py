@@ -44,7 +44,8 @@ VIEWER_HTML = r"""<!doctype html>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif}
 #bar{display:flex;gap:8px;padding:8px;align-items:center}
 #nav{display:flex;gap:8px;flex:1}
-#url{flex:1;padding:6px}
+#url{flex:1;padding:6px;background:#1c1c1e;color:#fff;border:1px solid #000;border-radius:8px}
+#go{background:#3a3a3c;color:#fff;border:1px solid #000;border-radius:8px;padding:6px 12px}
 #stats{padding:0 8px 8px;font-size:13px;color:#9f9}
 #screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
 </style></head><body>
