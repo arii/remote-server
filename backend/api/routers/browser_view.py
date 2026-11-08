@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -19,6 +20,26 @@ import urllib.request
 
 GRID_BASE = "http://browser:4444"
 VIEWPORT = {"width": 1280, "height": 800}
+MOBILE_VIEWPORT = {"width": 390, "height": 844}
+
+
+def is_phone_user_agent(user_agent):
+    """True when a viewer User-Agent looks like a phone (or phone-
+    sized tablet): the Mobi token covers mobile Chrome/Safari/Firefox,
+    the rest catch platform UAs that omit it."""
+    ua = user_agent or ""
+    return any(token in ua for token in
+               ("Mobi", "Android", "iPhone", "iPad"))
+
+
+def viewport_for(kind, user_agent):
+    """(viewport, mobile) for a viewer session. Phone viewers with
+    their OWN session get a 390x844 mobile viewport with touch
+    emulation; shared/agent sessions keep the desktop viewport so
+    every tab sees the same page. Pure (no I/O): unit-testable."""
+    if kind == "own" and is_phone_user_agent(user_agent):
+        return dict(MOBILE_VIEWPORT), True
+    return dict(VIEWPORT), False
 # Requested device pixels per CSS pixel. This MUST be 1: the
 # viewer maps pointer coords as frame_px / advertised_dsf, which
 # only lands when frames equal CSS px in every world — override
@@ -39,18 +60,33 @@ DSF = 1
 DEFAULT_URL = "https://example.com"
 
 VIEWER_HTML = r"""<!doctype html>
-<html><head><meta charset="utf-8"><title>CDP direct viewer (spike)</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Browser viewer</title>
 <style>
-body{margin:0;background:#111;color:#eee;font-family:sans-serif}
-#bar{display:flex;gap:8px;padding:8px;align-items:center}
-#nav{display:flex;gap:8px;flex:1}
-#url{flex:1;padding:6px}
-#stats{padding:0 8px 8px;font-size:13px;color:#9f9}
-#screen{display:block;max-width:100vw;border-top:1px solid #333;cursor:default}
-</style></head><body>
-<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address"><button id="go" type="submit">Go</button></form><span id="state">connecting…</span></div>
-<div id="stats">fps: - | last input→frame: - ms</div>
-<canvas id="screen"></canvas>
+body{margin:0;background:#111;color:#eee;font-family:sans-serif;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+*:focus-visible{outline:2px solid #0a84ff;outline-offset:1px}
+#bar{display:flex;gap:8px;padding:8px;align-items:center;flex-wrap:wrap}
+#nav{display:flex;gap:8px;flex:1;min-width:0}
+#url{flex:1;min-width:0;padding:6px;font-size:16px;min-height:44px;box-sizing:border-box}
+#go,#kb{min-height:44px}
+#state{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#stats{padding:0 8px 8px;font-size:14px;color:#9f9;font-variant-numeric:tabular-nums}
+#screen{display:block;max-width:100vw;height:auto;border-top:1px solid #333;cursor:default;touch-action:none}
+#kbd{max-width:100vw}
+#kbd[hidden]{display:none}
+/* On-screen keyboard in the viewer dark theme: the stock
+simple-keyboard palette is pale gray on white and unreadable here. */
+#kbd .hg-theme-default{background:#1c1c1e}
+#kbd .hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9)}
+#kbd .hg-theme-default .hg-button span{color:#fff;opacity:1}
+#kbd .hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/css/index.css">
+<script src="https://cdn.jsdelivr.net/npm/simple-keyboard@3.8.205/build/index.js"></script>
+</head><body>
+<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
+<div id="stats">fps: - | last activity→frame: - ms</div>
+<canvas id="screen" width="1280" height="800"></canvas>
+<div id="kbd" class="simple-keyboard" hidden></div>
 <script>
 const base = location.pathname.replace(/\/$/, '');
 const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
@@ -65,6 +101,11 @@ let dsf = 1;
 let ws = null;
 let reconnectTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
+function setControlsEnabled(on) {
+  for (const id of ['url', 'go', 'kb']) {
+    document.getElementById(id).disabled = !on;
+  }
+}
 function connect() {
   clearTimeout(reconnectTimer);
   try {
@@ -72,12 +113,14 @@ function connect() {
   } catch (_) {
     // Synchronous constructor throw (no path re-dials otherwise):
     // show the gap and retry like a clean close.
-    document.getElementById('state').textContent = 'reconnecting…';
+    document.getElementById('state').textContent = 'reconnecting — input paused…';
+    setControlsEnabled(false);
     reconnectTimer = setTimeout(connect, 2000);
     return;
   }
   ws.onopen = () => {
     document.getElementById('state').textContent = 'live';
+    setControlsEnabled(true);
     cv.style.opacity = '';
     frames = 0; t0 = performance.now();
   };
@@ -86,9 +129,11 @@ function connect() {
     if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
     if (m.type === 'attached') {
       dsf = m.dsf || 1;
-      const label = m.kind === 'agent' ? 'shared agent session '
-        : m.kind === 'viewer-shared' ? 'shared browser tab ' : 'own session ';
-      document.getElementById('state').textContent = label + m.session;
+      const label = m.kind === 'agent' ? 'shared agent session'
+        : m.kind === 'viewer-shared' ? 'shared browser tab' : 'own session';
+      const st = document.getElementById('state');
+      st.textContent = label + ' · live';
+      st.title = 'session ' + m.session;
       return;
     }
     if (m.type === 'status' || m.type === 'reattached') {
@@ -104,10 +149,13 @@ function connect() {
         if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
         ctx.drawImage(img, 0, 0); frames++;
         const el = (performance.now() - t0) / 1000;
-        if (el >= 2) {
+        // Throttle the readout to 1 Hz: per-frame DOM writes flicker
+        // and cost layout on every screencast frame.
+        if (el >= 2 && (!img._lastStats || performance.now() - img._lastStats > 1000)) {
+          img._lastStats = performance.now();
           document.querySelector('#stats').textContent =
             'fps: ' + (frames / el).toFixed(1) +
-            ' | last input→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
+            ' | last activity→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
         }
         URL.revokeObjectURL(img.src);
       };
@@ -117,9 +165,11 @@ function connect() {
   };
   ws.onclose = () => {
     // Dim the canvas: a frozen last frame must not pose as live
-    // while the socket is down.
+    // while the socket is down. Controls lock too so taps during
+    // the gap are visibly paused, not silently dropped.
     cv.style.opacity = '0.35';
-    document.getElementById('state').textContent = 'reconnecting…';
+    document.getElementById('state').textContent = 'reconnecting — input paused…';
+    setControlsEnabled(false);
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 2000);
   };
@@ -132,12 +182,121 @@ function pos(e) {
   return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
           y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
 }
-cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
-cv.addEventListener('keydown', (e) => {
+// Hover/cursor feedback: stream pointer moves (rAF-throttled) as
+// CDP mouseMoved so the remote page hovers, links highlight, and
+// the screencast repaints under the cursor like a local tab. Moves never
+// pause the agent — only click/key/go do.
+let movePending = false, moveQueued = null;
+cv.addEventListener('mousemove', (e) => {
   if (!sendable()) return;
-  e.preventDefault(); lastClick = performance.now();
-  ws.send(JSON.stringify({t: 'key', key: e.key, code: e.code}));
+  moveQueued = pos(e);
+  if (movePending) return;
+  movePending = true;
+  requestAnimationFrame(() => {
+    movePending = false;
+    if (moveQueued && sendable()) { lastClick = performance.now(); ws.send(JSON.stringify({t: 'move', ...moveQueued})); }
+  });
 });
+cv.addEventListener('click', (e) => { if (!sendable()) return; cv.focus(); lastClick = performance.now(); ws.send(JSON.stringify({t: 'click', ...pos(e)})); });
+// Wheel scrolls the remote page instead of the viewer chrome.
+cv.addEventListener('wheel', (e) => {
+  if (!sendable()) return;
+  e.preventDefault();
+  const f = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'wheel', ...pos(e), dx: Math.round(e.deltaX * f), dy: Math.round(e.deltaY * f)}));
+}, {passive: false});
+// One-finger drag scrolls the remote page (touch-action:none in CSS
+// keeps the viewer chrome itself from panning/zooming instead).
+let touchId = null;
+cv.addEventListener('touchstart', (e) => {
+  if (!sendable() || touchId !== null) return;
+  const t = e.changedTouches[0];
+  touchId = t.identifier;
+  e.preventDefault();
+  const p = pos(t);
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'touch', phase: 'start', ...p}));
+}, {passive: false});
+cv.addEventListener('touchmove', (e) => {
+  if (!sendable() || touchId === null) return;
+  for (const t of e.changedTouches) {
+    if (t.identifier !== touchId) continue;
+    e.preventDefault();
+    ws.send(JSON.stringify({t: 'touch', phase: 'move', ...pos(t)}));
+  }
+}, {passive: false});
+function touchEnd(e) {
+  if (touchId === null) return;
+  for (const t of e.changedTouches) {
+    if (t.identifier !== touchId) continue;
+    touchId = null;
+    if (!sendable()) return;
+    lastClick = performance.now();
+    ws.send(JSON.stringify({t: 'touch', phase: 'end', ...pos(t)}));
+  }
+}
+cv.addEventListener('touchend', touchEnd);
+cv.addEventListener('touchcancel', touchEnd);
+function sendKey(key, code) {
+  if (!sendable()) return;
+  // Mobile IMEs report Unidentified/229 composition placeholders on
+  // keydown with no usable data — the text itself arrives through the
+  // on-screen keyboard below, so drop these instead of erroring.
+  if (key === 'Unidentified' || key === 'Process') return;
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'key', key, code}));
+}
+function typeText(text) {
+  if (!sendable() || !text) return;
+  lastClick = performance.now();
+  ws.send(JSON.stringify({t: 'type', text}));
+}
+// Document-level so physical keyboards keep working after the focus
+// moves to the URL box or the Keyboard toggle; the URL box itself is
+// excluded so typing an address never drives the remote page. Tab
+// and Escape always propagate (focus trap otherwise).
+document.addEventListener('keydown', (e) => {
+  if (e.target && e.target.id === 'url') return;
+  if (e.key === 'Tab' || e.key === 'Escape') return;
+  if (!sendable()) return;
+  e.preventDefault();
+  sendKey(e.key, e.code || e.key);
+});
+// Off-the-shelf on-screen keyboard (simple-keyboard, MIT): the remote
+// page gets real CDP input, so tapping the Keyboard button works on a
+// phone with no native keyboard involved. Special keys reuse the key
+// path; printable keys commit as bulk text via Input.insertText.
+(function initKbd() {
+  const box = document.getElementById('kbd');
+  const btn = document.getElementById('kb');
+  // UMD global is SimpleKeyboard; the constructor rides .default
+  // (fallback to a bare Keyboard global for other builds).
+  const lib = window.SimpleKeyboard || window.Keyboard;
+  const Kbd = (lib && (lib.default || lib.SimpleKeyboard))
+    || (typeof Keyboard === 'function' && Keyboard);
+  if (typeof Kbd !== 'function') { btn.hidden = true; return; }
+  const kbd = new Kbd({
+    onKeyPress: (button) => {
+      if (button === '{enter}') { sendKey('Enter', 'Enter'); return; }
+      if (button === '{bksp}') { sendKey('Backspace', 'Backspace'); return; }
+      if (button === '{tab}') { sendKey('Tab', 'Tab'); return; }
+      if (button === '{shift}' || button === '{lock}') {
+        const cur = kbd.options.layoutName || 'default';
+        kbd.setOptions({layoutName: cur === 'default' ? 'shift' : 'default'});
+        return;
+      }
+      if (button === '{space}') { typeText(' '); return; }
+      if (/^\{.+\}$/.test(button)) return;
+      typeText(button);
+    }
+  });
+  btn.addEventListener('click', () => {
+    box.hidden = !box.hidden;
+    btn.setAttribute('aria-expanded', String(!box.hidden));
+    if (!box.hidden) box.scrollIntoView({block: 'nearest'});
+  });
+})();
 function normalizeUrl(raw) {
   // Chrome-omnibox-lite: trim first; keep explicit schemes and
   // chrome pages; bare hostnames ride https://; bare host:port
@@ -335,8 +494,14 @@ class CDPBridge:
     renderer or balloon server memory.
     """
 
-    def __init__(self, session_id):
+    def __init__(self, session_id, viewport=None, mobile=False):
         self.session_id = session_id
+        # The emulated viewport travels with the bridge: reattach
+        # metrics and screencast sizing both follow it, so a phone
+        # viewer stays 390x844 across target swaps and restarts.
+        self.viewport = dict(viewport) if viewport is not None \
+            else dict(VIEWPORT)
+        self.mobile = mobile
         self._id = 0
         # Fire-and-forget ack ids live far above call ids so an ack
         # response can never collide with a tracked call future.
@@ -381,9 +546,18 @@ class CDPBridge:
         self.cdp_session = attached["sessionId"]
         # Crisp text: render at device pixels, input stays in CSS px.
         await self.call("Emulation.setDeviceMetricsOverride",
-                        {"width": VIEWPORT["width"],
-                         "height": VIEWPORT["height"],
-                         "deviceScaleFactor": DSF, "mobile": False})
+                        {"width": self.viewport["width"],
+                         "height": self.viewport["height"],
+                         "deviceScaleFactor": DSF,
+                         "mobile": self.mobile})
+        if self.mobile:
+            # Phone-owned sessions get touch input: without this,
+            # taps land as mouse events and mobile pages misbehave.
+            # Best-effort: a Grid that rejects it must not fail the
+            # attach the desktop path just completed.
+            with contextlib.suppress(Exception):
+                await self.call("Emulation.setTouchEmulationEnabled",
+                                {"enabled": True})
         # Trust but verify: the override may not apply (headless
         # quirks, swapped targets). Advertise the measured ratio so
         # clicks never land at half coords again; on any error keep
@@ -494,8 +668,8 @@ class CDPBridge:
             and self.dsf > 0 else 1
         await self.call("Page.startScreencast",
                         {"format": "jpeg", "quality": 70,
-                         "maxWidth": int(VIEWPORT["width"] * scale),
-                         "maxHeight": int(VIEWPORT["height"] * scale),
+                         "maxWidth": int(self.viewport["width"] * scale),
+                         "maxHeight": int(self.viewport["height"] * scale),
                          "everyNthFrame": 1})
 
     async def ack_frame(self, session_id):
@@ -513,6 +687,31 @@ class CDPBridge:
                        {**base, "type": "mousePressed"})
         await self.call("Input.dispatchMouseEvent",
                        {**base, "type": "mouseReleased"})
+
+    async def move(self, x, y):
+        # Hover-only: no buttons, no agent pause. Lets the remote
+        # page fire :hover and repaint under the cursor.
+        await self.call("Input.dispatchMouseEvent",
+                        {"x": x, "y": y, "type": "mouseMoved"})
+
+    async def wheel(self, x, y, dx, dy):
+        # Scroll the remote page, not the viewer chrome. No agent
+        # pause: scrolling is look-around input, like a hover.
+        await self.call("Input.dispatchMouseEvent",
+                        {"x": x, "y": y, "type": "mouseWheel",
+                         "deltaX": dx, "deltaY": dy})
+
+    async def touch(self, phase, x, y):
+        # One-finger drag-scroll. touchEnd carries no points: the
+        # finger is gone by definition.
+        if phase == "end":
+            await self.call("Input.dispatchTouchEvent",
+                            {"type": "touchEnd", "touchPoints": []})
+            return
+        await self.call("Input.dispatchTouchEvent",
+                        {"type": "touchStart" if phase == "start"
+                         else "touchMove",
+                         "touchPoints": [{"x": x, "y": y}]})
 
     async def ensure_focus(self):
         # Keystrokes drop when nothing is focused: focus the active
@@ -545,6 +744,15 @@ class CDPBridge:
                 params["text"] = "\r" if key == "Enter" else ""
             await self.call("Input.dispatchKeyEvent", params)
 
+    async def type_text(self, text):
+        # Bulk commit from the on-screen keyboard: text that never
+        # existed as key presses takes the protocol-blessed IME path.
+        # Focus first, same best-effort deal as key(): a fresh tab
+        # has nothing focused, and insertText needs a target.
+        with contextlib.suppress(Exception):
+            await self.ensure_focus()
+        await self.call("Input.insertText", {"text": text})
+
     async def navigate(self, url):
         await self.call("Page.navigate", {"url": url})
 
@@ -568,15 +776,31 @@ def create_app():
         path = scope.get("path", "")
         if scope["type"] == "http":
             body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
+            # No-store: the viewer ships new JS with deploys and a
+            # cached copy silently pins old behavior (e.g. a dead URL
+            # box) with zero errors to diagnose.
             await send({"type": "http.response.start", "status": 200,
                         "headers": [(b"content-type",
-                                     b"text/html; charset=utf-8")]})
+                                     b"text/html; charset=utf-8"),
+                                    (b"cache-control", b"no-store")]})
             await send({"type": "http.response.body", "body": body})
             return
         if scope["type"] != "websocket" or not path.endswith("/ws"):
             await send({"type": "websocket.close", "code": 4404})
             return
         await send({"type": "websocket.accept"})
+        # Phone detection for viewport choice: read the viewer UA
+        # from the handshake headers (kind=='own' + phone => 390x844
+        # mobile emulation; shared/agent sessions stay desktop so
+        # every tab sees the same page).
+        user_agent = ""
+        for _name, _value in scope.get("headers", []):
+            # errors="ignore": a malformed header must not break the
+            # handshake (and decode then cannot raise, so no handler).
+            if _name.decode("latin-1", "ignore").lower() \
+                    == "user-agent":
+                user_agent = _value.decode("latin-1", "ignore")
+                break
         # Shared autonomy: attach to the live agent session when one
         # exists; otherwise open our own (deleted on disconnect).
         # A full Grid (single slot) or a down Grid raises here: tell
@@ -635,10 +859,15 @@ def create_app():
                 send, lock,
                 json.dumps({"type": "frame", "data": params["data"]}))
 
-        async def human_input():
+        def _request_pause():
+            # Fire-and-forget: input must never wait on the agent
+            # API — a hung pause stalled the first click by up to
+            # 10s. Marked up front so it fires exactly once.
             nonlocal paused
             if not paused:
-                paused = await asyncio.to_thread(_pause_agent)
+                paused = True
+                asyncio.get_running_loop().create_task(
+                    asyncio.to_thread(_pause_agent))
 
         async def recover_once(op):
             # One reattach + screencast restart, then retry: a swapped
@@ -688,7 +917,9 @@ def create_app():
                 pass
 
         try:
-            bridge = CDPBridge(session_id)
+            viewport, mobile = viewport_for(kind, user_agent)
+            bridge = CDPBridge(session_id, viewport=viewport,
+                               mobile=mobile)
             try:
                 await bridge.connect()
             except Exception as exc:
@@ -741,15 +972,45 @@ def create_app():
                     continue
                 msg = json.loads(event.get("text") or "{}")
                 if msg.get("t") == "click":
-                    await human_input()
+                    _request_pause()
                     x, y = int(msg["x"]), int(msg["y"])
                     await recover_once(lambda: bridge.click(x, y))
+                elif msg.get("t") == "move":
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.move(x, y))
+                elif msg.get("t") == "wheel":
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                        dx, dy = int(msg.get("dx", 0)), int(msg.get("dy", 0))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.wheel(x, y, dx, dy))
+                elif msg.get("t") == "touch":
+                    phase = str(msg.get("phase", ""))
+                    if phase not in ("start", "move", "end"):
+                        continue
+                    try:
+                        x, y = int(msg["x"]), int(msg["y"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    await recover_once(lambda: bridge.touch(phase, x, y))
                 elif msg.get("t") == "key":
-                    await human_input()
+                    _request_pause()
                     key, code = (str(msg.get("key", "")),
                                  str(msg.get("code", "")))
                     await recover_once(lambda: bridge.key(key, code))
+                elif msg.get("t") == "type":
+                    _request_pause()
+                    text = str(msg.get("text", ""))
+                    if not text:
+                        continue
+                    await recover_once(
+                        lambda: bridge.type_text(text))
                 elif msg.get("t") == "go":
+                    _request_pause()
                     url = str(msg["url"])
                     await recover_once(lambda: do_go(url))
         finally:

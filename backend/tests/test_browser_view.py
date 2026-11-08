@@ -14,7 +14,7 @@ class ViewerMountTest(unittest.TestCase):
         client = TestClient(browser_view.create_app())
         resp = client.get("/")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("CDP direct viewer", resp.text)
+        self.assertIn("Browser viewer", resp.text)
         # The start page is baked in: no unfilled placeholder, so a
         # fresh viewer navigates somewhere on connect (black canvas
         # otherwise — a new tab never repaints).
@@ -57,8 +57,11 @@ class ViewerMountTest(unittest.TestCase):
 
 class FakeBridge:
     """Stand-in for CDPBridge: no Grid traffic under test."""
-    def __init__(self, session_id):
+    def __init__(self, session_id, viewport=None, mobile=False):
         self.session_id = session_id
+        self.viewport = dict(viewport) if viewport is not None \
+            else dict(browser_view.VIEWPORT)
+        self.mobile = mobile
         self.dsf = browser_view.DSF
         self.calls = []
 
@@ -76,6 +79,15 @@ class FakeBridge:
 
     async def key(self, key, code):
         self.calls.append(("key", key, code))
+
+    async def type_text(self, text):
+        self.calls.append(("type_text", text))
+
+    async def wheel(self, x, y, dx, dy):
+        self.calls.append(("wheel", x, y, dx, dy))
+
+    async def touch(self, phase, x, y):
+        self.calls.append(("touch", phase, x, y))
 
     async def reattach(self):
         pass
@@ -198,6 +210,111 @@ class SharedViewerSessionTest(unittest.TestCase):
                 self.assertTrue(
                     self._wait_calls(shared, ("key", "a", "KeyA")),
                     f"key never reached bridge: {shared.calls}")
+                self.assertEqual(paused.call_count, 1)
+
+    def test_wheel_dispatched_without_human_pause(self):
+        # Scroll is look-around input like a hover: it must reach the
+        # bridge without tripping the agent-takeover pause.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False) as paused:
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "wheel", "x": 10,
+                                          "y": 20, "dx": 0, "dy": 120}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("wheel", 10, 20, 0, 120)),
+                    f"wheel never reached bridge: {shared.calls}")
+                self.assertEqual(paused.call_count, 0)
+
+    def test_touch_sequence_dispatched(self):
+        # One-finger drag: touchstart -> touchmove -> touchend.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "touch", "phase": "start",
+                                          "x": 100, "y": 200}))
+                ws.send_text(_json.dumps({"t": "touch", "phase": "move",
+                                          "x": 100, "y": 100}))
+                ws.send_text(_json.dumps({"t": "touch", "phase": "end",
+                                          "x": 100, "y": 100}))
+                ws.send_text(_json.dumps({"t": "touch", "phase": "pinch",
+                                          "x": 0, "y": 0}))
+                self.assertTrue(
+                    self._wait_calls(
+                        shared, ("touch", "end", 100, 100)),
+                    f"touch never reached bridge: {shared.calls}")
+                kinds = [c[1] for c in shared.calls
+                         if c[0] == "touch"]
+                self.assertEqual(kinds, ["start", "move", "end"])
+
+    def test_type_dispatched_with_human_pause(self):
+        # On-screen keyboard bulk commit (type -> human pause ->
+        # recover_once -> bridge.type_text) must be wired; printable
+        # mobile input has no other path to the remote page.
+        import json as _json
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                return_value=shared), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(
+                 browser_view, "_grid_session_alive",
+                 return_value=True), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             mock.patch.object(
+                 browser_view, "_pause_agent",
+                 return_value=False) as paused:
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "type",
+                                          "text": "hello"}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("type_text", "hello")),
+                    f"type never reached bridge: {shared.calls}")
                 self.assertEqual(paused.call_count, 1)
 
     def test_go_navigates_and_restarts_screencast(self):
@@ -545,6 +662,58 @@ class BridgeKeyTest(unittest.TestCase):
         self.assertEqual(seen.get("Input.insertText"),
                          {"text": "a"})
 
+    def test_type_text_bulk_commits_via_insert_text(self):
+        # On-screen keyboard text never existed as key presses, so
+        # it must take the protocol-blessed IME/commit path whole.
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        seen = {}
+
+        async def fake_call(method, params=None, timeout=15):
+            seen[method] = params
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.type_text("hello world"))
+        self.assertEqual(seen.get("Input.insertText"),
+                         {"text": "hello world"})
+
+    def test_wheel_sends_mouse_wheel_deltas(self):
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        seen = {}
+
+        async def fake_call(method, params=None, timeout=15):
+            seen[method] = params
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.wheel(10, 20, 0, 120))
+        self.assertEqual(seen.get("Input.dispatchMouseEvent"),
+                         {"x": 10, "y": 20, "type": "mouseWheel",
+                          "deltaX": 0, "deltaY": 120})
+
+    def test_touch_sequence_uses_touch_events(self):
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        seen = []
+
+        async def fake_call(method, params=None, timeout=15):
+            seen.append((method, params))
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.touch("start", 100, 200))
+        asyncio.run(bridge.touch("move", 100, 100))
+        asyncio.run(bridge.touch("end", 100, 100))
+        self.assertEqual(
+            [m for m, _ in seen],
+            ["Input.dispatchTouchEvent"] * 3)
+        self.assertEqual(seen[0][1]["type"], "touchStart")
+        self.assertEqual(seen[1][1]["type"], "touchMove")
+        self.assertEqual(seen[2][1],
+                         {"type": "touchEnd", "touchPoints": []})
+
     def test_reattach_without_page_target_names_it(self):
         # Crash/nav gap with no page target: name it instead of a
         # raw StopIteration.
@@ -693,6 +862,142 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertNotIn("getElementById('go').onclick", html)
         self.assertIn("function normalizeUrl(raw)", html)
         self.assertIn("https://' + v", html)
+
+
+class MobileViewportTest(unittest.TestCase):
+    PHONE_UAS = (
+        # iPhone Safari.
+        ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+         "Mobile/15E148 Safari/604.1"),
+        # Android Chrome.
+        ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"),
+        # iPad Safari.
+        ("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) "
+         "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+         "Mobile/15E148 Safari/604.1"),
+    )
+    DESKTOP_UA = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+    def test_phone_ua_gets_mobile_viewport_with_touch(self):
+        for ua in self.PHONE_UAS:
+            viewport, mobile = browser_view.viewport_for("own", ua)
+            self.assertEqual(
+                viewport, {"width": 390, "height": 844}, ua)
+            self.assertTrue(mobile, ua)
+
+    def test_desktop_ua_keeps_desktop_viewport(self):
+        viewport, mobile = browser_view.viewport_for(
+            "own", self.DESKTOP_UA)
+        self.assertEqual(viewport, browser_view.VIEWPORT)
+        self.assertFalse(mobile)
+
+    def test_shared_and_agent_kinds_stay_desktop_on_phones(self):
+        # Every tab on a shared/agent session sees the same page:
+        # a phone joining one must not shrink the emulation.
+        for kind in ("agent", "viewer-shared"):
+            viewport, mobile = browser_view.viewport_for(
+                kind, self.PHONE_UAS[0])
+            self.assertEqual(viewport, browser_view.VIEWPORT)
+            self.assertFalse(mobile)
+
+    def test_viewer_html_has_viewport_meta(self):
+        # Without this, phones shrink the 1280px layout to fit
+        # instead of viewing it at device width.
+        self.assertIn(
+            '<meta name="viewport" '
+            'content="width=device-width, initial-scale=1, '
+            'viewport-fit=cover">',
+            browser_view.VIEWER_HTML)
+
+    def test_bridge_reattach_uses_mobile_viewport_and_touch(self):
+        # The bridge carries its viewport: metrics + touch follow it.
+        import asyncio
+        bridge = browser_view.CDPBridge(
+            "sid", viewport=dict(browser_view.MOBILE_VIEWPORT),
+            mobile=True)
+
+        async def fake_call(method, params=None, timeout=15):
+            calls.append((method, params))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"type": "page", "targetId": "P"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "S1"}
+            if method == "Runtime.evaluate":
+                return {"result": {"value": 1}}
+            return {}
+
+        calls = []
+        bridge.call = fake_call
+        asyncio.run(bridge.reattach())
+        metrics = [p for m, p in calls
+                   if m == "Emulation.setDeviceMetricsOverride"]
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics[0]["width"], 390)
+        self.assertEqual(metrics[0]["height"], 844)
+        self.assertTrue(metrics[0]["mobile"])
+        touch = [p for m, p in calls
+                 if m == "Emulation.setTouchEmulationEnabled"]
+        self.assertEqual(touch, [{"enabled": True}])
+
+    def test_bridge_desktop_skips_touch_emulation(self):
+        import asyncio
+        bridge = browser_view.CDPBridge("sid")
+        calls = []
+
+        async def fake_call(method, params=None, timeout=15):
+            calls.append((method, params))
+            if method == "Target.getTargets":
+                return {"targetInfos": [
+                    {"type": "page", "targetId": "P"},
+                ]}
+            if method == "Target.attachToTarget":
+                return {"sessionId": "S1"}
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.reattach())
+        methods = [m for m, _ in calls]
+        self.assertNotIn("Emulation.setTouchEmulationEnabled", methods)
+        metrics = [p for m, p in calls
+                   if m == "Emulation.setDeviceMetricsOverride"]
+        self.assertFalse(metrics[0]["mobile"])
+
+    def test_phone_viewer_gets_mobile_bridge(self):
+        # End to end through the websocket handshake: a phone UA on
+        # an own session builds a mobile bridge.
+        from unittest import mock
+        client = TestClient(browser_view.create_app())
+        seen = {}
+
+        def make_bridge(session_id, viewport=None, mobile=False):
+            seen["viewport"] = viewport
+            seen["mobile"] = mobile
+            return FakeBridge(session_id, viewport=viewport,
+                              mobile=mobile)
+
+        with mock.patch.object(
+                browser_view, "CDPBridge",
+                side_effect=make_bridge), \
+             mock.patch.object(
+                 browser_view, "_grid_live_session",
+                 return_value=None), \
+             mock.patch.object(
+                 browser_view, "_grid_session_create",
+                 return_value="AAA"), \
+             mock.patch.object(browser_view, "_grid_session_delete"), \
+             client.websocket_connect(
+                 "/ws",
+                 headers={"user-agent": self.PHONE_UAS[1]}):
+            pass
+        self.assertEqual(seen["viewport"],
+                         {"width": 390, "height": 844})
+        self.assertTrue(seen["mobile"])
 
 
 class ChromeFlagsTest(unittest.TestCase):
