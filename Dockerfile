@@ -14,8 +14,11 @@ ARG PNPM_VERSION
 WORKDIR /build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY frontend/package.json ./frontend/
-RUN npm install -g "pnpm@${PNPM_VERSION}" \
- && pnpm install --frozen-lockfile
+# pnpm store cache mount: package content persists across image
+# rebuilds on the same builder instead of redownloading.
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    npm install -g "pnpm@${PNPM_VERSION}" \
+ && pnpm install --frozen-lockfile --store-dir /pnpm/store
 COPY frontend/ ./frontend/
 RUN VITE_BASE=/buttons/ pnpm --filter frontend build
 # Repair syntax gate (issue #488): the worker validates .ts/.tsx via
@@ -90,7 +93,8 @@ WORKDIR /app
 # package.json name (CI guards the drift).
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY frontend/package.json ./frontend/
-RUN pnpm install --frozen-lockfile --filter remote-server \
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter remote-server --store-dir /pnpm/store \
  && /app/node_modules/.bin/tsx --version \
  && echo "root ux deps live"
 # Playwright downloads browsers on demand; bake chromium (+ system
