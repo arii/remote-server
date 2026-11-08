@@ -163,9 +163,8 @@ def _ts_lib_dir() -> Optional[str]:
     env = os.environ.get("TS_LIB_DIR", "").strip()
     if env and os.path.isfile(os.path.join(env, "typescript.js")):
         return env
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    dev = os.path.join(repo, "frontend", "node_modules", "typescript",
-                       "lib")
+    dev = os.path.abspath(os.path.join(
+        "frontend", "node_modules", "typescript", "lib"))
     if os.path.isfile(os.path.join(dev, "typescript.js")):
         return dev
     return None

@@ -39,11 +39,10 @@ from backend.gh import run_gh, validate_gh
 
 import s5tools  # noqa: E402
 
-# Executor prompt template + coder CLI, resolved beside this module
-# (never cwd): backend/ -> repo root -> deep-agent/.
-_DEEP_AGENT_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "deep-agent")
+# Executor prompt template + coder CLI, resolved from the repo root:
+# every entry point runs with cwd=root, so abspath() of the literal
+# is exact with no __file__ climbing (see scripts/verify-python-paths.py).
+_DEEP_AGENT_DIR = os.path.abspath(os.path.join("deep-agent"))
 EXECUTOR_PROMPT_PATH = os.path.join(
     _DEEP_AGENT_DIR, "EXECUTOR_PROMPT.md")
 CODER_SCRIPT = os.path.join(_DEEP_AGENT_DIR, "coder.py")

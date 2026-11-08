@@ -17,9 +17,8 @@ class RouterSmokeTest(unittest.TestCase):
         import ast
         from pathlib import Path
 
-        root = Path(__file__).resolve().parents[1]
         for name in ("agents", "repo", "system", "jobs"):
-            src = (root / "api" / "routers" / f"{name}.py").read_text()
+            src = (Path("backend") / "api" / "routers" / f"{name}.py").read_text()
             tree = ast.parse(src)
             prefixes = [
                 n.value
@@ -30,7 +29,7 @@ class RouterSmokeTest(unittest.TestCase):
             self.assertIn("/health", prefixes, name)
             if name != "system":
                 self.assertIn('"ok"', src)
-        server_src = (root / "server.py").read_text()
+        server_src = (Path("backend") / "server.py").read_text()
         for name in ("agents", "repo", "system", "jobs"):
             self.assertIn(name, server_src)
         self.assertIn("FastAPI", server_src)

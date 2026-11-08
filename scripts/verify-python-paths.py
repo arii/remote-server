@@ -2,15 +2,18 @@
 """Ban in-code sys.path hacks and ad-hoc repo-root discovery (2026-11-08).
 
 Rule: no first-party module may mutate sys.path at import time, and no
-module may climb from __file__ to the repo root, except the two canonical
-single places that own those jobs:
+module may climb from __file__ to the repo root, except the canonical
+places that own those jobs:
 
 - deep-agent/cli.py::bootstrap() — adds deep-agent/ for frozen consumers
   (coder.py is Issue-7 frozen) + pinned by tests/test_cli.py::TestBootstrap.
 - deep-agent/cli.py::repo_root() — the one checkout-root derivation (#540
   per-checkout hermeticity: .env, chroma_db).
-- backend/api/routers/chat.py::deep_agent_dir() — spawn paths for the
+- backend/api/routers/chat.py::_repo_root() — spawn paths for the
   deep_chat child (env-overridable via DEEP_AGENT_DIR).
+- tests/test_deep_agent_paths.py::derived_root() — the test oracle that
+  independently re-derives the root to pin repo_root() (a copy here is
+  the point of the test).
 
 Everywhere else: entry points declare the search path (Dockerfile ENV
 PYTHONPATH, package.json test scripts, compose env), tests run from the
@@ -34,6 +37,7 @@ ALLOW_PATH_MUTATION = {("deep-agent/cli.py", "bootstrap")}
 ALLOW_ROOT_CLIMB = {
     ("deep-agent/cli.py", "repo_root"),
     ("backend/api/routers/chat.py", "_repo_root"),
+    ("tests/test_deep_agent_paths.py", "derived_root"),
 }
 
 
@@ -130,14 +134,19 @@ def check_file(rel, tree):
     return violations
 
 
+def _has_dunder(node):
+    """__file__ as a bare name or a module attribute (mod.__file__)."""
+    return any(
+        (isinstance(n, ast.Name) and n.id == "__file__")
+        or (isinstance(n, ast.Attribute) and n.attr == "__file__")
+        for n in ast.walk(node)
+    )
+
+
 def _climbs_from_dunder(node):
     if not isinstance(node, ast.stmt):
         return False
-    has_dunder = any(
-        isinstance(n, ast.Name) and n.id == "__file__"
-        for n in ast.walk(node)
-    )
-    if not has_dunder:
+    if not _has_dunder(node):
         return False
     for n in ast.walk(node):
         if isinstance(n, ast.Constant) and isinstance(n.value, str):
@@ -148,6 +157,31 @@ def _climbs_from_dunder(node):
                 return True
         if isinstance(n, ast.Attribute) and n.attr == "pardir":
             return True
+    # Nested dirname(): one dirname() stays in the module dir (package
+    # data); two or more wrapping a __file__-derived value climbs out.
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                and n.func.attr == "dirname":
+            depth, inner = 0, n
+            while isinstance(inner, ast.Call) \
+                    and isinstance(inner.func, ast.Attribute) \
+                    and inner.func.attr == "dirname":
+                depth += 1
+                inner = inner.args[0] if inner.args else None
+            if depth >= 2 and inner is not None and _has_dunder(inner):
+                return True
+    # .parents[N]: parents[0] is the module dir (fine); N>=1 climbs.
+    for n in ast.walk(node):
+        if isinstance(n, ast.Subscript) \
+                and isinstance(n.value, ast.Attribute) \
+                and n.value.attr == "parents":
+            idx = n.slice
+            if isinstance(idx, ast.Constant) \
+                    and isinstance(idx.value, int):
+                if idx.value >= 1:
+                    return True
+            else:
+                return True
     # Stacked .parent access: x.parent.parent (more than one hop).
     for n in ast.walk(node):
         if isinstance(n, ast.Attribute) and n.attr == "parent":
@@ -158,15 +192,6 @@ def _climbs_from_dunder(node):
                 inner = inner.value
             if depth >= 2:
                 return True
-            # Single .parent on __file__ itself leaves the module dir —
-            # fine (package data). Only a further dirname() climbs out.
-            if depth == 1 and isinstance(inner, ast.Name) \
-                    and inner.id == "__file__":
-                for m in ast.walk(node):
-                    if isinstance(m, ast.Call) and isinstance(
-                            m.func, ast.Attribute) \
-                            and m.func.attr == "dirname":
-                        return True
     return False
 
 

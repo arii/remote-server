@@ -125,9 +125,9 @@ def health() -> dict:
             "index_chunks": _index_chunks()}
 
 
-_DIST = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "frontend", "dist")
+# Built SPA dir: entry points run with cwd=repo root (/app in the image),
+# so abspath() of the literal is exact with no __file__ climbing.
+_DIST = os.path.abspath(os.path.join("frontend", "dist"))
 
 
 def mount_spa(target, dist_dir=_DIST):

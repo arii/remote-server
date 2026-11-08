@@ -19,8 +19,8 @@ def _load_preflight_script():
     """
     import importlib.util
 
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(root, "scripts",
+    # Root-relative: tests run with cwd=repo root.
+    path = os.path.join("scripts",
                         "verify-co-browsing-preflight.py")
     spec = importlib.util.spec_from_file_location(
         "verify_co_browsing_preflight", path)
@@ -30,8 +30,8 @@ def _load_preflight_script():
 
 
 def _full_js_toolchain_available():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tsc = os.path.join(root, "frontend", "node_modules", ".bin", "tsc")
+    # Root-relative: tests run with cwd=repo root.
+    tsc = os.path.join("frontend", "node_modules", ".bin", "tsc")
     return (
         shutil.which("node") is not None
         and shutil.which("pnpm") is not None

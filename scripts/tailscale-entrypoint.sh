@@ -39,7 +39,7 @@ tailscale status || true
 # port is blocked. Target defaults to the oauth2-proxy public listener;
 # override with TS_SERVE_TARGET (any http:// URL reachable from this
 # host-network container). Idempotent: re-running serve re-applies it.
-if [ -n "${TS_SERVE:-}" ]; then
+if [ "${TS_SERVE:-}" = "1" ]; then
   : "${TERMINAL_PORT:?TS_SERVE=1 needs TERMINAL_PORT}"
   SERVE_TARGET="${TS_SERVE_TARGET:-http://127.0.0.1:${TERMINAL_PORT}}"
   tailscale serve --https=443 --set-path / "$SERVE_TARGET"

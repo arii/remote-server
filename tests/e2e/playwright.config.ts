@@ -14,6 +14,9 @@ const webEnv: Record<string, string> = {
   E2E_STATE_FILE: join(stateDir, 'gh-state.json'),
   E2E_GH_LOG: join(stateDir, 'gh.log'),
   E2E_DOCKER_LOG: join(stateDir, 'docker.log'),
+  // Entry-point path for the backend child (no in-code sys.path hacks):
+  // repo root for backend.*, deep-agent/ for s5tools/runs/impact.
+  PYTHONPATH: `${repoRoot}:${join(repoRoot, 'deep-agent')}${process.env.PYTHONPATH ? `:${process.env.PYTHONPATH}` : ''}`,
   // Point every backend store/path seam at the checkout + tmp state.
   BUTTONS_STACK: repoRoot,
   BACKEND_STACK_DIR: repoRoot,
