@@ -40,7 +40,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # self-verifies the launcher it fetches (x-content-sha256 when advertised).
 COPY muse-install.sh /tmp/muse-install.sh
 COPY requirements.txt /tmp/requirements.txt
-RUN apt-get update \
+# pnpm store cache mount: the vendored boomtick install below
+# reuses package content across terminal image rebuilds.
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && apt-get install -y --no-install-recommends \
       bash ca-certificates curl git gnupg htop less nano openssh-client procps python3 python3-pip python3-venv tmux vim xz-utils \
  && install -m 0755 -d /etc/apt/keyrings \
@@ -84,7 +86,7 @@ RUN apt-get update \
  && rm -f /tmp/requirements.txt \
  && /opt/venvs/td/bin/td --help > /dev/null \
  && git clone --depth 1 --branch "${BOOMTICK_CLI_REF}" https://github.com/arii/boomtick.git /tmp/boomtick \
- && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp...) \
+ && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp... --store-dir /pnpm/store) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
  && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 15 \
