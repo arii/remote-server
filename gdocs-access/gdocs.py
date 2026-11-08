@@ -76,7 +76,9 @@ def auth_url():
     flow = InstalledAppFlow.from_client_secrets_file(str(secret_path), SCOPES)
     flow.redirect_uri = "http://localhost"
     url, state = flow.authorization_url(access_type="offline", prompt="consent")
-    PENDING_PATH.write_text(json.dumps({"code_verifier": flow.code_verifier, "state": state}))
+    PENDING_PATH.write_text(
+        json.dumps({"code_verifier": flow.code_verifier, "state": state})
+    )
     print("Open this URL in your browser and authorize:")
     print(f"\n  {url}\n")
     print("Google redirects to an http://localhost page that cannot load.")
@@ -223,10 +225,15 @@ def main(argv=None):
     p_append = sub.add_parser("append", help="append text to end of doc")
     p_append.add_argument("text", help="text to append (include \\n as needed)")
     p_append.add_argument("--doc-id", default=default_doc)
-    p_export = sub.add_parser("export", help="plain-text read via Drive export (works today)")
+    p_export = sub.add_parser(
+        "export", help="plain-text read via Drive export (works today)"
+    )
     p_export.add_argument("--doc-id", default=default_doc)
-    p_export.add_argument("--token-file", default=None,
-                          help="cached OAuth token to use read-only, without writing back")
+    p_export.add_argument(
+        "--token-file",
+        default=None,
+        help="cached OAuth token to use read-only, without writing back",
+    )
     args = parser.parse_args(argv)
 
     if args.cmd == "auth-url":
@@ -235,19 +242,25 @@ def main(argv=None):
         auth_code(args.code)
     elif args.cmd == "read":
         if not args.doc_id:
-            raise SystemExit("Missing doc id: set GOOGLE_DOCUMENT_ID in .env or pass --doc-id")
+            raise SystemExit(
+                "Missing doc id: set GOOGLE_DOCUMENT_ID in .env or pass --doc-id"
+            )
         title, text = read_document(args.doc_id)
         print(f"Title: {title}")
         print("--- content ---")
         print(text)
     elif args.cmd == "append":
         if not args.doc_id:
-            raise SystemExit("Missing doc id: set GOOGLE_DOCUMENT_ID in .env or pass --doc-id")
+            raise SystemExit(
+                "Missing doc id: set GOOGLE_DOCUMENT_ID in .env or pass --doc-id"
+            )
         index = append_text(args.doc_id, args.text)
         print(f"Inserted {len(args.text)} chars at index {index}")
     elif args.cmd == "export":
         if not args.doc_id:
-            raise SystemExit("Missing doc id: set GOOGLE_DOCUMENT_ID in .env or pass --doc-id")
+            raise SystemExit(
+                "Missing doc id: set GOOGLE_DOCUMENT_ID in .env or pass --doc-id"
+            )
         data = export_text(args.doc_id, token_file=args.token_file)
         sys.stdout.write(data.decode("utf-8-sig"))
 
