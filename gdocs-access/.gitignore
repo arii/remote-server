@@ -1,0 +1,9 @@
+# Local-only spike: never commit these.
+.venv/
+__pycache__/
+*.pyc
+.env
+!.env.example
+token.json
+.oauth_pending.json
+client_secret*.json
