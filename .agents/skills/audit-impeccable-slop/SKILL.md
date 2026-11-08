@@ -15,7 +15,7 @@ Announce yourself: read `lanes/registry.md` for the orchestrator session (see Di
 
 1. Open fresh BrowserMCP app tabs for the buttons app (`tab list` first; tab IDs rotate). Never touch the Gemini tab — another role owns it exclusively.
 2. Review the live app against the project's `impeccable` skill and the `kill-ai-slop` / `antislop-code` practice: hierarchy, layout, typography, color, motion, copy, accessibility, responsive behavior, and generic AI-default tells.
-3. For each finding, verify `file:line` against the live tree before writing anything up. Record alternatives considered for the fix (other approaches weighed, prior art in-tree or standard patterns, why this fix is preferred).
+3. For each finding, verify `file:line` with the `td-tools` skill (`td rag query` first, read only cited files) before writing anything up. Record alternatives considered for the fix (other approaches weighed, prior art in-tree or standard patterns, why this fix is preferred). Snapshots: Playwright per `td-tools` (BrowserMCP optional for interaction only).
 4. Dedup: `gh issue list --search "<distinctive keywords>"` (also try the file path). Skip anything already open.
 5. File new findings: `gh issue create --label audit --title "[<area>] <finding>"`. Every issue must include: verified `file:line`, severity, and expected vs actual.
 6. Message the orchestrator (see Discovery) one summary per batch: `batch: #<a> #<b> [<area>] <short note each>`.

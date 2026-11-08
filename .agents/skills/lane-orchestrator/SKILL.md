@@ -13,7 +13,7 @@ Write the lane registry to memory file `lanes/registry.md` (personal_project sco
 
 ## Role loop
 
-1. List open issues. Enforce dedup: close duplicates with a pointer comment (`Duplicate of #<n>`) naming the surviving issue.
+1. List open issues. Enforce dedup: close duplicates with a pointer comment (`Duplicate of #<n>`) naming the surviving issue. Scope research with the `td-tools` skill (RAG query before bulk reads).
 2. Label the next queue item `ready` (priority: live-breakage > user feedback > `audit` > `insight`). Only one `ready` item per coder at a time.
 3. Merge green, pre-approved PRs whose checks pass.
 4. Deploy the buttons service only — never the terminal service.
