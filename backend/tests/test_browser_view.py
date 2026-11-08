@@ -49,17 +49,14 @@ class ViewerMountTest(unittest.TestCase):
 
         repo_root = pathlib.Path(__file__).resolve().parents[2]
         caddyfile = (repo_root / "caddy" / "Caddyfile").read_text()
-        handle = re.search(
-            r"handle /cdp-stream\* \{(.*?)\n\t\}",
-            caddyfile, re.S)
+        handle = re.search(r"handle /cdp-stream\* \{(.*?)\n\t\}", caddyfile, re.S)
         self.assertIsNotNone(handle, "missing /cdp-stream* handle")
         self.assertIn("no-store", handle.group(1))
         self.assertNotIn("no-store", browser_view.VIEWER_HTML)
         client = TestClient(browser_view.create_app())
         resp = client.get("/")
         self.assertEqual(resp.status_code, 200)
-        self.assertNotIn("no-store",
-                         resp.headers.get("cache-control", ""))
+        self.assertNotIn("no-store", resp.headers.get("cache-control", ""))
 
     def test_default_url_is_neutral_not_console(self):
         # Issue #1023: first paint must not recurse into Buttons
