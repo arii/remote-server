@@ -10,12 +10,25 @@ body{margin:0;background:#111;color:#eee;font-family:sans-serif;padding:env(safe
 #state{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #stats{padding:0 8px 8px;font-size:14px;color:#9f9;font-variant-numeric:tabular-nums}
 #screen{display:block;max-width:100vw;height:auto;border-top:1px solid #333;cursor:default;touch-action:none}
-#kbd{max-width:100vw}
+/* Floating keyboard shell (research: Kasm FAB + draggable panel,
+Guacamole summon-on-demand; never docked in-flow — a docked board
+reflows the canvas and hides what you are typing into). */
+#kbd{position:fixed;left:8px;right:8px;bottom:8px;z-index:50;max-width:none;max-height:48vh;overflow-y:auto;border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,.6);padding:0 6px calc(6px + env(safe-area-inset-bottom))}
 #kbd[hidden]{display:none}
+#kbd-handle{display:flex;align-items:center;gap:8px;padding:8px 4px 4px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;color:#9a9aa0;font-size:13px}
+#kbd-handle:active{cursor:grabbing}
+#kbd-grip{letter-spacing:2px}
+#kbd-title{flex:1;text-align:center}
+#kbd-close{background:#3a3a3c;color:#fff;border:1px solid #000;border-radius:8px;min-width:44px;min-height:44px;font-size:16px}
+/* Lower-right floating toggle (Kasm pattern): coarse pointers only,
+real 56px target, always above the panel. */
+#kb-fab{display:none;position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));width:56px;height:56px;border-radius:50%;z-index:60;background:#0a84ff;color:#fff;border:1px solid #000;font-size:17px;font-weight:700;box-shadow:0 4px 16px rgba(0,0,0,.5)}
+@media (pointer:coarse){#kb-fab{display:block}}
 /* On-screen keyboard in the viewer dark theme: the stock
-simple-keyboard palette is pale gray on white and unreadable here. */
+simple-keyboard palette is pale gray on white and unreadable here.
+Keys meet the 48px Material touch height at phone width. */
 #kbd.hg-theme-default{background:#1c1c1e}
-#kbd.hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9)}
+#kbd.hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9);min-height:48px;font-size:20px}
 #kbd.hg-theme-default .hg-button span{color:#fff;opacity:1}
 #kbd.hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
 </style>
@@ -25,7 +38,8 @@ simple-keyboard palette is pale gray on white and unreadable here. */
 <div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
 <div id="stats">fps: - | last activity→frame: - ms</div>
 <canvas id="screen" width="1280" height="800"></canvas>
-<div id="kbd" class="simple-keyboard" hidden></div>
+<button id="kb-fab" type="button" aria-label="Toggle keyboard" aria-controls="kbd">ABC</button>
+<div id="kbd" class="simple-keyboard" hidden><div id="kbd-handle"><span id="kbd-grip" aria-hidden="true">⠿⠿</span><span id="kbd-title">Keyboard</span><button id="kbd-close" type="button" aria-label="Close keyboard">✕</button></div></div>
 <script>
 const base = location.pathname.replace(/\/$/, '');
 const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + base + '/ws';
@@ -41,7 +55,7 @@ let ws = null;
 let reconnectTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
 function setControlsEnabled(on) {
-  for (const id of ['url', 'go', 'kb']) {
+  for (const id of ['url', 'go', 'kb', 'kb-fab']) {
     document.getElementById(id).disabled = !on;
   }
 }
@@ -252,11 +266,17 @@ document.addEventListener('keydown', (e) => {
   if (typeof Kbd === 'function') {
     try {
       kbd = new Kbd({theme: "hg-theme-default",
+        // Phone taps must not wait out the 300ms mouse delay or
+        // double-fire: use touch events, fall back automatically.
+        useTouchEvents: true,
+        autoUseTouchEvents: true,
         onKeyPress: onPress});
     } catch (_) { kbd = null; }
   }
+  const fab = document.getElementById('kb-fab');
   if (!kbd || typeof kbd.setOptions !== 'function') {
     btn.hidden = true;
+    fab.hidden = true;
     return;
   }
   function onPress(button) {
@@ -272,10 +292,58 @@ document.addEventListener('keydown', (e) => {
       if (/^\{.+\}$/.test(button)) return;
       typeText(button);
   }
-  btn.addEventListener('click', () => {
-    box.hidden = !box.hidden;
-    btn.setAttribute('aria-expanded', String(!box.hidden));
-    if (!box.hidden) box.scrollIntoView({block: 'nearest'});
+  function setOpen(open) {
+    box.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+    // Fixed overlay: no scrollIntoView, the canvas never reflows.
+  }
+  btn.addEventListener('click', () => setOpen(box.hidden));
+  fab.addEventListener('click', () => setOpen(box.hidden));
+  document.getElementById('kbd-close').addEventListener('click', () => setOpen(false));
+  // Draggable by the handle only (never by keys): pointer events
+  // with touch-action:none on the handle, clamped to the visual
+  // viewport, position remembered across sessions.
+  const handle = document.getElementById('kbd-handle');
+  try {
+    const saved = JSON.parse(localStorage.getItem('kbd-pos') || 'null');
+    if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+      box.style.left = saved.left + 'px';
+      box.style.right = 'auto';
+      box.style.bottom = 'auto';
+      box.style.top = saved.top + 'px';
+    }
+  } catch (_) {}
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY;
+    const r = box.getBoundingClientRect();
+    const ox = sx - r.left, oy = sy - r.top;
+    // Pin to explicit coords so the panel follows the finger.
+    box.style.left = r.left + 'px';
+    box.style.right = 'auto';
+    box.style.bottom = 'auto';
+    box.style.top = r.top + 'px';
+    const move = (ev) => {
+      const vw = (window.visualViewport && window.visualViewport.width) || window.innerWidth;
+      const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+      let x = Math.min(Math.max(0, ev.clientX - ox), vw - 48);
+      let y = Math.min(Math.max(0, ev.clientY - oy), vh - 48);
+      box.style.left = x + 'px';
+      box.style.top = y + 'px';
+    };
+    const up = (ev) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      try {
+        localStorage.setItem('kbd-pos', JSON.stringify({
+          left: parseFloat(box.style.left) || 0,
+          top: parseFloat(box.style.top) || 0}));
+      } catch (_) {}
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
 })();
 function normalizeUrl(raw) {

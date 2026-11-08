@@ -21,6 +21,23 @@ class ViewerMountTest(unittest.TestCase):
         self.assertNotIn("__DEFAULT_URL__", resp.text)
         self.assertIn(browser_view.DEFAULT_URL, resp.text)
 
+    def test_keyboard_is_floating_overlay_with_fab(self):
+        # Research slice 1 (Kasm FAB + draggable panel, Guacamole
+        # summon-on-demand): the keyboard must overlay the canvas
+        # (position:fixed), never dock in-flow; a coarse-pointer FAB
+        # toggles it, a handle drags it, keys meet 48px height.
+        html = browser_view.VIEWER_HTML
+        self.assertIn('id="kb-fab"', html)
+        self.assertIn('id="kbd-handle"', html)
+        self.assertIn('id="kbd-close"', html)
+        self.assertIn('#kbd{position:fixed', html.replace(" ", ""))
+        self.assertIn('@media(pointer:coarse){#kb-fab{display:block}}',
+                     html.replace(" ", ""))
+        self.assertIn('min-height:48px', html.replace(" ", ""))
+        self.assertIn('useTouchEvents', html)
+        self.assertIn("localStorage.getItem('kbd-pos')", html)
+        self.assertNotIn("box.scrollIntoView", html)
+
     def test_viewer_page_is_not_cached(self):
         # The viewer ships new JS with deploys: a cached copy
         # silently pins old behavior (e.g. a dead URL box) with
