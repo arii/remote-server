@@ -27,6 +27,7 @@ import type {
   TraceEvent,
 } from '../apiClient';
 import { loadChat, useMock, type ChatMessage } from './mockViews';
+import { parseJson, pumpSse } from './sse';
 import AgentDrawer from './AgentDrawer';
 import RepoLabel from '../components/RepoLabel';
 
@@ -1644,35 +1645,6 @@ export function resolveChatSessionId(
   return mint();
 }
 
-interface SseEvent {
-  name: string;
-  data: string;
-}
-
-function parseSsePart(part: string): SseEvent | null {
-  const name = (part.match(/^event:\s*(.*)$/m)?.[1] ?? '').trim();
-  const dataMatch = part.match(/^data:\s*(.*)$/m);
-  if (!name || !dataMatch) return null;
-  return { name, data: dataMatch[1] };
-}
-
-function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
-  const parts = buffer.split('\n\n');
-  const rest = parts.pop() ?? '';
-  const events = parts
-    .map(parseSsePart)
-    .filter((e): e is SseEvent => e !== null);
-  return { events, rest };
-}
-
-function parseJson<T>(data: string): T | null {
-  try {
-    return JSON.parse(data) as T;
-  } catch {
-    return null;
-  }
-}
-
 export async function pumpStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onToken: (token: string) => void,
@@ -1681,37 +1653,28 @@ export async function pumpStream(
   onDone: (text: string) => void,
   onEvent: () => void,
 ): Promise<void> {
-  const decoder = new TextDecoder();
-  let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const { events, rest } = parseSse(buf);
-    buf = rest;
-    for (const ev of events) {
-      onEvent();
-      if (ev.name === 'error') {
-        const message = parseJson<{ error?: string }>(ev.data)?.error;
-        throw new Error(message && message.length > 0 ? message : ev.data);
-      }
-      if (ev.name === 'token') {
-        onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
-      }
-      if (ev.name === 'approval') {
-        const payload = parseJson<ApprovalPayload>(ev.data);
-        if (payload) onApproval(payload);
-      }
-      if (ev.name === 'phase') {
-        const msg = parseJson<{ message?: string }>(ev.data)?.message;
-        onPhase(msg && msg.length > 0 ? msg : null);
-      }
-      if (ev.name === 'done') {
-        onPhase(null);
-        onDone(parseJson<{ text?: string }>(ev.data)?.text ?? '');
-      }
+  await pumpSse(reader, (ev) => {
+    onEvent();
+    if (ev.name === 'error') {
+      const message = parseJson<{ error?: string }>(ev.data)?.error;
+      throw new Error(message && message.length > 0 ? message : ev.data);
     }
-  }
+    if (ev.name === 'token') {
+      onToken(parseJson<{ token?: string }>(ev.data)?.token ?? '');
+    }
+    if (ev.name === 'approval') {
+      const payload = parseJson<ApprovalPayload>(ev.data);
+      if (payload) onApproval(payload);
+    }
+    if (ev.name === 'phase') {
+      const msg = parseJson<{ message?: string }>(ev.data)?.message;
+      onPhase(msg && msg.length > 0 ? msg : null);
+    }
+    if (ev.name === 'done') {
+      onPhase(null);
+      onDone(parseJson<{ text?: string }>(ev.data)?.text ?? '');
+    }
+  });
 }
 
 // Seed staging (#507): Briefing/Now/Review "Ask agent" seeds land

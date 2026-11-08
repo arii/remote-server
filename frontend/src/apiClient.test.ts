@@ -886,6 +886,25 @@ describe('jobs push subscriptions', () => {
     expect(seen[0].closed).toBe(true);
   });
 
+  it('drops malformed jobs rows instead of casting them', () => {
+    const seen: FakeSource[] = [];
+    const jobs: unknown[] = [];
+    const live: boolean[] = [];
+    subscribeJobsPush(
+      {
+        onJobs: (j) => jobs.push(j),
+        onLive: (l) => live.push(l),
+      },
+      makeFactory(seen),
+    );
+    seen[0].emit(
+      'jobs',
+      JSON.stringify({ jobs: [{ id: 'a' }, 42, null, { noid: 1 }] }),
+    );
+    expect(jobs).toEqual([[{ id: 'a' }]]);
+    expect(live).toEqual([true]);
+  });
+
   it('closes on channel error and reports dead', () => {
     const seen: FakeSource[] = [];
     const live: boolean[] = [];

@@ -16,6 +16,7 @@ import {
 } from './agentSessionStore';
 import type { AgentTurn } from './agentSessionStore';
 import { useMock } from './mockViews';
+import { parseJson, pumpSse } from './sse';
 
 // Mirrors backend PROVIDERS (agent_turn.py): the picker renders
 // these instantly and live status refines them.
@@ -24,18 +25,6 @@ const FALLBACK_PROVIDERS = ['muse', 'agy'];
 // Reattach poll cadence (issue #856): a resumed live turn's text
 // refreshes this often until the server reports it finished.
 const REATTACH_POLL_MS = 2000;
-
-interface SseEvent {
-  name: string;
-  data: string;
-}
-
-function parseSsePart(part: string): SseEvent | null {
-  const name = (part.match(/^event:\s*(.*)$/m)?.[1] ?? '').trim();
-  const dataMatch = part.match(/^data:\s*(.*)$/m);
-  if (!name || !dataMatch) return null;
-  return { name, data: dataMatch[1] };
-}
 
 // Salvage summary from the bounded timeout rescue (issue #838):
 // which branch holds the wip snapshot, its commit, and whether
@@ -63,95 +52,69 @@ export async function pumpTurn(
   onWarning?: (secondsLeft: number) => void,
   onProgress?: (text: string) => void,
 ): Promise<{ sessionId: string; text: string; truncated: boolean }> {
-  const decoder = new TextDecoder();
-  let buf = '';
   let sessionId = '';
   let text = '';
   let truncated = false;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const parts = buf.split('\n\n');
-    buf = parts.pop() ?? '';
-    for (const part of parts) {
-      const ev = parseSsePart(part);
-      if (!ev) continue;
-      if (ev.name === 'error') {
-        let detail = ev.data;
-        let code: string | undefined;
-        let raw: string | undefined;
-        let errorSessionId: string | undefined;
-        let salvage: SalvageInfo | undefined;
-        try {
-          const data = JSON.parse(ev.data) as {
-            error?: string;
-            code?: string;
-            detail?: string;
-            session_id?: string;
-            salvage?: SalvageInfo;
-          };
-          detail = data.error ?? ev.data;
-          if (typeof data.code === 'string') code = data.code;
-          if (typeof data.detail === 'string') raw = data.detail;
-          if (typeof data.session_id === 'string' && data.session_id !== '') {
-            errorSessionId = data.session_id;
-          }
-          if (data.salvage !== null && typeof data.salvage === 'object') {
-            salvage = data.salvage;
-          }
-        } catch {
-          /* raw text */
+  await pumpSse(reader, (ev) => {
+    if (ev.name === 'error') {
+      let detail = ev.data;
+      let code: string | undefined;
+      let raw: string | undefined;
+      let errorSessionId: string | undefined;
+      let salvage: SalvageInfo | undefined;
+      const data = parseJson<{
+        error?: string;
+        code?: string;
+        detail?: string;
+        session_id?: string;
+        salvage?: SalvageInfo;
+      }>(ev.data);
+      if (data !== null) {
+        detail = data.error ?? ev.data;
+        if (typeof data.code === 'string') code = data.code;
+        if (typeof data.detail === 'string') raw = data.detail;
+        if (typeof data.session_id === 'string' && data.session_id !== '') {
+          errorSessionId = data.session_id;
         }
-        throw Object.assign(new Error(detail), {
-          code,
-          detail: raw,
-          sessionId: errorSessionId,
-          salvage,
-        });
-      }
-      if (ev.name === 'warning') {
-        try {
-          const secs = (JSON.parse(ev.data) as { seconds_left?: unknown })
-            .seconds_left;
-          if (typeof secs === 'number') onWarning?.(secs);
-        } catch {
-          /* ignore */
+        if (data.salvage !== null && typeof data.salvage === 'object') {
+          salvage = data.salvage;
         }
       }
-      // Live progress (issue #1021): tool calls and phase changes
-      // land here, never in the transcript tokens.
-      if (ev.name === 'progress') {
-        try {
-          const text = (JSON.parse(ev.data) as { text?: unknown }).text;
-          if (typeof text === 'string' && text) onProgress?.(text);
-        } catch {
-          /* ignore */
-        }
-      }
-      if (ev.name === 'token') {
-        try {
-          onToken((JSON.parse(ev.data) as { token?: string }).token ?? '');
-        } catch {
-          /* partial frame; next chunk completes it */
-        }
-      }
-      if (ev.name === 'done') {
-        try {
-          const data = JSON.parse(ev.data) as {
-            session_id?: string;
-            text?: string;
-            truncated?: boolean;
-          };
-          if (data.session_id) sessionId = data.session_id;
-          if (data.text) text = data.text;
-          if (data.truncated) truncated = true;
-        } catch {
-          /* ignore */
-        }
+      throw Object.assign(new Error(detail), {
+        code,
+        detail: raw,
+        sessionId: errorSessionId,
+        salvage,
+      });
+    }
+    if (ev.name === 'warning') {
+      const secs = parseJson<{ seconds_left?: unknown }>(ev.data)?.seconds_left;
+      if (typeof secs === 'number') onWarning?.(secs);
+    }
+    // Live progress (issue #1021): tool calls and phase changes
+    // land here, never in the transcript tokens.
+    if (ev.name === 'progress') {
+      const progress = parseJson<{ text?: unknown }>(ev.data)?.text;
+      if (typeof progress === 'string' && progress) onProgress?.(progress);
+    }
+    if (ev.name === 'token') {
+      // Partial frame; next chunk completes it.
+      const token = parseJson<{ token?: string }>(ev.data);
+      if (token !== null) onToken(token.token ?? '');
+    }
+    if (ev.name === 'done') {
+      const data = parseJson<{
+        session_id?: string;
+        text?: string;
+        truncated?: boolean;
+      }>(ev.data);
+      if (data !== null) {
+        if (data.session_id) sessionId = data.session_id;
+        if (data.text) text = data.text;
+        if (data.truncated) truncated = true;
       }
     }
-  }
+  });
   return { sessionId, text, truncated };
 }
 

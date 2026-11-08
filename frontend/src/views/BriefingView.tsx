@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, fetchPlan, fetchPlans, invalidateViewCaches, refreshBriefing, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
-import type { DigestChannelResult, DigestSchedule, NotificationPreferences, NotificationsStatus, PlanListRow } from '../apiClient';
+import type { DigestChannelResult, DigestResults, DigestSchedule, NotificationPreferences, NotificationsStatus, PlanListRow } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
 import { isHistoryFailure, toHistoryRows } from './historyUtils';
 import { dedupAttentionLines, isActionableLine } from '../attentionFilters';
@@ -296,14 +296,17 @@ export function digestStatusLine(status: NotificationsStatus): string {
 }
 
 export function digestResultLine(
-  results: Record<string, DigestChannelResult>,
+  results: DigestResults,
   sentAt: string,
 ): string {
-  const raw = (results ?? {}) as unknown as Record<string, unknown>;
-  if (typeof raw.suppressed === 'string') {
-    return `Digest not sent — ${raw.suppressed}.`;
+  const suppressed = results?.suppressed;
+  if (typeof suppressed === 'string') {
+    return `Digest not sent — ${suppressed}.`;
   }
-  const entries = Object.entries(results ?? {});
+  const entries = Object.entries(results ?? {}).filter(
+    (entry): entry is [string, DigestChannelResult] =>
+      typeof entry[1] === 'object' && entry[1] !== null,
+  );
   if (entries.length === 0) {
     return 'Digest built but delivered nowhere — no channel reported a send.';
   }
