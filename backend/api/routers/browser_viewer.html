@@ -3,12 +3,12 @@
 <style>
 body{margin:0;background:#111;color:#eee;font-family:sans-serif;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 *:focus-visible{outline:2px solid #0a84ff;outline-offset:1px}
-#bar{display:flex;gap:8px;padding:8px;align-items:center;flex-wrap:wrap}
+#bar{display:flex;gap:8px;padding:8px;align-items:center;flex-wrap:wrap;box-sizing:border-box;max-width:100vw}
 #nav{display:flex;gap:8px;flex:1;min-width:0}
 #url{flex:1;min-width:0;padding:6px;font-size:16px;min-height:44px;box-sizing:border-box;background:#1c1c1e;color:#fff;border:1px solid #000;border-radius:8px}
 #go,#kb{min-height:44px;background:#3a3a3c;color:#fff;border:1px solid #000;border-radius:8px;padding:6px 12px}
-#state{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#stats{padding:0 8px 8px;font-size:14px;color:#9f9;font-variant-numeric:tabular-nums}
+#state{max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#stats{padding:0 8px 8px;font-size:14px;color:#9f9;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #screen{display:block;max-width:100vw;height:auto;border-top:1px solid #333;cursor:default;touch-action:none}
 /* Floating keyboard shell (research: Kasm FAB + draggable panel,
 Guacamole summon-on-demand; never docked in-flow — a docked board
@@ -41,7 +41,7 @@ upstream bytes in simple-keyboard-3.8.205.{js,css}. -->
 <script src="vendor/simple-keyboard-3.8.205.js"></script>
 </head><body>
 <div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
-<div id="stats">fps: - | last activity→frame: - ms</div>
+<div id="stats">idle — waiting to attach…</div>
 <canvas id="screen" width="1280" height="800"></canvas>
 <button id="kb-fab" type="button" aria-label="Toggle keyboard" aria-controls="kbd">ABC</button>
 <div id="kbd" class="simple-keyboard" hidden><div id="kbd-handle"><span id="kbd-grip" aria-hidden="true">⠿⠿</span><span id="kbd-title">Keyboard</span><button id="kbd-close" type="button" aria-label="Close keyboard">✕</button></div></div>
@@ -94,6 +94,12 @@ function connect() {
       st.dataset.label = label + ' · live';
       st.textContent = st.dataset.label;
       st.title = 'session ' + m.session;
+      // Explicit empty state (issue #1203): bare '-' telemetry reads
+      // as a broken stream. Name what is attached and that no frame
+      // has landed yet; the 1 Hz readout replaces this on flow.
+      document.querySelector('#stats').textContent =
+        m.kind === 'agent' ? 'shared agent session · waiting for first frame…'
+        : 'personal view (no agent session) · waiting for first frame…';
       // A live socket with no frames means the Grid side is not
       // producing (single slot held elsewhere, or a stuck session):
       // say so instead of a black canvas that reads as broken.
@@ -118,6 +124,7 @@ function connect() {
           clearTimeout(noFrameTimer);
           const st = document.getElementById('state');
           if (st.dataset.label) st.textContent = st.dataset.label;
+          document.querySelector('#stats').textContent = 'receiving frames…';
         }
         if (cv.width !== img.width) { cv.width = img.width; cv.height = img.height; }
         ctx.drawImage(img, 0, 0); frames++;
