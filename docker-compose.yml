@@ -490,47 +490,6 @@ services:
       - SE_NODE_SESSION_TIMEOUT=600
     logging: *default-logging
 
-  # Neko trial (user-requested evaluation): WebRTC virtual browser at
-  # /neko/. v2 image (password/password_admin room auth). UDP 52000-52100
-  # is host-published for WebRTC media and must also be forwarded on the
-  # router; signaling rides the Caddy route. NAT1TO1 is the current public
-  # IP — update if the residential IP changes.
-  neko:
-    image: m1k1o/neko@sha256:1c0daa726efc31b00e1fd3f9337dd534c41c128e41c3042d44627d2012929992
-    container_name: remote-neko-1
-    shm_size: "2gb"
-    init: true
-    cap_add:
-      - SYS_ADMIN
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 3G
-        reservations:
-          memory: 256M
-    restart: unless-stopped
-    expose:
-      - "8080"
-    ports:
-      - "52000-52100:52000-52100/udp"
-    environment:
-      - NEKO_SCREEN=1280x720@30
-      - NEKO_PASSWORD=${NEKO_PASSWORD:?}
-      - NEKO_PASSWORD_ADMIN=${NEKO_PASSWORD_ADMIN:?}
-      - NEKO_BIND=0.0.0.0:8080
-      - NEKO_EPR=52000-52100
-      - NEKO_NAT1TO1=136.24.209.33
-      - NEKO_PROXY=true
-      - NEKO_PATH_PREFIX=/neko
-    # Image healthcheck probes /health, which moved under the path prefix.
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/neko/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 8
-    logging: *default-logging
-
   # Browser-based VS Code: code-server.
   # --auth none: the GitHub OAuth gate is the boundary, same as ttyd.
   # Mounts repos checkouts, stack checkout, and persistent config/extensions volumes.

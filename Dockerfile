@@ -60,7 +60,7 @@ RUN mkdir -p /usr/share/keyrings \
  && /opt/venvs/td/bin/pip install --no-cache-dir \
   "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
  && /opt/venvs/td/bin/pip install --no-cache-dir chromadb \
- && /opt/venvs/td/bin/python -c "import chromadb" \
+ && /opt/venvs/td/bin/python -c "import chromadb, sentence_transformers" \
  && /opt/venvs/td/bin/td --help > /dev/null
 # impact-pass toolchain (#881): node 24 + pnpm. Debian's nodejs (18)
 # is too old for @axe-core/playwright (>= 22.12), so node comes from

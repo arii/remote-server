@@ -25,7 +25,7 @@
 	# CDP-direct shared viewer: raw screencast over one websocket +
 	# CDP input relay, no VNC in the loop. The viewer is served by
 	# the buttons backend at /cdp-stream (pass the prefix through).
-	# Bare path redirects to the slash form (same convention as /neko):
+	# Bare path redirects to the slash form:
 	# the backend mount 404s without it.
 	handle /cdp-stream {
 		redir * /cdp-stream/
@@ -37,23 +37,6 @@
 		# zero errors to diagnose. Edge-owned; the app must not set it.
 		header Cache-Control "no-store"
 		reverse_proxy buttons:8000 {
-			transport http {
-				dial_timeout 10s
-			}
-		}
-	}
-
-	# Neko trial (user-requested evaluation): neko serves its own /neko
-	# prefix (NEKO_PATH_PREFIX), so pass through unstripped like /cdp-stream.
-	# Signaling rides this route; WebRTC media uses host UDP 52000-52100
-	# (needs the same range forwarded on the router). Public entry:
-	# https://<host>:8443/neko/ (behind the oauth2-proxy gate).
-	handle /neko {
-		redir * /neko/
-	}
-	handle /neko* {
-		header -X-Frame-Options
-		reverse_proxy neko:8080 {
 			transport http {
 				dial_timeout 10s
 			}
