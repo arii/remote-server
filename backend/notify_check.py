@@ -48,8 +48,16 @@ def main(argv=None) -> int:
         print(f"push [{kw.get('event_type', '?')}] {title}", flush=True)
         return res
 
-    state = check_notifications_and_digest(
-        fetcher=fetcher, sender=counting_sender)
+    try:
+        state = check_notifications_and_digest(
+            fetcher=fetcher, sender=counting_sender)
+    except Exception as exc:
+        # Never fail silently (#1125): the scheduler merges stderr
+        # into the run record, but a stdout summary keeps the
+        # failure visible to stdout-only consumers too. Re-raise so
+        # the traceback (and nonzero exit) still lands as well.
+        print(f"notify-check repo={repo_name} failed: {exc}", flush=True)
+        raise
     ci_keys = len((state.get("ci") or {}).get(repo_name, {}))
     conflict_keys = len(
         (state.get("conflicts") or {}).get(repo_name, {}))

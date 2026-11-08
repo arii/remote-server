@@ -880,10 +880,14 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
                 return
             if code != 0:
                 if not "".join(chunks).strip():
+                    # Never record a bare exit code (#1125): a silent
+                    # step failure still names its exit and repeats
+                    # the command line (echoed above), so the record
+                    # alone can diagnose without re-running.
                     registry.append(
-                        run_id, "note: the step printed nothing before "
-                        "failing — re-run this command on the host to "
-                        "diagnose.\n")
+                        run_id, f"note: the step exited {code} with no "
+                        "output — re-run the $ command above on the "
+                        "host to diagnose.\n")
                 _done(code)
                 return
         _done(0)
