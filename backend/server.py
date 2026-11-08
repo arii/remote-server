@@ -7,7 +7,26 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import agent, agent_control, agents, attention, briefing, browser_view, chat, deferred, dispatch, inbox, issues, jobs, notify, ops, pulls, repo, system
+from backend.api.routers import (
+    agent,
+    agent_control,
+    agents,
+    attention,
+    briefing,
+    browser_view,
+    chat,
+    deferred,
+    dispatch,
+    inbox,
+    issues,
+    jobs,
+    notify,
+    openwebui_shell,
+    ops,
+    pulls,
+    repo,
+    system,
+)
 
 
 @asynccontextmanager
@@ -54,7 +73,8 @@ async def _lifespan(app):
     except Exception as exc:
         app.state.skills_verification_errors = [f"verifier error: {exc}"]
         attention.publish_skills_verification_errors(
-            app.state.skills_verification_errors)
+            app.state.skills_verification_errors
+        )
         print(
             f"FIRST-PARTY SKILLS VERIFICATION ERROR (issue #1120): {exc} "
             "— agent turns will run with skills UNVERIFIED.",
@@ -64,8 +84,7 @@ async def _lifespan(app):
     try:
         import threading
 
-        thread = threading.Thread(
-            target=briefing.warm_briefing_cache, daemon=True)
+        thread = threading.Thread(target=briefing.warm_briefing_cache, daemon=True)
         thread.start()
     except Exception:
         pass
@@ -83,6 +102,7 @@ app.include_router(repo.repos_router)
 app.include_router(system.router)
 app.include_router(jobs.router)
 app.include_router(notify.router)
+app.include_router(openwebui_shell.router)
 app.include_router(chat.router)
 app.include_router(ops.router)
 app.include_router(pulls.router)
@@ -121,8 +141,7 @@ def _index_chunks():
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "index": _index_state(),
-            "index_chunks": _index_chunks()}
+    return {"ok": True, "index": _index_state(), "index_chunks": _index_chunks()}
 
 
 # Built SPA dir: entry points run with cwd=repo root (/app in the image),

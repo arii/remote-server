@@ -44,19 +44,33 @@
 	}
 
 	# Open WebUI (ambient chat & RAG) at /webui: the stock image
-	# hardcodes root-absolute frontend paths, so Caddy strips the
-	# prefix only for the page and passes the app's root paths
-	# through (verified live 2026-11-08 on v0.13.2: title renders,
-	# zero 404s, websocket connects; no source build needed, no DNS).
+	# has no base-path support (docs: root or subdomain only; the
+	# one subpath PR closed unmerged; v0.13.2 WEBUI_BASE_URL is a
+	# hardcoded ''), so its ONLY subpath-hostile bytes are the HTML
+	# shell (SvelteKit base:"" + absolute asset refs). The exact page
+	# rides the buttons shell shim (see openwebui_shell.py); the app
+	# then addresses itself under /webui and the strip wildcard below
+	# serves it. API/WS/model calls stay root-absolute in the JS
+	# bundle, so they ride the root handles (incl /ollama + /openai).
 	# Public entry: https://<host>:8443/webui/ (behind the gate).
 	handle /webui {
 		redir * /webui/
+	}
+	handle /webui/ {
+		rewrite /_oui-shell
+		reverse_proxy buttons:8000
 	}
 	handle /webui* {
 		uri strip_prefix /webui
 		reverse_proxy open-webui:8080
 	}
 	handle /api/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /ollama/* {
+		reverse_proxy open-webui:8080
+	}
+	handle /openai/* {
 		reverse_proxy open-webui:8080
 	}
 	handle /ws/* {
