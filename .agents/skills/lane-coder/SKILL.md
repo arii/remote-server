@@ -14,7 +14,7 @@ Announce yourself: read `lanes/registry.md` for the orchestrator session (see Di
 ## Role loop
 
 1. Pull the queue: `gh issue list --label ready --state open`. Pick the top item by priority: live-breakage first, then user feedback, then `audit`, then `insight`.
-2. Cut a branch from `origin/main` for the issue. Implement the fix, sequentially, one issue at a time (a small batch of tightly related issues may share one branch).
+2. Cut a branch from `origin/main` for the issue. Research the area with the `td-tools` skill first (`td rag query` before bulk reads). Implement the fix, sequentially, one issue at a time (a small batch of tightly related issues may share one branch).
 3. Run the repo tests: frontend `tsc` + `vitest`, backend `unittest`. Fix failures on your branch before proceeding.
 4. Open exactly ONE PR per issue or batch. Body must contain `Closes #<n>` (each issue addressed) so merge closes the issue.
 5. Ping the orchestrator (see Discovery) only when blocked or when the PR is green: `blocked #<n>: <reason>` or `green: <pr-url> closes #<n>`.
