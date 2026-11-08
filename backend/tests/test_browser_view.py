@@ -39,14 +39,27 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("localStorage.getItem('kbd-pos')", html)
         self.assertNotIn("box.scrollIntoView", html)
 
-    def test_viewer_page_is_not_cached(self):
-        # The viewer ships new JS with deploys: a cached copy
-        # silently pins old behavior (e.g. a dead URL box) with
-        # zero errors to diagnose.
+    def test_viewer_no_store_is_edge_owned(self):
+        # No-store lives in the Caddy /cdp-stream* handle, not app
+        # code (edge concern, like X-Frame-Options): the app must not
+        # set it, and the route must. A cached viewer silently pins
+        # old behavior with zero errors to diagnose.
+        import pathlib
+        import re
+
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        caddyfile = (repo_root / "caddy" / "Caddyfile").read_text()
+        handle = re.search(
+            r"handle /cdp-stream\* \{(.*?)\n\t\}",
+            caddyfile, re.S)
+        self.assertIsNotNone(handle, "missing /cdp-stream* handle")
+        self.assertIn("no-store", handle.group(1))
+        self.assertNotIn("no-store", browser_view.VIEWER_HTML)
         client = TestClient(browser_view.create_app())
         resp = client.get("/")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("no-store", resp.headers.get("cache-control", ""))
+        self.assertNotIn("no-store",
+                         resp.headers.get("cache-control", ""))
 
     def test_default_url_is_neutral_not_console(self):
         # Issue #1023: first paint must not recurse into Buttons

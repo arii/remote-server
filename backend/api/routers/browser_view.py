@@ -597,17 +597,13 @@ def create_app():
         path = scope.get("path", "")
         if scope["type"] == "http":
             body = VIEWER_HTML.replace("__DEFAULT_URL__", DEFAULT_URL).encode()
-            # No-store: the viewer ships new JS with deploys and a
-            # cached copy silently pins old behavior (e.g. a dead URL
-            # box) with zero errors to diagnose.
+            # No-store is edge-owned (Caddy sets Cache-Control on the
+            # /cdp-stream* handle); the app must not set it.
             await send(
                 {
                     "type": "http.response.start",
                     "status": 200,
-                    "headers": [
-                        (b"content-type", b"text/html; charset=utf-8"),
-                        (b"cache-control", b"no-store"),
-                    ],
+                    "headers": [(b"content-type", b"text/html; charset=utf-8")],
                 }
             )
             await send({"type": "http.response.body", "body": body})
