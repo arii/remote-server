@@ -35,6 +35,18 @@ RATE_CARD = {
 
 FREE_PREFIX = "ollama:"
 
+# Sorry-sentinel model labels: the harness records these when no
+# model was ever resolved, so no model call could have spent
+# anything (coder._implement_and_finish pre-resolve crashes file
+# model="unknown"; auditor failure rows file "unknown:model").
+# With an explicit all-zero token triple they quote $0 non-metered
+# (#1159: zero-token sorry rows must not fail-close the spend
+# gate). Anything else with these labels — real tokens, or a
+# missing/partial usage that proves nothing — stays fail-closed.
+SORRY_MODELS = frozenset({"unknown", "unknown:model"})
+
+ZERO_TRIPLE = ("input_tokens", "output_tokens", "total_tokens")
+
 SPEND_CAP_ENV = "NEBIUS_SPEND_CAP_USD"
 
 # Fail-closed default when NEBIUS_SPEND_CAP_USD is unset/blank
@@ -112,9 +124,29 @@ def rate_for(model):
         return None
 
 
+def _is_sorry_zero(model, usage):
+    """True for a sorry-sentinel label with explicit zero tokens.
+
+    Per-token rates make 0 tokens $0 on every backend, so there is
+    no spend to rate — unlike a bare real-model label with zeros
+    (#1121: usage may have been lost in a crash, stays
+    fail-closed). Never raises."""
+    try:
+        if model not in SORRY_MODELS:
+            return False
+        if not isinstance(usage, dict):
+            return False
+        return all(int(usage.get(key) or 0) == 0
+                   and key in usage for key in ZERO_TRIPLE)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def quote(model, usage):
     """(cost_usd | None, metered) for one turn. Never raises."""
     try:
+        if _is_sorry_zero(model, usage):
+            return 0.0, False
         if not isinstance(model, str) or not model:
             return None, True
         if model.startswith(FREE_PREFIX):
