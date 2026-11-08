@@ -806,9 +806,10 @@ a.link-chip:hover { border-color: var(--accent); }
 .attention-head { display: flex; align-items: flex-start; gap: 0.5rem; }
 .attention-head .row-title { flex: 1 1 auto; min-width: 0; }
 .attention-check { flex: none; width: 1.15rem; height: 1.15rem; margin-top: 0.15rem; cursor: pointer; }
-/* Select-all rides one line (#1178): label-qualified to beat
-   `label.row-meta` (0,1,1) without reordering or markup churn. */
-label.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
+/* Select-all rides one line (#1178): double-qualified to beat
+   `label.row-meta` outright — a single label qualifier only ties
+   (0,1,1) and loses to source order. */
+label.row-meta.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
 .attention-select-all input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 
 /* Ask-agent preview (issue #935): the disclosure summary carries
