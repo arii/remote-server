@@ -37,10 +37,6 @@ from backend.core import get_checkout_path, validate_repo_name
 from backend.exec.engine import validate_td_command
 from backend.gh import run_gh, validate_gh
 
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "deep-agent"))
-
 import s5tools  # noqa: E402
 
 # Executor prompt template + coder CLI, resolved beside this module

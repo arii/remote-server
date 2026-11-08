@@ -6,19 +6,10 @@ trace events. Summaries carry provider + latency + cost + repo
 slots, null-safe for local/unmetered turns and pre-repo rows.
 """
 
-import os
-import sys
-
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from fastapi import HTTPException
-
-sys.path.insert(0, os.path.join(
-    os.path.dirname(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-    "deep-agent"))
 
 import runs  # noqa: E402
 import pricing  # noqa: E402

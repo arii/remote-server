@@ -11,13 +11,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 import eval_chat
 import deep_chat
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-DEEP_CHAT = os.path.join(ROOT, "deep-agent", "deep_chat.py")
+DEEP_CHAT = os.path.join("deep-agent", "deep_chat.py")
 
 
 def case(**over):

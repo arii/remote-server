@@ -6,8 +6,7 @@ import os
 import re
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-COMPOSE = os.path.join(ROOT, "docker-compose.yml")
+COMPOSE = "docker-compose.yml"
 
 
 class TestComposeGuards(unittest.TestCase):
@@ -208,8 +207,8 @@ class TestComposeGuards(unittest.TestCase):
 
     def test_terminal_requirements_parity(self):
         """terminal/requirements.txt must include all backend deps and pytest."""
-        backend_req = os.path.join(ROOT, "backend", "requirements.txt")
-        terminal_req = os.path.join(ROOT, "terminal", "requirements.txt")
+        backend_req = os.path.join("backend", "requirements.txt")
+        terminal_req = os.path.join("terminal", "requirements.txt")
         self.assertTrue(os.path.exists(terminal_req))
 
         def parse_reqs(path):

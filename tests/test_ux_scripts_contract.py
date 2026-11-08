@@ -14,8 +14,6 @@ import os
 import re
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-
 REQUIRED_SCRIPTS = (
     "scripts/ux-discover-routes.ts",
     "scripts/ux-audit-runner.ts",
@@ -35,7 +33,7 @@ REQUIRED_DEV_DEPS = ("tsx", "playwright", "@axe-core/playwright",
 
 
 def _root(*parts):
-    return os.path.join(ROOT, *parts)
+    return os.path.join(*parts)
 
 
 class UxScriptsPresentTest(unittest.TestCase):

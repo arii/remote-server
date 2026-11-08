@@ -98,19 +98,30 @@ pi_runs_lock = threading.Lock()
 pending_resumes: dict = {}
 pending_resumes_lock = threading.Lock()
 
-REPO_ROOT = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-sys.path.insert(0, os.path.join(REPO_ROOT, "deep-agent"))
-
 import model_router  # noqa: E402
 import pricing  # noqa: E402
 
 
+def _repo_root() -> str:
+    # The one __file__-derived root in the backend (spawn paths below):
+    # everything else uses root-relative literals or entry-point
+    # PYTHONPATH. Never import this elsewhere; keep it private.
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(
+        os.path.dirname(os.path.dirname(here)))
+
+
 def deep_agent_dir() -> str:
     return os.environ.get("DEEP_AGENT_DIR",
-                           os.path.join(REPO_ROOT, "deep-agent"))
+                           os.path.join(_repo_root(), "deep-agent"))
+
+
+def deep_agent_env() -> dict:
+    """Child env for deep_chat spawns: our tree first, ambient behind."""
+    path = (_repo_root() + os.pathsep + deep_agent_dir()
+            + (os.pathsep + os.environ["PYTHONPATH"]
+               if os.environ.get("PYTHONPATH") else ""))
+    return {**os.environ, "PYTHONPATH": path}
 
 
 def deep_agent_python() -> str:
@@ -217,7 +228,8 @@ def validate_action_request(args: dict) -> tuple[bool, str]:
         proc = subprocess.run(
             [sys.executable, deep_agent_script("deep_chat.py"),
              "--validate-proposal", raw],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30,
+            env=deep_agent_env())
     except Exception as exc:
         return False, f"REJECTED: validator failed: {exc}"
     try:
@@ -235,7 +247,7 @@ def run_resume_spawn(gh: str, thread: str, verdict: str,
     if message_b64:
         argv.append(message_b64)
     proc = subprocess.run(argv, capture_output=True, text=True,
-                          timeout=600)
+                          timeout=600, env=deep_agent_env())
     return proc.returncode, proc.stdout
 
 

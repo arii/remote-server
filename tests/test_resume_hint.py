@@ -14,8 +14,7 @@ import time
 import unittest
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-HINT = REPO_ROOT / "terminal" / "bin" / "muse-resume-hint"
+HINT = Path("terminal/bin/muse-resume-hint")
 
 
 def make_store(tmp, sessions, claims=()):
@@ -145,6 +144,6 @@ class ResumeHintTest(unittest.TestCase):
             self.assertEqual((code, out, err), (0, "", ""))
 
     def test_dockerfile_wires_hint_into_bashrc(self):
-        dockerfile = (REPO_ROOT / "terminal" / "Dockerfile").read_text()
+        dockerfile = Path("terminal/Dockerfile").read_text()
         self.assertIn("muse-resume-hint", dockerfile)
         self.assertIn("/root/.bashrc", dockerfile)

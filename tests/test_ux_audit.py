@@ -4,14 +4,9 @@ Run: python3 tests/test_ux_audit.py"""
 import json
 import os
 import shlex
-import sys
 import tempfile
 import unittest
 from unittest import mock
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
-                               "deep-agent"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import ux_audit
 
@@ -68,8 +63,8 @@ class ExtractLinksTest(unittest.TestCase):
         self.assertIn("https://arii.github.io/about/", links)
         self.assertIn("https://x.example/", links)
         self.assertNotIn("https://arii.github.io/i.png", links)
-        self.assertFalse(any(l.endswith(".css") for l in links))
-        self.assertFalse(any(l.startswith("mailto") for l in links))
+        self.assertFalse(any(u.endswith(".css") for u in links))
+        self.assertFalse(any(u.startswith("mailto") for u in links))
 
     def test_hostile_markup_never_raises(self):
         self.assertEqual(ux_audit.extract_links("<a href", "/"), [])

@@ -9,8 +9,6 @@ Run: python3 -m unittest tests.test_no_core_cli"""
 import os
 import unittest
 
-ROOT = os.path.join(os.path.dirname(__file__), "..")
-
 SCOPES = ("backend", "deep-agent", "tests", "backend/tests", ".github", "Makefile", "mk")
 
 SKIP_DIRS = {".venv", "__pycache__", "node_modules", ".git", "chroma_db"}
@@ -19,7 +17,7 @@ SELF = os.path.basename(__file__)
 
 
 def iter_files(scope):
-    path = os.path.join(ROOT, scope)
+    path = scope
     if os.path.isfile(path):
         yield path
         return
@@ -34,7 +32,7 @@ def iter_files(scope):
 class TestNoCoreCli(unittest.TestCase):
     def test_core_cli_directory_absent(self):
         """core_cli/ must hold no source (stale __pycache__ residue excepted)."""
-        pkg = os.path.join(ROOT, "core_cli")
+        pkg = "core_cli"
         sources = []
         if os.path.isdir(pkg):
             for dirpath, dirnames, filenames in os.walk(pkg):
@@ -55,7 +53,7 @@ class TestNoCoreCli(unittest.TestCase):
                 except (OSError, UnicodeDecodeError):
                     continue
                 if "core_cli" in text:
-                    hits.append(os.path.relpath(path, ROOT))
+                    hits.append(os.path.relpath(path, "."))
         self.assertEqual(hits, [], f"core_cli references found: {hits}")
 
     def test_zero_run_core_cli_references(self):
@@ -71,7 +69,7 @@ class TestNoCoreCli(unittest.TestCase):
                 except (OSError, UnicodeDecodeError):
                     continue
                 if "run_core_cli" in text:
-                    hits.append(os.path.relpath(path, ROOT))
+                    hits.append(os.path.relpath(path, "."))
         self.assertEqual(hits, [], f"run_core_cli references found: {hits}")
 
     def test_run_td_entry_point(self):

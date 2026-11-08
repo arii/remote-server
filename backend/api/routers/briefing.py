@@ -586,10 +586,8 @@ def warm_briefing_cache(repos: list[str] | None = None) -> list[str]:
 
 
 def _run_briefing(repo: str, gh: str) -> dict:
-    script = os.path.join(os.path.dirname(__file__),
-                          "..", "..", "..", "backend",
-                          "briefing_summary.py")
-    script = os.path.normpath(script)
+    # Root-relative: the server runs with cwd=repo root (/app in the image).
+    script = os.path.join("backend", "briefing_summary.py")
     # cwd = live checkout: td discovers project_config.json upward from
     # cwd, and the image workdir (/app) has none. Script stays baked.
     proc = subprocess.run(

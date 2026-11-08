@@ -1331,7 +1331,6 @@ def load_skill_rubric():
 
 def _default_model_factory(prefer):
     """(model, spec) via deep_chat.build_model. Venv-only at call."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import deep_chat
 
     return deep_chat.build_model(prefer=prefer)

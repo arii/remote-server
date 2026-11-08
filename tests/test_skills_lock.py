@@ -1,19 +1,14 @@
 """First-party skill pin verification (issue #1120). Stdlib unittest only."""
 
 import json
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-
 import skills_lock
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-REPO_SKILLS = REPO_ROOT / "deep-agent" / "skills"
-REPO_LOCK = REPO_ROOT / "deep-agent" / "skills-lock.json"
+REPO_SKILLS = Path("deep-agent/skills")
+REPO_LOCK = Path("deep-agent/skills-lock.json")
 
 try:
     from backend.server import app as _app, _lifespan

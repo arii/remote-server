@@ -19,12 +19,8 @@ Exit 0 unless gh infrastructure fails (auth/network): per-PR skips and
 per-PR merge failures are outcomes with reasons, not fire failures.
 """
 
-import os
 import re
 import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))
 
 from backend.pr_gates import (MERGE_CAP, default_branch,  # noqa: E402
                               evaluate_merge_gates, merge_pr, open_prs,

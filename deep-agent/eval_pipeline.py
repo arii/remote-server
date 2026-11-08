@@ -32,10 +32,6 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
-
 import pipeline as pipeline_mod
 
 CALC_BUGGY = '''"""Sample module (buggy)."""

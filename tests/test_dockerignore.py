@@ -2,10 +2,7 @@
 build context (#562). Removing any listed line from .dockerignore
 fails this test (and re-bloats the image with dead state).
 """
-import os
 import unittest
-
-ROOT = os.path.join(os.path.dirname(__file__), "..")
 
 # Every known deep-agent runtime-state path must stay dockerignored.
 REQUIRED_IGNORES = [
@@ -19,7 +16,7 @@ REQUIRED_IGNORES = [
 
 
 def _ignore_lines():
-    with open(os.path.join(ROOT, ".dockerignore")) as f:
+    with open(".dockerignore") as f:
         return [
             line.strip()
             for line in f
@@ -38,7 +35,7 @@ class TestDockerignore(unittest.TestCase):
     def test_guard_is_meaningful(self):
         # The guard only matters because the image COPYs the tree:
         # without the exclusion lines, COPY would bake the state in.
-        with open(os.path.join(ROOT, "Dockerfile")) as f:
+        with open("Dockerfile") as f:
             body = f.read()
         self.assertIn("COPY deep-agent/", body)
 

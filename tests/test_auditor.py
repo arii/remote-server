@@ -11,9 +11,6 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deep-agent"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 import auditor
 
 try:
@@ -393,9 +390,7 @@ class TestAskOnce(unittest.TestCase):
         # live module pulls langchain at top.
         import ast
 
-        root = os.path.join(os.path.dirname(__file__), "..")
-        with open(os.path.join(root, "deep-agent",
-                               "ask_investigator.py"),
+        with open(os.path.join("deep-agent", "ask_investigator.py"),
                   encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
         defs = {node.name for node in ast.walk(tree)

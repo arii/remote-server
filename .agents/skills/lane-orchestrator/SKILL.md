@@ -43,3 +43,7 @@ To coders, one line: `ready: #<n> [<area>] <finding>`. To auditors on dupes: `du
 - Never let fixes live outside revision control: after every merge/deploy, verify runtime-only changes are encoded in compose/scripts/config/skills in the same change.
 - Never mark an issue `ready` without checking for dupes first.
 - Verify before claiming: a deploy is live only after curl + BrowserMCP confirm it.
+
+## Nebius implementation tasks
+
+Nebius implementation tasks (e.g. #1160) run worktree-isolated: the coder works in its own checkout and never overlaps files with an active coder lane. The orchestrator verifies the work line by line against the issue's steps, then pushes and owns the PR. Spend stays ledgered per the originating issue.

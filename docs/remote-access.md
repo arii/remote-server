@@ -125,8 +125,9 @@ compose). Rationale:
   over the mesh with zero additional public listeners.
 - It is the fallback when the public port is unreachable: restrictive
   hotel/café firewalls often block non-443 ports, while Tailscale's NAT
-  traversal usually gets through. Manual fallback command is in
-  `scripts/tailscale-entrypoint.sh` (serve the proxy over the tailnet).
+  traversal usually gets through. Set `TS_SERVE=1` (then recreate the
+  tailscale container) to serve the proxy over the tailnet automatically;
+  the equivalent manual command is in `scripts/tailscale-entrypoint.sh`.
 - Phone UX is one app toggle; full-tunnel mode is available in the app.
 
 **Alternative (documented, not chosen): self-hosted WireGuard**

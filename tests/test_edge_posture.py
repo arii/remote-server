@@ -7,10 +7,8 @@ threat-model doc claim together: the #531 bug was config/doc drift.
 import os
 import unittest
 
-CFG = os.path.join(
-    os.path.dirname(__file__), "..", "config", "oauth2-proxy.cfg")
-DOC = os.path.join(
-    os.path.dirname(__file__), "..", "docs", "remote-access.md")
+CFG = os.path.join("config", "oauth2-proxy.cfg")
+DOC = os.path.join("docs", "remote-access.md")
 
 
 def _active_lines(path):
