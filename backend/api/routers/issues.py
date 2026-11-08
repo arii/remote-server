@@ -27,6 +27,7 @@ no notify.py changes in this port).
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import threading
@@ -45,8 +46,9 @@ from backend.verify_allowlist import (
 
 router = APIRouter(prefix="/api", tags=["issues"])
 
-ISSUE_LIST_FIELDS = ("number,title,state,assignees,labels,updatedAt,"
-                     "url,body")
+logger = logging.getLogger(__name__)
+
+ISSUE_LIST_FIELDS = "number,title,state,assignees,labels,updatedAt,url,body"
 MAX_OUTPUT = 200_000
 
 REPAIR_WORKER_TIMEOUT = 1800  # seconds of wall clock for one repair
@@ -252,9 +254,9 @@ def _extract_failure_reason(log_buffer: str) -> str | None:
     return reason or None
 
 
-def _repair_worker_thread(issue_number: int,
-                          repo: str = "remote-server",
-                          focus: str = "") -> None:
+def _repair_worker_thread(
+    issue_number: int, repo: str = "remote-server", focus: str = ""
+) -> None:
     """Run the repo-scoped repair worker and record state and logs.
 
     Single-flight: dispatch claims the slot before spawning, and the
@@ -271,23 +273,35 @@ def _repair_worker_thread(issue_number: int,
         repair_state["repo"] = repo
         repair_state["log_buffer"] = (
             f"Dispatched repair worker for issue #{issue_number} "
-            f"({repo})"
-            + (" [group focus]\n" if focus else "\n"))
+            f"({repo})" + (" [group focus]\n" if focus else "\n")
+        )
         repair_state["exit_code"] = None
         repair_state["failure_reason"] = None
         _repair_proc = None
         _repair_abort = False
     run = _repair_runner or subprocess
-    cmd = ["python3", "-m", "backend.repair_worker",
-           "--issue", str(issue_number), "--repo", repo]
+    cmd = [
+        "python3",
+        "-m",
+        "backend.repair_worker",
+        "--issue",
+        str(issue_number),
+        "--repo",
+        repo,
+    ]
     if focus:
         cmd += ["--body", focus]
     try:
         # cwd = live checkout: the worker path is repo-relative and the
         # image workdir (/app) has no scripts/ dir.
-        proc = run.Popen(cmd, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, bufsize=1,
-                         cwd=stack_dir())
+        proc = run.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=stack_dir(),
+        )
         with repair_state_lock:
             _repair_proc = proc
             spawned_aborted = _repair_abort
@@ -329,8 +343,9 @@ def _repair_worker_thread(issue_number: int,
                     with repair_state_lock:
                         repair_state["log_buffer"] += line
                         if len(repair_state["log_buffer"]) > MAX_OUTPUT:
-                            repair_state["log_buffer"] = \
-                                repair_state["log_buffer"][-MAX_OUTPUT:]
+                            repair_state["log_buffer"] = repair_state["log_buffer"][
+                                -MAX_OUTPUT:
+                            ]
             budget = REPAIR_WORKER_TIMEOUT - (time.monotonic() - started)
             try:
                 code = proc.wait(timeout=max(1, budget))
@@ -364,25 +379,27 @@ def _repair_worker_thread(issue_number: int,
                 repair_state["status"] = "failed"
                 repair_state["exit_code"] = code
                 repair_state["failure_reason"] = _extract_failure_reason(
-                    repair_state["log_buffer"])
+                    repair_state["log_buffer"]
+                )
                 repair_state["log_buffer"] += (
                     "\nRepair worker timed out after "
-                    f"{REPAIR_WORKER_TIMEOUT}s and was killed.\n")
+                    f"{REPAIR_WORKER_TIMEOUT}s and was killed.\n"
+                )
             else:
                 repair_state["status"] = "done" if code == 0 else "failed"
                 repair_state["exit_code"] = code
-                repair_state["failure_reason"] = _extract_failure_reason(
-                    repair_state["log_buffer"]) \
-                    if code != 0 else None
-                repair_state["log_buffer"] += (
-                    f"\nProcess exited with code {code}\n")
+                repair_state["failure_reason"] = (
+                    _extract_failure_reason(repair_state["log_buffer"])
+                    if code != 0
+                    else None
+                )
+                repair_state["log_buffer"] += f"\nProcess exited with code {code}\n"
     except Exception as exc:
         with repair_state_lock:
             _repair_proc = None
             repair_state["status"] = "failed"
             repair_state["exit_code"] = 1
-            repair_state["log_buffer"] += (
-                f"\nFailed to spawn repair worker: {exc}\n")
+            repair_state["log_buffer"] += f"\nFailed to spawn repair worker: {exc}\n"
 
 
 class RepairAbortResult(BaseModel):
@@ -398,8 +415,7 @@ class RepairVerifyPreview(BaseModel):
     error: str = ""
 
 
-def _repair_verify_preview(issue_number: int,
-                           repo: str = "remote-server") -> dict:
+def _repair_verify_preview(issue_number: int, repo: str = "remote-server") -> dict:
     """Parsed verification command + allowlist verdict for an issue.
 
     Shared by the preview endpoint (the confirmer sees the command)
@@ -411,29 +427,45 @@ def _repair_verify_preview(issue_number: int,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
-        row = run_gh_json(gh, ["issue", "view", str(issue_number),
-                               "--repo", gh, "--json", "body"],
-                          timeout=60)
+        row = run_gh_json(
+            gh,
+            ["issue", "view", str(issue_number), "--repo", gh, "--json", "body"],
+            timeout=60,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     body = row.get("body", "") if isinstance(row, dict) else ""
     try:
         cmd = parse_task_spec(body or "").get("verification_command", "")
     except ValueError as exc:
-        return {"ok": True, "issue": issue_number, "command": "",
-                "allowlisted": False, "error": str(exc)[:300]}
+        return {
+            "ok": True,
+            "issue": issue_number,
+            "command": "",
+            "allowlisted": False,
+            "error": str(exc)[:300],
+        }
     if not validate_verify_command(cmd):
-        return {"ok": True, "issue": issue_number, "command": cmd[:500],
-                "allowlisted": False,
-                "error": f"not allowlisted (allowed: {VERIFY_VERB_HELP})"}
-    return {"ok": True, "issue": issue_number, "command": cmd[:500],
-            "allowlisted": True, "error": ""}
+        return {
+            "ok": True,
+            "issue": issue_number,
+            "command": cmd[:500],
+            "allowlisted": False,
+            "error": f"not allowlisted (allowed: {VERIFY_VERB_HELP})",
+        }
+    return {
+        "ok": True,
+        "issue": issue_number,
+        "command": cmd[:500],
+        "allowlisted": True,
+        "error": "",
+    }
 
 
-def trigger_repair(issue_number: int, repo: str = "remote-server",
-                   focus: str = ""):
-    t = threading.Thread(target=_repair_worker_thread,
-                         args=(issue_number, repo, focus), daemon=True)
+def trigger_repair(issue_number: int, repo: str = "remote-server", focus: str = ""):
+    t = threading.Thread(
+        target=_repair_worker_thread, args=(issue_number, repo, focus), daemon=True
+    )
     t.start()
     return t
 
@@ -442,8 +474,7 @@ def _ensure_repair_idle() -> None:
     """Single-flight guard: 409 when a worker holds the slot."""
     with repair_state_lock:
         if repair_state["status"] == "running":
-            raise HTTPException(status_code=409,
-                                detail="repair worker busy")
+            raise HTTPException(status_code=409, detail="repair worker busy")
 
 
 def _claim_due_schedule(now: float) -> int | None:
@@ -460,8 +491,7 @@ def _claim_due_schedule(now: float) -> int | None:
             sched = repair_schedules[issue_number]
             if sched["next_run"] <= now:
                 sched["last_run"] = now
-                sched["next_run"] = (
-                    now + SCHEDULE_INTERVALS[sched["cadence"]])
+                sched["next_run"] = now + SCHEDULE_INTERVALS[sched["cadence"]]
                 return issue_number
     return None
 
@@ -470,8 +500,7 @@ def fire_due_schedules(now: float | None = None) -> int | None:
     """Fire one due schedule through the same gate as one-shot
     dispatch. Never raises out of the ticker. Returns the fired
     issue number, or None."""
-    claimed = _claim_due_schedule(now if now is not None
-                                  else time.time())
+    claimed = _claim_due_schedule(now if now is not None else time.time())
     if claimed is None:
         return None
     try:
@@ -489,8 +518,8 @@ def _schedule_tick_loop() -> None:
         time.sleep(SCHEDULE_TICK_SECONDS)
         try:
             fire_due_schedules()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("schedule tick: fire_due_schedules failed: %s", exc)
         # Shared tick (see #636): scheduled digests ride this loop
         # rather than running a second ticker. Repair-owned loop.
         # Read off the package (not the defining submodule): the import
@@ -498,26 +527,28 @@ def _schedule_tick_loop() -> None:
         # backend.notify.fire_due_digest and have it land here.
         try:
             from backend import notify as _notify_pkg
+
             _notify_pkg.fire_due_digest()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("schedule tick: fire_due_digest failed: %s", exc)
         # Third job on the shared tick (#652): budget-watch alerts
         # ride this loop like digests — never a second ticker.
         # Same package-attr read so backend.notify.fire_budget_watch
         # patches land here too.
         try:
             from backend import notify as _notify_pkg2
+
             _notify_pkg2.fire_budget_watch()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("schedule tick: fire_budget_watch failed: %s", exc)
         # Fourth job on the shared tick (#655): scheduled jobs
         # actions ride this loop like digests — never a second ticker.
         try:
-            from backend.api.routers.jobs import \
-                fire_due_action_schedules
+            from backend.api.routers.jobs import fire_due_action_schedules
+
             fire_due_action_schedules()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("schedule tick: fire_due_action_schedules failed: %s", exc)
 
 
 def _ensure_schedule_ticker() -> None:
@@ -525,8 +556,7 @@ def _ensure_schedule_ticker() -> None:
     with repair_state_lock:
         if _schedule_ticker is not None:
             return
-        _schedule_ticker = threading.Thread(
-            target=_schedule_tick_loop, daemon=True)
+        _schedule_ticker = threading.Thread(target=_schedule_tick_loop, daemon=True)
         _schedule_ticker.start()
 
 
@@ -540,8 +570,9 @@ def list_issue_repo_names() -> list:
     """Injectable seam: known checkout names in picker order."""
     from backend.core.git_helpers import list_repos
 
-    return [r.get("name", "") for r in list_repos()
-            if isinstance(r, dict) and r.get("name")]
+    return [
+        r.get("name", "") for r in list_repos() if isinstance(r, dict) and r.get("name")
+    ]
 
 
 def list_open_issues(repo: str) -> list:
@@ -549,12 +580,28 @@ def list_open_issues(repo: str) -> list:
     the per-repo endpoint has always served. Raises ValueError for
     an unknown repo (repo_gh) and anything else on gh failure."""
     gh = repo_gh(repo)
-    rows = run_gh_json(gh, ["issue", "list", "--repo", gh,
-                            "--state", "open", "--limit", "50",
-                            "--json", ISSUE_LIST_FIELDS], timeout=60)
+    rows = run_gh_json(
+        gh,
+        [
+            "issue",
+            "list",
+            "--repo",
+            gh,
+            "--state",
+            "open",
+            "--limit",
+            "50",
+            "--json",
+            ISSUE_LIST_FIELDS,
+        ],
+        timeout=60,
+    )
     for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, dict) and isinstance(row.get("body"), str) \
-                and len(row["body"]) > 600:
+        if (
+            isinstance(row, dict)
+            and isinstance(row.get("body"), str)
+            and len(row["body"]) > 600
+        ):
             row["body"] = row["body"][:600] + "…"
     return rows
 
@@ -597,13 +644,20 @@ def issues(repo: str = "remote-server") -> dict:
 
 def _repo_label_names(gh: str) -> list:
     """Sorted repo label names via gh (typeahead source)."""
-    rows = run_gh_json(gh, ["label", "list", "--repo", gh,
-                            "--limit", "100", "--json", "name"],
-                       timeout=60)
-    return sorted({r.get("name", "") for r in rows
-                   if isinstance(r, dict)
-                   and isinstance(r.get("name"), str)
-                   and r.get("name", "").strip()})
+    rows = run_gh_json(
+        gh,
+        ["label", "list", "--repo", gh, "--limit", "100", "--json", "name"],
+        timeout=60,
+    )
+    return sorted(
+        {
+            r.get("name", "")
+            for r in rows
+            if isinstance(r, dict)
+            and isinstance(r.get("name"), str)
+            and r.get("name", "").strip()
+        }
+    )
 
 
 def _validate_create_labels(labels, gh: str) -> list:
@@ -622,8 +676,7 @@ def _validate_create_labels(labels, gh: str) -> list:
     for item in labels:
         name = parse_label_name(item)
         if name is None:
-            raise HTTPException(status_code=400,
-                                detail="invalid label name")
+            raise HTTPException(status_code=400, detail="invalid label name")
         wanted.append(name)
     try:
         repo_names = _repo_label_names(gh)
@@ -634,8 +687,7 @@ def _validate_create_labels(labels, gh: str) -> list:
     for name in wanted:
         hit = canonical.get(name.lower())
         if hit is None:
-            raise HTTPException(status_code=400,
-                                detail=f"unknown label: {name[:100]}")
+            raise HTTPException(status_code=400, detail=f"unknown label: {name[:100]}")
         if hit not in out:
             out.append(hit)
     return out
@@ -646,18 +698,26 @@ def create_issue(body: CreateIssueRequest) -> dict:
     try:
         gh = repo_gh(body.repo)
     except ValueError:
-        raise HTTPException(
-            status_code=400, detail="bad repo, title or body")
-    if (not isinstance(body.title, str) or not body.title.strip()
-            or len(body.title) > 200
-            or not isinstance(body.body, str)
-            or len(body.body) > 4000):
-        raise HTTPException(
-            status_code=400, detail="bad repo, title or body")
+        raise HTTPException(status_code=400, detail="bad repo, title or body")
+    if (
+        not isinstance(body.title, str)
+        or not body.title.strip()
+        or len(body.title) > 200
+        or not isinstance(body.body, str)
+        or len(body.body) > 4000
+    ):
+        raise HTTPException(status_code=400, detail="bad repo, title or body")
     labels = _validate_create_labels(body.labels, gh)
-    argv = ["issue", "create", "--repo", gh,
-           "--title", body.title.strip(),
-           "--body", body.body.strip()]
+    argv = [
+        "issue",
+        "create",
+        "--repo",
+        gh,
+        "--title",
+        body.title.strip(),
+        "--body",
+        body.body.strip(),
+    ]
     for name in labels:
         argv += ["--label", name]
     try:
@@ -700,19 +760,17 @@ def issue_draft(body: IssueDraftRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc))
     cause = body.cause.strip()
     details = body.details.strip()
-    problem = (f"Reported from {body.source} findings on {body.repo}."
-               + (f"\n\n{cause}" if cause else ""))
-    understand = (cause if cause
-                  else "[Provide content for UNDERSTAND THE ISSUE]")
-    scope = (f"```\n{details}\n```" if details
-             else "[Provide content for Scope]")
+    problem = f"Reported from {body.source} findings on {body.repo}." + (
+        f"\n\n{cause}" if cause else ""
+    )
+    understand = cause if cause else "[Provide content for UNDERSTAND THE ISSUE]"
+    scope = f"```\n{details}\n```" if details else "[Provide content for Scope]"
     sections = {
         "Problem Statement": problem,
         "Goal": "[Provide content for Goal]",
         "Non-Goals": "[Provide content for Non-Goals]",
         "Proposed Approach": "[Provide content for Proposed Approach]",
-        "Alternatives Considered":
-            "[Provide content for Alternatives Considered]",
+        "Alternatives Considered": "[Provide content for Alternatives Considered]",
         "Architectural Impact": "[Provide content for Architectural Impact]",
         "Scope": scope,
         "UNDERSTAND THE ISSUE": understand,
@@ -720,8 +778,9 @@ def issue_draft(body: IssueDraftRequest) -> dict:
         "SPECIFY SCOPE": "[Provide content for SPECIFY SCOPE]",
         "DEFINITION OF DONE": DRAFT_DONE_CHECKLIST.rstrip("\n"),
     }
-    md = "".join(f"# {name}\n\n{sections[name]}\n\n"
-                 for name in DRAFT_SCAFFOLD_SECTIONS)
+    md = "".join(
+        f"# {name}\n\n{sections[name]}\n\n" for name in DRAFT_SCAFFOLD_SECTIONS
+    )
     return {"ok": True, "title": body.title, "body": md}
 
 
@@ -742,34 +801,33 @@ def repo_labels(repo: str = "remote-server") -> dict:
 def issue_label(body: IssueLabelRequest) -> dict:
     issue_number = parse_issue_number(body.issue)
     if issue_number is None:
-        raise HTTPException(
-            status_code=400, detail="invalid issue number or url")
+        raise HTTPException(status_code=400, detail="invalid issue number or url")
     label = parse_label_name(body.label)
     if body.op not in LABEL_OPS or label is None:
         raise HTTPException(
-            status_code=400,
-            detail="op must be add or remove with a label name")
+            status_code=400, detail="op must be add or remove with a label name"
+        )
     try:
         gh = repo_gh(body.repo)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     flag = "--add-label" if body.op == "add" else "--remove-label"
     try:
-        run_gh(gh, ["issue", "edit", str(issue_number),
-                    "--repo", gh, flag, label], timeout=60)
+        run_gh(
+            gh,
+            ["issue", "edit", str(issue_number), "--repo", gh, flag, label],
+            timeout=60,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)[:500])
     return {"ok": True, "issue": issue_number}
 
 
-@router.get("/repair/verify-command",
-            response_model=RepairVerifyPreview)
-def repair_verify_command(issue: str = "",
-                          repo: str = "remote-server") -> dict:
+@router.get("/repair/verify-command", response_model=RepairVerifyPreview)
+def repair_verify_command(issue: str = "", repo: str = "remote-server") -> dict:
     issue_number = parse_issue_number(issue)
     if issue_number is None:
-        raise HTTPException(
-            status_code=400, detail="invalid issue number or url")
+        raise HTTPException(status_code=400, detail="invalid issue number or url")
     return _repair_verify_preview(issue_number, repo)
 
 
@@ -781,8 +839,7 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
     require_confirm(body, "repair-dispatch")
     issue_number = parse_issue_number(body.issue)
     if issue_number is None:
-        raise HTTPException(
-            status_code=400, detail="invalid issue number or url")
+        raise HTTPException(status_code=400, detail="invalid issue number or url")
     focus = body.focus if isinstance(body.focus, str) else ""
     if len(focus) > REPAIR_FOCUS_MAX:
         raise HTTPException(status_code=400, detail="focus too large")
@@ -801,24 +858,23 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
     preview = _repair_verify_preview(issue_number, repo_name)
     if not preview["allowlisted"]:
         raise HTTPException(
-            status_code=400,
-            detail=preview["error"] or "verification command rejected")
+            status_code=400, detail=preview["error"] or "verification command rejected"
+        )
     with repair_state_lock:
         # Atomic claim: a second dispatch landing between the idle
         # check above and the worker thread's own running-write
         # still 409s, so back-to-back double dispatch is safe. The
         # thread re-writes the same values on start (idempotent).
         if repair_state["status"] == "running":
-            raise HTTPException(status_code=409,
-                                detail="repair worker busy")
+            raise HTTPException(status_code=409, detail="repair worker busy")
         repair_state["status"] = "running"
         repair_state["timestamp"] = time.time()
         repair_state["issue"] = issue_number
         repair_state["repo"] = repo_name
         repair_state["log_buffer"] = (
             f"Dispatched repair worker for issue #{issue_number} "
-            f"({repo_name})"
-            + (" [group focus]\n" if focus else "\n"))
+            f"({repo_name})" + (" [group focus]\n" if focus else "\n")
+        )
         repair_state["exit_code"] = None
         repair_state["failure_reason"] = None
         _repair_proc = None
@@ -829,17 +885,14 @@ def repair_dispatch(body: RepairDispatchRequest) -> dict:
         trigger_repair(issue_number, repo_name, focus)
     else:
         trigger_repair(issue_number, repo_name)
-    return {"ok": True, "issue": issue_number, "status": "running",
-            "repo": repo_name}
+    return {"ok": True, "issue": issue_number, "status": "running", "repo": repo_name}
 
 
-@router.post("/repair/schedule",
-            response_model=RepairScheduleResult)
+@router.post("/repair/schedule", response_model=RepairScheduleResult)
 def repair_schedule(body: RepairScheduleRequest) -> dict:
     issue_number = parse_issue_number(body.issue)
     if issue_number is None:
-        raise HTTPException(
-            status_code=400, detail="invalid issue number or url")
+        raise HTTPException(status_code=400, detail="invalid issue number or url")
     cadence = (body.cadence or "").strip().lower()
     if cadence == "off":
         with repair_state_lock:
@@ -847,14 +900,16 @@ def repair_schedule(body: RepairScheduleRequest) -> dict:
         return {"ok": True, "schedule": None}
     if cadence not in SCHEDULE_INTERVALS:
         raise HTTPException(
-            status_code=400,
-            detail="cadence must be daily, weekly, or off")
+            status_code=400, detail="cadence must be daily, weekly, or off"
+        )
     now = time.time()
     with repair_state_lock:
         prev = repair_schedules.get(issue_number, {})
-        sched = {"cadence": cadence,
-                 "next_run": now + SCHEDULE_INTERVALS[cadence],
-                 "last_run": prev.get("last_run")}
+        sched = {
+            "cadence": cadence,
+            "next_run": now + SCHEDULE_INTERVALS[cadence],
+            "last_run": prev.get("last_run"),
+        }
         repair_schedules[issue_number] = sched
     _ensure_schedule_ticker()
     return {"ok": True, "schedule": {"issue": issue_number, **sched}}
@@ -866,8 +921,8 @@ def repair_status() -> dict:
     with repair_state_lock:
         out = dict(repair_state)
         out["schedules"] = [
-            {"issue": n, **repair_schedules[n]}
-            for n in sorted(repair_schedules)]
+            {"issue": n, **repair_schedules[n]} for n in sorted(repair_schedules)
+        ]
         return out
 
 

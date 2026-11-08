@@ -25,6 +25,8 @@ import re
 import shutil
 import sys
 
+from cli import repo_root
+
 DEFAULT_STATE_DIR = "/var/lib/buttons/impact-pass"
 DEFAULT_ROUTES = "/:desktop,/:mobile"
 VIEWPORTS = ("desktop", "mobile")
@@ -54,8 +56,7 @@ def checkout_dir() -> str:
     override = os.environ.get("IMPACT_PASS_CHECKOUT", "").strip()
     if override:
         return override
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.dirname(here)
+    return repo_root()
 
 
 def parse_routes(spec: str) -> list:
@@ -71,8 +72,7 @@ def parse_routes(spec: str) -> list:
             continue
         route, sep, viewport = chunk.rpartition(":")
         if not sep or not route or viewport not in VIEWPORTS:
-            raise ValueError(f"bad route spec: {chunk!r} "
-                             f"(want route:desktop|mobile)")
+            raise ValueError(f"bad route spec: {chunk!r} (want route:desktop|mobile)")
         pairs.append((route, viewport))
     if not pairs:
         raise ValueError("no routes configured")
@@ -95,8 +95,7 @@ def _browser_dirs():
     xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
     if xdg:
         cands.append(os.path.join(xdg, "ms-playwright"))
-    cands.append(os.path.join(os.path.expanduser("~"), ".cache",
-                              "ms-playwright"))
+    cands.append(os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"))
     return cands
 
 
@@ -111,9 +110,11 @@ def _chromium_present():
             if not name.startswith("chromium"):
                 continue
             root = os.path.join(base, name)
-            for rel in ("chrome-linux/chrome",
-                        "chrome-linux64/chrome",
-                        "chrome-linux/headless_shell"):
+            for rel in (
+                "chrome-linux/chrome",
+                "chrome-linux64/chrome",
+                "chrome-linux/headless_shell",
+            ):
                 full = os.path.join(root, rel)
                 if os.path.isfile(full):
                     return True, full
@@ -138,19 +139,23 @@ def check_toolchain(checkout=None):
     for tool in UX_BINS:
         full = os.path.join(root, "node_modules", ".bin", tool)
         ok = os.path.isfile(full) and os.access(full, os.X_OK)
-        results.append((f"node_modules/.bin/{tool}", ok,
-                        full if ok else f"missing {full}"))
+        results.append(
+            (f"node_modules/.bin/{tool}", ok, full if ok else f"missing {full}")
+        )
     ok, where = _chromium_present()
-    results.append(("playwright chromium", ok,
-                    where if ok else
-                    "no chromium under the browsers path"))
+    results.append(
+        (
+            "playwright chromium",
+            ok,
+            where if ok else "no chromium under the browsers path",
+        )
+    )
     return results
 
 
 def toolchain_errors(checks):
     """Human lines for the failing entries of check_toolchain()."""
-    return [f"{name}: {detail}" for name, ok, detail in checks
-            if not ok]
+    return [f"{name}: {detail}" for name, ok, detail in checks if not ok]
 
 
 def _load_impact():
@@ -177,29 +182,37 @@ def run_pass(routes, checkout, root, ledger_append) -> int:
             shutil.rmtree(stale, ignore_errors=True)
         try:
             res = impact.run_ux_capture(
-                checkout, route=route,
+                checkout,
+                route=route,
                 desktop=(viewport == "desktop"),
-                mobile=(viewport == "mobile"))
+                mobile=(viewport == "mobile"),
+            )
         except ValueError as exc:
             print(f"error [{route} {viewport}] {exc}", flush=True)
             return 1
         if not res.get("ok"):
-            print(f"error [{route} {viewport}] "
-                  f"{res.get('error', 'capture failed')}", flush=True)
+            print(
+                f"error [{route} {viewport}] {res.get('error', 'capture failed')}",
+                flush=True,
+            )
             return 1
         src = (res.get("artifacts") or {}).get("base", "")
         if not src or not os.path.isdir(src):
-            print(f"error [{route} {viewport}] capture ok but no "
-                  f"artifacts at {src!r}", flush=True)
+            print(
+                f"error [{route} {viewport}] capture ok but no artifacts at {src!r}",
+                flush=True,
+            )
             return 1
         try:
             names = os.listdir(os.path.join(src, "results"))
         except OSError:
             names = []
         if not any(n.endswith(".json") for n in names):
-            print(f"error [{route} {viewport}] capture wrote no "
-                  f"results (console down at the baseUrl?)",
-                  flush=True)
+            print(
+                f"error [{route} {viewport}] capture wrote no "
+                f"results (console down at the baseUrl?)",
+                flush=True,
+            )
             return 1
         key = route_key(route, viewport)
         key_dir = os.path.join(root, key)
@@ -212,29 +225,35 @@ def run_pass(routes, checkout, root, ledger_append) -> int:
         if not os.path.isdir(baseline):
             os.rename(current, baseline)
             seeded += 1
-            print(f"seeded [{route} {viewport}] baseline {baseline}",
-                  flush=True)
+            print(f"seeded [{route} {viewport}] baseline {baseline}", flush=True)
             continue
         diff = impact.diff_versions(baseline, current)
         findings = diff.get("findings", [])
         for hit in findings:
-            ledger_append({
-                "kind": "ux-finding",
-                "source": "impact-pass",
-                "severity": hit.get("severity", "info"),
-                "title": hit.get("title", ""),
-                "route": hit.get("route", route),
-                "viewport": hit.get("viewport", viewport),
-                "evidence": str(hit.get("evidence", ""))[:500],
-            })
+            ledger_append(
+                {
+                    "kind": "ux-finding",
+                    "source": "impact-pass",
+                    "severity": hit.get("severity", "info"),
+                    "title": hit.get("title", ""),
+                    "route": hit.get("route", route),
+                    "viewport": hit.get("viewport", viewport),
+                    "evidence": str(hit.get("evidence", ""))[:500],
+                }
+            )
         shutil.rmtree(baseline)
         os.rename(current, baseline)
         total_findings += len(findings)
-        print(f"pass [{route} {viewport}] "
-              f"findings={len(findings)} "
-              f"compared={diff.get('compared', 0)}", flush=True)
-    print(f"impact-pass routes={len(routes)} "
-          f"findings={total_findings} seeded={seeded}", flush=True)
+        print(
+            f"pass [{route} {viewport}] "
+            f"findings={len(findings)} "
+            f"compared={diff.get('compared', 0)}",
+            flush=True,
+        )
+    print(
+        f"impact-pass routes={len(routes)} findings={total_findings} seeded={seeded}",
+        flush=True,
+    )
     return 0
 
 
@@ -243,26 +262,29 @@ def main(argv=None) -> int:
     if args[:1] == ["--check"]:
         checks = check_toolchain()
         for name, ok, detail in checks:
-            print(f"{'ok' if ok else 'MISSING'} {name} {detail}",
-                  flush=True)
+            print(f"{'ok' if ok else 'MISSING'} {name} {detail}", flush=True)
         errors = toolchain_errors(checks)
         if errors:
-            print(f"impact-pass toolchain incomplete "
-                  f"({len(errors)} missing, see runbook)", flush=True)
+            print(
+                f"impact-pass toolchain incomplete "
+                f"({len(errors)} missing, see runbook)",
+                flush=True,
+            )
             return 1
         print("impact-pass toolchain ok", flush=True)
         return 0
     try:
-        routes = parse_routes(
-            os.environ.get("IMPACT_PASS_ROUTES", DEFAULT_ROUTES))
+        routes = parse_routes(os.environ.get("IMPACT_PASS_ROUTES", DEFAULT_ROUTES))
     except ValueError as exc:
         print(f"impact-pass config error: {exc}", flush=True)
         return 1
 
     errors = toolchain_errors(check_toolchain())
     if errors:
-        print("impact-pass toolchain missing "
-              "(capture would fail; see runbook):", flush=True)
+        print(
+            "impact-pass toolchain missing (capture would fail; see runbook):",
+            flush=True,
+        )
         for err in errors:
             print(f"  - {err}", flush=True)
         return 1

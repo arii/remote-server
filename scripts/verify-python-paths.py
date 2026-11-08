@@ -23,7 +23,13 @@ imports depend on execution order and cwd, hid missing launcher config,
 and broke silently when files moved.
 
 Exit 1 listing file:line on any violation. stdlib only.
+
+Split-statement climbing is also banned: a local assigned a
+__file__-derived value (here = abspath(__file__)) must never be
+climbed later (dirname(here)) — derive the root once via
+deep-agent/cli.py::repo_root instead.
 """
+
 import ast
 import os
 import sys
@@ -61,9 +67,17 @@ def check_tree(root):
     violations = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
-            d for d in dirnames
-            if d not in (".venv", "__pycache__", "node_modules",
-                         ".git", "chroma_db", ".td_rag")
+            d
+            for d in dirnames
+            if d
+            not in (
+                ".venv",
+                "__pycache__",
+                "node_modules",
+                ".git",
+                "chroma_db",
+                ".td_rag",
+            )
         )
         rel_dir = os.path.relpath(dirpath, root)
         if rel_dir == ".":
@@ -85,43 +99,121 @@ def check_tree(root):
     return violations
 
 
+def _scope_node(parents):
+    for node in reversed(parents):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return node
+    return parents[0]
+
+
+def _tainted_locals(tree):
+    """Names assigned __file__-derived values, keyed by scope node.
+
+    Split-statement climbing stashes the __file__ expression in a
+    local first (here = abspath(__file__)) and climbs later
+    (dirname(dirname(here))), so the per-statement check cannot see
+    the link. Only plain-name targets count (mod.__file__ probes in
+    tests never feed a climb).
+    """
+    tainted = {}
+
+    def collect(node, scope):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = node
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if isinstance(node, ast.AnnAssign):
+                targets, value = [node.target], node.value
+            else:
+                targets, value = node.targets, node.value
+            if value is not None and _has_dunder(value):
+                names = set()
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        names.add(target.id)
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        names.update(
+                            e.id for e in target.elts if isinstance(e, ast.Name)
+                        )
+                if names:
+                    tainted.setdefault(id(scope), set()).update(names)
+        for child in ast.iter_child_nodes(node):
+            collect(child, scope)
+
+    collect(tree, tree)
+    return tainted
+
+
+def _split_climb(node, tainted):
+    """dirname() applied to a __file__-derived local (abspath() on an
+    absolute path only normalizes, so it is not a climb)."""
+    if not isinstance(node, ast.stmt) or not tainted:
+        return False
+    for call in ast.walk(node):
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "dirname"
+        ):
+            if any(isinstance(n, ast.Name) and n.id in tainted for n in ast.walk(call)):
+                return True
+    return False
+
+
 def check_file(rel, tree):
     violations = []
     parents = []
+    tainted = _tainted_locals(tree)
 
     def visit(node):
         scope_name = _func_scope(node, parents)
         key = (rel, scope_name)
         # sys.path mutation: sys.path.append/insert/...() calls.
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if (node.func.attr in SYS_PATH_MUTATORS
-                    and _is_sys_path(node.func.value)):
+            if node.func.attr in SYS_PATH_MUTATORS and _is_sys_path(node.func.value):
                 if key not in ALLOW_PATH_MUTATION:
                     violations.append(
                         f"{rel}:{node.lineno}: sys.path.{node.func.attr} "
-                        f"mutation (declare the path at the entry point)")
+                        f"mutation (declare the path at the entry point)"
+                    )
         # sys.path assignment/aug-assign/del: sys.path = ..., += ..., del.
         if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = ([node.target] if isinstance(
-                node, (ast.AnnAssign, ast.AugAssign)) else node.targets)
+            targets = (
+                [node.target]
+                if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+                else node.targets
+            )
             for target in targets:
                 if _is_sys_path(target) and key not in ALLOW_PATH_MUTATION:
                     violations.append(
                         f"{rel}:{node.lineno}: sys.path assignment "
-                        f"(declare the path at the entry point)")
+                        f"(declare the path at the entry point)"
+                    )
         if isinstance(node, ast.Delete):
             for target in node.targets:
                 if _is_sys_path(target) and key not in ALLOW_PATH_MUTATION:
                     violations.append(
                         f"{rel}:{node.lineno}: del sys.path "
-                        f"(declare the path at the entry point)")
+                        f"(declare the path at the entry point)"
+                    )
         # Repo-root climbing from __file__: ".."/pardir constants or
         # stacked .parent climbing in the same statement.
         if key not in ALLOW_ROOT_CLIMB and _climbs_from_dunder(node):
             violations.append(
                 f"{rel}:{node.lineno}: __file__ repo-root climbing "
                 f"(use root-relative literals; root derivation lives in "
-                f"deep-agent/cli.py::repo_root)")
+                f"deep-agent/cli.py::repo_root)"
+            )
+        # Split-statement climbing: a __file__-derived local climbed
+        # later in the same scope (here = abspath(__file__),
+        # then dirname(here)).
+        if key not in ALLOW_ROOT_CLIMB and _split_climb(
+            node, tainted.get(id(_scope_node(parents)), ())
+        ):
+            violations.append(
+                f"{rel}:{node.lineno}: __file__ split-statement climbing "
+                f"(derive the root once via "
+                f"deep-agent/cli.py::repo_root"
+            )
 
     def walk(node):
         parents.append(node)
@@ -160,24 +252,30 @@ def _climbs_from_dunder(node):
     # Nested dirname(): one dirname() stays in the module dir (package
     # data); two or more wrapping a __file__-derived value climbs out.
     for n in ast.walk(node):
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
-                and n.func.attr == "dirname":
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "dirname"
+        ):
             depth, inner = 0, n
-            while isinstance(inner, ast.Call) \
-                    and isinstance(inner.func, ast.Attribute) \
-                    and inner.func.attr == "dirname":
+            while (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr == "dirname"
+            ):
                 depth += 1
                 inner = inner.args[0] if inner.args else None
             if depth >= 2 and inner is not None and _has_dunder(inner):
                 return True
     # .parents[N]: parents[0] is the module dir (fine); N>=1 climbs.
     for n in ast.walk(node):
-        if isinstance(n, ast.Subscript) \
-                and isinstance(n.value, ast.Attribute) \
-                and n.value.attr == "parents":
+        if (
+            isinstance(n, ast.Subscript)
+            and isinstance(n.value, ast.Attribute)
+            and n.value.attr == "parents"
+        ):
             idx = n.slice
-            if isinstance(idx, ast.Constant) \
-                    and isinstance(idx.value, int):
+            if isinstance(idx, ast.Constant) and isinstance(idx.value, int):
                 if idx.value >= 1:
                     return True
             else:
@@ -201,8 +299,10 @@ def main():
     root = os.getcwd()
     for marker in ("skills-lock.json", "docker-compose.yml"):
         if not os.path.isfile(os.path.join(root, marker)):
-            print(f"verify-python-paths: run from the repo root "
-                  f"(missing {marker} in {root})")
+            print(
+                f"verify-python-paths: run from the repo root "
+                f"(missing {marker} in {root})"
+            )
             return 2
     violations = check_tree(root)
     if violations:
