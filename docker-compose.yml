@@ -159,9 +159,11 @@ services:
       APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
-      NEBIUS_MODEL: ${NEBIUS_MODEL:-}
+      # Default mirrors deep-agent/model_router.py DEFAULT_NEBIUS_MODEL;
+      # keep both in sync so sessions never stall on model choice.
+      NEBIUS_MODEL: ${NEBIUS_MODEL:-zai-org/GLM-5.3-Flash}
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
-      NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
+      NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-2.00}
       # Shared headed browser (Solution A): Selenium Grid base for agent
       # CDP sessions. The service must exist; there is no fail-safe.
       BROWSER_ENDPOINT: http://browser:4444
@@ -320,12 +322,13 @@ services:
       GITHUB_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       GH_TOKEN: ${BOOMTICK_GITHUB_TOKEN:-}
       # Nebius fallback for the local-model router (mirrors terminal).
-      # Empty/unset = Ollama-only; calls raise instead of falling back.
+      # Model default mirrors deep-agent/model_router.py; host env
+      # overrides both. Cap defaults to $2.00 (spend-gate default).
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
-      NEBIUS_MODEL: ${NEBIUS_MODEL:-}
+      NEBIUS_MODEL: ${NEBIUS_MODEL:-zai-org/GLM-5.3-Flash}
       NEBIUS_BASE_URL: ${NEBIUS_BASE_URL:-}
-      # Metered-spend cap (gate + budget UI). Empty/unset = uncapped.
-      NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-}
+      # Metered-spend cap (gate + budget UI).
+      NEBIUS_SPEND_CAP_USD: ${NEBIUS_SPEND_CAP_USD:-2.00}
       # Ollama on the compose network (repair worker, narrators).
       # localhost is this container itself — the reachable default is
       # the ollama service alias (issue #966). Host override wins.
