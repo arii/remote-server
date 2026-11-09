@@ -1091,6 +1091,11 @@ export function AttentionRow({
             >
               {item.action.label}
             </button>
+            {/* Show the block reason as visible text; the title tooltip is
+                unreachable on touch devices. */}
+            <p className="row-meta" data-testid={`now-retry-why-${item.id}`}>
+              {retryBlockWarning(block)}
+            </p>
           </>
         ) : (
           <>
