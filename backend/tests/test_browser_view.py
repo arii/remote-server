@@ -887,6 +887,60 @@ class BridgeKeyTest(unittest.TestCase):
         asyncio.run(bridge.key("a", "KeyA"))
         self.assertEqual(seen.get("Input.insertText"), {"text": "a"})
 
+    def test_shift_dispatches_raw_with_modifier_mask(self):
+        # The viewer banner showed "unknown key: 'Shift'": a bare
+        # physical Shift must travel as rawKeyDown/rawKeyUp with
+        # the Shift bit set, never raise.
+        import asyncio
+
+        bridge = browser_view.CDPBridge("sid")
+        calls = []
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Runtime.evaluate":
+                return "BODY"
+            calls.append((method, params))
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.key("Shift", "ShiftLeft"))
+        key_calls = [c for c in calls if c[0] == "Input.dispatchKeyEvent"]
+        self.assertEqual(
+            [(c[1]["type"], c[1]["modifiers"]) for c in key_calls],
+            [("rawKeyDown", 8), ("rawKeyUp", 0)],
+        )
+        self.assertEqual(key_calls[0][1]["windowsVirtualKeyCode"], 16)
+        self.assertEqual(key_calls[0][1]["code"], "ShiftLeft")
+
+    def test_held_shift_applies_to_chorded_key(self):
+        # Shift held while Enter is struck: the Enter keyDown must
+        # carry modifiers=8 so Chromium resolves the chord.
+        import asyncio
+
+        bridge = browser_view.CDPBridge("sid")
+        calls = []
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Runtime.evaluate":
+                return "BODY"
+            calls.append((method, params))
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.key("Shift", "ShiftLeft"))
+        # A full down/up cycle must leave no leaked modifier state.
+        self.assertEqual(bridge._modifiers, 0)
+        # A held modifier propagates to the next chorded keyDown.
+        calls.clear()
+        bridge._modifiers = 8
+        asyncio.run(bridge.key("Enter", "Enter"))
+        downs = [
+            c
+            for c in calls
+            if c[0] == "Input.dispatchKeyEvent" and c[1]["type"] == "keyDown"
+        ]
+        self.assertEqual(downs[0][1]["modifiers"], 8)
+
     def test_type_text_bulk_commits_via_insert_text(self):
         # On-screen keyboard text never existed as key presses, so
         # it must take the protocol-blessed IME/commit path whole.
