@@ -5,8 +5,10 @@ description, trigger_nodes), indexes ~100-token summaries at startup,
 and injects full Markdown runbooks only for skills targeting the
 active node. Stdlib-only: no PyYAML dependency (neither venv ships it).
 """
+
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,17 +66,38 @@ class SkillsRegistry:
         self.skills_dir = skills_dir or (Path(__file__).resolve().parent / "skills")
         self._meta_cache: dict = {}
         self._body_cache: dict = {}
+        self._source_hash: str | None = None
         self.refresh_index()
+
+    def source_hash(self) -> str:
+        """SHA-256 over sorted skill file bytes (#1214)."""
+        digest = hashlib.sha256()
+        if self.skills_dir.exists():
+            for md_path in sorted(self.skills_dir.glob("*.md")):
+                digest.update(md_path.name.encode())
+                try:
+                    digest.update(md_path.read_bytes())
+                except OSError:
+                    digest.update(b"\x00unreadable")
+        return digest.hexdigest()
+
+    def refresh_if_stale(self) -> bool:
+        """Reindex when skill files changed since load; True on refresh."""
+        current = self.source_hash()
+        if current == self._source_hash:
+            return False
+        self.refresh_index()
+        return True
 
     def refresh_index(self) -> None:
         self._meta_cache.clear()
         self._body_cache.clear()
-        if not self.skills_dir.exists():
-            return
-        for md_path in sorted(self.skills_dir.glob("*.md")):
-            meta, body = self._parse_skill_file(md_path)
-            self._meta_cache[meta.name] = meta
-            self._body_cache[meta.name] = body
+        if self.skills_dir.exists():
+            for md_path in sorted(self.skills_dir.glob("*.md")):
+                meta, body = self._parse_skill_file(md_path)
+                self._meta_cache[meta.name] = meta
+                self._body_cache[meta.name] = body
+        self._source_hash = self.source_hash()
 
     @staticmethod
     def _parse_skill_file(path: Path) -> tuple:
@@ -86,13 +109,17 @@ class SkillsRegistry:
         if isinstance(triggers, str):
             triggers = [triggers]
         triggers = tuple(str(t) for t in triggers)
-        return SkillMetadata(name=name, description=description, trigger_nodes=triggers, path=path), body
+        return SkillMetadata(
+            name=name, description=description, trigger_nodes=triggers, path=path
+        ), body
 
     def skill_names(self) -> list:
+        self.refresh_if_stale()
         return sorted(self._meta_cache)
 
     def get_progressive_index_summary(self) -> str:
         """Returns compact ~100-token index of all registered skills."""
+        self.refresh_if_stale()
         if not self._meta_cache:
             return "No dynamic skills registered."
         lines = ["### Available Domain Skills (Progressive Disclosure Index)"]
@@ -101,12 +128,14 @@ class SkillsRegistry:
         return "\n".join(lines)
 
     def load_skill(self, name: str) -> str:
+        self.refresh_if_stale()
         if name not in self._body_cache:
             raise SkillNotFoundError(f"Skill '{name}' not found in {self.skills_dir}")
         return self._body_cache[name]
 
     def inject_skills_for_node(self, node_name: str, base_system_prompt: str) -> str:
         """Appends full Markdown instructions ONLY for skills targeting `node_name`."""
+        self.refresh_if_stale()
         matched = [
             self._body_cache[name]
             for name, meta in self._meta_cache.items()

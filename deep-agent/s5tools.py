@@ -58,10 +58,9 @@ def check_allowed(argv):
     """True when argv starts with an allowlisted verify prefix, or
     runs one repo test file directly (python3 tests/test_x.py)."""
     tupled = tuple(argv)
-    if len(tupled) >= 2 and tupled[0] == "python3" \
-            and TEST_FILE_RE.match(tupled[1]):
+    if len(tupled) >= 2 and tupled[0] == "python3" and TEST_FILE_RE.match(tupled[1]):
         return True
-    return any(tupled[:len(p)] == p for p in CHECK_PREFIXES)
+    return any(tupled[: len(p)] == p for p in CHECK_PREFIXES)
 
 
 def allowed_commands_text():
@@ -84,9 +83,12 @@ def check_env(checkout):
     """
     try:
         base = os.environ.get("PYTHONPATH", "")
-        path = (checkout + os.pathsep
-                + os.path.join(checkout, "deep-agent")
-                + (os.pathsep + base if base else ""))
+        path = (
+            checkout
+            + os.pathsep
+            + os.path.join(checkout, "deep-agent")
+            + (os.pathsep + base if base else "")
+        )
         return {"PYTHONPATH": path}
     except Exception:
         return {"PYTHONPATH": checkout}
@@ -102,13 +104,16 @@ def run_repo_command(checkout, command):
     except ValueError as exc:
         return f"REJECTED: bad command line: {exc}"
     if not argv or not check_allowed(argv):
-        return ("REJECTED: command must start with one of: "
-                + allowed_commands_text())
+        return "REJECTED: command must start with one of: " + allowed_commands_text()
     try:
         proc = subprocess.run(
-            argv, cwd=checkout, capture_output=True, text=True,
-            timeout=CHECK_TIMEOUT, env={**os.environ,
-                                        **check_env(checkout)})
+            argv,
+            cwd=checkout,
+            capture_output=True,
+            text=True,
+            timeout=CHECK_TIMEOUT,
+            env={**os.environ, **check_env(checkout)},
+        )
     except subprocess.TimeoutExpired:
         return f"TIMEOUT after {CHECK_TIMEOUT}s: {command[:200]}"
     except OSError as exc:
@@ -155,14 +160,14 @@ def repo_for_checkout(path):
         if path == root or path.startswith(root.rstrip("/") + "/"):
             return repo
     parts = path.rstrip("/").split("/")
-    if len(parts) >= 2 and parts[-2] == "repos" and REPO_RE.match(
-            "arii/" + parts[-1]):
+    if len(parts) >= 2 and parts[-2] == "repos" and REPO_RE.match("arii/" + parts[-1]):
         return "arii/" + parts[-1]
     return ""
 
 
-PR_JSON_FIELDS = ("number,title,author,state,isDraft,url,"
-                  "reviewDecision,statusCheckRollup")
+PR_JSON_FIELDS = (
+    "number,title,author,state,isDraft,url,reviewDecision,statusCheckRollup"
+)
 
 
 def read_pr(number, repo, timeout=60):
@@ -184,9 +189,11 @@ def read_pr(number, repo, timeout=60):
         return "PR_ERROR: bad repo (want owner/name)"
     try:
         proc = subprocess.run(
-            ["gh", "pr", "view", str(num), "--repo", text,
-             "--json", PR_JSON_FIELDS],
-            capture_output=True, text=True, timeout=timeout)
+            ["gh", "pr", "view", str(num), "--repo", text, "--json", PR_JSON_FIELDS],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"PR_ERROR: gh failed: {exc}"[:MAX_OUT]
     if proc.returncode != 0:
@@ -202,22 +209,27 @@ def read_pr(number, repo, timeout=60):
     checks = snap.get("statusCheckRollup") or []
     states = collections.Counter(
         str(c.get("conclusion") or c.get("status") or "?").upper()
-        for c in checks if isinstance(c, dict))
-    check_line = (", ".join(f"{k}:{v}" for k, v in sorted(states.items()))
-                  or "no checks")
-    line = (f"PR #{snap.get('number')} [{snap.get('state')}"
-            f"{' DRAFT' if snap.get('isDraft') else ''}] "
-            f"{snap.get('title')} by {(author.get('login') if isinstance(author, dict) else author) or '?'} "
-            f"review={snap.get('reviewDecision') or 'none'} "
-            f"checks=({check_line}) {snap.get('url') or ''}")
+        for c in checks
+        if isinstance(c, dict)
+    )
+    check_line = ", ".join(f"{k}:{v}" for k, v in sorted(states.items())) or "no checks"
+    line = (
+        f"PR #{snap.get('number')} [{snap.get('state')}"
+        f"{' DRAFT' if snap.get('isDraft') else ''}] "
+        f"{snap.get('title')} by {(author.get('login') if isinstance(author, dict) else author) or '?'} "
+        f"review={snap.get('reviewDecision') or 'none'} "
+        f"checks=({check_line}) {snap.get('url') or ''}"
+    )
     return line[:MAX_OUT]
 
 
 def run(argv, cwd=None, timeout=DEFAULT_TIMEOUT):
     """Run argv (no shell). Returns stripped stdout; raises RuntimeError
     with capped stderr on failure or timeout."""
-    if not isinstance(argv, list) or not argv or not all(
-        isinstance(a, str) for a in argv
+    if (
+        not isinstance(argv, list)
+        or not argv
+        or not all(isinstance(a, str) for a in argv)
     ):
         raise ValueError("argv must be a non-empty list of str")
     try:
@@ -300,13 +312,24 @@ def grep_repo(checkout, pattern, limit=2000):
         return "REJECTED: bad pattern"
     try:
         proc = subprocess.run(
-            ["grep", "-rn", "-m", "20", "--exclude-dir=.git",
-             "--exclude-dir=node_modules", "--exclude-dir=.venv",
-             "--exclude-dir=__pycache__", "--exclude-dir=.boomtick",
-             "--exclude-dir=chroma_db", "--exclude-dir=.claude",
-             "--exclude-dir=.muse",
-             "--exclude=ledger.jsonl",
-             "--", pattern, "."],
+            [
+                "grep",
+                "-rn",
+                "-m",
+                "20",
+                "--exclude-dir=.git",
+                "--exclude-dir=node_modules",
+                "--exclude-dir=.venv",
+                "--exclude-dir=__pycache__",
+                "--exclude-dir=.boomtick",
+                "--exclude-dir=chroma_db",
+                "--exclude-dir=.claude",
+                "--exclude-dir=.muse",
+                "--exclude=ledger.jsonl",
+                "--",
+                pattern,
+                ".",
+            ],
             cwd=checkout,
             capture_output=True,
             text=True,
@@ -357,9 +380,15 @@ def _host_blocked(host, allow_loopback=False):
             continue
         # Union, not is_global alone: stdlib marks multicast
         # (224.0.0.0/4) global, and only is_global catches 100.64/10.
-        if (ip.is_loopback or ip.is_link_local or ip.is_private
-                or ip.is_multicast or ip.is_reserved
-                or ip.is_unspecified or not ip.is_global):
+        if (
+            ip.is_loopback
+            or ip.is_link_local
+            or ip.is_private
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+            or not ip.is_global
+        ):
             return f"blocked non-public address {ip} for {host}"
     return None
 
@@ -368,9 +397,12 @@ def _one_line(exc, limit=200):
     return " ".join(str(exc).split())[:limit]
 
 
-def fetch_url(url, timeout=FETCH_DEFAULT_TIMEOUT,
-              max_bytes=FETCH_DEFAULT_MAX_BYTES,
-              _allow_loopback=False):
+def fetch_url(
+    url,
+    timeout=FETCH_DEFAULT_TIMEOUT,
+    max_bytes=FETCH_DEFAULT_MAX_BYTES,
+    _allow_loopback=False,
+):
     """Fetch a URL's text. Never raises: failures return
     "FETCH_ERROR: <one-line reason>".
 
@@ -395,8 +427,7 @@ def fetch_url(url, timeout=FETCH_DEFAULT_TIMEOUT,
         except Exception as exc:
             return f"FETCH_ERROR: bad url: {_one_line(exc)}"
         if parts.scheme not in ("http", "https"):
-            return (f"FETCH_ERROR: scheme must be http(s): "
-                    f"{parts.scheme or '(none)'}")
+            return f"FETCH_ERROR: scheme must be http(s): {parts.scheme or '(none)'}"
         host = parts.hostname or ""
         if not host:
             return "FETCH_ERROR: url has no host"
@@ -453,8 +484,7 @@ def fetch_url(url, timeout=FETCH_DEFAULT_TIMEOUT,
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, socket.timeout):
-                return (f"FETCH_ERROR: timed out after "
-                        f"{timeout}s: {host}")
+                return f"FETCH_ERROR: timed out after {timeout}s: {host}"
             return f"FETCH_ERROR: {_one_line(reason)}"
         except socket.timeout:
             return f"FETCH_ERROR: timed out after {timeout}s: {host}"
@@ -473,10 +503,10 @@ SEARCH_MAX_WAIT_S = 10
 SEARCH_TITLE_CAP = 200
 SEARCH_SNIPPET_CAP = 400
 
-_SEARCH_CARD_RE = re.compile(
-    r'<section[^>]*class="card search-result"[^>]*>')
+_SEARCH_CARD_RE = re.compile(r'<section[^>]*class="card search-result"[^>]*>')
 _SEARCH_TITLE_RE = re.compile(
-    r'<a[^>]*class="title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+    r'<a[^>]*class="title"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.S
+)
 _SEARCH_DESC_RE = re.compile(r'<p class="description">(.*?)</p>', re.S)
 _SEARCH_TAG_RE = re.compile(r"<[^>]+>")
 _SEARCH_WAIT_RE = re.compile(r"Wait For A Moment")
@@ -511,17 +541,23 @@ def _parse_search_results(page, limit):
         if parts.scheme not in ("http", "https") or not parts.hostname:
             continue
         desc = _SEARCH_DESC_RE.search(segment)
-        hits.append((
-            url,
-            _clean_search_text(title.group(2), SEARCH_TITLE_CAP),
-            _clean_search_text(
-                desc.group(1) if desc else "", SEARCH_SNIPPET_CAP),
-        ))
+        hits.append(
+            (
+                url,
+                _clean_search_text(title.group(2), SEARCH_TITLE_CAP),
+                _clean_search_text(desc.group(1) if desc else "", SEARCH_SNIPPET_CAP),
+            )
+        )
     return hits
 
 
-def search_web(query, limit=5, timeout=SEARCH_DEFAULT_TIMEOUT,
-               _allow_loopback=False, _base_url=None):
+def search_web(
+    query,
+    limit=5,
+    timeout=SEARCH_DEFAULT_TIMEOUT,
+    _allow_loopback=False,
+    _base_url=None,
+):
     """Keyless web search. Never raises: failures return
     "SEARCH_ERROR: <one-line reason>", no matches return
     "no results".
@@ -539,8 +575,7 @@ def search_web(query, limit=5, timeout=SEARCH_DEFAULT_TIMEOUT,
             return "SEARCH_ERROR: empty query"
         words = query.strip()
         if len(words) > SEARCH_MAX_QUERY:
-            return (f"SEARCH_ERROR: query too long "
-                    f"(max {SEARCH_MAX_QUERY} chars)")
+            return f"SEARCH_ERROR: query too long (max {SEARCH_MAX_QUERY} chars)"
         try:
             count = int(limit)
         except (TypeError, ValueError):
@@ -548,25 +583,20 @@ def search_web(query, limit=5, timeout=SEARCH_DEFAULT_TIMEOUT,
         count = max(1, min(SEARCH_MAX_RESULTS, count))
         base = _base_url or f"https://{SEARCH_PROVIDER_HOST}"
         url = base + "/search?query=" + urllib.parse.quote(words)
-        body = fetch_url(url, timeout=timeout,
-                         _allow_loopback=_allow_loopback)
+        body = fetch_url(url, timeout=timeout, _allow_loopback=_allow_loopback)
         if body.startswith("FETCH_ERROR:"):
-            return "SEARCH_ERROR: " + body[len("FETCH_ERROR:"):].strip()
+            return "SEARCH_ERROR: " + body[len("FETCH_ERROR:") :].strip()
         if _SEARCH_WAIT_RE.search(body):
             retry = _SEARCH_SST_RE.search(body)
             if retry is None:
-                return ("SEARCH_ERROR: provider asked to wait but "
-                        "gave no retry link")
+                return "SEARCH_ERROR: provider asked to wait but gave no retry link"
             asked = _SEARCH_WAIT_SECS_RE.search(body)
-            wait = min(SEARCH_MAX_WAIT_S,
-                       int(asked.group(1)) if asked else 2)
+            wait = min(SEARCH_MAX_WAIT_S, int(asked.group(1)) if asked else 2)
             time.sleep(wait)
             again = base + html.unescape(retry.group(1))
-            body = fetch_url(again, timeout=timeout,
-                             _allow_loopback=_allow_loopback)
+            body = fetch_url(again, timeout=timeout, _allow_loopback=_allow_loopback)
             if body.startswith("FETCH_ERROR:"):
-                return ("SEARCH_ERROR: " +
-                        body[len("FETCH_ERROR:"):].strip())
+                return "SEARCH_ERROR: " + body[len("FETCH_ERROR:") :].strip()
             if _SEARCH_WAIT_RE.search(body):
                 return "SEARCH_ERROR: provider still rate-limiting"
         hits = _parse_search_results(body, count)
@@ -578,3 +608,93 @@ def search_web(query, limit=5, timeout=SEARCH_DEFAULT_TIMEOUT,
         return "\n".join(lines)
     except Exception as exc:
         return f"SEARCH_ERROR: {_one_line(exc)}"
+
+
+MCP_PING_TIMEOUT = 10
+MCP_PING_METHOD = "ping"
+
+
+class MCPHealthError(RuntimeError):
+    """An MCP endpoint failed its pre-dispatch health check (#1215)."""
+
+
+_MCP_HOST_RE = re.compile(r"^[A-Za-z0-9._-]+(?::\d+)?$")
+
+
+def _mcp_url(endpoint):
+    """Normalized http(s) URL for an MCP endpoint. Raises ValueError."""
+    text = endpoint.strip() if isinstance(endpoint, str) else ""
+    if not text:
+        raise ValueError("bad mcp endpoint: empty")
+    if "://" not in text:
+        text = "http://" + text
+    try:
+        parts = urllib.parse.urlsplit(text)
+    except Exception:
+        raise ValueError(f"bad mcp endpoint: {endpoint!r}")
+    host = parts.hostname or ""
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"bad mcp endpoint: {endpoint!r}")
+    if not _MCP_HOST_RE.match(parts.netloc.split("@")[-1].split("/")[0]):
+        raise ValueError(f"bad mcp endpoint: {endpoint!r}")
+    if not host:
+        raise ValueError(f"bad mcp endpoint: {endpoint!r}")
+    return text
+
+
+def mcp_ping(endpoint, timeout=MCP_PING_TIMEOUT):
+    """JSON-RPC ping against an MCP endpoint. Returns the result payload.
+
+    Raises MCPHealthError (endpoint identity + check output) on any
+    failure: refused/timeout/non-2xx/non-JSON/RPC-error. No fallback.
+    """
+    url = _mcp_url(endpoint)
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": "s5-healthcheck", "method": MCP_PING_METHOD}
+    ).encode()
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            raw = resp.read(65536)
+    except urllib.error.HTTPError as exc:
+        raise MCPHealthError(
+            f"mcp endpoint unhealthy: {endpoint}: HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
+        raise MCPHealthError(
+            f"mcp endpoint unhealthy: {endpoint}: {_one_line(exc)}"
+        ) from exc
+    except Exception as exc:
+        raise MCPHealthError(
+            f"mcp endpoint unhealthy: {endpoint}: {_one_line(exc)}"
+        ) from exc
+    if status < 200 or status >= 300:
+        raise MCPHealthError(f"mcp endpoint unhealthy: {endpoint}: HTTP {status}")
+    try:
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError as exc:
+        raise MCPHealthError(
+            f"mcp endpoint unhealthy: {endpoint}: non-JSON reply"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("id") != "s5-healthcheck":
+        raise MCPHealthError(f"mcp endpoint unhealthy: {endpoint}: bad reply id")
+    if "error" in payload:
+        raise MCPHealthError(
+            f"mcp endpoint unhealthy: {endpoint}: {str(payload['error'])[:200]}"
+        )
+    return payload.get("result")
+
+
+def require_mcp_healthy(endpoint, timeout=MCP_PING_TIMEOUT):
+    """Dispatch-entry guard: ping first, raise before any turn (#1215).
+
+    Call at dispatch entry; a dead endpoint raises MCPHealthError fast
+    instead of failing deep inside a turn. Returns the ping result.
+    """
+    return mcp_ping(endpoint, timeout=timeout)
