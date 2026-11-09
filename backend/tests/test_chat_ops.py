@@ -1889,6 +1889,12 @@ class ChatStderrTailTest(unittest.TestCase):
         self._orig_spawn = chat.spawn_chat_process
         self._orig_venv = chat.deep_agent_python
         self._orig_script = chat.deep_agent_script
+        self._orig_resolve = chat.model_router.resolve_llm
+        chat.model_router.resolve_llm = lambda prefer=None: {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
         chat.get_repo_info = lambda repo: {
             "gh": "arii/remote-server",
             "td_cwd": "/srv/remote-server",
@@ -1903,6 +1909,7 @@ class ChatStderrTailTest(unittest.TestCase):
             os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
         chat.get_repo_info = self._orig_repo
         chat.spawn_chat_process = self._orig_spawn
+        chat.model_router.resolve_llm = self._orig_resolve
         chat.deep_agent_python = self._orig_venv
         chat.deep_agent_script = self._orig_script
 
