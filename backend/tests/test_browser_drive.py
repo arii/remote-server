@@ -213,6 +213,24 @@ class DriveApiTest(unittest.TestCase):
         # Presence only: the drive must not seize the wheel.
         self.assertEqual(state.state, "IDLE")
 
+    def test_activity_returns_human_and_agent_events(self):
+        browser_drive.browser_view._log_activity("go", "https://x/", via="human")
+        browser_drive.browser_view._log_activity(
+            "drive", "navigate https://x/", via="agent"
+        )
+        resp = make_client().get("/api/browser/activity?limit=10")
+        self.assertEqual(resp.status_code, 200)
+        events = resp.json()["events"]
+        vias = {(e["kind"], e["via"]) for e in events}
+        self.assertIn(("go", "human"), vias)
+        self.assertIn(("drive", "agent"), vias)
+
+    def test_activity_ring_is_capped(self):
+        for i in range(105):
+            browser_drive.browser_view._log_activity("click", f"{i},0")
+        resp = make_client().get("/api/browser/activity?limit=200")
+        self.assertEqual(len(resp.json()["events"]), 100)
+
     def test_drive_click_passes_coordinates(self):
         bridges = []
         orig_init = FakeBridge.__init__

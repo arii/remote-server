@@ -42,6 +42,19 @@ import uuid
 
 from backend.exec.engine import compose_argv, exec_argv
 from backend.ledger import append as ledger_append
+from backend.api.routers.agent_control import read_control_state
+
+
+def _human_paused() -> bool:
+    """True while the human holds the shared-browser wheel.
+
+    Best-effort: an unreadable control file never stalls a turn.
+    """
+    try:
+        return read_control_state().state == "PAUSED_BY_USER"
+    except Exception:
+        return False
+
 
 PROVIDERS = ("muse", "agy")
 
@@ -57,6 +70,7 @@ def ordered_providers() -> tuple:
     if first not in PROVIDERS:
         return PROVIDERS
     return (first,) + tuple(p for p in PROVIDERS if p != first)
+
 
 READ_CHUNK = 65536
 STDERR_TAIL = 4000
@@ -142,8 +156,7 @@ def tool_step_line(update: dict) -> str:
     """
     name = update.get("tool_name", "")
     info = update.get("tool_info")
-    params = (info.get("parameters")
-              if isinstance(info, dict) else None)
+    params = info.get("parameters") if isinstance(info, dict) else None
     arg = ""
     if isinstance(params, dict):
         for value in params.values():
@@ -152,6 +165,7 @@ def tool_step_line(update: dict) -> str:
                 break
     line = "tool %s" % name if name else "tool"
     return "%s %s" % (line, arg) if arg else line
+
 
 # A stored turn result must not live forever: entries that no route
 # ever pops (abandoned streams, issue #535) are swept past this age,
@@ -175,8 +189,7 @@ async def _stop_proc(proc: subprocess.Popen) -> None:
     except Exception:
         pass
     try:
-        await asyncio.wait_for(asyncio.to_thread(proc.wait),
-                               KILL_GRACE)
+        await asyncio.wait_for(asyncio.to_thread(proc.wait), KILL_GRACE)
     except (asyncio.TimeoutError, Exception):
         pass
     if proc.poll() is None:
@@ -185,8 +198,7 @@ async def _stop_proc(proc: subprocess.Popen) -> None:
         except Exception:
             pass
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(proc.wait), KILL_GRACE)
+            await asyncio.wait_for(asyncio.to_thread(proc.wait), KILL_GRACE)
         except (asyncio.TimeoutError, Exception):
             pass
 
@@ -221,9 +233,14 @@ def terminal_cwd(name: str) -> str:
     return f"{TERMINAL_REPOS}/{name}"
 
 
-def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
-               continued: bool,
-               conversation_id: str | None = None) -> list:
+def turn_argv(
+    provider: str,
+    cwd: str,
+    session_id: str,
+    prompt: str,
+    continued: bool,
+    conversation_id: str | None = None,
+) -> list:
     """Argv for one headless turn. Injectable seam: tests patch this
     to return a fake command so no real agent binary runs under test.
 
@@ -232,8 +249,7 @@ def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
     hanging the turn.
     """
     if provider == "muse":
-        cli: list[str] = ["muse", "exec", "--session-id", session_id,
-                          prompt]
+        cli: list[str] = ["muse", "exec", "--session-id", session_id, prompt]
     elif provider == "agy":
         # Session pinning (issue #440): every agy turn runs in
         # stream-json so its init event reports the conversation_id,
@@ -247,8 +263,7 @@ def turn_argv(provider: str, cwd: str, session_id: str, prompt: str,
         cli += ["--output-format", "stream-json", "-p", prompt]
     else:
         raise ValueError("unknown provider")
-    return compose_argv("exec", "-T", "--workdir", cwd, "terminal",
-                        *cli)
+    return compose_argv("exec", "-T", "--workdir", cwd, "terminal", *cli)
 
 
 # File-hygiene guardrail (issue #838): every provider prompt
@@ -275,12 +290,16 @@ def guard_prompt(prompt: str) -> str:
 # fail td validate-issue downstream. When the prompt asks for a spec,
 # append the canonical template; every other prompt passes through
 # untouched, and a missing template file degrades to no-op.
-SPEC_TASK_MARKERS = ("design spec", "spec issue", "write a spec",
-                     "write_spec_issue", "spec template")
+SPEC_TASK_MARKERS = (
+    "design spec",
+    "spec issue",
+    "write a spec",
+    "write_spec_issue",
+    "spec template",
+)
 # Root-relative: every entry point runs with cwd=repo root (server /app,
 # tests, run_check worktrees). No __file__ climbing (see scripts gating).
-SPEC_SKILL_PATH = os.path.join(
-    "deep-agent", "skills", "write_spec_issue.md")
+SPEC_SKILL_PATH = os.path.join("deep-agent", "skills", "write_spec_issue.md")
 
 
 def is_spec_task(prompt: str) -> bool:
@@ -305,8 +324,7 @@ def spec_prompt(prompt: str) -> str:
     template = spec_template()
     if not template:
         return prompt
-    return "%s\n\nFollow this spec template exactly:\n\n%s" % (
-        prompt, template)
+    return "%s\n\nFollow this spec template exactly:\n\n%s" % (prompt, template)
 
 
 def _first_line(text: str, limit: int) -> str:
@@ -317,11 +335,44 @@ def _first_line(text: str, limit: int) -> str:
     return ""
 
 
-def turn_decisions(provider: str, prompt: str, continued: bool,
-                   code: int | None, started: float, tail: str,
-                   err_tail: str, truncated: bool,
-                   timed_out: bool,
-                   timeout: int | None = None) -> tuple[str, str | None]:
+# Browsing brief for repo-free turns (the cobrowse drawer): the
+# agent drives the shared headed browser the human watches in
+# Buttons. Terminal-container CLIs cannot use the chat tools, so
+# they drive the same page over HTTP. Kept terse: it rides every
+# repo-free prompt.
+BROWSE_GUIDANCE = (
+    "You are driving the shared browser the human watches in the "
+    "Buttons browser drawer (/cdp-stream) — same live page, they "
+    "see every step. API base (this container's network): "
+    "http://buttons:8000/api/browser. Per errand: GET /snapshot "
+    "(page URL, title, click targets with x/y), GET /activity "
+    "(what the human just did — observe and learn from it), POST "
+    "/drive {op navigate|click|type|key|wheel, url|x|y|text|key} "
+    "then snapshot again to verify. Rules: say what you will do "
+    "before each act; attach-only — never open Grid sessions "
+    "yourself (browser-busy means ask the human to open the "
+    "drawer); a 409 means the human holds the wheel — stop, "
+    "narrate, wait for Hand Back; never automate past login "
+    "walls, payments, or sends — hand that step to the human. "
+    "Learn: read /var/lib/buttons/browser_notes.md first (shared "
+    "notebook, human-editable), append confirmed lessons as "
+    "`## <site>` bullets, and quote the recent /activity in your "
+    "summary so the next turn learns too. Now the request:\n\n"
+)
+
+
+def turn_decisions(
+    provider: str,
+    prompt: str,
+    continued: bool,
+    code: int | None,
+    started: float,
+    tail: str,
+    err_tail: str,
+    truncated: bool,
+    timed_out: bool,
+    timeout: int | None = None,
+) -> tuple[str, str | None]:
     """Decision block + failure reason for one agent-turn record.
 
     Returns (detail, error): detail is the what+why lines History
@@ -332,8 +383,10 @@ def turn_decisions(provider: str, prompt: str, continued: bool,
     limit = TURN_TIMEOUT if timeout is None else timeout
     asked = _first_line(prompt, 150)
     session = "continued session" if continued else "fresh session"
-    lines = [f"asked: {asked}" if asked else "asked: (empty prompt)",
-             f"ran: {provider} turn ({session})"]
+    lines = [
+        f"asked: {asked}" if asked else "asked: (empty prompt)",
+        f"ran: {provider} turn ({session})",
+    ]
     elapsed = round(time.time() - started, 1)
     error = None
     if timed_out:
@@ -350,8 +403,7 @@ def turn_decisions(provider: str, prompt: str, continued: bool,
         lines.append(f"verdict: exit 0 in {elapsed}s")
         lines.append(f"said: {said}" if said else "said: (no output)")
         if truncated:
-            lines.append("note: output capped at "
-                         f"{TURN_OUTPUT_MAX} chars")
+            lines.append(f"note: output capped at {TURN_OUTPUT_MAX} chars")
     return "\n".join(lines), error
 
 
@@ -365,14 +417,11 @@ RESCUE_COMMIT_MESSAGE = "wip: partial agent turn (timed out)"
 
 def _rescue_exec(cwd: str, args: list, timeout: float):
     """Run one git argv in the terminal-container workdir."""
-    argv = compose_argv("exec", "-T", "--workdir", cwd, "terminal",
-                       "git", *args)
-    return subprocess.run(argv, capture_output=True, text=True,
-                          timeout=timeout)
+    argv = compose_argv("exec", "-T", "--workdir", cwd, "terminal", "git", *args)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
 
-def rescue_partial_work(cwd: str, timeout: float = RESCUE_TIMEOUT,
-                        _exec=None) -> dict:
+def rescue_partial_work(cwd: str, timeout: float = RESCUE_TIMEOUT, _exec=None) -> dict:
     """Commit + push timeout debris. Never raises.
 
     Runs in the turn's own workdir: records the branch, commits a
@@ -382,10 +431,12 @@ def rescue_partial_work(cwd: str, timeout: float = RESCUE_TIMEOUT,
     failure path. `timeout` caps the whole rescue; `_exec(args,
     timeout)` overrides the terminal-exec runner (tests).
     """
-    record: dict = {"branch": None, "commit": None,
-                    "committed": False, "pushed": False}
-    run = _exec if _exec is not None else \
-        (lambda args, budget: _rescue_exec(cwd, args, budget))
+    record: dict = {"branch": None, "commit": None, "committed": False, "pushed": False}
+    run = (
+        _exec
+        if _exec is not None
+        else (lambda args, budget: _rescue_exec(cwd, args, budget))
+    )
     deadline = time.monotonic() + timeout
 
     def budget() -> float | None:
@@ -396,8 +447,7 @@ def rescue_partial_work(cwd: str, timeout: float = RESCUE_TIMEOUT,
         remaining = budget()
         if remaining is None:
             return record
-        branch = run(["rev-parse", "--abbrev-ref", "HEAD"],
-                     remaining)
+        branch = run(["rev-parse", "--abbrev-ref", "HEAD"], remaining)
         if branch.returncode == 0:
             record["branch"] = branch.stdout.strip() or None
         remaining = budget()
@@ -422,8 +472,7 @@ def rescue_partial_work(cwd: str, timeout: float = RESCUE_TIMEOUT,
         remaining = budget()
         if remaining is None:
             return record
-        if run(["commit", "-m", RESCUE_COMMIT_MESSAGE],
-               remaining).returncode != 0:
+        if run(["commit", "-m", RESCUE_COMMIT_MESSAGE], remaining).returncode != 0:
             return record
         record["committed"] = True
         remaining = budget()
@@ -475,8 +524,9 @@ def clear_probe_cache() -> None:
 
 def _run_probe(argv: list, timeout: int):
     """Blocking probe run (executed off the event loop)."""
-    return subprocess.run(argv, input=None, capture_output=True,
-                          text=True, timeout=timeout)
+    return subprocess.run(
+        argv, input=None, capture_output=True, text=True, timeout=timeout
+    )
 
 
 async def probe_provider(provider: str, cwd: str) -> dict:
@@ -491,17 +541,27 @@ async def probe_provider(provider: str, cwd: str) -> dict:
     checked_at = int(time.time())
     binary = exec_argv("command -v %s" % provider)
     try:
-        found = await asyncio.to_thread(_run_probe, binary,
-                                        PROBE_TIMEOUT)
+        found = await asyncio.to_thread(_run_probe, binary, PROBE_TIMEOUT)
     except Exception as exc:
-        return {"name": provider, "available": False,
-                "checked_at": checked_at,
-                "detail": "binary check failed: %s" % exc}
+        return {
+            "name": provider,
+            "available": False,
+            "checked_at": checked_at,
+            "detail": "binary check failed: %s" % exc,
+        }
     if found.returncode != 0:
-        return {"name": provider, "available": False,
-                "checked_at": checked_at, "detail": "binary missing"}
-    return {"name": provider, "available": True,
-            "checked_at": checked_at, "detail": "ok"}
+        return {
+            "name": provider,
+            "available": False,
+            "checked_at": checked_at,
+            "detail": "binary missing",
+        }
+    return {
+        "name": provider,
+        "available": True,
+        "checked_at": checked_at,
+        "detail": "ok",
+    }
 
 
 async def provider_status(cwd: str) -> list:
@@ -512,12 +572,13 @@ async def provider_status(cwd: str) -> list:
     """
     now = time.time()
     with _probe_lock:
-        fresh = {name: entry for name, (at, entry)
-                 in _probe_cache.items()
-                 if now - at < PROBE_TTL}
+        fresh = {
+            name: entry
+            for name, (at, entry) in _probe_cache.items()
+            if now - at < PROBE_TTL
+        }
     todo = [p for p in PROVIDERS if p not in fresh]
-    probed = await asyncio.gather(
-        *(probe_provider(p, cwd) for p in todo))
+    probed = await asyncio.gather(*(probe_provider(p, cwd) for p in todo))
     with _probe_lock:
         for entry in probed:
             _probe_cache[entry["name"]] = (time.time(), entry)
@@ -582,8 +643,10 @@ class AgyStreamParser:
                 # Live progress (issue #1021): tool starts surface
                 # as zero-text markers; completions stay silent so
                 # one call reads as one line, not two.
-                if update.get("step_type") == "tool" and \
-                        update.get("state") == "ACTIVE":
+                if (
+                    update.get("step_type") == "tool"
+                    and update.get("state") == "ACTIVE"
+                ):
                     line = tool_step_line(update)
                     if line:
                         return [TurnProgress(line)]
@@ -600,8 +663,7 @@ class AgyStreamParser:
     @staticmethod
     def _event_cid(event: dict) -> str | None:
         """Conversation id carried by one event, if any."""
-        for node in (event, event.get("step_update"),
-                     event.get("result")):
+        for node in (event, event.get("step_update"), event.get("result")):
             if isinstance(node, dict):
                 cid = node.get("conversation_id")
                 if isinstance(cid, str) and cid:
@@ -656,21 +718,18 @@ class AgentTurnManager:
         # reattach learns exit/truncated/timed_out after the fact.
         self._finished: dict[str, dict] = {}
 
-    def _register(self, session_id: str,
-                  proc: subprocess.Popen) -> None:
+    def _register(self, session_id: str, proc: subprocess.Popen) -> None:
         with self._lock:
             self._running[session_id] = proc
 
-    def _unregister(self, session_id: str,
-                    proc: subprocess.Popen) -> None:
+    def _unregister(self, session_id: str, proc: subprocess.Popen) -> None:
         # Identity-guarded (issue #441): a superseded turn finishing
         # after its successor registered must not free the slot.
         with self._lock:
             if self._running.get(session_id) is proc:
                 self._running.pop(session_id, None)
 
-    def _is_current(self, session_id: str,
-                    generation: int) -> bool:
+    def _is_current(self, session_id: str, generation: int) -> bool:
         with self._lock:
             return self._generation.get(session_id) == generation
 
@@ -696,8 +755,7 @@ class AgentTurnManager:
             proc = self._running.get(session_id)
             return proc is not None and proc.poll() is None
 
-    def _record_live(self, session_id: str, generation: int,
-                     text: str) -> None:
+    def _record_live(self, session_id: str, generation: int, text: str) -> None:
         # Generation-guarded like the result store: a retired turn
         # must not append to its successor's buffer.
         if not text:
@@ -709,13 +767,13 @@ class AgentTurnManager:
             room = TURN_OUTPUT_MAX - length
             if room <= 0:
                 return
-            self._live_text.setdefault(session_id, []).append(
-                text[:room])
+            self._live_text.setdefault(session_id, []).append(text[:room])
             self._live_len[session_id] = length + len(text[:room])
             self._live_at[session_id] = time.time()
 
-    def note_guidance(self, session_id: str, code: str | None,
-                      message: str, detail: str = "") -> None:
+    def note_guidance(
+        self, session_id: str, code: str | None, message: str, detail: str = ""
+    ) -> None:
         """Attach the router's failure guidance to the finish record.
 
         _turn_events calls this when a turn fails with a known
@@ -748,12 +806,10 @@ class AgentTurnManager:
                 "session_id": session_id,
                 "known": session_id in self._known,
                 "running": proc is not None and proc.poll() is None,
-                "transcript": "".join(
-                    self._live_text.get(session_id, [])),
-                "transcript_truncated": self._live_len.get(
-                    session_id, 0) >= TURN_OUTPUT_MAX,
-                "finished": dict(finished) if finished is not None
-                else None,
+                "transcript": "".join(self._live_text.get(session_id, [])),
+                "transcript_truncated": self._live_len.get(session_id, 0)
+                >= TURN_OUTPUT_MAX,
+                "finished": dict(finished) if finished is not None else None,
             }
 
     def _remember_agy(self, session_id: str, cid: str) -> None:
@@ -762,9 +818,16 @@ class AgentTurnManager:
             while len(self._agy) > KNOWN_SESSIONS_MAX:
                 self._agy.pop(next(iter(self._agy)))
 
-    async def run_turn(self, provider: str, repo: str, cwd: str,
-                       session_id: str, prompt: str, continued: bool,
-                       argv: list | None = None):
+    async def run_turn(
+        self,
+        provider: str,
+        repo: str,
+        cwd: str,
+        session_id: str,
+        prompt: str,
+        continued: bool,
+        argv: list | None = None,
+    ):
         """Yield stdout text chunks for one turn. Afterwards
         pop_result(session_id) holds {exit, stderr, truncated,
         timed_out, timeout, rescue}. `argv` overrides the allowlist
@@ -775,12 +838,24 @@ class AgentTurnManager:
         session aborts the registered prior turn, and the retired
         turn raises TurnSuperseded instead of storing — so
         pop_result never returns another turn's record."""
-        conversation_id = (self.agy_conversation(session_id)
-                           if provider == "agy" else None)
+        conversation_id = (
+            self.agy_conversation(session_id) if provider == "agy" else None
+        )
         send = guard_prompt(spec_prompt(prompt))
-        cmd = list(argv) if argv is not None else turn_argv(
-            provider, cwd, session_id, send, continued,
-            conversation_id=conversation_id)
+        if not repo:
+            send = BROWSE_GUIDANCE + send
+        cmd = (
+            list(argv)
+            if argv is not None
+            else turn_argv(
+                provider,
+                cwd,
+                session_id,
+                send,
+                continued,
+                conversation_id=conversation_id,
+            )
+        )
         started = time.time()
         timeout = turn_timeout()
         # Stderr lands in a temp file, never a pipe (issue #439): a
@@ -788,13 +863,16 @@ class AgentTurnManager:
         # writes past the ~64KB buffer, burning the full
         # TURN_TIMEOUT. The file removes the pipe entirely, so
         # stderr can never stall the turn.
-        err_file = tempfile.TemporaryFile(
-            prefix="agent-turn-stderr-")
+        err_file = tempfile.TemporaryFile(prefix="agent-turn-stderr-")
         try:
             proc = await asyncio.to_thread(
-                subprocess.Popen, cmd, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=err_file,
-                text=True)
+                subprocess.Popen,
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=err_file,
+                text=True,
+            )
         except Exception:
             try:
                 err_file.close()
@@ -840,14 +918,18 @@ class AgentTurnManager:
         out_len = 0
         truncated = False
         timed_out = False
+        paused = False
         superseded = False
         err_tail = ""
         rescue: dict | None = None
         deadline = started + timeout
         # Warning instant, or None when the budget is shorter than
         # the lead (patched-down test timeouts never warn).
-        warn_at = (started + timeout - TURN_WARNING_LEAD
-                   if timeout > TURN_WARNING_LEAD else None)
+        warn_at = (
+            started + timeout - TURN_WARNING_LEAD
+            if timeout > TURN_WARNING_LEAD
+            else None
+        )
         warned = False
         # Agy turns stream NDJSON (issue #440); muse chunks pass
         # through untouched.
@@ -858,37 +940,46 @@ class AgentTurnManager:
                 if not self._is_current(session_id, generation):
                     superseded = True
                     break
+                if _human_paused():
+                    paused = True
+                    marker = (
+                        "\n[human took the wheel — turn parked; "
+                        "resume after Hand Back]\n"
+                    )
+                    room = TURN_OUTPUT_MAX - out_len
+                    if room > 0:
+                        out_text.append(marker[:room])
+                        yield marker[:room]
+                    break
                 now = time.time()
                 budget = deadline - now
                 if budget <= 0:
                     timed_out = True
                     break
-                if warn_at is not None and not warned \
-                        and now >= warn_at:
+                if warn_at is not None and not warned and now >= warn_at:
                     warned = True
-                    yield TurnWarning(
-                        max(0, int(deadline - now)))
+                    yield TurnWarning(max(0, int(deadline - now)))
                     continue
                 # Cap the read wait at the warning instant so a
                 # silent turn still wakes in time to warn; the loop
-                # top re-checks the deadline afterwards.
+                # top re-checks the deadline afterwards. Cap at 5s
+                # besides, so a human takeover parks a quiet turn
+                # promptly instead of at the next warning/deadline.
                 wait = budget
                 if warn_at is not None and not warned:
-                    wait = min(budget,
-                               max(0.001, warn_at - now))
+                    wait = min(budget, max(0.001, warn_at - now))
+                wait = min(wait, 5.0)
                 try:
                     chunk = await asyncio.wait_for(
-                        asyncio.to_thread(proc.stdout.read,
-                                          READ_CHUNK),
-                        wait)
+                        asyncio.to_thread(proc.stdout.read, READ_CHUNK), wait
+                    )
                 except asyncio.TimeoutError:
                     if time.time() >= deadline:
                         timed_out = True
                         break
                     continue
                 if parser is not None:
-                    pieces = (parser.feed(chunk) if chunk
-                              else parser.flush())
+                    pieces = parser.feed(chunk) if chunk else parser.flush()
                 else:
                     pieces = [chunk] if chunk else []
                 for piece in pieces:
@@ -898,8 +989,7 @@ class AgentTurnManager:
                         truncated = True
                         if room > 0:
                             out_text.append(piece[:room])
-                            self._record_live(session_id, generation,
-                                              piece[:room])
+                            self._record_live(session_id, generation, piece[:room])
                             yield piece[:room]
                         break
                     out_text.append(piece)
@@ -907,13 +997,15 @@ class AgentTurnManager:
                     yield piece
                 if not chunk or truncated:
                     break
-            if parser is not None and parser.conversation_id and \
-                    self._is_current(session_id, generation):
+            if (
+                parser is not None
+                and parser.conversation_id
+                and self._is_current(session_id, generation)
+            ):
                 # Generation-guarded like the result store below: a
                 # retired turn must not overwrite its successor's
                 # conversation pin.
-                self._remember_agy(session_id,
-                                   parser.conversation_id)
+                self._remember_agy(session_id, parser.conversation_id)
             await _stop_proc(proc)
             err_tail = _read_stderr_tail(err_file)
             if timed_out:
@@ -922,8 +1014,7 @@ class AgentTurnManager:
                 # only on timeout (never on abort, success, or
                 # supersede) and never raises.
                 try:
-                    rescue = await asyncio.to_thread(
-                        rescue_partial_work, cwd)
+                    rescue = await asyncio.to_thread(rescue_partial_work, cwd)
                 except Exception:
                     rescue = None
         except GeneratorExit:
@@ -958,8 +1049,7 @@ class AgentTurnManager:
                 err_file.close()
             except Exception:
                 pass
-        if superseded or not self._is_current(session_id,
-                                                 generation):
+        if superseded or not self._is_current(session_id, generation):
             # Retired while streaming (or while a successor claimed
             # during teardown): no ledger, no store — the owning
             # turn's record is authoritative, and raising here keeps
@@ -968,20 +1058,41 @@ class AgentTurnManager:
         code = proc.poll()
         tail = "".join(out_text)[-STDERR_TAIL:]
         detail, error = turn_decisions(
-            provider, prompt, continued, code, started, tail,
-            err_tail, truncated, timed_out, timeout=timeout)
+            provider,
+            prompt,
+            continued,
+            code,
+            started,
+            tail,
+            err_tail,
+            truncated,
+            timed_out,
+            timeout=timeout,
+        )
         if timed_out and rescue is not None:
             detail += "\nsalvaged: branch=%s commit=%s pushed=%s" % (
-                rescue.get("branch"), rescue.get("commit"),
-                rescue.get("pushed"))
-        record = {"kind": "agent-turn", "session_id": session_id,
-                  "provider": provider, "repo": repo,
-                  "prompt": prompt[:150], "exit": code,
-                  "duration_s": round(time.time() - started, 2),
-                  "tail": tail, "stderr": err_tail,
-                  "truncated": truncated, "timed_out": timed_out,
-                  "timeout": timeout, "rescue": rescue,
-                  "detail": detail}
+                rescue.get("branch"),
+                rescue.get("commit"),
+                rescue.get("pushed"),
+            )
+        if paused:
+            detail += "\npaused: human took the wheel mid-turn; resume after Hand Back"
+        record = {
+            "kind": "agent-turn",
+            "session_id": session_id,
+            "provider": provider,
+            "repo": repo,
+            "prompt": prompt[:150],
+            "exit": code,
+            "duration_s": round(time.time() - started, 2),
+            "tail": tail,
+            "stderr": err_tail,
+            "truncated": truncated,
+            "timed_out": timed_out,
+            "timeout": timeout,
+            "rescue": rescue,
+            "detail": detail,
+        }
         if error is not None:
             record["error"] = error
         ledger_append(record)
@@ -989,24 +1100,28 @@ class AgentTurnManager:
         # takes the same (non-reentrant) lock itself.
         self._sweep_results()
         with self._lock:
-            current = (self._generation.get(session_id)
-                       == generation)
+            current = self._generation.get(session_id) == generation
             if current:
-                self._results[session_id] = {"exit": code,
-                                             "stderr": err_tail,
-                                             "truncated": truncated,
-                                             "timed_out": timed_out,
-                                             "timeout": timeout,
-                                             "rescue": rescue}
+                self._results[session_id] = {
+                    "exit": code,
+                    "stderr": err_tail,
+                    "truncated": truncated,
+                    "timed_out": timed_out,
+                    "timeout": timeout,
+                    "rescue": rescue,
+                }
                 self._result_at[session_id] = time.time()
                 # Durable verdict for reattach (issue #856): the
                 # owning stream pops _results, but this copy stays
                 # so a reloaded console still learns the outcome.
                 self._finished[session_id] = {
-                    "exit": code, "stderr": err_tail,
+                    "exit": code,
+                    "stderr": err_tail,
                     "truncated": truncated,
-                    "timed_out": timed_out, "timeout": timeout,
-                    "rescue": rescue}
+                    "timed_out": timed_out,
+                    "timeout": timeout,
+                    "rescue": rescue,
+                }
                 self._live_at[session_id] = time.time()
         if not current:
             # A successor claimed during the ledger write: the turn
@@ -1024,14 +1139,15 @@ class AgentTurnManager:
         """
         at = time.time() if now is None else now
         with self._lock:
-            stale = [sid for sid, ts in self._result_at.items()
-                     if at - ts > RESULT_TTL]
+            stale = [sid for sid, ts in self._result_at.items() if at - ts > RESULT_TTL]
             for sid in stale:
                 self._results.pop(sid, None)
                 self._result_at.pop(sid, None)
-            stale_live = [sid for sid, ts in self._live_at.items()
-                          if at - ts > RESULT_TTL
-                          and sid not in self._running]
+            stale_live = [
+                sid
+                for sid, ts in self._live_at.items()
+                if at - ts > RESULT_TTL and sid not in self._running
+            ]
             for sid in stale_live:
                 self._live_text.pop(sid, None)
                 self._live_len.pop(sid, None)

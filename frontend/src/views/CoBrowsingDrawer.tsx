@@ -1,13 +1,15 @@
 // Co-browsing page: full-viewport shared browser (CDP-direct viewer
 // at /cdp-stream via Caddy -> the headed session the agent drives)
-// with the chat console riding the side rail. The viewer pauses the
+// with the agent console riding the side rail. The viewer pauses the
 // agent server-side on first human input, so no takeover overlay is
-// needed. Presentational: the parent owns state polling and the
-// resume POST, so this renders from props and stays testable via
-// static markup like ContainerDrawer.
+// needed. The rail is an agent session (muse/agy, repo-free), not
+// the repo chat: browsing is agentic work. Presentational: the
+// parent owns state polling and the resume POST, so this renders
+// from props and stays testable via static markup like
+// ContainerDrawer.
 import { useEffect, useState } from 'react';
 import type { AgentBrowserState } from '../apiClient';
-import ChatView from './ChatView';
+import AgentDrawer from './AgentDrawer';
 
 // The frame can sit blank for seconds (Grid slot wait, cold
 // browser) or fail outright (Grid down, route 404): the overlay
@@ -44,7 +46,6 @@ export default function CoBrowsingDrawer({
   handoffReason = null,
   handoffUrl = null,
   iframeSrc,
-  repo,
   error,
   onResume,
   onHandBack = null,
@@ -55,7 +56,6 @@ export default function CoBrowsingDrawer({
   handoffReason?: string | null;
   handoffUrl?: string | null;
   iframeSrc: string;
-  repo: string;
   error: string | null;
   onResume: () => void;
   onHandBack?: (() => void) | null;
@@ -142,12 +142,13 @@ export default function CoBrowsingDrawer({
             onLoad={() => setFrameState('live')}
           />
         </div>
-        <aside className="cobrowse-chat" aria-label="Browser chat — ask it to drive the shared page">
+        <aside className="cobrowse-chat" aria-label="Browser agent — ask it to drive the shared page">
           <p className="row-meta" data-testid="cobrowse-chat-hint">
-            This chat sees and drives the page on the left — ask it to take you
-            somewhere. Click the page anytime to take over.
+            This agent sees and drives the page on the left — ask it to take
+            you somewhere. It runs its own session, no repo attached. Click
+            the page anytime to take over.
           </p>
-          <ChatView repo={repo} seed={null} onSeedUsed={() => {}} />
+          <AgentDrawer repo="" />
         </aside>
       </div>
     </section>

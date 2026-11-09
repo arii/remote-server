@@ -820,7 +820,7 @@ export default function AgentDrawer({
       {live && (
         <div className="detail">
           <span className="row-title">
-            {provider} · {repo}
+            {repo ? `${provider} · ${repo}` : `${provider} · browser`}
           </span>
           {working && warningSecs !== null && (
             <p

@@ -30,30 +30,35 @@ SPAWN_INTENT = "agent-spawn"
 # Known provider-failure signatures: (code, pattern, guidance).
 # Anything else falls through to the raw last-stderr-line behavior.
 _FAILURE_SIGNATURES = (
-    ("auth-expired",
-     r"expir|invalid token|unauthorized|http 401|status 401|"
-     r"re-?auth|login (expired|required)|session expired|"
-     r"not authenticated|not logged in|credentials expired|"
-     r"access token|need to log in",
-     "access expired — sign in again in the terminal, "
-     "or switch provider."),
-    ("access-denied",
-     r"access denied|permission denied|forbidden|http 403|"
-     r"status 403|operation not permitted",
-     "refused access — check its key and permissions, "
-     "or switch provider."),
-    ("binary-missing",
-     r"executable file not found|command not found",
-     "CLI is not installed in the terminal — install it, "
-     "or switch provider."),
+    (
+        "auth-expired",
+        r"expir|invalid token|unauthorized|http 401|status 401|"
+        r"re-?auth|login (expired|required)|session expired|"
+        r"not authenticated|not logged in|credentials expired|"
+        r"access token|need to log in",
+        "access expired — sign in again in the terminal, or switch provider.",
+    ),
+    (
+        "access-denied",
+        r"access denied|permission denied|forbidden|http 403|"
+        r"status 403|operation not permitted",
+        "refused access — check its key and permissions, or switch provider.",
+    ),
+    (
+        "binary-missing",
+        r"executable file not found|command not found",
+        "CLI is not installed in the terminal — install it, or switch provider.",
+    ),
     # Provider-side prompt-shape choke (issue #1036): a YAML line
     # number for a natural-language task is unactionable — name the
     # cause and the retry instead of surfacing the raw line.
-    ("prompt-parse",
-     r"yaml[^:\n]*line \d+|could not find expected|"
-     r"mapping values are not allowed|did not find expected key",
-     "choked on the prompt text — retry with simpler wording "
-     "(fewer colons and quotes), or switch provider."),
+    (
+        "prompt-parse",
+        r"yaml[^:\n]*line \d+|could not find expected|"
+        r"mapping values are not allowed|did not find expected key",
+        "choked on the prompt text — retry with simpler wording "
+        "(fewer colons and quotes), or switch provider.",
+    ),
 )
 
 
@@ -116,7 +121,12 @@ def _repo_target(repo: str) -> tuple[str, str]:
     Raises ValueError. The cwd feeds `compose exec --workdir` into
     the terminal container, so it must be the /srv bind-mount path
     even when the buttons-side resolver returns /home/ari paths.
+
+    Empty repo means a repo-free turn (browsing): no validation,
+    neutral cwd. The turn is not tied to any checkout.
     """
+    if not (repo or "").strip():
+        return "", "/srv"
     from backend.core.git_helpers import get_repo_status
     from backend.core.validation import validate_repo_name
 
@@ -130,25 +140,23 @@ def _repo_target(repo: str) -> tuple[str, str]:
 
 @router.get("/providers", response_model=ProviderList)
 async def agent_providers() -> dict:
-    status = await agent_turn.provider_status(
-        agent_turn.terminal_cwd("remote-server"))
-    return {"providers": list(agent_turn.ordered_providers()),
-            "status": status}
+    status = await agent_turn.provider_status(agent_turn.terminal_cwd("remote-server"))
+    return {"providers": list(agent_turn.ordered_providers()), "status": status}
 
 
-async def _turn_events(provider: str, repo: str, cwd: str,
-                       session_id: str, prompt: str,
-                       continued: bool):
+async def _turn_events(
+    provider: str, repo: str, cwd: str, session_id: str, prompt: str, continued: bool
+):
     text: list[str] = []
     try:
         async for chunk in agent_turn.manager.run_turn(
-                provider, repo, cwd, session_id, prompt, continued):
+            provider, repo, cwd, session_id, prompt, continued
+        ):
             # Pre-timeout warning (issue #838): a zero-text marker
             # the drawer renders as a countdown notice, never a
             # transcript token.
             if isinstance(chunk, agent_turn.TurnWarning):
-                yield sse_frame("warning", {
-                    "seconds_left": chunk.seconds_left})
+                yield sse_frame("warning", {"seconds_left": chunk.seconds_left})
                 continue
             # Live progress (issue #1021): tool calls and phase
             # changes ride their own frames, never the transcript.
@@ -167,17 +175,17 @@ async def _turn_events(provider: str, repo: str, cwd: str,
         # Single-flight (issue #441): a newer turn claimed the
         # session, so this stream ends here without popping — the
         # owning turn's stream reports its own result.
-        yield sse_frame("error", {"error": "turn superseded by a "
-                                           "newer turn",
-                                  "code": "turn-superseded"})
+        yield sse_frame(
+            "error",
+            {"error": "turn superseded by a newer turn", "code": "turn-superseded"},
+        )
         return
     result = agent_turn.manager.pop_result(session_id) or {}
     if result.get("timed_out"):
         # Timeout failure (issue #838): the drawer needs the same
         # session id to offer one-tap Resume, plus the salvage
         # summary (branch/commit/pushed) from the bounded rescue.
-        minutes = (result.get("timeout")
-                   or agent_turn.TURN_TIMEOUT) // 60
+        minutes = (result.get("timeout") or agent_turn.TURN_TIMEOUT) // 60
         payload: dict = {
             "error": f"turn timed out after {minutes}m",
             "code": "turn-timeout",
@@ -187,15 +195,14 @@ async def _turn_events(provider: str, repo: str, cwd: str,
         if isinstance(rescue, dict):
             payload["salvage"] = {
                 key: rescue.get(key)
-                for key in ("branch", "commit", "committed",
-                            "pushed")
+                for key in ("branch", "commit", "committed", "pushed")
             }
         yield sse_frame("error", payload)
         return
     if result.get("truncated"):
-        yield sse_frame("done", {"text": "".join(text),
-                                 "session_id": session_id,
-                                 "truncated": True})
+        yield sse_frame(
+            "done", {"text": "".join(text), "session_id": session_id, "truncated": True}
+        )
         return
     if result.get("exit") != 0:
         stderr = (result.get("stderr") or "").strip()
@@ -204,18 +211,16 @@ async def _turn_events(provider: str, repo: str, cwd: str,
             code, message = guidance
             # The reattached console never sees this frame (issue
             # #856), so the finish record carries the same guidance.
-            agent_turn.manager.note_guidance(
-                session_id, code, message, stderr[-1500:])
-            yield sse_frame("error", {"error": message, "code": code,
-                                      "detail": stderr[-1500:]})
+            agent_turn.manager.note_guidance(session_id, code, message, stderr[-1500:])
+            yield sse_frame(
+                "error", {"error": message, "code": code, "detail": stderr[-1500:]}
+            )
             return
         detail = stderr.split("\n")
-        detail = detail[-1] if detail and detail[-1] else \
-            f"exit {result.get('exit')}"
+        detail = detail[-1] if detail and detail[-1] else f"exit {result.get('exit')}"
         yield sse_frame("error", {"error": detail[:500]})
         return
-    yield sse_frame("done", {"text": "".join(text),
-                             "session_id": session_id})
+    yield sse_frame("done", {"text": "".join(text), "session_id": session_id})
 
 
 @router.post("/turn")
@@ -226,11 +231,19 @@ async def agent_turn_route(body: TurnRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="unknown provider")
     if not body.prompt.strip():
         raise HTTPException(status_code=400, detail="empty prompt")
+    # The human holding the wheel outranks every spawn: a turn fired
+    # while PAUSED would drive against the takeover. Resume first.
+    from backend.api.routers.agent_control import read_control_state
+
+    if read_control_state().state == "PAUSED_BY_USER":
+        raise HTTPException(
+            status_code=409,
+            detail="you have the wheel — human is driving (agent paused)",
+        )
     # Only server-known sessions skip the spawn gate (issue #442):
     # a client-minted id the server never issued must confirm like
     # a new spawn, and runs as a fresh (non-continued) turn.
-    if body.session_id and \
-            agent_turn.manager.is_known(body.session_id):
+    if body.session_id and agent_turn.manager.is_known(body.session_id):
         continued = True
     else:
         continued = False
@@ -241,9 +254,10 @@ async def agent_turn_route(body: TurnRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="unknown repo")
     sid = body.session_id or agent_turn.new_session_id()
     return StreamingResponse(
-        _turn_events(body.provider, name, cwd, sid,
-                     body.prompt.strip(), continued),
-        media_type="text/event-stream", headers=SSE_HEADERS)
+        _turn_events(body.provider, name, cwd, sid, body.prompt.strip(), continued),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.get("/session", response_model=SessionSnapshot)
@@ -256,15 +270,13 @@ async def agent_session(session_id: str = "") -> dict:
     report known=False; the caller keeps its saved transcript.
     """
     if not session_id:
-        raise HTTPException(status_code=400,
-                            detail="invalid session_id")
+        raise HTTPException(status_code=400, detail="invalid session_id")
     return agent_turn.manager.session_snapshot(session_id)
 
 
 @router.post("/abort", response_model=AbortResult)
 async def abort_agent(body: AbortRequest) -> dict:
     if not body.session_id:
-        raise HTTPException(status_code=400,
-                            detail="invalid session_id")
+        raise HTTPException(status_code=400, detail="invalid session_id")
     killed = await agent_turn.manager.abort(body.session_id)
     return {"ok": True, "killed": killed}

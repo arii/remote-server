@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
 import json
 from pathlib import Path
@@ -291,6 +292,28 @@ def _pause_agent():
         return True
     except Exception:
         return False
+
+
+#: Shared input history both sides learn from (issue: agent
+#: observes the human). Every viewer input (human) and every drive
+#: API op (agent) lands here with its origin, capped — the agent
+#: reads it back via GET /api/browser/activity to see what the
+#: human did while it was away and what worked before.
+_ACTIVITY = collections.deque(maxlen=100)
+_ACTIVITY_LOCK = threading.Lock()
+
+
+def _log_activity(kind: str, detail: str = "", via: str = "human") -> None:
+    with _ACTIVITY_LOCK:
+        _ACTIVITY.append(
+            {"t": time.time(), "kind": kind, "detail": str(detail)[:200], "via": via}
+        )
+
+
+def recent_activity(limit: int = 50) -> list:
+    with _ACTIVITY_LOCK:
+        items = list(_ACTIVITY)[-max(1, min(limit, 100)) :]
+    return [dict(item) for item in items]
 
 
 # CDP `modifiers` bitmask for Input.dispatchKeyEvent: Alt=1,
@@ -929,6 +952,7 @@ def create_app():
                         x, y = int(msg["x"]), int(msg["y"])
                     except (KeyError, TypeError, ValueError):
                         continue
+                    _log_activity("click", f"{x},{y}")
                     await recover_once(lambda: bridge.click(x, y))
                 elif msg.get("t") == "move":
                     try:
@@ -942,6 +966,7 @@ def create_app():
                         dx, dy = int(msg.get("dx", 0)), int(msg.get("dy", 0))
                     except (KeyError, TypeError, ValueError):
                         continue
+                    _log_activity("wheel", f"{x},{y} d{dx},{dy}")
                     await recover_once(lambda: bridge.wheel(x, y, dx, dy))
                 elif msg.get("t") == "touch":
                     phase = str(msg.get("phase", ""))
@@ -951,21 +976,26 @@ def create_app():
                         x, y = int(msg["x"]), int(msg["y"])
                     except (KeyError, TypeError, ValueError):
                         continue
+                    if phase != "move":
+                        _log_activity("touch", f"{phase} {x},{y}")
                     await recover_once(lambda: bridge.touch(phase, x, y))
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
+                    _log_activity("key", key or code)
                     await recover_once(lambda: bridge.key(key, code))
                 elif msg.get("t") == "type":
                     await human_input()
                     text = str(msg.get("text", ""))
                     if not text:
                         continue
+                    _log_activity("type", f"{len(text)} chars")
                     await recover_once(lambda: bridge.type_text(text))
                 elif msg.get("t") == "viewport":
                     mode = str(msg.get("mode", ""))
                     if mode not in ("mobile", "desktop"):
                         continue
+                    _log_activity("viewport", mode)
                     await recover_once(
                         lambda: bridge.set_viewport_mode(mode == "mobile")
                     )
@@ -974,6 +1004,7 @@ def create_app():
                     url = str(msg.get("url") or "")
                     if not url:
                         continue
+                    _log_activity("go", url)
                     await recover_once(lambda: do_go(url))
         finally:
             # The Grid session must release even when the bridge is

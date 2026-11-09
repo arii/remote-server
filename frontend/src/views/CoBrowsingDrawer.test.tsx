@@ -8,7 +8,6 @@ function renderDrawer(over: Record<string, unknown> = {}): string {
       browserState="IDLE"
       currentStep={null}
       iframeSrc="/cdp-stream/"
-      repo="remote-server"
       error={null}
       onResume={() => {}}
       onClose={() => {}}
@@ -41,11 +40,12 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     ).toContain('Manual control active');
   });
 
-  it('labels the rail as the browser chat with a first-run hint', () => {
+  it('labels the rail as the browser agent with a first-run hint', () => {
     const html = renderDrawer({});
     expect(html).toContain('data-testid="cobrowse-chat-hint"');
-    expect(html).toContain('ask it to take you');
-    expect(html).toContain('aria-label="Browser chat');
+    expect(html).toContain('ask it to take');
+    expect(html).toContain('aria-label="Browser agent');
+    expect(html).toContain('no repo attached');
   });
 
   it('names a pending handoff above every other banner (#1097)', () => {
@@ -97,9 +97,10 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(html).toContain('data-testid="cobrowse-frame"');
   });
 
-  it('gives the browser full height with chat in the side rail', () => {
+  it('gives the browser full height with the agent in the side rail', () => {
     const html = renderDrawer({});
-    expect(html).toContain('data-testid="chat-view"');
+    expect(html).toContain('data-testid="agent-drawer"');
+    expect(html).toContain('data-testid="agent-provider"');
     expect(html).toContain('cobrowse-split');
     expect(html).toContain('cobrowse-chat');
   });

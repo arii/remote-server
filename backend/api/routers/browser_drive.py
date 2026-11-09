@@ -129,6 +129,18 @@ async def snapshot() -> dict[str, Any]:
     return {"ok": True, "kind": kind, **page}
 
 
+@router.get("/activity")
+async def activity(limit: int = 50) -> dict[str, Any]:
+    """Shared input history, newest last, capped.
+
+    Both sides learn from this: the human's viewer inputs and the
+    agent's drive ops, each tagged with its origin. Read-only —
+    observing while paused is fine (that is when the agent most
+    needs to see what the human did).
+    """
+    return {"ok": True, "events": browser_view.recent_activity(limit)}
+
+
 @router.get("/state")
 async def drive_state() -> dict[str, Any]:
     """Rendezvous + wheel state without touching the browser."""
@@ -179,9 +191,6 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             await bridge.key(body.key, body.code or body.key)
         elif body.op == "wheel":
             await bridge.wheel(body.x, body.y, body.dx, body.dy)
-        page = await _snapshot(bridge)
-        # Presence for the drawer banner + a re-snapshot flag for any
-        # later pipeline run: best-effort, the drive already landed.
         target = (
             body.url
             if body.op == "navigate"
@@ -191,6 +200,10 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
                 else (body.text or body.key or body.op)
             )
         )
+        browser_view._log_activity("drive", f"{body.op} {target}", via="agent")
+        page = await _snapshot(bridge)
+        # Presence for the drawer banner + a re-snapshot flag for any
+        # later pipeline run: best-effort, the drive already landed.
         with contextlib.suppress(Exception):
             control = agent_control.read_control_state()
             control.current_step = f"{CHAT_DRIVE_PREFIX} {body.op} {target}"[:120]

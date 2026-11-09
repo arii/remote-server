@@ -893,7 +893,6 @@ export default function App() {
           handoffReason={agentBrowser?.handoff_reason ?? null}
           handoffUrl={agentBrowser?.handoff_url ?? null}
           iframeSrc={`${stackBase()}/cdp-stream/`}
-          repo={repo}
           error={browserError}
           onResume={() => void onResumeBrowser()}
           onHandBack={() => void onHandBackBrowser()}
