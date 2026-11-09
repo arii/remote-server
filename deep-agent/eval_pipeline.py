@@ -24,7 +24,14 @@ Fake-gate semantics:
 
 ``main()`` runs all evals and prints a JSON report; exit 0 iff all
 pass. Used by ``deep-agent/cli.py eval-pipeline``.
+
+``--verify-fixtures`` runs the offline fixture check instead: no
+pipeline, no models, no network — embedded fixtures must compile,
+the draft spec must satisfy the validate-issue criterion, and the
+acceptance suite must pass on the fixed module and fail on the
+buggy one (drift probe). Gated in CI.
 """
+import argparse
 import json
 import os
 import re
@@ -370,11 +377,146 @@ def run_all():
     return results, all(r["passed"] for r in results)
 
 
+def verify_fixtures():
+    """Offline fixture/drift check: no pipeline, no models, no network.
+
+    Returns (checks, all_passed). Fails loudly on drift: fixtures that
+    no longer compile, a draft spec the validate-issue gate would
+    reject, an acceptance suite that cannot tell fixed from buggy, or
+    gate-contract changes in FixtureTd.
+    """
+    checks = [_check_fixtures_compile(), _check_spec_gate_criterion(),
+              _check_suite_discriminates(), _check_gate_contract()]
+    return checks, all(c["passed"] for c in checks)
+
+
+def _check_fixtures_compile():
+    """Embedded python fixtures must compile."""
+    for name, text in (("CALC_BUGGY", CALC_BUGGY),
+                       ("CALC_FIXED", CALC_FIXED),
+                       ("TEST_CALC", TEST_CALC)):
+        try:
+            compile(text, f"<eval-fixture-{name}>", "exec")
+        except SyntaxError as exc:
+            return {"name": "fixtures-compile", "passed": False,
+                    "detail": f"{name} does not compile: {exc}"}
+    return {"name": "fixtures-compile", "passed": True,
+            "detail": "CALC_BUGGY, CALC_FIXED, TEST_CALC compile"}
+
+
+def _check_spec_gate_criterion():
+    """Draft spec must satisfy the validate-issue gate criterion."""
+    gate = "## Acceptance Criteria"
+    td = FixtureTd("/tmp")
+    with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False,
+            encoding="utf-8") as handle:
+        handle.write(SPEC_DRAFT)
+        draft_path = handle.name
+    with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False,
+            encoding="utf-8") as handle:
+        handle.write("# Empty spec\n\nNo acceptance section here.\n")
+        bad_path = handle.name
+    try:
+        code, out = td(["validate-issue", "--file", draft_path])
+        payload = json.loads(out)
+        good = code == 0 and payload.get("valid") is True
+        code, out = td(["validate-issue", "--file", bad_path])
+        payload = json.loads(out)
+        bad_rejected = code != 0 and payload.get("valid") is False
+    finally:
+        for path in (draft_path, bad_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    if gate not in SPEC_DRAFT:
+        return {"name": "spec-gate-criterion", "passed": False,
+                "detail": "SPEC_DRAFT lost the '## Acceptance Criteria' "
+                          "section the gate requires"}
+    if not (good and bad_rejected):
+        return {"name": "spec-gate-criterion", "passed": False,
+                "detail": "FixtureTd validate-issue no longer "
+                          "accepts the draft / rejects the bad spec"}
+    return {"name": "spec-gate-criterion", "passed": True,
+            "detail": "draft accepted, spec without '## Acceptance "
+                      "Criteria' rejected"}
+
+
+def _check_suite_discriminates():
+    """Acceptance suite must pass on fixed, fail on buggy (drift probe)."""
+    results = {}
+    for label, calc in (("fixed", CALC_FIXED), ("buggy", CALC_BUGGY)):
+        tmp = tempfile.mkdtemp(prefix="eval-fixture-probe-")
+        with open(os.path.join(tmp, "calc.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(calc)
+        with open(os.path.join(tmp, "test_calc.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(TEST_CALC)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q"], cwd=tmp,
+                capture_output=True, text=True, timeout=120)
+        except FileNotFoundError as exc:
+            return {"name": "suite-discriminates", "passed": False,
+                    "detail": f"pytest not runnable: {exc}"}
+        except subprocess.TimeoutExpired:
+            return {"name": "suite-discriminates", "passed": False,
+                    "detail": f"pytest timed out on {label} fixture"}
+        results[label] = proc.returncode
+    if results.get("fixed") != 0:
+        return {"name": "suite-discriminates", "passed": False,
+                "detail": "TEST_CALC fails on CALC_FIXED: fixture drift"}
+    if results.get("buggy") == 0:
+        return {"name": "suite-discriminates", "passed": False,
+                "detail": "TEST_CALC passes on CALC_BUGGY: suite no "
+                          "longer discriminates"}
+    return {"name": "suite-discriminates", "passed": True,
+            "detail": "suite green on fixed, red on buggy"}
+
+
+def _check_gate_contract():
+    """FixtureTd unknown gates must fail closed with an error status."""
+    td = FixtureTd("/tmp")
+    code, out = td(["no-such-gate"])
+    try:
+        payload = json.loads(out)
+    except ValueError:
+        return {"name": "gate-contract", "passed": False,
+                "detail": "unknown gate returned non-JSON"}
+    if code == 0 or payload.get("status") != "error":
+        return {"name": "gate-contract", "passed": False,
+                "detail": "unknown gate did not fail closed"}
+    if not EVALS or len({fn.__name__ for fn in EVALS}) != len(EVALS):
+        return {"name": "gate-contract", "passed": False,
+                "detail": "EVAL registry empty or has duplicate names"}
+    return {"name": "gate-contract", "passed": True,
+            "detail": f"unknown gate fails closed; {len(EVALS)} evals "
+                      f"registered"}
+
+
 def main(argv=None):
+    if argv:
+        parser = argparse.ArgumentParser(
+            prog="eval_pipeline.py",
+            description="Deterministic E2E evals for the 4-stage "
+                        "pipeline (offline; no models, no network).")
+        parser.add_argument(
+            "--verify-fixtures", action="store_true",
+            help="check embedded fixtures/prompts for drift without "
+                 "running the pipeline")
+        args = parser.parse_args(argv)
+        if args.verify_fixtures:
+            checks, ok = verify_fixtures()
+            print(json.dumps({"verify_fixtures": checks, "passed": ok},
+                             indent=2))
+            return 0 if ok else 1
     results, ok = run_all()
     print(json.dumps({"evals": results, "passed": ok}, indent=2))
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
