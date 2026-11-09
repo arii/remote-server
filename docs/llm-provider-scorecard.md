@@ -91,6 +91,13 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 - Direct (non-agent) fix: #1192 compose defaults (PR #1238, merged).
 - Costs: $2 cap honored all day; per-turn spend remains pennies.
 
+## Agent validation loop 2026-11-09 ~21:00-22:30Z (cloud-baryon)
+
+- Issue #1245 (Now-view audit) validation via deep_chat agents: Ollama qwen3:8b FAILED the read path (tried to resolve the issue as a PR, no issue-reading tool, gave up); Nebius GLM-5.3-Flash ran but honest-UNVERIFIED 4/5 (read_repo_file head-only 3000 chars, grep_repo no path scope + .pnpm-store flood). 1/5 independently CONFIRMED (bare `<p>{item.detail}</p>`). No fabricated verdicts — fail-closed behavior correct.
+- Costs: validate3 $0.0105 (68,869 toks — head re-reads burn input), validate4 $0.0036 (22,291 toks, grep-only). $2 cap untouched.
+- Harness fix from the failures: #1251 MERGED (offset reads + .pnpm-store/.pnpm grep excludes, wrappers + regression tests). Remaining gap: agents still lack PR-diff access (Ollama PR-review turns for #1247/#1248/#1251 all timed out at 25 min with zero verdicts — flailing on git-diff-via-checkout and regex-in-literal-grep).
+- Standing: agent validations are advisory only; merges ride native verification + AI-review CI + lane protocol.
+
 ## Hourly loop audit 2026-11-09 ~00:40Z (cloud-baryon)
 
 Probes, all live from this container: Nebius `GET $NEBIUS_BASE_URL/models`
