@@ -60,12 +60,24 @@ def check_allowed(argv):
     tupled = tuple(argv)
     if len(tupled) >= 2 and tupled[0] == "python3" and TEST_FILE_RE.match(tupled[1]):
         return True
+    # 1230: allow only the exact frozen-lockfile install (optional --dir),
+    # never bare `pnpm install` or other pnpm subcommands.
+    if tupled[:2] == ("pnpm", "install"):
+        rest = list(tupled[2:])
+        if "--dir" in rest:
+            i = rest.index("--dir")
+            if len(rest) < i + 2:
+                return False
+            del rest[i : i + 2]
+        return rest == ["--frozen-lockfile"]
     return any(tupled[: len(p)] == p for p in CHECK_PREFIXES)
 
 
 def allowed_commands_text():
     """Human list of the allowlisted command heads (tool prompts)."""
-    return ", ".join(" ".join(p) for p in CHECK_PREFIXES)
+    return ", ".join(" ".join(p) for p in CHECK_PREFIXES) + (
+        ", pnpm install --frozen-lockfile"
+    )
 
 
 def check_env(checkout):
