@@ -158,6 +158,9 @@ h1, h2, h3 { text-wrap: balance; }
    target; below 768px the table stacks into cards so repo, status,
    and actions never cram side by side on a phone. */
 [data-testid="dirty-repos-strip"] .actions button { min-height: 44px; }
+/* Audit #1245: vertically centered rows, actions pinned right. */
+[data-testid="dirty-repos-table"] td { vertical-align: middle; }
+[data-testid="dirty-repos-table"] td:last-child .actions { justify-content: flex-end; }
 @media (max-width: 768px) {
   [data-testid="dirty-repos-table"] thead { display: none; }
   [data-testid="dirty-repos-table"],
@@ -256,7 +259,7 @@ h1, h2, h3 { text-wrap: balance; }
 }
 
 .row-meta { color: var(--muted); font-size: 0.85rem; margin: 0; }
-.row-title { display: block; font-weight: 650; font-size: 1rem; }
+.row-title { display: block; font-weight: 650; font-size: 1rem; margin: 0; }
 
 /* #938: 2-line risk summary on each Review card (+ details pane). */
 .risk-summary { display: grid; gap: 0.1rem; margin: 0.35rem 0; font-size: 0.85rem; line-height: 1.4; }
@@ -812,6 +815,9 @@ label.row-meta.attention-select-all { display: inline-flex; align-items: center;
    the button hierarchy; the panel shows the exact sends. */
 .ask-agent > summary.btn-primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 650; }
 .ask-agent > summary.btn-secondary { background: var(--surface-2); color: var(--text); }
+/* Audit #1245: attention-row action buttons meet the 44px touch
+   target (beats button.btn-link's min-height: 0 by specificity). */
+li.detail .actions button { min-height: 44px; }
 .ask-preview { margin-top: 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); padding: 0.6rem 0.75rem; }
 .ask-preview pre { margin: 0.25rem 0 0.5rem; }
 
@@ -1114,6 +1120,8 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 /* Honest disabled state (#965): dimmed plus the not-allowed
    cursor, so a dead upkeep action reads dead before the tap. */
 button:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Audit #1250: aria-disabled controls stay focusable for feedback. */
+button[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 button[type="submit"] { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 650; }
 button[type="submit"]:hover:not(:disabled) { background: #1d4ed8; }
 

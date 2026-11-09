@@ -377,11 +377,13 @@ export function ReportDialog({
   availableLabels = [],
   onSubmit,
   onCancel,
+  returnFocusTo,
 }: {
   initialBody: string;
   availableLabels?: string[];
   onSubmit: (title: string, body: string, labels: string[]) => void;
   onCancel: () => void;
+  returnFocusTo?: string;
 }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState(initialBody);
@@ -401,6 +403,7 @@ export function ReportDialog({
       label="Report a bug"
       testId="report-dialog"
       className="detail"
+      returnFocusTo={returnFocusTo}
     >
     <form
       onSubmit={(e) => {
@@ -778,6 +781,7 @@ export function NowHero({
   const status = heroStatus(health, feed.attention);
   const top = topUrgent(feed.attention);
   const topBlock = top ? retryBlocked(top) : null;
+  const [heroBlockNudge, setHeroBlockNudge] = useState(false);
   // Banner dedup (issue #935): never repeat the first card's Retry
   // pull in the hero — the card directly below owns that action.
   const dupFirst =
@@ -836,11 +840,15 @@ export function NowHero({
                 type="button"
                 className="btn-secondary"
                 data-testid="now-hero-retry"
-                disabled
+                aria-disabled="true"
                 title={retryBlockWarning(topBlock)}
+                onClick={() => setHeroBlockNudge(true)}
               >
                 {top.action.label}
               </button>
+              {heroBlockNudge && (
+                <span role="alert"> Still blocked — {retryBlockWarning(topBlock)}</span>
+              )}
             </>
           ) : (
             <ActionControl
@@ -1009,6 +1017,33 @@ export function AttentionSelectAll({
 // it (the parent passes showSelect). The source line names the
 // row's repo context and, when the action resolves to an in-app
 // surface, its destination.
+
+// Long diagnostics fold (issue #1245): details past the fold
+// threshold render in a disclosure with a Copy button instead
+// of stretching the card full-width.
+const DETAIL_FOLD_AT = 300;
+
+function AttentionDetail({ detail, itemId }: { detail: string; itemId: string }) {
+  const [copied, setCopied] = useState(false);
+  if (detail.length <= DETAIL_FOLD_AT) return <p>{detail}</p>;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(detail);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <details data-testid={`now-detail-${itemId}`}>
+      <summary>Show full detail ({detail.length} chars)</summary>
+      <pre>{detail}</pre>
+      <button type="button" onClick={() => void copy()}>
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </details>
+  );
+}
 export function AttentionRow({
   item,
   viewRepo,
@@ -1035,6 +1070,7 @@ export function AttentionRow({
   onToggleSelect: () => void;
 }) {
   const block = retryBlocked(item, repoInfo);
+  const [blockNudge, setBlockNudge] = useState(false);
   return (
     <li className="detail" data-testid={`now-item-${item.id}`}>
       <div className="attention-head">
@@ -1049,11 +1085,11 @@ export function AttentionRow({
           />
         )}
         {showRepoTag(rollup, item.repo, viewRepo) ? (
-          <span className="row-title">
+          <h3 className="row-title">
             <RepoTag repo={item.repo} /> {item.title}
-          </span>
+          </h3>
         ) : (
-          <span className="row-title">{item.title}</span>
+          <h3 className="row-title">{item.title}</h3>
         )}
       </div>
       <p className="row-meta">
@@ -1072,7 +1108,7 @@ export function AttentionRow({
           </>
         )}
       </p>
-      <p>{item.detail}</p>
+      <AttentionDetail detail={item.detail} itemId={item.id} />
       <div className="actions">
         {block ? (
           <>
@@ -1086,15 +1122,20 @@ export function AttentionRow({
               type="button"
               className="btn-secondary"
               data-testid={`now-retry-${item.id}`}
-              disabled
+              aria-disabled="true"
               title={retryBlockWarning(block)}
+              onClick={() => setBlockNudge(true)}
             >
               {item.action.label}
             </button>
-            {/* Show the block reason as visible text; the title tooltip is
-                unreachable on touch devices. */}
-            <p className="row-meta" data-testid={`now-retry-why-${item.id}`}>
-              {retryBlockWarning(block)}
+            {/* Active feedback (issue #1250): a tap re-announces the
+                exact blocker instead of dying silently. */}
+            <p
+              className="row-meta"
+              data-testid={`now-retry-why-${item.id}`}
+              role={blockNudge ? 'alert' : undefined}
+            >
+              {blockNudge ? `Still blocked — ${retryBlockWarning(block)}` : retryBlockWarning(block)}
             </p>
           </>
         ) : (
@@ -1111,6 +1152,7 @@ export function AttentionRow({
         )}
         <button
           type="button"
+          className="btn-secondary"
           data-testid={`snooze-${item.id}-60`}
           disabled={busy}
           onClick={() => onSnooze(item, 60)}
@@ -1119,6 +1161,7 @@ export function AttentionRow({
         </button>
         <button
           type="button"
+          className="btn-link"
           data-testid={`dismiss-${item.id}`}
           disabled={busy}
           title="Dismiss for 8 hours"
@@ -1160,9 +1203,9 @@ export function AttentionGroupRow({
     <li className="detail attention-group" data-testid={`now-group-${index}`}>
       <details>
         <summary>
-          <span className="row-title">
+          <h3 className="row-title">
             {group.title} ×{group.items.length}
-          </span>
+          </h3>
           <span className="row-meta">
             {group.kind} · <span className={sevClass(group.severity)}>{group.severity}</span>
             {' · '}
@@ -1748,6 +1791,7 @@ export default function NowView({
           availableLabels={reportLabels ?? []}
           onSubmit={(t, b, l) => void onSubmitReport(t, b, l)}
           onCancel={() => setDialogOpen(false)}
+          returnFocusTo='[data-testid="report-bug"]'
         />
       )}
       {reported && (

@@ -159,4 +159,44 @@ describe('Dialog', () => {
     expect(calls).toBe(1);
     expect(el.open).toBe(true);
   });
+
+  it('modal: returnFocusTo restores an unfocused trigger on close', () => {
+    const trigger = document.createElement('button');
+    trigger.setAttribute('data-testid', 'trigger-1');
+    document.body.appendChild(trigger);
+    // Touch-tap open: the trigger never took focus (finding #1250).
+    expect(document.activeElement).toBe(document.body);
+    const onClose = () => {};
+    try {
+      mount(
+        <Dialog open label="L" onClose={onClose} returnFocusTo='[data-testid="trigger-1"]'>
+          <span>x</span>
+        </Dialog>,
+      );
+      rerender(
+        <Dialog open={false} label="L" onClose={onClose} returnFocusTo='[data-testid="trigger-1"]'>
+          <span>x</span>
+        </Dialog>,
+      );
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      trigger.remove();
+    }
+  });
+
+  it('modal: body-prev with no selector restores nothing', () => {
+    const onClose = () => {};
+    expect(document.activeElement).toBe(document.body);
+    mount(
+      <Dialog open label="L" onClose={onClose}>
+        <span>x</span>
+      </Dialog>,
+    );
+    rerender(
+      <Dialog open={false} label="L" onClose={onClose}>
+        <span>x</span>
+      </Dialog>,
+    );
+    expect(document.activeElement).toBe(document.body);
+  });
 });

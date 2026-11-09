@@ -429,13 +429,14 @@ def build_tools(checkout, *, impact_tools=False):
     allowed = s5tools.allowed_commands_text()
 
     @tool
-    def read_repo_file(path: str) -> str:
+    def read_repo_file(path: str, offset: int = 0) -> str:
         """Read a file from the repo checkout (read-only).
 
         Args:
             path: Repo-relative path, e.g. buttons/server.py.
+            offset: Char offset for windows past the head (#1249).
         """
-        return s5tools.read_repo_file(checkout, path)
+        return s5tools.read_repo_file(checkout, path, offset=offset)
 
     @tool
     def grep_repo(pattern: str) -> str:
