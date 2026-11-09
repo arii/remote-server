@@ -551,15 +551,15 @@ services:
   # Nebius Token Factory (configured in-UI under Admin > Connections;
   # env defaults below point at both). No published ports.
   open-webui:
-    # Pinned 2026-11-08: v0.13.2 digest of the build verified live
-    # behind /webui (title renders, zero 404s, ws connects).
+    # Pinned 2026-11-08: v0.13.2 digest; full UI verified live behind
+    # /webui via the buttons shell shim (see openwebui_shell.py).
     image: ghcr.io/open-webui/open-webui:v0.13.2@sha256:4f1dd4d81ef1445d4e4bfb4a7a55838dfb1de38a834a0fbe7615d92990333a71
     container_name: remote-openwebui-1
     volumes:
       - open-webui-data:/app/backend/data
     environment:
       - WEBUI_AUTH=false
-      - OLLAMA_BASE_URL=http://remote-ollama:11434
+      - OLLAMA_BASE_URL=http://ollama:11434
       - OPENAI_API_BASE_URLS=${NEBIUS_BASE_URL}
       - OPENAI_API_KEYS=${NEBIUS_API_KEY}
     expose:
