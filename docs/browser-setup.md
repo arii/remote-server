@@ -81,7 +81,7 @@ and mobile browsers get a native-feeling stream. Bring-up:
 ## Agent-driven cobrowse (the drawer rail is an agent session)
 
 The browser drawer pairs the viewer with an agent session
-(muse/agy picker, no repo attached), not the repo chat: browsing
+(either provider picker, no repo attached), not the repo chat: browsing
 is agentic work. The agent drives the same shared session through
 the buttons backend (`GET/POST /api/browser/*`, same process as
 the viewer): `snapshot` (URL, title, click targets), `drive`

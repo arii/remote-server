@@ -58,7 +58,7 @@ trigger_nodes:
 
 ## 6. Drawer agents drive via the buttons API, not raw Grid
 
-The cobrowse drawer runs a repo-free agent session (muse/agy),
+The cobrowse drawer runs a repo-free agent session (either provider),
 and that agent drives the shared page through the buttons
 `/api/browser` endpoints: `snapshot` (see it), `activity` (see
 what the human just did — observe and learn), `drive`
