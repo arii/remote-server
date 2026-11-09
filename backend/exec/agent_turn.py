@@ -342,7 +342,7 @@ def _first_line(text: str, limit: int) -> str:
 # repo-free prompt.
 BROWSE_GUIDANCE = (
     "You are driving the shared browser the human watches in the "
-    "Buttons browser drawer (/cdp-stream) — same live page, they "
+    "Buttons browser tab (/cdp-stream) — same live page, they "
     "see every step. API base (this container's network): "
     "http://buttons:8000/api/browser. Per errand: GET /snapshot "
     "(page URL, title, click targets with x/y), GET /activity "

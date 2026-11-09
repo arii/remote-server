@@ -111,4 +111,18 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     // The frame still mounts underneath so the load can proceed.
     expect(html).toContain('data-testid="cobrowse-frame"');
   });
+
+  it('shows activity, notebook, and Learn now in the tab (auto-learn)', () => {
+    // Static markup: effects never fire, so the panels render their
+    // loading shells — the wiring (testids, labels, button) is what
+    // this pins; live polling is exercised in the browser itself.
+    const html = renderDrawer({});
+    expect(html).toContain('data-testid="cobrowse-activity"');
+    expect(html).toContain('aria-label="Browser activity"');
+    expect(html).toContain('data-testid="cobrowse-learn-now"');
+    expect(html).toContain('Learn now');
+    expect(html).toContain('data-testid="cobrowse-learn-status"');
+    expect(html).toContain('data-testid="cobrowse-notes"');
+    expect(html).toContain('aria-label="Browser notebook"');
+  });
 });

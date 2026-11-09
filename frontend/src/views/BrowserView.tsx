@@ -8,7 +8,15 @@
 // from props and stays testable via static markup like
 // ContainerDrawer.
 import { useEffect, useState } from 'react';
-import type { AgentBrowserState } from '../apiClient';
+import type {
+  AgentBrowserState,
+  BrowserActivityEvent,
+} from '../apiClient';
+import {
+  fetchBrowserActivity,
+  fetchBrowserNotes,
+  triggerBrowserLearn,
+} from '../apiClient';
 import AgentDrawer from './AgentDrawer';
 
 // The frame can sit blank for seconds (Grid slot wait, cold
@@ -39,6 +47,126 @@ export function bannerTextFor(
       : 'Agent active — select the browser view to take over';
   }
   return 'Shared browser ready';
+}
+
+// Auto-learn panels: everything the system observes and remembers,
+// visible in the tab where the browsing happens. Activity polls the
+// shared ring (both sides' inputs, tagged human/agent/system); the
+// notebook shows what learn passes wrote; Learn now runs the same
+// deterministic pass on demand. Polls only while the document is
+// visible — the tab stays mounted behind keepalive when hidden.
+const LEARN_POLL_MS = 4000;
+
+function ago(ts: number): string {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
+function LearnPanels() {
+  const [events, setEvents] = useState<BrowserActivityEvent[] | null>(null);
+  const [notes, setNotes] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [learning, setLearning] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refresh() {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const [evts, nb] = await Promise.all([
+          fetchBrowserActivity(30),
+          fetchBrowserNotes(),
+        ]);
+        if (cancelled) return;
+        setEvents(evts);
+        setNotes(nb.notes);
+        const learns = evts.filter((e) => e.kind === 'learn');
+        setStatus(
+          learns.length > 0
+            ? `Last pass ${ago(learns[learns.length - 1].t)} · ${evts.length} recent events`
+            : 'No pass yet — browse and one runs automatically',
+        );
+      } catch {
+        if (!cancelled) setStatus('Could not reach the browser API.');
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), LEARN_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  async function learnNow() {
+    setLearning(true);
+    try {
+      const result = await triggerBrowserLearn();
+      const [evts, nb] = await Promise.all([
+        fetchBrowserActivity(30),
+        fetchBrowserNotes(),
+      ]);
+      setEvents(evts);
+      setNotes(nb.notes);
+      setStatus(
+        result.wrote
+          ? `Learned ${result.events_covered ?? 0} events just now`
+          : `Nothing new to learn (${result.reason ?? 'no new activity'})`,
+      );
+    } catch {
+      setStatus('Learn pass failed — browser API unreachable.');
+    } finally {
+      setLearning(false);
+    }
+  }
+
+  return (
+    <>
+      <section aria-label="Browser activity" data-testid="cobrowse-activity">
+        <p className="row-meta">
+          Activity — both sides, newest last{' '}
+          <button
+            type="button"
+            data-testid="cobrowse-learn-now"
+            onClick={() => void learnNow()}
+            disabled={learning}
+          >
+            {learning ? 'Learning…' : 'Learn now'}
+          </button>
+        </p>
+        <p className="row-meta" data-testid="cobrowse-learn-status">
+          {status ?? 'Loading learning status…'}
+        </p>
+        {events === null ? (
+          <p className="row-meta">Loading recent activity…</p>
+        ) : events.length === 0 ? (
+          <p className="row-meta">Nothing yet — interact with the page.</p>
+        ) : (
+          <ol>
+            {events.slice(-10).map((e, i) => (
+              <li key={`${e.t}-${i}`} className="row-meta">
+                {e.via} · {e.kind}
+                {e.detail ? ` — ${e.detail}` : ''} ({ago(e.t)})
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+      <section aria-label="Browser notebook" data-testid="cobrowse-notes">
+        <p className="row-meta">Notebook — what the system has learned</p>
+        {notes === null ? (
+          <p className="row-meta">Loading notebook…</p>
+        ) : notes === '' ? (
+          <p className="row-meta">Empty — the first pass will write here.</p>
+        ) : (
+          <pre className="row-meta">{notes.slice(-2000)}</pre>
+        )}
+      </section>
+    </>
+  );
 }
 
 export default function BrowserView({
@@ -145,6 +273,7 @@ export default function BrowserView({
             the page anytime to take over.
           </p>
           <AgentDrawer repo="" />
+          <LearnPanels />
         </aside>
       </div>
     </section>

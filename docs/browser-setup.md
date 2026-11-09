@@ -97,7 +97,12 @@ shows the agent at the wheel. Login walls, payments, and sends
 stay human — the agent hands the step back instead of automating
 past them. Durable lessons land in the shared notebook
 `/var/lib/buttons/browser_notes.md` (both containers mount it;
-human-editable).
+human-editable). Learning is automatic, not just per-errand: every
+25 activity events the backend appends a dated auto-notes section
+(counts and destinations, no model, no spend — idleness never
+triggers), and `POST /api/browser/learn` runs the same pass on
+demand. The Browser tab shows all of it: the live activity feed,
+the notebook, and a Learn now button.
 
 ## Spec deviation (recorded, not rebuilt — issue #1104)
 

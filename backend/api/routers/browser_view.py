@@ -308,12 +308,154 @@ def _log_activity(kind: str, detail: str = "", via: str = "human") -> None:
         _ACTIVITY.append(
             {"t": time.time(), "kind": kind, "detail": str(detail)[:200], "via": via}
         )
+        # The pass's own marker must not feed the next trigger.
+        if kind != "learn":
+            _LEARN_TOTAL[0] += 1
+    _maybe_auto_learn()
 
 
 def recent_activity(limit: int = 50) -> list:
     with _ACTIVITY_LOCK:
         items = list(_ACTIVITY)[-max(1, min(limit, 100)) :]
     return [dict(item) for item in items]
+
+
+def notes_file() -> Path:
+    """Resolve the shared notebook at call time so tests can redirect it."""
+    return Path(
+        os.environ.get("BROWSER_NOTES_FILE", "/var/lib/buttons/browser_notes.md")
+    )
+
+
+#: Volume trigger for the automatic learn pass: activity fires it,
+#: never idleness — quiet stretches write nothing.
+LEARN_THRESHOLD = 25
+#: Minimum seconds between automatic passes; a burst of 25+ events
+#: in seconds still yields one pass, not one per event.
+LEARN_MIN_INTERVAL_S = 120
+#: Monotonic event count (the ring is capped, so len() cannot tell
+#: how many events a pass has already covered).
+_LEARN_TOTAL = [0]
+_LEARN_STATE = {"covered": 0, "last_learn_at": 0.0}
+
+_NOTES_HEADER = (
+    "# Browser notebook\n\nShared between the human and the browsing "
+    "agent: auto-notes land here on their own, agent lessons too. "
+    "Human-editable — corrections teach the next turn.\n"
+)
+
+
+def learn_status() -> dict:
+    with _ACTIVITY_LOCK:
+        total = _LEARN_TOTAL[0]
+        covered = _LEARN_STATE["covered"]
+    return {
+        "events_since_learn": max(0, total - covered),
+        "last_learn_at": _LEARN_STATE["last_learn_at"],
+        "threshold": LEARN_THRESHOLD,
+    }
+
+
+def read_notes(max_chars: int = 20000) -> dict:
+    try:
+        text = notes_file().read_text(encoding="utf-8")
+    except OSError:
+        return {"notes": "", "truncated": False}
+    if len(text) > max_chars:
+        return {"notes": text[-max_chars:], "truncated": True}
+    return {"notes": text, "truncated": False}
+
+
+def summarize_events(events: list) -> list:
+    """Deterministic bullets over one learn window. No model, no
+    spend: counts and destinations only, safe to run automatically."""
+    human: dict[str, int] = {}
+    agent: dict[str, int] = {}
+    dests: list[str] = []
+    typed_chars = 0
+    for ev in events:
+        if ev.get("kind") == "learn":
+            continue
+        bucket = human if ev.get("via") == "human" else agent
+        kind = str(ev.get("kind", "?"))
+        bucket[kind] = bucket.get(kind, 0) + 1
+        if kind == "go":
+            dests.append(str(ev.get("detail", ""))[:120])
+        elif kind == "drive" and "navigate" in str(ev.get("detail", "")):
+            dests.append(str(ev.get("detail", ""))[:120])
+        elif kind == "type" and ev.get("via") == "human":
+            try:
+                typed_chars += int(str(ev.get("detail", "")).split()[0])
+            except (ValueError, IndexError):
+                pass
+    bullets = []
+    if dests:
+        seen = list(dict.fromkeys(dests))[:5]
+        extra = len(dests) - len(seen)
+        line = "visited: " + "; ".join(seen)
+        if extra > 0:
+            line += f" (+{extra} more)"
+        bullets.append(line)
+    if human:
+        parts = [f"{k} x{v}" for k, v in sorted(human.items())]
+        if typed_chars:
+            parts.append(f"~{typed_chars} chars typed")
+        bullets.append("human did: " + ", ".join(parts))
+    if agent:
+        parts = [f"{k} x{v}" for k, v in sorted(agent.items())]
+        bullets.append("agent did: " + ", ".join(parts))
+    if events:
+        span = events[-1].get("t", 0) - events[0].get("t", 0)
+        bullets.append(f"window: {len(events)} events over {span:.0f}s")
+    return bullets
+
+
+def run_learn_pass(manual: bool = False) -> dict:
+    """Append one auto-notes section covering events since the last
+    pass. Returns {wrote, bullets, events_covered}."""
+    with _ACTIVITY_LOCK:
+        total = _LEARN_TOTAL[0]
+        covered = _LEARN_STATE["covered"]
+        pending = max(0, total - covered)
+        window = (
+            [e for e in list(_ACTIVITY) if e.get("kind") != "learn"][-pending:]
+            if pending
+            else []
+        )
+        now = time.time()
+        if not manual:
+            if total - covered < LEARN_THRESHOLD:
+                return {"wrote": False, "reason": "below threshold"}
+            if now - _LEARN_STATE["last_learn_at"] < LEARN_MIN_INTERVAL_S:
+                return {"wrote": False, "reason": "cooling down"}
+        if not window:
+            return {"wrote": False, "reason": "nothing new"}
+        bullets = summarize_events(window)
+        stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now))
+        section = f"\n## Auto-notes {stamp}\n" + "".join(f"- {b}\n" for b in bullets)
+        path = notes_file()
+        try:
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_NOTES_HEADER, encoding="utf-8")
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(section)
+        except OSError as exc:
+            return {"wrote": False, "reason": f"notebook unwritable: {exc}"}
+        _LEARN_STATE["covered"] = total
+        _LEARN_STATE["last_learn_at"] = now
+    _log_activity("learn", f"{len(window)} events -> notebook", via="system")
+    return {"wrote": True, "bullets": bullets, "events_covered": len(window)}
+
+
+def _maybe_auto_learn() -> None:
+    with _ACTIVITY_LOCK:
+        due = (
+            _LEARN_TOTAL[0] - _LEARN_STATE["covered"] >= LEARN_THRESHOLD
+            and time.time() - _LEARN_STATE["last_learn_at"] >= LEARN_MIN_INTERVAL_S
+        )
+    if due:
+        run_learn_pass()
 
 
 # CDP `modifiers` bitmask for Input.dispatchKeyEvent: Alt=1,

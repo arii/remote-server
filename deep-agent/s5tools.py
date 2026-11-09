@@ -710,3 +710,20 @@ def require_mcp_healthy(endpoint, timeout=MCP_PING_TIMEOUT):
     instead of failing deep inside a turn. Returns the ping result.
     """
     return mcp_ping(endpoint, timeout=timeout)
+
+
+def link_worktree_node_modules(root, store):
+    """Symlink <store>/node_modules into <root>/frontend when absent (#1235).
+
+    Best-effort: returns True on link, False otherwise; never raises.
+    """
+    try:
+        store_nm = os.path.join(store, "node_modules")
+        target = os.path.join(root, "frontend", "node_modules")
+        if not os.path.isdir(store_nm) or os.path.lexists(target):
+            return False
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        os.symlink(store_nm, target, target_is_directory=True)
+        return True
+    except OSError:
+        return False
