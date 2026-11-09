@@ -31,14 +31,18 @@ class TestModelRouter(unittest.TestCase):
 
     def test_empty_env_means_unset(self):
         with env(ASK_MODEL="  ", NEBIUS_API_KEY=""):
-            with mock.patch.object(model_router, "ollama_reachable", return_value=True) as probe:
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=True
+            ) as probe:
                 spec = model_router.resolve_llm()
         self.assertEqual(spec["model"], "qwen3:8b")
         probe.assert_called_once_with()
 
     def test_fallback_to_nebius(self):
         with env(NEBIUS_API_KEY="k"):
-            with mock.patch.object(model_router, "ollama_reachable", return_value=False):
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
                 with mock.patch.object(model_router.ledger, "record"):
                     spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "nebius")
@@ -49,14 +53,13 @@ class TestModelRouter(unittest.TestCase):
         # line for journals, one stderr line for run output. Model
         # names and URLs only — never the spec (no-secrets rule).
         with env(NEBIUS_API_KEY="k"):
-            with mock.patch.object(model_router, "ollama_reachable",
-                                   return_value=False):
-                with self.assertLogs("model_router",
-                                     level="WARNING") as logs:
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
+                with self.assertLogs("model_router", level="WARNING") as logs:
                     err = io.StringIO()
                     with contextlib.redirect_stderr(err):
-                        with mock.patch.object(
-                                model_router.ledger, "record"):
+                        with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "nebius")
         self.assertEqual(len(logs.output), 1)
@@ -78,12 +81,10 @@ class TestModelRouter(unittest.TestCase):
     def test_local_path_stays_silent(self):
         # Ollama serving means no fallback: no signal.
         with env():
-            with mock.patch.object(model_router, "ollama_reachable",
-                                   return_value=True):
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
-                    with self.assertNoLogs("model_router",
-                                           level="WARNING"):
+                    with self.assertNoLogs("model_router", level="WARNING"):
                         spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "ollama")
         self.assertEqual(err.getvalue(), "")
@@ -91,10 +92,10 @@ class TestModelRouter(unittest.TestCase):
     def test_fallback_writes_ledger_entry(self):
         # #885: failover leaves an audit marker (reason + model).
         with env(NEBIUS_API_KEY="k"):
-            with mock.patch.object(model_router, "ollama_reachable",
-                                   return_value=False):
-                with mock.patch.object(model_router.ledger,
-                                       "record") as rec:
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
+                with mock.patch.object(model_router.ledger, "record") as rec:
                     err = io.StringIO()
                     with contextlib.redirect_stderr(err):
                         model_router.resolve_llm()
@@ -103,8 +104,7 @@ class TestModelRouter(unittest.TestCase):
         self.assertEqual(kwargs["script"], "model_router")
         self.assertIn("zai-org/GLM-5.3-Flash", kwargs["model"])
         self.assertEqual(kwargs["extra"]["event"], "metered-failover")
-        self.assertEqual(kwargs["extra"]["reason"],
-                         "ollama unreachable")
+        self.assertEqual(kwargs["extra"]["reason"], "ollama unreachable")
         self.assertEqual(kwargs["usage"]["total_tokens"], 0)
 
     def test_fallback_ledger_row_shape(self):
@@ -112,42 +112,35 @@ class TestModelRouter(unittest.TestCase):
         # carries timestamp, reason, and model, and costs $0.
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ledger.jsonl")
-            with mock.patch.object(model_router.ledger,
-                                   "LEDGER", path):
-                with mock.patch.object(model_router.runs,
-                                       "LEDGER", path):
+            with mock.patch.object(model_router.ledger, "LEDGER", path):
+                with mock.patch.object(model_router.runs, "LEDGER", path):
                     with env(NEBIUS_API_KEY="k"):
                         with mock.patch.object(
-                                model_router, "ollama_reachable",
-                                return_value=False):
+                            model_router, "ollama_reachable", return_value=False
+                        ):
                             err = io.StringIO()
                             with contextlib.redirect_stderr(err):
                                 model_router.resolve_llm()
             with open(path, encoding="utf-8") as f:
-                lines = [ln for ln in f.read().splitlines()
-                         if ln.strip()]
+                lines = [ln for ln in f.read().splitlines() if ln.strip()]
         self.assertEqual(len(lines), 1)
         row = json.loads(lines[0])
         self.assertIn("ts", row)
         self.assertEqual(row["script"], "model_router")
         self.assertIn("zai-org/GLM-5.3-Flash", row["model"])
-        self.assertEqual(row["extra"]["reason"],
-                         "ollama unreachable")
+        self.assertEqual(row["extra"]["reason"], "ollama unreachable")
         self.assertEqual(row["cost_usd"], 0.0)
 
     def test_explicit_nebius_writes_no_ledger_entry(self):
         with env(NEBIUS_API_KEY="k"):
-            with mock.patch.object(model_router.ledger,
-                                   "record") as rec:
+            with mock.patch.object(model_router.ledger, "record") as rec:
                 model_router.resolve_llm(prefer="nebius")
         rec.assert_not_called()
 
     def test_local_path_writes_no_ledger_entry(self):
         with env():
-            with mock.patch.object(model_router, "ollama_reachable",
-                                   return_value=True):
-                with mock.patch.object(model_router.ledger,
-                                       "record") as rec:
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
+                with mock.patch.object(model_router.ledger, "record") as rec:
                     model_router.resolve_llm()
         rec.assert_not_called()
 
@@ -155,21 +148,21 @@ class TestModelRouter(unittest.TestCase):
         # #885: the effective cap is visible in logs whenever the
         # metered path initializes (explicit set wins here).
         with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="7.50"):
-            with self.assertLogs("model_router",
-                                 level="INFO") as logs:
+            with self.assertLogs("model_router", level="INFO") as logs:
                 model_router.resolve_llm(prefer="nebius")
         self.assertTrue(any("7.50" in line for line in logs.output))
 
     def test_default_cap_logged_when_unset(self):
         with env(NEBIUS_API_KEY="k"):
-            with self.assertLogs("model_router",
-                                 level="INFO") as logs:
+            with self.assertLogs("model_router", level="INFO") as logs:
                 model_router.resolve_llm(prefer="nebius")
         self.assertTrue(any("5.00" in line for line in logs.output))
 
     def test_nebius_model_override(self):
         with env(NEBIUS_API_KEY="k", NEBIUS_MODEL="custom/model"):
-            with mock.patch.object(model_router, "ollama_reachable", return_value=False):
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
                 with mock.patch.object(model_router.ledger, "record"):
                     spec = model_router.resolve_llm()
         self.assertEqual(spec["model"], "custom/model")
@@ -182,25 +175,27 @@ class TestModelRouter(unittest.TestCase):
             with mock.patch("urllib.request.urlopen") as u:
                 u.return_value.__enter__.return_value.status = 200
                 self.assertTrue(model_router.ollama_reachable())
-        self.assertEqual(u.call_args[0][0],
-                         "http://ollama:11434/api/tags")
+        self.assertEqual(u.call_args[0][0], "http://ollama:11434/api/tags")
 
     def test_spec_base_url_strips_generate_suffix(self):
         with env(OLLAMA_URL="http://ollama:11434/api/generate"):
-            with mock.patch.object(model_router, "ollama_reachable",
-                                   return_value=True):
+            with mock.patch.object(model_router, "ollama_reachable", return_value=True):
                 spec = model_router.resolve_llm()
         self.assertEqual(spec["base_url"], "http://ollama:11434")
 
     def test_no_key_no_fallback(self):
         with env():
-            with mock.patch.object(model_router, "ollama_reachable", return_value=False):
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
                 with self.assertRaises(RuntimeError):
                     model_router.resolve_llm()
 
     def test_strict_means_no_fallback(self):
         with env(NEBIUS_API_KEY="k", OLLAMA_STRICT="1"):
-            with mock.patch.object(model_router, "ollama_reachable", return_value=False):
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
                 with self.assertRaises(RuntimeError):
                     model_router.resolve_llm()
 
@@ -213,7 +208,9 @@ class TestModelRouter(unittest.TestCase):
 
     def test_prefer_ollama_is_strict(self):
         with env():
-            with mock.patch.object(model_router, "ollama_reachable", return_value=False):
+            with mock.patch.object(
+                model_router, "ollama_reachable", return_value=False
+            ):
                 with self.assertRaises(RuntimeError):
                     model_router.resolve_llm(prefer="ollama")
 
@@ -237,36 +234,53 @@ class TestModelRouter(unittest.TestCase):
 def _spent_ledger(directory):
     path = os.path.join(directory, "ledger.jsonl")
     with open(path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(
-            {"kind": "deep-agent-run",
-             "model": "nebius:zai-org/GLM-5.3-Flash",
-             "usage": {"input_tokens": 2000, "output_tokens": 1000,
-                       "total_tokens": 3000},
-             "cost_usd": 0.0008, "metered": True}) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "kind": "deep-agent-run",
+                    "model": "nebius:zai-org/GLM-5.3-Flash",
+                    "usage": {
+                        "input_tokens": 2000,
+                        "output_tokens": 1000,
+                        "total_tokens": 3000,
+                    },
+                    "cost_usd": 0.0008,
+                    "metered": True,
+                }
+            )
+            + "\n"
+        )
     return path
 
 
 def _unknown_ledger(directory):
     path = os.path.join(directory, "ledger.jsonl")
     with open(path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(
-            {"kind": "deep-agent-run",
-             "model": "nebius:uncarded/future-9z",
-             "usage": {"input_tokens": 2000, "output_tokens": 1000,
-                       "total_tokens": 3000}}) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "kind": "deep-agent-run",
+                    "model": "nebius:uncarded/future-9z",
+                    "usage": {
+                        "input_tokens": 2000,
+                        "output_tokens": 1000,
+                        "total_tokens": 3000,
+                    },
+                }
+            )
+            + "\n"
+        )
     return path
 
 
 class TestSpendCapGate(unittest.TestCase):
     def test_cap_zero_blocks_metered(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _spent_ledger(d)):
-                with env(NEBIUS_API_KEY="k",
-                         NEBIUS_SPEND_CAP_USD="0"):
+            with mock.patch.object(runs, "LEDGER", _spent_ledger(d)):
+                with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="0"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
                         with self.assertRaises(RuntimeError) as ctx:
                             model_router.resolve_llm()
         self.assertIn("cap", str(ctx.exception).lower())
@@ -274,27 +288,22 @@ class TestSpendCapGate(unittest.TestCase):
 
     def test_cap_blocks_at_spend(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _spent_ledger(d)):
-                with env(NEBIUS_API_KEY="k",
-                         NEBIUS_SPEND_CAP_USD="0.0001"):
+            with mock.patch.object(runs, "LEDGER", _spent_ledger(d)):
+                with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="0.0001"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
                         with self.assertRaises(RuntimeError):
                             model_router.resolve_llm()
 
     def test_cap_allows_under_spend(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _spent_ledger(d)):
-                with env(NEBIUS_API_KEY="k",
-                         NEBIUS_SPEND_CAP_USD="5.00"):
+            with mock.patch.object(runs, "LEDGER", _spent_ledger(d)):
+                with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="5.00"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
-                        with mock.patch.object(
-                                model_router.ledger, "record"):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
+                        with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "nebius")
 
@@ -302,43 +311,39 @@ class TestSpendCapGate(unittest.TestCase):
         # #885: no more uncapped — unset now means the $5.00
         # default, which this $0.0008 ledger fits under.
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _spent_ledger(d)):
+            with mock.patch.object(runs, "LEDGER", _spent_ledger(d)):
                 with env(NEBIUS_API_KEY="k"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
-                        with mock.patch.object(
-                                model_router.ledger, "record"):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
+                        with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "nebius")
 
     def test_cap_blocks_on_unknown_rates(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _unknown_ledger(d)):
-                with env(NEBIUS_API_KEY="k",
-                         NEBIUS_SPEND_CAP_USD="5.00"):
+            with mock.patch.object(runs, "LEDGER", _unknown_ledger(d)):
+                with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="5.00"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
                         with self.assertRaises(RuntimeError) as ctx:
                             model_router.resolve_llm()
         self.assertIn("rate", str(ctx.exception).lower())
 
     def test_unknown_allowed_with_env_rate_override(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _unknown_ledger(d)):
-                with env(NEBIUS_API_KEY="k",
-                         NEBIUS_SPEND_CAP_USD="5.00",
-                         METERED_RATE_IN_PER_1M="0.15",
-                         METERED_RATE_OUT_PER_1M="0.50"):
+            with mock.patch.object(runs, "LEDGER", _unknown_ledger(d)):
+                with env(
+                    NEBIUS_API_KEY="k",
+                    NEBIUS_SPEND_CAP_USD="5.00",
+                    METERED_RATE_IN_PER_1M="0.15",
+                    METERED_RATE_OUT_PER_1M="0.50",
+                ):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
-                        with mock.patch.object(
-                                model_router.ledger, "record"):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
+                        with mock.patch.object(model_router.ledger, "record"):
                             spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "nebius")
 
@@ -346,25 +351,22 @@ class TestSpendCapGate(unittest.TestCase):
         # #885: unset used to ignore unrated spend; the $5.00
         # default fails closed on it like any explicit cap.
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _unknown_ledger(d)):
+            with mock.patch.object(runs, "LEDGER", _unknown_ledger(d)):
                 with env(NEBIUS_API_KEY="k"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=False):
+                        model_router, "ollama_reachable", return_value=False
+                    ):
                         with self.assertRaises(RuntimeError) as ctx:
                             model_router.resolve_llm()
         self.assertIn("rate", str(ctx.exception).lower())
 
     def test_cap_leaves_local_path_untouched(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(runs, "LEDGER",
-                                   _spent_ledger(d)):
-                with env(NEBIUS_API_KEY="k",
-                         NEBIUS_SPEND_CAP_USD="0"):
+            with mock.patch.object(runs, "LEDGER", _spent_ledger(d)):
+                with env(NEBIUS_API_KEY="k", NEBIUS_SPEND_CAP_USD="0"):
                     with mock.patch.object(
-                            model_router, "ollama_reachable",
-                            return_value=True):
+                        model_router, "ollama_reachable", return_value=True
+                    ):
                         spec = model_router.resolve_llm()
         self.assertEqual(spec["provider"], "ollama")
 
@@ -377,15 +379,15 @@ class TestSpendCapGate(unittest.TestCase):
         # chunks unless stream_usage is set; without it every Nebius
         # run ledgers zeros (spend tracking blind).
         kwargs = model_router.chat_kwargs(
-            {"provider": "nebius", "model": "m",
-             "base_url": "http://x"})
+            {"provider": "nebius", "model": "m", "base_url": "http://x"}
+        )
         self.assertTrue(kwargs["stream_usage"])
         # Issue #1040: default reasoning effort burns the output
         # budget on long turns; low keeps content for ~1 token.
         self.assertEqual(kwargs["reasoning_effort"], "low")
         ollama = model_router.chat_kwargs(
-            {"provider": "ollama", "model": "m",
-             "base_url": "http://x"})
+            {"provider": "ollama", "model": "m", "base_url": "http://x"}
+        )
         self.assertNotIn("stream_usage", ollama)
 
 
@@ -404,10 +406,12 @@ class TestBuildChatModel(unittest.TestCase):
                 calls.append(kwargs)
 
         fake_mod.ChatOllama = FakeOllama
-        spec = {"provider": "ollama", "model": "qwen3:8b",
-                "base_url": "http://ollama:11434"}
-        with unittest.mock.patch.dict(
-                sys.modules, {"langchain_ollama": fake_mod}):
+        spec = {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
+        with unittest.mock.patch.dict(sys.modules, {"langchain_ollama": fake_mod}):
             _model, out = model_router.build_chat_model(spec=spec)
         self.assertEqual(out, spec)
         self.assertEqual(calls[0]["base_url"], "http://ollama:11434")
@@ -425,15 +429,112 @@ class TestBuildChatModel(unittest.TestCase):
                 calls.append(kwargs)
 
         fake_mod.ChatOpenAI = FakeOpenAI
-        spec = {"provider": "nebius", "model": "m",
-                "base_url": "https://nebius.example/v1"}
-        with unittest.mock.patch.dict(
-                sys.modules, {"langchain_openai": fake_mod}):
+        spec = {
+            "provider": "nebius",
+            "model": "m",
+            "base_url": "https://nebius.example/v1",
+        }
+        with unittest.mock.patch.dict(sys.modules, {"langchain_openai": fake_mod}):
             with mock.patch.dict(os.environ, {"NEBIUS_API_KEY": "k"}):
                 _model, out = model_router.build_chat_model(spec=spec)
         self.assertEqual(out["provider"], "nebius")
         self.assertEqual(calls[0]["api_key"], "k")
         self.assertEqual(calls[0]["reasoning_effort"], "low")
+
+
+class _AnySchema:
+    """Sentinel schema: fakes record it, never validate it."""
+
+
+class TestStructuredChatModel(unittest.TestCase):
+    """Native schema binding (Gemini round 2026-11-09): no prompt-hinting."""
+
+    def test_schema_none_returns_plain_model(self):
+        import sys
+        import types
+
+        calls = []
+        fake_mod = types.ModuleType("langchain_ollama")
+
+        class FakeOllama:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+            def with_structured_output(self, *args, **kwargs):
+                raise AssertionError("must not bind without a schema")
+
+        fake_mod.ChatOllama = FakeOllama
+        spec = {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
+        with unittest.mock.patch.dict(sys.modules, {"langchain_ollama": fake_mod}):
+            model, out = model_router.build_structured_chat_model(spec=spec)
+        self.assertIsInstance(model, FakeOllama)
+        self.assertEqual(out["provider"], "ollama")
+
+    def test_ollama_binds_json_schema_natively(self):
+        import sys
+        import types
+
+        calls = []
+        fake_mod = types.ModuleType("langchain_ollama")
+
+        class FakeOllama:
+            def __init__(self, **kwargs):
+                pass
+
+            def with_structured_output(self, schema, **kwargs):
+                calls.append({"schema": schema, **kwargs})
+                return ("structured", schema)
+
+        fake_mod.ChatOllama = FakeOllama
+        spec = {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
+        with unittest.mock.patch.dict(sys.modules, {"langchain_ollama": fake_mod}):
+            model, _out = model_router.build_structured_chat_model(
+                spec=spec, schema=_AnySchema
+            )
+        self.assertEqual(model, ("structured", _AnySchema))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["method"], "json_schema")
+        self.assertNotIn("strict", calls[0])
+
+    def test_nebius_binds_json_schema_strict(self):
+        import sys
+        import types
+
+        calls = []
+        fake_mod = types.ModuleType("langchain_openai")
+
+        class FakeOpenAI:
+            def __init__(self, **kwargs):
+                pass
+
+            def with_structured_output(self, schema, **kwargs):
+                calls.append({"schema": schema, **kwargs})
+                return ("structured", schema)
+
+        fake_mod.ChatOpenAI = FakeOpenAI
+        spec = {
+            "provider": "nebius",
+            "model": "m",
+            "base_url": "https://nebius.example/v1",
+        }
+        with unittest.mock.patch.dict(sys.modules, {"langchain_openai": fake_mod}):
+            with mock.patch.dict(os.environ, {"NEBIUS_API_KEY": "k"}):
+                model, out = model_router.build_structured_chat_model(
+                    spec=spec, schema=_AnySchema
+                )
+        self.assertEqual(model, ("structured", _AnySchema))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["method"], "json_schema")
+        self.assertTrue(calls[0]["strict"])
+        self.assertEqual(out["provider"], "nebius")
 
 
 if __name__ == "__main__":
