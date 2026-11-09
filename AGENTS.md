@@ -30,6 +30,7 @@ When using BoomTick MCP tools:
 
 - Multi-session lane work is coordinated through memory file `lanes/registry.md` (personal_project scope): role → session-name roster. Read it to find the orchestrator/coders/auditors; never guess session names.
 - Lane skills live in `.agents/skills/` (force-added; the directory is otherwise ignored). Imported/upstream skills stay ignored as re-fetchable.
+- `.agents/skills/` is the single skill source of truth; `.claude/skills/` holds only symlinks into it (CI-guarded by `scripts/check-no-shadow-skills.sh`).
 
 ## Code Map
 

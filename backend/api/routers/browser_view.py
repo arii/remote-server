@@ -170,9 +170,11 @@ def _viewer_claim():
         sid = _viewer_session_id
         if sid is None:
             return None
-        # Validate outside the lock: network I/O under a mutex
-        # would serialize every viewer connect behind Grid latency.
-        alive = _grid_session_alive(sid)
+    # Validate outside the lock: network I/O under a mutex serializes
+    # every viewer connect behind Grid latency and stalls disconnect
+    # teardown (which needs the same lock) behind a wedged Grid
+    # probe — the slot then leaks (issue #1202).
+    alive = _grid_session_alive(sid)
     with _viewer_lock:
         if not alive or _viewer_session_id != sid:
             if _viewer_session_id == sid:
@@ -894,8 +896,14 @@ def create_app():
                         continue
                     await recover_once(lambda: do_go(url))
         finally:
+            # The Grid session must release even when the bridge is
+            # wedged: close() handshakes on the same Grid connection
+            # that just died, so an unbounded close starves the
+            # delete below and the single slot leaks (issue #1202).
+            # Bound it, then tear down unconditionally.
             if bridge is not None:
-                await bridge.close()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(bridge.close(), timeout=5)
             await _viewer_teardown(session_id, kind)
 
     return app

@@ -41,6 +41,7 @@ original.
 """
 
 import base64
+import itertools
 import json
 import os
 import queue
@@ -89,8 +90,18 @@ CHAT_KILL_GRACE = 5
 # this are swept opportunistically, mirroring RESULT_TTL.
 PENDING_RESUME_TTL = 3600
 RID_RE = re.compile(r"^[0-9a-f]{12}$")
-TOOL_HINTS = ("read", "find", "grep", "search", "list", "check",
-              "file", "code", "where", "log")
+TOOL_HINTS = (
+    "read",
+    "find",
+    "grep",
+    "search",
+    "list",
+    "check",
+    "file",
+    "code",
+    "where",
+    "log",
+)
 
 chat_sessions: dict = {}
 chat_sessions_lock = threading.Lock()
@@ -108,35 +119,60 @@ def _repo_root() -> str:
     # everything else uses root-relative literals or entry-point
     # PYTHONPATH. Never import this elsewhere; keep it private.
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.dirname(
-        os.path.dirname(os.path.dirname(here)))
+    return os.path.dirname(os.path.dirname(os.path.dirname(here)))
 
 
 def deep_agent_dir() -> str:
-    return os.environ.get("DEEP_AGENT_DIR",
-                           os.path.join(_repo_root(), "deep-agent"))
+    return os.environ.get("DEEP_AGENT_DIR", os.path.join(_repo_root(), "deep-agent"))
 
 
 def deep_agent_env() -> dict:
     """Child env for deep_chat spawns: our tree first, ambient behind."""
-    path = (_repo_root() + os.pathsep + deep_agent_dir()
-            + (os.pathsep + os.environ["PYTHONPATH"]
-               if os.environ.get("PYTHONPATH") else ""))
+    path = (
+        _repo_root()
+        + os.pathsep
+        + deep_agent_dir()
+        + (
+            os.pathsep + os.environ["PYTHONPATH"]
+            if os.environ.get("PYTHONPATH")
+            else ""
+        )
+    )
     return {**os.environ, "PYTHONPATH": path}
 
 
 def deep_agent_python() -> str:
     return os.environ.get(
-        "DEEP_AGENT_VENV",
-        os.path.join(deep_agent_dir(), ".venv", "bin", "python"))
+        "DEEP_AGENT_VENV", os.path.join(deep_agent_dir(), ".venv", "bin", "python")
+    )
 
 
 def deep_agent_script(name: str) -> str:
     return os.path.join(deep_agent_dir(), name)
 
 
+#: Process-wide monotonic frame counter (issue #1208). Every SSE
+#: frame rides one additive `seq` so receivers can drop stale or
+#: redelivered frames after a socket drop + reconnect. Global (not
+#: per-stream): reconnects start new generators, and a global counter
+#: stays ordered across them. Callers with stable ids (chat replay
+#: re-emits stored seqs) pass `seq` explicitly; setdefault keeps it.
+_sse_seq = itertools.count(1)
+_sse_seq_lock = threading.Lock()
+
+
+def _next_sse_seq() -> int:
+    with _sse_seq_lock:
+        return next(_sse_seq)
+
+
 def sse_frame(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    # Copy: generators alias payloads into change-detection state
+    # (jobs _run_events/_jobs_events compare `last`), so injecting
+    # in place would poison the comparison and spam frames.
+    frame = dict(data)
+    frame.setdefault("seq", _next_sse_seq())
+    return f"event: {event}\ndata: {json.dumps(frame)}\n\n"
 
 
 def get_repo_info(repo: str) -> dict:
@@ -192,7 +228,8 @@ class StderrTail:
             self._thread = None
         else:
             self._thread = threading.Thread(
-                target=self._drain, args=(err,), daemon=True)
+                target=self._drain, args=(err,), daemon=True
+            )
             self._thread.start()
 
     def _drain(self, err) -> None:
@@ -202,7 +239,7 @@ class StderrTail:
                 if not chunk:
                     break
                 with self._lock:
-                    self._tail = (self._tail + chunk)[-self._limit:]
+                    self._tail = (self._tail + chunk)[-self._limit :]
         except Exception:
             pass
         finally:
@@ -227,10 +264,17 @@ def validate_action_request(args: dict) -> tuple[bool, str]:
     raw = base64.b64encode(json.dumps(args).encode()).decode()
     try:
         proc = subprocess.run(
-            [sys.executable, deep_agent_script("deep_chat.py"),
-             "--validate-proposal", raw],
-            capture_output=True, text=True, timeout=30,
-            env=deep_agent_env())
+            [
+                sys.executable,
+                deep_agent_script("deep_chat.py"),
+                "--validate-proposal",
+                raw,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=deep_agent_env(),
+        )
     except Exception as exc:
         return False, f"REJECTED: validator failed: {exc}"
     try:
@@ -240,15 +284,23 @@ def validate_action_request(args: dict) -> tuple[bool, str]:
     return bool(out.get("ok")), str(out.get("text", ""))
 
 
-def run_resume_spawn(gh: str, thread: str, verdict: str,
-                     message_b64: str | None) -> tuple[int, str]:
+def run_resume_spawn(
+    gh: str, thread: str, verdict: str, message_b64: str | None
+) -> tuple[int, str]:
     """Run deep_chat --resume synchronously. Injectable for tests."""
-    argv = [deep_agent_python(), deep_agent_script("deep_chat.py"),
-           gh, thread, "--resume", verdict]
+    argv = [
+        deep_agent_python(),
+        deep_agent_script("deep_chat.py"),
+        gh,
+        thread,
+        "--resume",
+        verdict,
+    ]
     if message_b64:
         argv.append(message_b64)
-    proc = subprocess.run(argv, capture_output=True, text=True,
-                          timeout=600, env=deep_agent_env())
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, timeout=600, env=deep_agent_env()
+    )
     return proc.returncode, proc.stdout
 
 
@@ -256,7 +308,7 @@ def _interrupt_payload(chunks: list[str]) -> dict | None:
     for line in reversed("".join(chunks).splitlines()):
         if line.startswith("INTERRUPT:"):
             try:
-                return json.loads(line[len("INTERRUPT:"):])
+                return json.loads(line[len("INTERRUPT:") :])
             except ValueError:
                 return None
     return None
@@ -282,8 +334,11 @@ def approval_requests(value) -> list[dict]:
 
 def strip_agent_markers(text: str) -> str:
     """Drop machine lines (INTERRUPT blobs, trace paths) from replies."""
-    kept = [ln for ln in text.splitlines()
-            if not ln.startswith("INTERRUPT:") and not ln.startswith("trace:")]
+    kept = [
+        ln
+        for ln in text.splitlines()
+        if not ln.startswith("INTERRUPT:") and not ln.startswith("trace:")
+    ]
     return "\n".join(kept).strip()
 
 
@@ -400,9 +455,11 @@ def _sweep_pending_resumes(now: float | None = None) -> int:
     """
     now = time.time() if now is None else now
     with pending_resumes_lock:
-        stale = [sid for sid, st in pending_resumes.items()
-                 if not st.get("busy")
-                 and now - st.get("created_at", 0) > PENDING_RESUME_TTL]
+        stale = [
+            sid
+            for sid, st in pending_resumes.items()
+            if not st.get("busy") and now - st.get("created_at", 0) > PENDING_RESUME_TTL
+        ]
         for sid in stale:
             pending_resumes.pop(sid, None)
     return len(stale)
@@ -443,13 +500,23 @@ def _sweep_chat_sessions(now: float | None = None) -> int:
     return len(stale)
 
 
-def _buffer_token(session_id: str, token: str) -> None:
+def _buffer_token(session_id: str, token: str) -> int | None:
+    """Buffer a token for reattach replay; return its stable seq.
+
+    The seq rides the live frame and is stored alongside the token
+    so the replay re-emits the SAME ids (issue #1208): a client that
+    applied the live prefix drops the replayed prefix by seq instead
+    of appending it twice. None when nothing was buffered.
+    """
     if not token:
-        return
+        return None
+    seq = _next_sse_seq()
     with chat_sessions_lock:
         sess = chat_sessions.get(session_id)
         if sess is not None and not sess.get("done"):
             sess["tokens"].append(token)
+            sess.setdefault("seqs", []).append(seq)
+    return seq
 
 
 def _set_phase(session_id: str, phase: str) -> None:
@@ -485,22 +552,34 @@ def _abort_session(session_id: str) -> tuple[bool, str | None]:
     return True, None
 
 
-def _approval_events(session_id: str, repo: str, info: dict,
-                     chunks: list[str], elapsed: float):
+def _approval_events(
+    session_id: str, repo: str, info: dict, chunks: list[str], elapsed: float
+):
     blob = _interrupt_payload(chunks)
     ivs = (blob.get("interrupts") or []) if blob else []
     value = ivs[0].get("value") if ivs else None
     requests = approval_requests(value)
     if not requests:
-        yield sse_frame("phase", {"phase": "error",
-                                  "error": "approval requested but no proposal found",
-                                  "elapsed": elapsed})
-        yield sse_frame("error",
-                        {"error": "approval requested but no proposal found"})
-        ledger_append({"kind": "chat", "session_id": session_id,
-                       "repo": repo, "event": "chat failed",
-                       "error": "approval requested but no proposal found",
-                       "exit": 3, "elapsed": elapsed})
+        yield sse_frame(
+            "phase",
+            {
+                "phase": "error",
+                "error": "approval requested but no proposal found",
+                "elapsed": elapsed,
+            },
+        )
+        yield sse_frame("error", {"error": "approval requested but no proposal found"})
+        ledger_append(
+            {
+                "kind": "chat",
+                "session_id": session_id,
+                "repo": repo,
+                "event": "chat failed",
+                "error": "approval requested but no proposal found",
+                "exit": 3,
+                "elapsed": elapsed,
+            }
+        )
         return
     checked = [validate_action_request(a) for a in requests]
     if not all(ok for ok, _ in checked):
@@ -510,33 +589,64 @@ def _approval_events(session_id: str, repo: str, info: dict,
             run_resume_spawn(info["gh"], session_id, "reject", rej)
         except Exception:
             pass
-        yield sse_frame("phase", {"phase": "error",
-                                  "error": f"proposal rejected: {reason}",
-                                  "elapsed": elapsed})
+        yield sse_frame(
+            "phase",
+            {
+                "phase": "error",
+                "error": f"proposal rejected: {reason}",
+                "elapsed": elapsed,
+            },
+        )
         yield sse_frame("error", {"error": f"proposal rejected: {reason}"})
-        ledger_append({"kind": "chat", "session_id": session_id,
-                       "repo": repo, "event": "chat auto-rejected",
-                       "error": reason, "elapsed": elapsed})
+        ledger_append(
+            {
+                "kind": "chat",
+                "session_id": session_id,
+                "repo": repo,
+                "event": "chat auto-rejected",
+                "error": reason,
+                "elapsed": elapsed,
+            }
+        )
         return
     proposals = [t for _, t in checked]
     with pending_resumes_lock:
         pending_resumes[session_id] = {
-            "gh": info["gh"], "repo": repo, "value": value,
-            "proposals": proposals, "pending": True, "busy": False,
-            "created_at": time.time(), "executed": [],
+            "gh": info["gh"],
+            "repo": repo,
+            "value": value,
+            "proposals": proposals,
+            "pending": True,
+            "busy": False,
+            "created_at": time.time(),
+            "executed": [],
         }
-    yield sse_frame("approval", {"session_id": session_id, **value,
-                                 "proposals": proposals})
-    yield sse_frame("done", {"text": strip_agent_markers("".join(chunks)),
-                             "aborted": False, "elapsed": elapsed,
-                             "approval_pending": True})
-    ledger_append({"kind": "chat", "session_id": session_id,
-                   "repo": repo, "event": "chat approval requested",
-                   "elapsed": elapsed})
+    yield sse_frame(
+        "approval", {"session_id": session_id, **value, "proposals": proposals}
+    )
+    yield sse_frame(
+        "done",
+        {
+            "text": strip_agent_markers("".join(chunks)),
+            "aborted": False,
+            "elapsed": elapsed,
+            "approval_pending": True,
+        },
+    )
+    ledger_append(
+        {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": repo,
+            "event": "chat approval requested",
+            "elapsed": elapsed,
+        }
+    )
 
 
-def _resume_decision(session_id: str, decision: str,
-                     message: str) -> tuple[dict | None, int, str]:
+def _resume_decision(
+    session_id: str, decision: str, message: str
+) -> tuple[dict | None, int, str]:
     """Validate + run one resume. Returns (body, http_status, error)."""
     _sweep_pending_resumes()
     with pending_resumes_lock:
@@ -590,11 +700,15 @@ def _resume_decision(session_id: str, decision: str,
     exec_outcomes: list = []
     exec_suffix = ""
     if decision == "approve":
-        todo = [(i, a) for i, a in enumerate(
-            approval_requests(approved_value)) if i not in approved_done]
+        todo = [
+            (i, a)
+            for i, a in enumerate(approval_requests(approved_value))
+            if i not in approved_done
+        ]
         if todo:
             exec_outcomes = proposal_exec.execute_proposals(
-                todo, session_id, gh, approved_repo)
+                todo, session_id, gh, approved_repo
+            )
             with pending_resumes_lock:
                 st = pending_resumes.get(session_id)
                 if st is not None:
@@ -602,18 +716,31 @@ def _resume_decision(session_id: str, decision: str,
                     done.update(i for i, _ in todo)
                     st["executed"] = sorted(done)
             for o in exec_outcomes:
-                ledger_append({
-                    "kind": "chat", "session_id": session_id,
-                    "repo": approved_repo,
-                    "event": ("proposal executed" if not o["skipped"]
-                              else "proposal skipped"),
-                    "proposal_id": o["proposal_id"],
-                    "proposal_kind": o["kind"],
-                    "target": o["target"], "ok": o["ok"],
-                    "detail": o["detail"]})
+                ledger_append(
+                    {
+                        "kind": "chat",
+                        "session_id": session_id,
+                        "repo": approved_repo,
+                        "event": (
+                            "proposal executed"
+                            if not o["skipped"]
+                            else "proposal skipped"
+                        ),
+                        "proposal_id": o["proposal_id"],
+                        "proposal_kind": o["kind"],
+                        "target": o["target"],
+                        "ok": o["ok"],
+                        "detail": o["detail"],
+                    }
+                )
             exec_suffix = proposal_exec.format_suffix(exec_outcomes)
-    body: dict = {"ok": True, "resumed": True, "session_id": session_id,
-                  "text": text + exec_suffix, "exit": code}
+    body: dict = {
+        "ok": True,
+        "resumed": True,
+        "session_id": session_id,
+        "text": text + exec_suffix,
+        "exit": code,
+    }
     attempted = [o for o in exec_outcomes if not o["skipped"]]
     if attempted:
         body["executions"] = attempted
@@ -633,55 +760,69 @@ def _resume_decision(session_id: str, decision: str,
                     st["proposals"] = [t for _, t in checked]
                     st["created_at"] = time.time()
                     st["executed"] = []
-                    body["approval"] = {"session_id": session_id, **value,
-                                        "proposals": st["proposals"]}
+                    body["approval"] = {
+                        "session_id": session_id,
+                        **value,
+                        "proposals": st["proposals"],
+                    }
                     return body, 202, ""
             # Uninterpretable re-interrupt: auto-reject once (bounded)
             # so the thread never strands behind an unshowable card.
             rej = base64.b64encode(b"unreadable proposal").decode()
             try:
-                code2, out2 = run_resume_spawn(gh, session_id,
-                                               "reject", rej)
+                code2, out2 = run_resume_spawn(gh, session_id, "reject", rej)
             except Exception:
                 code2, out2 = 1, ""
             st["pending"] = False
-            ledger_append({"kind": "chat", "session_id": session_id,
-                           "repo": st["repo"],
-                           "event": "chat auto-rejected",
-                           "error": "follow-up approval unreadable"})
+            ledger_append(
+                {
+                    "kind": "chat",
+                    "session_id": session_id,
+                    "repo": st["repo"],
+                    "event": "chat auto-rejected",
+                    "error": "follow-up approval unreadable",
+                }
+            )
             if code2 == 3:
                 blob2 = _interrupt_payload([out2])
                 ivs2 = (blob2.get("interrupts") or []) if blob2 else []
                 value2 = ivs2[0].get("value") if ivs2 else None
                 requests2 = approval_requests(value2)
                 if requests2:
-                    checked2 = [validate_action_request(a)
-                                for a in requests2]
+                    checked2 = [validate_action_request(a) for a in requests2]
                     if all(ok for ok, _ in checked2):
                         st["pending"] = True
                         st["value"] = value2
                         st["proposals"] = [t for _, t in checked2]
                         st["created_at"] = time.time()
                         st["executed"] = []
-                        body["text"] = (strip_agent_markers(out2)
-                                        + exec_suffix)
+                        body["text"] = strip_agent_markers(out2) + exec_suffix
                         body["exit"] = code2
-                        body["approval"] = {"session_id": session_id,
-                                            **value2,
-                                            "proposals": st["proposals"]}
+                        body["approval"] = {
+                            "session_id": session_id,
+                            **value2,
+                            "proposals": st["proposals"],
+                        }
                         return body, 202, ""
-            body["text"] = ((strip_agent_markers(out2)
-                             or "The agent asked for approval in a form I "
-                                "can't display, so I rejected it. Ask again "
-                                "if still needed.")
-                            + exec_suffix)
+            body["text"] = (
+                strip_agent_markers(out2)
+                or "The agent asked for approval in a form I "
+                "can't display, so I rejected it. Ask again "
+                "if still needed."
+            ) + exec_suffix
             body["exit"] = code2
             body.pop("approval", None)
             return body, 202, ""
         st["pending"] = False
     done_word = "approved" if decision == "approve" else "rejected"
-    ledger_append({"kind": "chat", "session_id": session_id,
-                   "repo": st["repo"], "event": f"chat {done_word}"})
+    ledger_append(
+        {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": st["repo"],
+            "event": f"chat {done_word}",
+        }
+    )
     return body, 202, ""
 
 
@@ -699,11 +840,13 @@ CHAT_PREFER = {"auto": None, "local": "ollama", "cloud": "nebius"}
 MENTION_MAX_FILES = 3
 MENTION_MAX_FILE_BYTES = 8192
 MENTION_TAIL_MARKER = (
-    f"\n… [truncated to fit {CHAT_MAX_PROMPT} chars: attachments first]")
+    f"\n… [truncated to fit {CHAT_MAX_PROMPT} chars: attachments first]"
+)
 MENTION_RE = re.compile(r"(?:^|(?<=[\s(\[{>\"']))@([A-Za-z0-9_.\-/]+)")
 MENTION_STRIP_TRAILING = ".,;:!?)]}\"'"
-MENTION_SKIPPED_LINE = ("[+{extra} more @-mention(s) skipped: "
-                        "max {max_files} files per send]")
+MENTION_SKIPPED_LINE = (
+    "[+{extra} more @-mention(s) skipped: max {max_files} files per send]"
+)
 
 
 def parse_mentions(text: str) -> list[str]:
@@ -735,8 +878,11 @@ def read_mention_file(root, rel: str) -> tuple[str | None, str | None]:
     """
     cleaned = rel.strip().lstrip("/")
     parts = cleaned.split("/")
-    if (not cleaned or any(p in ("", ".", "..") for p in parts)
-            or os.path.isabs(rel.strip())):
+    if (
+        not cleaned
+        or any(p in ("", ".", "..") for p in parts)
+        or os.path.isabs(rel.strip())
+    ):
         return None, "invalid path"
     base = os.path.realpath(str(root))
     full = os.path.realpath(os.path.join(base, cleaned))
@@ -758,10 +904,11 @@ def read_mention_file(root, rel: str) -> tuple[str | None, str | None]:
             size = os.path.getsize(full)
         except OSError:
             size = MENTION_MAX_FILE_BYTES + 1
-        text = data[:MENTION_MAX_FILE_BYTES].decode("utf-8",
-                                                   errors="replace")
-        return (f"{text}\n… [truncated: showing first "
-                f"{MENTION_MAX_FILE_BYTES} of {size} bytes]"), None
+        text = data[:MENTION_MAX_FILE_BYTES].decode("utf-8", errors="replace")
+        return (
+            f"{text}\n… [truncated: showing first "
+            f"{MENTION_MAX_FILE_BYTES} of {size} bytes]"
+        ), None
     try:
         return data.decode("utf-8"), None
     except UnicodeDecodeError:
@@ -794,18 +941,22 @@ def inject_mentions(prompt: str, repo: str) -> str:
             blocks.append(f"[@{rel}: {reason}]")
     extra = len(mentions) - MENTION_MAX_FILES
     if extra > 0:
-        blocks.append(MENTION_SKIPPED_LINE.format(
-            extra=extra, max_files=MENTION_MAX_FILES))
+        blocks.append(
+            MENTION_SKIPPED_LINE.format(extra=extra, max_files=MENTION_MAX_FILES)
+        )
     combined = "\n\n".join(blocks) + "\n\n" + prompt
     if len(combined) <= CHAT_MAX_PROMPT:
         return combined
-    return (combined[:CHAT_MAX_PROMPT - len(MENTION_TAIL_MARKER)]
-            + MENTION_TAIL_MARKER)
+    return combined[: CHAT_MAX_PROMPT - len(MENTION_TAIL_MARKER)] + MENTION_TAIL_MARKER
 
 
-def _chat_events(prompt: str, repo: str, session_id: str,
-                 prefer: str = "auto",
-                 resolve_mentions: bool = False):
+def _chat_events(
+    prompt: str,
+    repo: str,
+    session_id: str,
+    prefer: str = "auto",
+    resolve_mentions: bool = False,
+):
     try:
         info = get_repo_info(repo)
     except ValueError:
@@ -822,8 +973,7 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     # GET turns keep mentions literal (never resolved off a URL).
     # The ledger keeps the user's own words, not injected content.
     user_text = prompt.strip()[:CHAT_MAX_PROMPT]
-    prompt = (inject_mentions(user_text, repo) if resolve_mentions
-              else user_text)
+    prompt = inject_mentions(user_text, repo) if resolve_mentions else user_text
     venv = deep_agent_python()
     script = deep_agent_script("deep_chat.py")
     if not (os.path.isfile(venv) and os.path.isfile(script)):
@@ -833,28 +983,51 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     _sweep_chat_sessions()
     with chat_sessions_lock:
         chat_sessions[session_id] = {
-            "id": session_id, "repo": repo, "prompt": prompt,
-            "started_at": time.time(), "aborted": False, "proc": None,
+            "id": session_id,
+            "repo": repo,
+            "prompt": prompt,
+            "started_at": time.time(),
+            "aborted": False,
+            "proc": None,
             # #1015 turn survival: tokens buffer server-side so a
             # remount re-attaches; the record stays queryable after
             # done (no pop) until the TTL sweep above reaps it.
-            "tokens": [], "phase": "prefill", "done": False,
-            "final": None, "detached_at": None, "completed_at": None,
+            "tokens": [],
+            "seqs": [],
+            "phase": "prefill",
+            "done": False,
+            "final": None,
+            "detached_at": None,
+            "completed_at": None,
         }
     _sweep_pending_resumes()
-    ledger_append({"kind": "chat", "session_id": session_id, "repo": repo,
-                   "prompt": user_text[:150], "event": "chat started"})
+    ledger_append(
+        {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": repo,
+            "prompt": user_text[:150],
+            "event": "chat started",
+        }
+    )
     start_time = time.time()
-    yield sse_frame("phase", {"phase": "prefill",
-                              "message": "Analyzing context and preparing request..."})
+    yield sse_frame(
+        "phase",
+        {"phase": "prefill", "message": "Analyzing context and preparing request..."},
+    )
     b64 = base64.b64encode(prompt.encode()).decode()
     argv = [venv, script, info["gh"], session_id, b64]
     if CHAT_PREFER[want]:
         argv.append(f"--prefer={CHAT_PREFER[want]}")
     if any(k in prompt.lower() for k in TOOL_HINTS):
         time.sleep(0.05)
-        yield sse_frame("phase", {"phase": "tool_call",
-                                  "message": "Inspecting repository context with tools..."})
+        yield sse_frame(
+            "phase",
+            {
+                "phase": "tool_call",
+                "message": "Inspecting repository context with tools...",
+            },
+        )
     try:
         proc = spawn_chat_process(argv)
         with chat_sessions_lock:
@@ -866,9 +1039,15 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         yield sse_frame("phase", {"phase": "error", "error": str(exc)})
         yield sse_frame("error", {"error": str(exc)})
         _finish_turn(session_id, {"kind": "error", "error": str(exc)})
-        ledger_append({"kind": "chat", "session_id": session_id,
-                       "repo": repo, "event": "chat failed",
-                       "error": str(exc)[:500]})
+        ledger_append(
+            {
+                "kind": "chat",
+                "session_id": session_id,
+                "repo": repo,
+                "event": "chat failed",
+                "error": str(exc)[:500],
+            }
+        )
         return
     drained = StderrTail(proc)
     full_response: list[str] = []
@@ -901,8 +1080,10 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     reader.start()
     try:
         _set_phase(session_id, "generating")
-        yield sse_frame("phase", {"phase": "generating",
-                                  "message": "Streaming response from model..."})
+        yield sse_frame(
+            "phase",
+            {"phase": "generating", "message": "Streaming response from model..."},
+        )
         while True:
             with chat_sessions_lock:
                 sess = chat_sessions.get(session_id)
@@ -929,18 +1110,23 @@ def _chat_events(prompt: str, repo: str, session_id: str,
             full_response.append(chunk)
             clean = scrubber.feed(chunk)
             if clean:
-                _buffer_token(session_id, clean)
-                yield sse_frame("token", {"token": clean})
+                seq = _buffer_token(session_id, clean)
+                frame = {"token": clean}
+                if seq is not None:
+                    frame["seq"] = seq
+                yield sse_frame("token", frame)
         tail = scrubber.flush()
         if tail:
-            _buffer_token(session_id, tail)
-            yield sse_frame("token", {"token": tail})
+            seq = _buffer_token(session_id, tail)
+            frame = {"token": tail}
+            if seq is not None:
+                frame["seq"] = seq
+            yield sse_frame("token", frame)
         if timed_out or is_aborted:
             _stop_proc(proc)
         else:
             try:
-                proc.wait(timeout=max(deadline - time.time(),
-                                      CHAT_KILL_GRACE))
+                proc.wait(timeout=max(deadline - time.time(), CHAT_KILL_GRACE))
             except Exception:
                 timed_out = True
                 _stop_proc(proc)
@@ -969,45 +1155,72 @@ def _chat_events(prompt: str, repo: str, session_id: str,
     elapsed = round(time.time() - start_time, 2)
     if is_aborted:
         text = strip_agent_markers("".join(full_response))
-        yield sse_frame("phase", {"phase": "aborted",
-                                  "message": "Generation aborted by user.",
-                                  "elapsed": elapsed})
-        yield sse_frame("done", {"text": text,
-                                 "aborted": True, "elapsed": elapsed})
-        _finish_turn(session_id, {"kind": "done", "text": text,
-                                  "aborted": True, "elapsed": elapsed})
-        ledger_append({"kind": "chat", "session_id": session_id,
-                       "repo": repo, "event": "chat aborted",
-                       "elapsed": elapsed})
+        yield sse_frame(
+            "phase",
+            {
+                "phase": "aborted",
+                "message": "Generation aborted by user.",
+                "elapsed": elapsed,
+            },
+        )
+        yield sse_frame("done", {"text": text, "aborted": True, "elapsed": elapsed})
+        _finish_turn(
+            session_id,
+            {"kind": "done", "text": text, "aborted": True, "elapsed": elapsed},
+        )
+        ledger_append(
+            {
+                "kind": "chat",
+                "session_id": session_id,
+                "repo": repo,
+                "event": "chat aborted",
+                "elapsed": elapsed,
+            }
+        )
         return
     if timed_out:
         msg = f"chat timed out after {CHAT_TURN_TIMEOUT}s"
-        yield sse_frame("phase", {"phase": "error",
-                                  "error": msg,
-                                  "elapsed": elapsed})
+        yield sse_frame("phase", {"phase": "error", "error": msg, "elapsed": elapsed})
         yield sse_frame("error", {"error": msg})
-        record = {"kind": "chat", "session_id": session_id,
-                  "repo": repo, "event": "chat failed",
-                  "error": msg, "exit": code, "elapsed": elapsed}
+        record = {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": repo,
+            "event": "chat failed",
+            "error": msg,
+            "exit": code,
+            "elapsed": elapsed,
+        }
         if err_tail:
             record["stderr"] = err_tail
         _finish_turn(session_id, {"kind": "error", "error": msg})
         ledger_append(record)
         return
     if code == 2:
-        yield sse_frame("phase", {"phase": "error",
-                                  "error": "agent runtime misconfigured (exit 2)",
-                                  "elapsed": elapsed})
-        yield sse_frame("error",
-                        {"error": "agent runtime misconfigured (exit 2)"})
-        record = {"kind": "chat", "session_id": session_id,
-                  "repo": repo, "event": "chat failed",
-                  "error": "agent runtime misconfigured (exit 2)",
-                  "exit": 2, "elapsed": elapsed}
+        yield sse_frame(
+            "phase",
+            {
+                "phase": "error",
+                "error": "agent runtime misconfigured (exit 2)",
+                "elapsed": elapsed,
+            },
+        )
+        yield sse_frame("error", {"error": "agent runtime misconfigured (exit 2)"})
+        record = {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": repo,
+            "event": "chat failed",
+            "error": "agent runtime misconfigured (exit 2)",
+            "exit": 2,
+            "elapsed": elapsed,
+        }
         if err_tail:
             record["stderr"] = err_tail
-        _finish_turn(session_id, {"kind": "error",
-                                  "error": "agent runtime misconfigured (exit 2)"})
+        _finish_turn(
+            session_id,
+            {"kind": "error", "error": "agent runtime misconfigured (exit 2)"},
+        )
         ledger_append(record)
         return
     if code == 1:
@@ -1017,22 +1230,24 @@ def _chat_events(prompt: str, repo: str, session_id: str,
         # unserializable interrupt blob) still fails, with a fallback.
         text = strip_agent_markers("".join(full_response))
         msg = text if text else "chat failed (exit 1)"
-        yield sse_frame("phase", {"phase": "error",
-                                  "error": msg,
-                                  "elapsed": elapsed})
+        yield sse_frame("phase", {"phase": "error", "error": msg, "elapsed": elapsed})
         yield sse_frame("error", {"error": msg})
-        record = {"kind": "chat", "session_id": session_id,
-                  "repo": repo, "event": "chat failed",
-                  "error": msg,
-                  "exit": 1, "elapsed": elapsed}
+        record = {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": repo,
+            "event": "chat failed",
+            "error": msg,
+            "exit": 1,
+            "elapsed": elapsed,
+        }
         if err_tail:
             record["stderr"] = err_tail
         _finish_turn(session_id, {"kind": "error", "error": msg})
         ledger_append(record)
         return
     if code == 3:
-        yield from _approval_events(session_id, repo, info,
-                                    full_response, elapsed)
+        yield from _approval_events(session_id, repo, info, full_response, elapsed)
         # Approval waits in pending_resumes; the turn record stays
         # queryable (not popped — #1015) so a remount polls
         # approval_pending instead of a silent miss.
@@ -1044,23 +1259,31 @@ def _chat_events(prompt: str, repo: str, session_id: str,
                 sess["final"] = {
                     "kind": "done",
                     "text": strip_agent_markers("".join(full_response)),
-                    "aborted": False, "elapsed": elapsed,
-                    "approval_pending": True}
+                    "aborted": False,
+                    "elapsed": elapsed,
+                    "approval_pending": True,
+                }
                 sess["detached_at"] = None
                 sess["completed_at"] = time.time()
         return
     else:
         text = strip_agent_markers("".join(full_response))
-        yield sse_frame("phase", {"phase": "done",
-                                  "message": "Complete ✓",
-                                  "elapsed": elapsed})
-        yield sse_frame("done", {"text": text,
-                                 "aborted": False, "elapsed": elapsed})
-        _finish_turn(session_id, {"kind": "done", "text": text,
-                                  "aborted": False, "elapsed": elapsed})
-        record = {"kind": "chat", "session_id": session_id,
-                  "repo": repo, "event": "chat finished",
-                  "exit": code, "elapsed": elapsed}
+        yield sse_frame(
+            "phase", {"phase": "done", "message": "Complete ✓", "elapsed": elapsed}
+        )
+        yield sse_frame("done", {"text": text, "aborted": False, "elapsed": elapsed})
+        _finish_turn(
+            session_id,
+            {"kind": "done", "text": text, "aborted": False, "elapsed": elapsed},
+        )
+        record = {
+            "kind": "chat",
+            "session_id": session_id,
+            "repo": repo,
+            "event": "chat finished",
+            "exit": code,
+            "elapsed": elapsed,
+        }
         if code != 0 and err_tail:
             record["stderr"] = err_tail
         ledger_append(record)
@@ -1115,7 +1338,13 @@ SSE_HEADERS = {
 
 
 def _reattach_events(session_id: str):
-    """Replay a detached turn, then tail it live to done (#1015)."""
+    """Replay a detached turn, then tail it live to done (#1015).
+
+    Replayed tokens carry their ORIGINAL seqs (stored beside the
+    tokens by _buffer_token), so a client that applied the live
+    prefix drops the replayed prefix instead of doubling it
+    (issue #1208). Sessions predating seqs replay with fresh ids.
+    """
     idx = 0
     deadline = time.time() + CHAT_TURN_TIMEOUT
     while True:
@@ -1126,21 +1355,28 @@ def _reattach_events(session_id: str):
                     yield sse_frame("error", {"error": "unknown session"})
                 return
             toks = list(sess.get("tokens", []))
-            new = toks[idx:]
+            seqs = list(sess.get("seqs", []))
+            new = list(zip(toks[idx:], seqs[idx:]))
+            if len(toks[idx:]) > len(new):
+                fresh_start = idx + len(new)
+                new += [(tok, None) for tok in toks[fresh_start:]]
             idx = len(toks)
             done = sess.get("done")
             final = dict(sess.get("final") or {})
-        for tok in new:
-            yield sse_frame("token", {"token": tok})
+        for tok, seq in new:
+            frame = {"token": tok}
+            if seq is not None:
+                frame["seq"] = seq
+            yield sse_frame("token", frame)
         if done:
             if final.get("kind") == "error":
-                yield sse_frame(
-                    "error",
-                    {"error": final.get("error") or "chat failed"})
+                yield sse_frame("error", {"error": final.get("error") or "chat failed"})
             else:
-                payload = {"text": final.get("text", "".join(toks)),
-                           "aborted": bool(final.get("aborted", False)),
-                           "elapsed": final.get("elapsed", 0)}
+                payload = {
+                    "text": final.get("text", "".join(toks)),
+                    "aborted": bool(final.get("aborted", False)),
+                    "elapsed": final.get("elapsed", 0),
+                }
                 if final.get("approval_pending"):
                     payload["approval_pending"] = True
                 yield sse_frame("done", payload)
@@ -1167,62 +1403,92 @@ def chat_session_status(session_id: str) -> dict:
         approval = None
         if pending is not None and pending.get("pending"):
             value = pending.get("value") or {}
-            approval = {"session_id": session_id, **value,
-                        "proposals": pending.get("proposals", [])}
+            approval = {
+                "session_id": session_id,
+                **value,
+                "proposals": pending.get("proposals", []),
+            }
     with chat_sessions_lock:
         sess = dict(chat_sessions.get(session_id) or {})
     if not sess and approval is None:
         raise HTTPException(status_code=404, detail="unknown session")
     if approval is not None:
-        return {"ok": True, "session_id": session_id,
-                "state": "approval_pending",
-                "phase": sess.get("phase", "approval"),
-                "text": "".join(sess.get("tokens", [])),
-                "elapsed": None, "approval": approval}
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "state": "approval_pending",
+            "phase": sess.get("phase", "approval"),
+            "text": "".join(sess.get("tokens", [])),
+            "elapsed": None,
+            "approval": approval,
+        }
     final = dict(sess.get("final") or {})
     if sess.get("done"):
         if final.get("kind") == "error":
-            return {"ok": True, "session_id": session_id,
-                    "state": "error", "phase": "error",
-                    "text": "".join(sess.get("tokens", [])),
-                    "elapsed": final.get("elapsed"),
-                    "error": final.get("error"), "approval": None}
-        return {"ok": True, "session_id": session_id,
-                "state": "aborted" if final.get("aborted") else "done",
-                "phase": "done",
-                "text": final.get("text", "".join(sess.get("tokens", []))),
-                "elapsed": final.get("elapsed"), "approval": None}
+            return {
+                "ok": True,
+                "session_id": session_id,
+                "state": "error",
+                "phase": "error",
+                "text": "".join(sess.get("tokens", [])),
+                "elapsed": final.get("elapsed"),
+                "error": final.get("error"),
+                "approval": None,
+            }
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "state": "aborted" if final.get("aborted") else "done",
+            "phase": "done",
+            "text": final.get("text", "".join(sess.get("tokens", []))),
+            "elapsed": final.get("elapsed"),
+            "approval": None,
+        }
     elapsed = round(time.time() - sess.get("started_at", time.time()), 2)
-    return {"ok": True, "session_id": session_id, "state": "live",
-            "phase": sess.get("phase", "generating"),
-            "text": "".join(sess.get("tokens", [])),
-            "elapsed": elapsed, "approval": None}
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "state": "live",
+        "phase": sess.get("phase", "generating"),
+        "text": "".join(sess.get("tokens", [])),
+        "elapsed": elapsed,
+        "approval": None,
+    }
 
 
 @router.get("/chat/reattach")
 def chat_reattach(session_id: str = "") -> StreamingResponse:
     """Resume a detached turn's SSE after a page leave (#1015)."""
     if not session_id or not isinstance(session_id, str):
+
         def _bad():
             yield sse_frame("error", {"error": "invalid session_id"})
-        return StreamingResponse(_bad(),
-                                 media_type="text/event-stream",
-                                 headers=SSE_HEADERS)
-    return StreamingResponse(_reattach_events(session_id),
-                             media_type="text/event-stream",
-                             headers=SSE_HEADERS)
+
+        return StreamingResponse(
+            _bad(), media_type="text/event-stream", headers=SSE_HEADERS
+        )
+    return StreamingResponse(
+        _reattach_events(session_id),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.get("/chat/stream")
-def chat_stream_get(prompt: str = "", repo: str = "remote-server",
-                    session_id: str = "",
-                    prefer: str = "auto") -> StreamingResponse:
+def chat_stream_get(
+    prompt: str = "",
+    repo: str = "remote-server",
+    session_id: str = "",
+    prefer: str = "auto",
+) -> StreamingResponse:
     sid = session_id or uuid.uuid4().hex[:12]
     if session_id and _live_turn(sid):
         raise HTTPException(status_code=409, detail="turn in progress")
-    return StreamingResponse(_chat_events(prompt, repo, sid, prefer),
-                             media_type="text/event-stream",
-                             headers=SSE_HEADERS)
+    return StreamingResponse(
+        _chat_events(prompt, repo, sid, prefer),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.post("/chat/stream")
@@ -1230,11 +1496,11 @@ def chat_stream_post(body: ChatStreamRequest) -> StreamingResponse:
     sid = body.session_id or uuid.uuid4().hex[:12]
     if body.session_id and _live_turn(sid):
         raise HTTPException(status_code=409, detail="turn in progress")
-    return StreamingResponse(_chat_events(body.prompt, body.repo, sid,
-                                          body.prefer,
-                                          resolve_mentions=True),
-                             media_type="text/event-stream",
-                             headers=SSE_HEADERS)
+    return StreamingResponse(
+        _chat_events(body.prompt, body.repo, sid, body.prefer, resolve_mentions=True),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
 
 
 @router.get("/chat/route-hint", response_model=RouteHint)
@@ -1275,8 +1541,9 @@ def chat_abort(body: ChatAbortRequest) -> dict:
     ok, err = _abort_session(body.session_id)
     if not ok:
         raise HTTPException(status_code=404, detail=err or "abort failed")
-    ledger_append({"kind": "chat", "session_id": body.session_id,
-                   "event": "chat aborted via api"})
+    ledger_append(
+        {"kind": "chat", "session_id": body.session_id, "event": "chat aborted via api"}
+    )
     return {"ok": True, "session_id": body.session_id}
 
 
@@ -1287,8 +1554,7 @@ def chat_resume(body: ChatResumeRequest) -> dict:
     if body.decision not in ("approve", "reject"):
         raise HTTPException(status_code=400, detail="invalid decision")
     message = body.message if isinstance(body.message, str) else ""
-    result, status, err = _resume_decision(body.session_id,
-                                           body.decision, message)
+    result, status, err = _resume_decision(body.session_id, body.decision, message)
     if result is None:
         raise HTTPException(status_code=status, detail=err)
     return result
