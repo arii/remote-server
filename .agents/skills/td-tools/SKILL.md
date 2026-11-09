@@ -22,7 +22,7 @@ Default tool leverage for every research, triage, audit, and implement loop. Que
 ## Brief design (agent tiers)
 
 - Nebius coder: surgical briefs only — exact repo-relative file:lines, one verify command, no investigation section. Open-ended briefs burn the 100-step budget with zero edits; do recon natively, then brief exactly (scorecard + #1230).
-- Ollama deep_chat: max 1-2 claims with exact paths per turn; longer briefs fail brief-following. Full diffs inline are fine for reviews; verdict format must be exact.
+- Ollama deep_chat: max 1-2 claims with exact paths per turn; longer briefs fail brief-following. Full diffs inline are fine for reviews; verdict format must be exact. Never write 'no tools needed' — mandate grounding reads first (read_repo_file package.json + relevant source, grep_repo for the claimed string, search_docs for unknown territory), require quoting what was read, and require UNVERIFIED marks for uncheckable claims. Name EXACT line windows to read (file alone is not enough: hrm #9817 grounded A/B read layout.tsx head but missed the metadata at lines 28-32 and still asserted a mismatch). Forbid asserting content outside the quoted windows. Ungrounded: 0 tool calls, 2 hallucinations. Grounded: 3/3 reads executed, identity correct, but still a false mismatch claim from a shallow read — exact windows close that gap.
 - Provision the worktree first (DEEP_AGENT_MODSTORE node_modules link lands automatically post-#1235); never brief verify steps the worktree cannot run.
 
 ## Buttons snapshots (Playwright)
