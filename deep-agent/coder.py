@@ -93,7 +93,7 @@ VERIFY_NUDGE = (
 )
 
 CODER_RULES = """You are implementing the task below in the checkout at {worktree}. Rules:
-- File paths are relative to the worktree root: /x means {worktree}/x.
+- File paths are repo-relative like frontend/src/views/NowView.tsx; never use absolute paths or a leading /.
 - Only change files the task needs; when a scope list is given, stay inside it.
 - Read before editing; keep diffs minimal and match surrounding style.
 - Verify with run_check (the touched area's tests/lint) before finishing.
