@@ -16,8 +16,6 @@ import os
 import threading
 import time
 
-from cli import repo_root
-
 DEFAULT_LEDGER_PATH = "/var/lib/buttons/ledger.jsonl"
 LEDGER_MAX_BYTES = 2_000_000
 LEDGER_PRUNE_LINES = 2000
@@ -151,6 +149,10 @@ def cli_ledger_path() -> str:
     state = os.environ.get("DEEP_AGENT_STATE_DIR")
     if state:
         return os.path.join(state, "ledger.jsonl")
+    # Local import: deep-agent/ is not on sys.path in every consumer
+    # (cutoff drill job env, #1220), so keep module import light.
+    from cli import repo_root
+
     return os.path.join(repo_root(), "deep-agent", "ledger.jsonl")
 
 
