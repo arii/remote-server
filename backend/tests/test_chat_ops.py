@@ -96,6 +96,12 @@ class ChatOpsTest(unittest.TestCase):
         self._orig_dispatch = proposals.run_dispatch
         self._orig_pr_comment = proposals.run_gh_pr_comment
         self._orig_pr_review = proposals.run_gh_pr_review
+        self._orig_resolve = chat.model_router.resolve_llm
+        chat.model_router.resolve_llm = lambda prefer=None: {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
         chat.get_repo_info = lambda repo: {
             "gh": "arii/remote-server",
             "td_cwd": "/srv/remote-server",
@@ -133,6 +139,7 @@ class ChatOpsTest(unittest.TestCase):
             os.environ["BUTTONS_LEDGER_PATH"] = self._orig_ledger
         chat.get_repo_info = self._orig_repo
         chat.spawn_chat_process = self._orig_spawn
+        chat.model_router.resolve_llm = self._orig_resolve
         chat.validate_action_request = self._orig_validate
         chat.run_resume_spawn = self._orig_resume_spawn
         chat.deep_agent_python = self._orig_venv
