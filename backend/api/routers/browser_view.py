@@ -647,6 +647,17 @@ class CDPBridge:
             await self.ensure_focus()
         await self.call("Input.insertText", {"text": text})
 
+    async def set_viewport_mode(self, mobile):
+        # Mobile/desktop toggle from the viewer: swap the emulated
+        # metrics + touch emulation, then reattach so the new size
+        # applies to the live target (same path as post-crash
+        # reattach, so a swapped target can't wedge the toggle).
+        # Shared/agent sessions are single-slot: the toggle applies
+        # to the session every attached tab sees.
+        self.mobile = bool(mobile)
+        self.viewport = dict(MOBILE_VIEWPORT if self.mobile else VIEWPORT)
+        await self.reattach()
+
     async def navigate(self, url):
         await self.call("Page.navigate", {"url": url})
 
@@ -870,6 +881,13 @@ def create_app():
             await _ws_send_text(
                 send, lock, json.dumps({"type": "dsf", "dsf": bridge.dsf})
             )
+            # Initial view mode for the toggle button (phone-owned
+            # sessions start mobile, everything else desktop).
+            await _ws_send_text(
+                send,
+                lock,
+                json.dumps({"type": "view", "mobile": bridge.mobile}),
+            )
             await bridge.start_screencast(on_frame)
 
             async def do_go(url):
@@ -944,6 +962,13 @@ def create_app():
                     if not text:
                         continue
                     await recover_once(lambda: bridge.type_text(text))
+                elif msg.get("t") == "viewport":
+                    mode = str(msg.get("mode", ""))
+                    if mode not in ("mobile", "desktop"):
+                        continue
+                    await recover_once(
+                        lambda: bridge.set_viewport_mode(mode == "mobile")
+                    )
                 elif msg.get("t") == "go":
                     await human_input()
                     url = str(msg.get("url") or "")

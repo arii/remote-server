@@ -40,7 +40,7 @@ upstream bytes in simple-keyboard-3.8.205.{js,css}. -->
 <link rel="stylesheet" href="vendor/simple-keyboard-3.8.205.css">
 <script src="vendor/simple-keyboard-3.8.205.js"></script>
 </head><body>
-<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
+<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><button id="view" type="button" aria-label="Toggle mobile or desktop view" aria-pressed="false">Desktop</button><span id="state" role="status">connecting…</span></div>
 <div id="stats">idle — waiting to attach…</div>
 <canvas id="screen" width="1280" height="800"></canvas>
 <button id="kb-fab" type="button" aria-label="Toggle keyboard" aria-controls="kbd">ABC</button>
@@ -61,7 +61,7 @@ let reconnectTimer = 0;
 let noFrameTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
 function setControlsEnabled(on) {
-  for (const id of ['url', 'go', 'kb', 'kb-fab']) {
+  for (const id of ['url', 'go', 'kb', 'view', 'kb-fab']) {
     document.getElementById(id).disabled = !on;
   }
 }
@@ -86,6 +86,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
+    if (m.type === 'view') { setView(!!m.mobile); return; }
     if (m.type === 'attached') {
       dsf = m.dsf || 1;
       const label = m.kind === 'agent' ? 'shared agent session'
@@ -254,6 +255,22 @@ function typeText(text) {
   lastClick = performance.now();
   ws.send(JSON.stringify({t: 'type', text}));
 }
+// Mobile/desktop view toggle: the label names the CURRENT mode
+// (server-confirmed via the view message, optimistically flipped
+// on tap). Re-emulation rides the same viewport path as attach,
+// so coords stay valid the moment frames resize — no reload.
+let mobileView = false;
+function setView(mobile) {
+  mobileView = !!mobile;
+  const btn = document.getElementById('view');
+  btn.textContent = mobileView ? 'Mobile' : 'Desktop';
+  btn.setAttribute('aria-pressed', String(mobileView));
+}
+document.getElementById('view').addEventListener('click', () => {
+  if (!sendable()) return;
+  setView(!mobileView);
+  ws.send(JSON.stringify({t: 'viewport', mode: mobileView ? 'mobile' : 'desktop'}));
+});
 // Document-level so physical keyboards keep working after the focus
 // moves to the URL box or the Keyboard toggle; the URL box itself is
 // excluded so typing an address never drives the remote page. Tab

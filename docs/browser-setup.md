@@ -55,6 +55,28 @@ session reuses the cookies:
 3. Never `--enable-automation` on the Grid caps: it forces the
    automation banner and hardcodes `navigator.webdriver=true`.
 
+## Neko (human-driven alternative)
+
+[Neko](https://neko.m1k1o.net/) (pinned digest in
+`docker-compose.yml`) is the WebRTC virtual browser at `/neko/`,
+chosen for interactive use: real browser input passes through, so
+there is no virtual-cursor or on-screen-keyboard layer to fight,
+and mobile browsers get a native-feeling stream. Bring-up:
+
+- `docker compose up -d neko` (pulls ~2 GB on first run).
+- Signaling rides the Caddy `/neko*` route (behind the gate);
+  WebRTC media uses host UDP 52000–52100, so that range must also
+  be forwarded on the router. Caddy serves it `no-store` so client
+  updates apply on image bumps.
+- `NEKO_NAT1TO1` in compose is the current public IP — update it
+  if the residential IP changes.
+- Room passwords live in `.env` (`NEKO_PASSWORD`,
+  `NEKO_PASSWORD_ADMIN`); dev defaults are in `.env.example`.
+- Agentic control stays on the CDP-stream/Grid path: Neko's
+  pixels-over-WebRTC gives an agent no DOM, no elements, and no
+  scriptable input — the wrong tool for automation. Use Neko for
+  hands, CDP-stream for agents.
+
 ## Spec deviation (recorded, not rebuilt — issue #1104)
 
 `updated_guide.md` Issue 8 specifies `browserless/chromium` with a

@@ -165,6 +165,14 @@ class FakeBridge:
     async def reattach(self):
         pass
 
+    async def set_viewport_mode(self, mobile):
+        self.mobile = bool(mobile)
+        self.viewport = dict(
+            browser_view.MOBILE_VIEWPORT if self.mobile else browser_view.VIEWPORT
+        )
+        self.calls.append(("viewport", self.mobile))
+        await self.reattach()
+
     async def close(self):
         pass
 
@@ -289,6 +297,33 @@ class SharedViewerSessionTest(unittest.TestCase):
                 )
                 self.assertTrue(self._wait_count(paused, 1), "pause task never ran")
                 self.assertEqual(paused.call_count, 1)
+
+    def test_viewport_toggle_dispatched_without_human_pause(self):
+        # Mobile/desktop toggle is look-around input like wheel: it
+        # reaches the bridge without tripping agent-takeover pause.
+        import json as _json
+
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with (
+            mock.patch.object(browser_view, "CDPBridge", return_value=shared),
+            mock.patch.object(browser_view, "_grid_live_session", return_value=None),
+            mock.patch.object(browser_view, "_grid_session_create", return_value="AAA"),
+            mock.patch.object(browser_view, "_grid_session_alive", return_value=True),
+            mock.patch.object(browser_view, "_grid_session_delete"),
+            mock.patch.object(
+                browser_view, "_pause_agent", return_value=False
+            ) as paused,
+        ):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "viewport", "mode": "mobile"}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("viewport", True)),
+                    f"viewport never reached bridge: {shared.calls}",
+                )
+                self.assertEqual(paused.call_count, 0)
 
     def test_wheel_dispatched_without_human_pause(self):
         # Scroll is look-around input like a hover: it must reach the
@@ -940,6 +975,26 @@ class BridgeKeyTest(unittest.TestCase):
             if c[0] == "Input.dispatchKeyEvent" and c[1]["type"] == "keyDown"
         ]
         self.assertEqual(downs[0][1]["modifiers"], 8)
+
+    def test_viewport_mode_swaps_metrics_and_touch(self):
+        # Mobile/desktop toggle: metrics follow the mode and the
+        # bridge reattaches so the live target picks them up.
+        import asyncio
+
+        bridge = browser_view.CDPBridge("sid")
+        reattached = []
+
+        async def fake_reattach():
+            reattached.append(True)
+
+        bridge.reattach = fake_reattach
+        asyncio.run(bridge.set_viewport_mode(True))
+        self.assertTrue(bridge.mobile)
+        self.assertEqual(bridge.viewport, browser_view.MOBILE_VIEWPORT)
+        asyncio.run(bridge.set_viewport_mode(False))
+        self.assertFalse(bridge.mobile)
+        self.assertEqual(bridge.viewport, browser_view.VIEWPORT)
+        self.assertEqual(len(reattached), 2)
 
     def test_type_text_bulk_commits_via_insert_text(self):
         # On-screen keyboard text never existed as key presses, so
