@@ -26,11 +26,12 @@ export function bannerTextFor(
   // stalled wait must never look like a working session (#1097).
   if (handoffReason) return `Waiting for you — ${handoffReason}`;
   if (state === 'PAUSED_BY_USER') return 'Manual control active — agent paused';
-  // Chat-driven ops record a "Chat drive:" step on the shared
+  // Browser-drive ops record a "Browser drive:" step on the shared
   // control state (backend/api/routers/browser_drive.py contract):
   // show the agent at the wheel even when no pipeline run owns it.
-  if (currentStep?.startsWith('Chat drive:')) {
-    return `Agent driving from chat (${currentStep}) — click the page to take over`;
+  if (currentStep?.startsWith('Browser drive:')) {
+    const what = currentStep.slice('Browser drive:'.length).trim();
+    return `Agent driving the browser (${what}) — click the page to take over`;
   }
   if (state === 'RUNNING') {
     return currentStep

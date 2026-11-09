@@ -89,7 +89,10 @@ class HelperTest(unittest.TestCase):
             )
 
         def fake_state():
-            return {"state": "IDLE", "current_step": "Chat drive: navigate https://x/"}
+            return {
+                "state": "IDLE",
+                "current_step": "Browser drive: navigate https://x/",
+            }
 
         with (
             mock.patch.object(preflight, "http_get", fake_get),

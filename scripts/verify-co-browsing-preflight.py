@@ -422,9 +422,9 @@ def stage_chat_drive():
     if drove.get("op") != "navigate" or "elements" not in drove:
         raise CheckFailed(f"drive shape changed: {sorted(drove)}")
     state = _agent_state()
-    if "Chat drive:" not in str(state.get("current_step")):
+    if "Browser drive:" not in str(state.get("current_step")):
         raise CheckFailed(
-            f"drive left no chat presence step: {state.get('current_step')!r}"
+            f"drive left no agent presence step: {state.get('current_step')!r}"
         )
     return {"url": drove.get("url"), "elements": len(drove.get("elements") or [])}
 

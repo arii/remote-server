@@ -31,12 +31,12 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
   });
 
   it('names chat driving even with no pipeline run owning the wheel', () => {
-    expect(bannerTextFor('IDLE', 'Chat drive: navigate https://x/')).toContain(
-      'Agent driving from chat',
+    expect(bannerTextFor('IDLE', 'Browser drive: navigate https://x/')).toContain(
+      'Agent driving the browser (navigate https://x/)',
     );
-    // A human takeover still outranks a stale chat step.
+    // A human takeover still outranks a stale agent step.
     expect(
-      bannerTextFor('PAUSED_BY_USER', 'Chat drive: click 10,20'),
+      bannerTextFor('PAUSED_BY_USER', 'Browser drive: click 10,20'),
     ).toContain('Manual control active');
   });
 

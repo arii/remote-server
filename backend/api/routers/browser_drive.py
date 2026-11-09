@@ -24,10 +24,10 @@ router = APIRouter(prefix="/api/browser", tags=["browser_drive"])
 # Cap the element list so a dense page cannot flood chat context.
 MAX_ELEMENTS = 100
 
-#: Step prefix a chat-driven op records on the shared control state.
-#: The drawer banner keys off this prefix to show "agent driving
-#: from chat". Plain string contract with CoBrowsingDrawer.tsx.
-CHAT_DRIVE_PREFIX = "Chat drive:"
+#: Step prefix a browser-drive op records on the shared control
+#: state. The drawer banner keys off this prefix to show the agent
+#: at the wheel. Plain string contract with CoBrowsingDrawer.tsx.
+CHAT_DRIVE_PREFIX = "Browser drive:"
 
 
 class DriveRequest(BaseModel):
