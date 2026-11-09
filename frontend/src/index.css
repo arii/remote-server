@@ -1120,6 +1120,8 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 /* Honest disabled state (#965): dimmed plus the not-allowed
    cursor, so a dead upkeep action reads dead before the tap. */
 button:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Audit #1250: aria-disabled controls stay focusable for feedback. */
+button[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
 button[type="submit"] { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 650; }
 button[type="submit"]:hover:not(:disabled) { background: #1d4ed8; }
 
