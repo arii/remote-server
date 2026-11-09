@@ -99,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: fail on real files under .claude/skills
+      - name: fail on real files under shim skill dirs
         run: bash scripts/check-no-shadow-skills.sh
 
   secret-scan:
