@@ -29,6 +29,20 @@ def _payload(frame):
 
 
 class SseFrameSeqTest(unittest.TestCase):
+    def setUp(self):
+        # Hermetic repo resolution: CI has no /srv/repos checkout,
+        # so the real get_repo_info yields "unknown repo" before the
+        # prompt/prefer validation these tests target. Same stub
+        # pattern as test_chat_ops.ChatOpsTest.
+        self._orig_repo = chat.get_repo_info
+        chat.get_repo_info = lambda repo: {
+            "gh": f"arii/{repo}",
+            "td_cwd": f"/srv/repos/{repo}",
+        }
+
+    def tearDown(self):
+        chat.get_repo_info = self._orig_repo
+
     def test_frames_carry_strictly_increasing_int_seq(self):
         seqs = [
             _payload(chat.sse_frame("token", {"token": "x"}))[1]["seq"]
