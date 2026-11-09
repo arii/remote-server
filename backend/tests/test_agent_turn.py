@@ -1440,7 +1440,9 @@ class AgentRouterTest(unittest.TestCase):
 
     def test_turn_repo_free_uses_neutral_cwd(self):
         # Browsing turns are not tied to a repo: empty repo skips
-        # validation and runs in the neutral /srv workdir.
+        # validation and runs in the neutral stack-root workdir (a
+        # trusted checkout — bare /srv is untrusted and the CLIs
+        # refuse to start there).
         body = dict(TURN_BODY, repo="")
         with mock.patch.object(
             agent_turn, "turn_argv", return_value=["/bin/echo", "ok-free"]
@@ -1448,7 +1450,7 @@ class AgentRouterTest(unittest.TestCase):
             resp = self.client.post("/api/agent/turn", json=body)
         self.assertEqual(resp.status_code, 200)
         self.assertIn("ok-free", resp.text)
-        self.assertEqual(argv_mock.call_args[0][1], "/srv")
+        self.assertEqual(argv_mock.call_args[0][1], agent_turn.TERMINAL_STACK)
 
     def test_turn_refuses_while_human_driving(self):
         # A turn fired while PAUSED would drive against the

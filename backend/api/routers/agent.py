@@ -126,7 +126,12 @@ def _repo_target(repo: str) -> tuple[str, str]:
     neutral cwd. The turn is not tied to any checkout.
     """
     if not (repo or "").strip():
-        return "", "/srv"
+        # Neutral cwd for repo-free (browsing) turns: the stack root,
+        # a trusted git checkout the CLIs accept (bare /srv is
+        # untrusted and the CLIs refuse to start there). The turn
+        # itself stays untied: no validation, no repo scoping,
+        # browsing brief in-prompt.
+        return "", agent_turn.TERMINAL_STACK
     from backend.core.git_helpers import get_repo_status
     from backend.core.validation import validate_repo_name
 
