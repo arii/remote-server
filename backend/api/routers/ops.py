@@ -55,8 +55,11 @@ def run_takeover() -> str:
 
     proc = subprocess.run(
         exec_argv("pkill -HUP -f '^zellij attach'; echo hup_exit=$?"),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=30, text=True)
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        text=True,
+    )
     return proc.stdout
 
 
@@ -66,8 +69,8 @@ def _fetch_run_jobs(gh: str, run_id) -> list | None:
 
     try:
         jobs_out = td_run(
-            f"gh api repos/{shlex.quote(gh)}/actions/runs/"
-            f"{run_id}/jobs", timeout=30)
+            f"gh api repos/{shlex.quote(gh)}/actions/runs/{run_id}/jobs", timeout=30
+        )
         jobs = json.loads(jobs_out).get("jobs", [])
         return jobs if isinstance(jobs, list) else []
     except Exception:
@@ -85,17 +88,21 @@ def _fetch_annotations(gh: str, check_id) -> list:
     out: list = []
     try:
         ann_out = td_run(
-            f"gh api repos/{shlex.quote(gh)}/check-runs/"
-            f"{check_id}/annotations", timeout=20)
+            f"gh api repos/{shlex.quote(gh)}/check-runs/{check_id}/annotations",
+            timeout=20,
+        )
         ann_list = json.loads(ann_out)
         if isinstance(ann_list, list):
             for a in ann_list[:5]:
-                out.append({
-                    "path": a.get("path"),
-                    "start_line": a.get("start_line"),
-                    "annotation_level": a.get("annotation_level"),
-                    "message": a.get("message"),
-                    "title": a.get("title")})
+                out.append(
+                    {
+                        "path": a.get("path"),
+                        "start_line": a.get("start_line"),
+                        "annotation_level": a.get("annotation_level"),
+                        "message": a.get("message"),
+                        "title": a.get("title"),
+                    }
+                )
     except Exception:
         pass
     return out
@@ -121,27 +128,45 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
     # from the worker cwd (a missing github_repo reads as a silent
     # exit-1 with empty stderr in CI).
     runs_out = td_run(
-        f"td --json repo workflow-runs --repo {shlex.quote(gh)}",
-        timeout=45)
+        f"td --json repo workflow-runs --repo {shlex.quote(gh)}", timeout=45
+    )
     runs_data = json.loads(runs_out)
-    runs_list = (runs_data.get("workflow_runs")
-                 or runs_data.get("workflowRuns") or [])
+    runs_list = runs_data.get("workflow_runs") or runs_data.get("workflowRuns") or []
     # Repo-level signal only (issue #1150): pull_request-event runs are
     # branch CI for unmerged PRs, not the repo's health. Surfacing them
     # pins PR-branch failures (e.g. a release-train PR) as crit cards
     # on the repo feed while main stays green. Push, schedule, and
     # dispatch events still page.
-    failing = [r for r in runs_list
-               if (r.get("conclusion") == "failure"
-                   or (r.get("conclusion") is None
-                       and r.get("status") == "failure"))
-               and r.get("event") != "pull_request"][:5]
+    failing = [
+        r
+        for r in runs_list
+        if (
+            r.get("conclusion") == "failure"
+            or (r.get("conclusion") is None and r.get("status") == "failure")
+        )
+        and r.get("event") != "pull_request"
+    ][:5]
+    # Supersede (#1224): a newer success of the same workflow means the
+    # failure is stale — drop it rather than page a fixed run.
+    latest_success: dict[str, str] = {}
+    for r in runs_list:
+        if r.get("conclusion") == "success" and r.get("name"):
+            stamp = r.get("created_at") or r.get("createdAt") or ""
+            cur = latest_success.get(r["name"])
+            if cur is None or stamp > cur:
+                latest_success[r["name"]] = stamp
+    failing = [
+        fr
+        for fr in failing
+        if (latest_success.get(fr.get("name")) or "")
+        <= (fr.get("created_at") or fr.get("createdAt") or "")
+    ]
     run_ids = [fr.get("id") for fr in failing]
     with ThreadPoolExecutor(max_workers=10) as pool:
-        jobs_futs = [pool.submit(_fetch_run_jobs, gh, rid)
-                     if rid else None for rid in run_ids]
-        jobs_payloads = [f.result() if f is not None else None
-                         for f in jobs_futs]
+        jobs_futs = [
+            pool.submit(_fetch_run_jobs, gh, rid) if rid else None for rid in run_ids
+        ]
+        jobs_payloads = [f.result() if f is not None else None for f in jobs_futs]
         ann_futs: dict[tuple[int, int], object] = {}
         for idx, jobs in enumerate(jobs_payloads):
             if not jobs:
@@ -153,8 +178,7 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
                 except Exception:
                     break
                 if check_id:
-                    ann_futs[(idx, pos)] = pool.submit(
-                        _fetch_annotations, gh, check_id)
+                    ann_futs[(idx, pos)] = pool.submit(_fetch_annotations, gh, check_id)
         ann_payloads = {k: f.result() for k, f in ann_futs.items()}
     workflows = []
     for idx, fr in enumerate(failing):
@@ -167,44 +191,56 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
                 try:
                     if job.get("conclusion") != "failure":
                         continue
-                    steps = [s.get("name", "?")
-                             for s in (job.get("steps") or [])
-                             if s.get("conclusion") == "failure"]
-                    failed_jobs.append({"name": job.get("name", "?"),
-                                        "conclusion": "failure",
-                                        "failed_steps": steps})
+                    steps = [
+                        s.get("name", "?")
+                        for s in (job.get("steps") or [])
+                        if s.get("conclusion") == "failure"
+                    ]
+                    failed_jobs.append(
+                        {
+                            "name": job.get("name", "?"),
+                            "conclusion": "failure",
+                            "failed_steps": steps,
+                        }
+                    )
                     if job.get("id"):
-                        annotations.extend(
-                            ann_payloads.get((idx, pos), []))
+                        annotations.extend(ann_payloads.get((idx, pos), []))
                 except Exception:
                     break
         if annotations:
             first = annotations[0]
-            diagnosed = (f"[{first.get('path', 'unknown')}:"
-                         f"{first.get('start_line', '?')}] "
-                         f"{first.get('message', '')}")
+            diagnosed = (
+                f"[{first.get('path', 'unknown')}:"
+                f"{first.get('start_line', '?')}] "
+                f"{first.get('message', '')}"
+            )
         elif failed_jobs:
             first = failed_jobs[0]
-            steps = (": " + ", ".join(first["failed_steps"])
-                     if first["failed_steps"] else "")
+            steps = (
+                ": " + ", ".join(first["failed_steps"]) if first["failed_steps"] else ""
+            )
             diagnosed = f"Job '{first['name']}' failed{steps}."
-        workflows.append({
-            "id": run_ids[idx],
-            "name": fr.get("name", "Workflow"),
-            "branch": fr.get("head_branch") or fr.get("headBranch") or "?",
-            "event": fr.get("event", "?"),
-            "conclusion": "failure",
-            "url": fr.get("html_url") or fr.get("url"),
-            "created_at": fr.get("created_at") or fr.get("createdAt"),
-            "updated_at": fr.get("updated_at") or fr.get("updatedAt"),
-            "diagnosed_cause": diagnosed,
-            "annotations": annotations,
-            "jobs": failed_jobs,
-        })
-    return {"repo": repo,
-            "status": "failing" if workflows else "healthy",
-            "total_failing": len(workflows),
-            "workflows": workflows}
+        workflows.append(
+            {
+                "id": run_ids[idx],
+                "name": fr.get("name", "Workflow"),
+                "branch": fr.get("head_branch") or fr.get("headBranch") or "?",
+                "event": fr.get("event", "?"),
+                "conclusion": "failure",
+                "url": fr.get("html_url") or fr.get("url"),
+                "created_at": fr.get("created_at") or fr.get("createdAt"),
+                "updated_at": fr.get("updated_at") or fr.get("updatedAt"),
+                "diagnosed_cause": diagnosed,
+                "annotations": annotations,
+                "jobs": failed_jobs,
+            }
+        )
+    return {
+        "repo": repo,
+        "status": "failing" if workflows else "healthy",
+        "total_failing": len(workflows),
+        "workflows": workflows,
+    }
 
 
 def _fixture_workflow_health(repo: str) -> dict | None:
@@ -220,8 +256,10 @@ def _fixture_workflow_health(repo: str) -> dict | None:
     fixture_path = resolve_briefing_fixture_path()
     if fixture_path and not os.path.exists(fixture_path):
         logger.warning(
-            "workflow-health: fixture %s for repo %s missing; "
-            "serving live", fixture_path, repo)
+            "workflow-health: fixture %s for repo %s missing; serving live",
+            fixture_path,
+            repo,
+        )
         return None
     if not fixture_path:
         stray = briefing_fixture_candidate()
@@ -230,7 +268,9 @@ def _fixture_workflow_health(repo: str) -> dict | None:
                 "workflow-health: ignoring stray fixture %s for repo %s "
                 "(set BUTTONS_FIXTURE_BRIEFING or "
                 "BUTTONS_FIXTURE_AUTO_DISCOVER=1 to serve fixtures)",
-                stray, repo)
+                stray,
+                repo,
+            )
         return None
     try:
         with open(fixture_path, encoding="utf-8") as fh:
@@ -239,37 +279,50 @@ def _fixture_workflow_health(repo: str) -> dict | None:
         return None
     items = []
     for r in fix_data.get("failing_runs", []):
-        items.append({
-            "id": 101,
-            "name": r.get("name", "CI"),
-            "branch": r.get("branch", "main"),
-            "event": r.get("event", "push"),
-            "conclusion": "failure",
-            "url": r.get("url", "https://github.com/example/demo-app/"
-                                "actions/runs/101"),
-            "created_at": r.get("created_at") or r.get("createdAt"),
-            "updated_at": r.get("updated_at") or r.get("updatedAt"),
-            "diagnosed_cause": "Browser context crashed during Playwright "
-                               "launch in e2e-tests step.",
-            "annotations": [{
-                "path": "tests/test_ui.py",
-                "start_line": 42,
-                "annotation_level": "failure",
-                "message": "Error: Playwright connection refused: chromium "
-                           "executable missing at /root/.cache/ms-playwright",
-                "title": "Browser Launch Exception"}],
-            "jobs": [{"name": "test-e2e", "conclusion": "failure",
-                      "failed_steps": ["run playwright test"]}],
-        })
+        items.append(
+            {
+                "id": 101,
+                "name": r.get("name", "CI"),
+                "branch": r.get("branch", "main"),
+                "event": r.get("event", "push"),
+                "conclusion": "failure",
+                "url": r.get(
+                    "url", "https://github.com/example/demo-app/actions/runs/101"
+                ),
+                "created_at": r.get("created_at") or r.get("createdAt"),
+                "updated_at": r.get("updated_at") or r.get("updatedAt"),
+                "diagnosed_cause": "Browser context crashed during Playwright "
+                "launch in e2e-tests step.",
+                "annotations": [
+                    {
+                        "path": "tests/test_ui.py",
+                        "start_line": 42,
+                        "annotation_level": "failure",
+                        "message": "Error: Playwright connection refused: chromium "
+                        "executable missing at /root/.cache/ms-playwright",
+                        "title": "Browser Launch Exception",
+                    }
+                ],
+                "jobs": [
+                    {
+                        "name": "test-e2e",
+                        "conclusion": "failure",
+                        "failed_steps": ["run playwright test"],
+                    }
+                ],
+            }
+        )
     logger.warning(
-        "workflow-health: serving fixture %s for repo %s",
-        fixture_path, repo)
-    return {"repo": repo,
-            "status": "failing" if items else "healthy",
-            "total_failing": len(items),
-            "workflows": items,
-            "fixture": True,
-            "fixture_source": fixture_path}
+        "workflow-health: serving fixture %s for repo %s", fixture_path, repo
+    )
+    return {
+        "repo": repo,
+        "status": "failing" if items else "healthy",
+        "total_failing": len(items),
+        "workflows": items,
+        "fixture": True,
+        "fixture_source": fixture_path,
+    }
 
 
 class TakeoverResult(BaseModel):
@@ -326,8 +379,7 @@ def takeover(body: TakeoverRequest) -> dict:
     # keeps the historical ok:true contract.
     marker = re.search(r"hup_exit=(\d+)", out or "")
     matched = (int(marker.group(1)) == 0) if marker else True
-    ledger_append({"kind": "system",
-                   "event": "terminal session takeover requested"})
+    ledger_append({"kind": "system", "event": "terminal session takeover requested"})
     return {"ok": matched, "matched": matched, "output": out}
 
 

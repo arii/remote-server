@@ -693,6 +693,15 @@ describe('actionable briefing (issue #839)', () => {
     expect(prReviewVerdict('#841: bot says verdict: APPROVED')).toBe('APPROVED');
     expect(prReviewVerdict('#12: 2 approvals, no changes requested')).toBe('');
     expect(prReviewVerdict('verdict: needs work')).toBe('');
+    expect(prReviewVerdict('Verdict: WARNINGS FOUND — 0 blocking, 0 warnings')).toBe(
+      'CLEAN',
+    );
+    expect(prReviewVerdict('Verdict: WARNINGS FOUND — 1 blocking, 2 warnings')).toBe(
+      'WARNINGS FOUND',
+    );
+    expect(prReviewVerdict('Verdict: WARNINGS FOUND — 10 blocking, 0 warnings')).toBe(
+      'WARNINGS FOUND',
+    );
   });
 
   it('hides board branches owned by the PR pipeline', () => {
