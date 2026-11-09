@@ -979,6 +979,25 @@ def _chat_events(
     if not (os.path.isfile(venv) and os.path.isfile(script)):
         yield sse_frame("error", {"error": "agent runtime not installed"})
         return
+    # Fail fast when no provider answers the ladder probe (#1226):
+    # otherwise the child hangs until CHAT_TURN_TIMEOUT and the
+    # client stalls the full STALL_SECONDS.
+    try:
+        model_router.resolve_llm(prefer=CHAT_PREFER[want])
+    except Exception as exc:
+        err = f"no worker attached: {str(exc)[:200]}"
+        yield sse_frame("error", {"error": err})
+        _finish_turn(session_id, {"kind": "error", "error": err})
+        ledger_append(
+            {
+                "kind": "chat",
+                "session_id": session_id,
+                "repo": repo,
+                "event": "chat failed",
+                "error": err[:500],
+            }
+        )
+        return
 
     _sweep_chat_sessions()
     with chat_sessions_lock:

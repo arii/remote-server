@@ -73,8 +73,7 @@ def _fixture_repos_dir(tmp):
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
 class RepoFilesTest(unittest.TestCase):
     def _list(self, tmp, repo="demo", prefix="", **kwargs):
-        with mock.patch("backend.core.repos.get_repos_dir",
-                        return_value=Path(tmp)):
+        with mock.patch("backend.core.repos.get_repos_dir", return_value=Path(tmp)):
             return list_repo_files(repo, prefix, **kwargs)
 
     def test_lists_files_sorted_relative(self):
@@ -105,8 +104,9 @@ class RepoFilesTest(unittest.TestCase):
             _fixture_repos_dir(tmp)
             body = self._list(tmp, prefix="sub/")
             slashed = self._list(tmp, prefix="/sub/")
-        self.assertEqual(body["files"],
-                         ["sub/a.py", "sub/b.py", "sub/c.py", "sub/d.py"])
+        self.assertEqual(
+            body["files"], ["sub/a.py", "sub/b.py", "sub/c.py", "sub/d.py"]
+        )
         self.assertEqual(slashed["files"], body["files"])
         self.assertEqual(slashed["prefix"], "sub/")
 
@@ -141,35 +141,32 @@ class RepoFilesTest(unittest.TestCase):
         client = TestClient(app)
         with tempfile.TemporaryDirectory() as tmp:
             _fixture_repos_dir(tmp)
-            with mock.patch("backend.core.repos.get_repos_dir",
-                            return_value=Path(tmp)):
-                resp = client.get("/api/repo/files",
-                                  params={"repo": "demo", "prefix": "sub/"})
+            with mock.patch("backend.core.repos.get_repos_dir", return_value=Path(tmp)):
+                resp = client.get(
+                    "/api/repo/files", params={"repo": "demo", "prefix": "sub/"}
+                )
                 self.assertEqual(resp.status_code, 200)
                 body = resp.json()
                 self.assertEqual(body["repo"], "demo")
-                self.assertEqual(body["files"],
-                                 ["sub/a.py", "sub/b.py",
-                                  "sub/c.py", "sub/d.py"])
+                self.assertEqual(
+                    body["files"], ["sub/a.py", "sub/b.py", "sub/c.py", "sub/d.py"]
+                )
                 self.assertFalse(body["truncated"])
-                resp = client.get("/api/repo/files",
-                                  params={"repo": "a/b/c"})
+                resp = client.get("/api/repo/files", params={"repo": "a/b/c"})
                 self.assertEqual(resp.status_code, 400)
-                resp = client.get("/api/repo/files",
-                                  params={"repo": "ghost"})
+                resp = client.get("/api/repo/files", params={"repo": "ghost"})
                 self.assertEqual(resp.status_code, 404)
 
 
 class ParseMentionsTest(unittest.TestCase):
     def test_basic_and_multiples_deduped_in_order(self):
-        self.assertEqual(chat.parse_mentions("see @a.py and @b/c.md"),
-                         ["a.py", "b/c.md"])
-        self.assertEqual(chat.parse_mentions("@a.py then @a.py again"),
-                         ["a.py"])
+        self.assertEqual(
+            chat.parse_mentions("see @a.py and @b/c.md"), ["a.py", "b/c.md"]
+        )
+        self.assertEqual(chat.parse_mentions("@a.py then @a.py again"), ["a.py"])
 
     def test_midword_at_never_matches(self):
-        self.assertEqual(chat.parse_mentions("mail user@example.com ok"),
-                         [])
+        self.assertEqual(chat.parse_mentions("mail user@example.com ok"), [])
         self.assertEqual(chat.parse_mentions("a@b"), [])
         self.assertEqual(chat.parse_mentions("@@z"), [])
 
@@ -190,17 +187,18 @@ class InjectMentionsTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         _fixture_repos_dir(self.tmp)
         self._patcher = mock.patch(
-            "backend.core.repos.get_repos_dir", return_value=Path(self.tmp))
+            "backend.core.repos.get_repos_dir", return_value=Path(self.tmp)
+        )
         self._patcher.start()
 
     def tearDown(self):
         self._patcher.stop()
 
     def test_no_mentions_returns_plain_capped_prompt(self):
-        self.assertEqual(chat.inject_mentions("plain prompt", "demo"),
-                         "plain prompt")
-        self.assertEqual(chat.inject_mentions(
-            "x" * 4000, "demo"), "x" * chat.CHAT_MAX_PROMPT)
+        self.assertEqual(chat.inject_mentions("plain prompt", "demo"), "plain prompt")
+        self.assertEqual(
+            chat.inject_mentions("x" * 4000, "demo"), "x" * chat.CHAT_MAX_PROMPT
+        )
 
     def test_content_block_prepended_before_user_text(self):
         out = chat.inject_mentions("look at @sub/a.py please", "demo")
@@ -224,12 +222,11 @@ class InjectMentionsTest(unittest.TestCase):
 
     def test_per_file_cap_marks_truncation(self):
         from backend.core.repos import get_checkout_path
-        text, reason = chat.read_mention_file(
-            get_checkout_path("demo"), "big.txt")
+
+        text, reason = chat.read_mention_file(get_checkout_path("demo"), "big.txt")
         self.assertIsNone(reason)
         assert text is not None
-        self.assertIn("[truncated: showing first 8192 of 9000 bytes]",
-                      text)
+        self.assertIn("[truncated: showing first 8192 of 9000 bytes]", text)
         # The 8KB pin then also trips the turn budget (attachments
         # first, tail cut with a marker).
         out = chat.inject_mentions("x @big.txt y", "demo")
@@ -238,24 +235,19 @@ class InjectMentionsTest(unittest.TestCase):
         self.assertIn("truncated to fit 3000 chars", out)
 
     def test_max_files_with_skipped_summary(self):
-        out = chat.inject_mentions(
-            "@sub/a.py @sub/b.py @sub/c.py @sub/d.py go", "demo")
+        out = chat.inject_mentions("@sub/a.py @sub/b.py @sub/c.py @sub/d.py go", "demo")
         self.assertIn("--- @sub/a.py ---", out)
         self.assertIn("--- @sub/c.py ---", out)
         self.assertNotIn("--- @sub/d.py ---", out)
-        self.assertIn("[+1 more @-mention(s) skipped: "
-                      "max 3 files per send]", out)
+        self.assertIn("[+1 more @-mention(s) skipped: max 3 files per send]", out)
 
     def test_total_budget_marks_tail_cut(self):
-        out = chat.inject_mentions(
-            "look at @big.txt " + "please " * 800, "demo")
+        out = chat.inject_mentions("look at @big.txt " + "please " * 800, "demo")
         self.assertLessEqual(len(out), chat.CHAT_MAX_PROMPT)
-        self.assertIn("truncated to fit 3000 chars: attachments first",
-                      out)
+        self.assertIn("truncated to fit 3000 chars: attachments first", out)
 
     def test_unknown_repo_returns_plain_prompt(self):
-        self.assertEqual(chat.inject_mentions("see @a.py", "ghost"),
-                         "see @a.py")
+        self.assertEqual(chat.inject_mentions("see @a.py", "ghost"), "see @a.py")
 
 
 @unittest.skipUnless(HAS_CLIENT, "fastapi.testclient not importable")
@@ -263,8 +255,7 @@ class MentionRouteTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self._orig_ledger = os.environ.get("BUTTONS_LEDGER_PATH")
-        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(
-            self.tmpdir, "ledger.jsonl")
+        os.environ["BUTTONS_LEDGER_PATH"] = os.path.join(self.tmpdir, "ledger.jsonl")
         app = FastAPI()
         app.include_router(chat.router)
         self.client = TestClient(app)
@@ -272,15 +263,23 @@ class MentionRouteTest(unittest.TestCase):
         self._orig_spawn = chat.spawn_chat_process
         self._orig_venv = chat.deep_agent_python
         self._orig_script = chat.deep_agent_script
-        chat.get_repo_info = lambda repo: {"gh": "arii/demo",
-                                           "td_cwd": "/srv/repos/demo"}
+        self._orig_resolve = chat.model_router.resolve_llm
+        chat.model_router.resolve_llm = lambda prefer=None: {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
+        chat.get_repo_info = lambda repo: {
+            "gh": "arii/demo",
+            "td_cwd": "/srv/repos/demo",
+        }
         chat.deep_agent_python = lambda: os.path.abspath(chat.__file__)
         chat.deep_agent_script = lambda name: os.path.abspath(chat.__file__)
         self.fixture = tempfile.mkdtemp()
         self.root = _fixture_repos_dir(self.fixture)
         self._patcher = mock.patch(
-            "backend.core.repos.get_repos_dir",
-            return_value=Path(self.fixture))
+            "backend.core.repos.get_repos_dir", return_value=Path(self.fixture)
+        )
         self._patcher.start()
 
     def tearDown(self):
@@ -292,6 +291,7 @@ class MentionRouteTest(unittest.TestCase):
         chat.spawn_chat_process = self._orig_spawn
         chat.deep_agent_python = self._orig_venv
         chat.deep_agent_script = self._orig_script
+        chat.model_router.resolve_llm = self._orig_resolve
         self._patcher.stop()
 
     def _sent_prompt(self, argv):
@@ -299,12 +299,15 @@ class MentionRouteTest(unittest.TestCase):
 
     def test_post_resolves_mentions_into_agent_prompt(self):
         argvs = []
-        chat.spawn_chat_process = lambda cmd: (
-            argvs.append(cmd), FakeProc("ok"))[1]
+        chat.spawn_chat_process = lambda cmd: (argvs.append(cmd), FakeProc("ok"))[1]
         resp = self.client.post(
             "/api/chat/stream",
-            json={"prompt": "look at @sub/a.py please", "repo": "demo",
-                  "session_id": "mention00001"})
+            json={
+                "prompt": "look at @sub/a.py please",
+                "repo": "demo",
+                "session_id": "mention00001",
+            },
+        )
         self.assertEqual(resp.status_code, 200)
         sent = self._sent_prompt(argvs[-1])
         self.assertTrue(sent.startswith("--- @sub/a.py ---\nx = 1\n"))
@@ -312,22 +315,28 @@ class MentionRouteTest(unittest.TestCase):
 
     def test_get_leaves_mentions_literal(self):
         argvs = []
-        chat.spawn_chat_process = lambda cmd: (
-            argvs.append(cmd), FakeProc("ok"))[1]
+        chat.spawn_chat_process = lambda cmd: (argvs.append(cmd), FakeProc("ok"))[1]
         resp = self.client.get(
             "/api/chat/stream",
-            params={"prompt": "look at @sub/a.py please", "repo": "demo",
-                    "session_id": "mention00002"})
+            params={
+                "prompt": "look at @sub/a.py please",
+                "repo": "demo",
+                "session_id": "mention00002",
+            },
+        )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(self._sent_prompt(argvs[-1]),
-                         "look at @sub/a.py please")
+        self.assertEqual(self._sent_prompt(argvs[-1]), "look at @sub/a.py please")
 
     def test_post_keeps_user_words_in_ledger(self):
         chat.spawn_chat_process = lambda cmd: FakeProc("ok")
         resp = self.client.post(
             "/api/chat/stream",
-            json={"prompt": "look at @sub/a.py please", "repo": "demo",
-                  "session_id": "mention00003"})
+            json={
+                "prompt": "look at @sub/a.py please",
+                "repo": "demo",
+                "session_id": "mention00003",
+            },
+        )
         self.assertEqual(resp.status_code, 200)
         with open(os.path.join(self.tmpdir, "ledger.jsonl")) as handle:
             lines = handle.read()
