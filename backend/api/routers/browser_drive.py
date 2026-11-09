@@ -252,7 +252,10 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             x=body.x if body.op in ("click", "wheel") else None,
             y=body.y if body.op in ("click", "wheel") else None,
             url=(body.url if body.op == "navigate" else (pre_page or {}).get("url")),
-            page_hash=pre_hash,
+            # A navigate's destination hash is unknown until the
+            # post-op snapshot: never pair the new URL with the
+            # previous page's hash.
+            page_hash=(None if body.op == "navigate" else pre_hash),
         )
         page = await _snapshot(bridge)
         # Presence for the drawer banner + a re-snapshot flag for any

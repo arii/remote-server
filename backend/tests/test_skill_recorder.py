@@ -227,6 +227,15 @@ class SkillRecorderTest(unittest.TestCase):
             browser_view.selector_for({"tag": "DIV", "role": "button"}),
             "div[role='button']",
         )
+        # Attribute values are case-sensitive: only the tag folds.
+        self.assertEqual(
+            browser_view.selector_for({"tag": "INPUT", "name": "UserEmail"}),
+            "input[name='UserEmail']",
+        )
+        self.assertEqual(
+            browser_view.selector_for({"tag": "DIV", "role": "mainNav"}),
+            "div[role='mainNav']",
+        )
         self.assertIsNone(browser_view.selector_for({"tag": "A"}))
 
     def test_match_target_contains_then_nearest(self):
@@ -239,6 +248,33 @@ class SkillRecorderTest(unittest.TestCase):
         self.assertEqual(near["tid"], "submit")
         self.assertIsNone(browser_view.match_target(page, 900, 900))
         self.assertIsNone(browser_view.match_target(None, 1, 1))
+
+    def test_second_navigate_pairs_no_stale_hash(self):
+        # A navigate's destination hash is unknown until its
+        # post-op snapshot: two navigates must both log the new URL
+        # with no hash, never the previous page's.
+        grid, bridge = live_session()
+        with grid, bridge:
+            client = drive_client()
+            for url in ("https://example.com/form", "https://example.com/other"):
+                resp = client.post(
+                    "/api/browser/drive", json={"op": "navigate", "url": url}
+                )
+                self.assertEqual(resp.status_code, 200)
+        navs = [e for e in self.jsonl_events() if e["action"] == "navigate"]
+        self.assertEqual(
+            [e["url"] for e in navs],
+            ["https://example.com/form", "https://example.com/other"],
+        )
+        self.assertTrue(all(e["page_hash"] is None for e in navs))
+
+    def test_snapshot_does_not_feed_learn_trigger(self):
+        before = browser_view.learn_status()["events_since_learn"]
+        browser_view._log_activity(
+            "snapshot", "https://example.com/", via="agent", action="snapshot"
+        )
+        after = browser_view.learn_status()["events_since_learn"]
+        self.assertEqual(before, after)
 
     def test_page_hash_stable_and_sensitive(self):
         page = {

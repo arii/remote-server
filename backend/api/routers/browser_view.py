@@ -337,8 +337,10 @@ def _log_activity(
     }
     with _ACTIVITY_LOCK:
         _ACTIVITY.append(event)
-        # The pass's own marker must not feed the next trigger.
-        if kind != "learn":
+        # The pass's own marker and read-only snapshots must not
+        # feed the next trigger: 25 snapshots alone carry no signal
+        # worth a learn pass.
+        if kind not in ("learn", "snapshot"):
             _LEARN_TOTAL[0] += 1
     _append_jsonl(event)
     _maybe_auto_learn()
@@ -394,10 +396,13 @@ def selector_for(target: dict) -> str | None:
         return f"#{eid}"
     name = target.get("name")
     if name:
-        return f"{target.get('tag', '')}[name='{name}']".lower()
+        # Lowercase the tag only: attribute values are
+        # case-sensitive, so lowercasing them would log a selector
+        # that matches nothing on replay.
+        return f"{target.get('tag', '').lower()}[name='{name}']"
     role = target.get("role")
     if role:
-        return f"{target.get('tag', '')}[role='{role}']".lower()
+        return f"{target.get('tag', '').lower()}[role='{role}']"
     return None
 
 
@@ -1296,6 +1301,10 @@ def create_app():
                         continue
                     ctx = _human_context()
                     ctx["url"] = url
+                    # The destination hash is unknown until the
+                    # post-go snapshot: never pair the new URL with
+                    # the previous page's hash.
+                    ctx["page_hash"] = None
                     _log_activity("go", url, **ctx)
                     await recover_once(lambda: do_go(url))
         finally:
