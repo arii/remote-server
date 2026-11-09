@@ -84,7 +84,7 @@ import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
 import ContainerLogsDrawer from './views/ContainerLogsDrawer';
-import CoBrowsingDrawer from './views/CoBrowsingDrawer';
+import BrowserView from './views/BrowserView';
 import { dangerEntryFor } from './views/DangerZone';
 import { clickChatSend, useAppShortcuts } from './shortcuts';
 import { ShortcutCheatsheet, ShortcutHint } from './components/ShortcutCheatsheet';
@@ -127,7 +127,7 @@ function healthSummary(health: SystemHealthResponse | null): string {
   return `Status: ${up}/${health.containers.length} containers up`;
 }
 
-export type Tab = 'now' | 'chat' | 'briefing' | 'history';
+export type Tab = 'now' | 'chat' | 'briefing' | 'history' | 'browser';
 
 // Persistent console nav (#896): one bar, seven destinations. Review,
 // Jobs, and Queue live inside Now as sections (not routes); the nav
@@ -143,6 +143,7 @@ export const NAV_ENTRIES: NavEntry[] = [
   { kind: 'tab', id: 'chat', label: 'Chat', key: '2' },
   { kind: 'tab', id: 'briefing', label: 'Briefing', key: '3' },
   { kind: 'tab', id: 'history', label: 'History', key: '4' },
+  { kind: 'tab', id: 'browser', label: 'Browser', key: '5' },
   { kind: 'section', id: 'review', label: 'Review' },
   { kind: 'section', id: 'jobs', label: 'Jobs' },
   { kind: 'section', id: 'queue', label: 'Queue' },
@@ -269,10 +270,10 @@ export default function App() {
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
-  // Shared browser drawer (follow_up Issue 11): embedded
-  // headed-Chromium noVNC head with takeover interception. Polls the agent
-  // control API while open; pause/resume POST there too.
-  const [browserOpen, setBrowserOpen] = useState(false);
+  // Shared browser page (follow_up Issue 11): embedded
+  // headed-Chromium head with takeover interception. Polls the agent
+  // control API while the Browser tab is live; pause/resume POST
+  // there too.
   const [agentBrowser, setAgentBrowser] = useState<AgentBrowserStatus | null>(null);
   const [browserError, setBrowserError] = useState<string | null>(null);
   // Cross-tab feed filter (issue #931): a container pill in Now or
@@ -310,7 +311,7 @@ export default function App() {
   // subscription, so the chord can never double-fire.
   const [helpOpen, setHelpOpen] = useState(false);
   useAppShortcuts({
-    suspended: diffRepo !== null || statsOpen || browserOpen,
+    suspended: diffRepo !== null || statsOpen,
     helpOpen,
     onTab: setTab,
     onSend: () => clickChatSend(),
@@ -566,10 +567,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statsOpen, statsSeq, health]);
 
-  // Agent control poll while the browser drawer is open. Point-in-time
-  // status, not a stream: open + 2s cadence only.
+  // Agent control poll while the Browser tab is live. Point-in-time
+  // status, not a stream: tab open + 2s cadence only.
   useEffect(() => {
-    if (!browserOpen) return;
+    if (tab !== 'browser') return;
     let cancelled = false;
     setBrowserError(null);
     const applyState = (status: AgentBrowserStatus) => {
@@ -604,7 +605,7 @@ export default function App() {
       window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserOpen]);
+  }, [tab]);
 
   async function onResumeBrowser(): Promise<void> {
     setBrowserError(null);
@@ -842,7 +843,7 @@ export default function App() {
             type="button"
             data-testid="tool-browser"
             title="Open shared browser"
-            onClick={() => setBrowserOpen(true)}
+            onClick={() => setTab('browser')}
           >
             Browser
           </button>
@@ -886,18 +887,19 @@ export default function App() {
           onClose={closeStats}
         />
       )}
-      {browserOpen && (
-        <CoBrowsingDrawer
-          browserState={agentBrowser?.state ?? 'IDLE'}
-          currentStep={agentBrowser?.current_step || null}
-          handoffReason={agentBrowser?.handoff_reason ?? null}
-          handoffUrl={agentBrowser?.handoff_url ?? null}
-          iframeSrc={`${stackBase()}/cdp-stream/`}
-          error={browserError}
-          onResume={() => void onResumeBrowser()}
-          onHandBack={() => void onHandBackBrowser()}
-          onClose={() => setBrowserOpen(false)}
-        />
+      {seenTabs.has('browser') && (
+        <div hidden={tab !== 'browser'} data-testid="keepalive-browser">
+          <BrowserView
+            browserState={agentBrowser?.state ?? 'IDLE'}
+            currentStep={agentBrowser?.current_step || null}
+            handoffReason={agentBrowser?.handoff_reason ?? null}
+            handoffUrl={agentBrowser?.handoff_url ?? null}
+            iframeSrc={`${stackBase()}/cdp-stream/`}
+            error={browserError}
+            onResume={() => void onResumeBrowser()}
+            onHandBack={() => void onHandBackBrowser()}
+          />
+        </div>
       )}
       {statsOpen && logService && (
         <ContainerLogsDrawer

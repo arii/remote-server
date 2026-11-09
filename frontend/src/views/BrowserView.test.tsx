@@ -1,16 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CoBrowsingDrawer, { bannerTextFor } from './CoBrowsingDrawer';
+import BrowserView, { bannerTextFor } from './BrowserView';
 
 function renderDrawer(over: Record<string, unknown> = {}): string {
   return renderToStaticMarkup(
-    <CoBrowsingDrawer
+    <BrowserView
       browserState="IDLE"
       currentStep={null}
       iframeSrc="/cdp-stream/"
       error={null}
       onResume={() => {}}
-      onClose={() => {}}
       {...(over as object)}
     />,
   );

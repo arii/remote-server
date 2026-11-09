@@ -41,7 +41,7 @@ export function bannerTextFor(
   return 'Shared browser ready';
 }
 
-export default function CoBrowsingDrawer({
+export default function BrowserView({
   browserState,
   currentStep,
   handoffReason = null,
@@ -50,7 +50,6 @@ export default function CoBrowsingDrawer({
   error,
   onResume,
   onHandBack = null,
-  onClose,
 }: {
   browserState: AgentBrowserState;
   currentStep: string | null;
@@ -60,7 +59,6 @@ export default function CoBrowsingDrawer({
   error: string | null;
   onResume: () => void;
   onHandBack?: (() => void) | null;
-  onClose: () => void;
 }) {
   const [frameState, setFrameState] = useState<FrameState>('loading');
   const [frameKey, setFrameKey] = useState(0);
@@ -107,9 +105,6 @@ export default function CoBrowsingDrawer({
               </button>
             )
           )}{' '}
-          <button type="button" data-testid="cobrowse-close" onClick={onClose}>
-            Close
-          </button>
         </div>
       </header>
       <div className="cobrowse-split">
