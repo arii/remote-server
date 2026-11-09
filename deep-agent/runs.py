@@ -27,7 +27,8 @@ import ledger
 import pricing
 
 LEDGER = os.environ.get("EVAL_LEDGER") or os.path.join(
-    ledger.state_dir(), "ledger.jsonl")
+    ledger.state_dir(), "ledger.jsonl"
+)
 TRACES = os.path.join(ledger.state_dir(), "traces")
 RUN_RE = re.compile(r"^run-(\d+)$")
 
@@ -38,9 +39,9 @@ SEARCH_MAX_ROWS = 5
 SEARCH_LINE_CHARS = 400
 SEARCH_MAX_BYTES = 1024 * 1024
 SEARCH_USAGE = (
-    "usage: search_turns(query, kind=\"\", limit=5) — keyword recall "
+    'usage: search_turns(query, kind="", limit=5) — keyword recall '
     "over past agent turns, newest first; "
-    "e.g. search_turns(\"triage verdict\")"
+    'e.g. search_turns("triage verdict")'
 )
 
 
@@ -125,8 +126,7 @@ def _entry_summary(index, row):
         "started_ts": row.get("ts", 0),
         "duration_s": _row_latency(row),
         "ok": "error" not in extra,
-        "tools": [c.get("name", "?")
-                  for c in row.get("tool_calls", []) or []],
+        "tools": [c.get("name", "?") for c in row.get("tool_calls", []) or []],
         "tokens": usage.get("total_tokens", 0) or 0,
         "preview": (row.get("final_preview", "") or "")[:200],
         "prompt_first_line": _prompt_first_line(extra),
@@ -182,15 +182,28 @@ def _match_words(query):
 
 
 def _row_haystack(row):
-    """Lowercased searchable text: script/model/thread/final/prompt."""
+    """Lowercased searchable text: script/model/thread/final/prompt/tools.
+
+    Tool names join the haystack so a later turn can recall what it
+    *did* ("what did we click on linkedin"), not just what it said:
+    browser errands narrate into the final answer, but the act names
+    survive even terse ones.
+    """
     extra = row.get("extra") or {}
     if not isinstance(extra, dict):
         extra = {}
+    tool_names = " ".join(
+        str(c.get("name", ""))
+        for c in (row.get("tool_calls") or [])[:20]
+        if isinstance(c, dict)
+    )
     parts = [
-        row.get("script"), row.get("model"), row.get("thread_id"),
+        row.get("script"),
+        row.get("model"),
+        row.get("thread_id"),
         row.get("final_preview"),
-        extra.get("prompt") if isinstance(extra.get("prompt"), str)
-        else "",
+        extra.get("prompt") if isinstance(extra.get("prompt"), str) else "",
+        tool_names,
     ]
     return " ".join(str(p or "") for p in parts).lower()
 
@@ -198,25 +211,31 @@ def _row_haystack(row):
 def _hit_line(index, row):
     """One compact hit line, capped at SEARCH_LINE_CHARS."""
     try:
-        stamp = time.strftime("%Y-%m-%dT%H:%MZ",
-                              time.gmtime(float(row.get("ts", 0))))
+        stamp = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(float(row.get("ts", 0))))
     except (TypeError, ValueError, OverflowError):
         stamp = "?"
     cost = row.get("cost_usd")
-    cost_txt = ("$%.6g" % cost) if isinstance(cost, (int, float)) \
-        else "?"
+    cost_txt = ("$%.6g" % cost) if isinstance(cost, (int, float)) else "?"
     preview = str(row.get("final_preview", "") or "")
     if not preview.strip():
-        tools = [c.get("name", "?")
-                 for c in row.get("tool_calls", []) or []
-                 if isinstance(c, dict)]
+        tools = [
+            c.get("name", "?")
+            for c in row.get("tool_calls", []) or []
+            if isinstance(c, dict)
+        ]
         preview = "tools=%s" % ",".join(tools) if tools else "(no output)"
-    line = ("%s run-%d %s %s thread=%s dur=%ss cost=%s :: %s" % (
-        stamp, index, row.get("script", "?"), row.get("model", "?"),
-        row.get("thread_id", "?"), row.get("duration_s", "?"),
-        cost_txt, preview))
+    line = "%s run-%d %s %s thread=%s dur=%ss cost=%s :: %s" % (
+        stamp,
+        index,
+        row.get("script", "?"),
+        row.get("model", "?"),
+        row.get("thread_id", "?"),
+        row.get("duration_s", "?"),
+        cost_txt,
+        preview,
+    )
     if len(line) > SEARCH_LINE_CHARS:
-        line = line[:SEARCH_LINE_CHARS - 1] + "…"
+        line = line[: SEARCH_LINE_CHARS - 1] + "…"
     return " ".join(line.split())
 
 
@@ -224,10 +243,11 @@ def search_turns(query, kind="", limit=5, ledger_path=None):
     """Keyword grep over past ledger rows. Never raises; returns text.
 
     Case-insensitive AND-of-words match over each row's script,
-    model, thread, final preview, and stored prompt; kind-filtered
-    when given; newest first; capped lines. Empty query returns
-    usage text, missing/empty ledger and no-match return graceful
-    one-liners. Reads the EVAL_LEDGER-aware resolved path.
+    model, thread, final preview, stored prompt, and tool names;
+    kind-filtered when given; newest first; capped lines. Empty
+    query returns usage text, missing/empty ledger and no-match
+    return graceful one-liners. Reads the EVAL_LEDGER-aware resolved
+    path.
     """
     try:
         words = _match_words(query)
@@ -259,10 +279,11 @@ def search_turns(query, kind="", limit=5, ledger_path=None):
                 return "no past turns recorded yet"
             return "no past turns match %r%s" % (
                 str(query)[:100],
-                " (kind=%s)" % kind if kind else "")
-        head = "past turns, newest first" \
-            + (" (recent tail only: ledger exceeds 1MB)"
-               if tail_only else "")
+                " (kind=%s)" % kind if kind else "",
+            )
+        head = "past turns, newest first" + (
+            " (recent tail only: ledger exceeds 1MB)" if tail_only else ""
+        )
         return head + ":\n" + "\n".join(hits)
     except Exception as exc:  # noqa: BLE001 - recall must never break a turn
         return "past-turn search unavailable: %s" % exc
@@ -303,8 +324,7 @@ def delete_run(run_id, ledger_path=None):
     match = RUN_RE.match(run_id or "")
     if not match:
         return False
-    return _tombstone_lines({int(match.group(1))},
-                            ledger_path or LEDGER) == 1
+    return _tombstone_lines({int(match.group(1))}, ledger_path or LEDGER) == 1
 
 
 def clear_finished_runs(ledger_path=None):
@@ -389,10 +409,12 @@ def _needs_1121_note_fix(row):
         if not isinstance(row, dict) or _is_deleted(row):
             return False
         extra = row.get("extra")
-        return (isinstance(extra, dict)
-                and isinstance(extra.get("backfill"), str)
-                and extra["backfill"].startswith("1121:")
-                and "regardless of backend" not in extra["backfill"])
+        return (
+            isinstance(extra, dict)
+            and isinstance(extra.get("backfill"), str)
+            and extra["backfill"].startswith("1121:")
+            and "regardless of backend" not in extra["backfill"]
+        )
     except (TypeError, ValueError, AttributeError):
         return False
 
@@ -474,9 +496,11 @@ def backfill_test_providers(ledger_path=None, dry_run=False):
         if not isinstance(extra, dict):
             extra = {}
             row["extra"] = extra
-        extra["backfill"] = ("1121: test-harness row, zero tokens — "
-                             "cost 0 regardless of backend; provider "
-                             "not recorded by the pre-1121 writer")
+        extra["backfill"] = (
+            "1121: test-harness row, zero tokens — "
+            "cost 0 regardless of backend; provider "
+            "not recorded by the pre-1121 writer"
+        )
         lines[i] = json.dumps(row) + "\n"
     tmp = path + ".backfill.tmp"
     try:
@@ -485,8 +509,10 @@ def backfill_test_providers(ledger_path=None, dry_run=False):
         os.replace(tmp, path)
         return {"matched": matched, "rewritten": len(matched)}
     except OSError as exc:
-        print(f"backfill: cannot write {path} ({exc}); "
-              "original untouched", file=sys.stderr)
+        print(
+            f"backfill: cannot write {path} ({exc}); original untouched",
+            file=sys.stderr,
+        )
         try:
             os.unlink(tmp)
         except OSError:
@@ -517,8 +543,12 @@ def total_metered_spend(ledger_path=None):
             continue
         if not isinstance(row, dict):
             continue
-        if row.get("deleted") and "cost_usd" not in row \
-                and "model" not in row and "usage" not in row:
+        if (
+            row.get("deleted")
+            and "cost_usd" not in row
+            and "model" not in row
+            and "usage" not in row
+        ):
             continue
         try:
             cost_usd, metered = _row_cost(row)
@@ -553,8 +583,7 @@ def _read_start(path):
                     first = json.loads(line)
                 except ValueError:
                     return {}
-                if isinstance(first, dict) \
-                        and first.get("type") == "run_start":
+                if isinstance(first, dict) and first.get("type") == "run_start":
                     return first
                 return {}
     except OSError:
@@ -587,19 +616,21 @@ def list_traces(traces_dir=None, limit=None):
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = 0
-        runs.append({
-            "run_id": os.path.basename(path)[:-len(".jsonl")],
-            "trace_path": path,
-            "script": start.get("script"),
-            "thread": start.get("thread"),
-            "model": start.get("model"),
-            "ts": start.get("ts"),
-            "n_lines": _count_lines(path),
-            "mtime": mtime,
-        })
+        runs.append(
+            {
+                "run_id": os.path.basename(path)[: -len(".jsonl")],
+                "trace_path": path,
+                "script": start.get("script"),
+                "thread": start.get("thread"),
+                "model": start.get("model"),
+                "ts": start.get("ts"),
+                "n_lines": _count_lines(path),
+                "mtime": mtime,
+            }
+        )
     runs.sort(key=lambda r: (r["mtime"], r["run_id"]), reverse=True)
     if limit is not None:
-        runs = runs[:max(0, limit)]
+        runs = runs[: max(0, limit)]
     return runs
 
 
@@ -618,13 +649,19 @@ def _ledger_trace_for_thread(ref, ledger_path, traces_dir):
             entry = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(entry, dict) or _is_deleted(entry) \
-                or entry.get("thread_id") != ref:
+        if (
+            not isinstance(entry, dict)
+            or _is_deleted(entry)
+            or entry.get("thread_id") != ref
+        ):
             continue
         extra = entry.get("extra") or {}
         trace = extra.get("trace") if isinstance(extra, dict) else None
-        if isinstance(trace, str) and os.path.isfile(trace) \
-                and _in_dir(trace, traces_dir or TRACES):
+        if (
+            isinstance(trace, str)
+            and os.path.isfile(trace)
+            and _in_dir(trace, traces_dir or TRACES)
+        ):
             return trace
     return None
 
@@ -644,22 +681,23 @@ def resolve_run(ref, traces_dir=None, ledger_path=None):
         return None
     if RUN_RE.match(ref):
         row = get_run(ref, ledger_path)
-        trace = ((row or {}).get("entry", {}).get("extra") or {}) \
-            .get("trace")
-        if isinstance(trace, str) and os.path.isfile(trace) \
-                and _in_dir(trace, traces_dir or TRACES):
+        trace = ((row or {}).get("entry", {}).get("extra") or {}).get("trace")
+        if (
+            isinstance(trace, str)
+            and os.path.isfile(trace)
+            and _in_dir(trace, traces_dir or TRACES)
+        ):
             return trace
         return None
     if os.path.isfile(ref):
         return os.path.abspath(ref)
     base = traces_dir or TRACES
-    for cand in (os.path.join(base, ref),
-                 os.path.join(base, ref + ".jsonl")):
+    for cand in (os.path.join(base, ref), os.path.join(base, ref + ".jsonl")):
         if os.path.isfile(cand):
             return cand
     candidates = []
     for path in _trace_files(base):
-        stem = os.path.basename(path)[:-len(".jsonl")]
+        stem = os.path.basename(path)[: -len(".jsonl")]
         if stem == ref:
             return path
         if stem.startswith(ref):
@@ -684,8 +722,7 @@ def main(argv=None) -> int:
     if argv and argv[0] == "--backfill-1121":
         dry = "--dry-run" in argv[1:]
         result = backfill_test_providers(dry_run=dry)
-        print(json.dumps({"status": "backfilled" if not dry else "dry-run",
-                          **result}))
+        print(json.dumps({"status": "backfilled" if not dry else "dry-run", **result}))
         return 0
     if not argv:
         found = list_runs(limit=10)
@@ -693,10 +730,12 @@ def main(argv=None) -> int:
             print("no runs")
             return 0
         for r in found:
-            print(f"{r['id']} script={r['script']} "
-                  f"thread={r['thread']} model={r['model']} "
-                  f"ok={r['ok']} dur={_dur_txt(r)} "
-                  f"tools={len(r['tools'])}")
+            print(
+                f"{r['id']} script={r['script']} "
+                f"thread={r['thread']} model={r['model']} "
+                f"ok={r['ok']} dur={_dur_txt(r)} "
+                f"tools={len(r['tools'])}"
+            )
         return 0
     ref = argv[0]
     try:
@@ -707,10 +746,12 @@ def main(argv=None) -> int:
         if n <= 0:
             return 0
         for r in list_runs(limit=n):
-            print(f"{r['id']} script={r['script']} "
-                  f"thread={r['thread']} model={r['model']} "
-                  f"ok={r['ok']} dur={_dur_txt(r)} "
-                  f"tools={len(r['tools'])}")
+            print(
+                f"{r['id']} script={r['script']} "
+                f"thread={r['thread']} model={r['model']} "
+                f"ok={r['ok']} dur={_dur_txt(r)} "
+                f"tools={len(r['tools'])}"
+            )
         return 0
     path = resolve_run(ref)
     if path is None:

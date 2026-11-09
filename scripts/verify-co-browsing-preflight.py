@@ -1,6 +1,6 @@
 """End-to-end co-browsing preflight (follow_up Issue 12).
 
-Runs the 6 verification stages against the live stack from inside the
+Runs the 7 verification stages against the live stack from inside the
 terminal container (compose network). Human or `agy` usage::
 
     python3 scripts/verify-co-browsing-preflight.py [--repo /srv/remote-server]
@@ -39,8 +39,7 @@ import urllib.request
 
 BROWSER_HTTP = os.environ.get("BROWSER_HTTP", "http://browser:4444")
 AGENT_API = os.environ.get("AGENT_API", "http://buttons:8000/api/agent")
-PREVIEW_URL = os.environ.get(
-    "PREVIEW_URL", "http://caddy:8080/buttons/")
+PREVIEW_URL = os.environ.get("PREVIEW_URL", "http://caddy:8080/buttons/")
 TD_BIN = os.environ.get("TD_BIN", "td")
 TD_CWD = os.environ.get("TD_CWD") or None
 REPO = os.environ.get("REPO", "/srv/remote-server")
@@ -65,8 +64,25 @@ def http_get(url, timeout=10):
 
 
 def http_post(url, timeout=10):
-    req = urllib.request.Request(url, data=b"{}", method="POST",
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url, data=b"{}", method="POST", headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except Exception as exc:
+        raise MissingTool(f"{url} unreachable: {exc}")
+
+
+def http_post_json(url, payload, timeout=25):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
@@ -103,11 +119,17 @@ def create_grid_session():
     req = urllib.request.Request(
         BROWSER_HTTP.rstrip("/") + "/session",
         data=json.dumps(
-            {"capabilities": {"alwaysMatch": {
-                "browserName": "chrome",
-                "goog:chromeOptions": {"args": list(GRID_CHROME_ARGS)}}}
-             }).encode("utf-8"),
-        headers={"Content-Type": "application/json"})
+            {
+                "capabilities": {
+                    "alwaysMatch": {
+                        "browserName": "chrome",
+                        "goog:chromeOptions": {"args": list(GRID_CHROME_ARGS)},
+                    }
+                }
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
@@ -123,8 +145,8 @@ def create_grid_session():
 def delete_grid_session(session_id):
     """Free the single grid slot; best-effort, never raises."""
     req = urllib.request.Request(
-        BROWSER_HTTP.rstrip("/") + f"/session/{session_id}",
-        method="DELETE")
+        BROWSER_HTTP.rstrip("/") + f"/session/{session_id}", method="DELETE"
+    )
     try:
         with urllib.request.urlopen(req, timeout=10):
             pass
@@ -144,12 +166,17 @@ def stage_grid_ready():
     if not value.get("ready"):
         raise CheckFailed("grid not ready")
     nodes = value.get("nodes", [])
-    free = sum(1 for node in nodes for slot in node.get("slots", [])
-               if slot.get("session") is None)
+    free = sum(
+        1
+        for node in nodes
+        for slot in node.get("slots", [])
+        if slot.get("session") is None
+    )
     if not free:
         raise CheckFailed(
             "no free grid slot (single session; a leaked session may "
-            "hold it — DELETE /session/<id>)")
+            "hold it — DELETE /session/<id>)"
+        )
     return {"nodes": len(nodes), "free_slots": free}
 
 
@@ -165,22 +192,23 @@ def stage_cdp_snapshot(out_dir):
     try:
         with sync_playwright() as playwright:
             try:
-                browser = playwright.chromium.connect_over_cdp(
-                    endpoint, timeout=10000)
+                browser = playwright.chromium.connect_over_cdp(endpoint, timeout=10000)
             except Exception as exc:
                 raise CheckFailed(f"CDP connect failed: {exc}")
-            context = (browser.contexts[0] if browser.contexts
-                       else browser.new_context(viewport={"width": 1280,
-                                                          "height": 800}))
+            context = (
+                browser.contexts[0]
+                if browser.contexts
+                else browser.new_context(viewport={"width": 1280, "height": 800})
+            )
             page = context.new_page()
             try:
-                page.goto(PREVIEW_URL, wait_until="domcontentloaded",
-                          timeout=20000)
+                page.goto(PREVIEW_URL, wait_until="domcontentloaded", timeout=20000)
                 metrics = page.evaluate(
                     """() => ({
                         dom_node_count: document.querySelectorAll('*').length,
                         title: document.title
-                    })""")
+                    })"""
+                )
                 shot = os.path.join(out_dir, "preflight_viewport.png")
                 page.screenshot(path=shot, full_page=False)
             finally:
@@ -190,9 +218,11 @@ def stage_cdp_snapshot(out_dir):
         delete_grid_session(session_id)
     if not metrics.get("dom_node_count"):
         raise CheckFailed("preview page has no DOM nodes")
-    return {"dom_node_count": metrics["dom_node_count"],
-            "title": metrics.get("title", ""),
-            "screenshot": shot}
+    return {
+        "dom_node_count": metrics["dom_node_count"],
+        "title": metrics.get("title", ""),
+        "screenshot": shot,
+    }
 
 
 def stage_screenshot_integrity(png_path):
@@ -245,9 +275,13 @@ def stage_resume_refresh():
 
 def _td_supports_preview():
     try:
-        proc = subprocess.run(shlex.split(TD_BIN) + ["audit-impact", "--help"],
-                              capture_output=True, text=True, timeout=30,
-                              cwd=TD_CWD)
+        proc = subprocess.run(
+            shlex.split(TD_BIN) + ["audit-impact", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=TD_CWD,
+        )
     except (FileNotFoundError, OSError) as exc:
         raise MissingTool(f"td entrypoint missing ({TD_BIN}): {exc}")
     return "--preview-url" in (proc.stdout or "")
@@ -260,26 +294,43 @@ def stage_td_impact(repo, out_dir):
         raise MissingTool(
             "installed td predates --preview-url (stale td); set TD_BIN "
             "to a checkout entrypoint, e.g. TD_BIN='python3 "
-            "dev_tools/cli.py' TD_CWD=/srv/repos/boomtick/cli")
+            "dev_tools/cli.py' TD_CWD=/srv/repos/boomtick/cli"
+        )
     worktree = os.path.join(out_dir, "vis-preflight")
     css_rel = os.path.join("frontend", "src", "index.css")
     css_abs = os.path.join(repo, css_rel)
     if not os.path.isfile(css_abs):
         raise MissingTool(f"no UI file to probe at {css_abs}")
-    subprocess.run(["git", "worktree", "add", "--detach", worktree,
-                    "origin/main"], capture_output=True, text=True, timeout=60,
-                   cwd=repo, check=False)
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", worktree, "origin/main"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=repo,
+        check=False,
+    )
     try:
-        if subprocess.run(["git", "diff", "--name-only", "origin/main",
-                           "--", "."], capture_output=True, text=True,
-                          timeout=60, cwd=worktree).returncode != 0:
+        if (
+            subprocess.run(
+                ["git", "diff", "--name-only", "origin/main", "--", "."],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=worktree,
+            ).returncode
+            != 0
+        ):
             raise MissingTool(f"{worktree} is not a git worktree of {repo}")
-        with open(os.path.join(worktree, css_rel), "a",
-                  encoding="utf-8") as handle:
+        with open(os.path.join(worktree, css_rel), "a", encoding="utf-8") as handle:
             handle.write("\n/* vis-preflight probe */\n")
-        cmd = (shlex.split(TD_BIN)
-               + ["audit-impact", "--worktree", worktree,
-                  "--preview-url", PREVIEW_URL, "--json"])
+        cmd = shlex.split(TD_BIN) + [
+            "audit-impact",
+            "--worktree",
+            worktree,
+            "--preview-url",
+            PREVIEW_URL,
+            "--json",
+        ]
         env = dict(os.environ)
         # browser_cdp opens its own Grid session from this base URL.
         env.setdefault("BROWSER_ENDPOINT", BROWSER_HTTP)
@@ -287,39 +338,108 @@ def stage_td_impact(repo, out_dir):
             # Checkout entrypoints (TD_BIN="python3 dev_tools/cli.py")
             # must resolve dev_tools from the checkout, not the stale
             # installed td in /opt/venvs/td.
-            env["PYTHONPATH"] = TD_CWD + (os.pathsep + env["PYTHONPATH"]
-                                          if env.get("PYTHONPATH") else "")
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=180, cwd=TD_CWD or repo, env=env)
+            env["PYTHONPATH"] = TD_CWD + (
+                os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+            )
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=TD_CWD or repo,
+            env=env,
+        )
         try:
             payload = json.loads((proc.stdout or "").strip())
         except ValueError:
             raise CheckFailed(
                 f"td stdout not pure JSON (rc={proc.returncode}, "
-                f"stderr={proc.stderr[-300:]})")
+                f"stderr={proc.stderr[-300:]})"
+            )
         visual = payload.get("visual_diff") or {}
         if not visual.get("reachable"):
-            raise CheckFailed(
-                f"visual snapshot unreachable: {visual.get('error')}")
+            raise CheckFailed(f"visual snapshot unreachable: {visual.get('error')}")
         if not visual.get("dom_node_count"):
             raise CheckFailed("visual snapshot has no DOM metrics")
-        return {"dom_node_count": visual["dom_node_count"],
-                "mismatch_percentage": visual.get("mismatch_percentage"),
-                "passed": payload.get("passed")}
+        return {
+            "dom_node_count": visual["dom_node_count"],
+            "mismatch_percentage": visual.get("mismatch_percentage"),
+            "passed": payload.get("passed"),
+        }
     finally:
-        subprocess.run(["git", "worktree", "remove", "--force", worktree],
-                       capture_output=True, timeout=60, cwd=repo)
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", worktree],
+            capture_output=True,
+            timeout=60,
+            cwd=repo,
+        )
+
+
+def _browser_base():
+    """Buttons /api/browser base from the agent-control knob (one knob
+    for every agent->backend call, same derivation chat tools use)."""
+    base = AGENT_API.rstrip("/")
+    if base.endswith("/agent"):
+        base = base[: -len("/agent")]
+    return base + "/browser"
+
+
+def stage_chat_drive():
+    """Stage 7: the chat drive API (cdp-stream only) attaches to the
+    live shared session and performs a navigate round-trip.
+
+    Needs a shared session: open the drawer viewer (or have an agent
+    run driving) before running, else this reports ENV_MISSING with
+    the fix. Navigates to the neutral console page — the same page
+    a fresh viewer starts on — never an arbitrary site."""
+    base = _browser_base()
+    status, body = http_get(base + "/state")
+    if status != 200:
+        raise CheckFailed(f"browser state HTTP {status}")
+    seen = json.loads(body.decode("utf-8"))
+    if "human_driving" not in seen or "agent_state" not in seen:
+        raise CheckFailed(f"browser state shape changed: {sorted(seen)}")
+    status, body = http_get(base + "/snapshot")
+    if status == 409:
+        raise MissingTool(
+            "no shared Grid session — open the drawer viewer (or "
+            "start an agent run driving the browser), then re-run"
+        )
+    if status != 200:
+        raise CheckFailed(f"snapshot HTTP {status}")
+    snap = json.loads(body.decode("utf-8"))
+    for key in ("url", "title", "elements"):
+        if key not in snap:
+            raise CheckFailed(f"snapshot missing {key}: {sorted(snap)}")
+    status, body = http_post_json(
+        base + "/drive", {"op": "navigate", "url": PREVIEW_URL}
+    )
+    if status == 409:
+        raise CheckFailed(f"drive refused on a live session: {body[:160]!r}")
+    if status != 200:
+        raise CheckFailed(f"drive HTTP {status}")
+    drove = json.loads(body.decode("utf-8"))
+    if drove.get("op") != "navigate" or "elements" not in drove:
+        raise CheckFailed(f"drive shape changed: {sorted(drove)}")
+    state = _agent_state()
+    if "Chat drive:" not in str(state.get("current_step")):
+        raise CheckFailed(
+            f"drive left no chat presence step: {state.get('current_step')!r}"
+        )
+    return {"url": drove.get("url"), "elements": len(drove.get("elements") or [])}
 
 
 STAGES = [
     ("grid_ready", lambda ctx: stage_grid_ready()),
     ("cdp_snapshot", lambda ctx: stage_cdp_snapshot(ctx["dir"])),
-    ("screenshot_integrity",
-     lambda ctx: stage_screenshot_integrity(ctx["snapshot"]["screenshot"])),
+    (
+        "screenshot_integrity",
+        lambda ctx: stage_screenshot_integrity(ctx["snapshot"]["screenshot"]),
+    ),
     ("pause_halts", lambda _ctx: stage_pause_halts()),
     ("resume_refresh", lambda _ctx: stage_resume_refresh()),
-    ("td_impact",
-     lambda ctx: stage_td_impact(ctx["repo"], ctx["dir"])),
+    ("td_impact", lambda ctx: stage_td_impact(ctx["repo"], ctx["dir"])),
+    ("chat_drive", lambda _ctx: stage_chat_drive()),
 ]
 
 
@@ -332,23 +452,33 @@ def run_preflight(repo):
             try:
                 detail = fn(ctx)
             except MissingTool as exc:
-                results[name] = {"status": "ENV_MISSING",
-                                 "detail": str(exc),
-                                 "elapsed_s": round(time.time() - started, 1)}
+                results[name] = {
+                    "status": "ENV_MISSING",
+                    "detail": str(exc),
+                    "elapsed_s": round(time.time() - started, 1),
+                }
                 break
             except CheckFailed as exc:
-                results[name] = {"status": "FAIL", "detail": str(exc),
-                                 "elapsed_s": round(time.time() - started, 1)}
+                results[name] = {
+                    "status": "FAIL",
+                    "detail": str(exc),
+                    "elapsed_s": round(time.time() - started, 1),
+                }
                 break
             except Exception as exc:  # noqa: BLE001 - report, don't crash
-                results[name] = {"status": "ERROR",
-                                 "detail": f"{type(exc).__name__}: {exc}",
-                                 "elapsed_s": round(time.time() - started, 1)}
+                results[name] = {
+                    "status": "ERROR",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                    "elapsed_s": round(time.time() - started, 1),
+                }
                 break
             if name == "cdp_snapshot":
                 ctx["snapshot"] = detail
-            results[name] = {"status": "PASS", "detail": detail,
-                             "elapsed_s": round(time.time() - started, 1)}
+            results[name] = {
+                "status": "PASS",
+                "detail": detail,
+                "elapsed_s": round(time.time() - started, 1),
+            }
     return results
 
 
@@ -358,10 +488,10 @@ def main(argv):
     failed = [n for n, r in results.items() if r["status"] in ("FAIL", "ERROR")]
     missing = [n for n, r in results.items() if r["status"] == "ENV_MISSING"]
     for name, result in results.items():
-        print(f"[{result['status']}] {name} "
-              f"({result['elapsed_s']}s): {result['detail']}")
-    print(json.dumps({"ok": not failed and not missing, "stages": results},
-                     indent=2))
+        print(
+            f"[{result['status']}] {name} ({result['elapsed_s']}s): {result['detail']}"
+        )
+    print(json.dumps({"ok": not failed and not missing, "stages": results}, indent=2))
     if missing and not failed:
         return 2
     return 1 if failed else 0

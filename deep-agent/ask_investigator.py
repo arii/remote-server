@@ -38,8 +38,7 @@ def search_docs(query: str, repo: str = "") -> str:
         return "REJECTED: bad query"
     try:
         filt = retrieval.normalize_repo(repo)
-        target = (s5tools.checkout_for(filt) if filt
-                  else _checkout)
+        target = s5tools.checkout_for(filt) if filt else _checkout
     except ValueError:
         return "REJECTED: bad repo filter"
     return retrieval.search_td(query, target, top_k=3)
@@ -100,13 +99,11 @@ def pr_state(number: str) -> str:
     """
     # String type: the tool wrapper coerces True to 1 for int args,
     # which would smuggle a bool past validation into the command.
-    if not isinstance(number, str) or not number.isdigit() \
-            or int(number) <= 0:
+    if not isinstance(number, str) or not number.isdigit() or int(number) <= 0:
         return "REJECTED: bad PR number"
     try:
         proc = subprocess.run(
-            ["td", "--json", "gh", "pr-view", "--pr", str(number),
-             "--repo", _repo],
+            ["td", "--json", "gh", "pr-view", "--pr", str(number), "--repo", _repo],
             capture_output=True,
             text=True,
             timeout=60,
@@ -136,7 +133,9 @@ def pr_state(number: str) -> str:
         f"checks={summary.get('passed')}/{summary.get('total')} "
         f"failed={summary.get('failed')} "
         f"pending={summary.get('pending')} "
-        f"title={snap.get('title')}", limit=400)
+        f"title={snap.get('title')}",
+        limit=400,
+    )
 
 
 @tool
@@ -189,14 +188,14 @@ def search_web(query: str, limit: int = 5) -> str:
 
 
 @tool
-def search_turns(query: str, kind: str = "",
-                 limit: int = 5) -> str:
+def search_turns(query: str, kind: str = "", limit: int = 5) -> str:
     """Search past agent turns for prior outcomes (read-only recall).
 
     Use when the user asks about earlier work: how something was
     fixed before, what triage concluded, whether this failure was
     seen already. Keyword match over each turn's script, model,
-    thread, prompt, and final answer, newest first, capped lines.
+    thread, prompt, final answer, and tool names, newest first,
+    capped lines.
 
     Args:
         query: Keywords from the earlier outcome, e.g. "triage verdict".
@@ -207,9 +206,13 @@ def search_turns(query: str, kind: str = "",
 
 
 @tool
-def run_ux_capture(route: str = "", all_routes: bool = False,
-                   desktop: bool = False, mobile: bool = False,
-                   screenshots_only: bool = False) -> str:
+def run_ux_capture(
+    route: str = "",
+    all_routes: bool = False,
+    desktop: bool = False,
+    mobile: bool = False,
+    screenshots_only: bool = False,
+) -> str:
     """Capture the checkout's UI via td ux (Playwright).
 
     Runs in the repo checkout (which must carry scripts/ux-*.ts;
@@ -225,19 +228,23 @@ def run_ux_capture(route: str = "", all_routes: bool = False,
     """
     try:
         result = impact.run_ux_capture(
-            _checkout, route=route or "",
-            all_routes=all_routes, desktop=desktop,
-            mobile=mobile, screenshots_only=screenshots_only)
+            _checkout,
+            route=route or "",
+            all_routes=all_routes,
+            desktop=desktop,
+            mobile=mobile,
+            screenshots_only=screenshots_only,
+        )
     except ValueError as exc:
         return f"REJECTED: {exc}"
     if not result.get("ok"):
         return f"CAPTURE_ERROR: {result.get('error', 'unknown')}"
     rows = result.get("results", [])
-    done = sum(1 for r in rows
-               if isinstance(r, dict)
-               and r.get("status") == "success")
-    return (f"captured {done}/{len(rows)} route(s) to "
-            f"{impact.UX_DIR} (snapshot before the next run)")
+    done = sum(1 for r in rows if isinstance(r, dict) and r.get("status") == "success")
+    return (
+        f"captured {done}/{len(rows)} route(s) to "
+        f"{impact.UX_DIR} (snapshot before the next run)"
+    )
 
 
 @tool
@@ -256,11 +263,9 @@ def diff_versions(before: str, after: str) -> str:
     base_dir = impact.resolve_capture_dir(_checkout, before)
     head_dir = impact.resolve_capture_dir(_checkout, after)
     if base_dir is None or head_dir is None:
-        return ("REJECTED: capture dirs must be existing dirs "
-                "inside the checkout or tmp")
+        return "REJECTED: capture dirs must be existing dirs inside the checkout or tmp"
     try:
-        return impact.format_diff_text(
-            impact.diff_versions(base_dir, head_dir))
+        return impact.format_diff_text(impact.diff_versions(base_dir, head_dir))
     except ValueError as exc:
         return f"REJECTED: {exc}"
 
@@ -282,14 +287,12 @@ def ask_diff(question: str, before: str, after: str) -> str:
     base_dir = impact.resolve_capture_dir(_checkout, before)
     head_dir = impact.resolve_capture_dir(_checkout, after)
     if base_dir is None or head_dir is None:
-        return ("REJECTED: capture dirs must be existing dirs "
-                "inside the checkout or tmp")
+        return "REJECTED: capture dirs must be existing dirs inside the checkout or tmp"
     try:
         base_snap = impact.collect_capture(base_dir)
         head_snap = impact.collect_capture(head_dir)
         result = impact.diff_versions(base_snap, head_snap)
-        evidence = impact.format_evidence_for_model(
-            question, result)
+        evidence = impact.format_evidence_for_model(question, result)
         crops = impact.changed_crops(base_snap, head_snap)
     except ValueError as exc:
         return f"REJECTED: {exc}"
@@ -304,11 +307,9 @@ def lighthouse_read(capture: str = "") -> str:
         capture: Capture dir (checkout-relative or tmp);
             '' reads the checkout's current artifacts/ux-audit.
     """
-    target = impact.resolve_capture_dir(
-        _checkout, capture or impact.UX_DIR)
+    target = impact.resolve_capture_dir(_checkout, capture or impact.UX_DIR)
     if target is None:
-        return ("REJECTED: capture dir must exist inside the "
-                "checkout or tmp")
+        return "REJECTED: capture dir must exist inside the checkout or tmp"
     return impact.lighthouse_read(target)["text"]
 
 

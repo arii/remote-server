@@ -55,3 +55,13 @@ trigger_nodes:
   reuse pre-takeover element references.
 - When reporting what the browser shows, cite the `/cdp-stream`
   live-view URL from §1 so the human opens the exact live head.
+
+## 6. Chat turns drive via the buttons API, not raw Grid
+
+Chat (`browser_snapshot` / `browser_act` / `browser_notes`) never
+opens a Grid session: it calls the buttons `/api/browser`
+endpoints, which attach to the live shared session (agent session
+first, else viewer-shared) and refuse mutating ops while the human
+holds the wheel. Raw Grid sessions (§2) stay for
+terminal-container agents. BrowserMCP is the audit/test harness,
+never a drive path.

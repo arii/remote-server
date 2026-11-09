@@ -31,6 +31,23 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(renderDrawer({ browserState: 'IDLE' })).not.toContain('cobrowse-takeover');
   });
 
+  it('names chat driving even with no pipeline run owning the wheel', () => {
+    expect(bannerTextFor('IDLE', 'Chat drive: navigate https://x/')).toContain(
+      'Agent driving from chat',
+    );
+    // A human takeover still outranks a stale chat step.
+    expect(
+      bannerTextFor('PAUSED_BY_USER', 'Chat drive: click 10,20'),
+    ).toContain('Manual control active');
+  });
+
+  it('labels the rail as the browser chat with a first-run hint', () => {
+    const html = renderDrawer({});
+    expect(html).toContain('data-testid="cobrowse-chat-hint"');
+    expect(html).toContain('ask it to take you');
+    expect(html).toContain('aria-label="Browser chat');
+  });
+
   it('names a pending handoff above every other banner (#1097)', () => {
     expect(bannerTextFor('PAUSED_BY_USER', 'Paused (x)', 'login wall')).toBe(
       'Waiting for you — login wall',

@@ -78,6 +78,20 @@ and mobile browsers get a native-feeling stream. Bring-up:
   scriptable input — the wrong tool for automation. Use Neko for
   hands, CDP-stream for agents.
 
+## Chat-driven cobrowse (chat turns drive this page)
+
+Chat turns in the browser drawer drive the same shared session
+through the buttons backend (`GET/POST /api/browser/*`, same
+process as the viewer): `snapshot` (URL, title, click targets),
+`drive` (navigate/click/type/key/wheel), `state` (rendezvous +
+who holds the wheel). Attach-only — chat never mints a session:
+it joins the live agent session first, else the viewer-shared
+session, else reports browser-busy. Mutating ops refuse while the
+human drives (`PAUSED_BY_USER`); every drive records a
+`Chat drive:` step so the drawer banner shows the agent at the
+wheel. Login walls, payments, and sends stay human — the agent
+hands the step back in chat instead of automating past them.
+
 ## Spec deviation (recorded, not rebuilt — issue #1104)
 
 `updated_guide.md` Issue 8 specifies `browserless/chromium` with a

@@ -24,6 +24,12 @@ export function bannerTextFor(
   // stalled wait must never look like a working session (#1097).
   if (handoffReason) return `Waiting for you — ${handoffReason}`;
   if (state === 'PAUSED_BY_USER') return 'Manual control active — agent paused';
+  // Chat-driven ops record a "Chat drive:" step on the shared
+  // control state (backend/api/routers/browser_drive.py contract):
+  // show the agent at the wheel even when no pipeline run owns it.
+  if (currentStep?.startsWith('Chat drive:')) {
+    return `Agent driving from chat (${currentStep}) — click the page to take over`;
+  }
   if (state === 'RUNNING') {
     return currentStep
       ? `Agent active (${currentStep}) — select the browser view to take over`
@@ -136,7 +142,11 @@ export default function CoBrowsingDrawer({
             onLoad={() => setFrameState('live')}
           />
         </div>
-        <aside className="cobrowse-chat" aria-label="Chat alongside the shared browser">
+        <aside className="cobrowse-chat" aria-label="Browser chat — ask it to drive the shared page">
+          <p className="row-meta" data-testid="cobrowse-chat-hint">
+            This chat sees and drives the page on the left — ask it to take you
+            somewhere. Click the page anytime to take over.
+          </p>
           <ChatView repo={repo} seed={null} onSeedUsed={() => {}} />
         </aside>
       </div>
