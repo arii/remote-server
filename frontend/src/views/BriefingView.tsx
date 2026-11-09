@@ -716,8 +716,10 @@ export function prReviewNote(prNumber: string, reviewsLines: readonly string[]):
 export function prReviewVerdict(note: string): string {
   const m = note.match(/[Vv]erdict:\s*([A-Z]{2,}(?:[ ]+[A-Z]{2,})*)/);
   if (!m) return '';
-  // Zero-count notes read clean even when phrased as WARNINGS FOUND (#1225).
-  if (/0\s+blocking/.test(note) && /0\s+warning/.test(note)) return 'CLEAN';
+  // Zero-count notes read clean even when phrased as WARNINGS FOUND
+  // (#1225): the boundary guards counts like 10 from reading as 0.
+  if (/(?<!\d)0\s+blocking/.test(note) && /(?<!\d)0\s+warning/.test(note))
+    return 'CLEAN';
   return m[1];
 }
 
