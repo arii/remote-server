@@ -53,7 +53,7 @@
       "source": "pbakaus/impeccable",
       "sourceType": "github",
       "skillPath": ".agents/skills/impeccable/SKILL.md",
-      "computedHash": "ec5c81f17af6476cafd351875d9109b7d03329e05b3f845cb2d0bbbd4bc31b2c"
+      "computedHash": "c6921e830b7a565ebbe9aabe11516d34092062cd7fa2b442f030134857bf86a8"
     },
     "karpathy-guidelines": {
       "source": "nvidia/nemo-fabric",
