@@ -34,6 +34,10 @@ class HangBridge:
 
     def __init__(self, session_id, viewport=None, mobile=False):
         self.session_id = session_id
+        self.viewport = (
+            dict(viewport) if viewport is not None else dict(browser_view.VIEWPORT)
+        )
+        self.mobile = mobile
         self.dsf = browser_view.DSF
 
     async def connect(self):
