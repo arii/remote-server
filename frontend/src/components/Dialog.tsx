@@ -4,7 +4,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 // (touch taps leave activeElement on body), so restoring prev alone
 // lands on the document root. An explicit selector wins; otherwise
 // the previous element, unless it was the body.
-export function resolveReturnFocus(
+function resolveReturnFocus(
   selector: string | undefined,
   prev: Element | null,
   lookup: (s: string) => Element | null = (s) =>
