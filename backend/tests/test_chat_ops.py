@@ -2025,6 +2025,50 @@ class ChatStderrTailTest(unittest.TestCase):
         self.assertEqual(len(finished), 1)
         self.assertNotIn("stderr", finished[0])
 
+    def test_chat_no_provider_fails_fast(self):
+        # #1226: an unreachable provider ladder must fail fast instead
+        # of stalling the client for the full STALL_SECONDS.
+        with mock.patch.object(
+            chat.model_router,
+            "resolve_llm",
+            side_effect=RuntimeError("no provider"),
+        ):
+            resp = self.client.post(
+                "/api/chat/stream",
+                json={
+                    "prompt": "hi",
+                    "repo": "remote-server",
+                    "session_id": "noprov000001",
+                },
+            )
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "error")
+        self.assertEqual(events[-1][1]["error"], "no worker attached: no provider")
+        self.assertNotIn("token", [e for e, _ in events])
+        failed = [e for e in self._ledger() if e.get("event") == "chat failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("no worker attached", failed[0]["error"])
+
+    def test_chat_provider_resolved_streams_normally(self):
+        with mock.patch.object(
+            chat.model_router,
+            "resolve_llm",
+            return_value={"provider": "ollama", "model": "llama3"},
+        ):
+            chat.spawn_chat_process = lambda cmd: FakeProc("hello")
+            resp = self.client.post(
+                "/api/chat/stream",
+                json={
+                    "prompt": "hi",
+                    "repo": "remote-server",
+                    "session_id": "provok0000001",
+                },
+            )
+        events = self._sse_events(resp)
+        self.assertEqual(events[-1][0], "done")
+        done = events[-1][1]
+        self.assertEqual(done["text"], "hello")
+
 
 if __name__ == "__main__":
     unittest.main()
