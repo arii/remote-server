@@ -3,17 +3,17 @@
 import { expect, test } from '@playwright/test';
 
 // Co-browse / topbar responsive layout (operator UX feedback):
-// the chat rail must hold 300-380px without mid-word clipping at
-// desktop widths, collapse below the browser under 1100px, and the
+// the agent rail must hold 300-380px without mid-word clipping at
+// desktop widths, stack below the browser under 1100px, and the
 // top bar must read as one row: context, views, tools in order.
-// Stateless: opens the drawer and measures, mutates nothing.
+// Stateless: opens the Browser tab and measures, mutates nothing.
 test.describe('responsive console layout', () => {
   for (const width of [1280, 1440, 1920]) {
-    test(`drawer rail holds 300-380px at ${width}px`, async ({ page }) => {
+    test(`agent rail holds 300-380px at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.goto('/');
       await page.getByTestId('tool-browser').click();
-      await expect(page.getByTestId('cobrowse-drawer')).toBeVisible();
+      await expect(page.getByTestId('keepalive-browser')).toBeVisible();
 
       const rail = page.getByTestId('cobrowse-drawer').locator('.cobrowse-chat');
       const box = await rail.boundingBox();
@@ -21,10 +21,10 @@ test.describe('responsive console layout', () => {
       expect(box!.width).toBeGreaterThanOrEqual(300);
       expect(box!.width).toBeLessThanOrEqual(380);
 
-      // Prompt chips must not clip mid-word: no horizontal
-      // overflow on any rail button.
+      // Rail buttons must not clip mid-word: no horizontal
+      // overflow on any agent-rail button.
       const overflows = await page
-        .getByTestId('chat-prompt-chips')
+        .getByTestId('agent-drawer')
         .locator('button')
         .evaluateAll((btns) =>
           btns.map((b) => b.scrollWidth - b.clientWidth),
@@ -89,7 +89,7 @@ test.describe('responsive console layout', () => {
     }
   });
 
-  test('drawer stacks chat below the browser under 1100px', async ({ page }) => {
+  test('page stacks the agent rail below the browser under 1100px', async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 900 });
     await page.goto('/');
     await page.getByTestId('tool-browser').click();
