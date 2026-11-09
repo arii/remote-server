@@ -19,6 +19,12 @@ Default tool leverage for every research, triage, audit, and implement loop. Que
 - Native session agents do the work by default. Nebius is for explicitly delegated REST tasks: probe `$NEBIUS_BASE_URL/models` with `$NEBIUS_API_KEY` first; `NEBIUS_MODEL` may be empty in container env, so pick from the listing. Ollama is probed at `localhost:11434/api/tags`; connection refused means the local-LLM loop is blocked — file an issue, don't reroute silently.
 - Log every provider task with evidence links (PR comments, run URLs, token usage) to `docs/llm-provider-scorecard.md` in the repo where the work landed.
 
+## Brief design (agent tiers)
+
+- Nebius coder: surgical briefs only — exact repo-relative file:lines, one verify command, no investigation section. Open-ended briefs burn the 100-step budget with zero edits; do recon natively, then brief exactly (scorecard + #1230).
+- Ollama deep_chat: max 1-2 claims with exact paths per turn; longer briefs fail brief-following. Full diffs inline are fine for reviews; verdict format must be exact.
+- Provision the worktree first (DEEP_AGENT_MODSTORE node_modules link lands automatically post-#1235); never brief verify steps the worktree cannot run.
+
 ## Buttons snapshots (Playwright)
 
 - Live app entry: `http://remote-buttons-1:8000/` + route rewrite `**/buttons/**` → replace `/buttons/` with `/` (prod serves under the `/buttons` base path via caddy; direct backend serves the shell at `/` with assets at `/assets/*`).

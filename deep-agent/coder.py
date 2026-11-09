@@ -162,14 +162,25 @@ def needs_plan(brief, context=""):
     """True when the brief clears the planning bar. Pure.
 
     CODER_PLAN=always forces planning, =never skips it; otherwise
-    2+ distinct file-like tokens in brief+context trigger a plan.
+    2+ distinct file-like tokens in brief+context trigger a plan, as
+    does any investigation verb when files fall short (#1235).
     """
     mode = os.environ.get(PLAN_ENV, "").strip().lower()
     if mode == "always":
         return True
     if mode == "never":
         return False
-    return len(files_named(brief, context)) >= 2
+    if len(files_named(brief, context)) >= 2:
+        return True
+    text = " ".join(t for t in (brief, context) if isinstance(t, str))
+    return bool(
+        re.search(
+            r"\b(find|locate|search|grep|explore|investigate|trace|audit"
+            r"|discover|what|where)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def validate_plan(plan):
@@ -1485,6 +1496,12 @@ class InitCoderGraph:
             root, error = outer.provision_worktree()
             if error:
                 return {"fatal": error}
+            # Best-effort: link shared node_modules into the fresh worktree (#1235).
+            import s5tools  # noqa: E402  (stdlib-only module)
+
+            s5tools.link_worktree_node_modules(
+                root, os.environ.get("DEEP_AGENT_MODSTORE", "")
+            )
             return {
                 "worktree_root": root,
                 "fix_attempts": 0,
