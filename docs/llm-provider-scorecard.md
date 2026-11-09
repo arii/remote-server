@@ -74,6 +74,14 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 - Provider proof: Nebius key live (19-token completion), `NEBIUS_SPEND_CAP_USD=2.00` set on agent commands (container default unset — RS #1192 stays with env owner). Ollama reachable at `ollama:11434`, 6 models.
 - Costs tonight: $2 cap set, actual spend pennies (short turns). Ledger rows in deep-agent traces (coder_*, deep_chat_* 2026-11-09).
 
+## hrm spec-validation loop 2026-11-09 ~18:30-19:30Z (cloud-baryon)
+
+- hrm RAG + project_config verified current (real hits, no reindex needed).
+- Ollama qwen3:8b spec-9844 turn: 394s, 5705 tokens (5154 in/551 out), $0. Drafted Goal + 6-item DoD + 4-step acceptance for Strava upload; respected scope (upload-only, manual trigger, privacy doc). Appended to arii/hrm#9844 as spec sections. Verdict: drafts are postable after a native scope check.
+- Ollama qwen3:8b spec-9817 turn: fast, correct structure, but hallucinated app domain ('HR management for employee records' — HRM is a Real-Time Heart Rate Monitor) and proposed fixing an already-fixed bullet (boilerplate meta present since Feb, app/layout.tsx:28-32). Caught in native tree verification; posted corrected comment instead of its body. Verdict: NEVER auto-post Ollama drafts — mandatory native fact-check first.
+- Native validations: #9843 SPEC-READY (gap confirmed TimerDisplay.tsx:419-423 vs shared VolumeSlider.tsx:45-54); #9799 SPEC-READY (constraints + root causes complete). Validation comments posted with file:line evidence.
+- Next steps from tool performance: (1) keep Ollama on drafting-only with native verify-before-post; (2) hrm session owns #9844 implementation per new DoD and #9817 bullet-1 closure confirm; (3) #9817 bullet-2 (theme-aware flash fix) is implementable as a surgical task when scheduled.
+
 ## Gemini follow-through loop 2026-11-09 ~08:00-17:00Z (cloud-baryon)
 
 - Gemini Flash-Lite round (repo attached): Top-3 were worktree dep provisioning, Ollama claim caps, scoping node for open briefs — all verified in-tree, filed as #1235. Token cuts (context filtering, sliding-window truncation, prompt minimization) recorded unverified.
