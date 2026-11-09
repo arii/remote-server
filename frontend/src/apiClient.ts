@@ -1809,6 +1809,46 @@ export async function resolveHandoff(note?: string): Promise<AgentBrowserStatus>
   return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/handoff/resolve');
 }
 
+export interface BrowserActivityEvent {
+  t: number;
+  kind: string;
+  detail: string;
+  via: string;
+}
+
+// Shared-browser activity + notebook (auto-learn): same live page
+// the tab shows, so same real-time rule as pause/resume — direct
+// fetchApi, never the offline outbox.
+export async function fetchBrowserActivity(
+  limit = 30,
+): Promise<BrowserActivityEvent[]> {
+  const data = await getJson<{ ok: boolean; events: BrowserActivityEvent[] }>(
+    `api/browser/activity?limit=${limit}`,
+  );
+  return data.events;
+}
+
+export interface BrowserNotes {
+  notes: string;
+  truncated: boolean;
+}
+
+export function fetchBrowserNotes(): Promise<BrowserNotes> {
+  return getJson<BrowserNotes>('api/browser/notes');
+}
+
+export interface BrowserLearnResult {
+  wrote: boolean;
+  bullets?: string[];
+  events_covered?: number;
+  reason?: string;
+}
+
+export async function triggerBrowserLearn(): Promise<BrowserLearnResult> {
+  const resp = await fetchApi('api/browser/learn', { method: 'POST' });
+  return readJson<BrowserLearnResult>(resp, 'POST', 'api/browser/learn');
+}
+
 export function postAgentTurn(
   provider: string,
   repo: string,

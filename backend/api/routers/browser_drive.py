@@ -141,6 +141,28 @@ async def activity(limit: int = 50) -> dict[str, Any]:
     return {"ok": True, "events": browser_view.recent_activity(limit)}
 
 
+@router.get("/notes")
+async def notes() -> dict[str, Any]:
+    """Shared browser notebook: auto-notes plus agent lessons.
+
+    Read-only. The human can read everything the system has
+    "learned" here; agents read it back at the start of each
+    browsing turn, so corrections teach the next turn.
+    """
+    return {"ok": True, **browser_view.read_notes()}
+
+
+@router.post("/learn")
+async def learn() -> dict[str, Any]:
+    """Run one learn pass now over events since the last pass.
+
+    Same deterministic summarizer the automatic volume trigger
+    uses — counts and destinations, no model, no spend. Returns
+    what was written so the tab can show it immediately.
+    """
+    return {"ok": True, **browser_view.run_learn_pass(manual=True)}
+
+
 @router.get("/state")
 async def drive_state() -> dict[str, Any]:
     """Rendezvous + wheel state without touching the browser."""
@@ -159,6 +181,7 @@ async def drive_state() -> dict[str, Any]:
         "viewer_shared_session": shared,
         "agent_state": control.state,
         "human_driving": control.state == "PAUSED_BY_USER",
+        "learn": browser_view.learn_status(),
     }
 
 
