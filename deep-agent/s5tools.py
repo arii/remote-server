@@ -298,9 +298,11 @@ def list_dir(checkout, path="", limit=200):
     return "\n".join(names[:limit]) or "(empty)"
 
 
-def read_repo_file(checkout, path, limit=3000):
-    """Read a repo-relative file. Returns content or a not-found/REJECTED
-    string (routine outcomes, not exceptions)."""
+def read_repo_file(checkout, path, limit=3000, offset=0):
+    """Read a repo-relative file from char offset, up to limit chars.
+
+    Negatives clamp to 0; missing/REJECTED shapes stay routine,
+    not exceptions."""
     root = _checkout_root(checkout)
     if root is None:
         return "REJECTED: bad checkout"
@@ -310,7 +312,12 @@ def read_repo_file(checkout, path, limit=3000):
     if not os.path.isfile(full):
         return "not found: no such file"
     try:
+        start = max(0, int(offset))
+    except (TypeError, ValueError):
+        return "REJECTED: bad offset"
+    try:
         with open(full, encoding="utf-8", errors="replace") as f:
+            f.seek(start)
             return f.read(limit)
     except OSError as exc:
         return f"read failed: {exc}"
@@ -331,6 +338,8 @@ def grep_repo(checkout, pattern, limit=2000):
                 "20",
                 "--exclude-dir=.git",
                 "--exclude-dir=node_modules",
+                "--exclude-dir=.pnpm-store",
+                "--exclude-dir=.pnpm",
                 "--exclude-dir=.venv",
                 "--exclude-dir=__pycache__",
                 "--exclude-dir=.boomtick",

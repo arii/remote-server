@@ -45,15 +45,16 @@ def search_docs(query: str, repo: str = "") -> str:
 
 
 @tool
-def read_repo_file(path: str) -> str:
+def read_repo_file(path: str, offset: int = 0) -> str:
     """Read a file from the repo checkout (read-only).
 
     Args:
         path: Repo-relative path, e.g. buttons/server.py.
+        offset: Char offset for windows past the head (#1249).
     """
     # Same sandbox + messages as the inline version this replaces;
     # one implementation lives in s5tools now (like grep_repo).
-    return s5tools.read_repo_file(_checkout, path)
+    return s5tools.read_repo_file(_checkout, path, offset=offset)
 
 
 @tool
