@@ -136,6 +136,20 @@ def fetch_workflow_health(repo: str, gh: str) -> dict:
                    or (r.get("conclusion") is None
                        and r.get("status") == "failure"))
                and r.get("event") != "pull_request"][:5]
+    # Supersede (#1224): a newer success of the same workflow means the
+    # failure is stale — drop it rather than page a fixed run.
+    latest_success: dict[str, str] = {}
+    for r in runs_list:
+        if r.get("conclusion") == "success" and r.get("name"):
+            stamp = r.get("created_at") or r.get("createdAt") or ""
+            cur = latest_success.get(r["name"])
+            if cur is None or stamp > cur:
+                latest_success[r["name"]] = stamp
+    failing = [
+        fr for fr in failing
+        if (latest_success.get(fr.get("name")) or "") <=
+        (fr.get("created_at") or fr.get("createdAt") or "")
+    ]
     run_ids = [fr.get("id") for fr in failing]
     with ThreadPoolExecutor(max_workers=10) as pool:
         jobs_futs = [pool.submit(_fetch_run_jobs, gh, rid)

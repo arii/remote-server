@@ -915,5 +915,45 @@ class AttentionFailedRunsTest(unittest.TestCase):
         self.assertEqual(body["items"], [])
 
 
+class SupersededFailureTest(unittest.TestCase):
+    """#1224: a newer success of the same workflow supersedes its failure."""
+
+    def setUp(self):
+        import backend.exec.engine as engine
+        self._orig = engine.td_run
+
+    def tearDown(self):
+        import backend.exec.engine as engine
+        engine.td_run = self._orig
+
+    def test_newer_success_supersedes_failure(self):
+        import backend.exec.engine as engine
+        from backend.api.routers import ops
+
+        runs = json.dumps({"workflow_runs": [
+            {"id": 1, "name": "CI", "head_branch": "main", "event": "push",
+             "conclusion": "failure", "created_at": "2026-01-01T00:00:00Z",
+             "updated_at": "2026-01-01T00:05:00Z"},
+            {"id": 2, "name": "CI", "head_branch": "main", "event": "push",
+             "conclusion": "success", "created_at": "2026-01-02T00:00:00Z",
+             "updated_at": "2026-01-02T00:05:00Z"},
+            {"id": 3, "name": "Lint", "head_branch": "main", "event": "push",
+             "conclusion": "failure", "created_at": "2026-01-03T00:00:00Z",
+             "updated_at": "2026-01-03T00:05:00Z"},
+        ]})
+
+        def fake(cmd, timeout=None):
+            if "workflow-runs" in cmd:
+                return runs
+            raise AssertionError(f"unexpected cmd: {cmd}")
+
+        engine.td_run = fake
+        data = ops.fetch_workflow_health("remote-server",
+                                         "arii/remote-server")
+        names = [w["name"] for w in data["workflows"]]
+        self.assertEqual(names, ["Lint"])
+        self.assertEqual(data["total_failing"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
