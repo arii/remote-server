@@ -175,6 +175,38 @@ jobs:
       - name: validate configs
         run: python3 -m backend.validate_config
 
+  eval-fixtures:
+    # Offline eval fixture check (#1216): no models, no network, no
+    # GPU — embedded fixtures must compile, the draft spec must
+    # satisfy the validate-issue gate, and the acceptance suite must
+    # tell fixed from buggy. Path-filtered: PRs outside backend/,
+    # deep-agent/, .agents/ skip the check step but still pass, so
+    # the required context stays green on unrelated PRs.
+    name: eval fixtures offline check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: install pytest
+        run: pip install pytest
+      - name: eval scope changed?
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "matched=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- backend deep-agent .agents | grep -q .; then
+            echo "matched=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: offline fixture verification
+        if: steps.scope.outputs.matched == 'true'
+        run: python3 deep-agent/eval_pipeline.py --verify-fixtures
+
   format:
     name: ruff format (diff-aware)
     runs-on: ubuntu-latest
@@ -194,7 +226,7 @@ jobs:
     name: comment CI failures on the PR
     # A failing PR yields a PR comment, never a new issue per failure
     # (issue #1081). One marker comment per PR, updated per run.
-    needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, backend, format]
+    needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, backend, eval-fixtures, format]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:

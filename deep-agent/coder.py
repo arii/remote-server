@@ -202,10 +202,15 @@ def parse_args(argv):
 
 
 def build_system(worktree, context):
-    """Spawner context plus coder rules (context may be empty direct)."""
+    """Coder rules plus spawner context, static head first.
+
+    The rules block is identical every turn; per-task context varies,
+    so the stable head stays first and the dynamic context trails the
+    separator. Any provider-side prefix cache then survives new tasks.
+    """
     rules = CODER_RULES.format(worktree=worktree)
     if context and context.strip():
-        return context.strip() + "\n\n---\n\n" + rules
+        return rules + "\n\n---\n\n" + context.strip()
     return rules
 
 
@@ -226,15 +231,15 @@ def _default_plan_fn(brief, worktree_root, context):
     tests); the graph signature stays (brief, root, context)."""
     model, _spec = build_model()
     context = dict(context or {})
-    system = context.get("skills") or ""
-    if system:
-        system = system.strip() + "\n\n---\n\n"
+    skills = (context.get("skills") or "").strip()
+    skills_block = "\n\n---\n\nSkills:\n" + skills if skills else ""
     prompt = (
-        f"{system}Propose an implementation plan for this brief. "
+        "Propose an implementation plan for this brief. "
         "Reply with a numbered step list, one step per line, each "
         "naming its files like [files: path1, path2]. "
-        "Keep it to the brief; no questions.\n\n"
-        f"Brief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
+        "Keep it to the brief; no questions."
+        f"{skills_block}"
+        f"\n\nBrief:\n{brief}\n\nErrors so far:\n{context.get('errors', [])}"
     )
     text = _model_text(model.invoke(prompt))
     return {
