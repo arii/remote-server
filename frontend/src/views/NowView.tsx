@@ -1009,6 +1009,33 @@ export function AttentionSelectAll({
 // it (the parent passes showSelect). The source line names the
 // row's repo context and, when the action resolves to an in-app
 // surface, its destination.
+
+// Long diagnostics fold (issue #1245): details past the fold
+// threshold render in a disclosure with a Copy button instead
+// of stretching the card full-width.
+const DETAIL_FOLD_AT = 300;
+
+function AttentionDetail({ detail, itemId }: { detail: string; itemId: string }) {
+  const [copied, setCopied] = useState(false);
+  if (detail.length <= DETAIL_FOLD_AT) return <p>{detail}</p>;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(detail);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <details data-testid={`now-detail-${itemId}`}>
+      <summary>Show full detail ({detail.length} chars)</summary>
+      <pre>{detail}</pre>
+      <button type="button" onClick={() => void copy()}>
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </details>
+  );
+}
 export function AttentionRow({
   item,
   viewRepo,
@@ -1049,11 +1076,11 @@ export function AttentionRow({
           />
         )}
         {showRepoTag(rollup, item.repo, viewRepo) ? (
-          <span className="row-title">
+          <h3 className="row-title">
             <RepoTag repo={item.repo} /> {item.title}
-          </span>
+          </h3>
         ) : (
-          <span className="row-title">{item.title}</span>
+          <h3 className="row-title">{item.title}</h3>
         )}
       </div>
       <p className="row-meta">
@@ -1072,7 +1099,7 @@ export function AttentionRow({
           </>
         )}
       </p>
-      <p>{item.detail}</p>
+      <AttentionDetail detail={item.detail} itemId={item.id} />
       <div className="actions">
         {block ? (
           <>
@@ -1111,6 +1138,7 @@ export function AttentionRow({
         )}
         <button
           type="button"
+          className="btn-secondary"
           data-testid={`snooze-${item.id}-60`}
           disabled={busy}
           onClick={() => onSnooze(item, 60)}
@@ -1119,6 +1147,7 @@ export function AttentionRow({
         </button>
         <button
           type="button"
+          className="btn-link"
           data-testid={`dismiss-${item.id}`}
           disabled={busy}
           title="Dismiss for 8 hours"
@@ -1160,9 +1189,9 @@ export function AttentionGroupRow({
     <li className="detail attention-group" data-testid={`now-group-${index}`}>
       <details>
         <summary>
-          <span className="row-title">
+          <h3 className="row-title">
             {group.title} ×{group.items.length}
-          </span>
+          </h3>
           <span className="row-meta">
             {group.kind} · <span className={sevClass(group.severity)}>{group.severity}</span>
             {' · '}
