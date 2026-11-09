@@ -517,7 +517,7 @@ services:
     ports:
       - "52000-52100:52000-52100/udp"
     environment:
-      - NEKO_SCREEN=720x1280@30
+      - NEKO_DESKTOP_SCREEN=720x1280@30
       - NEKO_PASSWORD=${NEKO_PASSWORD:?}
       - NEKO_PASSWORD_ADMIN=${NEKO_PASSWORD_ADMIN:?}
       - NEKO_BIND=0.0.0.0:8080
