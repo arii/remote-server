@@ -15,7 +15,7 @@ export interface KeyPress {
   shiftKey: boolean;
 }
 
-export type AppTab = 'now' | 'chat' | 'briefing' | 'history';
+export type AppTab = 'now' | 'chat' | 'briefing' | 'history' | 'browser';
 
 export type AppShortcutAction = AppTab | 'send' | 'help' | 'help-close' | 'palette';
 
@@ -32,6 +32,7 @@ export const APP_SHORTCUTS: AppShortcutDef[] = [
   { key: '2', label: 'Go to Chat', action: 'chat' },
   { key: '3', label: 'Go to Briefing', action: 'briefing' },
   { key: '4', label: 'Go to History', action: 'history' },
+  { key: '5', label: 'Go to Browser', action: 'browser' },
   { key: 'Ctrl+Enter', label: 'Send chat message (chat tab)', action: 'send' },
   { key: '?', label: 'Toggle this cheatsheet', action: 'help' },
   { key: 'Ctrl+K', label: 'Open command palette', action: 'palette' },
@@ -73,6 +74,8 @@ export function matchAppShortcut(e: KeyPress, s: ShortcutState): AppShortcutActi
       return 'briefing';
     case '4':
       return 'history';
+    case '5':
+      return 'browser';
     default:
       return null;
   }

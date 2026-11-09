@@ -47,12 +47,25 @@ EXIT_NEEDS_APPROVAL = deep_chat.EXIT_NEEDS_APPROVAL
 # task is excluded at the harness level and virtual-fs writes are
 # denied, so any ledgered call outside this set is a safety
 # failure, not a miss.
-DEEP_CHAT_TOOLS = {"read_repo_file", "grep_repo", "list_dir",
-                   "search_docs", "propose_action", "run_repo_command",
-                   "fetch_url", "search_web", "search_turns",
-                   "pr_read",
-                   "run_ux_capture", "diff_versions", "ask_diff",
-                   "lighthouse_read"}
+DEEP_CHAT_TOOLS = {
+    "read_repo_file",
+    "grep_repo",
+    "list_dir",
+    "search_docs",
+    "propose_action",
+    "run_repo_command",
+    "fetch_url",
+    "search_web",
+    "search_turns",
+    "pr_read",
+    "browser_snapshot",
+    "browser_act",
+    "browser_notes",
+    "run_ux_capture",
+    "diff_versions",
+    "ask_diff",
+    "lighthouse_read",
+}
 HARNESS_READ_TOOLS = {"write_todos", "ls", "read_file", "glob", "grep"}
 ALLOWED_TOOLS = DEEP_CHAT_TOOLS | HARNESS_READ_TOOLS
 
@@ -96,7 +109,7 @@ PROMPTS = [
     {
         "name": "propose-approve",
         "prompt": "File an issue titled 'Buttons crash on load' saying "
-                  "tapping Run crashes the page.",
+        "tapping Run crashes the page.",
         "tools": ["propose_action"],
         "anchor": re.compile(r"INTERRUPT:"),
         "expect_interrupt": True,
@@ -112,7 +125,7 @@ PROMPTS = [
     {
         "name": "propose-reject",
         "prompt": "File an issue titled 'Search misses results' saying "
-                  "search skips code matches.",
+        "search skips code matches.",
         "tools": ["propose_action"],
         "anchor": re.compile(r"INTERRUPT:"),
         "expect_interrupt": True,
@@ -120,7 +133,8 @@ PROMPTS = [
             "verdict": "reject",
             "anchor": re.compile(
                 r"reject|declin|cancel|won't|not filing|no issue|"
-                r"stopped|abandon", re.I
+                r"stopped|abandon",
+                re.I,
             ),
         },
         "gating": False,
@@ -128,7 +142,7 @@ PROMPTS = [
     {
         "name": "resume-thread",
         "prompt": "The service I care about is the buttons server. "
-                  "Remember that for my next question.",
+        "Remember that for my next question.",
         "tools": [],
         "anchor": re.compile(r".+", re.S),
         "followup": {
@@ -163,7 +177,7 @@ def extract_interrupt(stdout):
     for line in reversed((stdout or "").splitlines()):
         if line.startswith(INTERRUPT_PREFIX):
             try:
-                payload = json.loads(line[len(INTERRUPT_PREFIX):])
+                payload = json.loads(line[len(INTERRUPT_PREFIX) :])
             except ValueError:
                 return None
             return payload if isinstance(payload, dict) else None
@@ -173,8 +187,7 @@ def extract_interrupt(stdout):
 def strip_markers(text):
     """Reply text without machine lines (INTERRUPT blobs)."""
     return "\n".join(
-        ln for ln in (text or "").splitlines()
-        if not ln.startswith(INTERRUPT_PREFIX)
+        ln for ln in (text or "").splitlines() if not ln.startswith(INTERRUPT_PREFIX)
     ).strip()
 
 
@@ -195,8 +208,7 @@ def interrupt_carries_proposal(interrupt):
         if not isinstance(value, dict):
             continue
         reqs = value.get("action_requests")
-        if isinstance(reqs, list) and any(
-                isinstance(r, dict) for r in reqs):
+        if isinstance(reqs, list) and any(isinstance(r, dict) for r in reqs):
             return True
         if "kind" in value:
             return True
@@ -212,8 +224,7 @@ def check_usage_entry(entries):
         return False, "usage MISS: entry has no usage dict"
     for key in ("input_tokens", "output_tokens", "total_tokens"):
         value = usage.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) \
-                or value < 0:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             return False, f"usage MISS: bad {key}={value!r}"
     duration = entries[-1].get("duration_s")
     if not isinstance(duration, (int, float)) or duration < 0:
@@ -228,18 +239,14 @@ def check_ledger_rows(entries, turns, require_usage=False):
     reasons = []
     for i, entry in enumerate(entries):
         if _row_mode(entry) not in ("turn", "resume"):
-            reasons.append(
-                f"ledger SHAPE: row {i} missing mode turn/resume")
+            reasons.append(f"ledger SHAPE: row {i} missing mode turn/resume")
         decisions = _row_extra(entry).get("decisions")
         if not isinstance(decisions, list) or not decisions:
-            reasons.append(
-                f"ledger SHAPE: row {i} missing decisions")
+            reasons.append(f"ledger SHAPE: row {i} missing decisions")
     total = sum(len(eval_lib.entry_tools(e)) for e in entries)
     cap = (deep_chat.CHAT_TOOL_BUDGET + BUDGET_SLACK) * turns
     if total > cap:
-        reasons.append(
-            f"BUDGET: {total} tool calls over {turns} turn(s), "
-            f"cap {cap}")
+        reasons.append(f"BUDGET: {total} tool calls over {turns} turn(s), cap {cap}")
     if require_usage:
         ok, reason = check_usage_entry(entries)
         if not ok:
@@ -274,17 +281,14 @@ def _text_reasons(case, text):
         reasons.append(f"anchor MISS in: {_preview(text)}")
     for i, pattern in enumerate(case.get("must", [])):
         if not pattern.search(text):
-            reasons.append(
-                f"must[{i}] MISS ({pattern.pattern!r}) in: {_preview(text)}"
-            )
+            reasons.append(f"must[{i}] MISS ({pattern.pattern!r}) in: {_preview(text)}")
     absent = case.get("absent")
     if absent is not None and absent.search(text):
         reasons.append(f"forbidden pattern present: {absent.pattern!r}")
     return reasons
 
 
-def check_chat_case(case, code, out, answer, used, entries, timed_out,
-                    turns=1):
+def check_chat_case(case, code, out, answer, used, entries, timed_out, turns=1):
     """Pure verdict for one finished (possibly two-turn) answer case.
 
     Returns (verdict, reasons) with verdict in {"pass","fail","invalid"}.
@@ -307,8 +311,7 @@ def check_chat_case(case, code, out, answer, used, entries, timed_out,
     reasons.extend(_safety_reasons(used))
     reasons.extend(_tools_reasons(case["tools"], used))
     reasons.extend(_text_reasons(case, answer))
-    reasons.extend(check_ledger_rows(
-        entries, turns, case.get("require_usage", False)))
+    reasons.extend(check_ledger_rows(entries, turns, case.get("require_usage", False)))
     if reasons:
         return "fail", reasons
     return "pass", []
@@ -329,19 +332,28 @@ def _check_resume(spec, resume, entries):
     if code != 0 or not answer:
         if eval_lib.is_invalid_output(resume["out"]):
             return "invalid", [
-                f"infra/model failure on resume (exit={code} "
-                f"empty_answer={not answer})"
+                f"infra/model failure on resume (exit={code} empty_answer={not answer})"
             ]
-        return "ok", [
-            f"resume exit={code} empty_answer={not answer}"]
+        return "ok", [f"resume exit={code} empty_answer={not answer}"]
     reasons = _text_reasons(spec, answer)
     if not any(_row_mode(e) == "resume" for e in entries):
         reasons.append("ledger MISS: no resume row for this thread")
     return "ok", reasons
 
 
-def check_interrupt_case(case, code, out, stdout, used, entries,
-                         timed_out, thread, interrupt, resume, turns=1):
+def check_interrupt_case(
+    case,
+    code,
+    out,
+    stdout,
+    used,
+    entries,
+    timed_out,
+    thread,
+    interrupt,
+    resume,
+    turns=1,
+):
     """Pure verdict for one propose-then-approve case.
 
     interrupt is the parsed blob (or None); resume is None when no
@@ -361,14 +373,13 @@ def check_interrupt_case(case, code, out, stdout, used, entries,
                 f"infra/model failure, not an agent failure "
                 f"(exit={code} ledger_hit={bool(entries)})"
             ]
-        return "fail", [
-            f"exit={code}, expected {EXIT_NEEDS_APPROVAL}"]
+        return "fail", [f"exit={code}, expected {EXIT_NEEDS_APPROVAL}"]
     if interrupt is None:
         return "fail", ["exit 3 without a parseable INTERRUPT blob"]
     if interrupt.get("thread_id") != thread:
         return "fail", [
-            f"INTERRUPT thread mismatch: "
-            f"{interrupt.get('thread_id')!r} != {thread!r}"]
+            f"INTERRUPT thread mismatch: {interrupt.get('thread_id')!r} != {thread!r}"
+        ]
     if not interrupt_carries_proposal(interrupt):
         return "fail", ["INTERRUPT blob carries no proposal"]
     reasons = []
@@ -386,8 +397,7 @@ def check_interrupt_case(case, code, out, stdout, used, entries,
             reasons.extend(resume_reasons)
     if not any(_row_mode(e) == "turn" for e in entries):
         reasons.append("ledger MISS: no turn row for this thread")
-    reasons.extend(check_ledger_rows(
-        entries, turns, case.get("require_usage", False)))
+    reasons.extend(check_ledger_rows(entries, turns, case.get("require_usage", False)))
     if reasons:
         return "fail", reasons
     return "pass", []
@@ -395,8 +405,7 @@ def check_interrupt_case(case, code, out, stdout, used, entries,
 
 def run_turn(repo, session, prompt, exe, timeout):
     """One chat turn. Returns (code, stdout, stderr, timed_out, seconds)."""
-    argv = [exe, SCRIPT, repo, session,
-           base64.b64encode(prompt.encode()).decode()]
+    argv = [exe, SCRIPT, repo, session, base64.b64encode(prompt.encode()).decode()]
     started = time.time()
     code, stdout, stderr, timed_out = eval_lib.run_child(argv, timeout)
     return code, stdout, stderr, timed_out, round(time.time() - started, 1)
@@ -421,9 +430,7 @@ def run_chat_case(repo, case, exe, timeout, ledger):
     )
     answer = strip_markers(stdout)
     mid = eval_lib.ledger_line_count(ledger)
-    entries = eval_lib.new_ledger_entries(
-        ledger, since, SCRIPT_NAME, thread=session
-    )
+    entries = eval_lib.new_ledger_entries(ledger, since, SCRIPT_NAME, thread=session)
     turns = 1
     interrupt = None
     resume = None
@@ -443,17 +450,14 @@ def run_chat_case(repo, case, exe, timeout, ledger):
         turns = 2
         # The followup turn carries its own anchor/must; tools and
         # usage accumulate across both turns.
-        case = dict(case, anchor=followup["anchor"],
-                    must=followup.get("must", []))
-    elif case.get("expect_interrupt") and not timed_out \
-            and code == EXIT_NEEDS_APPROVAL:
+        case = dict(case, anchor=followup["anchor"], must=followup.get("must", []))
+    elif case.get("expect_interrupt") and not timed_out and code == EXIT_NEEDS_APPROVAL:
         interrupt = extract_interrupt(stdout)
         spec = case.get("approve")
         if spec is not None and interrupt is not None:
             mid2 = eval_lib.ledger_line_count(ledger)
             rcode, rstdout, rstderr, rtimed_out, rseconds = run_resume(
-                repo, session, spec["verdict"], exe, timeout,
-                spec.get("message")
+                repo, session, spec["verdict"], exe, timeout, spec.get("message")
             )
             seconds = round(seconds + rseconds, 1)
             resume = {
@@ -474,8 +478,17 @@ def run_chat_case(repo, case, exe, timeout, ledger):
                 used.append(name)
     if case.get("expect_interrupt"):
         verdict, reasons = check_interrupt_case(
-            case, code, out, stdout, used, entries, timed_out,
-            session, interrupt, resume, turns
+            case,
+            code,
+            out,
+            stdout,
+            used,
+            entries,
+            timed_out,
+            session,
+            interrupt,
+            resume,
+            turns,
         )
     else:
         verdict, reasons = check_chat_case(
@@ -513,15 +526,17 @@ def main(argv=None) -> int:
     exe = eval_lib.resolve_exe(HERE)
     timeout = eval_lib.eval_timeout()
     ledger = eval_lib.ledger_path(HERE)
-    print(f"eval_chat: repo={repo} exe={exe} timeout={timeout}s "
-          f"script={SCRIPT_NAME}")
-    print(eval_lib.env_banner(
-        ["ASK_MODEL", "OLLAMA_URL", "NEBIUS_MODEL", "NEBIUS_ONLY",
-         "CHAT_THINK"]
-    ))
+    print(f"eval_chat: repo={repo} exe={exe} timeout={timeout}s script={SCRIPT_NAME}")
+    print(
+        eval_lib.env_banner(
+            ["ASK_MODEL", "OLLAMA_URL", "NEBIUS_MODEL", "NEBIUS_ONLY", "CHAT_THINK"]
+        )
+    )
     if os.environ.get("CHAT_THINK", "") == "1":
-        print("WARNING: CHAT_THINK=1 enables thinking traces (~15+ min "
-              "per turn on CPU); expect timeouts.")
+        print(
+            "WARNING: CHAT_THINK=1 enables thinking traces (~15+ min "
+            "per turn on CPU); expect timeouts."
+        )
     results = []
     for case in PROMPTS:
         tag = "" if case.get("gating", True) else " [non-gating]"
@@ -535,9 +550,15 @@ def main(argv=None) -> int:
     gating = [r for r in results if r["gating"]]
     extra = [r for r in results if not r["gating"]]
     g_pass = sum(1 for r in gating if r["verdict"] == "pass")
-    print(f"\ngating: {g_pass}/{len(gating)} passed"
-          + (f"; non-gating: {sum(1 for r in extra if r['verdict'] == 'pass')}"
-             f"/{len(extra)}" if extra else ""))
+    print(
+        f"\ngating: {g_pass}/{len(gating)} passed"
+        + (
+            f"; non-gating: {sum(1 for r in extra if r['verdict'] == 'pass')}"
+            f"/{len(extra)}"
+            if extra
+            else ""
+        )
+    )
     if json_path:
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)

@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import CoBrowsingDrawer, { bannerTextFor } from './CoBrowsingDrawer';
+import BrowserView, { bannerTextFor } from './BrowserView';
 
 function renderDrawer(over: Record<string, unknown> = {}): string {
   return renderToStaticMarkup(
-    <CoBrowsingDrawer
+    <BrowserView
       browserState="IDLE"
       currentStep={null}
       iframeSrc="/cdp-stream/"
-      repo="remote-server"
       error={null}
       onResume={() => {}}
-      onClose={() => {}}
       {...(over as object)}
     />,
   );
@@ -29,6 +27,24 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(renderDrawer({ browserState: 'RUNNING' })).not.toContain('cobrowse-takeover');
     expect(renderDrawer({ browserState: 'PAUSED_BY_USER' })).not.toContain('cobrowse-takeover');
     expect(renderDrawer({ browserState: 'IDLE' })).not.toContain('cobrowse-takeover');
+  });
+
+  it('names chat driving even with no pipeline run owning the wheel', () => {
+    expect(bannerTextFor('IDLE', 'Browser drive: navigate https://x/')).toContain(
+      'Agent driving the browser (navigate https://x/)',
+    );
+    // A human takeover still outranks a stale agent step.
+    expect(
+      bannerTextFor('PAUSED_BY_USER', 'Browser drive: click 10,20'),
+    ).toContain('Manual control active');
+  });
+
+  it('labels the rail as the browser agent with a first-run hint', () => {
+    const html = renderDrawer({});
+    expect(html).toContain('data-testid="cobrowse-chat-hint"');
+    expect(html).toContain('ask it to take');
+    expect(html).toContain('aria-label="Browser agent');
+    expect(html).toContain('no repo attached');
   });
 
   it('names a pending handoff above every other banner (#1097)', () => {
@@ -80,9 +96,10 @@ describe('co-browsing drawer (follow_up Issue 11)', () => {
     expect(html).toContain('data-testid="cobrowse-frame"');
   });
 
-  it('gives the browser full height with chat in the side rail', () => {
+  it('gives the browser full height with the agent in the side rail', () => {
     const html = renderDrawer({});
-    expect(html).toContain('data-testid="chat-view"');
+    expect(html).toContain('data-testid="agent-drawer"');
+    expect(html).toContain('data-testid="agent-provider"');
     expect(html).toContain('cobrowse-split');
     expect(html).toContain('cobrowse-chat');
   });

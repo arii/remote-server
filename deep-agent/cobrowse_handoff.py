@@ -20,16 +20,19 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.request
 from typing import Any, Callable
 
 try:
     from langchain_core.tools import tool
 except ImportError:  # deep-agent venv absent (plain unit runs)
+
     def tool(fn=None, **kwargs):  # type: ignore[no-redef]
         if fn is None:
             return lambda f: f
         return fn
+
 
 AGENT_API = os.environ.get("AGENT_API", "http://127.0.0.1:8000/api/agent")
 
@@ -43,8 +46,9 @@ def live_view_url_for(live_view_url: str = "") -> str:
     return f"{public}/buttons/cobrowse" if public else ""
 
 
-def handoff_payload(thread_id: str, reason: str, current_url: str = "",
-                    live_view_url: str = "") -> dict[str, Any]:
+def handoff_payload(
+    thread_id: str, reason: str, current_url: str = "", live_view_url: str = ""
+) -> dict[str, Any]:
     """Interrupt-shaped handoff payload (JSON-serializable)."""
     return {
         "event": "browser_handoff_requested",
@@ -59,15 +63,20 @@ def handoff_payload(thread_id: str, reason: str, current_url: str = "",
     }
 
 
-def _post_handoff_request(api_base: str, reason: str,
-                           current_url: str) -> dict[str, Any]:
-    body = json.dumps({
-        "reason": reason,
-        "current_url": current_url or None,
-    }).encode("utf-8")
+def _post_handoff_request(
+    api_base: str, reason: str, current_url: str
+) -> dict[str, Any]:
+    body = json.dumps(
+        {
+            "reason": reason,
+            "current_url": current_url or None,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
-        api_base.rstrip("/") + "/handoff/request", data=body,
-        headers={"Content-Type": "application/json"})
+        api_base.rstrip("/") + "/handoff/request",
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -100,8 +109,9 @@ def request_human_cobrowse_handoff_impl(
         return "REJECTED: thread_id is required"
     if not (reason or "").strip():
         return "REJECTED: reason is required"
-    payload = handoff_payload(thread_id.strip(), reason.strip(),
-                              (current_url or "").strip(), live_view_url)
+    payload = handoff_payload(
+        thread_id.strip(), reason.strip(), (current_url or "").strip(), live_view_url
+    )
     sender = post or _post_handoff_request
     try:
         sender(AGENT_API, payload["reason"], payload["current_url"])
@@ -111,3 +121,125 @@ def request_human_cobrowse_handoff_impl(
 
 
 request_human_cobrowse_handoff = tool(request_human_cobrowse_handoff_impl)
+
+
+def browser_api_base(api_base: str = "") -> str:
+    """Buttons /api/browser base, derived from the AGENT_API knob.
+
+    One knob for every agent→backend call: strip the trailing
+    /agent so chat tools and the handoff tool share configuration.
+    """
+    base = (api_base or AGENT_API or "").strip().rstrip("/")
+    if base.endswith("/agent"):
+        base = base[: -len("/agent")]
+    return base + "/browser"
+
+
+def _browser_http(
+    method: str, path: str, payload: dict | None = None, timeout: int = 25
+) -> str:
+    url = browser_api_base() + path
+    data = json.dumps(payload or {}).encode("utf-8") if method == "POST" else None
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method=method
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return f"BROWSER_ERROR: {exc}"
+    if isinstance(body, dict) and body.get("ok"):
+        return json.dumps(body)
+    detail = (body.get("detail") if isinstance(body, dict) else None) or body
+    return f"BROWSER_ERROR: {detail}"
+
+
+def browser_snapshot_impl() -> str:
+    """Read-only view of the shared cdp-stream page (URL, title,
+    click targets). Attaches to the live shared session; reports
+    browser-busy when none exists. No pixels: the human watches the
+    stream, the agent works from this text."""
+    return _browser_http("GET", "/snapshot")
+
+
+def browser_drive_impl(
+    op: str,
+    url: str = "",
+    x: int = 0,
+    y: int = 0,
+    dx: int = 0,
+    dy: int = 0,
+    text: str = "",
+    key: str = "",
+    code: str = "",
+) -> str:
+    """Drive the shared cdp-stream page: navigate (http(s) only),
+    click, type, key, or wheel. Refuses while the human holds the
+    wheel (PAUSED_BY_USER) — narrate instead of retrying. Never
+    creates a session; browser-busy means open the drawer viewer."""
+    return _browser_http(
+        "POST",
+        "/drive",
+        {
+            "op": op,
+            "url": url,
+            "x": x,
+            "y": y,
+            "dx": dx,
+            "dy": dy,
+            "text": text,
+            "key": key,
+            "code": code or key,
+        },
+        timeout=40,
+    )
+
+
+def _notes_path() -> str:
+    state_dir = os.environ.get("DEEP_AGENT_STATE_DIR") or os.path.dirname(
+        os.path.abspath(__file__)
+    )
+    return os.path.join(state_dir, "browser_notes.json")
+
+
+def _notes_load() -> dict:
+    try:
+        with open(_notes_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def browser_notes_impl(site: str = "", note: str = "") -> str:
+    """Per-site browser memory (gitignored runtime state, survives
+    recreates via DEEP_AGENT_STATE_DIR).
+
+    Read first (blank site lists everything, capped): what worked
+    here before — login quirks, selectors that land, pages that
+    fight automation. Save after the human confirms a lesson
+    (handoff outcomes are the main source): site names the page
+    host or purpose, note is one or two sentences.
+    """
+    site = (site or "").strip()
+    note = (note or "").strip()
+    notes = _notes_load()
+    if not note:
+        if site:
+            entry = notes.get(site)
+            return (
+                json.dumps({site: entry})
+                if entry is not None
+                else f"no notes for {site!r}"
+            )
+        trimmed = {k: notes[k] for k in list(notes)[:50]}
+        return json.dumps(trimmed) if trimmed else "no browser notes yet"
+    if not site:
+        return "REJECTED: site is required to save a note"
+    notes[site] = {"note": note[:500], "updated": int(time.time())}
+    try:
+        with open(_notes_path(), "w", encoding="utf-8") as f:
+            json.dump(notes, f, indent=2)
+    except Exception as exc:
+        return f"BROWSER_ERROR: cannot persist notes: {exc}"
+    return f"saved note for {site!r}"

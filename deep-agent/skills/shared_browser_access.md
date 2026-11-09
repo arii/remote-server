@@ -55,3 +55,23 @@ trigger_nodes:
   reuse pre-takeover element references.
 - When reporting what the browser shows, cite the `/cdp-stream`
   live-view URL from §1 so the human opens the exact live head.
+
+## 6. Drawer agents drive via the buttons API, not raw Grid
+
+The cobrowse drawer runs a repo-free agent session (either provider),
+and that agent drives the shared page through the buttons
+`/api/browser` endpoints: `snapshot` (see it), `activity` (see
+what the human just did — observe and learn), `drive`
+(navigate/click/type/key/wheel), `state` (who holds the wheel).
+Attach-only: it joins the live agent session first, else the
+viewer-shared session, else reports browser-busy and asks the
+human to open the drawer. Mutating ops refuse while the human
+drives (`PAUSED_BY_USER` parks mid-turn too); login walls,
+payments, and sends go back to the human. Durable lessons go in
+`/var/lib/buttons/browser_notes.md` (shared volume, both
+containers; human-editable) — read first, append confirmed
+lessons, quote recent `/activity` in the turn summary so the next
+turn learns. Repo-free turns carry this brief in-prompt; raw Grid
+sessions (§2) stay for terminal-container agents that own their
+own head. BrowserMCP is the audit/test harness, never a drive
+path.

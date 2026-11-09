@@ -48,6 +48,7 @@ describe('matchAppShortcut', () => {
     expect(matchAppShortcut(press({ key: '2' }), state())).toBe('chat');
     expect(matchAppShortcut(press({ key: '3' }), state())).toBe('briefing');
     expect(matchAppShortcut(press({ key: '4' }), state())).toBe('history');
+    expect(matchAppShortcut(press({ key: '5' }), state())).toBe('browser');
   });
 
   it('opens help on ? only; Ctrl/Cmd+K opens the palette (issue #902)', () => {

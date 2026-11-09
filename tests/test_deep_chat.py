@@ -3,6 +3,7 @@
 chat model plus real middleware/checkpointer mechanics.
 Run: python3 tests/test_deep_chat.py  (A only under system python)
      deep-agent/.venv/bin/python tests/test_deep_chat.py  (A + B)"""
+
 import base64
 import io
 import json
@@ -17,6 +18,7 @@ import deep_chat
 try:
     import langchain_core  # noqa: F401
     from deepagents import create_deep_agent  # noqa: F401
+
     HAS_AGENT_DEPS = True
 except ImportError:
     HAS_AGENT_DEPS = False
@@ -29,7 +31,8 @@ def b64(text):
 class TestProposalValidation(unittest.TestCase):
     def test_issue_ok(self):
         ok, text = deep_chat.validate_proposal(
-            {"kind": "issue", "title": "Fix it", "body": "details"})
+            {"kind": "issue", "title": "Fix it", "body": "details"}
+        )
         self.assertTrue(ok)
         self.assertIn("PROPOSE issue", text)
         self.assertIn("TITLE: Fix it", text)
@@ -58,19 +61,19 @@ class TestProposalValidation(unittest.TestCase):
 
     def test_td_exact_shapes(self):
         for cmd in ("td context-warm", "td --json preflight"):
-            ok, text = deep_chat.validate_proposal(
-                {"kind": "td", "command": cmd})
+            ok, text = deep_chat.validate_proposal({"kind": "td", "command": cmd})
             self.assertTrue(ok, cmd)
             self.assertIn(f"COMMAND: {cmd}", text)
 
     def test_td_n_to_digits(self):
         ok, text = deep_chat.validate_proposal(
-            {"kind": "td",
-             "command": "td gh resolve-conflicts --pr 153"})
+            {"kind": "td", "command": "td gh resolve-conflicts --pr 153"}
+        )
         self.assertTrue(ok)
         self.assertIn("--pr 153", text)
         ok, _ = deep_chat.validate_proposal(
-            {"kind": "td", "command": "td gh read-pr-reviews --pr 7"})
+            {"kind": "td", "command": "td gh read-pr-reviews --pr 7"}
+        )
         self.assertTrue(ok)
 
     def test_td_rejects(self):
@@ -96,21 +99,26 @@ class TestProposalValidation(unittest.TestCase):
             None,
             42,
         ):
-            ok, text = deep_chat.validate_proposal(
-                {"kind": "td", "command": bad})
+            ok, text = deep_chat.validate_proposal({"kind": "td", "command": bad})
             self.assertFalse(ok, bad)
             self.assertIn("REJECTED", text)
 
     def test_td_whitespace_normalized(self):
         ok, text = deep_chat.validate_proposal(
-            {"kind": "td", "command": "td   --json\tpreflight "})
+            {"kind": "td", "command": "td   --json\tpreflight "}
+        )
         self.assertTrue(ok)
         self.assertIn("COMMAND: td --json preflight", text)
 
     def test_dispatch_ok(self):
         ok, text = deep_chat.validate_proposal(
-            {"kind": "dispatch", "repo": "arii/boomtick",
-             "branch": "main", "task": "Fix the typo."})
+            {
+                "kind": "dispatch",
+                "repo": "arii/boomtick",
+                "branch": "main",
+                "task": "Fix the typo.",
+            }
+        )
         self.assertTrue(ok)
         self.assertIn("PROPOSE dispatch", text)
         self.assertIn("REPO: arii/boomtick", text)
@@ -119,8 +127,12 @@ class TestProposalValidation(unittest.TestCase):
         self.assertIn("END PROPOSE", text)
 
     def test_dispatch_rejects(self):
-        good = {"kind": "dispatch", "repo": "arii/boomtick",
-                "branch": "fix/x-1.0", "task": "Do it."}
+        good = {
+            "kind": "dispatch",
+            "repo": "arii/boomtick",
+            "branch": "fix/x-1.0",
+            "task": "Do it.",
+        }
         ok, _ = deep_chat.validate_proposal(good)
         self.assertTrue(ok)
         for field, bad in (
@@ -147,8 +159,13 @@ class TestProposalValidation(unittest.TestCase):
 
     def test_comment_ok(self):
         ok, text = deep_chat.validate_proposal(
-            {"kind": "comment", "repo": "arii/boomtick",
-             "pr_number": 12, "body": "Looks good."})
+            {
+                "kind": "comment",
+                "repo": "arii/boomtick",
+                "pr_number": 12,
+                "body": "Looks good.",
+            }
+        )
         self.assertTrue(ok)
         self.assertIn("PROPOSE comment", text)
         self.assertIn("REPO: arii/boomtick", text)
@@ -157,8 +174,12 @@ class TestProposalValidation(unittest.TestCase):
         self.assertIn("END PROPOSE", text)
 
     def test_comment_rejects(self):
-        good = {"kind": "comment", "repo": "arii/boomtick",
-                "pr_number": 12, "body": "Looks good."}
+        good = {
+            "kind": "comment",
+            "repo": "arii/boomtick",
+            "pr_number": 12,
+            "body": "Looks good.",
+        }
         for field, bad in (
             ("repo", "noslash"),
             ("repo", "a/b/c"),
@@ -182,9 +203,14 @@ class TestProposalValidation(unittest.TestCase):
     def test_review_ok(self):
         for event in ("comment", "request-changes"):
             ok, text = deep_chat.validate_proposal(
-                {"kind": "review", "repo": "arii/boomtick",
-                 "pr_number": 12, "review_event": event,
-                 "body": "Please fix."})
+                {
+                    "kind": "review",
+                    "repo": "arii/boomtick",
+                    "pr_number": 12,
+                    "review_event": event,
+                    "body": "Please fix.",
+                }
+            )
             self.assertTrue(ok, event)
             self.assertIn("PROPOSE review", text)
             self.assertIn("REPO: arii/boomtick", text)
@@ -193,9 +219,13 @@ class TestProposalValidation(unittest.TestCase):
             self.assertIn("END PROPOSE", text)
 
     def test_review_rejects(self):
-        good = {"kind": "review", "repo": "arii/boomtick",
-                "pr_number": 12, "review_event": "comment",
-                "body": "Please fix."}
+        good = {
+            "kind": "review",
+            "repo": "arii/boomtick",
+            "pr_number": 12,
+            "review_event": "comment",
+            "body": "Please fix.",
+        }
         for field, bad in (
             ("repo", "noslash"),
             ("pr_number", 0),
@@ -221,8 +251,7 @@ class TestRecursionBudget(unittest.TestCase):
 
 class TestVerdictMapping(unittest.TestCase):
     def test_approve(self):
-        self.assertEqual(deep_chat.decision_for_verdict("approve"),
-                         {"type": "approve"})
+        self.assertEqual(deep_chat.decision_for_verdict("approve"), {"type": "approve"})
 
     def test_reject_default_message(self):
         d = deep_chat.decision_for_verdict("reject")
@@ -252,24 +281,33 @@ class TestVerdictMapping(unittest.TestCase):
 
 class TestApprovedProposalBlocks(unittest.TestCase):
     def test_valid_issue_block(self):
-        texts = deep_chat.approved_proposal_blocks([
-            {"name": "propose_action",
-             "args": {"kind": "issue", "title": "T", "body": "B"}}])
+        texts = deep_chat.approved_proposal_blocks(
+            [
+                {
+                    "name": "propose_action",
+                    "args": {"kind": "issue", "title": "T", "body": "B"},
+                }
+            ]
+        )
         self.assertEqual(len(texts), 1)
         self.assertIn("PROPOSE issue", texts[0])
         self.assertIn("END PROPOSE", texts[0])
 
     def test_invalid_becomes_rejected(self):
-        texts = deep_chat.approved_proposal_blocks([
-            {"name": "propose_action", "args": {"kind": "issue"}}])
+        texts = deep_chat.approved_proposal_blocks(
+            [{"name": "propose_action", "args": {"kind": "issue"}}]
+        )
         self.assertEqual(len(texts), 1)
         self.assertTrue(texts[0].startswith("REJECTED"))
 
     def test_skips_malformed(self):
         self.assertEqual(
             deep_chat.approved_proposal_blocks([None, "x", {}]),
-            ["REJECTED: kind must be 'issue', 'td', 'dispatch', "
-             "'coder', 'comment', or 'review'"])
+            [
+                "REJECTED: kind must be 'issue', 'td', 'dispatch', "
+                "'coder', 'comment', or 'review'"
+            ],
+        )
         self.assertEqual(deep_chat.approved_proposal_blocks([]), [])
         self.assertEqual(deep_chat.approved_proposal_blocks(None), [])
 
@@ -294,11 +332,12 @@ class TestInterruptContract(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = deep_chat._emit_interrupt(
-                "t1", [{"id": "i1", "value": {"action_requests": []}}])
+                "t1", [{"id": "i1", "value": {"action_requests": []}}]
+            )
         self.assertEqual(code, 3)
         line = buf.getvalue().strip()
         self.assertTrue(line.startswith("INTERRUPT: "))
-        env = json.loads(line[len("INTERRUPT: "):])
+        env = json.loads(line[len("INTERRUPT: ") :])
         self.assertEqual(env["thread_id"], "t1")
         self.assertEqual(env["interrupts"][0]["id"], "i1")
 
@@ -311,12 +350,16 @@ class TestCliValidation(unittest.TestCase):
         # root for backend.exec.engine plus deep-agent/ for siblings.
         # cwd is the repo root by contract, so derive both from it.
         root = os.getcwd()
-        env = {**os.environ,
-               "PYTHONPATH": (root + os.pathsep
-                              + os.path.join(root, "deep-agent"))}
+        env = {
+            **os.environ,
+            "PYTHONPATH": (root + os.pathsep + os.path.join(root, "deep-agent")),
+        }
         return subprocess.run(
             [sys.executable, self.SCRIPT, *args],
-            capture_output=True, text=True, timeout=120, env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
         )
 
     def test_bad_repo(self):
@@ -347,8 +390,8 @@ class TestCliValidation(unittest.TestCase):
     def test_validate_proposal_ok(self):
         p = self.run_script(
             "--validate-proposal",
-            b64(json.dumps({"kind": "td",
-                            "command": "td --json preflight"})))
+            b64(json.dumps({"kind": "td", "command": "td --json preflight"})),
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         body = json.loads(p.stdout)
         self.assertTrue(body["ok"])
@@ -357,7 +400,8 @@ class TestCliValidation(unittest.TestCase):
     def test_validate_proposal_rejected(self):
         p = self.run_script(
             "--validate-proposal",
-            b64(json.dumps({"kind": "td", "command": "td rm -rf /"})))
+            b64(json.dumps({"kind": "td", "command": "td rm -rf /"})),
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         body = json.loads(p.stdout)
         self.assertFalse(body["ok"])
@@ -378,16 +422,13 @@ class TestSuperviseMode(unittest.TestCase):
     def test_argv_dispatch(self):
         from unittest import mock
 
-        with mock.patch.object(deep_chat, "_cmd_turn",
-                               return_value=0) as turn:
-            code = deep_chat.main(
-                ["deep_chat.py", "arii/remote-server", "--supervise"])
+        with mock.patch.object(deep_chat, "_cmd_turn", return_value=0) as turn:
+            code = deep_chat.main(["deep_chat.py", "arii/remote-server", "--supervise"])
         self.assertEqual(code, 0)
         repo, thread, raw = turn.call_args[0]
         self.assertEqual(repo, "arii/remote-server")
         self.assertEqual(thread, "supervise-remote-server")
-        self.assertEqual(base64.b64decode(raw).decode(),
-                         deep_chat.SUPERVISOR_BRIEF)
+        self.assertEqual(base64.b64decode(raw).decode(), deep_chat.SUPERVISOR_BRIEF)
 
     def test_bad_repo_rejected(self):
         from unittest import mock
@@ -411,17 +452,17 @@ class TestTrivialFastPath(unittest.TestCase):
         def boom(*args, **kwargs):
             raise AssertionError("harness entered for trivial prompt")
 
-        with mock.patch.object(
-                deep_chat, "build_model",
-                return_value=(object(), {"provider": "x",
-                                        "model": "y"})), \
-             mock.patch.object(deep_chat, "build_agent",
-                               side_effect=boom), \
-             mock.patch.object(deep_chat, "_cmd_trivial_turn",
-                               side_effect=fake_trivial):
+        with (
+            mock.patch.object(
+                deep_chat,
+                "build_model",
+                return_value=(object(), {"provider": "x", "model": "y"}),
+            ),
+            mock.patch.object(deep_chat, "build_agent", side_effect=boom),
+            mock.patch.object(deep_chat, "_cmd_trivial_turn", side_effect=fake_trivial),
+        ):
             with redirect_stdout(io.StringIO()):
-                code = deep_chat._cmd_turn(
-                    "arii/remote-server", "t1", b64("hi"))
+                code = deep_chat._cmd_turn("arii/remote-server", "t1", b64("hi"))
         self.assertEqual(code, 0)
         self.assertEqual(seen.get("prompt"), "hi")
 
@@ -435,22 +476,36 @@ class TestTrivialTrace(unittest.TestCase):
 
         trace_path = os.path.join(tmp, "trivial.jsonl")
 
-        def fake_record(script, model_name, thread_id, messages,
-                        started, extra=None, usage=None, calls=None):
+        def fake_record(
+            script,
+            model_name,
+            thread_id,
+            messages,
+            started,
+            extra=None,
+            usage=None,
+            calls=None,
+        ):
             ledger_seen["extra"] = extra
             ledger_seen["usage"] = usage
             return {}
 
-        with mock.patch.object(deep_chat.ledger, "record",
-                               side_effect=fake_record), \
-             mock.patch.object(deep_chat.observe,
-                               "default_trace_path",
-                               return_value=trace_path):
+        with (
+            mock.patch.object(deep_chat.ledger, "record", side_effect=fake_record),
+            mock.patch.object(
+                deep_chat.observe, "default_trace_path", return_value=trace_path
+            ),
+        ):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = deep_chat._cmd_trivial_turn(
-                    "arii/remote-server", "t-trivial", "hi", 0.0,
-                    model, {"provider": "ollama", "model": "qwen3:8b"})
+                    "arii/remote-server",
+                    "t-trivial",
+                    "hi",
+                    0.0,
+                    model,
+                    {"provider": "ollama", "model": "qwen3:8b"},
+                )
         return code, buf.getvalue(), trace_path
 
     def _events(self, trace_path):
@@ -462,10 +517,12 @@ class TestTrivialTrace(unittest.TestCase):
         from types import SimpleNamespace
         from unittest import mock
 
-        usage = {"input_tokens": 12, "output_tokens": 5,
-                 "total_tokens": 17}
-        model = SimpleNamespace(invoke=mock.Mock(return_value=(
-            SimpleNamespace(content="hey!", usage_metadata=usage))))
+        usage = {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17}
+        model = SimpleNamespace(
+            invoke=mock.Mock(
+                return_value=(SimpleNamespace(content="hey!", usage_metadata=usage))
+            )
+        )
         seen = {}
         with tempfile.TemporaryDirectory() as tmp:
             code, out, trace_path = self._run_trivial(tmp, model, seen)
@@ -474,9 +531,10 @@ class TestTrivialTrace(unittest.TestCase):
             self.assertEqual(seen["extra"]["trace"], trace_path)
             self.assertEqual(seen["usage"], usage)
             events = self._events(trace_path)
-        self.assertEqual([e["type"] for e in events],
-                         ["run_start", "model_request", "model_response",
-                          "run_end"])
+        self.assertEqual(
+            [e["type"] for e in events],
+            ["run_start", "model_request", "model_response", "run_end"],
+        )
         self.assertEqual(events[0]["model"], "ollama:qwen3:8b")
         self.assertEqual(events[0]["thread"], "t-trivial")
         self.assertEqual(events[1]["n_messages"], 2)
@@ -484,15 +542,19 @@ class TestTrivialTrace(unittest.TestCase):
         self.assertTrue(events[3]["ok"])
         self.assertEqual(
             [d["why"] for d in seen["extra"]["decisions"]],
-            ["trivial greeting, fast path"])
+            ["trivial greeting, fast path"],
+        )
 
     def test_unreported_usage_records_zeros(self):
         import tempfile
         from types import SimpleNamespace
         from unittest import mock
 
-        model = SimpleNamespace(invoke=mock.Mock(return_value=(
-            SimpleNamespace(content="hey!", usage_metadata=None))))
+        model = SimpleNamespace(
+            invoke=mock.Mock(
+                return_value=(SimpleNamespace(content="hey!", usage_metadata=None))
+            )
+        )
         seen = {}
         with tempfile.TemporaryDirectory() as tmp:
             code, _, trace_path = self._run_trivial(tmp, model, seen)
@@ -508,8 +570,9 @@ class TestTrivialTrace(unittest.TestCase):
         from types import SimpleNamespace
         from unittest import mock
 
-        model = SimpleNamespace(invoke=mock.Mock(
-            side_effect=RuntimeError("model down")))
+        model = SimpleNamespace(
+            invoke=mock.Mock(side_effect=RuntimeError("model down"))
+        )
         seen = {}
         with tempfile.TemporaryDirectory() as tmp:
             code, out, trace_path = self._run_trivial(tmp, model, seen)
@@ -527,14 +590,26 @@ class TestTrivialTrace(unittest.TestCase):
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
 class TestToolSurface(unittest.TestCase):
-    def test_ten_tools(self):
+    def test_tool_surface(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 10)
+        self.assertEqual(len(tools), 13)
         self.assertEqual(
             {t.name for t in tools},
-            {"read_repo_file", "grep_repo", "list_dir", "search_docs",
-             "propose_action", "run_repo_command", "fetch_url",
-             "search_web", "search_turns", "pr_read"},
+            {
+                "read_repo_file",
+                "grep_repo",
+                "list_dir",
+                "search_docs",
+                "propose_action",
+                "run_repo_command",
+                "fetch_url",
+                "search_web",
+                "search_turns",
+                "pr_read",
+                "browser_snapshot",
+                "browser_act",
+                "browser_notes",
+            },
         )
 
     def test_read_grep_list_delegate(self):
@@ -544,14 +619,14 @@ class TestToolSurface(unittest.TestCase):
             with open(os.path.join(d, "a.txt"), "w") as f:
                 f.write("hello needle\n")
             by_name = {t.name: t for t in deep_chat.build_tools(d)}
-            self.assertIn("hello", by_name["read_repo_file"].invoke(
-                {"path": "a.txt"}))
-            self.assertIn("REJECTED", by_name["read_repo_file"].invoke(
-                {"path": "../escape"}))
-            self.assertIn("needle", by_name["grep_repo"].invoke(
-                {"pattern": "needle"}))
-            self.assertEqual(by_name["grep_repo"].invoke(
-                {"pattern": "zzz-absent"}), "no matches")
+            self.assertIn("hello", by_name["read_repo_file"].invoke({"path": "a.txt"}))
+            self.assertIn(
+                "REJECTED", by_name["read_repo_file"].invoke({"path": "../escape"})
+            )
+            self.assertIn("needle", by_name["grep_repo"].invoke({"pattern": "needle"}))
+            self.assertEqual(
+                by_name["grep_repo"].invoke({"pattern": "zzz-absent"}), "no matches"
+            )
             self.assertIn("a.txt", by_name["list_dir"].invoke({"path": ""}))
 
     def test_search_docs_passthrough(self):
@@ -560,8 +635,9 @@ class TestToolSurface(unittest.TestCase):
         import retrieval
 
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        with mock.patch.object(retrieval, "search_td",
-                               return_value="[a.py:3] how to x") as search:
+        with mock.patch.object(
+            retrieval, "search_td", return_value="[a.py:3] how to x"
+        ) as search:
             out = by_name["search_docs"].invoke({"query": "how to"})
         self.assertEqual(out, "[a.py:3] how to x")
         search.assert_called_once_with("how to", "/tmp", top_k=3)
@@ -572,11 +648,13 @@ class TestToolSurface(unittest.TestCase):
         import retrieval
 
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        with mock.patch.object(retrieval, "query_td_repo",
-                               side_effect=RuntimeError("td down")):
+        with mock.patch.object(
+            retrieval, "query_td_repo", side_effect=RuntimeError("td down")
+        ):
             self.assertIn(
                 "doc search unavailable",
-                by_name["search_docs"].invoke({"query": "how to"}))
+                by_name["search_docs"].invoke({"query": "how to"}),
+            )
 
     def test_search_docs_repo_filter_passed_through(self):
         from unittest import mock
@@ -584,28 +662,29 @@ class TestToolSurface(unittest.TestCase):
         import retrieval
 
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
-        with mock.patch.object(retrieval, "search_td",
-                               return_value="[README.md:1] how to x") as search:
+        with mock.patch.object(
+            retrieval, "search_td", return_value="[README.md:1] how to x"
+        ) as search:
             out = by_name["search_docs"].invoke(
-                {"query": "how to", "repo": "tech-dancer"})
+                {"query": "how to", "repo": "tech-dancer"}
+            )
         self.assertEqual(out, "[README.md:1] how to x")
-        search.assert_called_once_with(
-            "how to", "/srv/repos/tech-dancer", top_k=3)
+        search.assert_called_once_with("how to", "/srv/repos/tech-dancer", top_k=3)
 
     def test_search_docs_bad_repo_degrades(self):
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
         self.assertIn(
             "doc search unavailable",
-            by_name["search_docs"].invoke(
-                {"query": "how to", "repo": "??"}))
+            by_name["search_docs"].invoke({"query": "how to", "repo": "??"}),
+        )
 
     def test_propose_action_tool(self):
         by_name = {t.name: t for t in deep_chat.build_tools("/tmp")}
         out = by_name["propose_action"].invoke(
-            {"kind": "td", "command": "td --json preflight"})
+            {"kind": "td", "command": "td --json preflight"}
+        )
         self.assertIn("PROPOSE td", out)
-        out = by_name["propose_action"].invoke(
-            {"kind": "td", "command": "td do-evil"})
+        out = by_name["propose_action"].invoke({"kind": "td", "command": "td do-evil"})
         self.assertIn("REJECTED", out)
 
     def test_run_repo_command_tool(self):
@@ -618,11 +697,11 @@ class TestToolSurface(unittest.TestCase):
                 f.write("print('X-MARKER')\n")
             by_name = {t.name: t for t in deep_chat.build_tools(d)}
             out = by_name["run_repo_command"].invoke(
-                {"command": "python3 tests/test_x.py"})
+                {"command": "python3 tests/test_x.py"}
+            )
             self.assertTrue(out.startswith("exit=0\n"), out[:200])
             self.assertIn("X-MARKER", out)
-            out = by_name["run_repo_command"].invoke(
-                {"command": "npx tsc --noEmit"})
+            out = by_name["run_repo_command"].invoke({"command": "npx tsc --noEmit"})
             self.assertIn("REJECTED", out)
 
     def test_fetch_url_tool(self):
@@ -646,9 +725,9 @@ class TestToolSurface(unittest.TestCase):
         # Guarded shapes fail without touching the network.
         out = tool.invoke({"query": ""})
         self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
-        with mock.patch.object(s5tools, "search_web",
-                               return_value="1. T\n   https://x/\n   s"
-                               ) as m:
+        with mock.patch.object(
+            s5tools, "search_web", return_value="1. T\n   https://x/\n   s"
+        ) as m:
             out = tool.invoke({"query": "ollama", "limit": 3})
         m.assert_called_once_with("ollama", limit=3)
         self.assertIn("1. T", out)
@@ -663,13 +742,21 @@ class TestToolSurface(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ledger.jsonl")
             with open(path, "w", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "kind": "deep-agent-run", "ts": 1700000000.0,
-                    "script": "ask_investigator.py",
-                    "model": "ollama:qwen3:8b", "thread_id": "ask-a-b",
-                    "duration_s": 12.5,
-                    "final_preview": "fixed by pinning the model",
-                    "extra": {}}) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "kind": "deep-agent-run",
+                            "ts": 1700000000.0,
+                            "script": "ask_investigator.py",
+                            "model": "ollama:qwen3:8b",
+                            "thread_id": "ask-a-b",
+                            "duration_s": 12.5,
+                            "final_preview": "fixed by pinning the model",
+                            "extra": {},
+                        }
+                    )
+                    + "\n"
+                )
             prev = os.environ.get("EVAL_LEDGER")
             os.environ["EVAL_LEDGER"] = path
             try:
@@ -681,8 +768,7 @@ class TestToolSurface(unittest.TestCase):
                     os.environ["EVAL_LEDGER"] = prev
         self.assertIn("pinning the model", out)
         self.assertIn("run-0", out)
-        self.assertIn("usage:",
-                      tool.invoke({"query": "  "}))
+        self.assertIn("usage:", tool.invoke({"query": "  "}))
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
@@ -699,14 +785,11 @@ class TestAgentMechanics(unittest.TestCase):
             def _llm_type(self):
                 return "queue-fake"
 
-            def _generate(self, messages, stop=None, run_manager=None,
-                          **kwargs):
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
                 from langchain_core.messages import AIMessage
 
-                msg = self.replies.pop(0) if self.replies \
-                    else AIMessage(content="")
-                return ChatResult(
-                    generations=[ChatGeneration(message=msg)])
+                msg = self.replies.pop(0) if self.replies else AIMessage(content="")
+                return ChatResult(generations=[ChatGeneration(message=msg)])
 
             def bind_tools(self, tools, **kwargs):
                 return self
@@ -725,10 +808,17 @@ class TestAgentMechanics(unittest.TestCase):
     def _tool_call_msg(self, args, call_id="call-1"):
         from langchain_core.messages import AIMessage
 
-        return AIMessage(content="", tool_calls=[
-            {"name": "propose_action", "args": args, "id": call_id,
-             "type": "tool_call"},
-        ])
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "propose_action",
+                    "args": args,
+                    "id": call_id,
+                    "type": "tool_call",
+                },
+            ],
+        )
 
     def test_verify_tool_runs_in_turn(self):
         import tempfile
@@ -740,25 +830,36 @@ class TestAgentMechanics(unittest.TestCase):
             probe = os.path.join(d, "tests", "test_x.py")
             with open(probe, "w", encoding="utf-8") as f:
                 f.write("print('TURN-MARKER')\n")
-            call = AIMessage(content="", tool_calls=[{
-                "name": "run_repo_command",
-                "args": {"command": "python3 tests/test_x.py"},
-                "id": "call-verify", "type": "tool_call"}])
+            call = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "run_repo_command",
+                        "args": {"command": "python3 tests/test_x.py"},
+                        "id": "call-verify",
+                        "type": "tool_call",
+                    }
+                ],
+            )
             agent, config = self._stub_agent(
                 [call, AIMessage(content="exit was 0, tail shows TURN-MARKER")],
-                thread="t-verify", checkout=d)
+                thread="t-verify",
+                checkout=d,
+            )
             done = agent.invoke(
-                {"messages": [{"role": "user",
-                               "content": "run the test to confirm"}]},
-                config)
+                {"messages": [{"role": "user", "content": "run the test to confirm"}]},
+                config,
+            )
             joined = "\n".join(
-                str(m.content) for m in done["messages"]
-                if m.__class__.__name__ == "ToolMessage")
+                str(m.content)
+                for m in done["messages"]
+                if m.__class__.__name__ == "ToolMessage"
+            )
             self.assertIn("exit=0", joined)
             self.assertIn("TURN-MARKER", joined)
             self.assertEqual(
-                done["messages"][-1].content,
-                "exit was 0, tail shows TURN-MARKER")
+                done["messages"][-1].content, "exit was 0, tail shows TURN-MARKER"
+            )
 
     def test_fetch_tool_runs_in_turn(self):
         from unittest import mock
@@ -767,27 +868,35 @@ class TestAgentMechanics(unittest.TestCase):
 
         import s5tools
 
-        call = AIMessage(content="", tool_calls=[{
-            "name": "fetch_url",
-            "args": {"url": "https://docs.example.com/x"},
-            "id": "call-fetch", "type": "tool_call"}])
+        call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "fetch_url",
+                    "args": {"url": "https://docs.example.com/x"},
+                    "id": "call-fetch",
+                    "type": "tool_call",
+                }
+            ],
+        )
         agent, config = self._stub_agent(
-            [call, AIMessage(content="the docs say FROBNICATE")],
-            thread="t-fetch")
+            [call, AIMessage(content="the docs say FROBNICATE")], thread="t-fetch"
+        )
         with mock.patch.object(
-                s5tools, "fetch_url",
-                return_value="upstream text FROBNICATE") as fetch:
+            s5tools, "fetch_url", return_value="upstream text FROBNICATE"
+        ) as fetch:
             done = agent.invoke(
-                {"messages": [{"role": "user",
-                               "content": "read the upstream docs"}]},
-                config)
+                {"messages": [{"role": "user", "content": "read the upstream docs"}]},
+                config,
+            )
         fetch.assert_called_once_with("https://docs.example.com/x")
         joined = "\n".join(
-            str(m.content) for m in done["messages"]
-            if m.__class__.__name__ == "ToolMessage")
+            str(m.content)
+            for m in done["messages"]
+            if m.__class__.__name__ == "ToolMessage"
+        )
         self.assertIn("FROBNICATE", joined)
-        self.assertEqual(done["messages"][-1].content,
-                         "the docs say FROBNICATE")
+        self.assertEqual(done["messages"][-1].content, "the docs say FROBNICATE")
 
     def test_search_turns_runs_in_turn(self):
         import tempfile
@@ -797,139 +906,177 @@ class TestAgentMechanics(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ledger.jsonl")
             with open(path, "w", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "kind": "deep-agent-run", "ts": 1700000000.0,
-                    "script": "ask_investigator.py",
-                    "model": "ollama:qwen3:8b",
-                    "thread_id": "ask-old", "duration_s": 9.9,
-                    "final_preview": "triage verdict: QUOTA-FAULT",
-                    "extra": {}}) + "\n")
-            call = AIMessage(content="", tool_calls=[{
-                "name": "search_turns",
-                "args": {"query": "triage verdict"},
-                "id": "call-recall", "type": "tool_call"}])
+                f.write(
+                    json.dumps(
+                        {
+                            "kind": "deep-agent-run",
+                            "ts": 1700000000.0,
+                            "script": "ask_investigator.py",
+                            "model": "ollama:qwen3:8b",
+                            "thread_id": "ask-old",
+                            "duration_s": 9.9,
+                            "final_preview": "triage verdict: QUOTA-FAULT",
+                            "extra": {},
+                        }
+                    )
+                    + "\n"
+                )
+            call = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_turns",
+                        "args": {"query": "triage verdict"},
+                        "id": "call-recall",
+                        "type": "tool_call",
+                    }
+                ],
+            )
             agent, config = self._stub_agent(
-                [call, AIMessage(
-                    content="last triage concluded QUOTA-FAULT")],
-                thread="t-recall")
+                [call, AIMessage(content="last triage concluded QUOTA-FAULT")],
+                thread="t-recall",
+            )
             prev = os.environ.get("EVAL_LEDGER")
             os.environ["EVAL_LEDGER"] = path
             try:
                 done = agent.invoke(
-                    {"messages": [{"role": "user",
-                                   "content": "what did triage conclude?"}]},
-                    config)
+                    {
+                        "messages": [
+                            {"role": "user", "content": "what did triage conclude?"}
+                        ]
+                    },
+                    config,
+                )
             finally:
                 if prev is None:
                     del os.environ["EVAL_LEDGER"]
                 else:
                     os.environ["EVAL_LEDGER"] = prev
         joined = "\n".join(
-            str(m.content) for m in done["messages"]
-            if m.__class__.__name__ == "ToolMessage")
+            str(m.content)
+            for m in done["messages"]
+            if m.__class__.__name__ == "ToolMessage"
+        )
         self.assertIn("QUOTA-FAULT", joined)
-        self.assertEqual(done["messages"][-1].content,
-                         "last triage concluded QUOTA-FAULT")
+        self.assertEqual(
+            done["messages"][-1].content, "last triage concluded QUOTA-FAULT"
+        )
 
     def test_pause_then_approve_executes(self):
         from langchain_core.messages import AIMessage
         from langgraph.types import Command
 
-        agent, config = self._stub_agent([
-            self._tool_call_msg({"kind": "td",
-                                 "command": "td --json preflight"}),
-            AIMessage(content="done after approval"),
-        ])
+        agent, config = self._stub_agent(
+            [
+                self._tool_call_msg({"kind": "td", "command": "td --json preflight"}),
+                AIMessage(content="done after approval"),
+            ]
+        )
         paused = agent.invoke(
-            {"messages": [{"role": "user", "content": "check it"}]}, config)
+            {"messages": [{"role": "user", "content": "check it"}]}, config
+        )
         iv = paused.get("__interrupt__")
         self.assertTrue(iv, "expected a HITL pause")
         reqs = iv[0].value["action_requests"]
         self.assertEqual(reqs[0]["name"], "propose_action")
         cfgs = iv[0].value["review_configs"]
-        self.assertEqual(cfgs[0]["allowed_decisions"],
-                         ["approve", "reject"])
+        self.assertEqual(cfgs[0]["allowed_decisions"], ["approve", "reject"])
         done = agent.invoke(
-            Command(resume=deep_chat.resume_payload(
-                [deep_chat.decision_for_verdict("approve")] * len(reqs))),
-            config)
-        self.assertEqual(done["messages"][-1].content,
-                         "done after approval")
-        joined = "\n".join(str(m.content) for m in done["messages"]
-                           if m.__class__.__name__ == "ToolMessage")
+            Command(
+                resume=deep_chat.resume_payload(
+                    [deep_chat.decision_for_verdict("approve")] * len(reqs)
+                )
+            ),
+            config,
+        )
+        self.assertEqual(done["messages"][-1].content, "done after approval")
+        joined = "\n".join(
+            str(m.content)
+            for m in done["messages"]
+            if m.__class__.__name__ == "ToolMessage"
+        )
         self.assertIn("PROPOSE td", joined)
 
     def test_reject_skips_tool(self):
         from langchain_core.messages import AIMessage
         from langgraph.types import Command
 
-        agent, config = self._stub_agent([
-            self._tool_call_msg({"kind": "td",
-                                 "command": "td --json preflight"}),
-            AIMessage(content="ok, skipped it"),
-        ])
+        agent, config = self._stub_agent(
+            [
+                self._tool_call_msg({"kind": "td", "command": "td --json preflight"}),
+                AIMessage(content="ok, skipped it"),
+            ]
+        )
         paused = agent.invoke(
-            {"messages": [{"role": "user", "content": "check it"}]}, config)
+            {"messages": [{"role": "user", "content": "check it"}]}, config
+        )
         self.assertTrue(paused.get("__interrupt__"))
         done = agent.invoke(
-            Command(resume=deep_chat.resume_payload(
-                [deep_chat.decision_for_verdict("reject", "not now")])),
-            config)
+            Command(
+                resume=deep_chat.resume_payload(
+                    [deep_chat.decision_for_verdict("reject", "not now")]
+                )
+            ),
+            config,
+        )
         self.assertEqual(done["messages"][-1].content, "ok, skipped it")
-        joined = "\n".join(str(m.content) for m in done["messages"]
-                           if m.__class__.__name__ == "ToolMessage")
+        joined = "\n".join(
+            str(m.content)
+            for m in done["messages"]
+            if m.__class__.__name__ == "ToolMessage"
+        )
         self.assertNotIn("PROPOSE", joined)
 
     def test_multiturn_memory_and_isolation(self):
         from langchain_core.messages import AIMessage
 
         agent, config = self._stub_agent(
-            [AIMessage(content="first answer"),
-             AIMessage(content="second answer"),
-             AIMessage(content="other thread answer")])
+            [
+                AIMessage(content="first answer"),
+                AIMessage(content="second answer"),
+                AIMessage(content="other thread answer"),
+            ]
+        )
         r1 = agent.invoke(
-            {"messages": [{"role": "user", "content": "remember aardvark"}]},
-            config)
+            {"messages": [{"role": "user", "content": "remember aardvark"}]}, config
+        )
         r2 = agent.invoke(
-            {"messages": [{"role": "user", "content": "what was it?"}]},
-            config)
+            {"messages": [{"role": "user", "content": "what was it?"}]}, config
+        )
         self.assertGreater(len(r2["messages"]), len(r1["messages"]))
-        self.assertTrue(any("aardvark" in str(m.content)
-                            for m in r2["messages"]))
+        self.assertTrue(any("aardvark" in str(m.content) for m in r2["messages"]))
         other = {"configurable": {"thread_id": "t-other"}}
-        r3 = agent.invoke(
-            {"messages": [{"role": "user", "content": "hi"}]}, other)
-        self.assertFalse(any("aardvark" in str(m.content)
-                             for m in r3["messages"]))
+        r3 = agent.invoke({"messages": [{"role": "user", "content": "hi"}]}, other)
+        self.assertFalse(any("aardvark" in str(m.content) for m in r3["messages"]))
 
     def test_pending_interrupts_helper(self):
         from langchain_core.messages import AIMessage
         from langgraph.types import Command
 
-        agent, config = self._stub_agent([
-            self._tool_call_msg({"kind": "issue", "title": "t",
-                                 "body": "b"}),
-            AIMessage(content="final"),
-        ])
-        agent.invoke(
-            {"messages": [{"role": "user", "content": "file it"}]}, config)
+        agent, config = self._stub_agent(
+            [
+                self._tool_call_msg({"kind": "issue", "title": "t", "body": "b"}),
+                AIMessage(content="final"),
+            ]
+        )
+        agent.invoke({"messages": [{"role": "user", "content": "file it"}]}, config)
         pending = deep_chat._pending_interrupts(agent, config)
         self.assertEqual(len(pending), 1)
         self.assertIn("action_requests", pending[0]["value"])
-        agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}),
-                     config)
+        agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
         self.assertEqual(deep_chat._pending_interrupts(agent, config), [])
 
     def test_stream_helper_shape(self):
         from langchain_core.messages import AIMessage
 
         agent, config = self._stub_agent(
-            [AIMessage(content="streamed hi")], thread="t-stream")
+            [AIMessage(content="streamed hi")], thread="t-stream"
+        )
         buf = io.StringIO()
         with redirect_stdout(buf):
             reply, tool_msgs, msgs, salvaged = deep_chat._stream(
-                agent, {"messages": [{"role": "user", "content": "hi"}]},
-                config)
+                agent, {"messages": [{"role": "user", "content": "hi"}]}, config
+            )
         self.assertEqual(reply, "streamed hi")
         self.assertEqual(tool_msgs, [])
         self.assertEqual(len(msgs), 1)
@@ -955,7 +1102,9 @@ class TestAgentMechanics(unittest.TestCase):
             reply, _, _, salvaged = deep_chat._stream(
                 LoopingAgent(),
                 {"messages": [{"role": "user", "content": "hi"}]},
-                {}, model=FakeModel())
+                {},
+                model=FakeModel(),
+            )
         self.assertEqual(reply, "salvaged answer")
         self.assertTrue(salvaged)
         self.assertIn("salvaged answer", buf.getvalue())
@@ -971,23 +1120,23 @@ class TestAgentMechanics(unittest.TestCase):
                 raise GraphRecursionError("limit of 40 reached")
 
         with self.assertRaises(GraphRecursionError):
-            deep_chat._stream(
-                LoopingAgent(), {"messages": []}, {})
+            deep_chat._stream(LoopingAgent(), {"messages": []}, {})
 
     def test_build_agent_appends_intent_hint(self):
         from unittest import mock
 
         with mock.patch("deepagents.create_deep_agent") as factory:
             deep_chat.build_agent(
-                "arii/remote-server", mock.Mock(), model="m",
-                intent_hint="HINT-SENTINEL")
+                "arii/remote-server",
+                mock.Mock(),
+                model="m",
+                intent_hint="HINT-SENTINEL",
+            )
         prompt = factory.call_args.kwargs["system_prompt"]
         self.assertIn("HINT-SENTINEL", prompt)
         with mock.patch("deepagents.create_deep_agent") as factory:
-            deep_chat.build_agent("arii/remote-server", mock.Mock(),
-                                  model="m")
-        self.assertNotIn("HINT-SENTINEL",
-                         factory.call_args.kwargs["system_prompt"])
+            deep_chat.build_agent("arii/remote-server", mock.Mock(), model="m")
+        self.assertNotIn("HINT-SENTINEL", factory.call_args.kwargs["system_prompt"])
 
     def test_stream_reraises_when_salvage_fails(self):
         from langgraph.errors import GraphRecursionError
@@ -1001,9 +1150,7 @@ class TestAgentMechanics(unittest.TestCase):
                 raise RuntimeError("invoke down")
 
         with self.assertRaises(GraphRecursionError):
-            deep_chat._stream(
-                LoopingAgent(), {"messages": []}, {},
-                model=DeadModel())
+            deep_chat._stream(LoopingAgent(), {"messages": []}, {}, model=DeadModel())
 
     def _queue_model(self, replies):
         from langchain_core.language_models.chat_models import BaseChatModel
@@ -1017,14 +1164,11 @@ class TestAgentMechanics(unittest.TestCase):
             def _llm_type(self):
                 return "m"
 
-            def _generate(self, messages, stop=None, run_manager=None,
-                          **kwargs):
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
                 from langchain_core.messages import AIMessage
 
-                msg = self.replies.pop(0) if self.replies \
-                    else AIMessage(content="")
-                return ChatResult(
-                    generations=[ChatGeneration(message=msg)])
+                msg = self.replies.pop(0) if self.replies else AIMessage(content="")
+                return ChatResult(generations=[ChatGeneration(message=msg)])
 
             def bind_tools(self, tools, **kwargs):
                 return self
@@ -1038,52 +1182,68 @@ class TestAgentMechanics(unittest.TestCase):
         from langgraph.checkpoint.memory import InMemorySaver
 
         saver = InMemorySaver()
-        model = self._queue_model([
-            self._tool_call_msg({"kind": "td",
-                                 "command": "td --json preflight"}),
-        ])
+        model = self._queue_model(
+            [
+                self._tool_call_msg({"kind": "td", "command": "td --json preflight"}),
+            ]
+        )
         spec = {"provider": "stub", "model": "m"}
         seen_extras = []
 
-        def fake_record(script, model_name, thread_id, messages,
-                        started, extra=None, usage=None, calls=None):
+        def fake_record(
+            script,
+            model_name,
+            thread_id,
+            messages,
+            started,
+            extra=None,
+            usage=None,
+            calls=None,
+        ):
             seen_extras.append(extra)
             return {}
 
-        with mock.patch.object(deep_chat, "build_model",
-                               return_value=(model, spec)), \
-                mock.patch.object(deep_chat, "open_checkpointer",
-                                  return_value=(saver, False, None)), \
-                mock.patch.object(deep_chat.ledger, "record",
-                                  side_effect=fake_record):
+        with (
+            mock.patch.object(deep_chat, "build_model", return_value=(model, spec)),
+            mock.patch.object(
+                deep_chat, "open_checkpointer", return_value=(saver, False, None)
+            ),
+            mock.patch.object(deep_chat.ledger, "record", side_effect=fake_record),
+        ):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 code = deep_chat._cmd_turn(
-                    "arii/remote-server", "t-e2e", b64("check it"))
+                    "arii/remote-server", "t-e2e", b64("check it")
+                )
             self.assertEqual(code, 3)
             # "check it" classifies explain: the answer line's why
             # names intent + full path, not the reply text (#450).
             self.assertEqual(
-                seen_extras[-1]["decisions"][-1]["why"],
-                "explain turn, full path")
-            line = [ln for ln in buf.getvalue().splitlines()
-                    if ln.startswith("INTERRUPT: ")]
+                seen_extras[-1]["decisions"][-1]["why"], "explain turn, full path"
+            )
+            line = [
+                ln for ln in buf.getvalue().splitlines() if ln.startswith("INTERRUPT: ")
+            ]
             self.assertEqual(len(line), 1)
-            env = json.loads(line[0][len("INTERRUPT: "):])
+            env = json.loads(line[0][len("INTERRUPT: ") :])
             self.assertEqual(env["thread_id"], "t-e2e")
-            self.assertEqual(env["interrupts"][0]["value"]
-                             ["action_requests"][0]["name"], "propose_action")
+            self.assertEqual(
+                env["interrupts"][0]["value"]["action_requests"][0]["name"],
+                "propose_action",
+            )
             # Resume in a "fresh process" (same saver, new model).
             model.replies.append(AIMessage(content="e2e resumed"))
             buf2 = io.StringIO()
             with redirect_stdout(buf2):
                 code2 = deep_chat._cmd_resume(
-                    "arii/remote-server", "t-e2e", "approve", None)
+                    "arii/remote-server", "t-e2e", "approve", None
+                )
             self.assertEqual(code2, 0)
             self.assertNotIn("INTERRUPT", buf2.getvalue())
             self.assertEqual(
                 seen_extras[-1]["decisions"][-1]["why"],
-                "resumed after approve, full path")
+                "resumed after approve, full path",
+            )
 
     def test_cmd_resume_without_pause_fails(self):
         from unittest import mock
@@ -1092,14 +1252,18 @@ class TestAgentMechanics(unittest.TestCase):
 
         model = self._queue_model([])
         spec = {"provider": "stub", "model": "m"}
-        with mock.patch.object(deep_chat, "build_model",
-                               return_value=(model, spec)), \
-                mock.patch.object(deep_chat, "open_checkpointer",
-                                  return_value=(InMemorySaver(), False, None)), \
-                mock.patch.object(deep_chat.ledger, "record",
-                                  return_value={}):
+        with (
+            mock.patch.object(deep_chat, "build_model", return_value=(model, spec)),
+            mock.patch.object(
+                deep_chat,
+                "open_checkpointer",
+                return_value=(InMemorySaver(), False, None),
+            ),
+            mock.patch.object(deep_chat.ledger, "record", return_value={}),
+        ):
             code = deep_chat._cmd_resume(
-                "arii/remote-server", "t-nopause", "approve", None)
+                "arii/remote-server", "t-nopause", "approve", None
+            )
         self.assertEqual(code, 1)
 
     def test_build_agent_wires_model_and_repo(self):
@@ -1119,19 +1283,21 @@ class TestAgentMechanics(unittest.TestCase):
             def _llm_type(self):
                 return "m"
 
-            def _generate(self, messages, stop=None, run_manager=None,
-                          **kwargs):
-                return ChatResult(generations=[
-                    ChatGeneration(message=self.replies.pop(0))])
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                return ChatResult(
+                    generations=[ChatGeneration(message=self.replies.pop(0))]
+                )
 
             def bind_tools(self, tools, **kwargs):
                 return self
 
         real = deep_chat.build_agent(
-            "arii/remote-server", InMemorySaver(), model=M(replies=replies))
+            "arii/remote-server", InMemorySaver(), model=M(replies=replies)
+        )
         out = real.invoke(
             {"messages": [{"role": "user", "content": "hi"}]},
-            {"configurable": {"thread_id": "t-wire"}})
+            {"configurable": {"thread_id": "t-wire"}},
+        )
         self.assertEqual(out["messages"][-1].content, "wired")
 
     def _spying_model(self, base, replies, seen, **kwargs):
@@ -1141,19 +1307,19 @@ class TestAgentMechanics(unittest.TestCase):
         class Spy(base):
             replies: list = Field(default_factory=list)
 
-            def _generate(self, messages, stop=None, run_manager=None,
-                          **kwargs):
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
                 from langchain_core.messages import AIMessage
 
-                msg = self.replies.pop(0) if self.replies \
-                    else AIMessage(content="")
-                return ChatResult(
-                    generations=[ChatGeneration(message=msg)])
+                msg = self.replies.pop(0) if self.replies else AIMessage(content="")
+                return ChatResult(generations=[ChatGeneration(message=msg)])
 
             def bind_tools(self, tools, **kwargs):
                 for t in tools:
-                    name = t.get("name") if isinstance(t, dict) \
+                    name = (
+                        t.get("name")
+                        if isinstance(t, dict)
                         else getattr(t, "name", None)
+                    )
                     if name:
                         seen.append(name)
                 return self
@@ -1163,14 +1329,19 @@ class TestAgentMechanics(unittest.TestCase):
     def _fs_call_msg(self, name, args, call_id="call-fs"):
         from langchain_core.messages import AIMessage
 
-        return AIMessage(content="", tool_calls=[
-            {"name": name, "args": args, "id": call_id,
-             "type": "tool_call"},
-        ])
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {"name": name, "args": args, "id": call_id, "type": "tool_call"},
+            ],
+        )
 
     def _tool_text(self, out):
-        return "\n".join(str(m.content) for m in out["messages"]
-                         if m.__class__.__name__ == "ToolMessage")
+        return "\n".join(
+            str(m.content)
+            for m in out["messages"]
+            if m.__class__.__name__ == "ToolMessage"
+        )
 
     def test_chat_gates_exclude_task(self):
         from langchain_core.messages import AIMessage
@@ -1179,18 +1350,27 @@ class TestAgentMechanics(unittest.TestCase):
 
         seen = []
         model = self._spying_model(
-            ChatOllama, [AIMessage(content="hi-done")], seen,
-            model="qwen3:8b")
+            ChatOllama, [AIMessage(content="hi-done")], seen, model="qwen3:8b"
+        )
         agent = deep_chat.build_agent(
-            "arii/remote-server", InMemorySaver(), model=model,
-            spec={"provider": "ollama", "model": "qwen3:8b"})
+            "arii/remote-server",
+            InMemorySaver(),
+            model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"},
+        )
         out = agent.invoke(
             {"messages": [{"role": "user", "content": "hi"}]},
-            {"configurable": {"thread_id": "t-gate-task"}})
+            {"configurable": {"thread_id": "t-gate-task"}},
+        )
         self.assertEqual(out["messages"][-1].content, "hi-done")
         self.assertNotIn("task", seen)
-        for name in ("read_repo_file", "grep_repo", "list_dir",
-                     "search_docs", "propose_action"):
+        for name in (
+            "read_repo_file",
+            "grep_repo",
+            "list_dir",
+            "search_docs",
+            "propose_action",
+        ):
             self.assertIn(name, seen)
 
     def test_chat_gates_translate_nebius_provider(self):
@@ -1200,14 +1380,22 @@ class TestAgentMechanics(unittest.TestCase):
 
         seen = []
         model = self._spying_model(
-            ChatOpenAI, [AIMessage(content="hi-done")], seen,
-            model="glm-gate-probe", api_key="test")
+            ChatOpenAI,
+            [AIMessage(content="hi-done")],
+            seen,
+            model="glm-gate-probe",
+            api_key="test",
+        )
         agent = deep_chat.build_agent(
-            "arii/remote-server", InMemorySaver(), model=model,
-            spec={"provider": "nebius", "model": "glm-gate-probe"})
+            "arii/remote-server",
+            InMemorySaver(),
+            model=model,
+            spec={"provider": "nebius", "model": "glm-gate-probe"},
+        )
         agent.invoke(
             {"messages": [{"role": "user", "content": "hi"}]},
-            {"configurable": {"thread_id": "t-gate-nebius"}})
+            {"configurable": {"thread_id": "t-gate-nebius"}},
+        )
         self.assertNotIn("task", seen)
 
     def test_chat_gates_deny_virtual_writes(self):
@@ -1218,17 +1406,25 @@ class TestAgentMechanics(unittest.TestCase):
         seen = []
         model = self._spying_model(
             ChatOllama,
-            [self._fs_call_msg("write_file",
-                               {"file_path": "/probe.txt",
-                                "content": "x"}),
-             AIMessage(content="done")],
-            seen, model="qwen3:8b")
+            [
+                self._fs_call_msg(
+                    "write_file", {"file_path": "/probe.txt", "content": "x"}
+                ),
+                AIMessage(content="done"),
+            ],
+            seen,
+            model="qwen3:8b",
+        )
         agent = deep_chat.build_agent(
-            "arii/remote-server", InMemorySaver(), model=model,
-            spec={"provider": "ollama", "model": "qwen3:8b"})
+            "arii/remote-server",
+            InMemorySaver(),
+            model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"},
+        )
         out = agent.invoke(
             {"messages": [{"role": "user", "content": "write it"}]},
-            {"configurable": {"thread_id": "t-gate-write"}})
+            {"configurable": {"thread_id": "t-gate-write"}},
+        )
         self.assertIn("permission denied", self._tool_text(out))
 
     def test_chat_gates_allow_virtual_reads(self):
@@ -1239,16 +1435,23 @@ class TestAgentMechanics(unittest.TestCase):
         seen = []
         model = self._spying_model(
             ChatOllama,
-            [self._fs_call_msg("read_file",
-                               {"file_path": "/probe.txt"}),
-             AIMessage(content="done")],
-            seen, model="qwen3:8b")
+            [
+                self._fs_call_msg("read_file", {"file_path": "/probe.txt"}),
+                AIMessage(content="done"),
+            ],
+            seen,
+            model="qwen3:8b",
+        )
         agent = deep_chat.build_agent(
-            "arii/remote-server", InMemorySaver(), model=model,
-            spec={"provider": "ollama", "model": "qwen3:8b"})
+            "arii/remote-server",
+            InMemorySaver(),
+            model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"},
+        )
         out = agent.invoke(
             {"messages": [{"role": "user", "content": "read it"}]},
-            {"configurable": {"thread_id": "t-gate-read"}})
+            {"configurable": {"thread_id": "t-gate-read"}},
+        )
         self.assertNotIn("permission denied", self._tool_text(out))
 
     def _looper_model(self, n_calls, seen_binds, seen_msgs):
@@ -1264,57 +1467,73 @@ class TestAgentMechanics(unittest.TestCase):
             def _llm_type(self):
                 return "looper"
 
-            def _generate(self, messages, stop=None, run_manager=None,
-                          **kwargs):
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
                 seen_msgs.append(list(messages))
-                msg = self.replies.pop(0) if self.replies \
-                    else AIMessage(content="")
-                return ChatResult(
-                    generations=[ChatGeneration(message=msg)])
+                msg = self.replies.pop(0) if self.replies else AIMessage(content="")
+                return ChatResult(generations=[ChatGeneration(message=msg)])
 
             def bind_tools(self, tools, **kwargs):
                 seen_binds.append(
-                    {t.get("name") if isinstance(t, dict)
-                     else getattr(t, "name", None) for t in tools})
+                    {
+                        t.get("name")
+                        if isinstance(t, dict)
+                        else getattr(t, "name", None)
+                        for t in tools
+                    }
+                )
                 return self
 
-        calls = [AIMessage(content="", tool_calls=[
-            {"name": "grep_repo", "args": {"pattern": f"zzz-{i}"},
-             "id": f"loop-{i}", "type": "tool_call"},
-        ]) for i in range(n_calls)]
+        calls = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "grep_repo",
+                        "args": {"pattern": f"zzz-{i}"},
+                        "id": f"loop-{i}",
+                        "type": "tool_call",
+                    },
+                ],
+            )
+            for i in range(n_calls)
+        ]
         return Looper(replies=calls + [AIMessage(content="done")])
 
     def test_tool_budget_narrows_to_propose(self):
         from langgraph.checkpoint.memory import InMemorySaver
 
         binds, msgs = [], []
-        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1,
-                                   binds, msgs)
-        agent = deep_chat.build_agent("arii/remote-server",
-                                      InMemorySaver(), model=model)
+        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1, binds, msgs)
+        agent = deep_chat.build_agent(
+            "arii/remote-server", InMemorySaver(), model=model
+        )
         agent.invoke(
             {"messages": [{"role": "user", "content": "dig deep"}]},
-            {"configurable": {"thread_id": "t-budget-narrow"}})
+            {"configurable": {"thread_id": "t-budget-narrow"}},
+        )
         self.assertGreater(len(binds), 1)
         self.assertIn("grep_repo", binds[0])
         self.assertIn({"propose_action"}, binds[1:])
         nudge_seen = any(
             m.__class__.__name__ == "SystemMessage"
             and "budget" in str(m.content).lower()
-            for batch in msgs for m in batch)
+            for batch in msgs
+            for m in batch
+        )
         self.assertTrue(nudge_seen, "expected a budget-spent nudge")
 
     def test_tool_budget_rejects_over_calls(self):
         from langgraph.checkpoint.memory import InMemorySaver
 
         binds, msgs = [], []
-        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1,
-                                   binds, msgs)
-        agent = deep_chat.build_agent("arii/remote-server",
-                                      InMemorySaver(), model=model)
+        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1, binds, msgs)
+        agent = deep_chat.build_agent(
+            "arii/remote-server", InMemorySaver(), model=model
+        )
         out = agent.invoke(
             {"messages": [{"role": "user", "content": "dig deep"}]},
-            {"configurable": {"thread_id": "t-budget-reject"}})
+            {"configurable": {"thread_id": "t-budget-reject"}},
+        )
         self.assertIn("budget spent", self._tool_text(out))
 
 
@@ -1383,8 +1602,7 @@ class TestTrimThreadHistory(unittest.TestCase):
             def update_state(self, config, values):
                 seen["update"] = values
 
-        n = deep_chat.trim_thread_history(
-            FakeAgent(), {"thread": "t"}, keep=10)
+        n = deep_chat.trim_thread_history(FakeAgent(), {"thread": "t"}, keep=10)
         self.assertTrue(n > 0)
         updates = seen["update"]["messages"]
         self.assertTrue(all(isinstance(m, RemoveMessage) for m in updates))
@@ -1401,16 +1619,14 @@ class TestTrimThreadHistory(unittest.TestCase):
             def update_state(self, config, values):
                 raise AssertionError("must not trim")
 
-        self.assertEqual(
-            deep_chat.trim_thread_history(FakeAgent(), {}), 0)
+        self.assertEqual(deep_chat.trim_thread_history(FakeAgent(), {}), 0)
 
     def test_broken_agent_never_raises(self):
         class FakeAgent:
             def get_state(self, config):
                 raise RuntimeError("saver gone")
 
-        self.assertEqual(
-            deep_chat.trim_thread_history(FakeAgent(), {}), 0)
+        self.assertEqual(deep_chat.trim_thread_history(FakeAgent(), {}), 0)
 
 
 @unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
@@ -1464,17 +1680,14 @@ class TestExtractPrefer(unittest.TestCase):
             seen["prefer"] = prefer
             return 0
 
-        with mock.patch.object(deep_chat, "_cmd_turn",
-                               side_effect=fake_turn), \
-                mock.patch.object(deep_chat.s5tools, "valid_repo",
-                                  return_value=True), \
-                mock.patch.object(deep_chat.s5tools, "checkout_for",
-                                  return_value="/tmp"), \
-                mock.patch.object(deep_chat, "valid_thread_id",
-                                  return_value=True):
+        with (
+            mock.patch.object(deep_chat, "_cmd_turn", side_effect=fake_turn),
+            mock.patch.object(deep_chat.s5tools, "valid_repo", return_value=True),
+            mock.patch.object(deep_chat.s5tools, "checkout_for", return_value="/tmp"),
+            mock.patch.object(deep_chat, "valid_thread_id", return_value=True),
+        ):
             rc = deep_chat.main(
-                ["deep_chat.py", "o/r", "thread-1", b64("hi"),
-                 "--prefer=nebius"]
+                ["deep_chat.py", "o/r", "thread-1", b64("hi"), "--prefer=nebius"]
             )
         self.assertEqual(rc, 0)
         self.assertEqual(seen["prefer"], "nebius")
@@ -1488,17 +1701,13 @@ class TestExtractPrefer(unittest.TestCase):
             seen["prefer"] = prefer
             return 0
 
-        with mock.patch.object(deep_chat, "_cmd_turn",
-                               side_effect=fake_turn), \
-                mock.patch.object(deep_chat.s5tools, "valid_repo",
-                                  return_value=True), \
-                mock.patch.object(deep_chat.s5tools, "checkout_for",
-                                  return_value="/tmp"), \
-                mock.patch.object(deep_chat, "valid_thread_id",
-                                  return_value=True):
-            rc = deep_chat.main(
-                ["deep_chat.py", "o/r", "thread-1", b64("hi")]
-            )
+        with (
+            mock.patch.object(deep_chat, "_cmd_turn", side_effect=fake_turn),
+            mock.patch.object(deep_chat.s5tools, "valid_repo", return_value=True),
+            mock.patch.object(deep_chat.s5tools, "checkout_for", return_value="/tmp"),
+            mock.patch.object(deep_chat, "valid_thread_id", return_value=True),
+        ):
+            rc = deep_chat.main(["deep_chat.py", "o/r", "thread-1", b64("hi")])
         self.assertEqual(rc, 0)
         self.assertIsNone(seen["prefer"])
 
@@ -1524,11 +1733,15 @@ class TestBuildModelNumCtx(unittest.TestCase):
         stub.ChatOllama = FakeChat
         old = sys.modules.get("langchain_ollama")
         sys.modules["langchain_ollama"] = stub
-        spec = {"provider": "ollama", "model": "qwen3:8b",
-                "base_url": "http://ollama:11434"}
+        spec = {
+            "provider": "ollama",
+            "model": "qwen3:8b",
+            "base_url": "http://ollama:11434",
+        }
         try:
-            with mock.patch.object(deep_chat.model_router,
-                                   "resolve_llm", return_value=spec):
+            with mock.patch.object(
+                deep_chat.model_router, "resolve_llm", return_value=spec
+            ):
                 deep_chat.build_model(prefer="ollama")
         finally:
             if old is None:

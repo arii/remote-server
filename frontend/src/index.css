@@ -876,14 +876,24 @@ label.row-meta.attention-select-all { display: inline-flex; align-items: center;
   font-weight: 650;
 }
 /* In-bar variant: inside the unified topbar the tab group is
-   borderless — the bar owns the surface, not the nav. */
+   borderless — the bar owns the surface, not the nav. One row:
+   five tabs ride a non-wrapping line with horizontal scroll as the
+   escape hatch (same pattern as phones below), so the bar keeps
+   its single-row read at desktop widths. */
 .topbar .topnav {
   position: static;
   background: transparent;
   border: none;
   border-radius: 0;
   padding: 0.1rem 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  max-width: 100%;
+  min-width: 0;
 }
+/* Tool row holds one line at desktop widths (phones re-enable
+   wrap in the ≤700px query below). */
+.topbar-group.topbar-tools { flex-wrap: nowrap; }
 
 /* Command palette: overlay panel reusing the console's row grammar —
    surface, border, and the selected-row accent. No chrome beyond that. */

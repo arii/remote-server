@@ -41,7 +41,7 @@
       "source": "first-party",
       "sourceType": "repo",
       "skillPath": "skills/shared_browser_access.md",
-      "computedHash": "158e84cf0ae48c77ac98d4544b1ad873da8959727431ed9d50a4a2d85e5ee75e"
+      "computedHash": "f6a98a1e87c566f3195e575225424703edf1f934366c7750c6ec4383b19828d3"
     },
     "write_spec_issue": {
       "source": "first-party",

@@ -1,13 +1,15 @@
 // Co-browsing page: full-viewport shared browser (CDP-direct viewer
 // at /cdp-stream via Caddy -> the headed session the agent drives)
-// with the chat console riding the side rail. The viewer pauses the
+// with the agent console riding the side rail. The viewer pauses the
 // agent server-side on first human input, so no takeover overlay is
-// needed. Presentational: the parent owns state polling and the
-// resume POST, so this renders from props and stays testable via
-// static markup like ContainerDrawer.
+// needed. The rail is an agent session (muse/agy, repo-free), not
+// the repo chat: browsing is agentic work. Presentational: the
+// parent owns state polling and the resume POST, so this renders
+// from props and stays testable via static markup like
+// ContainerDrawer.
 import { useEffect, useState } from 'react';
 import type { AgentBrowserState } from '../apiClient';
-import ChatView from './ChatView';
+import AgentDrawer from './AgentDrawer';
 
 // The frame can sit blank for seconds (Grid slot wait, cold
 // browser) or fail outright (Grid down, route 404): the overlay
@@ -24,6 +26,13 @@ export function bannerTextFor(
   // stalled wait must never look like a working session (#1097).
   if (handoffReason) return `Waiting for you — ${handoffReason}`;
   if (state === 'PAUSED_BY_USER') return 'Manual control active — agent paused';
+  // Browser-drive ops record a "Browser drive:" step on the shared
+  // control state (backend/api/routers/browser_drive.py contract):
+  // show the agent at the wheel even when no pipeline run owns it.
+  if (currentStep?.startsWith('Browser drive:')) {
+    const what = currentStep.slice('Browser drive:'.length).trim();
+    return `Agent driving the browser (${what}) — click the page to take over`;
+  }
   if (state === 'RUNNING') {
     return currentStep
       ? `Agent active (${currentStep}) — select the browser view to take over`
@@ -32,28 +41,24 @@ export function bannerTextFor(
   return 'Shared browser ready';
 }
 
-export default function CoBrowsingDrawer({
+export default function BrowserView({
   browserState,
   currentStep,
   handoffReason = null,
   handoffUrl = null,
   iframeSrc,
-  repo,
   error,
   onResume,
   onHandBack = null,
-  onClose,
 }: {
   browserState: AgentBrowserState;
   currentStep: string | null;
   handoffReason?: string | null;
   handoffUrl?: string | null;
   iframeSrc: string;
-  repo: string;
   error: string | null;
   onResume: () => void;
   onHandBack?: (() => void) | null;
-  onClose: () => void;
 }) {
   const [frameState, setFrameState] = useState<FrameState>('loading');
   const [frameKey, setFrameKey] = useState(0);
@@ -100,9 +105,6 @@ export default function CoBrowsingDrawer({
               </button>
             )
           )}{' '}
-          <button type="button" data-testid="cobrowse-close" onClick={onClose}>
-            Close
-          </button>
         </div>
       </header>
       <div className="cobrowse-split">
@@ -136,8 +138,13 @@ export default function CoBrowsingDrawer({
             onLoad={() => setFrameState('live')}
           />
         </div>
-        <aside className="cobrowse-chat" aria-label="Chat alongside the shared browser">
-          <ChatView repo={repo} seed={null} onSeedUsed={() => {}} />
+        <aside className="cobrowse-chat" aria-label="Browser agent — ask it to drive the shared page">
+          <p className="row-meta" data-testid="cobrowse-chat-hint">
+            This agent sees and drives the page on the left — ask it to take
+            you somewhere. It runs its own session, no repo attached. Click
+            the page anytime to take over.
+          </p>
+          <AgentDrawer repo="" />
         </aside>
       </div>
     </section>

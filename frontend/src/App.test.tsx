@@ -1025,14 +1025,18 @@ describe('app', () => {
     expect(tools).toBeGreaterThan(views);
     expect(html).toContain('data-testid="tool-terminal"');
     expect(html).toContain('data-testid="tool-code"');
-    expect(html).toContain('data-testid="tool-browser"');
+    // No tool-browser: Browser is a Views tab now, not a tool link.
+    expect(html).not.toContain('data-testid="tool-browser"');
+    expect(html).toContain('data-testid="nav-browser"');
   });
 
   it('navPressed lights exactly the visible destination (issue #896)', () => {
     const entry = (id: string) => NAV_ENTRIES.find((e) => e.id === id)!;
-    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['now', 'chat', 'briefing', 'history', 'review', 'jobs', 'queue']);
+    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['now', 'chat', 'briefing', 'history', 'browser', 'review', 'jobs', 'queue']);
     // Tabs light on tab match.
     expect(navPressed('chat', null, entry('chat'))).toBe(true);
+    expect(navPressed('browser', null, entry('browser'))).toBe(true);
+    expect(navPressed('browser', null, entry('chat'))).toBe(false);
     expect(navPressed('chat', null, entry('now'))).toBe(false);
     expect(navPressed('briefing', null, entry('briefing'))).toBe(true);
     // Now yields to an open section entry.
