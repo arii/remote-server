@@ -794,6 +794,36 @@ describe('attention grouping (issue #839)', () => {
     expect(overflow).not.toContain('>Review<');
   });
 
+  it('AttentionRow applies the 3-tier action hierarchy, h3 titles, and detail folding (issue #1245)', () => {
+    const noop = () => {};
+    const props = {
+      viewRepo: 'remote-server',
+      rollup: false,
+      selected: false,
+      busy: false,
+      onToggleSelect: noop,
+      onDone: noop,
+      onError: noop,
+      onSection: noop,
+      onTab: noop,
+      onAskAgent: noop,
+      onSnooze: noop,
+    };
+    const html = renderToStaticMarkup(<AttentionRow item={item({ id: 'job-j1' })} {...props} />);
+    // Secondary snooze, tertiary dismiss; titles are headings.
+    expect(html).toMatch(/<button[^>]*class="btn-secondary"[^>]*data-testid="snooze-job-j1-60"/);
+    expect(html).toMatch(/<button[^>]*class="btn-link"[^>]*data-testid="dismiss-job-j1"/);
+    expect(html).toContain('<h3 class="row-title">');
+    expect(html).toContain('<p>d</p>');
+    // Long diagnostics fold into a disclosure with a Copy button.
+    const long = renderToStaticMarkup(
+      <AttentionRow item={item({ id: 'job-j2', detail: 'x'.repeat(400) })} {...props} />,
+    );
+    expect(long).toContain('data-testid="now-detail-job-j2"');
+    expect(long).toContain('>Copy</button>');
+    expect(long).not.toContain('<p>' + 'x'.repeat(10));
+  });
+
   it('AttentionRow shows repo context without an opens run for fetch-only actions (issue #930)', () => {
     const noop = () => {};
     const html = renderToStaticMarkup(
