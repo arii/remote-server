@@ -43,6 +43,28 @@
 		}
 	}
 
+	# Neko virtual browser (user-chosen remote browser): neko
+	# serves its own /neko prefix (NEKO_PATH_PREFIX), so pass
+	# through unstripped like /cdp-stream. Signaling rides this
+	# route; WebRTC media uses host UDP 52000-52100 (needs the same
+	# range forwarded on the router). Public entry:
+	# https://<host>:8443/neko/ (behind the oauth2-proxy gate).
+	handle /neko {
+		redir * /neko/
+	}
+	handle /neko* {
+		header -X-Frame-Options
+		# No-store: the neko web client ships with its image and a
+		# cached copy pins old client JS across image bumps with
+		# zero errors to diagnose (same class as /cdp-stream).
+		header Cache-Control "no-store"
+		reverse_proxy neko:8080 {
+			transport http {
+				dial_timeout 10s
+			}
+		}
+	}
+
 	# Open WebUI (ambient chat & RAG) at /webui: the stock image
 	# has no base-path support (docs: root or subdomain only; the
 	# one subpath PR closed unmerged; v0.13.2 WEBUI_BASE_URL is a

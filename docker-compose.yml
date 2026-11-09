@@ -490,6 +490,51 @@ services:
       - SE_NODE_SESSION_TIMEOUT=600
     logging: *default-logging
 
+  # Neko virtual browser (user-chosen remote browser): WebRTC
+  # virtual browser at /neko/. v3.2.0 (React client: touch
+  # keyboard, IME input as key events). Portrait 720x1280 for
+  # phones; profile bind-mounted on the host so logins survive
+  # reboots and recreates. GHCR per-app image (password/password_admin
+  # room auth). UDP 52000-52100 host-published + router-forwarded;
+  # signaling rides Caddy; NAT1TO1 = current public IP.
+  neko:
+    image: ghcr.io/m1k1o/neko/chromium:3.2.0@sha256:270face8b8111e639744fb7bcdbbf0deed227900bb89d58b2f8adfc12af8c41e
+    container_name: remote-neko-1
+    shm_size: "2gb"
+    init: true
+    cap_add:
+      - SYS_ADMIN
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+        reservations:
+          memory: 256M
+    restart: unless-stopped
+    expose:
+      - "8080"
+    ports:
+      - "52000-52100:52000-52100/udp"
+    environment:
+      - NEKO_DESKTOP_SCREEN=720x1280@30
+      - NEKO_PASSWORD=${NEKO_PASSWORD:?}
+      - NEKO_PASSWORD_ADMIN=${NEKO_PASSWORD_ADMIN:?}
+      - NEKO_SERVER_BIND=0.0.0.0:8080
+      - NEKO_WEBRTC_EPR=52000-52100
+      - NEKO_WEBRTC_NAT1TO1=136.24.209.33
+      - NEKO_SERVER_PROXY=true
+      - NEKO_SERVER_PATH_PREFIX=/neko
+    # Image healthcheck probes /health, which moved under the path prefix.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/neko/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    volumes:
+      - ${HOST_HOME:-/home/ari}/.s5-shared-browser/neko:/home/neko/.config/chromium
+    logging: *default-logging
+
   # Browser-based VS Code: code-server.
   # --auth none: the GitHub OAuth gate is the boundary, same as ttyd.
   # Mounts repos checkouts, stack checkout, and persistent config/extensions volumes.

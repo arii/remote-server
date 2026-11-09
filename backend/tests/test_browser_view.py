@@ -40,6 +40,24 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("localStorage.getItem('kbd-pos')", html)
         self.assertNotIn("box.scrollIntoView", html)
 
+    def test_mobile_keyboard_uses_native_bridge(self):
+        # Phone audit fixes: no squeezed desktop board on coarse
+        # phones — the Keyboard button summons the OS keyboard
+        # through a hidden conduit input; the form never shows a
+        # native validation bubble; the address bar owns its row.
+        html = browser_view.VIEWER_HTML
+        flat = html.replace(" ", "")
+        self.assertIn('id="native-kb"', html)
+        self.assertIn('<form id="nav" novalidate>', html)
+        self.assertIn("@media(max-width:600px){", flat)
+        self.assertIn("#nav{flex:11100%}", flat)
+        self.assertIn("isMobileBoard", html)
+        self.assertIn("compositionend", html)
+        self.assertIn('enterkeyhint="enter"', html)
+        # FAB keeps its coarse-only slot but hides under the open
+        # panel instead of overlapping its keys.
+        self.assertIn("fab.style.visibility", html)
+
     def test_viewer_assets_are_vendored_no_cdn(self):
         # The viewer must load with zero external requests: a
         # render-blocking CDN <script> stalls the whole page (and the
@@ -165,6 +183,14 @@ class FakeBridge:
     async def reattach(self):
         pass
 
+    async def set_viewport_mode(self, mobile):
+        self.mobile = bool(mobile)
+        self.viewport = dict(
+            browser_view.MOBILE_VIEWPORT if self.mobile else browser_view.VIEWPORT
+        )
+        self.calls.append(("viewport", self.mobile))
+        await self.reattach()
+
     async def close(self):
         pass
 
@@ -289,6 +315,33 @@ class SharedViewerSessionTest(unittest.TestCase):
                 )
                 self.assertTrue(self._wait_count(paused, 1), "pause task never ran")
                 self.assertEqual(paused.call_count, 1)
+
+    def test_viewport_toggle_dispatched_without_human_pause(self):
+        # Mobile/desktop toggle is look-around input like wheel: it
+        # reaches the bridge without tripping agent-takeover pause.
+        import json as _json
+
+        client = TestClient(browser_view.create_app())
+        shared = FakeBridge("AAA")
+        with (
+            mock.patch.object(browser_view, "CDPBridge", return_value=shared),
+            mock.patch.object(browser_view, "_grid_live_session", return_value=None),
+            mock.patch.object(browser_view, "_grid_session_create", return_value="AAA"),
+            mock.patch.object(browser_view, "_grid_session_alive", return_value=True),
+            mock.patch.object(browser_view, "_grid_session_delete"),
+            mock.patch.object(
+                browser_view, "_pause_agent", return_value=False
+            ) as paused,
+        ):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                ws.send_text(_json.dumps({"t": "viewport", "mode": "mobile"}))
+                self.assertTrue(
+                    self._wait_calls(shared, ("viewport", True)),
+                    f"viewport never reached bridge: {shared.calls}",
+                )
+                self.assertEqual(paused.call_count, 0)
 
     def test_wheel_dispatched_without_human_pause(self):
         # Scroll is look-around input like a hover: it must reach the
@@ -887,6 +940,80 @@ class BridgeKeyTest(unittest.TestCase):
         asyncio.run(bridge.key("a", "KeyA"))
         self.assertEqual(seen.get("Input.insertText"), {"text": "a"})
 
+    def test_shift_dispatches_raw_with_modifier_mask(self):
+        # The viewer banner showed "unknown key: 'Shift'": a bare
+        # physical Shift must travel as rawKeyDown/rawKeyUp with
+        # the Shift bit set, never raise.
+        import asyncio
+
+        bridge = browser_view.CDPBridge("sid")
+        calls = []
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Runtime.evaluate":
+                return "BODY"
+            calls.append((method, params))
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.key("Shift", "ShiftLeft"))
+        key_calls = [c for c in calls if c[0] == "Input.dispatchKeyEvent"]
+        self.assertEqual(
+            [(c[1]["type"], c[1]["modifiers"]) for c in key_calls],
+            [("rawKeyDown", 8), ("rawKeyUp", 0)],
+        )
+        self.assertEqual(key_calls[0][1]["windowsVirtualKeyCode"], 16)
+        self.assertEqual(key_calls[0][1]["code"], "ShiftLeft")
+
+    def test_held_shift_applies_to_chorded_key(self):
+        # Shift held while Enter is struck: the Enter keyDown must
+        # carry modifiers=8 so Chromium resolves the chord.
+        import asyncio
+
+        bridge = browser_view.CDPBridge("sid")
+        calls = []
+
+        async def fake_call(method, params=None, timeout=15):
+            if method == "Runtime.evaluate":
+                return "BODY"
+            calls.append((method, params))
+            return {}
+
+        bridge.call = fake_call
+        asyncio.run(bridge.key("Shift", "ShiftLeft"))
+        # A full down/up cycle must leave no leaked modifier state.
+        self.assertEqual(bridge._modifiers, 0)
+        # A held modifier propagates to the next chorded keyDown.
+        calls.clear()
+        bridge._modifiers = 8
+        asyncio.run(bridge.key("Enter", "Enter"))
+        downs = [
+            c
+            for c in calls
+            if c[0] == "Input.dispatchKeyEvent" and c[1]["type"] == "keyDown"
+        ]
+        self.assertEqual(downs[0][1]["modifiers"], 8)
+
+    def test_viewport_mode_swaps_metrics_and_touch(self):
+        # Mobile/desktop toggle: metrics follow the mode and the
+        # bridge reattaches so the live target picks them up.
+        import asyncio
+
+        bridge = browser_view.CDPBridge("sid")
+        reattached = []
+
+        async def fake_reattach():
+            reattached.append(True)
+
+        bridge.reattach = fake_reattach
+        asyncio.run(bridge.set_viewport_mode(True))
+        self.assertTrue(bridge.mobile)
+        self.assertEqual(bridge.viewport, browser_view.MOBILE_VIEWPORT)
+        asyncio.run(bridge.set_viewport_mode(False))
+        self.assertFalse(bridge.mobile)
+        self.assertEqual(bridge.viewport, browser_view.VIEWPORT)
+        self.assertEqual(len(reattached), 2)
+
     def test_type_text_bulk_commits_via_insert_text(self):
         # On-screen keyboard text never existed as key presses, so
         # it must take the protocol-blessed IME/commit path whole.
@@ -1113,7 +1240,10 @@ class ViewerHtmlTest(unittest.TestCase):
         # (form submit, not button click); bare hostnames ride
         # https:// per normalizeUrl.
         html = browser_view.VIEWER_HTML
-        self.assertIn('<form id="nav">', html)
+        # novalidate: the browser's own "enter a URL" bubble
+        # obscured controls on phones; bad input surfaces as the
+        # remote page's error instead. Submit path unchanged.
+        self.assertIn('<form id="nav" novalidate>', html)
         self.assertIn('type="submit"', html)
         self.assertIn("getElementById('nav').onsubmit", html)
         self.assertNotIn("getElementById('go').onclick", html)

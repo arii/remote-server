@@ -31,7 +31,20 @@ Keys meet the 48px Material touch height at phone width. */
 #kbd.hg-theme-default .hg-button{background:#3a3a3c;color:#fff;border-color:#000;box-shadow:0 0 3px -1px rgba(0,0,0,.9);min-height:48px;font-size:20px}
 #kbd.hg-theme-default .hg-button span{color:#fff;opacity:1}
 #kbd.hg-theme-default .hg-button.hg-activeButton{background:#0a84ff}
-</style>
+/* Narrow phones: the address bar gets its own full row so the
+placeholder and caret are never squeezed into a pill by the
+toolbar buttons wrapping underneath. Buttons keep 44px targets. */
+@media (max-width:600px){
+#bar{gap:6px}
+#nav{flex:1 1 100%}
+#go,#kb,#view{padding:6px 8px}
+#state{font-size:12px;max-width:45vw}
+}
+/* Native-keyboard bridge (coarse-pointer phones): an invisible but
+laid-out input summons the OS keyboard on tap. opacity:0 keeps it
+hittable-invisible without display:none (which iOS refuses to
+focus); 16px type blocks iOS auto-zoom on focus. */
+#native-kb{position:fixed;left:8px;right:8px;bottom:8px;z-index:1;opacity:0;height:44px;font-size:16px;border:0;padding:0;pointer-events:none}</style>
 <!-- Vendored same-origin (backend serves ./vendor/): the page must
 load with zero external requests — a render-blocking CDN script
 stalls onLoad (and the console's cobrowse iframe state) whenever
@@ -40,10 +53,11 @@ upstream bytes in simple-keyboard-3.8.205.{js,css}. -->
 <link rel="stylesheet" href="vendor/simple-keyboard-3.8.205.css">
 <script src="vendor/simple-keyboard-3.8.205.js"></script>
 </head><body>
-<div id="bar"><form id="nav"><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><span id="state" role="status">connecting…</span></div>
+<div id="bar"><form id="nav" novalidate><input id="url" value="__DEFAULT_URL__" aria-label="Address" type="url" inputmode="url" enterkeyhint="go" autocapitalize="off" autocorrect="off" spellcheck="false"><button id="go" type="submit">Go</button></form><button id="kb" type="button" aria-label="Keyboard" aria-expanded="false" aria-controls="kbd">Keyboard</button><button id="view" type="button" aria-label="Toggle mobile or desktop view" aria-pressed="false">Desktop</button><span id="state" role="status">connecting…</span></div>
 <div id="stats">idle — waiting to attach…</div>
 <canvas id="screen" width="1280" height="800"></canvas>
-<button id="kb-fab" type="button" aria-label="Toggle keyboard" aria-controls="kbd">ABC</button>
+<button id="kb-fab" type="button" aria-label="Toggle keyboard" title="Keyboard" aria-controls="kbd">ABC</button>
+<input id="native-kb" type="text" aria-label="Type to the remote page" enterkeyhint="enter" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
 <div id="kbd" class="simple-keyboard" hidden><div id="kbd-handle"><span id="kbd-grip" aria-hidden="true">⠿⠿</span><span id="kbd-title">Keyboard</span><button id="kbd-close" type="button" aria-label="Close keyboard">✕</button></div></div>
 <script>
 const base = location.pathname.replace(/\/$/, '');
@@ -61,7 +75,7 @@ let reconnectTimer = 0;
 let noFrameTimer = 0;
 function sendable() { return ws && ws.readyState === 1; }
 function setControlsEnabled(on) {
-  for (const id of ['url', 'go', 'kb', 'kb-fab']) {
+  for (const id of ['url', 'go', 'kb', 'view', 'kb-fab']) {
     document.getElementById(id).disabled = !on;
   }
 }
@@ -86,6 +100,7 @@ function connect() {
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.type === 'dsf') { dsf = m.dsf || 1; return; }
+    if (m.type === 'view') { setView(!!m.mobile); return; }
     if (m.type === 'attached') {
       dsf = m.dsf || 1;
       const label = m.kind === 'agent' ? 'shared agent session'
@@ -254,6 +269,61 @@ function typeText(text) {
   lastClick = performance.now();
   ws.send(JSON.stringify({t: 'type', text}));
 }
+// Coarse-pointer phones get the OS keyboard (right-sized keys,
+// autocorrect, no overlay blocking the page); everything else keeps
+// the floating simple-keyboard panel. Decided per tap so rotation
+// across the breakpoint switches paths immediately.
+function isMobileBoard() {
+  return window.matchMedia('(pointer:coarse) and (max-width: 820px)').matches;
+}
+function focusNativeKb() {
+  const nk = document.getElementById('native-kb');
+  if (nk && document.activeElement !== nk) {
+    try { nk.focus({preventScroll: true}); } catch (_) { nk.focus(); }
+  }
+}
+(function initNativeKb() {
+  const nk = document.getElementById('native-kb');
+  // The field is a conduit, never a store: commit-on-input keeps
+  // each event a trivial insert, so races and repeats stay small.
+  nk.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (sendable()) { lastClick = performance.now(); sendKey('Enter', 'Enter'); }
+      nk.value = '';
+    } else if (e.key === 'Backspace') {
+      e.preventDefault();
+      if (sendable()) { lastClick = performance.now(); sendKey('Backspace', 'Backspace'); }
+    }
+  });
+  nk.addEventListener('input', (e) => {
+    if (e.isComposing) return;
+    if (!sendable()) { nk.value = ''; return; }
+    const data = (e.data !== null && e.data !== undefined) ? e.data : nk.value;
+    if (data) { lastClick = performance.now(); typeText(data); }
+    nk.value = '';
+  });
+  nk.addEventListener('compositionend', () => {
+    if (sendable() && nk.value) { lastClick = performance.now(); typeText(nk.value); }
+    nk.value = '';
+  });
+})();
+// Mobile/desktop view toggle: the label names the CURRENT mode
+// (server-confirmed via the view message, optimistically flipped
+// on tap). Re-emulation rides the same viewport path as attach,
+// so coords stay valid the moment frames resize — no reload.
+let mobileView = false;
+function setView(mobile) {
+  mobileView = !!mobile;
+  const btn = document.getElementById('view');
+  btn.textContent = mobileView ? 'Mobile' : 'Desktop';
+  btn.setAttribute('aria-pressed', String(mobileView));
+}
+document.getElementById('view').addEventListener('click', () => {
+  if (!sendable()) return;
+  setView(!mobileView);
+  ws.send(JSON.stringify({t: 'viewport', mode: mobileView ? 'mobile' : 'desktop'}));
+});
 // Document-level so physical keyboards keep working after the focus
 // moves to the URL box or the Keyboard toggle; the URL box itself is
 // excluded so typing an address never drives the remote page. Tab
@@ -324,9 +394,17 @@ document.addEventListener('keydown', (e) => {
     box.hidden = !open;
     btn.setAttribute('aria-expanded', String(open));
     // Fixed overlay: no scrollIntoView, the canvas never reflows.
+    // Hide the FAB under the open panel: same action, no overlap.
+    fab.style.visibility = open ? 'hidden' : '';
   }
-  btn.addEventListener('click', () => setOpen(box.hidden));
-  fab.addEventListener('click', () => setOpen(box.hidden));
+  // Summoning picks the path per tap: the OS keyboard on phones
+  // (no overlay, nothing covered), the floating panel elsewhere.
+  function summon() {
+    if (isMobileBoard()) { setOpen(false); focusNativeKb(); }
+    else setOpen(box.hidden);
+  }
+  btn.addEventListener('click', summon);
+  fab.addEventListener('click', summon);
   document.getElementById('kbd-close').addEventListener('click', () => setOpen(false));
   // Draggable by the handle only (never by keys): pointer events
   // with touch-action:none on the handle, clamped to the visual
