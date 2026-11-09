@@ -491,13 +491,14 @@ services:
     logging: *default-logging
 
   # Neko virtual browser (user-chosen remote browser): WebRTC
-  # virtual browser at /neko/. v2 image (password/password_admin
-  # room auth). UDP 52000-52100 is host-published for WebRTC media
+  # virtual browser at /neko/. v3.2.0 (React client: touch
+  # keyboard, IME input as key events). GHCR per-app image
+  # (password/password_admin room auth). UDP 52000-52100 is host-published for WebRTC media
   # and must also be forwarded on the router; signaling rides the
   # Caddy route. NAT1TO1 is the current public IP — update if the
   # residential IP changes.
   neko:
-    image: m1k1o/neko@sha256:1c0daa726efc31b00e1fd3f9337dd534c41c128e41c3042d44627d2012929992
+    image: ghcr.io/m1k1o/neko/chromium:3.2.0@sha256:270face8b8111e639744fb7bcdbbf0deed227900bb89d58b2f8adfc12af8c41e
     container_name: remote-neko-1
     shm_size: "2gb"
     init: true
