@@ -12,7 +12,7 @@ test.describe('responsive console layout', () => {
     test(`agent rail holds 300-380px at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.goto('/');
-      await page.getByTestId('tool-browser').click();
+      await page.getByTestId('nav-browser').click();
       await expect(page.getByTestId('keepalive-browser')).toBeVisible();
 
       const rail = page.getByTestId('cobrowse-drawer').locator('.cobrowse-chat');
@@ -81,7 +81,7 @@ test.describe('responsive console layout', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
     await expect(page.getByTestId('topbar')).toBeVisible();
-    for (const t of ['palette-open', 'tool-terminal', 'tool-code', 'tool-browser']) {
+    for (const t of ['palette-open', 'tool-terminal', 'tool-code']) {
       const box = await page.getByTestId(t).boundingBox();
       expect(box).not.toBeNull();
       expect(box!.x).toBeGreaterThanOrEqual(0);
@@ -92,7 +92,7 @@ test.describe('responsive console layout', () => {
   test('page stacks the agent rail below the browser under 1100px', async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 900 });
     await page.goto('/');
-    await page.getByTestId('tool-browser').click();
+    await page.getByTestId('nav-browser').click();
     await expect(page.getByTestId('cobrowse-drawer')).toBeVisible();
     const [frameTop, chatTop] = await page.getByTestId('cobrowse-drawer').evaluate((el) => {
       const f = (el.querySelector('.cobrowse-frame-wrap') as HTMLElement).getBoundingClientRect().top;

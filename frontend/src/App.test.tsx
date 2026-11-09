@@ -1025,7 +1025,9 @@ describe('app', () => {
     expect(tools).toBeGreaterThan(views);
     expect(html).toContain('data-testid="tool-terminal"');
     expect(html).toContain('data-testid="tool-code"');
-    expect(html).toContain('data-testid="tool-browser"');
+    // No tool-browser: Browser is a Views tab now, not a tool link.
+    expect(html).not.toContain('data-testid="tool-browser"');
+    expect(html).toContain('data-testid="nav-browser"');
   });
 
   it('navPressed lights exactly the visible destination (issue #896)', () => {

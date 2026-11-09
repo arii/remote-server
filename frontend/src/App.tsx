@@ -839,14 +839,6 @@ export default function App() {
           <a data-testid="tool-code" href={`${stackBase()}/code`}>
             Code
           </a>
-          <button
-            type="button"
-            data-testid="tool-browser"
-            title="Open shared browser"
-            onClick={() => setTab('browser')}
-          >
-            Browser
-          </button>
         </div>
       </header>
       <SyncBanner />
