@@ -61,6 +61,19 @@ Verified = checked live for this scorecard; registry-cited = recorded in
 3. Comment-ID links above were spot-checked (2 of 3 resolve); full
    re-verification is per-use, not per-write.
 
+## Agent loop 2026-11-09 ~06:00-06:50Z (cloud-baryon)
+
+First night local agents did lane work end-to-end (briefs inline in session log):
+- Ollama `qwen3:8b` validation turn validate-1227-1224: VERDICT-1227 READY (confirmed title-only tooltip, NowView.tsx:1085-1093 + :350-354); VERDICT-1224 label said NEEDS-WORK but the evidence confirmed the issue (no supersede logic, attention.py:460-493) — brief verdict semantics were ambiguous, adjudicated to READY-for-implementation. Lesson: define READY/NEEDS-WORK crisply in validation briefs.
+- Ollama `qwen3:8b` spec-format check on #1224/#1225/#1226: all VALID (Problem/Goal/Approach/Alternatives/Scope/DoD present).
+- Nebius GLM-5.3-Flash coder implemented #1227 (PR #1229, +7 lines, 81/81 tests + tsc verified outside agent): correct edit first pass, then burned 100-step recursion limit in verify loop — filed #1230 with trace.
+- Ollama `qwen3:8b` review of #1229: BLOCK with 2 findings → adjudicated (1 refuted with evidence, 1 accepted non-blocking) with reasoning on the PR; merged on green.
+- Nebius GLM-5.3-Flash coder fixed #1230 (PR #1231): attempts 1-2 jammed on the very bugs being fixed (no node_modules + install rejected; absolute-path flailing); attempt 3 with exact file:lines + provisioned modules converged with in-agent verification (30/30). Precise briefs + provisioned env unblock the harness.
+- Ollama `qwen3:8b` review of #1231: APPROVE, no findings; merged on green.
+- Ollama auditor attempt on #1228 (5-claim brief): failed brief-following (returned clarification question). Lesson: keep Ollama briefs to 1-2 claims with exact paths; retry pending.
+- Provider proof: Nebius key live (19-token completion), `NEBIUS_SPEND_CAP_USD=2.00` set on agent commands (container default unset — RS #1192 stays with env owner). Ollama reachable at `ollama:11434`, 6 models.
+- Costs tonight: $2 cap set, actual spend pennies (short turns). Ledger rows in deep-agent traces (coder_*, deep_chat_* 2026-11-09).
+
 ## Hourly loop audit 2026-11-09 ~00:40Z (cloud-baryon)
 
 Probes, all live from this container: Nebius `GET $NEBIUS_BASE_URL/models`
