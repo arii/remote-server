@@ -70,6 +70,7 @@ and mobile browsers get a native-feeling stream. Bring-up:
   updates apply on image bumps.
 - `NEKO_NAT1TO1` in compose is the current public IP — update it
   if the residential IP changes.
+- Browser profile bind-mounts `~/.s5-shared-browser/neko`, so logins survive reboots and recreates.
 - Room passwords live in `.env` (`NEKO_PASSWORD`,
   `NEKO_PASSWORD_ADMIN`); dev defaults are in `.env.example`.
 - Agentic control stays on the CDP-stream/Grid path: Neko's
