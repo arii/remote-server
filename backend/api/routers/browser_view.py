@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import collections
 import contextlib
+import hashlib
 import json
 from pathlib import Path
 import os
@@ -303,15 +304,158 @@ _ACTIVITY = collections.deque(maxlen=100)
 _ACTIVITY_LOCK = threading.Lock()
 
 
-def _log_activity(kind: str, detail: str = "", via: str = "human") -> None:
+def _log_activity(
+    kind: str,
+    detail: str = "",
+    via: str = "human",
+    *,
+    action: str | None = None,
+    selector: str | None = None,
+    x: int | None = None,
+    y: int | None = None,
+    url: str | None = None,
+    page_hash: str | None = None,
+) -> None:
+    """Append one action event to the ring and the JSONL log.
+
+    The original kind/detail/via triple is untouched (feeds, banners,
+    and the learn summarizer read it); the keyword fields make the
+    event replayable on its own: what ran (action), where
+    (selector and/or x/y), on which page (url + page_hash).
+    """
+    event = {
+        "t": time.time(),
+        "kind": kind,
+        "detail": str(detail)[:200],
+        "via": via,
+        "action": action or kind,
+        "selector": selector,
+        "x": x,
+        "y": y,
+        "url": url,
+        "page_hash": page_hash,
+    }
     with _ACTIVITY_LOCK:
-        _ACTIVITY.append(
-            {"t": time.time(), "kind": kind, "detail": str(detail)[:200], "via": via}
-        )
+        _ACTIVITY.append(event)
         # The pass's own marker must not feed the next trigger.
         if kind != "learn":
             _LEARN_TOTAL[0] += 1
+    _append_jsonl(event)
     _maybe_auto_learn()
+
+
+def activity_log_file() -> Path:
+    """Resolve the JSONL action log at call time so tests redirect it."""
+    return Path(
+        os.environ.get(
+            "BROWSER_ACTIVITY_FILE", "/var/lib/buttons/browser_activity.jsonl"
+        )
+    )
+
+
+def _append_jsonl(event: dict) -> None:
+    """Persist one event outside the capped ring. Best-effort: a
+    full disk must never break input relay or the drive API."""
+    try:
+        path = activity_log_file()
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def page_hash_of(page: dict) -> str:
+    """Deterministic 12-hex state hash for a snapshot page: URL,
+    title, and the ordered target signature. Code-computed, so the
+    replayer (not the model) can tell whether the page changed."""
+    lines = [str(page.get("url", "")), str(page.get("title", ""))]
+    for el in page.get("elements", []) or []:
+        lines.append(
+            "|".join(str(el.get(k, "")) for k in ("tag", "tid", "text", "x", "y"))
+        )
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
+
+
+def selector_for(target: dict) -> str | None:
+    """Best-effort replay selector for a snapshot target.
+
+    data-testid first, then id, name, ARIA role — never XPath,
+    never bare text (the frozen skill format forbids both).
+    Targets without a stable hook return None: the event still
+    carries x/y so it stays replayable.
+    """
+    tid = target.get("tid")
+    if tid:
+        return f"[data-testid='{str(tid).replace(chr(39), '')}']"
+    eid = target.get("id")
+    if eid and " " not in str(eid):
+        return f"#{eid}"
+    name = target.get("name")
+    if name:
+        return f"{target.get('tag', '')}[name='{name}']".lower()
+    role = target.get("role")
+    if role:
+        return f"{target.get('tag', '')}[role='{role}']".lower()
+    return None
+
+
+def match_target(page: dict | None, x: int, y: int) -> dict | None:
+    """Target whose rect holds (x, y), else the nearest center
+    within 48px, else None. Drives match against the pre-op page
+    (the last remembered snapshot), never the post-op one."""
+    if not page:
+        return None
+    best = None
+    best_dist = 48.0
+    for el in page.get("elements", []) or []:
+        try:
+            cx, cy = int(el.get("x", 0)), int(el.get("y", 0))
+            w, h = int(el.get("w", 0)), int(el.get("h", 0))
+        except (TypeError, ValueError):
+            continue
+        if abs(x - cx) <= w / 2 and abs(y - cy) <= h / 2:
+            return el
+        dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+        if dist < best_dist:
+            best, best_dist = el, dist
+    return best
+
+
+#: Last snapshot page, for pre-op selector matching and human-input
+#: context (the human viewer is pixels-only and never snapshots).
+_LAST_PAGE: dict = {"page": None, "hash": None}
+
+
+def remember_page(page: dict) -> dict:
+    """Cache a snapshot page and its hash; returns the same page."""
+    _LAST_PAGE["page"] = page
+    _LAST_PAGE["hash"] = page_hash_of(page)
+    return page
+
+
+def last_page() -> tuple[dict | None, str | None]:
+    """Cached page and hash (both None before the first snapshot)."""
+    return _LAST_PAGE["page"], _LAST_PAGE["hash"]
+
+
+def _human_context(x: int | None = None, y: int | None = None) -> dict:
+    """Replay fields for a human input: selector matched against
+    the last snapshot page (pixels-only viewer never snapshots),
+    plus that page's url and hash. All None before any snapshot."""
+    page, phash = last_page()
+    selector = None
+    if x is not None and y is not None:
+        target = match_target(page, x, y)
+        selector = selector_for(target) if target else None
+    return {
+        "selector": selector,
+        "x": x,
+        "y": y,
+        "url": page.get("url") if page else None,
+        "page_hash": phash,
+    }
 
 
 def recent_activity(limit: int = 50) -> list:
@@ -1094,7 +1238,7 @@ def create_app():
                         x, y = int(msg["x"]), int(msg["y"])
                     except (KeyError, TypeError, ValueError):
                         continue
-                    _log_activity("click", f"{x},{y}")
+                    _log_activity("click", f"{x},{y}", **_human_context(x, y))
                     await recover_once(lambda: bridge.click(x, y))
                 elif msg.get("t") == "move":
                     try:
@@ -1108,7 +1252,9 @@ def create_app():
                         dx, dy = int(msg.get("dx", 0)), int(msg.get("dy", 0))
                     except (KeyError, TypeError, ValueError):
                         continue
-                    _log_activity("wheel", f"{x},{y} d{dx},{dy}")
+                    _log_activity(
+                        "wheel", f"{x},{y} d{dx},{dy}", **_human_context(x, y)
+                    )
                     await recover_once(lambda: bridge.wheel(x, y, dx, dy))
                 elif msg.get("t") == "touch":
                     phase = str(msg.get("phase", ""))
@@ -1119,25 +1265,27 @@ def create_app():
                     except (KeyError, TypeError, ValueError):
                         continue
                     if phase != "move":
-                        _log_activity("touch", f"{phase} {x},{y}")
+                        _log_activity(
+                            "touch", f"{phase} {x},{y}", **_human_context(x, y)
+                        )
                     await recover_once(lambda: bridge.touch(phase, x, y))
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
-                    _log_activity("key", key or code)
+                    _log_activity("key", key or code, **_human_context())
                     await recover_once(lambda: bridge.key(key, code))
                 elif msg.get("t") == "type":
                     await human_input()
                     text = str(msg.get("text", ""))
                     if not text:
                         continue
-                    _log_activity("type", f"{len(text)} chars")
+                    _log_activity("type", f"{len(text)} chars", **_human_context())
                     await recover_once(lambda: bridge.type_text(text))
                 elif msg.get("t") == "viewport":
                     mode = str(msg.get("mode", ""))
                     if mode not in ("mobile", "desktop"):
                         continue
-                    _log_activity("viewport", mode)
+                    _log_activity("viewport", mode, **_human_context())
                     await recover_once(
                         lambda: bridge.set_viewport_mode(mode == "mobile")
                     )
@@ -1146,7 +1294,9 @@ def create_app():
                     url = str(msg.get("url") or "")
                     if not url:
                         continue
-                    _log_activity("go", url)
+                    ctx = _human_context()
+                    ctx["url"] = url
+                    _log_activity("go", url, **ctx)
                     await recover_once(lambda: do_go(url))
         finally:
             # The Grid session must release even when the bridge is
