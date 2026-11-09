@@ -531,6 +531,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 8
+    volumes:
+      - neko-profile:/home/neko/.config/chromium
     logging: *default-logging
 
   # Browser-based VS Code: code-server.
@@ -638,6 +640,7 @@ volumes:
   code-server-data:
   code-server-config:
   open-webui-data:
+  neko-profile:
 
 # ---------------------------------------------------------------------------
 # ON HOLD — remaining agent harness decisions deferred (2026-10-22).
