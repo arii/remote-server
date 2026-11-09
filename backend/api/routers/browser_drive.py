@@ -101,7 +101,10 @@ SNAPSHOT_JS = (
     "text:(e.innerText||e.value||e.getAttribute('aria-label')||'')"
     ".slice(0,80),"
     "x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),"
-    "w:Math.round(r.width),h:Math.round(r.height)}})}})()"
+    "w:Math.round(r.width),h:Math.round(r.height),"
+    "tid:e.getAttribute('data-testid'),"
+    "id:e.id||null,name:e.getAttribute('name'),"
+    "role:e.getAttribute('role')}}}})()"
 )
 
 
@@ -114,11 +117,13 @@ async def _snapshot(bridge: browser_view.CDPBridge) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"snapshot failed: {exc}") from exc
     value = (raw or {}).get("result", {}).get("value") or {}
-    return {
-        "url": value.get("url", ""),
-        "title": value.get("title", ""),
-        "elements": value.get("els", []),
-    }
+    return browser_view.remember_page(
+        {
+            "url": value.get("url", ""),
+            "title": value.get("title", ""),
+            "elements": value.get("els", []),
+        }
+    )
 
 
 @router.get("/snapshot")
@@ -126,6 +131,14 @@ async def snapshot() -> dict[str, Any]:
     """Read-only view of the shared page: URL, title, click targets."""
     async with _drive_session() as (bridge, kind):
         page = await _snapshot(bridge)
+    browser_view._log_activity(
+        "snapshot",
+        page["url"],
+        via="agent",
+        action="snapshot",
+        url=page["url"],
+        page_hash=browser_view.page_hash_of(page),
+    )
     return {"ok": True, "kind": kind, **page}
 
 
@@ -190,6 +203,9 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
     """Drive the shared page. Refuses while the human holds the wheel."""
     _require_human_not_driving()
     async with _drive_session() as (bridge, kind):
+        # Pre-op page: selectors match what the action saw, not the
+        # post-op snapshot taken below.
+        pre_page, pre_hash = browser_view.last_page()
         if body.op == "navigate":
             url = (body.url or "").strip()
             if not url.startswith(("http://", "https://")):
@@ -223,7 +239,24 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
                 else (body.text or body.key or body.op)
             )
         )
-        browser_view._log_activity("drive", f"{body.op} {target}", via="agent")
+        selector = None
+        if body.op in ("click", "wheel"):
+            match = browser_view.match_target(pre_page, body.x, body.y)
+            selector = browser_view.selector_for(match) if match else None
+        browser_view._log_activity(
+            "drive",
+            f"{body.op} {target}",
+            via="agent",
+            action=body.op,
+            selector=selector,
+            x=body.x if body.op in ("click", "wheel") else None,
+            y=body.y if body.op in ("click", "wheel") else None,
+            url=(body.url if body.op == "navigate" else (pre_page or {}).get("url")),
+            # A navigate's destination hash is unknown until the
+            # post-op snapshot: never pair the new URL with the
+            # previous page's hash.
+            page_hash=(None if body.op == "navigate" else pre_hash),
+        )
         page = await _snapshot(bridge)
         # Presence for the drawer banner + a re-snapshot flag for any
         # later pipeline run: best-effort, the drive already landed.
