@@ -377,11 +377,13 @@ export function ReportDialog({
   availableLabels = [],
   onSubmit,
   onCancel,
+  returnFocusTo,
 }: {
   initialBody: string;
   availableLabels?: string[];
   onSubmit: (title: string, body: string, labels: string[]) => void;
   onCancel: () => void;
+  returnFocusTo?: string;
 }) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState(initialBody);
@@ -401,6 +403,7 @@ export function ReportDialog({
       label="Report a bug"
       testId="report-dialog"
       className="detail"
+      returnFocusTo={returnFocusTo}
     >
     <form
       onSubmit={(e) => {
@@ -778,6 +781,7 @@ export function NowHero({
   const status = heroStatus(health, feed.attention);
   const top = topUrgent(feed.attention);
   const topBlock = top ? retryBlocked(top) : null;
+  const [heroBlockNudge, setHeroBlockNudge] = useState(false);
   // Banner dedup (issue #935): never repeat the first card's Retry
   // pull in the hero — the card directly below owns that action.
   const dupFirst =
@@ -836,11 +840,15 @@ export function NowHero({
                 type="button"
                 className="btn-secondary"
                 data-testid="now-hero-retry"
-                disabled
+                aria-disabled="true"
                 title={retryBlockWarning(topBlock)}
+                onClick={() => setHeroBlockNudge(true)}
               >
                 {top.action.label}
               </button>
+              {heroBlockNudge && (
+                <span role="alert"> Still blocked — {retryBlockWarning(topBlock)}</span>
+              )}
             </>
           ) : (
             <ActionControl
@@ -1062,6 +1070,7 @@ export function AttentionRow({
   onToggleSelect: () => void;
 }) {
   const block = retryBlocked(item, repoInfo);
+  const [blockNudge, setBlockNudge] = useState(false);
   return (
     <li className="detail" data-testid={`now-item-${item.id}`}>
       <div className="attention-head">
@@ -1113,15 +1122,20 @@ export function AttentionRow({
               type="button"
               className="btn-secondary"
               data-testid={`now-retry-${item.id}`}
-              disabled
+              aria-disabled="true"
               title={retryBlockWarning(block)}
+              onClick={() => setBlockNudge(true)}
             >
               {item.action.label}
             </button>
-            {/* Show the block reason as visible text; the title tooltip is
-                unreachable on touch devices. */}
-            <p className="row-meta" data-testid={`now-retry-why-${item.id}`}>
-              {retryBlockWarning(block)}
+            {/* Active feedback (issue #1250): a tap re-announces the
+                exact blocker instead of dying silently. */}
+            <p
+              className="row-meta"
+              data-testid={`now-retry-why-${item.id}`}
+              role={blockNudge ? 'alert' : undefined}
+            >
+              {blockNudge ? `Still blocked — ${retryBlockWarning(block)}` : retryBlockWarning(block)}
             </p>
           </>
         ) : (
@@ -1777,6 +1791,7 @@ export default function NowView({
           availableLabels={reportLabels ?? []}
           onSubmit={(t, b, l) => void onSubmitReport(t, b, l)}
           onCancel={() => setDialogOpen(false)}
+          returnFocusTo='[data-testid="report-bug"]'
         />
       )}
       {reported && (

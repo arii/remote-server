@@ -1,5 +1,23 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 
+// Focus return (issue #1250): the trigger often never took focus
+// (touch taps leave activeElement on body), so restoring prev alone
+// lands on the document root. An explicit selector wins; otherwise
+// the previous element, unless it was the body.
+export function resolveReturnFocus(
+  selector: string | undefined,
+  prev: Element | null,
+  lookup: (s: string) => Element | null = (s) =>
+    typeof document === 'undefined' ? null : document.querySelector(s),
+): Element | null {
+  if (selector) {
+    const el = lookup(selector);
+    if (el && (el as HTMLElement).focus instanceof Function) return el;
+  }
+  if (prev && prev !== (typeof document !== 'undefined' ? document.body : null)) return prev;
+  return null;
+}
+
 // One shared wrapper on the native <dialog> element (issue #1128):
 // showModal gives top-layer, Escape, and focus containment free;
 // show() keeps the inline dialogs non-modal. Outside-tap dismiss,
@@ -14,6 +32,7 @@ export default function Dialog({
   label,
   testId,
   className,
+  returnFocusTo,
   children,
 }: {
   open: boolean;
@@ -22,6 +41,7 @@ export default function Dialog({
   label: string;
   testId?: string;
   className?: string;
+  returnFocusTo?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement | null>(null);
@@ -51,9 +71,9 @@ export default function Dialog({
     }
     return () => {
       document.body.style.overflow = prevOverflow;
-      prevActive?.focus?.();
+      (resolveReturnFocus(returnFocusTo, prevActive) as HTMLElement | null)?.focus?.();
     };
-  }, [open, modal]);
+  }, [open, modal, returnFocusTo]);
 
   // Non-modal dialogs trap no focus, so an element-level Escape
   // handler only fires when focus happens to sit inside (finding 3).

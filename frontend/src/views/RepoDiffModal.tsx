@@ -345,6 +345,7 @@ export default function RepoDiffModal({
       label={`Diff for ${repo}`}
       testId="repo-diff-modal"
       className="detail diff-modal"
+      returnFocusTo={`[data-testid="dirty-view-diff-${repo}"]`}
     >
         <span className="row-title">
           Diff · {repo} @ {branch}

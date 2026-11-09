@@ -978,6 +978,7 @@ describe('triage card CTAs (issue #935)', () => {
     expect(html).toContain('Ask agent to inspect &amp; rebase');
     expect(html).toContain('data-testid="now-retry-webhook-skip-1"');
     expect(html).toContain('disabled');
+    expect(html).toContain('aria-disabled="true"');
     expect(html).toContain('Retry will fail until the local commits are rebased');
     expect(html).toContain('data-testid="now-retry-why-webhook-skip-1"');
     expect(html).toContain('<p class="row-meta"');
