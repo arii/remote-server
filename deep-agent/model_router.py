@@ -91,15 +91,14 @@ def _ollama_spec():
 
 def _nebius_spec():
     if not _env("NEBIUS_API_KEY"):
-        raise RuntimeError(
-            "Nebius fallback needs NEBIUS_API_KEY in the environment"
-        )
+        raise RuntimeError("Nebius fallback needs NEBIUS_API_KEY in the environment")
     cap = pricing.spend_cap()
     # Effective cap, logged each time the metered path initializes
     # (#885). Info, not warning: the outage signal below stays the
     # one warning per failover.
-    logger.info("nebius effective spend cap: $%s",
-                "unlimited" if cap is None else f"{cap:.2f}")
+    logger.info(
+        "nebius effective spend cap: $%s", "unlimited" if cap is None else f"{cap:.2f}"
+    )
     if cap is not None:
         # Single choke point: every metered path flows through here
         # (guarded by tests/test_nebius_choke.py — no direct Nebius
@@ -113,12 +112,14 @@ def _nebius_spec():
             raise RuntimeError(
                 f"Nebius spend cap unverifiable: {total['unknown']} "
                 "metered run(s) have no rate — add a rate card entry "
-                "or set METERED_RATE_IN_PER_1M/METERED_RATE_OUT_PER_1M")
+                "or set METERED_RATE_IN_PER_1M/METERED_RATE_OUT_PER_1M"
+            )
         spent = total["spent"]
         if spent >= cap:
             raise RuntimeError(
                 f"Nebius spend cap hit: ${spent:.4f} of ${cap:.4f} "
-                "used — raise NEBIUS_SPEND_CAP_USD to continue")
+                "used — raise NEBIUS_SPEND_CAP_USD to continue"
+            )
     return {
         "provider": "nebius",
         "model": _env("NEBIUS_MODEL", DEFAULT_NEBIUS_MODEL),
@@ -143,7 +144,9 @@ def resolve_llm(prefer=None):
     if want == "ollama":
         if ollama_reachable():
             return _ollama_spec()
-        raise RuntimeError("Ollama unreachable at " + _env("OLLAMA_URL", DEFAULT_OLLAMA_URL))
+        raise RuntimeError(
+            "Ollama unreachable at " + _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
+        )
     if ollama_reachable():
         return _ollama_spec()
     if strict_ollama:
@@ -167,10 +170,11 @@ def _announce_fallback(spec):
     """
     url = _env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
     model = spec.get("model", "?")
-    logger.warning("ollama unreachable at %s, using metered nebius (%s)",
-                   url, model)
-    print(f"model_router: ollama unreachable at {url}, "
-          f"using metered nebius ({model})", file=sys.stderr)
+    logger.warning("ollama unreachable at %s, using metered nebius (%s)", url, model)
+    print(
+        f"model_router: ollama unreachable at {url}, using metered nebius ({model})",
+        file=sys.stderr,
+    )
     # Marker row, not a turn: zero usage quotes to $0 on carded
     # models, so spend totals are untouched. record() never raises,
     # so a ledger failure cannot break the failover it records.
@@ -180,10 +184,8 @@ def _announce_fallback(spec):
         thread_id="",
         messages=[],
         started=time.time(),
-        extra={"event": "metered-failover",
-               "reason": "ollama unreachable"},
-        usage={"input_tokens": 0, "output_tokens": 0,
-               "total_tokens": 0},
+        extra={"event": "metered-failover", "reason": "ollama unreachable"},
+        usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         calls=[],
     )
 
@@ -263,8 +265,7 @@ def is_retryable_error(exc):
     return bool(_RETRYABLE_MSG.search(str(exc)))
 
 
-def with_local_fallback(primary_fn, make_local_fn, note_fn,
-                        *, primary_is_local=False):
+def with_local_fallback(primary_fn, make_local_fn, note_fn, *, primary_is_local=False):
     """Run primary_fn(); on a retryable cloud error run one local leg.
 
     Framework-free: primary_fn is a zero-arg thunk for the cloud
@@ -353,6 +354,25 @@ def build_chat_model(spec=None, think=False):
     return ChatOpenAI(api_key=os.environ["NEBIUS_API_KEY"], **kwargs), spec
 
 
+def build_structured_chat_model(spec=None, schema=None, think=False):
+    """Native structured-output chat model (no prompt-hinting).
+
+    Binds the Pydantic schema at the protocol layer: Ollama gets
+    format=<json schema> (server-side constrained decoding), Nebius
+    gets response_format json_schema strict=True. Drops ~150-300
+    prompt/format-repair tokens per verdict turn (Gemini round
+    docs/gemini-round-2026-11-09.md). Returns (model, spec).
+    """
+    model, resolved = build_chat_model(spec, think=think)
+    if schema is None:
+        return model, resolved
+    if resolved.get("provider") == "nebius":
+        return model.with_structured_output(
+            schema, method="json_schema", strict=True
+        ), resolved
+    return model.with_structured_output(schema, method="json_schema"), resolved
+
+
 def disable_general_purpose(spec):
     """Disable the auto-added general-purpose subagent for one model.
 
@@ -374,5 +394,6 @@ def disable_general_purpose(spec):
     register_harness_profile(
         f"{provider}:{spec['model']}",
         HarnessProfileConfig(
-            general_purpose_subagent=GeneralPurposeSubagentProfile(
-                enabled=False)))
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)
+        ),
+    )
