@@ -157,6 +157,22 @@ class TestEvalFixturesCiGate(unittest.TestCase):
             )
         except subprocess.CalledProcessError:
             self.skipTest("no origin/main ref here")
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        main = subprocess.run(
+            ["git", "rev-parse", "origin/main"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if head == main:
+            self.skipTest("on main: no PR diff to filter")
         base = ["git", "diff", "--name-only", "origin/main...HEAD", "--"]
         in_scope = subprocess.run(
             base + ["backend", "deep-agent", ".agents"],
