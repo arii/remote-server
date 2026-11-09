@@ -78,13 +78,20 @@
 	handle /webui {
 		redir * /webui/
 	}
-	handle /webui/ {
-		rewrite /_oui-shell
-		reverse_proxy buttons:8000
-	}
 	handle /webui* {
-		uri strip_prefix /webui
-		reverse_proxy open-webui:8080
+		# Document navigations (full loads, refreshes, deep links)
+		# get the shimmed shell: the stock SvelteKit base:"" can't
+		# route a subpath (see openwebui_shell.py). Fetch/XHR/socket
+		# traffic rides the strip wildcard below.
+		@oui_page header Accept text/html*
+		handle @oui_page {
+			rewrite /_oui-shell
+			reverse_proxy buttons:8000
+		}
+		handle {
+			uri strip_prefix /webui
+			reverse_proxy open-webui:8080
+		}
 	}
 	handle /api/* {
 		reverse_proxy open-webui:8080

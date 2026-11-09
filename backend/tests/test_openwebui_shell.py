@@ -14,7 +14,7 @@ FIXTURE_SHELL = """<!doctype html>
 <link rel="manifest" href="/manifest.json">
 <script>sveltekit_abc = {base: ""};</script>
 <script src="/_app/immutable/entry/app.js"></script>
-</head><body>app</body></html>"""
+</head><body data-x="1"><a href="/notes">n</a><a href="/">h</a><a href="/auth">a</a><a href="/api/v1/x">api</a></body></html>"""
 
 
 def _urlopen_ok(*args, **kwargs):
@@ -33,7 +33,28 @@ class RewriteShellTest(unittest.TestCase):
         self.assertIn('"/webui/_app/immutable/entry/app.js"', out)
         self.assertIn("'/webui/static/favicon.png'", out)
         self.assertIn('"/webui/manifest.json"', out)
-        self.assertIn("<body>app</body>", out)
+        # App-route hrefs pass through untouched: the injected
+        # runtime rewriter owns links, and /api stays root-absolute.
+        self.assertIn('<a href="/notes">', out)
+        self.assertIn('<a href="/">', out)
+        self.assertIn('<a href="/auth">', out)
+        self.assertIn('<a href="/api/v1/x">', out)
+
+    def test_rewrite_injects_link_rewriter(self):
+        out = openwebui_shell.rewrite_oui_shell(FIXTURE_SHELL)
+        # Runs before the app boots and observes later renders.
+        self.assertIn("MutationObserver", out)
+        self.assertIn("notes|workspace|c|", out)
+        self.assertIn("indexOf('/webui/')", out)
+        # /auth is excluded from the route list: its form POSTs need
+        # the real OUI route via the root /auth* handle.
+        self.assertNotIn("auth", openwebui_shell._OUI_APP_ROUTES.split("|"))
+
+    def test_rewrite_fails_closed_without_body(self):
+        with self.assertRaises(ValueError):
+            openwebui_shell.rewrite_oui_shell(
+                '<html><head><script>x = {base: ""};</script></head>no-body</html>'
+            )
 
     def test_rewrite_fails_closed_on_drift(self):
         with self.assertRaises(ValueError):
