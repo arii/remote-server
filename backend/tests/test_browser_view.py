@@ -40,6 +40,24 @@ class ViewerMountTest(unittest.TestCase):
         self.assertIn("localStorage.getItem('kbd-pos')", html)
         self.assertNotIn("box.scrollIntoView", html)
 
+    def test_mobile_keyboard_uses_native_bridge(self):
+        # Phone audit fixes: no squeezed desktop board on coarse
+        # phones — the Keyboard button summons the OS keyboard
+        # through a hidden conduit input; the form never shows a
+        # native validation bubble; the address bar owns its row.
+        html = browser_view.VIEWER_HTML
+        flat = html.replace(" ", "")
+        self.assertIn('id="native-kb"', html)
+        self.assertIn('<form id="nav" novalidate>', html)
+        self.assertIn("@media(max-width:600px){", flat)
+        self.assertIn("#nav{flex:11100%}", flat)
+        self.assertIn("isMobileBoard", html)
+        self.assertIn("compositionend", html)
+        self.assertIn('enterkeyhint="enter"', html)
+        # FAB keeps its coarse-only slot but hides under the open
+        # panel instead of overlapping its keys.
+        self.assertIn("fab.style.visibility", html)
+
     def test_viewer_assets_are_vendored_no_cdn(self):
         # The viewer must load with zero external requests: a
         # render-blocking CDN <script> stalls the whole page (and the
@@ -1222,7 +1240,10 @@ class ViewerHtmlTest(unittest.TestCase):
         # (form submit, not button click); bare hostnames ride
         # https:// per normalizeUrl.
         html = browser_view.VIEWER_HTML
-        self.assertIn('<form id="nav">', html)
+        # novalidate: the browser's own "enter a URL" bubble
+        # obscured controls on phones; bad input surfaces as the
+        # remote page's error instead. Submit path unchanged.
+        self.assertIn('<form id="nav" novalidate>', html)
         self.assertIn('type="submit"', html)
         self.assertIn("getElementById('nav').onsubmit", html)
         self.assertNotIn("getElementById('go').onclick", html)
