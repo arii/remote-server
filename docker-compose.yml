@@ -521,8 +521,8 @@ services:
       - NEKO_PASSWORD=${NEKO_PASSWORD:?}
       - NEKO_PASSWORD_ADMIN=${NEKO_PASSWORD_ADMIN:?}
       - NEKO_BIND=0.0.0.0:8080
-      - NEKO_EPR=52000-52100
-      - NEKO_NAT1TO1=136.24.209.33
+      - NEKO_WEBRTC_EPR=52000-52100
+      - NEKO_WEBRTC_NAT1TO1=136.24.209.33
       - NEKO_PROXY=true
       - NEKO_PATH_PREFIX=/neko
     # Image healthcheck probes /health, which moved under the path prefix.
