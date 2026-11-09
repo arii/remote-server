@@ -60,3 +60,16 @@ Verified = checked live for this scorecard; registry-cited = recorded in
    to PR comments.
 3. Comment-ID links above were spot-checked (2 of 3 resolve); full
    re-verification is per-use, not per-write.
+
+## Hourly loop audit 2026-11-09 ~00:40Z (cloud-baryon)
+
+Probes, all live from this container: Nebius `GET $NEBIUS_BASE_URL/models`
+→ 200 with model list (key live; `NEBIUS_MODEL`/`NEBIUS_SPEND_CAP_USD`
+still empty — RS #1192 stays with env owner). Ollama
+`remote-ollama-1:11434/api/tags` → 200 (terminal-container route still
+#1196, now cross-referenced with merged #1212). `td rag query` → success
+with real hits on both repos (`receipt cap session manager` → BT
+`local_sessions.py`; `viewer session leak teardown` →
+`browser_view.py:201+`). No provider ran lane work this loop — both audit
+mega-PRs were implemented/tested by Muse subagents (author≠tester,
+red-green evidence in PRs). Gaps 1–2 unchanged.
