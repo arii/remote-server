@@ -74,6 +74,15 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 - Provider proof: Nebius key live (19-token completion), `NEBIUS_SPEND_CAP_USD=2.00` set on agent commands (container default unset — RS #1192 stays with env owner). Ollama reachable at `ollama:11434`, 6 models.
 - Costs tonight: $2 cap set, actual spend pennies (short turns). Ledger rows in deep-agent traces (coder_*, deep_chat_* 2026-11-09).
 
+## Gemini follow-through loop 2026-11-09 ~08:00-17:00Z (cloud-baryon)
+
+- Gemini Flash-Lite round (repo attached): Top-3 were worktree dep provisioning, Ollama claim caps, scoping node for open briefs — all verified in-tree, filed as #1235. Token cuts (context filtering, sliding-window truncation, prompt minimization) recorded unverified.
+- Implemented all three code-side items via Nebius coder in fix/1235-agent-loop (PR #1236, merged): link_worktree_node_modules + DEEP_AGENT_MODSTORE hook, needs_plan verb trigger, 9 focused tests (16/16 with #1230 suite, hermetic, gates clean). Skill brief-design rules added natively to td-tools.
+- Ollama reviews: #1236 BLOCK adjudicated (3 refuted with evidence — symlink writes stay in-worktree, lexists no-follow, \bwhat\b doesn't match 'whatever' — 1 accepted-by-design) then merged on green; #1238 BLOCK adjudicated (cap non-blocking on owner direction, model string confirmed) then merged on green.
+- New standing rules banked: hermetic worktree runs MUST put the worktree first on PYTHONPATH (else they silently import the base checkout); single-file ruff runs are not the contract — run the repo gate command.
+- Direct (non-agent) fix: #1192 compose defaults (PR #1238, merged).
+- Costs: $2 cap honored all day; per-turn spend remains pennies.
+
 ## Hourly loop audit 2026-11-09 ~00:40Z (cloud-baryon)
 
 Probes, all live from this container: Nebius `GET $NEBIUS_BASE_URL/models`
