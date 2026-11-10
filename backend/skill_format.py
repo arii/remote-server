@@ -10,9 +10,12 @@ the same structure plus what JSON Schema cannot express cheaply
 no-bare-text selector rule, type-steps-need-values).
 
 Rules: data-testid or ARIA role first, then id, name. Never XPath,
-never bare text. Every step has exactly one check, of one of four
-types: url_contains, element_visible, text_contains, value_equals.
-The model never verifies a step; code does.
+never bare text — except navigate steps, whose selector carries
+the destination http(s) URL instead of a CSS selector (clarified
+for the replayer, issue #1255). Every step has exactly one check,
+of one of four types: url_contains, element_visible,
+text_contains, value_equals. The model never verifies a step;
+code does.
 """
 
 from __future__ import annotations
@@ -141,9 +144,14 @@ def _split_compounds(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def _selector_errors(selector: str, n: int) -> list[str]:
+def _selector_errors(selector: str, n: int, action: str = "") -> list[str]:
     if not selector:
         return [f"step {n}: missing selector"]
+    if action == "navigate":
+        # The navigate target is a URL, not a CSS selector.
+        if selector.strip().startswith(("http://", "https://")):
+            return []
+        return [f"step {n}: navigate needs an http(s) URL in selector"]
     text = selector.strip()
     if text.lower().startswith(("//", "xpath=", "xpath:")):
         return [f"step {n}: XPath selectors are forbidden"]
@@ -178,7 +186,7 @@ def validate_skill(data: dict) -> list[str]:
             errors.append(f"step {want}: n is {step.n}, steps must run 1..N in order")
         if step.action not in ACTIONS:
             errors.append(f"step {step.n}: unknown action {step.action!r}")
-        errors.extend(_selector_errors(step.selector, step.n))
+        errors.extend(_selector_errors(step.selector, step.n, step.action))
         if step.action == "type" and not step.value:
             errors.append(f"step {step.n}: type needs a value")
         if step.check.type not in CHECK_TYPES:

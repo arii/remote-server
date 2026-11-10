@@ -27,7 +27,7 @@
                         "type": "string",
                         "minLength": 1,
                         "pattern": "^(?![\\s]*(//|xpath=|xpath:))",
-                        "description": "No XPath. The no-bare-text rule is enforced by the validator, which also requires sequential step numbers."
+                        "description": "No XPath. The no-bare-text rule is enforced by the validator, which also requires sequential step numbers. Navigate steps carry the destination URL here instead of a CSS selector."
                     },
                     "value": {"type": "string", "default": ""},
                     "check": {
