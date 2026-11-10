@@ -9,6 +9,7 @@ that import langchain at module top); those run under
 deep-agent/.venv/bin/python.
 Run: python3 tests/test_cli.py
 """
+
 import base64
 import io
 import os
@@ -29,6 +30,7 @@ try:
     import langchain  # noqa: F401
     import dotenv  # noqa: F401
     import deepagents  # noqa: F401
+
     HAS_AGENT_DEPS = True
 except ImportError:
     HAS_AGENT_DEPS = False
@@ -42,7 +44,10 @@ def run_script(name, *args, env=None):
     script = os.path.join(DEEP_AGENT, name)
     return subprocess.run(
         [sys.executable, script, *args],
-        capture_output=True, text=True, timeout=120, env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
 
 
@@ -83,8 +88,7 @@ class TestUsageError(unittest.TestCase):
         with redirect_stderr(err):
             code = cli.usage_error("line one", "line two", "line three")
         self.assertEqual(code, 2)
-        self.assertEqual(
-            err.getvalue(), "line one\nline two\nline three\n")
+        self.assertEqual(err.getvalue(), "line one\nline two\nline three\n")
 
 
 class TestSorry(unittest.TestCase):
@@ -134,17 +138,23 @@ class TestCliAgentSuggest(unittest.TestCase):
         self.assertIn("unknown arg", p.stderr)
 
     def test_missing_file_sorry(self):
-        p = run_script("issue_generator.py", "--spec-file",
-                       "/nonexistent-brief.md")
+        p = run_script("issue_generator.py", "--spec-file", "/nonexistent-brief.md")
         self.assertEqual(p.returncode, 1)
         self.assertIn("Sorry, cannot read spec", p.stdout)
 
     def test_empty_stdin_sorry(self):
         proc = subprocess.run(
-            [sys.executable,
-             os.path.join(DEEP_AGENT, "issue_generator.py"),
-             "--spec-file", "-"],
-            input="", capture_output=True, text=True, timeout=120)
+            [
+                sys.executable,
+                os.path.join(DEEP_AGENT, "issue_generator.py"),
+                "--spec-file",
+                "-",
+            ],
+            input="",
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("Sorry, empty brief", proc.stdout)
 
@@ -162,8 +172,8 @@ class TestRunsArgv(unittest.TestCase):
         p = run_script("runs.py", "definitely-no-such-run-xyz")
         self.assertEqual(p.returncode, 1)
         self.assertEqual(
-            p.stdout, "Sorry, no run found for "
-            "'definitely-no-such-run-xyz'.\n")
+            p.stdout, "Sorry, no run found for 'definitely-no-such-run-xyz'.\n"
+        )
         self.assertEqual(p.stderr, "")
 
 
@@ -178,45 +188,52 @@ class TestDeepChatArgv(unittest.TestCase):
             "   or: deep_chat.py owner/repo <thread-id> --resume "
             "approve|reject [b64-message]\n"
             "   or: deep_chat.py owner/repo --supervise\n"
-            "   or: deep_chat.py --validate-proposal <b64-json>\n")
+            "   or: deep_chat.py owner/repo --review-pr <number>\n"
+            "   or: deep_chat.py --validate-proposal <b64-json>\n",
+        )
         self.assertEqual(p.stdout, "")
 
     def test_resume_bad_verdict_text(self):
-        p = run_script("deep_chat.py", "arii/remote-server", "t1",
-                       "--resume", "maybe")
+        p = run_script("deep_chat.py", "arii/remote-server", "t1", "--resume", "maybe")
         self.assertEqual(p.returncode, 2)
-        self.assertEqual(p.stderr, "bad verdict 'maybe': "
-                         "want 'approve'/'reject'\n")
+        self.assertEqual(p.stderr, "bad verdict 'maybe': want 'approve'/'reject'\n")
 
     def test_resume_bad_message(self):
-        p = run_script("deep_chat.py", "arii/remote-server", "t1",
-                       "--resume", "approve", "a")
+        p = run_script(
+            "deep_chat.py", "arii/remote-server", "t1", "--resume", "approve", "a"
+        )
         self.assertEqual(p.returncode, 2)
         self.assertEqual(p.stderr, "bad base64 message\n")
 
     def test_turn_no_model_sorry(self):
         out = io.StringIO()
-        with mock.patch.object(deep_chat, "build_model",
-                               side_effect=RuntimeError("ollama down")), \
-                redirect_stdout(out):
-            code = deep_chat._cmd_turn(
-                "arii/remote-server", "t-sorry", b64("hi"))
+        with (
+            mock.patch.object(
+                deep_chat, "build_model", side_effect=RuntimeError("ollama down")
+            ),
+            redirect_stdout(out),
+        ):
+            code = deep_chat._cmd_turn("arii/remote-server", "t-sorry", b64("hi"))
         self.assertEqual(code, 1)
         self.assertEqual(
-            out.getvalue(),
-            "Sorry, no model is available right now: ollama down\n")
+            out.getvalue(), "Sorry, no model is available right now: ollama down\n"
+        )
 
     def test_resume_no_model_sorry(self):
         out = io.StringIO()
-        with mock.patch.object(deep_chat, "build_model",
-                               side_effect=RuntimeError("ollama down")), \
-                redirect_stdout(out):
+        with (
+            mock.patch.object(
+                deep_chat, "build_model", side_effect=RuntimeError("ollama down")
+            ),
+            redirect_stdout(out),
+        ):
             code = deep_chat._cmd_resume(
-                "arii/remote-server", "t-sorry", "approve", None)
+                "arii/remote-server", "t-sorry", "approve", None
+            )
         self.assertEqual(code, 1)
         self.assertEqual(
-            out.getvalue(),
-            "Sorry, no model is available right now: ollama down\n")
+            out.getvalue(), "Sorry, no model is available right now: ollama down\n"
+        )
 
 
 class TestEvalArgv(unittest.TestCase):
@@ -241,8 +258,8 @@ class TestVenvEntrypointArgv(unittest.TestCase):
         p = run_script("resolve_conflicts.py")
         self.assertEqual(p.returncode, 2)
         self.assertEqual(
-            p.stderr,
-            "usage: resolve_conflicts.py <worktree-path> [base-ref]\n")
+            p.stderr, "usage: resolve_conflicts.py <worktree-path> [base-ref]\n"
+        )
 
     def test_triage_fanout_bad_repos(self):
         env = dict(os.environ, NEBIUS_API_KEY="dummy")
