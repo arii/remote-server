@@ -104,7 +104,10 @@ SNAPSHOT_JS = (
     "w:Math.round(r.width),h:Math.round(r.height),"
     "tid:e.getAttribute('data-testid'),"
     "id:e.id||null,name:e.getAttribute('name'),"
-    "role:e.getAttribute('role')}}}})()"
+    "role:e.getAttribute('role'),"
+    "cls:(typeof e.className==='string'?e.className:"
+    "((e.className&&e.className.baseVal)||''))||null,"
+    "val:('value' in e?e.value:null)}}}})()"
 )
 
 
