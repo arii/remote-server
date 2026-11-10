@@ -91,6 +91,12 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 - Direct (non-agent) fix: #1192 compose defaults (PR #1238, merged).
 - Costs: $2 cap honored all day; per-turn spend remains pennies.
 
+## Live --review-pr path 2026-11-10 ~02:00Z (cloud-baryon)
+
+- #1280 merged: `deep_chat --review-pr <n>` (fixed task + native ReviewVerdict schema + ledgering). Unit + dispatch proven, full gates green.
+- First live Ollama run of the mode (PR #1270) hit the 20-min cap with no model response — matches the Gemini pitfall note (qwen3:8b can lock up under format-constrained decoding). The /tmp A/B (93s, valid schema) remains the positive datum; live-path reliability needs more samples, preferably smaller diffs first.
+- #1268 closed by the merge.
+
 ## First binary Ollama verdicts 2026-11-10 ~01:30Z (cloud-baryon)
 
 - review-1274 turn called `pr_read(number=1274, diff=true)` — the new #1274 tool path — and returned 3 binary APPROVE lines + overall APPROVE, zero BLOCKs. Direct before/after: 5 prior review turns without diff access timed out with zero verdicts; the first turn WITH diff access produced verdicts. Harness gap closed by the feature it reviews.
