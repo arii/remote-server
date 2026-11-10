@@ -264,10 +264,15 @@
             }))
           : undefined;
 
+      const isConsent =
+        type === "checkbox" &&
+        /agree|terms|privacy policy|acknowledge|consent/i.test(labelQuery);
+
       fields.push({
         fieldId: `field_${idx}_${(el.id || el.name || "input").replace(/[^a-zA-Z0-9_-]/g, "")}`,
         query: labelQuery,
         inputType: tag === "select" ? (el.multiple ? "select-multiple" : "select-one") : type,
+        semanticCategory: isConsent ? "legal.consent" : undefined,
         value: currentValue,
         locator: {
           cssSelector,
@@ -499,6 +504,124 @@
     true
   );
 
+  // 8. Phase 8: On-Demand UX & Touch Target Auditor
+  function runUxAudit() {
+    const violations = [];
+    let totalChecked = 0;
+
+    // 1. Interactive touch target sizes (< 24x24 px per WCAG 2.2 AAA / 2.5.8)
+    const interactives = document.querySelectorAll('button, a, input, select, textarea, [role="button"]');
+    interactives.forEach((el) => {
+      totalChecked++;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return;
+      if (rect.width > 0 && rect.height > 0 && (rect.width < 24 || rect.height < 24)) {
+        violations.push({
+          type: "touch-target-size",
+          severity: "warning",
+          element: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ""),
+          text: (el.innerText || el.getAttribute("aria-label") || el.name || "").slice(0, 40),
+          actualSize: `${Math.round(rect.width)}x${Math.round(rect.height)}px`,
+          guideline: "Interactive target should be at least 24x24px"
+        });
+      }
+    });
+
+    // 2. Silent text clipping (scrollWidth > clientWidth with overflow hidden)
+    const textNodes = document.querySelectorAll('button, a, span, p, h1, h2, h3, h4, label, [class*="title"], [class*="label"]');
+    textNodes.forEach((el) => {
+      totalChecked++;
+      const style = window.getComputedStyle(el);
+      if (
+        (style.overflow === "hidden" || style.overflowX === "hidden") &&
+        style.textOverflow !== "ellipsis" &&
+        el.scrollWidth > el.clientWidth + 2 &&
+        el.clientWidth > 0
+      ) {
+        violations.push({
+          type: "text-clipping",
+          severity: "error",
+          element: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ""),
+          text: (el.innerText || "").slice(0, 50),
+          guideline: "Text content clips silently without text-overflow: ellipsis"
+        });
+      }
+    });
+
+    // 3. Missing input labels / accessibility
+    const inputs = document.querySelectorAll('input:not([type="hidden"]), select, textarea');
+    inputs.forEach((el) => {
+      totalChecked++;
+      const hasLabel =
+        el.getAttribute("aria-label") ||
+        el.getAttribute("aria-labelledby") ||
+        (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) ||
+        el.closest("label");
+      if (!hasLabel) {
+        violations.push({
+          type: "missing-label",
+          severity: "error",
+          element: el.tagName.toLowerCase() + (el.name ? `[name="${el.name}"]` : ""),
+          guideline: "Form control missing accessible label or matching label[for]"
+        });
+      }
+    });
+
+    // 4. Missing mobile inputmode on tel/email/number/url
+    inputs.forEach((el) => {
+      totalChecked++;
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      if (["tel", "email", "url", "number"].includes(type) && !el.getAttribute("inputmode")) {
+        violations.push({
+          type: "missing-inputmode",
+          severity: "info",
+          element: `${el.tagName.toLowerCase()}[type="${type}"]`,
+          guideline: `Add inputmode="${type === "number" ? "numeric" : type}" for optimal mobile virtual keyboards`
+        });
+      }
+    });
+
+    const score = Math.max(0, Math.round(100 - violations.length * 4));
+    return {
+      timestamp: new Date().toISOString(),
+      url: window.location.href,
+      title: document.title,
+      totalChecked,
+      score,
+      violations
+    };
+  }
+
+  // Proactive Form Detection Badge ("Pre-Scan on Page Load")
+  function proactiveFormPreScan() {
+    try {
+      const scan = scanCurrentPageForms({ includePageContext: true, includeCurrentValues: true });
+      window.__PRE_SCANNED_FORM__ = {
+        timestamp: Date.now(),
+        doc: scan
+      };
+      if (scan.fields && scan.fields.length >= 3) {
+        chrome.runtime.sendMessage({
+          action: "FORM_DETECTED_ON_PAGE",
+          count: scan.fields.length
+        });
+      }
+    } catch (e) {}
+  }
+
+  let preScanTimer = null;
+  const schedulePreScan = () => {
+    clearTimeout(preScanTimer);
+    preScanTimer = setTimeout(proactiveFormPreScan, 600);
+  };
+
+  if (document.readyState === "complete") {
+    schedulePreScan();
+  } else {
+    window.addEventListener("load", schedulePreScan);
+  }
+
   // Expose hooks for multi-frame fallback execution via chrome.scripting
   window.__LOCALFORM_SCAN__ = (opts) =>
     scanCurrentPageForms(opts || {});
@@ -509,14 +632,29 @@
   window.__LOCALFORM_SNAPSHOT__ = () =>
     capturePageSnapshot();
 
+  window.__LOCALFORM_AUDIT__ = () =>
+    runUxAudit();
+
   // Message router from extension popup/sidepanel
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === "SCAN_PAGE_FORMS") {
-      sendResponse(scanCurrentPageForms(msg.options || {}));
+      if (
+        window.__PRE_SCANNED_FORM__ &&
+        Date.now() - window.__PRE_SCANNED_FORM__.timestamp < 5000 &&
+        !msg.options?.forceFresh
+      ) {
+        sendResponse(window.__PRE_SCANNED_FORM__.doc);
+      } else {
+        const fresh = scanCurrentPageForms(msg.options || {});
+        window.__PRE_SCANNED_FORM__ = { timestamp: Date.now(), doc: fresh };
+        sendResponse(fresh);
+      }
     } else if (msg.action === "HYDRATE_PAGE_FORMS") {
       sendResponse(hydratePageForms(msg.document, msg.options || {}));
     } else if (msg.action === "CAPTURE_PAGE_SNAPSHOT") {
       sendResponse(capturePageSnapshot());
+    } else if (msg.action === "RUN_UX_AUDIT") {
+      sendResponse(runUxAudit());
     }
     return true;
   });

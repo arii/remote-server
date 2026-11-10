@@ -3,8 +3,33 @@
 // Implements Phases 1 through 7 for Chrome's Built-in On-Device AI
 // ============================================================================
 
-// Global state cache
+// Global state cache & pre-warmed AI pool
 let currentExportDoc = null;
+let baseWarmSession = null;
+
+async function getClonedSession() {
+  const lmGlobal = self.LanguageModel || self.ai?.languageModel;
+  if (!lmGlobal) return null;
+  try {
+    if (!baseWarmSession) {
+      baseWarmSession = await lmGlobal.create({
+        outputLanguage: "en",
+        systemPrompt:
+          "You are an expert technical career assistant for Dr. Ariel Anders (MIT PhD Roboticist, former Waymo Motion Planning Senior SWE, Robust.AI first roboticist, Civ Robotics Senior Algorithms Engineer). Always write tailored, concrete, first-person responses."
+      });
+    }
+    if (typeof baseWarmSession.clone === "function") {
+      return await baseWarmSession.clone();
+    }
+    return await lmGlobal.create({ outputLanguage: "en" });
+  } catch (e) {
+    baseWarmSession = null;
+    return await lmGlobal.create({ outputLanguage: "en" });
+  }
+}
+
+// Pre-warm Gemini Nano on startup
+getClonedSession().catch(() => {});
 
 // Helpers
 async function getActiveTab() {
@@ -189,6 +214,11 @@ async function createPromptSession(onProgress, options = {}) {
     ...options
   };
 
+  if (!onProgress && !options.systemPrompt) {
+    const warm = await getClonedSession();
+    if (warm) return warm;
+  }
+
   if ("LanguageModel" in self) {
     return await self.LanguageModel.create(sessionOptions);
   } else if (self.ai?.languageModel) {
@@ -309,145 +339,160 @@ document.getElementById("btn-copy-export-json").addEventListener("click", () => 
   setTimeout(() => (btn.textContent = "Copy to Clipboard"), 1500);
 });
 
+// Phase 8: Run UX & Touch Target Audit Button
+document.getElementById("btn-run-ux-audit")?.addEventListener("click", async () => {
+  const preview = document.getElementById("export-preview-box");
+  preview.textContent = "Running UX & Touch Target Audit on active tab...";
+
+  try {
+    const report = await sendToActiveTab({ action: "RUN_UX_AUDIT" });
+    preview.textContent = JSON.stringify(report, null, 2);
+  } catch (err) {
+    preview.textContent = "UX Audit Error: " + err.message;
+  }
+});
+
 // ----------------------------------------------------------------------------
-// PHASES 3 & 6: FORM-IMPORT & FORM-IMPORT++ (AUTONOMOUS FILL)
+// PHASES 3 & 6: FORM-IMPORT & FORM-IMPORT++ (TWO-STAGE INSTANT FILL)
 // ----------------------------------------------------------------------------
 document.getElementById("btn-autofill-now").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-autofill-now");
   const statusBox = document.getElementById("autofill-status-box");
-  statusBox.textContent = "1. Scanning page form controls in memory...";
+  btn.disabled = true;
+  btn.textContent = "⚡ Stage 1: Instant Vault Fill (<15ms)...";
 
   try {
     const tab = await getActiveTab();
     if (!tab?.id) throw new Error("No active web page found.");
 
+    // 1. Scan current form (reads fresh or pre-scanned cache)
     const doc = await sendToActiveTab({
       action: "SCAN_PAGE_FORMS",
-      options: { includePageContext: true, includeCurrentValues: false }
+      options: { includePageContext: true, includeCurrentValues: true }
     });
 
-    if (!doc.fields || doc.fields.length === 0) {
+    if (!doc?.fields || doc.fields.length === 0) {
       statusBox.textContent = "No fillable interactive form inputs found on this page.";
       return;
     }
 
-    statusBox.textContent = `2. Found ${doc.fields.length} inputs. Matching against User-Context Vault...`;
     const { userContextVault = [], activeSessionContext = null } = await chrome.storage.local.get([
       "userContextVault",
       "activeSessionContext"
     ]);
 
-    const unresolvedFields = [];
+    const autoConsent = document.getElementById("chk-agree-consent")?.checked ?? true;
+    const longFormFields = [];
 
-    // Tier 1: Deterministic Fast Match (Autocomplete attributes & key/alias match)
+    // 2. Stage 1: Deterministic fast match for atomic fields + pre-drafted Cover Letter check
     for (const field of doc.fields) {
-      const q = field.query.toLowerCase().replace(/\*+$/, "").trim();
+      if (field.value && field.value !== "" && field.value !== false) continue;
+
+      const q = (field.query || "").toLowerCase().trim();
+      const isCoverLetterOrEssay =
+        field.inputType === "textarea" ||
+        /cover letter|why do you|why are you|motivation|note to hiring|tell us about|additional info|why openmind|why us/i.test(q);
+
+      if (isCoverLetterOrEssay) {
+        // If we already pre-drafted a tailored cover letter for activeSessionContext, use it in 0ms!
+        if (activeSessionContext?.preDraftedCoverLetter && /cover letter|note|motivation|why/i.test(q)) {
+          field.value = activeSessionContext.preDraftedCoverLetter;
+          field.confidence = 0.99;
+        } else {
+          longFormFields.push(field);
+        }
+        continue;
+      }
+
+      // Check consent checkboxes
+      if (field.inputType === "checkbox" && (field.semanticCategory === "legal.consent" || /agree|terms|privacy/i.test(q))) {
+        if (autoConsent) {
+          field.value = true;
+          field.confidence = 0.95;
+        }
+        continue;
+      }
+
+      // Deterministic match for standard atomic inputs
       const autoAttr = field.constraints?.autocomplete;
-
-      const matched = userContextVault.find((entry) => {
-        if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) return true;
-        if (entry.key.toLowerCase() === q) return true;
-        if (
-          entry.aliases &&
-          entry.aliases.some((a) => {
-            const alias = a.toLowerCase();
-            return q === alias || q.includes(alias) || alias.includes(q);
-          })
-        ) {
-          return true;
+      for (const entry of userContextVault) {
+        if (autoAttr && entry.autocomplete && entry.autocomplete === autoAttr) {
+          field.value = entry.value;
+          field.confidence = 0.99;
+          break;
         }
-        return false;
-      });
-
-      if (matched) {
-        field.value = matched.value;
-        field.confidence = 0.98;
-      } else {
-        unresolvedFields.push(field);
-      }
-    }
-
-    // Tier 2: Local Prompt API with Constrained JSON Schema for remaining fields
-    if (unresolvedFields.length > 0) {
-      statusBox.textContent = `3. Running on-device AI on ${unresolvedFields.length} ambiguous fields...`;
-      try {
-        const session = await createPromptSession();
-        const autoFillResponseSchema = {
-          type: "object",
-          properties: {
-            mappings: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  fieldId: { type: "string" },
-                  filledValue: { type: ["string", "boolean", "null"] },
-                  confidence: { type: "number" }
-                },
-                required: ["fieldId", "filledValue", "confidence"]
-              }
-            }
-          },
-          required: ["mappings"]
-        };
-
-        let targetContextBlock = "";
-        if (activeSessionContext) {
-          targetContextBlock = `
-Target Opportunity Context:
-- Role / Position: ${activeSessionContext.role || "N/A"}
-- Organization: ${activeSessionContext.organization || "N/A"}
-- Key Requirements: ${(activeSessionContext.keyRequirements || []).join(", ") || "N/A"}
-- Tech Stack: ${(activeSessionContext.techStack || []).join(", ") || "N/A"}
-- Mission / Summary: ${activeSessionContext.missionSummary || "N/A"}
-`;
-        }
-
-        // Chunk unresolved fields into batches of at most 8 fields
-        const chunkSize = 8;
-        for (let i = 0; i < unresolvedFields.length; i += chunkSize) {
-          const chunk = unresolvedFields.slice(i, i + chunkSize);
-          const promptText = `You are an on-device personal assistant filling a web application form.
-User Profile Facts (Who the applicant is):
-${JSON.stringify(userContextVault.map((u) => ({ key: u.key, value: u.value })))}
-${targetContextBlock}
-Page Context: ${doc.pageContext?.title || ""} ${doc.pageContext?.description || ""}
-Target Form Fields to Map:
-${JSON.stringify(chunk.map((f) => ({ fieldId: f.fieldId, label: f.query, type: f.inputType, options: f.constraints?.options })))}
-
-Rules:
-1. Ground the applicant's experience, identity, and qualifications strictly in the User Profile Facts. Never hallucinate facts about the applicant.
-2. If a field asks for a cover letter, motivation ("Why this role?", "Why our company?"), or a relevant project description, synthesize a concise, high-impact answer that connects the applicant's actual experience to the Target Opportunity Context.
-3. For standard fields (name, email, phone, links, location), map directly from user facts.
-4. Set filledValue to null if no user fact fits.`;
-
-          const resultJson = await session.prompt(promptText, {
-            responseConstraint: autoFillResponseSchema
-          });
-          const parsed = JSON.parse(resultJson);
-          for (const item of parsed.mappings || []) {
-            const target = doc.fields.find((f) => f.fieldId === item.fieldId);
-            if (target && item.filledValue !== null && item.filledValue !== undefined) {
-              target.value = item.filledValue;
-              target.confidence = typeof item.confidence === "number" ? item.confidence : 0.85;
-            }
+        const aliases = [entry.key.toLowerCase(), ...(entry.aliases || []).map((a) => a.toLowerCase())];
+        if (aliases.some((a) => q === a || q.includes(a) || a.includes(q))) {
+          if (field.inputType === "checkbox") {
+            field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
+          } else {
+            field.value = entry.value;
           }
+          field.confidence = 0.98;
+          break;
         }
-        session.destroy();
-      } catch (aiErr) {
-        console.warn("Prompt API mapping skipped:", aiErr);
       }
     }
 
-    statusBox.textContent = "4. Hydrating live DOM inputs...";
-    const hydrationResult = await sendToActiveTab({
+    // 3. Immediately hydrate Stage 1 fields on the live DOM so user sees instant results (<15ms)!
+    const stage1Result = await sendToActiveTab({
       action: "HYDRATE_PAGE_FORMS",
       document: doc,
       options: { highlightConfidence: true }
     });
+    statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
-    statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(hydrationResult, null, 2);
+    // 4. Stage 2: On-Device LLM synthesis ONLY for remaining tailored essays or unmapped fields
+    if (longFormFields.length > 0) {
+      btn.textContent = `🧠 Stage 2: Tailoring ${longFormFields.length} Essay/Cover Letter Field(s)...`;
+      const session = await getClonedSession();
+
+      if (session) {
+        for (const field of longFormFields) {
+          const ctx = activeSessionContext || doc.pageContext || {};
+          const bioEntry = userContextVault.find((v) => v.id === "custom.bio")?.value || "";
+          const expEntries = userContextVault
+            .filter((v) => ["professional", "education"].includes(v.category))
+            .map((v) => `${v.key}: ${v.value}`)
+            .join("\n");
+
+          const prompt =
+            `Draft a tailored, first-person response for the form field: "${field.query}".\n` +
+            `TARGET CONTEXT:\n` +
+            `- Role: ${ctx.role || ctx.roleOrTopic || document.title}\n` +
+            `- Company: ${ctx.organization || "this organization"}\n` +
+            `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
+            `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
+            `CANDIDATE FACTS (Dr. Ariel Anders):\n${bioEntry}\n${expEntries}\n\n` +
+            `INSTRUCTIONS:\n` +
+            `- DO NOT repeat the candidate bio word-for-word.\n` +
+            `- Explicitly connect Ariel's MIT PhD, Waymo motion planning, Robust.AI behavior trees, and Civ Robotics C++/Python/ROS 2 work to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
+            `- Output ONLY the final response text (no markdown headers, no placeholders, max 175 words).`;
+
+          const synthesized = await session.prompt(prompt);
+          if (synthesized && synthesized.trim()) {
+            field.value = synthesized.trim();
+            field.confidence = 0.92;
+          }
+        }
+        session.destroy?.();
+
+        // Hydrate the newly synthesized essay fields
+        const finalResult = await sendToActiveTab({
+          action: "HYDRATE_PAGE_FORMS",
+          document: doc,
+          options: { highlightConfidence: true }
+        });
+        statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(finalResult, null, 2);
+      }
+    } else {
+      statusBox.textContent = `Auto-Fill Completed (Instant Pre-Draft Used)!\n\n` + JSON.stringify(stage1Result, null, 2);
+    }
   } catch (err) {
     statusBox.textContent = `Auto-Fill Error: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "✨ Auto-Fill Active Form with AI";
   }
 });
 
@@ -755,6 +800,7 @@ async function renderSessionContext() {
 
   const observerCard = document.getElementById("session-context-card");
   const observerSummary = document.getElementById("session-context-summary");
+  const observerBadge = document.getElementById("session-context-badge");
   const autofillCard = document.getElementById("autofill-target-context-card");
   const autofillRole = document.getElementById("autofill-target-role");
   const autofillDesc = document.getElementById("autofill-target-desc");
@@ -763,32 +809,91 @@ async function renderSessionContext() {
     if (observerCard && observerSummary) {
       observerCard.style.display = "block";
       const parts = [];
-      if (activeSessionContext.role) parts.push(`Role: ${activeSessionContext.role}`);
+      const roleStr = activeSessionContext.role || activeSessionContext.roleOrTopic;
+      if (roleStr) parts.push(`Role: ${roleStr}`);
       if (activeSessionContext.organization) parts.push(`Organization: ${activeSessionContext.organization}`);
-      if (activeSessionContext.techStack && activeSessionContext.techStack.length) {
-        parts.push(`Tech Stack: ${activeSessionContext.techStack.join(", ")}`);
+      const stack = activeSessionContext.techStack || activeSessionContext.keywords;
+      if (stack && stack.length) {
+        parts.push(`Tech Stack / Keywords: ${stack.join(", ")}`);
       }
       if (activeSessionContext.keyRequirements && activeSessionContext.keyRequirements.length) {
         parts.push(`Requirements: ${activeSessionContext.keyRequirements.join("; ")}`);
       }
-      if (activeSessionContext.missionSummary) {
-        parts.push(`Summary: ${activeSessionContext.missionSummary}`);
-      }
+      const sum = activeSessionContext.missionSummary || activeSessionContext.summary;
+      if (sum) parts.push(`Summary: ${sum}`);
       if (activeSessionContext.sourceUrl) {
         parts.push(`Source: ${activeSessionContext.sourceUrl}`);
       }
       observerSummary.textContent = parts.join("\n");
+
+      if (observerBadge) {
+        if (activeSessionContext.preDraftedCoverLetter) {
+          observerBadge.textContent = "✅ Tailored Cover Letter Ready (0ms Instant Fill)";
+        } else {
+          observerBadge.textContent = "🎯 Target Context Saved";
+        }
+      }
     }
 
     if (autofillCard && autofillRole && autofillDesc) {
       autofillCard.style.display = "block";
-      const title = [activeSessionContext.role, activeSessionContext.organization].filter(Boolean).join(" @ ") || "Target Opportunity";
+      const title = [
+        activeSessionContext.role || activeSessionContext.roleOrTopic,
+        activeSessionContext.organization
+      ].filter(Boolean).join(" @ ") || "Target Opportunity";
       autofillRole.textContent = title;
-      autofillDesc.textContent = activeSessionContext.missionSummary || (activeSessionContext.keyRequirements || []).join(", ") || activeSessionContext.sourceTitle || "";
+      const descText = activeSessionContext.preDraftedCoverLetter
+        ? "✅ 0ms Cover Letter Ready | Grounded in target job"
+        : activeSessionContext.missionSummary || (activeSessionContext.keyRequirements || []).join(", ") || "";
+      autofillDesc.textContent = descText;
     }
   } else {
     if (observerCard) observerCard.style.display = "none";
     if (autofillCard) autofillCard.style.display = "none";
+  }
+}
+
+// Background speculative cover letter pre-drafter ("Pre-Hit Go")
+async function preDraftTailoredCoverLetter(ctx, vault) {
+  const session = await getClonedSession();
+  if (!session || !ctx) return;
+
+  const badgeEl = document.getElementById("session-context-badge");
+  if (badgeEl) badgeEl.textContent = "⚡ Pre-drafting tailored Cover Letter...";
+
+  try {
+    const bioEntry = vault.find((v) => v.id === "custom.bio")?.value || "";
+    const expEntries = vault
+      .filter((v) => ["professional", "education"].includes(v.category))
+      .map((v) => `${v.key}: ${v.value}`)
+      .join("\n");
+
+    const prompt =
+      `Write a concise, high-impact 2-paragraph Cover Letter for Ariel Anders applying to:\n` +
+      `- Target Role: ${ctx.role || ctx.roleOrTopic || "Software Engineer"}\n` +
+      `- Target Company: ${ctx.organization || "Company"}\n` +
+      `- Key Job Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
+      `- Job Tech Stack / Keywords: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n` +
+      `- Company Summary: ${ctx.missionSummary || ctx.summary || ""}\n\n` +
+      `CANDIDATE BACKGROUND (USE ONLY THESE REAL FACTS):\n` +
+      `${bioEntry}\n${expEntries}\n\n` +
+      `STRICT RULES:\n` +
+      `1. DO NOT copy the candidate bio verbatim. Mention ${ctx.organization || "the team"} and the "${ctx.role || ctx.roleOrTopic || "role"}" role explicitly in sentence 1.\n` +
+      `2. Connect Ariel's specific experience (MIT PhD in robotic manipulation under uncertainty, Waymo C++ motion planning & trajectory optimization, Robust.AI behavior trees, Civ Robotics C++/Python/ROS 2 localization & navigation) directly to ${ctx.organization || "the team"}'s requirements (${(ctx.techStack || ctx.keywords || []).slice(0, 5).join(", ")}).\n` +
+      `3. Keep it under 180 words, natural, direct, and ready to paste without placeholders.`;
+
+    const drafted = await session.prompt(prompt);
+    session.destroy?.();
+
+    if (drafted && drafted.trim().length > 40) {
+      ctx.preDraftedCoverLetter = drafted.trim();
+      await chrome.storage.local.set({ activeSessionContext: ctx });
+      if (badgeEl) badgeEl.textContent = "✅ Tailored Cover Letter Ready (0ms Instant Fill)";
+      renderSessionContext();
+    }
+  } catch (err) {
+    console.warn("Background cover letter pre-draft failed:", err);
+    if (badgeEl) badgeEl.textContent = "⚠️ Pre-draft unavailable";
   }
 }
 
@@ -878,6 +983,11 @@ Respond ONLY with a JSON object in this format:
     await chrome.storage.local.set({ activeSessionContext: targetContext });
     await renderSessionContext();
     btn.textContent = "🎯 Context Captured!";
+
+    // Speculative Pre-Computation: kick off background pre-draft of tailored cover letter
+    const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
+    preDraftTailoredCoverLetter(targetContext, userContextVault).catch(() => {});
+
     setTimeout(() => {
       btn.textContent = originalText;
       btn.disabled = false;

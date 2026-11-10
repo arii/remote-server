@@ -215,6 +215,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+
+  if (message.action === "FORM_DETECTED_ON_PAGE") {
+    const tabId = sender.tab?.id;
+    if (tabId && message.count >= 3) {
+      chrome.action.setBadgeText({ text: String(message.count), tabId });
+      chrome.action.setBadgeBackgroundColor({ color: "#3b82f6", tabId });
+    }
+    sendResponse({ ok: true });
+    return false;
+  }
 });
 
 async function handleFormSubmitObservation(payload, tab) {

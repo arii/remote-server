@@ -121,6 +121,10 @@
         </button>
       </div>
 
+      <button id="btn-run-ux-audit" class="btn btn-subtle btn-sm" style="margin-top:8px;">
+        🔍 Run UX & Touch Target Audit (Phase 8)
+      </button>
+
       <pre id="export-preview-box">Click "Scan Active Tab Forms" to inspect schema...</pre>
     </div>
   </main>
@@ -141,6 +145,12 @@
         </div>
         <div id="autofill-target-desc" style="color:var(--text-muted); font-size:10px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
       </div>
+
+      <!-- Consent Checkbox Control -->
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer; font-size:11px; color:#cbd5e1;">
+        <input type="checkbox" id="chk-agree-consent" checked style="width:auto;" />
+        <span>Auto-check "I agree to terms & privacy policy" checkboxes</span>
+      </label>
 
       <button id="btn-autofill-now" class="btn btn-primary">
         ✨ Auto-Fill Active Form with AI
@@ -239,6 +249,7 @@
           <strong style="font-size:11px; color:#93c5fd;">🎯 Active Target Context (For Next Form Fill)</strong>
           <button class="btn btn-danger" id="btn-clear-target-context" style="width:auto; padding:2px 8px; font-size:10px; margin:0;">Clear</button>
         </div>
+        <div id="session-context-badge" style="margin-top:5px; font-size:10.5px; color:#38bdf8; font-weight:600;"></div>
         <div id="session-context-summary" style="font-size:11px; color:#cbd5e1; margin-top:6px; white-space:pre-wrap;"></div>
       </div>
     </div>
