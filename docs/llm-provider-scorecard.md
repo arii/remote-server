@@ -101,6 +101,7 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 
 - review-1274 turn called `pr_read(number=1274, diff=true)` — the new #1274 tool path — and returned 3 binary APPROVE lines + overall APPROVE, zero BLOCKs. Direct before/after: 5 prior review turns without diff access timed out with zero verdicts; the first turn WITH diff access produced verdicts. Harness gap closed by the feature it reviews.
 - #1274 had already merged on green + AI-review; the Ollama verdicts stand as corroborating post-merge signal, no follow-up needed.
+- review-1282 (same brief shape, diff tool used correctly) timed out with zero verdicts — tool access is necessary but not sufficient; verdict rate 2/7 turns. Next lever is smaller diffs + fewer claims per brief, not more tooling.
 
 ## First usable Ollama review 2026-11-10 ~01:00Z (cloud-baryon)
 
