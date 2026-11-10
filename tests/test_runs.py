@@ -72,6 +72,20 @@ class TestRuns(unittest.TestCase):
             run = runs.get_run("run-0", ledger_path=path)
             self.assertEqual(run["trace"], [])
 
+    def test_empty_trace_file_resolves_unknown_ref(self):
+        # Issue #1279: killed runs leave 0-byte traces; _read_start
+        # returned None and resolve_run crashed instead of Sorry.
+        with tempfile.TemporaryDirectory() as d:
+            traces = os.path.join(d, "traces")
+            os.makedirs(traces)
+            open(os.path.join(traces, "dead.jsonl"), "w").close()
+            ledger = self._ledger(d, [])
+            self.assertIsNone(
+                runs.resolve_run(
+                    "definitely-no-such-run-xyz", traces_dir=traces, ledger_path=ledger
+                )
+            )
+
     def test_delete_run_hides_row_and_keeps_ids_stable(self):
         with tempfile.TemporaryDirectory() as d:
             path = self._ledger(d, [_row(thread_id="t0"), _row(thread_id="t1")])
