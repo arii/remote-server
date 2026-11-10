@@ -3,13 +3,9 @@
 Run: python3 -m pytest tests/test_harness_verdicts.py
 """
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deep-agent"))
-
-from verdicts import parse_verdict, verdict_prompt_hint  # noqa: E402
+from verdicts import parse_verdict, verdict_prompt_hint
 
 PROBE = (
     '{"verdict": "NEEDS-WORK", '
