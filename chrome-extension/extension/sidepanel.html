@@ -130,7 +130,16 @@
     <div class="card">
       <div class="card-title">Phase 6: Form-Import++ (1-Click AI Auto-Fill)</div>
       <div class="card-desc">
-        Scans the page in memory, resolves fields against your User-Context Vault using local Prompt API constrained JSON decoding, and fills the form.
+        Scans the page in memory, resolves fields against your User-Context Vault and active Target Context using local Gemini Nano, and populates the form.
+      </div>
+
+      <!-- Active Target Context Indicator in Auto-Fill Tab -->
+      <div id="autofill-target-context-card" style="display:none; border:1px solid #3b82f6; border-radius:6px; background:rgba(30,58,138,0.18); padding:8px 10px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:600; font-size:11px; color:#93c5fd;">🎯 Grounded with Target Context</span>
+          <span id="autofill-target-role" style="color:#e2e8f0; font-size:10.5px; font-weight:600;"></span>
+        </div>
+        <div id="autofill-target-desc" style="color:var(--text-muted); font-size:10px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
       </div>
 
       <button id="btn-autofill-now" class="btn btn-primary">
@@ -210,14 +219,28 @@
   <!-- TAB 5: OBSERVER (PHASE 7) -->
   <main id="tab-observer" class="tab-pane" style="display: none;">
     <div class="card">
-      <div class="card-title">Observer — Learn from Pages & Forms</div>
+      <div class="card-title">Observer — Target Context & Profile Learning</div>
       <div class="card-desc">
-        Click "Snapshot Page" to extract candidate personal facts from the active tab. No silent overwrites: approve or discard proposals below.
+        Capture job/target context to ground your next application, or extract your own profile facts from your resume/portfolio into the Review Queue.
       </div>
 
-      <button id="btn-snapshot-active-tab" class="btn btn-secondary">
-        📸 Snapshot Active Page for Facts
-      </button>
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <button class="btn btn-primary" id="btn-capture-target-context" style="flex:1;">
+          🎯 Capture Target / Job Context
+        </button>
+        <button class="btn btn-secondary" id="btn-snapshot-user-facts" style="flex:1;">
+          👤 Extract My Profile Facts
+        </button>
+      </div>
+
+      <!-- Active Target Context Card -->
+      <div class="card" id="session-context-card" style="display:none; border-color:#3b82f6; background:rgba(30,58,138,0.15);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong style="font-size:11px; color:#93c5fd;">🎯 Active Target Context (For Next Form Fill)</strong>
+          <button class="btn btn-danger" id="btn-clear-target-context" style="width:auto; padding:2px 8px; font-size:10px; margin:0;">Clear</button>
+        </div>
+        <div id="session-context-summary" style="font-size:11px; color:#cbd5e1; margin-top:6px; white-space:pre-wrap;"></div>
+      </div>
     </div>
 
     <div class="card">

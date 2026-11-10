@@ -106,6 +106,10 @@ document.querySelectorAll(".nav button").forEach((btn) => {
     const targetId = btn.dataset.tab;
     const targetPane = document.getElementById(targetId);
     if (targetPane) targetPane.style.display = "block";
+
+    if (targetId === "tab-observer" || targetId === "tab-fill") {
+      renderSessionContext();
+    }
   });
 });
 
@@ -327,7 +331,10 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     }
 
     statusBox.textContent = `2. Found ${doc.fields.length} inputs. Matching against User-Context Vault...`;
-    const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
+    const { userContextVault = [], activeSessionContext = null } = await chrome.storage.local.get([
+      "userContextVault",
+      "activeSessionContext"
+    ]);
 
     const unresolvedFields = [];
 
@@ -383,19 +390,35 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           required: ["mappings"]
         };
 
+        let targetContextBlock = "";
+        if (activeSessionContext) {
+          targetContextBlock = `
+Target Opportunity Context:
+- Role / Position: ${activeSessionContext.role || "N/A"}
+- Organization: ${activeSessionContext.organization || "N/A"}
+- Key Requirements: ${(activeSessionContext.keyRequirements || []).join(", ") || "N/A"}
+- Tech Stack: ${(activeSessionContext.techStack || []).join(", ") || "N/A"}
+- Mission / Summary: ${activeSessionContext.missionSummary || "N/A"}
+`;
+        }
+
         // Chunk unresolved fields into batches of at most 8 fields
         const chunkSize = 8;
         for (let i = 0; i < unresolvedFields.length; i += chunkSize) {
           const chunk = unresolvedFields.slice(i, i + chunkSize);
-          const promptText = `You are an on-device personal assistant filling a web form.
-User Facts:
+          const promptText = `You are an on-device personal assistant filling a web application form.
+User Profile Facts (Who the applicant is):
 ${JSON.stringify(userContextVault.map((u) => ({ key: u.key, value: u.value })))}
-
+${targetContextBlock}
 Page Context: ${doc.pageContext?.title || ""} ${doc.pageContext?.description || ""}
 Target Form Fields to Map:
 ${JSON.stringify(chunk.map((f) => ({ fieldId: f.fieldId, label: f.query, type: f.inputType, options: f.constraints?.options })))}
 
-Map only appropriate user facts to the fields. Set filledValue to null if no user fact fits.`;
+Rules:
+1. Ground the applicant's experience, identity, and qualifications strictly in the User Profile Facts. Never hallucinate facts about the applicant.
+2. If a field asks for a cover letter, motivation ("Why this role?", "Why our company?"), or a relevant project description, synthesize a concise, high-impact answer that connects the applicant's actual experience to the Target Opportunity Context.
+3. For standard fields (name, email, phone, links, location), map directly from user facts.
+4. Set filledValue to null if no user fact fits.`;
 
           const resultJson = await session.prompt(promptText, {
             responseConstraint: autoFillResponseSchema
@@ -724,10 +747,154 @@ document.getElementById("btn-discard-all-deltas").addEventListener("click", asyn
   renderObserverQueue();
 });
 
-// Snapshot Active Tab Button
-document.getElementById("btn-snapshot-active-tab").addEventListener("click", async () => {
-  const btn = document.getElementById("btn-snapshot-active-tab");
-  btn.textContent = "Extracting page knowledge with on-device AI...";
+// ----------------------------------------------------------------------------
+// SESSION CONTEXT CONTROLLER (TARGET JOB / EPHEMERAL PAGE CONTEXT)
+// ----------------------------------------------------------------------------
+async function renderSessionContext() {
+  const { activeSessionContext = null } = await chrome.storage.local.get(["activeSessionContext"]);
+
+  const observerCard = document.getElementById("session-context-card");
+  const observerSummary = document.getElementById("session-context-summary");
+  const autofillCard = document.getElementById("autofill-target-context-card");
+  const autofillRole = document.getElementById("autofill-target-role");
+  const autofillDesc = document.getElementById("autofill-target-desc");
+
+  if (activeSessionContext) {
+    if (observerCard && observerSummary) {
+      observerCard.style.display = "block";
+      const parts = [];
+      if (activeSessionContext.role) parts.push(`Role: ${activeSessionContext.role}`);
+      if (activeSessionContext.organization) parts.push(`Organization: ${activeSessionContext.organization}`);
+      if (activeSessionContext.techStack && activeSessionContext.techStack.length) {
+        parts.push(`Tech Stack: ${activeSessionContext.techStack.join(", ")}`);
+      }
+      if (activeSessionContext.keyRequirements && activeSessionContext.keyRequirements.length) {
+        parts.push(`Requirements: ${activeSessionContext.keyRequirements.join("; ")}`);
+      }
+      if (activeSessionContext.missionSummary) {
+        parts.push(`Summary: ${activeSessionContext.missionSummary}`);
+      }
+      if (activeSessionContext.sourceUrl) {
+        parts.push(`Source: ${activeSessionContext.sourceUrl}`);
+      }
+      observerSummary.textContent = parts.join("\n");
+    }
+
+    if (autofillCard && autofillRole && autofillDesc) {
+      autofillCard.style.display = "block";
+      const title = [activeSessionContext.role, activeSessionContext.organization].filter(Boolean).join(" @ ") || "Target Opportunity";
+      autofillRole.textContent = title;
+      autofillDesc.textContent = activeSessionContext.missionSummary || (activeSessionContext.keyRequirements || []).join(", ") || activeSessionContext.sourceTitle || "";
+    }
+  } else {
+    if (observerCard) observerCard.style.display = "none";
+    if (autofillCard) autofillCard.style.display = "none";
+  }
+}
+
+// Clear Active Target Context Button
+document.getElementById("btn-clear-target-context")?.addEventListener("click", async () => {
+  await chrome.storage.local.remove(["activeSessionContext"]);
+  await renderSessionContext();
+});
+
+// Action 1: Capture Target / Job Context (Session Memory, does NOT pollute Vault)
+document.getElementById("btn-capture-target-context")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-capture-target-context");
+  const originalText = btn.textContent;
+  btn.textContent = "Analyzing target page...";
+  btn.disabled = true;
+
+  try {
+    const tab = await getActiveTab();
+    if (!tab?.id) throw new Error("No active web page found.");
+
+    const snapshot = await sendToActiveTab({
+      action: "CAPTURE_PAGE_SNAPSHOT"
+    });
+
+    if (!snapshot) throw new Error("Could not capture page content.");
+
+    let targetContext = {
+      role: "",
+      organization: "",
+      keyRequirements: [],
+      techStack: [],
+      missionSummary: "",
+      sourceTitle: snapshot.title || "",
+      sourceUrl: snapshot.url || "",
+      capturedAt: new Date().toISOString()
+    };
+
+    // Use Gemini Nano if available to extract structured target context
+    if (snapshot.extractedText && ("LanguageModel" in self || self.ai?.languageModel)) {
+      try {
+        const session = await createPromptSession();
+        const promptText = `Analyze this job posting / target page and extract the target context.
+Page Title: "${snapshot.title || ""}"
+URL: "${snapshot.url || ""}"
+Text Content:
+"${snapshot.extractedText.slice(0, 3500)}"
+
+Respond ONLY with a JSON object in this format:
+{
+  "role": "Title of the job, grant, or opportunity (e.g. Senior Software Engineer)",
+  "organization": "Company or organization name (e.g. OpenMind, Waymo)",
+  "keyRequirements": ["requirement 1", "requirement 2"],
+  "techStack": ["tech 1", "tech 2"],
+  "missionSummary": "1-2 sentence overview of what the company/team does and what they need."
+}`;
+        const aiResponse = await session.prompt(promptText);
+        session.destroy();
+
+        const match = aiResponse.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (parsed.role) targetContext.role = parsed.role;
+          if (parsed.organization) targetContext.organization = parsed.organization;
+          if (Array.isArray(parsed.keyRequirements)) targetContext.keyRequirements = parsed.keyRequirements;
+          if (Array.isArray(parsed.techStack)) targetContext.techStack = parsed.techStack;
+          if (parsed.missionSummary) targetContext.missionSummary = parsed.missionSummary;
+        }
+      } catch (aiErr) {
+        console.warn("AI target extraction failed, falling back to heuristics:", aiErr);
+      }
+    }
+
+    // Heuristic fallbacks if AI was unavailable or missed role/org
+    if (!targetContext.role || !targetContext.organization) {
+      const titleParts = (snapshot.title || "").split(/[-|–•]/).map((s) => s.trim());
+      if (titleParts.length >= 2) {
+        if (!targetContext.role) targetContext.role = titleParts[0];
+        if (!targetContext.organization) targetContext.organization = titleParts[1];
+      } else if (!targetContext.role) {
+        targetContext.role = snapshot.title || "Target Opportunity";
+      }
+    }
+    if (!targetContext.missionSummary) {
+      targetContext.missionSummary = (snapshot.extractedText || "").slice(0, 300).trim();
+    }
+
+    await chrome.storage.local.set({ activeSessionContext: targetContext });
+    await renderSessionContext();
+    btn.textContent = "🎯 Context Captured!";
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }, 1500);
+  } catch (err) {
+    alert("Capture Target Context failed: " + err.message);
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+});
+
+// Action 2: Extract My Profile Facts (Permanent User Identity -> Review & Merge Queue)
+document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", async () => {
+  const btn = document.getElementById("btn-snapshot-user-facts");
+  const originalText = btn.textContent;
+  btn.textContent = "Extracting my profile facts...";
+  btn.disabled = true;
 
   try {
     const tab = await getActiveTab();
@@ -739,11 +906,11 @@ document.getElementById("btn-snapshot-active-tab").addEventListener("click", asy
 
     if (!snapshot) throw new Error("Could not capture page snapshot.");
 
-    // Phase 7 FR-7.3: Extract facts via on-device LanguageModel if text is available
+    // Extract user profile facts via on-device LanguageModel strictly for personal portfolio/resume
     if (snapshot.extractedText && ("LanguageModel" in self || self.ai?.languageModel)) {
       try {
         const session = await createPromptSession();
-        const promptText = `Extract 1-3 key profile facts (such as name, role, email, location, or organization) from this text if present. Text: "${snapshot.extractedText.slice(0, 1000)}". Respond with a JSON array of objects with "key", "proposedValue", "category".`;
+        const promptText = `Extract 1-3 personal profile facts about the user/author (such as full name, email, phone number, location, GitHub URL, portfolio, or current employer) from this portfolio or resume text. Text: "${snapshot.extractedText.slice(0, 2000)}". Respond ONLY with a JSON array of objects with "key", "proposedValue", "category".`;
         const aiResponse = await session.prompt(promptText);
         session.destroy();
 
@@ -761,9 +928,9 @@ document.getElementById("btn-snapshot-active-tab").addEventListener("click", asy
                   category: item.category || "custom",
                   key: item.key,
                   proposedValue: String(item.proposedValue),
-                  evidenceSnippet: `Extracted via Gemini Nano from "${snapshot.title || "page"}"`,
+                  evidenceSnippet: `Extracted from "${snapshot.title || "portfolio/resume"}"`,
                   sourceUrl: snapshot.url || "",
-                  confidence: 0.9
+                  confidence: 0.92
                 });
                 addedCount++;
               }
@@ -781,17 +948,22 @@ document.getElementById("btn-snapshot-active-tab").addEventListener("click", asy
       }
     }
 
-    // Pass snapshot to service worker observation handler
+    // Pass snapshot to service worker observation handler for any filled inputs
     await chrome.runtime.sendMessage({
       action: "FORM_SUBMIT_DETECTED",
       payload: snapshot
     });
 
     renderObserverQueue();
+    btn.textContent = "👤 Extracted!";
+    setTimeout(() => {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }, 1500);
   } catch (err) {
-    alert("Snapshot failed: " + err.message);
-  } finally {
-    btn.textContent = "📸 Snapshot Active Page for Facts";
+    alert("Profile extraction failed: " + err.message);
+    btn.textContent = originalText;
+    btn.disabled = false;
   }
 });
 
@@ -801,3 +973,4 @@ document.getElementById("btn-snapshot-active-tab").addEventListener("click", asy
 checkBuiltInAIStatus();
 renderVault();
 renderObserverQueue();
+renderSessionContext();

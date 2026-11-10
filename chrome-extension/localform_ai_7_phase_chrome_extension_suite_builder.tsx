@@ -954,8 +954,18 @@ async function handleFormSubmitObservation(payload, tab) {
   <!-- PHASE 5 & 7: User-Context Vault & Page Observer -->
   <section id="tab-phase57" class="tab-pane" style="display:none;">
     <div class="card">
-      <h4>Phase 7: Observer — Snapshot Page Knowledge</h4>
-      <button id="btn-snapshot-page" class="btn btn-secondary">📸 Snapshot Current Page for Facts</button>
+      <h4>Phase 7: Observer — Target Context & Profile Learning</h4>
+      <div style="display:flex; gap:6px; margin-bottom:8px;">
+        <button id="btn-capture-target-context" class="btn btn-primary" style="flex:1;">🎯 Capture Target / Job Context</button>
+        <button id="btn-snapshot-user-facts" class="btn btn-secondary" style="flex:1;">👤 Extract My Profile Facts</button>
+      </div>
+      <div id="session-context-card" style="display:none; border:1px solid #3b82f6; padding:8px; border-radius:6px; margin-bottom:8px; background:rgba(30,58,138,0.15);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong style="font-size:11px; color:#93c5fd;">🎯 Active Target Context</strong>
+          <button id="btn-clear-target-context" class="btn btn-danger btn-sm" style="padding:2px 6px;">Clear</button>
+        </div>
+        <pre id="session-context-summary" style="font-size:10.5px; margin-top:4px; white-space:pre-wrap;"></pre>
+      </div>
       <div id="observer-deltas-list" style="margin-top:8px;"></div>
     </div>
     <div class="card">
@@ -1504,6 +1514,7 @@ export default function App() {
     "I'm Ariel Anders (MIT PhD Roboticist). Based at 1 Brady St Apt 123, San Francisco, CA. Previously Senior Software Engineer on the Motion Planning team at Waymo and First Roboticist at Robust.AI."
   );
   const [isObserving, setIsObserving] = useState(false);
+  const [activeSessionContext, setActiveSessionContext] = useState(null);
 
   // Code Viewer State
   const [selectedCodeFile, setSelectedCodeFile] = useState('content-script.js');
@@ -1864,9 +1875,36 @@ export default function App() {
   };
 
   // --------------------------------------------------------------------------
-  // PHASE 7: Observer — Snapshot Page or Form Values to Propose Context Updates
+  // PHASE 7: Observer — Split Target Context vs. User Profile Facts
   // --------------------------------------------------------------------------
-  const handleSnapshotCurrentPage = async () => {
+  const handleCaptureTargetContext = async () => {
+    setIsObserving(true);
+    await new Promise((r) => setTimeout(r, 300));
+
+    const target = {
+      role: currentPage.title.replace(/@.*/, '').trim() || 'Robotics Engineer',
+      organization: 'OpenMind',
+      keyRequirements: [
+        'Production experience with robotics motion planning',
+        'C++ / Python systems architecture',
+        'Autonomous mobile robotics or manipulation'
+      ],
+      techStack: ['Python', 'C++', 'ROS 2', 'PyTorch', 'Linux'],
+      missionSummary: currentPage.description || 'Advanced Robots for the Unstructured World in San Francisco.',
+      sourceTitle: currentPage.title,
+      sourceUrl: currentPage.url,
+      capturedAt: new Date().toISOString()
+    };
+
+    setActiveSessionContext(target);
+    setIsObserving(false);
+  };
+
+  const handleClearTargetContext = () => {
+    setActiveSessionContext(null);
+  };
+
+  const handleSnapshotUserFacts = async () => {
     setIsObserving(true);
     await new Promise((r) => setTimeout(r, 350));
 
@@ -1905,7 +1943,7 @@ export default function App() {
           category: 'custom',
           key: f.query,
           proposedValue: val,
-          evidenceSnippet: `Captured new field "${f.query}" on ${currentPage.domain}`,
+          evidenceSnippet: `Captured user profile fact "${f.query}" from portfolio/form`,
           sourceUrl: currentPage.url,
           confidence: 0.88
         });
@@ -2625,6 +2663,18 @@ export default function App() {
                     With the v1.1 Ashby patch, all 8 fields on <strong>Robotics Engineer @ OpenMind</strong> (including Location combobox, Visa Sponsorship, Onsite Commitment, and Personal Projects) map automatically.
                   </p>
 
+                  {activeSessionContext && (
+                    <div className="bg-blue-950/40 border border-blue-500/40 rounded-xl p-3 text-xs space-y-1">
+                      <div className="flex items-center justify-between text-blue-400 font-bold">
+                        <span>🎯 Grounded with Target Context</span>
+                        <span>{activeSessionContext.role} @ {activeSessionContext.organization}</span>
+                      </div>
+                      <div className="text-slate-400 text-[10px]">
+                        Tailoring long-form responses and pitches to: {activeSessionContext.techStack.join(', ')}
+                      </div>
+                    </div>
+                  )}
+
                   <button
                     onClick={handleAutonomousFormFillPlusPlus}
                     disabled={isAutoFilling}
@@ -2658,16 +2708,47 @@ export default function App() {
                 <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
                   <h3 className="text-sm font-bold text-white flex items-center gap-2">
                     <Eye className="w-4 h-4 text-indigo-400" />
-                    Phase 7: Observer — Snapshot & Learn
+                    Phase 7: Observer — Target Context & Profile Learning
                   </h3>
-                  <button
-                    onClick={handleSnapshotCurrentPage}
-                    disabled={isObserving}
-                    className="w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs transition cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    <Eye className="w-4 h-4" />
-                    📸 Snapshot Current Page & Form Edits
-                  </button>
+                  <p className="text-xs text-slate-400">
+                    Separate ephemeral target context (the hiring company & role) from permanent user facts (your portfolio & resume).
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleCaptureTargetContext}
+                      disabled={isObserving}
+                      className="py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      🎯 Capture Target Context
+                    </button>
+                    <button
+                      onClick={handleSnapshotUserFacts}
+                      disabled={isObserving}
+                      className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      👤 Extract Profile Facts
+                    </button>
+                  </div>
+
+                  {activeSessionContext && (
+                    <div className="bg-blue-950/30 border border-blue-500/40 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center justify-between text-xs font-bold text-blue-400">
+                        <span>🎯 Active Target Context (Ready for Next Auto-Fill)</span>
+                        <button
+                          onClick={handleClearTargetContext}
+                          className="text-[10px] bg-rose-500/20 text-rose-300 hover:bg-rose-500/40 px-2 py-0.5 rounded cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="text-[11px] text-slate-300 space-y-1">
+                        <div><strong className="text-white">Role:</strong> {activeSessionContext.role} @ {activeSessionContext.organization}</div>
+                        <div><strong className="text-white">Stack:</strong> {activeSessionContext.techStack.join(', ')}</div>
+                        <div className="text-slate-400 text-[10px]">{activeSessionContext.missionSummary}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
