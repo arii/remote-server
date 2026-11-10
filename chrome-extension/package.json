@@ -1,0 +1,22 @@
+{
+  "name": "localform-ai-extension",
+  "version": "1.0.0",
+  "description": "Chrome Built-in AI (Gemini Nano) Form Exporter, Importer, Context Vault, Auto-Filler, and Observer Suite (Manifest V3)",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test:syntax": "node --check extension/service-worker.js && node --check extension/content-script.js && node --check extension/sidepanel.js",
+    "check": "npm run test:syntax && npm run build"
+  },
+  "keywords": [
+    "chrome-extension",
+    "manifest-v3",
+    "built-in-ai",
+    "gemini-nano",
+    "prompt-api",
+    "summarizer-api",
+    "autofill"
+  ],
+  "author": "",
+  "license": "MIT"
+}

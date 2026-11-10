@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalForm AI — Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <!-- HEADER -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">LocalForm AI</div>
+      </div>
+    </div>
+    <div id="ai-status-badge" class="badge badge-downloadable">
+      <span class="dot">●</span>
+      <span id="ai-status-text">Checking AI...</span>
+    </div>
+  </header>
+
+  <!-- NAVIGATION TABS -->
+  <nav class="nav">
+    <button data-tab="tab-ai" class="active">
+      <span>AI Model</span>
+    </button>
+    <button data-tab="tab-export">
+      <span>Export</span>
+    </button>
+    <button data-tab="tab-fill">
+      <span>Auto-Fill</span>
+    </button>
+    <button data-tab="tab-vault">
+      <span>Vault</span>
+    </button>
+    <button data-tab="tab-observer">
+      <span id="tab-observer-label">Observer</span>
+    </button>
+  </nav>
+
+  <!-- TAB 1: AI MODEL BOOTSTRAPPER (PHASE 1) -->
+  <main id="tab-ai" class="tab-pane">
+    <div class="card">
+      <div class="card-title">Chrome Built-in AI (Gemini Nano)</div>
+      <div class="card-desc">
+        Runs 100% on-device via Chrome's native Prompt and Summarizer APIs. No external API keys or cloud calls required.
+      </div>
+
+      <div class="status-grid">
+        <div class="status-pill">
+          <div class="label">Prompt API</div>
+          <div id="pill-prompt-status" class="val">...</div>
+        </div>
+        <div class="status-pill">
+          <div class="label">Summarizer</div>
+          <div id="pill-summarizer-status" class="val">...</div>
+        </div>
+        <div class="status-pill">
+          <div class="label">Writer API</div>
+          <div id="pill-writer-status" class="val">...</div>
+        </div>
+      </div>
+
+      <div id="download-progress-container" style="display: none;">
+        <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+          <span>Downloading Gemini Nano Weights</span>
+          <span id="download-progress-text">0%</span>
+        </div>
+        <div class="progress-bar-container">
+          <div id="download-progress-fill" class="progress-bar" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <button id="btn-bootstrap-model" class="btn btn-primary">
+        Initialize / Download Built-in Models
+      </button>
+
+      <pre id="model-details-box">Checking capabilities...</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Prompt API Diagnostic Sandbox</div>
+      <textarea id="sandbox-prompt-input" rows="2" placeholder="Ask on-device Gemini Nano a test question...">Why is local on-device form autofill safer for privacy?</textarea>
+      <div class="btn-row">
+        <button id="btn-run-sandbox" class="btn btn-secondary">Run Test Prompt</button>
+      </div>
+      <pre id="sandbox-response-box" style="display: none;"></pre>
+    </div>
+  </main>
+
+  <!-- TAB 2: FORM-EXPORT & FORM-EXPORT++ (PHASES 2 & 4) -->
+  <main id="tab-export" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Form-Export (v1 & v2)</div>
+      <div class="card-desc">
+        Extracts all form inputs on the active tab into a portable JSON schema with labels, CSS selectors, constraints, and hierarchy.
+      </div>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="chk-export-plus" checked style="width:auto;" />
+        <span><strong>Enable Form-Export++ (v2):</strong> Include page context, heading hierarchy & AI Summarizer digest</span>
+      </label>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px; cursor:pointer;">
+        <input type="checkbox" id="chk-include-values" checked style="width:auto;" />
+        <span>Include currently typed input values in schema</span>
+      </label>
+
+      <button id="btn-scan-page" class="btn btn-primary">
+        Scan Active Tab Forms
+      </button>
+
+      <div class="btn-row" id="export-actions-row" style="display: none;">
+        <button id="btn-download-export-json" class="btn btn-secondary">
+          Download .JSON File
+        </button>
+        <button id="btn-copy-export-json" class="btn btn-subtle">
+          Copy to Clipboard
+        </button>
+      </div>
+
+      <pre id="export-preview-box">Click "Scan Active Tab Forms" to inspect schema...</pre>
+    </div>
+  </main>
+
+  <!-- TAB 3: AUTO-FILL & MANUAL IMPORT (PHASES 3 & 6) -->
+  <main id="tab-fill" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Phase 6: Form-Import++ (1-Click AI Auto-Fill)</div>
+      <div class="card-desc">
+        Scans the page in memory, resolves fields against your User-Context Vault using local Prompt API constrained JSON decoding, and fills the form.
+      </div>
+
+      <button id="btn-autofill-now" class="btn btn-primary">
+        ✨ Auto-Fill Active Form with AI
+      </button>
+
+      <pre id="autofill-status-box">Ready to fill active form.</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 3: Manual Form-Import (JSON)</div>
+      <div class="card-desc">
+        Load an exported .json schema file to populate matching fields via React-safe native setters.
+      </div>
+
+      <input type="file" id="file-import-input" accept=".json" style="margin-bottom: 8px;" />
+      <button id="btn-run-manual-import" class="btn btn-subtle">
+        Populate Form from Selected File
+      </button>
+    </div>
+  </main>
+
+  <!-- TAB 4: USER-CONTEXT VAULT (PHASE 5) -->
+  <main id="tab-vault" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">
+        <span>User-Context Vault</span>
+        <span id="vault-count-badge" class="badge badge-available">0 entries</span>
+      </div>
+      <div class="card-desc">
+        Your transparent, private on-device facts and recurring application answers.
+      </div>
+
+      <div class="filter-bar">
+        <input type="text" id="vault-search-input" placeholder="Search keys, values, or tags..." />
+        <select id="vault-category-filter" style="width: 110px;">
+          <option value="all">All</option>
+          <option value="identity">Identity</option>
+          <option value="contact">Contact</option>
+          <option value="location">Location</option>
+          <option value="professional">Professional</option>
+          <option value="social">Social</option>
+          <option value="preferences">Preferences</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+
+      <div id="vault-entries-container" style="max-height: 260px; overflow-y: auto; margin-bottom: 10px;"></div>
+
+      <div class="btn-row">
+        <button id="btn-export-vault" class="btn btn-subtle btn-sm">Export Vault JSON</button>
+        <button id="btn-import-vault-trigger" class="btn btn-subtle btn-sm">Import Vault JSON</button>
+        <input type="file" id="file-import-vault" accept=".json" style="display:none;" />
+      </div>
+    </div>
+
+    <!-- ADD NEW FACT CARD -->
+    <div class="card">
+      <div class="card-title">+ Add New Fact to Vault</div>
+      <div style="display:grid; grid-template-columns: 1fr 100px; gap: 6px; margin-bottom: 6px;">
+        <input type="text" id="new-fact-key" placeholder="Key (e.g., Portfolio URL)" />
+        <select id="new-fact-category">
+          <option value="custom">Custom</option>
+          <option value="identity">Identity</option>
+          <option value="contact">Contact</option>
+          <option value="location">Location</option>
+          <option value="professional">Professional</option>
+          <option value="social">Social</option>
+          <option value="preferences">Preferences</option>
+        </select>
+      </div>
+      <input type="text" id="new-fact-value" placeholder="Value (e.g., https://example.com)" style="margin-bottom: 8px;" />
+      <button id="btn-add-fact" class="btn btn-secondary">Save Fact to Vault</button>
+    </div>
+  </main>
+
+  <!-- TAB 5: OBSERVER (PHASE 7) -->
+  <main id="tab-observer" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Observer — Learn from Pages & Forms</div>
+      <div class="card-desc">
+        Click "Snapshot Page" to extract candidate personal facts from the active tab. No silent overwrites: approve or discard proposals below.
+      </div>
+
+      <button id="btn-snapshot-active-tab" class="btn btn-secondary">
+        📸 Snapshot Active Page for Facts
+      </button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Review & Merge Queue</span>
+        <span id="observer-queue-count" class="badge badge-downloadable">0 pending</span>
+      </div>
+
+      <div class="btn-row" id="observer-bulk-actions" style="margin-bottom: 10px; display: none;">
+        <button id="btn-approve-all-deltas" class="btn btn-primary btn-sm">Approve All</button>
+        <button id="btn-discard-all-deltas" class="btn btn-danger btn-sm">Discard All</button>
+      </div>
+
+      <div id="observer-deltas-container">
+        <div style="text-align: center; color: var(--text-muted); padding: 16px 0;">
+          No pending fact updates. Snapshot a page or submit a form to learn new facts.
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
