@@ -368,3 +368,17 @@ pre {
   border-radius: 4px;
   text-transform: uppercase;
 }
+
+@keyframes lf-spin {
+  to { transform: rotate(360deg); }
+}
+
+.lf-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #3b82f6;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: lf-spin 0.75s linear infinite;
+}

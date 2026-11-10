@@ -119,6 +119,190 @@ async function sendToActiveTab(payload) {
   }
 }
 
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ============================================================================
+// OBSERVABILITY & UX PROGRESS CONTROLLER
+// ============================================================================
+const Telemetry = {
+  traces: [],
+  timerInterval: null,
+  startTime: 0,
+  activeAbortController: null,
+
+  startTask(stageLabel, progressPct = 15) {
+    this.startTime = performance.now();
+    this.activeAbortController = new AbortController();
+
+    const bar = document.getElementById("ux-activity-bar");
+    const lbl = document.getElementById("ux-stage-label");
+    const fill = document.getElementById("ux-progress-fill");
+    const timerEl = document.getElementById("ux-elapsed-timer");
+    const previewEl = document.getElementById("ux-stream-preview");
+
+    if (bar) bar.style.display = "block";
+    if (lbl) lbl.textContent = stageLabel;
+    if (fill) fill.style.width = `${progressPct}%`;
+    if (previewEl) previewEl.textContent = "";
+
+    clearInterval(this.timerInterval);
+    this.timerInterval = setInterval(() => {
+      const elapsedSec = ((performance.now() - this.startTime) / 1000).toFixed(1);
+      if (timerEl) timerEl.textContent = `${elapsedSec}s`;
+    }, 100);
+
+    return this.activeAbortController.signal;
+  },
+
+  updateStage(stageLabel, progressPct, streamSnippet = "") {
+    const lbl = document.getElementById("ux-stage-label");
+    const fill = document.getElementById("ux-progress-fill");
+    const previewEl = document.getElementById("ux-stream-preview");
+    if (lbl) lbl.textContent = stageLabel;
+    if (fill && progressPct !== undefined) fill.style.width = `${progressPct}%`;
+    if (previewEl && streamSnippet) {
+      previewEl.textContent = `⚡ ${streamSnippet.slice(-90)}`;
+    }
+  },
+
+  endTask() {
+    clearInterval(this.timerInterval);
+    const bar = document.getElementById("ux-activity-bar");
+    const fill = document.getElementById("ux-progress-fill");
+    if (fill) fill.style.width = "100%";
+    setTimeout(() => {
+      if (bar) bar.style.display = "none";
+    }, 450);
+  },
+
+  updateTokenUsage(session) {
+    if (!session) return;
+    const used = session.contextUsage ?? session.tokensSoFar ?? 0;
+    const max = session.contextWindow ?? session.maxTokens ?? 9216;
+    const pill = document.getElementById("obs-token-pill");
+    if (pill) {
+      const pct = Math.round((used / max) * 100);
+      pill.textContent = `Tokens: ${used} / ${max} (${pct}%)`;
+      pill.style.color = pct > 80 ? "#f87171" : "#38bdf8";
+    }
+  },
+
+  logTrace({ type, title, durationMs, details }) {
+    const entry = {
+      id: Date.now() + Math.random(),
+      ts: new Date().toLocaleTimeString(),
+      type, // 'SCAN' | 'HYDRATE' | 'LLM_PROMPT' | 'OBSERVER' | 'ERROR'
+      title,
+      durationMs: Math.round(durationMs || 0),
+      details: typeof details === "string" ? details : JSON.stringify(details, null, 2)
+    };
+    this.traces.unshift(entry);
+    if (this.traces.length > 40) this.traces.pop();
+    this.renderTraces();
+  },
+
+  renderTraces() {
+    const countEl = document.getElementById("obs-log-count");
+    const listEl = document.getElementById("obs-trace-list");
+    if (countEl) countEl.textContent = String(this.traces.length);
+    if (!listEl) return;
+
+    const colorMap = {
+      SCAN: "#38bdf8",
+      HYDRATE: "#10b981",
+      LLM_PROMPT: "#a855f7",
+      OBSERVER: "#f59e0b",
+      ERROR: "#ef4444"
+    };
+
+    listEl.innerHTML = this.traces
+      .map(
+        (t) => `
+      <details style="margin-bottom:6px; border-left:2px solid ${colorMap[t.type] || "#64748b"}; padding-left:6px;">
+        <summary style="cursor:pointer; color:#e2e8f0; display:flex; justify-content:space-between;">
+          <span><strong style="color:${colorMap[t.type] || "#94a3b8"}">[${t.type}]</strong> ${escapeHtml(t.title)}</span>
+          <span style="color:#64748b;">${t.durationMs}ms · ${t.ts}</span>
+        </summary>
+        <pre style="margin:4px 0 0; padding:6px; background:#020617; color:#94a3b8; border-radius:4px; overflow-x:auto; white-space:pre-wrap;">${escapeHtml(t.details)}</pre>
+      </details>
+    `
+      )
+      .join("");
+  }
+};
+
+// Wire Drawer Toggle & Abort Button
+document.getElementById("obs-drawer-toggle")?.addEventListener("click", () => {
+  const body = document.getElementById("obs-drawer-body");
+  if (body) body.style.display = body.style.display === "none" ? "block" : "none";
+});
+document.getElementById("btn-clear-traces")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  Telemetry.traces = [];
+  Telemetry.renderTraces();
+});
+document.getElementById("btn-abort-ai")?.addEventListener("click", () => {
+  Telemetry.activeAbortController?.abort();
+  Telemetry.logTrace({ type: "ERROR", title: "User Aborted AI Task", durationMs: 0, details: "AbortController triggered" });
+  Telemetry.endTask();
+});
+
+async function runObservablePrompt(session, prompt, options = {}) {
+  const t0 = performance.now();
+  const { label = "Gemini Nano Inference", responseConstraint, signal, onChunk } = options;
+
+  try {
+    let finalOutput = "";
+    const promptOpts = {};
+    if (responseConstraint) promptOpts.responseConstraint = responseConstraint;
+    if (signal) promptOpts.signal = signal;
+
+    if (typeof session.promptStreaming === "function" && !responseConstraint) {
+      const stream = session.promptStreaming(prompt, promptOpts);
+      for await (const chunk of stream) {
+        if (chunk.startsWith(finalOutput)) {
+          finalOutput = chunk;
+        } else {
+          finalOutput += chunk;
+        }
+        Telemetry.updateStage(
+          `${label} (${finalOutput.length} chars)...`,
+          undefined,
+          finalOutput
+        );
+        if (onChunk) onChunk(finalOutput);
+      }
+    } else {
+      finalOutput = await session.prompt(prompt, promptOpts);
+    }
+
+    const durationMs = performance.now() - t0;
+    Telemetry.updateTokenUsage(session);
+    Telemetry.logTrace({
+      type: "LLM_PROMPT",
+      title: `${label} (${finalOutput.length} chars out)`,
+      durationMs,
+      details: `PROMPT (${prompt.length} chars):\n${prompt.slice(0, 600)}...\n\nOUTPUT:\n${finalOutput}`
+    });
+
+    return finalOutput;
+  } catch (err) {
+    Telemetry.logTrace({
+      type: "ERROR",
+      title: `${label} Failed: ${err.message}`,
+      durationMs: performance.now() - t0,
+      details: err.stack || err.message
+    });
+    throw err;
+  }
+}
+
 // ----------------------------------------------------------------------------
 // TAB NAVIGATION
 // ----------------------------------------------------------------------------
@@ -361,20 +545,33 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
   btn.disabled = true;
   btn.textContent = "⚡ Stage 1: Instant Vault Fill (<15ms)...";
 
+  const abortSignal = Telemetry.startTask("[1/4] Scanning DOM for interactive inputs...", 20);
+
   try {
     const tab = await getActiveTab();
     if (!tab?.id) throw new Error("No active web page found.");
 
     // 1. Scan current form (reads fresh or pre-scanned cache)
+    const scanT0 = performance.now();
     const doc = await sendToActiveTab({
       action: "SCAN_PAGE_FORMS",
       options: { includePageContext: true, includeCurrentValues: true }
     });
 
+    Telemetry.logTrace({
+      type: "SCAN",
+      title: "Scan Page Forms",
+      durationMs: performance.now() - scanT0,
+      details: { url: doc?.pageContext?.url, fieldCount: doc?.fields?.length || 0 }
+    });
+
     if (!doc?.fields || doc.fields.length === 0) {
       statusBox.textContent = "No fillable interactive form inputs found on this page.";
+      Telemetry.endTask();
       return;
     }
+
+    Telemetry.updateStage("[2/4] Instant Vault Match & Consent Guard (<15ms)...", 45);
 
     const { userContextVault = [], activeSessionContext = null } = await chrome.storage.local.get([
       "userContextVault",
@@ -465,24 +662,40 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     }
 
     // 3. Immediately hydrate Stage 1 fields on the live DOM so user sees instant results (<15ms)!
+    const stage1T0 = performance.now();
     const stage1Result = await sendToActiveTab({
       action: "HYDRATE_PAGE_FORMS",
       document: doc,
       options: { highlightConfidence: true }
+    });
+    Telemetry.logTrace({
+      type: "HYDRATE",
+      title: "Hydrate Stage 1 Atomic Fields",
+      durationMs: performance.now() - stage1T0,
+      details: { filledCount: stage1Result.filledCount, failedCount: stage1Result.failedFields?.length || 0 }
     });
     statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
     // 4. Stage 2: On-Device LLM synthesis ONLY for remaining tailored essays or unmapped fields
     if (longFormFields.length > 0) {
       btn.textContent = `🧠 Stage 2: Tailoring ${longFormFields.length} Essay/Cover Letter Field(s)...`;
+      Telemetry.updateStage(`[3/4] Streaming Gemini Nano Synthesis for ${longFormFields.length} field(s)...`, 65);
       const session = await getClonedSession();
 
       if (session) {
+        const portfolioUrl =
+          userContextVault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value ||
+          "https://arii.github.io";
+        const githubUrl =
+          userContextVault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value ||
+          "https://github.com/arii";
+
         for (const field of longFormFields) {
+          if (field.skipLLM) continue;
           const ctx = activeSessionContext || doc.pageContext || {};
           const bioEntry = userContextVault.find((v) => v.id === "custom.bio")?.value || "";
           const expEntries = userContextVault
-            .filter((v) => ["professional", "education"].includes(v.category))
+            .filter((v) => ["professional", "education", "social"].includes(v.category))
             .map((v) => `${v.key}: ${v.value}`)
             .join("\n");
 
@@ -493,25 +706,58 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             `- Company: ${ctx.organization || "this organization"}\n` +
             `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
             `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
-            `CANDIDATE FACTS (Dr. Ariel Anders):\n${bioEntry}\n${expEntries}\n\n` +
+            `CANDIDATE FACTS (Dr. Ariel Anders):\n${bioEntry}\n${expEntries}\n` +
+            `- Portfolio URL: ${portfolioUrl}\n` +
+            `- GitHub URL: ${githubUrl}\n` +
+            `- Civ Robotics (Senior Algorithms Engineer): Built C++, Python, and ROS 2 navigation/localization for autonomous forklifts; solved field localization drift via custom IMU/GPS drivers and tilt-compensation logic.\n\n` +
             `INSTRUCTIONS:\n` +
             `- DO NOT repeat the candidate bio word-for-word.\n` +
             `- Explicitly connect Ariel's MIT PhD, Waymo motion planning, Robust.AI behavior trees, and Civ Robotics C++/Python/ROS 2 work to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
             `- Output ONLY the final response text (no markdown headers, no placeholders, max 175 words).`;
 
-          const synthesized = await session.prompt(prompt);
+          let lastLiveUpdate = 0;
+          const synthesized = await runObservablePrompt(session, prompt, {
+            label: `Tailor "${field.query}"`,
+            signal: abortSignal,
+            onChunk: (chunk) => {
+              const now = performance.now();
+              if (now - lastLiveUpdate > 250) {
+                lastLiveUpdate = now;
+                sendToActiveTab({
+                  action: "HYDRATE_PAGE_FORMS",
+                  document: { fields: [{ ...field, value: chunk }] },
+                  options: { highlightConfidence: false }
+                }).catch(() => {});
+              }
+            }
+          });
+
           if (synthesized && synthesized.trim()) {
-            field.value = synthesized.trim();
+            let finalText = synthesized.trim();
+            // Task 2.3: Deterministic Portfolio Link Guarantee in Stage 2 Live Synthesis
+            const isProjectOrShowcase = /share something cool|built|project|portfolio|repo|link|work sample|cover letter/i.test(field.query);
+            if (isProjectOrShowcase && !finalText.includes("arii.github.io")) {
+              finalText = `${finalText}\n\nPortfolio: ${portfolioUrl} | GitHub: ${githubUrl}`;
+            }
+            field.value = finalText;
             field.confidence = 0.92;
           }
         }
         session.destroy?.();
 
         // Hydrate the newly synthesized essay fields
+        Telemetry.updateStage("[4/4] Hydrating Final Form on Live DOM...", 90);
+        const stage2T0 = performance.now();
         const finalResult = await sendToActiveTab({
           action: "HYDRATE_PAGE_FORMS",
           document: doc,
           options: { highlightConfidence: true }
+        });
+        Telemetry.logTrace({
+          type: "HYDRATE",
+          title: "Hydrate Stage 2 Essays",
+          durationMs: performance.now() - stage2T0,
+          details: finalResult
         });
         statusBox.textContent = `Auto-Fill Completed!\n\n` + JSON.stringify(finalResult, null, 2);
       }
@@ -520,7 +766,14 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     }
   } catch (err) {
     statusBox.textContent = `Auto-Fill Error: ${err.message}`;
+    Telemetry.logTrace({
+      type: "ERROR",
+      title: "Auto-Fill Error",
+      durationMs: 0,
+      details: err.message
+    });
   } finally {
+    Telemetry.endTask();
     btn.disabled = false;
     btn.textContent = "✨ Auto-Fill Active Form with AI";
   }
@@ -654,10 +907,6 @@ async function renderVault() {
       }
     });
   });
-}
-
-function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 document.getElementById("vault-search-input").addEventListener("input", renderVault);
@@ -932,31 +1181,53 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
   if (badgeEl) badgeEl.textContent = "⚡ Pre-drafting tailored Cover Letter...";
 
   try {
+    Telemetry.startTask(`Pre-drafting tailored response for ${ctx.organization || "target role"}...`, 35);
+
+    const portfolioUrl =
+      vault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value ||
+      "https://arii.github.io";
+    const githubUrl =
+      vault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value ||
+      "https://github.com/arii";
+
     const bioEntry = vault.find((v) => v.id === "custom.bio")?.value || "";
-    const expEntries = vault
-      .filter((v) => ["professional", "education"].includes(v.category))
-      .map((v) => `${v.key}: ${v.value}`)
+    const allFacts = vault
+      .filter((v) => ["professional", "education", "social"].includes(v.category))
+      .map((v) => `- ${v.key}: ${v.value}`)
       .join("\n");
 
     const prompt =
-      `Write a concise, high-impact 2-paragraph Cover Letter for Ariel Anders applying to:\n` +
+      `Write a concise, high-impact 2-paragraph technical application response for Dr. Ariel Anders applying to:\n` +
       `- Target Role: ${ctx.role || ctx.roleOrTopic || "Software Engineer"}\n` +
-      `- Target Company: ${ctx.organization || "Company"}\n` +
-      `- Key Job Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
-      `- Job Tech Stack / Keywords: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n` +
-      `- Company Summary: ${ctx.missionSummary || ctx.summary || ""}\n\n` +
-      `CANDIDATE BACKGROUND (USE ONLY THESE REAL FACTS):\n` +
-      `${bioEntry}\n${expEntries}\n\n` +
+      `- Target Organization: ${ctx.organization || "Company"}\n` +
+      `- Key Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
+      `- Tech Stack / Keywords: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
+      `CANDIDATE FACTS (USE ONLY THESE REAL FACTS):\n` +
+      `- Portfolio URL: ${portfolioUrl}\n` +
+      `- GitHub URL: ${githubUrl}\n` +
+      `- Civ Robotics (Senior Algorithms Engineer): Built C++, Python, and ROS 2 navigation/localization for autonomous forklifts; solved field localization drift via custom IMU/GPS drivers and tilt-compensation logic.\n` +
+      `- Waymo (Senior SWE, Planning): Engineered onboard C++ motion planning and trajectory decision-making software.\n` +
+      `- Robust.AI (First Roboticist): Architected reactive social navigation stack using behavior trees.\n` +
+      `- Education: MIT CSAIL Ph.D. in Computer Science & EE (robotic manipulation under uncertainty); UC Santa Cruz B.S. in Computer Engineering.\n` +
+      `${bioEntry}\n${allFacts}\n\n` +
       `STRICT RULES:\n` +
-      `1. DO NOT copy the candidate bio verbatim. Mention ${ctx.organization || "the team"} and the "${ctx.role || ctx.roleOrTopic || "role"}" role explicitly in sentence 1.\n` +
-      `2. Connect Ariel's specific experience (MIT PhD in robotic manipulation under uncertainty, Waymo C++ motion planning & trajectory optimization, Robust.AI behavior trees, Civ Robotics C++/Python/ROS 2 localization & navigation) directly to ${ctx.organization || "the team"}'s requirements (${(ctx.techStack || ctx.keywords || []).slice(0, 5).join(", ")}).\n` +
-      `3. Keep it under 180 words, natural, direct, and ready to paste without placeholders.`;
+      `1. Directly connect Ariel's hands-on robot bring-up, sensor calibration/filtering (IMU/GPS/ROS 2 at Civ Robotics), behavior trees (Robust.AI), and C++/Python motion planning (Waymo, MIT PhD) to ${ctx.organization || "the team"}'s stack.\n` +
+      `2. Explicitly include the portfolio link (${portfolioUrl}) and GitHub (${githubUrl}).\n` +
+      `3. Keep it under 175 words, concrete, first-person, and free of placeholders.`;
 
-    const drafted = await session.prompt(prompt);
+    const drafted = await runObservablePrompt(session, prompt, {
+      label: `Pre-Draft (${ctx.organization || "Job"})`,
+      signal: Telemetry.activeAbortController?.signal
+    });
     session.destroy?.();
 
     if (drafted && drafted.trim().length > 40) {
-      ctx.preDraftedCoverLetter = drafted.trim();
+      let cleanText = drafted.trim();
+      // Deterministic Link Guarantee: If Nano omitted the portfolio URL, append a clean link line
+      if (!cleanText.includes("arii.github.io")) {
+        cleanText = `${cleanText}\n\nPortfolio & Projects: ${portfolioUrl} | GitHub: ${githubUrl}`;
+      }
+      ctx.preDraftedCoverLetter = cleanText;
       await chrome.storage.local.set({ activeSessionContext: ctx });
       if (badgeEl) badgeEl.textContent = "✅ Tailored Cover Letter Ready (0ms Instant Fill)";
       renderSessionContext();
@@ -964,7 +1235,101 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
   } catch (err) {
     console.warn("Background cover letter pre-draft failed:", err);
     if (badgeEl) badgeEl.textContent = "⚠️ Pre-draft unavailable";
+  } finally {
+    Telemetry.endTask();
   }
+}
+
+function normalizeForDedup(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so "www.linkedin.com/in/ariel-anders" matches "https://www.linkedin.com/in/arielanders"
+    .replace(/[^a-z0-9]/g, "");
+}
+
+async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
+  const { userContextVault = [], pendingDeltas = [], activeSessionContext = null } = await chrome.storage.local.get([
+    "userContextVault",
+    "pendingDeltas",
+    "activeSessionContext"
+  ]);
+
+  let addedCount = 0;
+  for (const f of rawFacts) {
+    const propText = String(f.proposedValue || "").trim();
+    const normProp = normalizeForDedup(propText);
+    if (!normProp || normProp.length < 2) continue;
+
+    // GUARDRAIL 1: Strict URL / Value Deduplication (ignores http/https/www/hyphens)
+    const alreadyInVault = userContextVault.some((v) => {
+      const normVault = normalizeForDedup(v.value);
+      return normVault === normProp || (normProp.length > 10 && normVault.includes(normProp));
+    });
+    if (alreadyInVault) continue;
+
+    const alreadyInQueue = pendingDeltas.some((d) => {
+      const normQueue = normalizeForDedup(d.proposedValue);
+      return normQueue === normProp || (normProp.length > 10 && normQueue.includes(normProp));
+    });
+    if (alreadyInQueue) continue;
+
+    let key = f.key;
+    let category = f.category || "custom";
+
+    // GUARDRAIL 2: Never label a linkedin.com URL as "GitHub" or vice versa
+    if (/linkedin\.com/i.test(propText) && /github/i.test(key)) {
+      key = "LinkedIn Profile URL";
+      category = "social";
+    } else if (/github\.com/i.test(propText) && /linkedin/i.test(key)) {
+      key = "GitHub Profile URL";
+      category = "social";
+    }
+
+    // GUARDRAIL 3: Never allow a company-specific Cover Letter ("I am applying for ... at [Company]")
+    // to overwrite canonical "Professional Bio & Summary" (custom.bio)!
+    const isCompanySpecificCoverLetter =
+      /i am applying for|writing to apply|role at |position at /i.test(propText) ||
+      /cover letter/i.test(key);
+
+    let action = f.action || "create";
+    let targetEntryId = f.targetEntryId;
+
+    if (isCompanySpecificCoverLetter) {
+      const companyOrg = activeSessionContext?.organization || sourceTitle.split("|")[0].trim() || "Recent Application";
+      key = `Cover Letter Sample (${companyOrg})`;
+      category = "custom";
+      action = "create";
+      targetEntryId = undefined;
+    }
+
+    pendingDeltas.unshift({
+      deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      action,
+      targetEntryId,
+      category,
+      key,
+      previousValue: f.previousValue,
+      proposedValue: propText,
+      evidenceSnippet: f.evidenceSnippet || `Extracted from "${sourceTitle || "portfolio/resume"}"`,
+      sourceUrl: f.sourceUrl || sourceUrl || "",
+      confidence: f.confidence || 0.92
+    });
+    addedCount++;
+  }
+
+  if (addedCount > 0) {
+    await chrome.storage.local.set({ pendingDeltas });
+    chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: pendingDeltas.length });
+  }
+
+  Telemetry.logTrace({
+    type: "OBSERVER",
+    title: `Observer Queued ${addedCount} Fact(s)`,
+    durationMs: 0,
+    details: { addedCount, totalPending: pendingDeltas.length }
+  });
+
+  return addedCount;
 }
 
 // Clear Active Target Context Button
@@ -1086,39 +1451,29 @@ document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", as
 
     if (!snapshot) throw new Error("Could not capture page snapshot.");
 
+    Telemetry.logTrace({
+      type: "SCAN",
+      title: "Capture Profile Page Snapshot",
+      durationMs: 0,
+      details: { url: snapshot.url, length: snapshot.extractedText?.length || 0 }
+    });
+
     // Extract user profile facts via on-device LanguageModel strictly for personal portfolio/resume
     if (snapshot.extractedText && ("LanguageModel" in self || self.ai?.languageModel)) {
       try {
         const session = await createPromptSession();
         const promptText = `Extract 1-3 personal profile facts about the user/author (such as full name, email, phone number, location, GitHub URL, portfolio, or current employer) from this portfolio or resume text. Text: "${snapshot.extractedText.slice(0, 2000)}". Respond ONLY with a JSON array of objects with "key", "proposedValue", "category".`;
-        const aiResponse = await session.prompt(promptText);
+        const aiResponse = await runObservablePrompt(session, promptText, {
+          label: "Extract Profile Facts",
+          signal: Telemetry.activeAbortController?.signal
+        });
         session.destroy();
 
         try {
           const match = aiResponse.match(/\[[\s\S]*\]/);
           if (match) {
             const parsedFacts = JSON.parse(match[0]);
-            const { pendingDeltas = [] } = await chrome.storage.local.get(["pendingDeltas"]);
-            let addedCount = 0;
-            for (const item of parsedFacts) {
-              if (item.key && item.proposedValue) {
-                pendingDeltas.unshift({
-                  deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                  action: "create",
-                  category: item.category || "custom",
-                  key: item.key,
-                  proposedValue: String(item.proposedValue),
-                  evidenceSnippet: `Extracted from "${snapshot.title || "portfolio/resume"}"`,
-                  sourceUrl: snapshot.url || "",
-                  confidence: 0.92
-                });
-                addedCount++;
-              }
-            }
-            if (addedCount > 0) {
-              await chrome.storage.local.set({ pendingDeltas });
-              chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: pendingDeltas.length });
-            }
+            await queueVerifiedDeltas(parsedFacts, snapshot.title || "portfolio/resume", snapshot.url || "");
           }
         } catch (parseErr) {
           console.warn("AI fact parse notice:", parseErr);

@@ -114,14 +114,44 @@ const SEED_CONTEXT_ENTRIES = [
     updatedAt: "2026-11-10T01:27:01.340Z"
   },
   {
+    id: "social.portfolio",
+    category: "social",
+    key: "Portfolio Website URL",
+    aliases: ["portfolio", "website", "personal website", "portfolio url", "personal projects", "work samples"],
+    value: "https://arii.github.io",
+    tags: ["social", "work", "links", "core"],
+    autocomplete: "url",
+    updatedAt: "2026-11-10T05:00:00Z"
+  },
+  {
+    id: "social.github",
+    category: "social",
+    key: "GitHub Profile URL",
+    aliases: ["github", "github url", "code repo", "github profile", "repositories"],
+    value: "https://github.com/arii",
+    tags: ["social", "work", "links", "core"],
+    autocomplete: "url",
+    updatedAt: "2026-11-10T05:00:00Z"
+  },
+  {
+    id: "social.linkedin",
+    category: "social",
+    key: "LinkedIn Profile URL",
+    aliases: ["linkedin", "linkedin url", "linkedin profile"],
+    value: "https://www.linkedin.com/in/ariel-anders",
+    tags: ["social", "work", "links", "core"],
+    autocomplete: "url",
+    updatedAt: "2026-11-10T05:00:00Z"
+  },
+  {
     id: "social.personal_projects",
     category: "social",
     key: "Personal Projects & Portfolio URL",
     aliases: ["personal projects", "projects", "portfolio", "website", "portfolio url", "personal website"],
-    value: "https://github.com/arii",
+    value: "https://arii.github.io",
     tags: ["social", "work", "links", "ashby"],
     autocomplete: "url",
-    updatedAt: "2026-11-10T01:42:00Z"
+    updatedAt: "2026-11-10T05:00:00Z"
   },
   {
     id: "preferences.visa_sponsorship",
@@ -180,7 +210,7 @@ const SEED_CONTEXT_ENTRIES = [
     id: "custom.bio",
     category: "custom",
     key: "Professional Bio & Summary",
-    aliases: ["bio", "about you", "summary", "why should we pick you", "project description", "speaker bio", "qualifications", "cover letter"],
+    aliases: ["bio", "about you", "summary", "why should we pick you", "project description", "speaker bio", "qualifications"],
     value: "I'm an MIT PhD roboticist. My work centers on robot system architecture, reliability, and handling uncertainty: getting robots to behave in messy real-world conditions. Previously, I was a Senior Software Engineer on the Planning team at Waymo, developing onboard motion planning and decision-making software, including pickups and drop-offs. Before that, I was the first roboticist hired at Robust.AI, an early-stage startup, where I architected the reactive social navigation stack using behavior trees. I received a BS in Computer Engineering from UC Santa Cruz and my Doctorate in Computer Science from MIT, where my research focused on reliable robotic manipulation under uncertainty, with the vision of enabling household helpers. At MIT I also taught project-based collaborative robotics courses and built an iOS app for people with visual impairments. I'm currently considering full-time roles and consulting/project-based work in the Bay Area.",
     tags: ["bio", "conference", "grant"],
     autocomplete: "",
@@ -260,10 +290,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+function normalizeForDedup(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so "www.linkedin.com/in/ariel-anders" matches "https://www.linkedin.com/in/arielanders"
+    .replace(/[^a-z0-9]/g, "");
+}
+
 async function handleFormSubmitObservation(payload, tab) {
-  const { userContextVault = [], pendingDeltas = [] } = await chrome.storage.local.get([
+  const { userContextVault = [], pendingDeltas = [], activeSessionContext = null } = await chrome.storage.local.get([
     "userContextVault",
-    "pendingDeltas"
+    "pendingDeltas",
+    "activeSessionContext"
   ]);
 
   const newDeltas = [];
@@ -273,7 +311,60 @@ async function handleFormSubmitObservation(payload, tab) {
     if (!field.value || typeof field.value !== "string") continue;
     if (sensitiveRegex.test(field.query) || sensitiveRegex.test(field.locator?.name || "")) continue;
 
-    const normalizedQuery = field.query.toLowerCase().trim();
+    const propText = String(field.value).trim();
+    const normProp = normalizeForDedup(propText);
+    if (!normProp || normProp.length < 2) continue;
+
+    // GUARDRAIL 1: Strict URL / Value Deduplication (ignores http/https/www/hyphens)
+    const alreadyInVault = userContextVault.some((v) => {
+      const normVault = normalizeForDedup(v.value);
+      return normVault === normProp || (normProp.length > 10 && normVault.includes(normProp));
+    });
+    if (alreadyInVault) continue;
+
+    const alreadyInPending = pendingDeltas.some((d) => {
+      const normD = normalizeForDedup(d.proposedValue);
+      return normD === normProp || (normProp.length > 10 && normD.includes(normProp));
+    });
+    if (alreadyInPending) continue;
+
+    let key = field.query;
+    let category = "custom";
+
+    // GUARDRAIL 2: Never label a linkedin.com URL as "GitHub" or vice versa
+    if (/linkedin\.com/i.test(propText) && /github/i.test(key)) {
+      key = "LinkedIn Profile URL";
+      category = "social";
+    } else if (/github\.com/i.test(propText) && /linkedin/i.test(key)) {
+      key = "GitHub Profile URL";
+      category = "social";
+    }
+
+    const pageTitle = payload.title || "active page";
+    const pageUrl = payload.url || (tab && tab.url) || "";
+
+    // GUARDRAIL 3: Never allow a company-specific Cover Letter ("I am applying for ... at [Company]")
+    // to overwrite canonical "Professional Bio & Summary" (custom.bio)!
+    const isCompanySpecificCoverLetter =
+      /i am applying for|writing to apply|role at |position at /i.test(propText) ||
+      /cover letter/i.test(key);
+
+    if (isCompanySpecificCoverLetter) {
+      const companyOrg = activeSessionContext?.organization || pageTitle.split("|")[0].trim() || "Recent Application";
+      newDeltas.push({
+        deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        action: "create",
+        category: "custom",
+        key: `Cover Letter Sample (${companyOrg})`,
+        proposedValue: propText,
+        evidenceSnippet: `Submitted on form "${pageTitle}"`,
+        sourceUrl: pageUrl,
+        confidence: 0.9
+      });
+      continue;
+    }
+
+    const normalizedQuery = key.toLowerCase().trim();
     const existing = userContextVault.find((e) => {
       if (e.key.toLowerCase() === normalizedQuery) return true;
       if (e.aliases && e.aliases.some((a) => normalizedQuery.includes(a.toLowerCase()))) return true;
@@ -281,33 +372,44 @@ async function handleFormSubmitObservation(payload, tab) {
       return false;
     });
 
-    const pageTitle = payload.title || "active page";
-    const pageUrl = payload.url || (tab && tab.url) || "";
-
     if (!existing) {
       newDeltas.push({
         deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         action: "create",
-        category: "custom",
-        key: field.query,
-        proposedValue: String(field.value),
+        category,
+        key,
+        proposedValue: propText,
         evidenceSnippet: `Submitted on form "${pageTitle}"`,
         sourceUrl: pageUrl,
         confidence: 0.88
       });
-    } else if (existing.value !== String(field.value)) {
-      newDeltas.push({
-        deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        action: "update",
-        targetEntryId: existing.id,
-        category: existing.category,
-        key: existing.key,
-        previousValue: existing.value,
-        proposedValue: String(field.value),
-        evidenceSnippet: `Observed updated value on form "${pageTitle}"`,
-        sourceUrl: pageUrl,
-        confidence: 0.94
-      });
+    } else if (existing.value !== propText) {
+      // If existing is canonical custom.bio, do NOT overwrite it with long-form prose
+      if (existing.id === "custom.bio") {
+        newDeltas.push({
+          deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          action: "create",
+          category: "custom",
+          key: `Cover Letter / Bio (${pageTitle.split("|")[0].trim()})`,
+          proposedValue: propText,
+          evidenceSnippet: `Submitted on form "${pageTitle}"`,
+          sourceUrl: pageUrl,
+          confidence: 0.88
+        });
+      } else {
+        newDeltas.push({
+          deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          action: "update",
+          targetEntryId: existing.id,
+          category: existing.category,
+          key: existing.key,
+          previousValue: existing.value,
+          proposedValue: propText,
+          evidenceSnippet: `Observed updated value on form "${pageTitle}"`,
+          sourceUrl: pageUrl,
+          confidence: 0.94
+        });
+      }
     }
   }
 

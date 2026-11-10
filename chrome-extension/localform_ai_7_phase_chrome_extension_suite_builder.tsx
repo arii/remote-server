@@ -131,24 +131,44 @@ const INITIAL_CONTEXT_ENTRIES = [
     metadata: { updatedAt: '2026-11-10T01:22:54.176Z', source: 'manual', confidence: 1.0 }
   },
   {
+    id: 'social.portfolio',
+    category: 'social',
+    key: 'Portfolio Website URL',
+    aliases: ['portfolio', 'website', 'personal website', 'portfolio url', 'personal projects', 'work samples'],
+    value: 'https://arii.github.io',
+    tags: ['social', 'work', 'links', 'core'],
+    autocomplete: 'url',
+    metadata: { updatedAt: '2026-11-10T05:00:00Z', source: 'manual', confidence: 1.0 }
+  },
+  {
     id: 'social.github',
     category: 'social',
     key: 'GitHub Profile URL',
-    aliases: ['github', 'github url', 'code repo', 'github profile'],
+    aliases: ['github', 'github url', 'code repo', 'github profile', 'repositories'],
     value: 'https://github.com/arii',
-    tags: ['social', 'work', 'links'],
+    tags: ['social', 'work', 'links', 'core'],
     autocomplete: 'url',
-    metadata: { updatedAt: '2026-11-10T01:27:01.340Z', source: 'manual', confidence: 1.0 }
+    metadata: { updatedAt: '2026-11-10T05:00:00Z', source: 'manual', confidence: 1.0 }
+  },
+  {
+    id: 'social.linkedin',
+    category: 'social',
+    key: 'LinkedIn Profile URL',
+    aliases: ['linkedin', 'linkedin url', 'linkedin profile'],
+    value: 'https://www.linkedin.com/in/ariel-anders',
+    tags: ['social', 'work', 'links', 'core'],
+    autocomplete: 'url',
+    metadata: { updatedAt: '2026-11-10T05:00:00Z', source: 'manual', confidence: 1.0 }
   },
   {
     id: 'social.personal_projects',
     category: 'social',
     key: 'Personal Projects & Portfolio URL',
     aliases: ['personal projects', 'projects', 'portfolio', 'website', 'portfolio url', 'personal website'],
-    value: 'https://github.com/arii',
+    value: 'https://arii.github.io',
     tags: ['social', 'work', 'links', 'ashby'],
     autocomplete: 'url',
-    metadata: { updatedAt: '2026-11-10T01:42:00Z', source: 'manual', confidence: 1.0 }
+    metadata: { updatedAt: '2026-11-10T05:00:00Z', source: 'manual', confidence: 1.0 }
   },
   {
     id: 'preferences.visa_sponsorship',
@@ -207,7 +227,7 @@ const INITIAL_CONTEXT_ENTRIES = [
     id: 'custom.bio',
     category: 'custom',
     key: 'Professional Bio & Summary',
-    aliases: ['bio', 'about you', 'summary', 'why should we pick you', 'project description', 'speaker bio', 'qualifications', 'cover letter'],
+    aliases: ['bio', 'about you', 'summary', 'why should we pick you', 'project description', 'speaker bio', 'qualifications'],
     value: "I'm an MIT PhD roboticist. My work centers on robot system architecture, reliability, and handling uncertainty: getting robots to behave in messy real-world conditions. Previously, I was a Senior Software Engineer on the Planning team at Waymo, developing onboard motion planning and decision-making software, including pickups and drop-offs. Before that, I was the first roboticist hired at Robust.AI, an early-stage startup, where I architected the reactive social navigation stack using behavior trees. I received a BS in Computer Engineering from UC Santa Cruz and my Doctorate in Computer Science from MIT, where my research focused on reliable robotic manipulation under uncertainty, with the vision of enabling household helpers. At MIT I also taught project-based collaborative robotics courses and built an iOS app for people with visual impairments. I'm currently considering full-time roles and consulting/project-based work in the Bay Area.",
     tags: ['bio', 'conference', 'grant'],
     autocomplete: '',
@@ -302,46 +322,121 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+function normalizeForDedup(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/^https?:\\/\\/(www\\.)?/, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
 async function handleFormSubmitObservation(payload, tab) {
-  const { userContextVault = [], pendingDeltas = [] } = await chrome.storage.local.get([
+  const { userContextVault = [], pendingDeltas = [], activeSessionContext = null } = await chrome.storage.local.get([
     'userContextVault',
-    'pendingDeltas'
+    'pendingDeltas',
+    'activeSessionContext'
   ]);
 
   const newDeltas = [];
+  const sensitiveRegex = /password|passcode|cvv|cvc|cc-number|card-number|ssn|social-security/i;
+
   for (const field of payload.filledFormFields || []) {
     if (!field.value || typeof field.value !== 'string') continue;
-    const normalizedQuery = field.query.toLowerCase().trim();
-    const existing = userContextVault.find(
-      (e) =>
-        e.key.toLowerCase() === normalizedQuery ||
-        (e.aliases && e.aliases.some((a) => normalizedQuery.includes(a)))
-    );
+    if (sensitiveRegex.test(field.query) || sensitiveRegex.test(field.locator?.name || '')) continue;
+
+    const propText = String(field.value).trim();
+    const normProp = normalizeForDedup(propText);
+    if (!normProp || normProp.length < 2) continue;
+
+    const alreadyInVault = userContextVault.some((v) => {
+      const normVault = normalizeForDedup(v.value);
+      return normVault === normProp || (normProp.length > 10 && normVault.includes(normProp));
+    });
+    if (alreadyInVault) continue;
+
+    const alreadyInPending = pendingDeltas.some((d) => {
+      const normD = normalizeForDedup(d.proposedValue);
+      return normD === normProp || (normProp.length > 10 && normD.includes(normProp));
+    });
+    if (alreadyInPending) continue;
+
+    let key = field.query;
+    let category = 'custom';
+
+    if (/linkedin\\.com/i.test(propText) && /github/i.test(key)) {
+      key = 'LinkedIn Profile URL';
+      category = 'social';
+    } else if (/github\\.com/i.test(propText) && /linkedin/i.test(key)) {
+      key = 'GitHub Profile URL';
+      category = 'social';
+    }
+
+    const pageTitle = payload.title || 'active page';
+    const pageUrl = payload.url || (tab && tab.url) || '';
+
+    const isCompanySpecificCoverLetter =
+      /i am applying for|writing to apply|role at |position at /i.test(propText) ||
+      /cover letter/i.test(key);
+
+    if (isCompanySpecificCoverLetter) {
+      const companyOrg = activeSessionContext?.organization || pageTitle.split('|')[0].trim() || 'Recent Application';
+      newDeltas.push({
+        deltaId: 'delta_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        action: 'create',
+        category: 'custom',
+        key: \`Cover Letter Sample (\${companyOrg})\`,
+        proposedValue: propText,
+        evidenceSnippet: \`Submitted on form "\${pageTitle}"\`,
+        sourceUrl: pageUrl,
+        confidence: 0.9
+      });
+      continue;
+    }
+
+    const normalizedQuery = key.toLowerCase().trim();
+    const existing = userContextVault.find((e) => {
+      if (e.key.toLowerCase() === normalizedQuery) return true;
+      if (e.aliases && e.aliases.some((a) => normalizedQuery.includes(a.toLowerCase()))) return true;
+      if (field.constraints?.autocomplete && e.autocomplete === field.constraints.autocomplete) return true;
+      return false;
+    });
 
     if (!existing) {
       newDeltas.push({
         deltaId: 'delta_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
         action: 'create',
-        category: 'custom',
-        key: field.query,
-        proposedValue: String(field.value),
-        evidenceSnippet: \`Submitted on form "\${payload.title}"\`,
-        sourceUrl: payload.url || (tab && tab.url) || '',
-        confidence: 0.85
+        category,
+        key,
+        proposedValue: propText,
+        evidenceSnippet: \`Submitted on form "\${pageTitle}"\`,
+        sourceUrl: pageUrl,
+        confidence: 0.88
       });
-    } else if (existing.value !== String(field.value)) {
-      newDeltas.push({
-        deltaId: 'delta_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-        action: 'update',
-        targetEntryId: existing.id,
-        category: existing.category,
-        key: existing.key,
-        previousValue: existing.value,
-        proposedValue: String(field.value),
-        evidenceSnippet: \`Updated value on "\${payload.title}"\`,
-        sourceUrl: payload.url || (tab && tab.url) || '',
-        confidence: 0.92
-      });
+    } else if (existing.value !== propText) {
+      if (existing.id === 'custom.bio') {
+        newDeltas.push({
+          deltaId: 'delta_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          action: 'create',
+          category: 'custom',
+          key: \`Cover Letter / Bio (\${pageTitle.split('|')[0].trim()})\`,
+          proposedValue: propText,
+          evidenceSnippet: \`Submitted on form "\${pageTitle}"\`,
+          sourceUrl: pageUrl,
+          confidence: 0.88
+        });
+      } else {
+        newDeltas.push({
+          deltaId: 'delta_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          action: 'update',
+          targetEntryId: existing.id,
+          category: existing.category,
+          key: existing.key,
+          previousValue: existing.value,
+          proposedValue: propText,
+          evidenceSnippet: \`Updated value on "\${pageTitle}"\`,
+          sourceUrl: pageUrl,
+          confidence: 0.94
+        });
+      }
     }
   }
 
@@ -985,12 +1080,39 @@ async function handleFormSubmitObservation(payload, tab) {
       border-radius: 6px;
       margin-top: 4px;
     }
+    @keyframes lf-spin { to { transform: rotate(360deg); } }
+    .lf-spinner {
+      width: 11px;
+      height: 11px;
+      border: 2px solid #3b82f6;
+      border-top-color: transparent;
+      border-radius: 50%;
+      display: inline-block;
+      animation: lf-spin 0.75s linear infinite;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <strong>LocalForm AI (Phases 1–7)</strong>
     <span id="ai-badge" style="font-size:11px; color:#94a3b8;">Checking AI...</span>
+  </div>
+
+  <div id="ux-activity-bar" style="display:none; background:#0f172a; border-bottom:1px solid #3b82f6; padding:8px 12px; font-size:11px; margin:-12px -12px 12px -12px; position:sticky; top:0; z-index:100;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span class="lf-spinner"></span>
+        <strong id="ux-stage-label" style="color:#93c5fd;">Initializing...</strong>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="ux-elapsed-timer" style="font-family:monospace; color:#38bdf8;">0.0s</span>
+        <button id="btn-abort-ai" class="btn" style="width:auto; padding:1px 6px; font-size:10px; margin:0; background:#ef4444; color:white;">Abort</button>
+      </div>
+    </div>
+    <div style="width:100%; height:4px; background:#1e293b; border-radius:2px; overflow:hidden;">
+      <div id="ux-progress-fill" style="width:15%; height:100%; background:linear-gradient(90deg, #3b82f6, #10b981); transition:width 0.2s ease;"></div>
+    </div>
+    <div id="ux-stream-preview" style="font-family:monospace; font-size:10px; color:#94a3b8; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
   </div>
 
   <div class="nav">
@@ -1064,6 +1186,20 @@ async function handleFormSubmitObservation(payload, tab) {
     </div>
   </section>
 
+  <!-- Persistent Observability & Telemetry Footer Drawer -->
+  <div id="obs-drawer" style="border-top:1px solid #1e293b; background:#090d16; font-size:11px; margin:16px -12px -12px -12px; position:sticky; bottom:0; z-index:90;">
+    <div id="obs-drawer-toggle" style="display:flex; justify-content:space-between; align-items:center; padding:6px 12px; cursor:pointer; user-select:none;">
+      <span style="color:#94a3b8; font-weight:600;">📡 Observability & AI Trace (<span id="obs-log-count">0</span> events)</span>
+      <span id="obs-token-pill" style="font-family:monospace; font-size:10px; color:#64748b;">Tokens: 0 / 9216</span>
+    </div>
+    <div id="obs-drawer-body" style="display:none; max-height:190px; overflow-y:auto; padding:8px 12px; border-top:1px solid #1e293b; font-family:monospace; font-size:10px;">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:4px;">
+        <button id="btn-clear-traces" style="background:none; border:none; color:#64748b; cursor:pointer; font-size:10px;">Clear Logs</button>
+      </div>
+      <div id="obs-trace-list"></div>
+    </div>
+  </div>
+
   <script type="module" src="sidepanel.js"></script>
 </body>
 </html>`,
@@ -1103,6 +1239,186 @@ async function getActiveTab() {
 async function sendToMainFrame(tabId, payload) {
   // Target frameId: 0 first so invisible reCAPTCHA iframes never win the broadcast race
   return await chrome.tabs.sendMessage(tabId, payload, { frameId: 0 });
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const Telemetry = {
+  traces: [],
+  timerInterval: null,
+  startTime: 0,
+  activeAbortController: null,
+
+  startTask(stageLabel, progressPct = 15) {
+    this.startTime = performance.now();
+    this.activeAbortController = new AbortController();
+
+    const bar = document.getElementById('ux-activity-bar');
+    const lbl = document.getElementById('ux-stage-label');
+    const fill = document.getElementById('ux-progress-fill');
+    const timerEl = document.getElementById('ux-elapsed-timer');
+    const previewEl = document.getElementById('ux-stream-preview');
+
+    if (bar) bar.style.display = 'block';
+    if (lbl) lbl.textContent = stageLabel;
+    if (fill) fill.style.width = \`\${progressPct}%\`;
+    if (previewEl) previewEl.textContent = '';
+
+    clearInterval(this.timerInterval);
+    this.timerInterval = setInterval(() => {
+      const elapsedSec = ((performance.now() - this.startTime) / 1000).toFixed(1);
+      if (timerEl) timerEl.textContent = \`\${elapsedSec}s\`;
+    }, 100);
+
+    return this.activeAbortController.signal;
+  },
+
+  updateStage(stageLabel, progressPct, streamSnippet = '') {
+    const lbl = document.getElementById('ux-stage-label');
+    const fill = document.getElementById('ux-progress-fill');
+    const previewEl = document.getElementById('ux-stream-preview');
+    if (lbl) lbl.textContent = stageLabel;
+    if (fill && progressPct !== undefined) fill.style.width = \`\${progressPct}%\`;
+    if (previewEl && streamSnippet) {
+      previewEl.textContent = \`⚡ \${streamSnippet.slice(-90)}\`;
+    }
+  },
+
+  endTask() {
+    clearInterval(this.timerInterval);
+    const bar = document.getElementById('ux-activity-bar');
+    const fill = document.getElementById('ux-progress-fill');
+    if (fill) fill.style.width = '100%';
+    setTimeout(() => {
+      if (bar) bar.style.display = 'none';
+    }, 450);
+  },
+
+  updateTokenUsage(session) {
+    if (!session) return;
+    const used = session.contextUsage ?? session.tokensSoFar ?? 0;
+    const max = session.contextWindow ?? session.maxTokens ?? 9216;
+    const pill = document.getElementById('obs-token-pill');
+    if (pill) {
+      const pct = Math.round((used / max) * 100);
+      pill.textContent = \`Tokens: \${used} / \${max} (\${pct}%)\`;
+      pill.style.color = pct > 80 ? '#f87171' : '#38bdf8';
+    }
+  },
+
+  logTrace({ type, title, durationMs, details }) {
+    const entry = {
+      id: Date.now() + Math.random(),
+      ts: new Date().toLocaleTimeString(),
+      type,
+      title,
+      durationMs: Math.round(durationMs || 0),
+      details: typeof details === 'string' ? details : JSON.stringify(details, null, 2)
+    };
+    this.traces.unshift(entry);
+    if (this.traces.length > 40) this.traces.pop();
+    this.renderTraces();
+  },
+
+  renderTraces() {
+    const countEl = document.getElementById('obs-log-count');
+    const listEl = document.getElementById('obs-trace-list');
+    if (countEl) countEl.textContent = String(this.traces.length);
+    if (!listEl) return;
+
+    const colorMap = {
+      SCAN: '#38bdf8',
+      HYDRATE: '#10b981',
+      LLM_PROMPT: '#a855f7',
+      OBSERVER: '#f59e0b',
+      ERROR: '#ef4444'
+    };
+
+    listEl.innerHTML = this.traces
+      .map(
+        (t) => \`
+      <details style="margin-bottom:6px; border-left:2px solid \${colorMap[t.type] || '#64748b'}; padding-left:6px;">
+        <summary style="cursor:pointer; color:#e2e8f0; display:flex; justify-content:space-between;">
+          <span><strong style="color:\${colorMap[t.type] || '#94a3b8'}">[\${t.type}]</strong> \${escapeHtml(t.title)}</span>
+          <span style="color:#64748b;">\${t.durationMs}ms · \${t.ts}</span>
+        </summary>
+        <pre style="margin:4px 0 0; padding:6px; background:#020617; color:#94a3b8; border-radius:4px; overflow-x:auto; white-space:pre-wrap;">\${escapeHtml(t.details)}</pre>
+      </details>
+    \`
+      )
+      .join('');
+  }
+};
+
+document.getElementById('obs-drawer-toggle')?.addEventListener('click', () => {
+  const body = document.getElementById('obs-drawer-body');
+  if (body) body.style.display = body.style.display === 'none' ? 'block' : 'none';
+});
+document.getElementById('btn-clear-traces')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  Telemetry.traces = [];
+  Telemetry.renderTraces();
+});
+document.getElementById('btn-abort-ai')?.addEventListener('click', () => {
+  Telemetry.activeAbortController?.abort();
+  Telemetry.logTrace({ type: 'ERROR', title: 'User Aborted AI Task', durationMs: 0, details: 'AbortController triggered' });
+  Telemetry.endTask();
+});
+
+async function runObservablePrompt(session, prompt, options = {}) {
+  const t0 = performance.now();
+  const { label = 'Gemini Nano Inference', responseConstraint, signal, onChunk } = options;
+
+  try {
+    let finalOutput = '';
+    const promptOpts = {};
+    if (responseConstraint) promptOpts.responseConstraint = responseConstraint;
+    if (signal) promptOpts.signal = signal;
+
+    if (typeof session.promptStreaming === 'function' && !responseConstraint) {
+      const stream = session.promptStreaming(prompt, promptOpts);
+      for await (const chunk of stream) {
+        if (chunk.startsWith(finalOutput)) {
+          finalOutput = chunk;
+        } else {
+          finalOutput += chunk;
+        }
+        Telemetry.updateStage(
+          \`\${label} (\${finalOutput.length} chars)...\`,
+          undefined,
+          finalOutput
+        );
+        if (onChunk) onChunk(finalOutput);
+      }
+    } else {
+      finalOutput = await session.prompt(prompt, promptOpts);
+    }
+
+    const durationMs = performance.now() - t0;
+    Telemetry.updateTokenUsage(session);
+    Telemetry.logTrace({
+      type: 'LLM_PROMPT',
+      title: \`\${label} (\${finalOutput.length} chars out)\`,
+      durationMs,
+      details: \`PROMPT (\${prompt.length} chars):\\n\${prompt.slice(0, 600)}...\\n\\nOUTPUT:\\n\${finalOutput}\`
+    });
+
+    return finalOutput;
+  } catch (err) {
+    Telemetry.logTrace({
+      type: 'ERROR',
+      title: \`\${label} Failed: \${err.message}\`,
+      durationMs: performance.now() - t0,
+      details: err.stack || err.message
+    });
+    throw err;
+  }
 }
 
 // --- PHASE 1: Built-in AI Detection & Bootstrap ---
@@ -1302,7 +1618,7 @@ User Context: \${JSON.stringify(userContextVault.map((u) => ({ key: u.key, value
 Page Title: \${doc.pageContext?.title || ''}
 Unresolved Fields: \${JSON.stringify(unresolvedFields.map((f) => ({ fieldId: f.fieldId, query: f.query, inputType: f.inputType, options: f.constraints?.options })))}\`;
 
-      const rawRes = await session.prompt(prompt, { responseConstraint: schema });
+      const rawRes = await runObservablePrompt(session, prompt, { responseConstraint: schema, label: 'Form-Import++ Mapping' });
       const parsed = JSON.parse(rawRes);
       for (const mapItem of parsed.mappings || []) {
         const target = doc.fields.find((f) => f.fieldId === mapItem.fieldId);

@@ -21,6 +21,25 @@
     </div>
   </header>
 
+  <!-- Global Live Activity & Token Bar (Sticky below header) -->
+  <div id="ux-activity-bar" style="display:none; background:#0f172a; border-bottom:1px solid #3b82f6; padding:8px 12px; font-size:11px; margin:-12px -12px 12px -12px; position:sticky; top:0; z-index:100;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span class="lf-spinner"></span>
+        <strong id="ux-stage-label" style="color:#93c5fd;">Initializing...</strong>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="ux-elapsed-timer" style="font-family:monospace; color:#38bdf8;">0.0s</span>
+        <button id="btn-abort-ai" class="btn btn-danger" style="width:auto; padding:1px 6px; font-size:10px; margin:0;">Abort</button>
+      </div>
+    </div>
+    <!-- Progress Bar Track -->
+    <div style="width:100%; height:4px; background:#1e293b; border-radius:2px; overflow:hidden;">
+      <div id="ux-progress-fill" style="width:15%; height:100%; background:linear-gradient(90deg, #3b82f6, #10b981); transition:width 0.2s ease;"></div>
+    </div>
+    <div id="ux-stream-preview" style="font-family:monospace; font-size:10px; color:#94a3b8; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+  </div>
+
   <!-- NAVIGATION TABS -->
   <nav class="nav">
     <button data-tab="tab-ai" class="active">
@@ -272,6 +291,20 @@
       </div>
     </div>
   </main>
+
+  <!-- Persistent Observability & Telemetry Footer Drawer -->
+  <div id="obs-drawer" style="border-top:1px solid #1e293b; background:#090d16; font-size:11px; margin:16px -12px -12px -12px; position:sticky; bottom:0; z-index:90;">
+    <div id="obs-drawer-toggle" style="display:flex; justify-content:space-between; align-items:center; padding:6px 12px; cursor:pointer; user-select:none;">
+      <span style="color:#94a3b8; font-weight:600;">📡 Observability & AI Trace (<span id="obs-log-count">0</span> events)</span>
+      <span id="obs-token-pill" style="font-family:monospace; font-size:10px; color:#64748b;">Tokens: 0 / 9216</span>
+    </div>
+    <div id="obs-drawer-body" style="display:none; max-height:190px; overflow-y:auto; padding:8px 12px; border-top:1px solid #1e293b; font-family:monospace; font-size:10px;">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:4px;">
+        <button id="btn-clear-traces" style="background:none; border:none; color:#64748b; cursor:pointer; font-size:10px;">Clear Logs</button>
+      </div>
+      <div id="obs-trace-list"></div>
+    </div>
+  </div>
 
   <script type="module" src="sidepanel.js"></script>
 </body>
