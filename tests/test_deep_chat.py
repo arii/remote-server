@@ -439,6 +439,104 @@ class TestSuperviseMode(unittest.TestCase):
         turn.assert_not_called()
 
 
+class TestReviewPr(unittest.TestCase):
+    def test_argv_dispatch(self):
+        from unittest import mock
+
+        with mock.patch.object(deep_chat, "_cmd_review_pr", return_value=0) as cmd:
+            code = deep_chat.main(
+                ["deep_chat.py", "arii/remote-server", "--review-pr", "42"]
+            )
+        self.assertEqual(code, 0)
+        cmd.assert_called_once_with("arii/remote-server", "42", prefer=None)
+
+    def test_bad_repo_rejected(self):
+        from unittest import mock
+
+        with mock.patch.object(deep_chat, "_cmd_review_pr") as cmd:
+            code = deep_chat.main(["deep_chat.py", "nope", "--review-pr", "42"])
+        self.assertEqual(code, 2)
+        cmd.assert_not_called()
+
+    def test_bad_number_usage_error(self):
+        from unittest import mock
+
+        with mock.patch.object(deep_chat.s5tools, "read_pr") as rp:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = deep_chat._cmd_review_pr("arii/remote-server", "xx")
+        self.assertEqual(code, 2)
+        rp.assert_not_called()
+
+    def test_unreadable_pr_sorry(self):
+        from unittest import mock
+
+        with mock.patch.object(
+            deep_chat.s5tools, "read_pr", return_value="PR_ERROR: boom"
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = deep_chat._cmd_review_pr("arii/remote-server", "99")
+        self.assertEqual(code, 1)
+        self.assertIn("Sorry", buf.getvalue())
+
+    def test_success_prints_verdict_and_ledgers(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        seen = {}
+
+        def fake_record(
+            script,
+            model_name,
+            thread_id,
+            messages,
+            started,
+            extra=None,
+            usage=None,
+            calls=None,
+            provider=None,
+        ):
+            seen["extra"] = extra
+            seen["thread"] = thread_id
+            return {}
+
+        model = SimpleNamespace(
+            invoke=mock.Mock(return_value={"verdict": "APPROVE", "reason": "clean"})
+        )
+        spec = {"provider": "ollama", "model": "qwen3:8b"}
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_path = os.path.join(tmp, "t.jsonl")
+            with (
+                mock.patch.object(
+                    deep_chat.s5tools, "read_pr", return_value="PR #1 [OPEN] T diff..."
+                ),
+                mock.patch.object(
+                    deep_chat.model_router, "resolve_llm", return_value=spec
+                ),
+                mock.patch.object(
+                    deep_chat.model_router,
+                    "build_structured_chat_model",
+                    return_value=(model, spec),
+                ),
+                mock.patch.object(deep_chat.ledger, "record", side_effect=fake_record),
+                mock.patch.object(
+                    deep_chat.observe, "default_trace_path", return_value=trace_path
+                ),
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = deep_chat._cmd_review_pr(
+                        "arii/remote-server", "1", prefer="ollama"
+                    )
+        self.assertEqual(code, 0)
+        self.assertEqual(buf.getvalue().strip(), "APPROVE: clean")
+        self.assertEqual(seen["thread"], "review-pr-1")
+        self.assertEqual(seen["extra"]["mode"], "review-pr")
+        self.assertEqual(seen["extra"]["repo"], "arii/remote-server")
+
+
 class TestTrivialFastPath(unittest.TestCase):
     def test_trivial_skips_harness(self):
         from unittest import mock

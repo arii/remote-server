@@ -256,6 +256,15 @@ def _valid_pr_number(value):
 
 REVIEW_EVENTS = ("comment", "request-changes")
 
+# Structured review verdict (issue #1268): fixed task, no format
+# instructions — the schema binds at the protocol layer, so the
+# prompt carries zero JSON scaffolding. Keep flat: qwen3:8b locks
+# up on nested schemas (Gemini round 2026-11-09).
+REVIEW_PR_TASK = (
+    "Review this PR for bugs. Reply APPROVE when the diff is sound, "
+    "BLOCK with the exact reason when it is not.\n\n{pr}"
+)
+
 
 def validate_proposal(payload):
     """Validate a propose_action payload. Returns (ok, text).
@@ -1166,6 +1175,82 @@ def _cmd_validate(raw):
     return 0
 
 
+def _cmd_review_pr(repo, number, prefer=None):
+    """Structured single-shot PR verdict (issue #1268). Returns exit code.
+
+    Reads the PR with diff, invokes the natively-bound verdict schema
+    with the fixed task (zero format instructions), prints the verdict,
+    ledgers the run. Deterministic failures print a Sorry line and exit
+    1 — never a fake verdict.
+    """
+    from pydantic import BaseModel  # noqa: E402
+
+    import ledger  # noqa: E402
+    import observe  # noqa: E402
+
+    if s5tools.valid_number(number) is None:
+        return cli.usage_error(f"bad PR number: {number!r}")
+
+    class ReviewVerdict(BaseModel):
+        verdict: str
+        reason: str
+
+    started = time.time()
+    thread_id = f"review-pr-{number}"
+    pr_text = s5tools.read_pr(number, repo, diff=True)
+    if pr_text.startswith("PR_ERROR:"):
+        return cli.sorry(f"Sorry, cannot read PR #{number} in {repo}.")
+    try:
+        spec = model_router.resolve_llm(prefer=prefer)
+        model, spec = model_router.build_structured_chat_model(
+            spec=spec, schema=ReviewVerdict
+        )
+    except ImportError as exc:
+        return cli.sorry(f"Sorry, the chat backend is not installed: {_short_err(exc)}")
+    except RuntimeError as exc:
+        return cli.sorry(f"Sorry, no model is available right now: {_short_err(exc)}")
+    print(f"deep_chat via {spec['provider']}:{spec['model']}", file=sys.stderr)
+    recorder = observe.TraceRecorder(observe.default_trace_path("deep_chat", thread_id))
+    recorder.run_start("deep_chat.py", thread_id, f"{spec['provider']}:{spec['model']}")
+    try:
+        recorder.model_request(1)
+        answer = model.invoke(REVIEW_PR_TASK.format(pr=pr_text))
+        verdict = ReviewVerdict.model_validate(answer)
+        recorder.model_response({})
+    except Exception as exc:
+        recorder.run_end(False)
+        recorder.close()
+        return cli.sorry(f"Sorry, the review failed: {_short_err(exc)}")
+    recorder.run_end(True)
+    recorder.close()
+    _usage, _calls = recorder.totals()
+    text = f"{verdict.verdict}: {verdict.reason}"
+    print(text, flush=True)
+    ledger.record(
+        "deep_chat.py",
+        f"{spec['provider']}:{spec['model']}",
+        thread_id,
+        [
+            {"type": "human", "content": REVIEW_PR_TASK.format(pr=pr_text)},
+            {"type": "ai", "content": text},
+        ],
+        started,
+        extra={
+            "repo": repo,
+            "mode": "review-pr",
+            "trace": recorder.path,
+            "prompt": "REVIEW_PR_TASK",
+            "decisions": decisions.build_decisions(
+                [], [], text, reason="structured review verdict"
+            ),
+        },
+        usage=_usage,
+        calls=_calls,
+        provider=spec["provider"],
+    )
+    return 0
+
+
 def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     """Fast path for greetings: one direct model call, no tools, no
     history. Still ledgered (usage when reported) with a minimal
@@ -1513,6 +1598,10 @@ def main(argv=None) -> int:
         thread = f"supervise-{argv[1].split('/')[1]}"
         raw = base64.b64encode(SUPERVISOR_BRIEF.encode()).decode()
         return _cmd_turn(argv[1], thread, raw)
+    if len(argv) == 4 and argv[2] == "--review-pr":
+        if not s5tools.valid_repo(argv[1]):
+            return cli.usage_error(f"bad repo: {argv[1]!r}")
+        return _cmd_review_pr(argv[1], argv[3], prefer=prefer)
     if len(argv) < 4 or not s5tools.valid_repo(argv[1]):
         return cli.usage_error(
             "usage: deep_chat.py owner/repo <thread-id> <b64-prompt>"
@@ -1520,6 +1609,7 @@ def main(argv=None) -> int:
             "   or: deep_chat.py owner/repo <thread-id> --resume "
             "approve|reject [b64-message]",
             "   or: deep_chat.py owner/repo --supervise",
+            "   or: deep_chat.py owner/repo --review-pr <number>",
             "   or: deep_chat.py --validate-proposal <b64-json>",
         )
     if not valid_thread_id(argv[2]):
