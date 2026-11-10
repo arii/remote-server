@@ -91,6 +91,14 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 - Direct (non-agent) fix: #1192 compose defaults (PR #1238, merged).
 - Costs: $2 cap honored all day; per-turn spend remains pennies.
 
+## Structured-output A/B 2026-11-09 ~23:00Z (cloud-baryon, Ollama qwen3:8b)
+
+- Same review task + same 2KB diff, two modes (`/tmp/ab_structured.py`, scratch).
+- Prompt-hinted JSON: 655 in / 522 out tokens, 131s, output trailed a `.` after the JSON — `json.loads` FAILED, repair needed.
+- Native `build_structured_chat_model(ReviewVerdict)`: 93s, valid schema object first try, zero repair. (Ollama usage_metadata empty on this path, so the input-token delta is by construction ~60 hint tokens, not measured.)
+- Verdict: native enforcement wins on the format axis (n=1, noisy timing). Judgment quality identical-ish (both BLOCKed the same test). #1247 helper stays unwired in prod — wiring tracked in #1268.
+- Prior art noted: #1244 (other lane, open) banks a prompt-hint + fallback-parser schema and explicitly deferred native enforcement; reconcile if it merges.
+
 ## Agent validation loop 2026-11-09 ~21:00-22:30Z (cloud-baryon)
 
 - Issue #1245 (Now-view audit) validation via deep_chat agents: Ollama qwen3:8b FAILED the read path (tried to resolve the issue as a PR, no issue-reading tool, gave up); Nebius GLM-5.3-Flash ran but honest-UNVERIFIED 4/5 (read_repo_file head-only 3000 chars, grep_repo no path scope + .pnpm-store flood). 1/5 independently CONFIRMED (bare `<p>{item.detail}</p>`). No fabricated verdicts — fail-closed behavior correct.
