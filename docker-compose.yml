@@ -158,6 +158,11 @@ services:
       GITHUB_APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       APP_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Local LLM route (issue #1196): compose-DNS alias for the
+      # ollama service below. localhost:11434 never resolves in
+      # this container; the model_router default matches this value,
+      # so the line documents the topology and offers one override.
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
       # Default mirrors deep-agent/model_router.py DEFAULT_NEBIUS_MODEL;
       # keep both in sync so sessions never stall on model choice.
