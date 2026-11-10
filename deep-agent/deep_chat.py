@@ -603,19 +603,24 @@ def build_tools(checkout, *, impact_tools=False):
         return runs.search_turns(query, kind=kind, limit=limit)
 
     @tool
-    def pr_read(number: str, repo: str = "") -> str:
+    def pr_read(number: str, repo: str = "", diff: bool = False) -> str:
         """Read a GitHub PR: title, author, state, reviews, checks.
 
         Use for open-PR questions — private repos are invisible to
         keyless search_web and td PR reads need a project_config.json
         the checkout may not carry. Read-only; never comments or edits.
+        Reviewers: pass diff=True to also get the capped patch —
+        without it there is no way to see what changed.
 
         Args:
             number: PR number as digits, e.g. "9826".
             repo: Optional owner/name (or bare checkout name); blank
                 reads the turn's repo.
+            diff: Also return the capped unified diff.
         """
-        return s5tools.read_pr(number, repo or s5tools.repo_for_checkout(checkout))
+        return s5tools.read_pr(
+            number, repo or s5tools.repo_for_checkout(checkout), diff=diff
+        )
 
     @tool
     def browser_snapshot() -> str:

@@ -6,6 +6,7 @@ import s5tools
 
 try:
     import pytest  # noqa: F401
+
     HAS_PYTEST = True
 except ImportError:
     HAS_PYTEST = False
@@ -40,37 +41,50 @@ class TestS5Tools(unittest.TestCase):
 
     def test_repo_for_checkout(self):
         self.assertEqual(
-            s5tools.repo_for_checkout("/srv/remote-server"),
-            "arii/remote-server")
-        self.assertEqual(
-            s5tools.repo_for_checkout("/srv/repos/hrm"), "arii/hrm")
+            s5tools.repo_for_checkout("/srv/remote-server"), "arii/remote-server"
+        )
+        self.assertEqual(s5tools.repo_for_checkout("/srv/repos/hrm"), "arii/hrm")
         self.assertEqual(s5tools.repo_for_checkout("/tmp"), "")
         self.assertEqual(s5tools.repo_for_checkout(""), "")
         self.assertEqual(s5tools.repo_for_checkout(None), "")
 
     def test_read_pr_rejects_without_subprocess(self):
         from unittest import mock
+
         with mock.patch("subprocess.run") as m:
-            for number, repo in (("0", "arii/hrm"), ("-3", "arii/hrm"),
-                                 ("12x", "arii/hrm"), ("", "arii/hrm"),
-                                 (True, "arii/hrm"), ("1", ""),
-                                 ("1", "no slash here"),
-                                 ("1", "a/" * 200), ("1", None)):
+            for number, repo in (
+                ("0", "arii/hrm"),
+                ("-3", "arii/hrm"),
+                ("12x", "arii/hrm"),
+                ("", "arii/hrm"),
+                (True, "arii/hrm"),
+                ("1", ""),
+                ("1", "no slash here"),
+                ("1", "a/" * 200),
+                ("1", None),
+            ):
                 out = s5tools.read_pr(number, repo)
-                self.assertTrue(out.startswith("PR_ERROR:"),
-                                (number, repo, out))
+                self.assertTrue(out.startswith("PR_ERROR:"), (number, repo, out))
             m.assert_not_called()
 
     def test_read_pr_bare_name_gains_owner(self):
         from unittest import mock
         import json as _json
-        payload = {"number": 9826, "title": "t", "author": {"login": "u"},
-                   "state": "OPEN", "isDraft": False, "url": "http://x",
-                   "reviewDecision": None, "statusCheckRollup": []}
+
+        payload = {
+            "number": 9826,
+            "title": "t",
+            "author": {"login": "u"},
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "http://x",
+            "reviewDecision": None,
+            "statusCheckRollup": [],
+        }
         with mock.patch("subprocess.run") as m:
-            m.return_value = mock.Mock(returncode=0,
-                                       stdout=_json.dumps(payload),
-                                       stderr="")
+            m.return_value = mock.Mock(
+                returncode=0, stdout=_json.dumps(payload), stderr=""
+            )
             out = s5tools.read_pr("9826", "hrm")
         self.assertIn("PR #9826", out)
         argv = m.call_args[0][0]
@@ -79,37 +93,110 @@ class TestS5Tools(unittest.TestCase):
     def test_read_pr_formats_and_caps(self):
         from unittest import mock
         import json as _json
-        payload = {"number": 1, "title": "T", "author": {"login": "a"},
-                   "state": "OPEN", "isDraft": True, "url": "http://x/y",
-                   "reviewDecision": "APPROVED",
-                   "statusCheckRollup": [{"conclusion": "SUCCESS"},
-                                         {"conclusion": "FAILURE"},
-                                         {"status": "pending"}]}
+
+        payload = {
+            "number": 1,
+            "title": "T",
+            "author": {"login": "a"},
+            "state": "OPEN",
+            "isDraft": True,
+            "url": "http://x/y",
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [
+                {"conclusion": "SUCCESS"},
+                {"conclusion": "FAILURE"},
+                {"status": "pending"},
+            ],
+        }
         with mock.patch("subprocess.run") as m:
-            m.return_value = mock.Mock(returncode=0,
-                                       stdout=_json.dumps(payload),
-                                       stderr="")
+            m.return_value = mock.Mock(
+                returncode=0, stdout=_json.dumps(payload), stderr=""
+            )
             out = s5tools.read_pr(1, "arii/hrm")
         self.assertIn("DRAFT", out)
         self.assertIn("review=APPROVED", out)
         self.assertIn("FAILURE:1", out)
         self.assertLessEqual(len(out), s5tools.MAX_OUT)
 
+    def test_read_pr_diff_appended_and_capped(self):
+        from unittest import mock
+        import json as _json
+
+        payload = {
+            "number": 7,
+            "title": "T",
+            "author": {"login": "a"},
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "http://x/y",
+            "reviewDecision": None,
+            "statusCheckRollup": [],
+        }
+        view = mock.Mock(returncode=0, stdout=_json.dumps(payload), stderr="")
+        big = mock.Mock(returncode=0, stdout="x" * 9000, stderr="")
+        with mock.patch("subprocess.run", side_effect=[view, big]) as m:
+            out = s5tools.read_pr("7", "arii/hrm", diff=True)
+        self.assertEqual(m.call_count, 2)
+        self.assertIn("PR #7", out)
+        self.assertIn("\nDIFF:\n", out)
+        self.assertIn("[truncated]", out)
+        self.assertLessEqual(len(out), s5tools.MAX_OUT + s5tools.DIFF_CAP + 100)
+
+    def test_read_pr_diff_failure_degrades_to_summary(self):
+        from unittest import mock
+        import json as _json
+
+        payload = {
+            "number": 7,
+            "title": "T",
+            "author": {"login": "a"},
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "http://x/y",
+            "reviewDecision": None,
+            "statusCheckRollup": [],
+        }
+        view = mock.Mock(returncode=0, stdout=_json.dumps(payload), stderr="")
+        fail = mock.Mock(returncode=1, stdout="", stderr="boom")
+        with mock.patch("subprocess.run", side_effect=[view, fail]):
+            out = s5tools.read_pr("7", "arii/hrm", diff=True)
+        self.assertIn("PR #7", out)
+        self.assertIn("DIFF: unavailable", out)
+
+    def test_read_pr_no_diff_by_default(self):
+        from unittest import mock
+        import json as _json
+
+        payload = {
+            "number": 7,
+            "title": "T",
+            "author": {"login": "a"},
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "http://x/y",
+            "reviewDecision": None,
+            "statusCheckRollup": [],
+        }
+        with mock.patch("subprocess.run") as m:
+            m.return_value = mock.Mock(
+                returncode=0, stdout=_json.dumps(payload), stderr=""
+            )
+            out = s5tools.read_pr("7", "arii/hrm")
+        self.assertEqual(m.call_count, 1)
+        self.assertIn("PR #7", out)
+        self.assertNotIn("DIFF", out)
+
     def test_read_pr_gh_failure_paths(self):
         from unittest import mock
         import subprocess as _sp
+
         with mock.patch("subprocess.run") as m:
-            m.return_value = mock.Mock(returncode=1, stdout="",
-                                       stderr="gh: not found")
-            self.assertTrue(
-                s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
-            m.return_value = mock.Mock(returncode=0, stdout="nope",
-                                       stderr="")
-            self.assertTrue(
-                s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
+            m.return_value = mock.Mock(returncode=1, stdout="", stderr="gh: not found")
+            self.assertTrue(s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
+            m.return_value = mock.Mock(returncode=0, stdout="nope", stderr="")
+            self.assertTrue(s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
             m.side_effect = _sp.TimeoutExpired("gh", 60)
-            self.assertTrue(
-                s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
+            self.assertTrue(s5tools.read_pr("1", "arii/hrm").startswith("PR_ERROR:"))
 
     def test_run_ok_and_failure(self):
         out = s5tools.run([sys.executable, "-c", "print('hi')"])
@@ -133,7 +220,9 @@ class TestS5Tools(unittest.TestCase):
             self.assertTrue(
                 s5tools.read_repo_file(d, "../../etc/passwd").startswith("REJECTED")
             )
-            self.assertTrue(s5tools.read_repo_file(d, "missing").startswith("not found"))
+            self.assertTrue(
+                s5tools.read_repo_file(d, "missing").startswith("not found")
+            )
 
     def test_list_dir(self):
         import tempfile
@@ -148,21 +237,18 @@ class TestS5Tools(unittest.TestCase):
     def test_falsy_checkout_rejected_never_content(self):
         for checkout in ("", None):
             self.assertTrue(
-                s5tools.read_repo_file(
-                    checkout, "/etc/hostname").startswith("REJECTED"))
-            self.assertTrue(
-                s5tools.list_dir(
-                    checkout, "/etc").startswith("REJECTED"))
+                s5tools.read_repo_file(checkout, "/etc/hostname").startswith("REJECTED")
+            )
+            self.assertTrue(s5tools.list_dir(checkout, "/etc").startswith("REJECTED"))
 
     def test_absolute_path_rejected_with_checkout(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
             self.assertTrue(
-                s5tools.read_repo_file(
-                    d, "/etc/hostname").startswith("REJECTED"))
-            self.assertTrue(
-                s5tools.list_dir(d, "/etc").startswith("REJECTED"))
+                s5tools.read_repo_file(d, "/etc/hostname").startswith("REJECTED")
+            )
+            self.assertTrue(s5tools.list_dir(d, "/etc").startswith("REJECTED"))
 
     def test_grep_repo(self):
         import tempfile
@@ -197,8 +283,16 @@ class TestS5Tools(unittest.TestCase):
         # shape of the code-locate 4/5 live failure (grep-noise).
         import tempfile
 
-        for dirname in (".git", "node_modules", ".venv", "__pycache__",
-                        ".boomtick", "chroma_db", ".claude", ".muse"):
+        for dirname in (
+            ".git",
+            "node_modules",
+            ".venv",
+            "__pycache__",
+            ".boomtick",
+            "chroma_db",
+            ".claude",
+            ".muse",
+        ):
             with tempfile.TemporaryDirectory() as d:
                 os.mkdir(os.path.join(d, dirname))
                 with open(os.path.join(d, dirname, "n.txt"), "w") as f:
@@ -215,9 +309,7 @@ class TestRunRepoCommand(unittest.TestCase):
         os.mkdir(os.path.join(d, "tests"))
         probe = os.path.join(d, "tests", "test_probe.py")
         with open(probe, "w", encoding="utf-8") as f:
-            f.write("def test_probe():\n"
-                    "    print('PROBE-MARKER')\n"
-                    "    assert True\n")
+            f.write("def test_probe():\n    print('PROBE-MARKER')\n    assert True\n")
         return probe
 
     @unittest.skipUnless(HAS_PYTEST, "needs pytest")
@@ -227,7 +319,8 @@ class TestRunRepoCommand(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._checkout(d)
             out = s5tools.run_repo_command(
-                d, "python3 -m pytest tests/test_probe.py -q")
+                d, "python3 -m pytest tests/test_probe.py -q"
+            )
         self.assertTrue(out.startswith("exit=0\n"), out[:200])
         self.assertIn("1 passed", out)
 
@@ -240,8 +333,7 @@ class TestRunRepoCommand(unittest.TestCase):
             bad = os.path.join(d, "tests", "test_bad.py")
             with open(bad, "w", encoding="utf-8") as f:
                 f.write("def test_bad():\n    assert False\n")
-            out = s5tools.run_repo_command(
-                d, "python3 -m pytest tests/test_bad.py -q")
+            out = s5tools.run_repo_command(d, "python3 -m pytest tests/test_bad.py -q")
         self.assertTrue(out.startswith("exit=1\n"), out[:200])
         self.assertIn("1 failed", out)
 
@@ -283,16 +375,12 @@ class TestRunRepoCommand(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
-            out = s5tools.run_repo_command(
-                d, "git status && touch SMUGGLED")
+            out = s5tools.run_repo_command(d, "git status && touch SMUGGLED")
             self.assertTrue(out.startswith("exit="), out[:200])
-            self.assertFalse(os.path.exists(
-                os.path.join(d, "SMUGGLED")))
-            out = s5tools.run_repo_command(
-                d, "git status ; touch SMUGGLED2")
+            self.assertFalse(os.path.exists(os.path.join(d, "SMUGGLED")))
+            out = s5tools.run_repo_command(d, "git status ; touch SMUGGLED2")
             self.assertTrue(out.startswith("exit="), out[:200])
-            self.assertFalse(os.path.exists(
-                os.path.join(d, "SMUGGLED2")))
+            self.assertFalse(os.path.exists(os.path.join(d, "SMUGGLED2")))
 
     def test_tail_cap(self):
         import tempfile
@@ -406,13 +494,18 @@ class TestFetchUrl(unittest.TestCase):
             "http://100.64.0.1/",
         ):
             out = s5tools.fetch_url(url)
-            self.assertTrue(out.startswith("FETCH_ERROR: blocked"),
-                            url)
+            self.assertTrue(out.startswith("FETCH_ERROR: blocked"), url)
 
     def test_rejects_schemes(self):
-        for url in ("file:///etc/passwd", "ftp://x/y",
-                    "javascript:alert(1)", "", "   ", "notaurl",
-                    "http:///nohost"):
+        for url in (
+            "file:///etc/passwd",
+            "ftp://x/y",
+            "javascript:alert(1)",
+            "",
+            "   ",
+            "notaurl",
+            "http:///nohost",
+        ):
             out = s5tools.fetch_url(url)
             self.assertTrue(out.startswith("FETCH_ERROR:"), repr(url))
         self.assertTrue(s5tools.fetch_url(None).startswith("FETCH_ERROR:"))
@@ -422,14 +515,13 @@ class TestFetchUrl(unittest.TestCase):
         from unittest import mock
 
         with mock.patch.object(
-                socket, "getaddrinfo",
-                side_effect=socket.gaierror("nope")):
+            socket, "getaddrinfo", side_effect=socket.gaierror("nope")
+        ):
             out = s5tools.fetch_url("http://docs.example.com/")
         self.assertIn("FETCH_ERROR: DNS failed", out)
 
     def test_ok_double_returns_text(self):
-        page = (b"<html><head><title>Docs</title></head>"
-                b"<body>do the thing</body></html>")
+        page = b"<html><head><title>Docs</title></head><body>do the thing</body></html>"
         base = self._double({"/ok": (200, [], page)})
         self.assertEqual(self._fetch(base, "/ok"), page.decode())
 
@@ -441,7 +533,8 @@ class TestFetchUrl(unittest.TestCase):
         self.assertTrue(out.endswith(f"[truncated {over} bytes]"), out[-60:])
         self.assertEqual(
             len(out) - len(f"\n[truncated {over} bytes]"),
-            s5tools.FETCH_DEFAULT_MAX_BYTES)
+            s5tools.FETCH_DEFAULT_MAX_BYTES,
+        )
 
     def test_timeout_text(self):
         import time
@@ -456,23 +549,29 @@ class TestFetchUrl(unittest.TestCase):
         self.assertIn("timed out", out)
 
     def test_redirect_followed(self):
-        base = self._double({
-            "/redir": (302, [("Location", "/ok")], b""),
-            "/ok": (200, [], b"FINAL-TEXT"),
-        })
+        base = self._double(
+            {
+                "/redir": (302, [("Location", "/ok")], b""),
+                "/ok": (200, [], b"FINAL-TEXT"),
+            }
+        )
         self.assertEqual(self._fetch(base, "/redir"), "FINAL-TEXT")
 
     def test_redirect_to_private_blocked(self):
-        base = self._double({
-            "/evil": (302, [("Location", "http://10.0.0.1/")], b""),
-        })
+        base = self._double(
+            {
+                "/evil": (302, [("Location", "http://10.0.0.1/")], b""),
+            }
+        )
         out = self._fetch(base, "/evil")
         self.assertTrue(out.startswith("FETCH_ERROR: blocked"), out[:120])
 
     def test_too_many_redirects(self):
-        base = self._double({
-            "/loop": (302, [("Location", "/loop")], b""),
-        })
+        base = self._double(
+            {
+                "/loop": (302, [("Location", "/loop")], b""),
+            }
+        )
         out = self._fetch(base, "/loop")
         self.assertEqual(out, "FETCH_ERROR: too many redirects")
 
@@ -496,35 +595,34 @@ def _search_card(url, title, desc):
     return (
         f'<section data-ms-rank="5" class="card search-result" >'
         f'<div class="url"><a rel="nofollow external" href="{url}">'
-        f"{url}</a></div> <h2> <a tabindex=\"-1\" class=\"title\" "
-        f"rel=\"nofollow external\" href=\"{url}\">{title}</a> </h2> "
-        f"<p class=\"description\">{desc}</p> "
-        f"<div class=\"utils\"> Also from example.com </div>"
+        f'{url}</a></div> <h2> <a tabindex="-1" class="title" '
+        f'rel="nofollow external" href="{url}">{title}</a> </h2> '
+        f'<p class="description">{desc}</p> '
+        f'<div class="utils"> Also from example.com </div>'
     )
 
 
 _SEARCH_PAGE_HEAD = (
-    "<html><body><span id=\"content-start\"></span>"
-    "<section class=\"sidebar-narrow\"><section id=\"results\""
-    " class=\"sb-left\"> <div class=\"infobox screenreader-only\">"
+    '<html><body><span id="content-start"></span>'
+    '<section class="sidebar-narrow"><section id="results"'
+    ' class="sb-left"> <div class="infobox screenreader-only">'
     " Showing 25 search results. </div> "
 )
 
 
 def _search_page(*cards):
     # Bytes: the shared _DoubleHandler writes bodies raw.
-    return (_SEARCH_PAGE_HEAD + " ".join(cards)
-            + "</section></section>").encode()
+    return (_SEARCH_PAGE_HEAD + " ".join(cards) + "</section></section>").encode()
 
 
 def _wait_page(query, countdown=0):
     return (
         "<html><head><title>Error</title></head><body>"
-        "<div class=\"infobox\"><h1>Wait For A Moment</h1>"
+        '<div class="infobox"><h1>Wait For A Moment</h1>'
         "<p>The search engine is currently barraged by queries</p>"
-        f"<p>Please wait for <b id=\"countdown\" data-tr=\"{countdown}\">"
+        f'<p>Please wait for <b id="countdown" data-tr="{countdown}">'
         f"{countdown}</b> seconds.</p>"
-        f"<a href=\"/search?query={query}&sst=S-test\">this link</a>"
+        f'<a href="/search?query={query}&sst=S-test">this link</a>'
         "</div></body></html>"
     ).encode()
 
@@ -556,10 +654,8 @@ class TestSearchWeb(unittest.TestCase):
 
     def test_parses_ranked_hits(self):
         page = _search_page(
-            _search_card("https://a.example/docs", "A docs",
-                         "how to a"),
-            _search_card("https://b.example/log", "B log",
-                         "b changes"),
+            _search_card("https://a.example/docs", "A docs", "how to a"),
+            _search_card("https://b.example/log", "B log", "b changes"),
         )
         base = self._double({"/search?query=ollama": (200, [], page)})
         out = self._search(base, "ollama")
@@ -570,10 +666,12 @@ class TestSearchWeb(unittest.TestCase):
         self.assertIn("https://b.example/log", out)
 
     def test_limit_clamps(self):
-        page = _search_page(*[
-            _search_card(f"https://x.example/{i}", f"T{i}", f"s{i}")
-            for i in range(7)
-        ])
+        page = _search_page(
+            *[
+                _search_card(f"https://x.example/{i}", f"T{i}", f"s{i}")
+                for i in range(7)
+            ]
+        )
         base = self._double({"/search?query=q": (200, [], page)})
         out = self._search(base, "q", limit=2)
         self.assertIn("2. T1", out)
@@ -599,15 +697,21 @@ class TestSearchWeb(unittest.TestCase):
             self.assertTrue(out.startswith("SEARCH_ERROR:"), repr(limit))
 
     def test_empty_page_is_no_results(self):
-        base = self._double({
-            "/search?query=qqq": (200, [], _search_page()),
-        })
+        base = self._double(
+            {
+                "/search?query=qqq": (200, [], _search_page()),
+            }
+        )
         self.assertEqual(self._search(base, "qqq"), "no results")
 
     def test_cleans_entities_and_tags(self):
-        page = _search_page(_search_card(
-            "https://a.example/", "It&#x27;s <em>A</em>",
-            "line <b>bold</b>  spaced   out&#x27;s"))
+        page = _search_page(
+            _search_card(
+                "https://a.example/",
+                "It&#x27;s <em>A</em>",
+                "line <b>bold</b>  spaced   out&#x27;s",
+            )
+        )
         base = self._double({"/search?query=e": (200, [], page)})
         out = self._search(base, "e")
         self.assertIn("1. It's A\n", out)
@@ -627,29 +731,36 @@ class TestSearchWeb(unittest.TestCase):
         self.assertNotIn("REL", out)
 
     def test_wait_page_honors_countdown_and_retries(self):
-        page = _search_page(_search_card(
-            "https://r.example/", "Retry hit", "after wait"))
-        base = self._double({
-            "/search?query=w": (200, [], _wait_page("w", 0)),
-            "/search?query=w&sst=S-test": (200, [], page),
-        })
+        page = _search_page(
+            _search_card("https://r.example/", "Retry hit", "after wait")
+        )
+        base = self._double(
+            {
+                "/search?query=w": (200, [], _wait_page("w", 0)),
+                "/search?query=w&sst=S-test": (200, [], page),
+            }
+        )
         out = self._search(base, "w")
         self.assertIn("1. Retry hit", out)
         self.assertIn("https://r.example/", out)
 
     def test_wait_page_without_retry_link(self):
-        body = ("<html><head><title>Error</title></head><body>"
-                "<h1>Wait For A Moment</h1></body></html>").encode()
+        body = (
+            "<html><head><title>Error</title></head><body>"
+            "<h1>Wait For A Moment</h1></body></html>"
+        ).encode()
         base = self._double({"/search?query=w": (200, [], body)})
         out = self._search(base, "w")
         self.assertTrue(out.startswith("SEARCH_ERROR:"), out[:120])
         self.assertIn("no retry link", out)
 
     def test_double_wait_is_search_error(self):
-        base = self._double({
-            "/search?query=w": (200, [], _wait_page("w", 0)),
-            "/search?query=w&sst=S-test": (200, [], _wait_page("w", 0)),
-        })
+        base = self._double(
+            {
+                "/search?query=w": (200, [], _wait_page("w", 0)),
+                "/search?query=w&sst=S-test": (200, [], _wait_page("w", 0)),
+            }
+        )
         out = self._search(base, "w")
         self.assertEqual(out, "SEARCH_ERROR: provider still rate-limiting")
 
@@ -674,8 +785,8 @@ class TestSearchWeb(unittest.TestCase):
         for query in (b"bytes", ["q"], {"q": 1}, "http://[::1"):
             out = s5tools.search_web(query, limit="x", _base_url=12345)
             self.assertTrue(
-                out.startswith("SEARCH_ERROR:") or out == "no results",
-                repr(query))
+                out.startswith("SEARCH_ERROR:") or out == "no results", repr(query)
+            )
 
 
 if __name__ == "__main__":

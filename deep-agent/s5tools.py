@@ -181,16 +181,12 @@ PR_JSON_FIELDS = (
     "number,title,author,state,isDraft,url,reviewDecision,statusCheckRollup"
 )
 
+DIFF_CAP = 6000
 
-def read_pr(number, repo, timeout=60):
-    """Read-only GitHub PR summary via gh. Never raises.
 
-    Private repos are invisible to keyless search_web, and td-based
-    PR reads need a project_config.json the checkout may not carry,
-    so chat agents read PRs through gh directly (auth comes from the
-    environment, same as lane tooling). Failures return
-    "PR_ERROR: <one-line reason>".
-    """
+def _validated_pr_target(number, repo):
+    """Shared number/repo validation for PR reads. Returns (num, text)
+    or an error string."""
     num = valid_number(number)
     if num is None:
         return "PR_ERROR: bad PR number"
@@ -199,6 +195,23 @@ def read_pr(number, repo, timeout=60):
         text = "arii/" + text
     if not valid_repo(text):
         return "PR_ERROR: bad repo (want owner/name)"
+    return num, text
+
+
+def read_pr(number, repo, timeout=60, diff=False):
+    """Read-only GitHub PR summary via gh. Never raises.
+
+    Private repos are invisible to keyless search_web, and td-based
+    PR reads need a project_config.json the checkout may not carry,
+    so chat agents read PRs through gh directly (auth comes from the
+    environment, same as lane tooling). Failures return
+    "PR_ERROR: <one-line reason>". diff=True appends the capped
+    patch (review agents otherwise cannot see what changed).
+    """
+    target = _validated_pr_target(number, repo)
+    if isinstance(target, str):
+        return target
+    num, text = target
     try:
         proc = subprocess.run(
             ["gh", "pr", "view", str(num), "--repo", text, "--json", PR_JSON_FIELDS],
@@ -231,8 +244,30 @@ def read_pr(number, repo, timeout=60):
         f"{snap.get('title')} by {(author.get('login') if isinstance(author, dict) else author) or '?'} "
         f"review={snap.get('reviewDecision') or 'none'} "
         f"checks=({check_line}) {snap.get('url') or ''}"
-    )
-    return line[:MAX_OUT]
+    )[:MAX_OUT]
+    if not diff:
+        return line
+    return line + read_pr_diff(num, text, timeout=timeout)
+
+
+def read_pr_diff(num, repo, timeout=60, limit=DIFF_CAP):
+    """Capped unified diff for a validated PR target. Returns the
+    patch block or a one-line unavailable note; never raises."""
+    try:
+        proc = subprocess.run(
+            ["gh", "pr", "diff", str(num), "--repo", repo],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"\nDIFF: unavailable ({exc})"
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return "\nDIFF: unavailable (empty)"
+    patch = (proc.stdout or "").strip()
+    if len(patch) > limit:
+        patch = patch[:limit] + "\n... [truncated]"
+    return "\nDIFF:\n" + patch
 
 
 def run(argv, cwd=None, timeout=DEFAULT_TIMEOUT):
