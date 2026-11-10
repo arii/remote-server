@@ -19,7 +19,11 @@ async function getClonedSession() {
       });
     }
     if (typeof baseWarmSession.clone === "function") {
-      return await baseWarmSession.clone();
+      try {
+        return await baseWarmSession.clone({ outputLanguage: "en" });
+      } catch {
+        return await baseWarmSession.clone();
+      }
     }
     return await lmGlobal.create({ outputLanguage: "en" });
   } catch (e) {
@@ -393,9 +397,9 @@ async function createPromptSession(onProgress, options = {}) {
   };
 
   const sessionOptions = {
-    outputLanguage: "en",
     monitor,
-    ...options
+    ...options,
+    outputLanguage: options.outputLanguage || "en"
   };
 
   if (!onProgress && !options.systemPrompt) {

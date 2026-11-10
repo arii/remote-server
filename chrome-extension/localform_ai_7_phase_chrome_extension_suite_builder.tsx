@@ -1222,7 +1222,11 @@ async function getClonedSession() {
       });
     }
     if (typeof baseWarmSession.clone === 'function') {
-      return await baseWarmSession.clone();
+      try {
+        return await baseWarmSession.clone({ outputLanguage: 'en' });
+      } catch {
+        return await baseWarmSession.clone();
+      }
     }
     return await lmGlobal.create({ outputLanguage: 'en' });
   } catch (e) {
@@ -1462,9 +1466,9 @@ async function createPromptSession(onProgress, options = {}) {
   };
 
   const sessionOptions = {
-    outputLanguage: 'en',
     monitor,
-    ...options
+    ...options,
+    outputLanguage: options.outputLanguage || 'en'
   };
 
   if ('LanguageModel' in self) {
@@ -2065,11 +2069,12 @@ export default function App() {
     setDownloadProgress(15);
 
     try {
-      if ('LanguageModel' in window) {
-        const session = await window.LanguageModel.create({
+      const lm = (window as any).LanguageModel || (window as any).ai?.languageModel;
+      if (lm) {
+        const session = await lm.create({
           outputLanguage: 'en',
-          monitor(m) {
-            m.addEventListener('downloadprogress', (e) => {
+          monitor(m: any) {
+            m.addEventListener('downloadprogress', (e: any) => {
               setDownloadProgress(Math.round((e.loaded || 0) * 100));
             });
           }
@@ -2103,8 +2108,9 @@ export default function App() {
     setSandboxResponse('');
 
     try {
-      if ('LanguageModel' in window) {
-        const session = await window.LanguageModel.create({ outputLanguage: 'en' });
+      const lm = (window as any).LanguageModel || (window as any).ai?.languageModel;
+      if (lm) {
+        const session = await lm.create({ outputLanguage: 'en' });
         const reply = await session.prompt(sandboxPrompt);
         setSandboxResponse(reply);
         session.destroy();
