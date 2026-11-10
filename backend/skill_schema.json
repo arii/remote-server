@@ -1,0 +1,54 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://buttons.local/schemas/skill-format-1.json",
+    "title": "Co-browse skill file (frozen, issue #1253)",
+    "description": "One file per skill, versioned, human readable. Selectors use data-testid or ARIA role first; never XPath, never bare text. Every step has exactly one check of one of four types. Structural rules here; sequential step numbers, strict ints, no extra properties, and the no-bare-text selector rule are enforced by the validator in backend/skill_format.py.",
+    "type": "object",
+    "required": ["skill", "version", "source_url", "steps"],
+    "additionalProperties": false,
+    "properties": {
+        "skill": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "source_url": {"type": "string", "pattern": "^https?://"},
+        "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["n", "action", "selector", "check"],
+                "additionalProperties": false,
+                "properties": {
+                    "n": {"type": "integer", "minimum": 1},
+                    "action": {
+                        "type": "string",
+                        "enum": ["navigate", "click", "type", "key", "wheel"]
+                    },
+                    "selector": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^(?![\\s]*(//|xpath=|xpath:))",
+                        "description": "No XPath. The no-bare-text rule is enforced by the validator, which also requires sequential step numbers."
+                    },
+                    "value": {"type": "string", "default": ""},
+                    "check": {
+                        "type": "object",
+                        "required": ["type", "expected"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "url_contains",
+                                    "element_visible",
+                                    "text_contains",
+                                    "value_equals"
+                                ]
+                            },
+                            "expected": {"type": "string", "minLength": 1}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
