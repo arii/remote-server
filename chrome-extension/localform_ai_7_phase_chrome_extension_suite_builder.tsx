@@ -154,7 +154,14 @@ const INITIAL_CONTEXT_ENTRIES = [
     id: 'preferences.visa_sponsorship',
     category: 'preferences',
     key: 'Require Visa Sponsorship',
-    aliases: ['will you now or in the future require sponsorship', 'require sponsorship for employment visa', 'require sponsorship', 'visa sponsorship'],
+    aliases: [
+      'will you now or in the future require sponsorship',
+      'require sponsorship for employment visa',
+      'require sponsorship',
+      'visa sponsorship',
+      'require sponsorship for employment visa status',
+      'sponsorship'
+    ],
     value: 'No',
     tags: ['career', 'ashby', 'compliance'],
     autocomplete: '',
@@ -164,11 +171,37 @@ const INITIAL_CONTEXT_ENTRIES = [
     id: 'preferences.onsite_commitment',
     category: 'preferences',
     key: 'Onsite San Francisco Commitment',
-    aliases: ['full-time onsite role based out of our office in san francisco', 'are you able to commit to this requirement', 'commit to this requirement', 'onsite role'],
+    aliases: [
+      'full-time onsite role based out of our office in san francisco',
+      'are you able to commit to this requirement',
+      'commit to this requirement',
+      'onsite role',
+      'are you willing to relocate to san francisco',
+      'if you already live here, please click yes',
+      'willing to relocate',
+      'relocate to san francisco'
+    ],
     value: 'Yes',
     tags: ['career', 'preferences', 'ashby'],
     autocomplete: '',
     metadata: { updatedAt: '2026-11-10T01:42:00Z', source: 'manual', confidence: 1.0 }
+  },
+  {
+    id: 'custom.coolest_project',
+    category: 'custom',
+    key: "Share something cool you've built",
+    aliases: [
+      "share something cool you've built",
+      'share something cool',
+      "something you've built",
+      'coolest project',
+      'describe a project',
+      'what failed and what you changed'
+    ],
+    value: "Autonomous Forklift Localization & Tilt-Compensated Sensor Fusion (Civ Robotics): Built and deployed core C++, Python, and ROS 2 navigation and localization pipelines on physical autonomous forklifts operating in rugged outdoor field sites. When we hit critical localization drift on uneven terrain, I led root-cause analysis across the hardware/software boundary—engineering custom IMU + GPS sensor-filtering drivers and real-time tilt-compensation logic that stabilized pose estimation and significantly increased fleet uptime.\n\nReal-Time Web Bluetooth & Multi-Client Telemetry Pipeline (https://github.com/arii/hrm): Built an open-source, low-latency biometric telemetry platform streaming live BLE heart-rate sensor packets over WebSockets to multi-client dashboards, paired with an autonomous phone-first operator console (remote-server) for managing local coding and robotics workflows.",
+    tags: ['projects', 'robotics', 'c++', 'ros2'],
+    autocomplete: '',
+    metadata: { updatedAt: '2026-11-10T05:00:00Z', source: 'manual', confidence: 1.0 }
   },
   {
     id: 'custom.bio',
@@ -539,8 +572,15 @@ async function handleFormSubmitObservation(payload, tab) {
       const cssSelector = buildCssSelector(el);
       let currentValue = null;
       if (options.includeCurrentValues) {
-        if (type === 'checkbox') currentValue = Boolean(el.checked);
-        else if (tag === 'select' && el.multiple) {
+        if (type === 'checkbox') {
+          const container = el.closest('[class*="fieldEntry"], [class*="form-field"], fieldset') || el.parentElement?.parentElement;
+          const activeBtn = container?.querySelector('button[aria-pressed="true"], button[class*="selected"], button[class*="active"]');
+          if (activeBtn) {
+            currentValue = /^yes$/i.test(activeBtn.textContent.trim());
+          } else {
+            currentValue = el.checked ? true : null;
+          }
+        } else if (tag === 'select' && el.multiple) {
           currentValue = Array.from(el.selectedOptions).map((o) => o.value);
         } else if (el.isContentEditable) {
           currentValue = el.innerText.trim();
@@ -671,22 +711,78 @@ async function handleFormSubmitObservation(payload, tab) {
         el.getAttribute('aria-autocomplete') === 'list';
 
       if (isTypeahead) {
+        el.focus();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }));
         setTimeout(() => {
-          const listboxOptions = document.querySelectorAll(
-            '[role="option"], [class*="option"], [class*="Option"], [class*="menu"] li'
-          );
-          if (listboxOptions.length > 0) {
-            listboxOptions[0].click();
+          const listbox = document.querySelector('[role="listbox"], [class*="menu"], [class*="options"]');
+          const firstOpt = listbox
+            ? listbox.querySelector('[role="option"], [class*="option"], li, div[id*="option"]')
+            : document.querySelector('[role="option"], [class*="option"], [class*="Option"], [class*="menu"] li');
+          if (firstOpt) {
+            firstOpt.click();
           } else {
             el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
           }
-        }, 350);
+        }, 300);
       }
     }
 
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+
+  function isVisibleInput(el) {
+    if (!el || el.disabled || el.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(el);
+    if (el.type !== 'checkbox' && el.type !== 'radio' && (style.display === 'none' || style.visibility === 'hidden')) {
+      return false;
+    }
+    return true;
+  }
+
+  function locateElement(field) {
+    const loc = field.locator || {};
+
+    // 1. Direct document.getElementById (immune to CSS selector escaping bugs on numeric UUIDs like "87368112-...")
+    if (loc.id) {
+      const byId = document.getElementById(loc.id);
+      if (byId) return byId;
+    }
+
+    // 2. Direct name attribute lookup via CSS.escape
+    if (loc.name) {
+      try {
+        const byName = document.querySelector(\`[name="\${CSS.escape(loc.name)}"]\`);
+        if (byName) return byName;
+      } catch (_) {}
+    }
+
+    // 3. CSS Selector lookup
+    if (loc.cssSelector) {
+      try {
+        const byCss = document.querySelector(loc.cssSelector);
+        if (byCss) return byCss;
+      } catch (_) {}
+    }
+
+    // 4. Fallback: Match by resolved human-readable label text (\`field.query\`)!
+    // Crucial when React re-renders DOM wrappers after "Autofill from resume"
+    if (field.query) {
+      const targetQ = field.query.toLowerCase().replace(/\\s+/g, ' ').trim();
+      const candidates = Array.from(
+        document.querySelectorAll('input:not([type="hidden"]):not([type="file"]), textarea, select, [contenteditable="true"]')
+      ).filter(isVisibleInput);
+
+      for (const el of candidates) {
+        const elLabel = resolveFieldLabel(el).toLowerCase().replace(/\\s+/g, ' ').trim();
+        if (elLabel === targetQ || (targetQ.length > 8 && (elLabel.includes(targetQ) || targetQ.includes(elLabel)))) {
+          return el;
+        }
+      }
+    }
+
+    return null;
   }
 
   // 6. Hydrate Page Forms from Export Document (Phase 3 & Phase 6)
@@ -719,17 +815,8 @@ async function handleFormSubmitObservation(payload, tab) {
           continue;
         }
 
-        // Locator fallback waterfall
-        let el = null;
-        if (field.locator?.cssSelector) {
-          try { el = document.querySelector(field.locator.cssSelector); } catch {}
-        }
-        if (!el && field.locator?.id) {
-          el = document.getElementById(field.locator.id);
-        }
-        if (!el && field.locator?.name) {
-          el = document.querySelector(\`[name="\${CSS.escape(field.locator.name)}"]\`);
-        }
+        // Resilient element lookup: ID -> name -> CSS selector -> resolved label text
+        const el = locateElement(field);
 
         if (!el) {
           failedFields.push({ fieldId: field.fieldId, query: field.query, reason: 'Element not found in DOM' });
@@ -1142,10 +1229,28 @@ document.getElementById('btn-autofill-plus').addEventListener('click', async () 
 
   const { userContextVault = [] } = await chrome.storage.local.get(['userContextVault']);
 
-  // Tier 1: Deterministic fast match
+  // Tier 1: Deterministic fast match with Rule A & Rule B
   const unresolvedFields = [];
-  for (const field of doc.fields) {
+  for (let i = 0; i < doc.fields.length; i++) {
+    const field = doc.fields[i];
+
+    // Rule A: Skip conditional follow-up fields when preceding boolean field is false / No
+    if (/^(if so|if yes|if applicable|please specify if)/i.test((field.query || '').trim())) {
+      const prevField = i > 0 ? doc.fields[i - 1] : null;
+      if (!prevField || prevField.value === false || prevField.value === 'No' || prevField.value === null || prevField.value === '') {
+        field.value = '';
+        field.skipLLM = true;
+        continue;
+      }
+    }
+
+    if (field.skipLLM) continue;
+
     const q = field.query.toLowerCase().replace(/\\*+$/, '').trim();
+    const isLongFormEssay =
+      field.inputType === 'textarea' ||
+      /cover letter|why do you|why are you|motivation|share something cool|something you've built|tell us about|describe a project|what failed/i.test(q);
+
     const matched = userContextVault.find(
       (entry) =>
         (field.constraints?.autocomplete && entry.autocomplete === field.constraints.autocomplete) ||
@@ -1157,7 +1262,11 @@ document.getElementById('btn-autofill-plus').addEventListener('click', async () 
           }))
     );
     if (matched) {
-      field.value = matched.value;
+      if (field.inputType === 'checkbox') {
+        field.value = /^(yes|true|1)$/i.test(String(matched.value).trim());
+      } else {
+        field.value = matched.value;
+      }
       field.confidence = 0.98;
     } else {
       unresolvedFields.push(field);
@@ -1231,11 +1340,42 @@ document.getElementById('btn-import-json').addEventListener('click', async () =>
   document.getElementById('autofill-status-box').textContent = JSON.stringify(res, null, 2);
 });
 
+function deduplicateVault(entries) {
+  if (!Array.isArray(entries)) return [];
+  const sorted = [...entries].sort((a, b) => {
+    const aIsTimestamp = /\\.\\d{10,}$/.test(a.id || '');
+    const bIsTimestamp = /\\.\\d{10,}$/.test(b.id || '');
+    return Number(aIsTimestamp) - Number(bIsTimestamp);
+  });
+  const cleaned = [];
+  for (const item of sorted) {
+    const normKey = String(item.key || '').toLowerCase().trim();
+    const normVal = String(item.value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    if (!normVal) continue;
+    const existing = cleaned.find((c) => {
+      const cVal = String(c.value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+      const cKey = String(c.key || '').toLowerCase().trim();
+      return cVal === normVal && (cKey === normKey || c.category === item.category || item.tags?.includes('observed'));
+    });
+    if (existing) {
+      const mergedAliases = new Set([...(existing.aliases || []), ...(item.aliases || []), normKey]);
+      existing.aliases = Array.from(mergedAliases);
+      continue;
+    }
+    cleaned.push(item);
+  }
+  return cleaned;
+}
+
 // Phase 5 & 7: Render User-Context Vault
 async function renderVault() {
   const { userContextVault = [] } = await chrome.storage.local.get(['userContextVault']);
+  const deduped = deduplicateVault(userContextVault);
+  if (deduped.length !== userContextVault.length) {
+    await chrome.storage.local.set({ userContextVault: deduped });
+  }
   const container = document.getElementById('vault-entries-list');
-  container.innerHTML = userContextVault
+  container.innerHTML = deduped
     .map(
       (item) => \`
       <div style="padding:6px; border-bottom:1px solid #334155; display:flex; justify-content:space-between;">
@@ -1259,7 +1399,7 @@ document.getElementById('btn-add-fact').addEventListener('click', async () => {
     tags: ['manual'],
     updatedAt: new Date().toISOString()
   });
-  await chrome.storage.local.set({ userContextVault });
+  await chrome.storage.local.set({ userContextVault: deduplicateVault(userContextVault) });
   document.getElementById('new-fact-key').value = '';
   document.getElementById('new-fact-val').value = '';
   renderVault();

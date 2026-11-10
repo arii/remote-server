@@ -127,7 +127,14 @@ const SEED_CONTEXT_ENTRIES = [
     id: "preferences.visa_sponsorship",
     category: "preferences",
     key: "Require Visa Sponsorship",
-    aliases: ["will you now or in the future require sponsorship", "require sponsorship for employment visa", "require sponsorship", "visa sponsorship"],
+    aliases: [
+      "will you now or in the future require sponsorship",
+      "require sponsorship for employment visa",
+      "require sponsorship",
+      "visa sponsorship",
+      "require sponsorship for employment visa status",
+      "sponsorship"
+    ],
     value: "No",
     tags: ["career", "ashby", "compliance"],
     autocomplete: "",
@@ -137,11 +144,37 @@ const SEED_CONTEXT_ENTRIES = [
     id: "preferences.onsite_commitment",
     category: "preferences",
     key: "Onsite San Francisco Commitment",
-    aliases: ["full-time onsite role based out of our office in san francisco", "are you able to commit to this requirement", "commit to this requirement", "onsite role"],
+    aliases: [
+      "full-time onsite role based out of our office in san francisco",
+      "are you able to commit to this requirement",
+      "commit to this requirement",
+      "onsite role",
+      "are you willing to relocate to san francisco",
+      "if you already live here, please click yes",
+      "willing to relocate",
+      "relocate to san francisco"
+    ],
     value: "Yes",
     tags: ["career", "preferences", "ashby"],
     autocomplete: "",
     updatedAt: "2026-11-10T01:42:00Z"
+  },
+  {
+    id: "custom.coolest_project",
+    category: "custom",
+    key: "Share something cool you've built",
+    aliases: [
+      "share something cool you've built",
+      "share something cool",
+      "something you've built",
+      "coolest project",
+      "describe a project",
+      "what failed and what you changed"
+    ],
+    value: "Autonomous Forklift Localization & Tilt-Compensated Sensor Fusion (Civ Robotics): Built and deployed core C++, Python, and ROS 2 navigation and localization pipelines on physical autonomous forklifts operating in rugged outdoor field sites. When we hit critical localization drift on uneven terrain, I led root-cause analysis across the hardware/software boundary—engineering custom IMU + GPS sensor-filtering drivers and real-time tilt-compensation logic that stabilized pose estimation and significantly increased fleet uptime.\n\nReal-Time Web Bluetooth & Multi-Client Telemetry Pipeline (https://github.com/arii/hrm): Built an open-source, low-latency biometric telemetry platform streaming live BLE heart-rate sensor packets over WebSockets to multi-client dashboards, paired with an autonomous phone-first operator console (remote-server) for managing local coding and robotics workflows.",
+    tags: ["projects", "robotics", "c++", "ros2"],
+    autocomplete: "",
+    updatedAt: "2026-11-10T05:00:00Z"
   },
   {
     id: "custom.bio",

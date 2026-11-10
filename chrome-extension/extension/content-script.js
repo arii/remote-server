@@ -245,7 +245,14 @@
       let currentValue = null;
       if (options.includeCurrentValues) {
         if (type === "checkbox") {
-          currentValue = Boolean(el.checked);
+          // Check if an Ashby Yes/No button is already selected in the container
+          const container = el.closest('[class*="fieldEntry"], [class*="form-field"], fieldset') || el.parentElement?.parentElement;
+          const activeBtn = container?.querySelector('button[aria-pressed="true"], button[class*="selected"], button[class*="active"]');
+          if (activeBtn) {
+            currentValue = /^yes$/i.test(activeBtn.textContent.trim());
+          } else {
+            currentValue = el.checked ? true : null; // null = unanswered yet, so explicit false ("No") won't be skipped!
+          }
         } else if (tag === "select" && el.multiple) {
           currentValue = Array.from(el.selectedOptions).map((o) => o.value);
         } else if (el.isContentEditable) {
@@ -382,22 +389,78 @@
         el.getAttribute("aria-autocomplete") === "list";
 
       if (isTypeahead) {
+        el.focus();
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
         setTimeout(() => {
-          const listboxOptions = document.querySelectorAll(
-            '[role="option"], [class*="option"], [class*="Option"], [class*="menu"] li'
-          );
-          if (listboxOptions.length > 0) {
-            listboxOptions[0].click();
+          const listbox = document.querySelector('[role="listbox"], [class*="menu"], [class*="options"]');
+          const firstOpt = listbox
+            ? listbox.querySelector('[role="option"], [class*="option"], li, div[id*="option"]')
+            : document.querySelector('[role="option"], [class*="option"], [class*="Option"], [class*="menu"] li');
+          if (firstOpt) {
+            firstOpt.click();
           } else {
             el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
           }
-        }, 350);
+        }, 300);
       }
     }
 
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+
+  function isVisibleInput(el) {
+    if (!el || el.disabled || el.getAttribute("aria-hidden") === "true") return false;
+    const style = window.getComputedStyle(el);
+    if (el.type !== "checkbox" && el.type !== "radio" && (style.display === "none" || style.visibility === "hidden")) {
+      return false;
+    }
+    return true;
+  }
+
+  function locateElement(field) {
+    const loc = field.locator || {};
+
+    // 1. Direct document.getElementById (immune to CSS selector escaping bugs on numeric UUIDs like "87368112-...")
+    if (loc.id) {
+      const byId = document.getElementById(loc.id);
+      if (byId) return byId;
+    }
+
+    // 2. Direct name attribute lookup via CSS.escape
+    if (loc.name) {
+      try {
+        const byName = document.querySelector(`[name="${CSS.escape(loc.name)}"]`);
+        if (byName) return byName;
+      } catch (_) {}
+    }
+
+    // 3. CSS Selector lookup
+    if (loc.cssSelector) {
+      try {
+        const byCss = document.querySelector(loc.cssSelector);
+        if (byCss) return byCss;
+      } catch (_) {}
+    }
+
+    // 4. Fallback: Match by resolved human-readable label text (`field.query`)!
+    // Crucial when React re-renders DOM wrappers after "Autofill from resume"
+    if (field.query) {
+      const targetQ = field.query.toLowerCase().replace(/\s+/g, " ").trim();
+      const candidates = Array.from(
+        document.querySelectorAll('input:not([type="hidden"]):not([type="file"]), textarea, select, [contenteditable="true"]')
+      ).filter(isVisibleInput);
+
+      for (const el of candidates) {
+        const elLabel = resolveFieldLabel(el).toLowerCase().replace(/\s+/g, " ").trim();
+        if (elLabel === targetQ || (targetQ.length > 8 && (elLabel.includes(targetQ) || targetQ.includes(elLabel)))) {
+          return el;
+        }
+      }
+    }
+
+    return null;
   }
 
   // 6. Hydrate Page Forms from Export Document (Phase 3 & Phase 6)
@@ -430,19 +493,8 @@
           continue;
         }
 
-        // Locator fallback waterfall: cssSelector -> id -> name
-        let el = null;
-        if (field.locator?.cssSelector) {
-          try { el = document.querySelector(field.locator.cssSelector); } catch {}
-        }
-        if (!el && field.locator?.id) {
-          el = document.getElementById(field.locator.id);
-        }
-        if (!el && field.locator?.name) {
-          try {
-            el = document.querySelector(`[name="${CSS.escape(field.locator.name)}"]`);
-          } catch {}
-        }
+        // Resilient element lookup: ID -> name -> CSS selector -> resolved label text
+        const el = locateElement(field);
 
         if (!el) {
           failedFields.push({ fieldId: field.fieldId, query: field.query, reason: "Element not found in DOM" });

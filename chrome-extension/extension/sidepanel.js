@@ -385,15 +385,45 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
     const longFormFields = [];
 
     // 2. Stage 1: Deterministic fast match for atomic fields + pre-drafted Cover Letter check
-    for (const field of doc.fields) {
-      if (field.value && field.value !== "" && field.value !== false) continue;
+    for (let i = 0; i < doc.fields.length; i++) {
+      const field = doc.fields[i];
+
+      // Rule A: Skip conditional follow-up fields ("If so, ...", "If yes, ...") when preceding boolean field is false ("No")
+      if (/^(if so|if yes|if applicable|please specify if)/i.test((field.query || "").trim())) {
+        const prevField = i > 0 ? doc.fields[i - 1] : null;
+        if (!prevField || prevField.value === false || prevField.value === "No" || prevField.value === null || prevField.value === "") {
+          field.value = ""; // Explicitly leave blank
+          field.skipLLM = true;
+          continue;
+        }
+      }
+
+      if (field.skipLLM) continue;
+      if (field.value !== null && field.value !== undefined && field.value !== "" && field.value !== false) continue;
 
       const q = (field.query || "").toLowerCase().trim();
-      const isCoverLetterOrEssay =
-        field.inputType === "textarea" ||
-        /cover letter|why do you|why are you|motivation|note to hiring|tell us about|additional info|why openmind|why us/i.test(q);
 
-      if (isCoverLetterOrEssay) {
+      // Rule B: Expand long-form / open-ended synthesis detection to catch project & engineering prompts:
+      const isLongFormEssay =
+        field.inputType === "textarea" ||
+        /cover letter|why do you|why are you|motivation|share something cool|something you've built|tell us about|describe a project|what failed|note to hiring|additional info|why openmind|why us/i.test(q);
+
+      if (isLongFormEssay) {
+        // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
+        let matchedVaultEssay = null;
+        for (const entry of userContextVault) {
+          const aliases = [entry.key.toLowerCase(), ...(entry.aliases || []).map((a) => a.toLowerCase())];
+          if (aliases.some((a) => q === a || q.includes(a) || a.includes(q))) {
+            matchedVaultEssay = entry.value;
+            break;
+          }
+        }
+        if (matchedVaultEssay) {
+          field.value = matchedVaultEssay;
+          field.confidence = 0.98;
+          continue;
+        }
+
         // If we already pre-drafted a tailored cover letter for activeSessionContext, use it in 0ms!
         if (activeSessionContext?.preDraftedCoverLetter && /cover letter|note|motivation|why/i.test(q)) {
           field.value = activeSessionContext.preDraftedCoverLetter;
@@ -523,13 +553,50 @@ document.getElementById("btn-run-manual-import").addEventListener("click", async
 // ----------------------------------------------------------------------------
 // PHASE 5: USER-CONTEXT VAULT (CRUD & LOCAL STORAGE)
 // ----------------------------------------------------------------------------
+function deduplicateVault(entries) {
+  if (!Array.isArray(entries)) return [];
+  // Sort so canonical IDs (like "identity.full_name" without random timestamps) come FIRST
+  const sorted = [...entries].sort((a, b) => {
+    const aIsTimestamp = /\.\d{10,}$/.test(a.id || "");
+    const bIsTimestamp = /\.\d{10,}$/.test(b.id || "");
+    return Number(aIsTimestamp) - Number(bIsTimestamp);
+  });
+
+  const cleaned = [];
+  for (const item of sorted) {
+    const normKey = String(item.key || "").toLowerCase().trim();
+    const normVal = String(item.value || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!normVal) continue;
+
+    // If another entry already has the exact same normalized value and overlapping key/category, merge aliases instead of duplicating
+    const existing = cleaned.find((c) => {
+      const cVal = String(c.value || "").toLowerCase().replace(/\s+/g, " ").trim();
+      const cKey = String(c.key || "").toLowerCase().trim();
+      return cVal === normVal && (cKey === normKey || c.category === item.category || item.tags?.includes("observed"));
+    });
+
+    if (existing) {
+      const mergedAliases = new Set([...(existing.aliases || []), ...(item.aliases || []), normKey]);
+      existing.aliases = Array.from(mergedAliases);
+      continue;
+    }
+    cleaned.push(item);
+  }
+  return cleaned;
+}
+
 async function renderVault() {
   const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
+  const cleanedVault = deduplicateVault(userContextVault);
+  if (cleanedVault.length !== userContextVault.length) {
+    await chrome.storage.local.set({ userContextVault: cleanedVault });
+  }
+
   const container = document.getElementById("vault-entries-container");
   const search = document.getElementById("vault-search-input").value.toLowerCase().trim();
   const categoryFilter = document.getElementById("vault-category-filter").value;
 
-  const filtered = userContextVault.filter((entry) => {
+  const filtered = cleanedVault.filter((entry) => {
     const matchesCat = categoryFilter === "all" || entry.category === categoryFilter;
     const matchesSearch =
       !search ||
@@ -539,7 +606,7 @@ async function renderVault() {
     return matchesCat && matchesSearch;
   });
 
-  document.getElementById("vault-count-badge").textContent = `${userContextVault.length} facts`;
+  document.getElementById("vault-count-badge").textContent = `${cleanedVault.length} facts`;
 
   if (filtered.length === 0) {
     container.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:16px;">No matching facts found.</div>`;
@@ -650,7 +717,8 @@ document.getElementById("file-import-vault").addEventListener("change", async (e
     const text = await e.target.files[0].text();
     const imported = JSON.parse(text);
     if (!Array.isArray(imported)) throw new Error("Expected an array of context entries.");
-    await chrome.storage.local.set({ userContextVault: imported });
+    const cleaned = deduplicateVault(imported);
+    await chrome.storage.local.set({ userContextVault: cleaned });
     renderVault();
     alert("Vault successfully restored!");
   } catch (err) {
@@ -743,7 +811,8 @@ async function approveDelta(deltaId) {
   }
 
   const remaining = pendingDeltas.filter((d) => d.deltaId !== deltaId);
-  await chrome.storage.local.set({ userContextVault, pendingDeltas: remaining });
+  const dedupedVault = deduplicateVault(userContextVault);
+  await chrome.storage.local.set({ userContextVault: dedupedVault, pendingDeltas: remaining });
   chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: remaining.length });
   renderVault();
   renderObserverQueue();
@@ -780,7 +849,8 @@ document.getElementById("btn-approve-all-deltas").addEventListener("click", asyn
     }
   }
 
-  await chrome.storage.local.set({ userContextVault, pendingDeltas: [] });
+  const dedupedVault = deduplicateVault(userContextVault);
+  await chrome.storage.local.set({ userContextVault: dedupedVault, pendingDeltas: [] });
   chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: 0 });
   renderVault();
   renderObserverQueue();
@@ -1080,7 +1150,21 @@ document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", as
 // ----------------------------------------------------------------------------
 // INITIALIZATION
 // ----------------------------------------------------------------------------
-checkBuiltInAIStatus();
-renderVault();
-renderObserverQueue();
-renderSessionContext();
+async function init() {
+  try {
+    const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
+    if (userContextVault.length > 0) {
+      const cleaned = deduplicateVault(userContextVault);
+      if (cleaned.length !== userContextVault.length) {
+        await chrome.storage.local.set({ userContextVault: cleaned });
+      }
+    }
+  } catch (err) {
+    console.warn("Vault initialization sanitization warning:", err);
+  }
+  checkBuiltInAIStatus();
+  renderVault();
+  renderObserverQueue();
+  renderSessionContext();
+}
+init();
