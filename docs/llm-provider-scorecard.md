@@ -91,6 +91,11 @@ First night local agents did lane work end-to-end (briefs inline in session log)
 - Direct (non-agent) fix: #1192 compose defaults (PR #1238, merged).
 - Costs: $2 cap honored all day; per-turn spend remains pennies.
 
+## First usable Ollama review 2026-11-10 ~01:00Z (cloud-baryon)
+
+- review-1270 turn completed with a substantive (if non-binary) review: independently confirmed the terminal-missing-OLLAMA_URL root cause and the alias fix, no blocking findings. First of 6 dispatches to return analysis instead of timing out. Correlate: brief scope was single-file compose + guard test (smallest diff reviewed yet) — keep review briefs to one concern.
+- #1270 merged on green + AI-review + this read.
+
 ## Structured-output A/B 2026-11-09 ~23:00Z (cloud-baryon, Ollama qwen3:8b)
 
 - Same review task + same 2KB diff, two modes (`/tmp/ab_structured.py`, scratch).
