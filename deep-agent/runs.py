@@ -586,6 +586,7 @@ def _read_start(path):
                 if isinstance(first, dict) and first.get("type") == "run_start":
                     return first
                 return {}
+        return {}
     except OSError:
         return {}
 
