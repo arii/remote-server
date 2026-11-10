@@ -2,6 +2,7 @@
 closed. The oauth2-proxy single-user gate (issue #561) is enforced by a
 `:?` guard on GITHUB_USER so compose refuses to start with an open gate.
 Run: python3 -m unittest tests.test_compose_guards"""
+
 import os
 import re
 import unittest
@@ -19,12 +20,10 @@ class TestComposeGuards(unittest.TestCase):
         """
         with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
             lines = f.read().splitlines()
-        gated = [
-            line for line in lines
-            if "OAUTH2_PROXY_GITHUB_USER" in line
-        ]
-        self.assertEqual(len(gated), 1,
-                         "expected exactly one OAUTH2_PROXY_GITHUB_USER line")
+        gated = [line for line in lines if "OAUTH2_PROXY_GITHUB_USER" in line]
+        self.assertEqual(
+            len(gated), 1, "expected exactly one OAUTH2_PROXY_GITHUB_USER line"
+        )
         self.assertRegex(
             gated[0],
             r"\$\{GITHUB_USER:\?",
@@ -32,22 +31,27 @@ class TestComposeGuards(unittest.TestCase):
         )
 
     def test_buttons_ollama_url(self):
-        """buttons OLLAMA_URL must default to the compose-network alias.
+        """Every OLLAMA_URL default must be the compose-network alias.
 
-        localhost inside the buttons container is itself, so every
-        model call refused (issue #966). The default must be the
-        ollama service address with an env override, never localhost.
+        localhost inside a container is itself, so every model call
+        refused (issues #966 terminal #1196). Each default must be
+        the ollama service address with an env override, never
+        localhost.
         """
         with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
             lines = f.read().splitlines()
         gated = [line for line in lines if "OLLAMA_URL" in line]
-        self.assertEqual(len(gated), 1,
-                         "expected exactly one OLLAMA_URL line")
-        self.assertIn("http://ollama:11434", gated[0])
-        self.assertNotIn("localhost", gated[0])
-        self.assertRegex(gated[0], r"\$\{OLLAMA_URL:-http://ollama:11434",
-                         "OLLAMA_URL must keep the host override with "
-                         "the network-alias default")
+        self.assertEqual(
+            len(gated), 2, "expected OLLAMA_URL in buttons + terminal only"
+        )
+        for line in gated:
+            self.assertIn("http://ollama:11434", line)
+            self.assertNotIn("localhost", line)
+            self.assertRegex(
+                line,
+                r"\$\{OLLAMA_URL:-http://ollama:11434",
+                "OLLAMA_URL must keep the host override with the network-alias default",
+            )
 
     def test_pinned_service_images(self):
         """ollama/tailscale/code-server images must be digest-pinned.
@@ -95,16 +99,18 @@ class TestComposeGuards(unittest.TestCase):
         with open(os.path.abspath(COMPOSE), encoding="utf-8") as f:
             lines = f.read().splitlines()
         timeout = [
-            line for line in lines
-            if "SE_NODE_SESSION_TIMEOUT" in line
-            and not line.strip().startswith("#")
+            line
+            for line in lines
+            if "SE_NODE_SESSION_TIMEOUT" in line and not line.strip().startswith("#")
         ]
-        self.assertEqual(len(timeout), 1,
-                         "expected exactly one SE_NODE_SESSION_TIMEOUT line")
+        self.assertEqual(
+            len(timeout), 1, "expected exactly one SE_NODE_SESSION_TIMEOUT line"
+        )
         m = re.search(r"SE_NODE_SESSION_TIMEOUT=(\d+)", timeout[0])
         self.assertIsNotNone(m, "session timeout must carry an integer value")
-        self.assertLessEqual(int(m.group(1)), 600,
-                             "idle reap must be 10 minutes or less")
+        self.assertLessEqual(
+            int(m.group(1)), 600, "idle reap must be 10 minutes or less"
+        )
 
     def test_agent_control_shared_state(self):
         """buttons + terminal must share one pause-state file (#1104).
@@ -128,25 +134,29 @@ class TestComposeGuards(unittest.TestCase):
                 service = svc.group(1)
                 continue
             if service in ("buttons", "terminal"):
-                if re.match(r"^\s*AGENT_CONTROL_STATE_FILE\s*:",
-                            line):
-                    state_lines.setdefault(service, []).append(
-                        line.strip())
-                if ("buttons-data:/var/lib/buttons" in line
-                        and not line.strip().startswith("#")):
+                if re.match(r"^\s*AGENT_CONTROL_STATE_FILE\s*:", line):
+                    state_lines.setdefault(service, []).append(line.strip())
+                if (
+                    "buttons-data:/var/lib/buttons" in line
+                    and not line.strip().startswith("#")
+                ):
                     mounts_buttons_data.add(service)
         for svc in ("buttons", "terminal"):
             self.assertEqual(
                 state_lines.get(svc),
-                ["AGENT_CONTROL_STATE_FILE: "
-                 "/var/lib/buttons/agent_control_state.json"],
-                f"{svc} must pin the shared pause-state file exactly once")
+                ["AGENT_CONTROL_STATE_FILE: /var/lib/buttons/agent_control_state.json"],
+                f"{svc} must pin the shared pause-state file exactly once",
+            )
         self.assertIn(
-            "buttons", mounts_buttons_data,
-            "buttons must mount buttons-data at /var/lib/buttons")
+            "buttons",
+            mounts_buttons_data,
+            "buttons must mount buttons-data at /var/lib/buttons",
+        )
         self.assertIn(
-            "terminal", mounts_buttons_data,
-            "terminal must mount the shared buttons-data volume")
+            "terminal",
+            mounts_buttons_data,
+            "terminal must mount the shared buttons-data volume",
+        )
 
     def test_chroma_dir_unified_on_td_output(self):
         """buttons must watch the sqlite `td rag index` produces (#1094).
@@ -169,14 +179,13 @@ class TestComposeGuards(unittest.TestCase):
             if svc:
                 service = svc.group(1)
                 continue
-            if service == "buttons" and re.match(
-                    r"^\s*S5_CHROMA_DIR\s*:", line):
+            if service == "buttons" and re.match(r"^\s*S5_CHROMA_DIR\s*:", line):
                 chroma_lines.append(line.strip())
         self.assertEqual(
             chroma_lines,
-            ["S5_CHROMA_DIR: "
-             "/home/ari/remote-server/.td_rag/chroma_db"],
-            "buttons must pin S5_CHROMA_DIR at the td output dir")
+            ["S5_CHROMA_DIR: /home/ari/remote-server/.td_rag/chroma_db"],
+            "buttons must pin S5_CHROMA_DIR at the td output dir",
+        )
 
     def test_buttons_playwright_browsers_path(self):
         """buttons must pin the baked browser home (#1118).
@@ -198,12 +207,14 @@ class TestComposeGuards(unittest.TestCase):
                 service = svc.group(1)
                 continue
             if service == "buttons" and re.match(
-                    r"^\s*PLAYWRIGHT_BROWSERS_PATH\s*:", line):
+                r"^\s*PLAYWRIGHT_BROWSERS_PATH\s*:", line
+            ):
                 browser_lines.append(line.strip())
         self.assertEqual(
             browser_lines,
             ["PLAYWRIGHT_BROWSERS_PATH: /opt/ms-playwright"],
-            "buttons must pin PLAYWRIGHT_BROWSERS_PATH at the bake dir")
+            "buttons must pin PLAYWRIGHT_BROWSERS_PATH at the bake dir",
+        )
 
     def test_terminal_requirements_parity(self):
         """terminal/requirements.txt must include all backend deps and pytest."""
@@ -223,10 +234,15 @@ class TestComposeGuards(unittest.TestCase):
         backend_deps = parse_reqs(backend_req)
         terminal_deps = parse_reqs(terminal_req)
         for dep in backend_deps:
-            self.assertIn(dep, terminal_deps,
-                          f"backend dependency {dep} missing from terminal/requirements.txt")
-        self.assertTrue(any(d.startswith("pytest") for d in terminal_deps),
-                        "pytest missing from terminal/requirements.txt")
+            self.assertIn(
+                dep,
+                terminal_deps,
+                f"backend dependency {dep} missing from terminal/requirements.txt",
+            )
+        self.assertTrue(
+            any(d.startswith("pytest") for d in terminal_deps),
+            "pytest missing from terminal/requirements.txt",
+        )
 
 
 if __name__ == "__main__":
