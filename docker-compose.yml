@@ -127,6 +127,10 @@ services:
       # Muse CLI auth/settings persist across recreates (the binary is
       # baked into the image; /root/.local already persists via local-data).
       - muse-data:/root/.config/muse
+      # Copilot CLI sessions, history, and auth persist across
+      # recreates (the binary is baked into the image; its cache
+      # already persists via local-data XDG_CACHE_HOME).
+      - copilot-data:/root/.copilot
       # gh CLI login (hosts.yml) persists across recreates so MCP
       # servers and agents find authenticated gh on every boot.
       - gh-data:/root/.config/gh
@@ -643,6 +647,7 @@ volumes:
   gemini-data:
   local-data:
   muse-data:
+  copilot-data:
   gh-data:
   buttons-data:
   code-server-data:
