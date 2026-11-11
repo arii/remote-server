@@ -25,6 +25,7 @@ When using BoomTick MCP tools:
 - `./scripts/buttons-up.sh` — restart the buttons service (buttons only; never bare `docker compose up -d` or the terminal service — that kills the shell you run in)
 - `pnpm run lint` — run the lint task
 - `npm run lint && npm test` — reproduce the CI gates locally (shell + compile-check + ruff + tsc, then backend + frontend suites; backend needs `pip install -r backend/requirements.txt` first, lint:python needs `pip install ruff`)
+- `bash scripts/prune-worktrees.sh [--prune]` — sweep stale worktrees (report-only by default). After a PR merges, remove its worktree and delete the branch the same turn; never leave merged worktrees behind. The script only removes clean trees whose branch landed, never the main checkout, dirty trees, or unmerged work.
 
 ## Agent lanes
 
