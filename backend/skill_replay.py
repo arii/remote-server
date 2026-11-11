@@ -22,6 +22,7 @@ validator (#1253) and refuses to run an invalid skill.
 from __future__ import annotations
 
 from backend.skill_check import check_step, match_selector
+from backend.skill_drivers import BrowserDriver
 from backend.skill_format import validate_skill
 
 
@@ -81,7 +82,7 @@ def _perform(driver, action: str, kwargs: dict) -> str:
     return ""
 
 
-def run_skill(skill: dict, driver) -> dict:
+def run_skill(skill: dict, driver: BrowserDriver) -> dict:
     """Run a skill dict to completion or the first failure.
 
     Returns {skill, version, passed, failed_step, reason, steps} —
