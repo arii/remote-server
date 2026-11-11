@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend import skill_store
+from backend import skill_runs, skill_store
 
 router = APIRouter(prefix="/api/browser/skills", tags=["browser_skills"])
 
@@ -29,6 +29,12 @@ async def read_one(name: str) -> dict[str, Any]:
     if data is None:
         raise HTTPException(status_code=404, detail="unknown skill")
     return {"ok": True, "skill": data}
+
+
+@router.get("/{name}/runs")
+async def read_runs(name: str, limit: int = 100) -> dict[str, Any]:
+    """Run history rows for one skill, oldest first."""
+    return {"ok": True, "runs": skill_runs.list_runs(name, limit)}
 
 
 @router.post("/")
