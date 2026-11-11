@@ -26,6 +26,7 @@ ARG TTYD_VERSION=1.7.7
 ARG ZELLIJ_VERSION=0.45.1
 ARG NODE_VERSION=24.16.0
 ARG PI_VERSION=1.4.0
+ARG COPILOT_VERSION=1.0.109
 # Boomtick CLI floats on main (latest-only): the image always
 # consumes current upstream instead of a release tag.
 ARG BOOMTICK_CLI_REF=main
@@ -76,6 +77,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && node --version \
  && npm install -g "@earendil-works/pi-coding-agent@${PI_VERSION}" \
  && pi --version \
+ && npm install -g "@github/copilot@${COPILOT_VERSION}" \
+ && copilot --version \
  && gh --version \
  && npm install -g "pnpm@10.28.2" \
  && pnpm --version \
