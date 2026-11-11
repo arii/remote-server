@@ -3,9 +3,10 @@
 # Usage: bash scripts/prune-worktrees.sh [--prune]
 #
 # A linked worktree is pruned only when ALL hold:
-#   - it is not the main checkout,
+#   - it is not the tree the script runs from,
 #   - it is not locked and not detached,
-#   - its tree is clean (no uncommitted changes at all),
+#   - its tree is clean (no uncommitted changes and no untracked
+#     files at all — unknown files block pruning),
 #   - its branch is landed: every branch commit is in origin/main,
 #     or GitHub reports a MERGED PR for the branch head
 #     (squash-merges rewrite SHAs, so ancestry alone misses them).
@@ -58,7 +59,7 @@ locked=0
 flush_tree() {
     [ -z "$path" ] && return 0
     if [ "$path" = "$TOPLEVEL" ]; then
-        echo "MAIN  $path [$branch] -- never touched"
+        echo "SELF  $path [$branch] -- the tree running this script, never touched"
     elif [ "$locked" -eq 1 ]; then
         echo "KEEP  $path [$branch] -- locked"
     elif [ -z "$branch" ]; then
