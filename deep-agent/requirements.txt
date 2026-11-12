@@ -10,10 +10,10 @@
 # 1.0 LTS line or newer, langchain-core is pinned explicitly (not left
 # to transitive resolution), no langchain-community catch-all (dedicated
 # langchain-* integration packages only).
-deepagents==0.7.32
-langchain==1.4.8
-langchain-core==1.7.4
-langchain-openai==1.7.3
+deepagents==0.7.34
+langchain==1.4.9
+langchain-core==1.7.6
+langchain-openai==1.7.4
 langchain-ollama==1.1.0
 langchain-chroma==1.1.0
 # Embedding backend for the td RAG index build (#1094): boomtick's
