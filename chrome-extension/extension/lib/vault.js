@@ -16,16 +16,27 @@ export function deduplicateVault(entries) {
   });
 
   const cleaned = [];
+  // Normalize each entry once (memoized by identity) so the merge search
+  // below stays O(n) instead of re-running String() per comparison.
+  const normMemo = new Map();
+  const pairFor = (entry) => {
+    if (!normMemo.has(entry)) {
+      normMemo.set(entry, {
+        val: String(entry.value || "").toLowerCase().replace(/\s+/g, " ").trim(),
+        key: String(entry.key || "").toLowerCase().trim()
+      });
+    }
+    return normMemo.get(entry);
+  };
   for (const item of sorted) {
-    const normKey = String(item.key || "").toLowerCase().trim();
-    const normVal = String(item.value || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const normKey = pairFor(item).key;
+    const normVal = pairFor(item).val;
     if (!normVal) continue;
 
     // If another entry already has the exact same normalized value and overlapping key/category, merge aliases instead of duplicating
     const existing = cleaned.find((c) => {
-      const cVal = String(c.value || "").toLowerCase().replace(/\s+/g, " ").trim();
-      const cKey = String(c.key || "").toLowerCase().trim();
-      return cVal === normVal && (cKey === normKey || c.category === item.category || item.tags?.includes("observed"));
+      const cPair = pairFor(c);
+      return cPair.val === normVal && (cPair.key === normKey || c.category === item.category || item.tags?.includes("observed"));
     });
 
     if (existing) {
