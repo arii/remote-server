@@ -29,8 +29,11 @@ class TestIntentWiring(unittest.TestCase):
             self.assertIn("# Dispatch Brief", out, node)
 
     def test_unknown_intent_returns_base_unchanged(self):
+        # A node no skill registers for must inject nothing. This used
+        # to use intent_explain — now a live co-browsing trigger node
+        # (#1301) — so it pins a genuinely unregistered node instead.
         self.assertEqual(
-            _reg().inject_skills_for_node("intent_explain", "hint"), "hint")
+            _reg().inject_skills_for_node("intent_bogus", "hint"), "hint")
 
     def test_moved_skills_registered(self):
         names = _reg().skill_names()
