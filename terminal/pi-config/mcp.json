@@ -27,6 +27,7 @@
         "td_validate_issue": "direct",
         "td_verify_scope": "direct",
         "td_audit_worktree": "direct",
+        "run_workflow": "direct",
         "*.*": "hidden"
       }
     },

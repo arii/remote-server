@@ -5,9 +5,9 @@ description: Instructions and schema reference for calling BoomTick MCP tools (R
 
 # BoomTick MCP Tools & Schemas
 
-The BoomTick MCP server (`boomtick`) exposes 11 tools for RAG init/query,
-repository context/tests, GitHub operations, deterministic gates, and PR
-submission. Mode-heavy tools use explicit mode fields (`include`, `search`,
+The BoomTick MCP server (`boomtick`) exposes 12 tools for RAG init/query,
+repository context/tests, GitHub operations, deterministic gates, PR
+submission, and workflow runs. Mode-heavy tools use explicit mode fields (`include`, `search`,
 write fields) — never optional-field telegraphy.
 
 ## Working Directory & Repo-Override Convention
@@ -30,7 +30,8 @@ have a value for; schemas name fields exactly (no `branch`/`branchName`
 aliases) and unknown or mistyped fields surface as validation errors.
 
 **Rule 2: Only call tools on the live surface.** The server exposes
-exactly the 11 tools below (post the 2026-11 surface consolidation).
+exactly the 12 tools below (post the 2026-11 surface consolidation
+plus the `run_workflow` gateway).
 Anything else — the retired names `boomtick_health`,
 `repo_read_agent_context`, `repo_read_ci_logs`, `repo_run_tests`,
 `github_get_pr`, `github_issue_view`, `github_issue_update`,
@@ -117,6 +118,14 @@ Anything else — the retired names `boomtick_health`,
   analysis (`worktree` required; `includeImpact`, `topK` optional).
 - `mcp__boomtick__agent_submit_pr`: submit a branch as a PR (draft by
   default; `pushMode: true` required to actually push).
+
+### Workflows: `mcp__boomtick__run_workflow`
+- Runs a constrained, fixed-graph workflow from the workflows registry;
+  the request is validated deterministically and the response is a
+  receipt with per-provider attempt traces.
+- `workflow` (required string) names a registered workflow;
+  `input` must match that workflow's own JSON schema — the per-workflow
+  schemas live in the `mcp://workflows/registry` resource, not here.
 
 Worktree lifecycle has no MCP tools — use the `td worktree`
 CLI (`create` / `list` / `remove`) instead.
