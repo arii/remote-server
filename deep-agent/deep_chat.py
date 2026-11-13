@@ -1055,7 +1055,7 @@ def _message_role(message):
     return "other"
 
 
-def history_window(messages, keep=MAX_HISTORY_MESSAGES):
+def trim_history_by_count(messages, keep=MAX_HISTORY_MESSAGES):
     """(kept_messages, drop_ids) after the count trim. Pure, no
     langchain import.
 
@@ -1087,7 +1087,7 @@ def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
 
     Count trim only; the history token share is carved on top of this
     by trim_thread_history (D2: one derived context budget)."""
-    return history_window(messages, keep=keep)[1]
+    return trim_history_by_count(messages, keep=keep)[1]
 
 
 def _content_text(message):
@@ -1098,7 +1098,7 @@ def _content_text(message):
 def _history_token_drops(kept):
     """Extra drop ids so the kept window fits the history token share.
 
-    Groups are human-boundary turns (history_window already snapped
+    Groups are human-boundary turns (trim_history_by_count already snapped
     the window to one), dropped oldest-first via the budget module's
     pure arithmetic. Raises ContextBudgetError when even the newest
     turn alone exceeds the share — the turn fails loudly with the
@@ -1144,7 +1144,7 @@ def trim_thread_history(agent, config, keep=MAX_HISTORY_MESSAGES):
     try:
         snap = agent.get_state(config)
         messages = (snap.values or {}).get("messages", []) or []
-        kept, count_drops = history_window(messages, keep=keep)
+        kept, count_drops = trim_history_by_count(messages, keep=keep)
         drop_ids = list(count_drops) + _history_token_drops(kept)
         if not drop_ids:
             return 0

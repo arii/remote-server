@@ -164,7 +164,7 @@ class CheckStaticTests(unittest.TestCase):
 
 
 class HistoryWindowTests(unittest.TestCase):
-    """deep_chat.history_window: count trim + human-boundary snap."""
+    """deep_chat.trim_history_by_count: count trim + human-boundary snap."""
 
     def test_within_count_keeps_all(self):
         import deep_chat
@@ -173,7 +173,7 @@ class HistoryWindowTests(unittest.TestCase):
             fake_message("human", "one", "m1"),
             fake_message("ai", "reply", "m2"),
         ]
-        kept, drops = deep_chat.history_window(messages, keep=40)
+        kept, drops = deep_chat.trim_history_by_count(messages, keep=40)
         self.assertEqual(kept, messages)
         self.assertEqual(drops, [])
 
@@ -181,7 +181,7 @@ class HistoryWindowTests(unittest.TestCase):
         import deep_chat
 
         messages = [fake_message("human", f"turn {i}", f"m{i}") for i in range(10)]
-        kept, drops = deep_chat.history_window(messages, keep=3)
+        kept, drops = deep_chat.trim_history_by_count(messages, keep=3)
         self.assertEqual([m.id for m in kept], ["m7", "m8", "m9"])
         self.assertEqual(drops, ["m0", "m1", "m2", "m3", "m4", "m5", "m6"])
 
@@ -198,7 +198,7 @@ class HistoryWindowTests(unittest.TestCase):
             fake_message("human", "new", "m3"),
             fake_message("ai", "new reply", "m4"),
         ]
-        kept, drops = deep_chat.history_window(messages, keep=2)
+        kept, drops = deep_chat.trim_history_by_count(messages, keep=2)
         self.assertEqual([m.id for m in kept], ["m3", "m4"])
         self.assertEqual(drops, ["m0", "m1", "m2"])
 
@@ -206,7 +206,7 @@ class HistoryWindowTests(unittest.TestCase):
         import deep_chat
 
         messages = [fake_message("other", "tool result", f"m{i}") for i in range(6)]
-        _kept, drops = deep_chat.history_window(messages, keep=2)
+        _kept, drops = deep_chat.trim_history_by_count(messages, keep=2)
         self.assertEqual(drops, [])
 
 
