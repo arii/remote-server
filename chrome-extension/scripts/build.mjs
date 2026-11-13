@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
+import { emitLegacyMatcher } from './legacy-matcher.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,7 +24,15 @@ if (!fs.existsSync(EXT_SRC)) {
   process.exit(1);
 }
 
-// 2. Validate manifest.json
+// 2. Emit the classic-script matcher twin for the content script.
+// content-script.js cannot import ES modules; matcher.legacy.js is
+// generated from extension/lib/matcher.js and exposes the identical
+// functions via window.__LOCALFORM_MATCHER__. Emitted before manifest
+// verification so a clean checkout passes with no prior build.
+emitLegacyMatcher();
+console.log('✅ Emitted classic-script matcher twin: lib/matcher.legacy.js (from lib/matcher.js)');
+
+// 3. Validate manifest.json
 const manifestPath = path.join(EXT_SRC, 'manifest.json');
 if (!fs.existsSync(manifestPath)) {
   console.error(`❌ manifest.json not found in ${EXT_SRC}`);
