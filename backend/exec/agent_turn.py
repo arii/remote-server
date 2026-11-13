@@ -40,6 +40,7 @@ import threading
 import time
 import uuid
 
+from backend.exec import turn_engine
 from backend.exec.engine import compose_argv, exec_argv
 from backend.ledger import append as ledger_append
 from backend.api.routers.agent_control import read_control_state
@@ -88,25 +89,21 @@ STDERR_READ_MAX = 65536
 # same env-only flip as AGENT_DEFAULT_PROVIDER.
 TURN_TIMEOUT = 1800
 TURN_TIMEOUT_ENV = "AGENT_TURN_TIMEOUT"
-KILL_GRACE = 5
+# One kill ladder (D4): the bounded SIGTERM→SIGKILL grace the chat
+# runner shares.
+KILL_GRACE = turn_engine.KILL_GRACE
 
 
 def turn_timeout() -> int:
     """Effective per-turn budget in seconds.
 
-    The env override wins when it parses to a positive int;
+    The shared resolver (backend/exec/turn_engine.py, D4) applies
+    the env contract: positive-int AGENT_TURN_TIMEOUT wins;
     unset, blank, garbage, and non-positive values fall back to
     TURN_TIMEOUT. Tests patch TURN_TIMEOUT directly (env unset),
     so the fallback keeps that seam working.
     """
-    raw = os.environ.get(TURN_TIMEOUT_ENV, "").strip()
-    if not raw:
-        return TURN_TIMEOUT
-    try:
-        value = int(raw)
-    except ValueError:
-        return TURN_TIMEOUT
-    return value if value > 0 else TURN_TIMEOUT
+    return turn_engine.resolve_timeout(TURN_TIMEOUT, TURN_TIMEOUT_ENV)
 
 
 # Seconds before the deadline the turn warns the drawer (issue
@@ -181,26 +178,11 @@ KNOWN_SESSIONS_MAX = 10000
 
 async def _stop_proc(proc: subprocess.Popen) -> None:
     """Terminate, escalate to kill, wait bounded. Never raises and
-    returns at once when the process already exited."""
-    if proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-    except Exception:
-        pass
-    try:
-        await asyncio.wait_for(asyncio.to_thread(proc.wait), KILL_GRACE)
-    except (asyncio.TimeoutError, Exception):
-        pass
-    if proc.poll() is None:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            await asyncio.wait_for(asyncio.to_thread(proc.wait), KILL_GRACE)
-        except (asyncio.TimeoutError, Exception):
-            pass
+    returns at once when the process already exited.
+
+    Delegates to the shared turn engine's async ladder (D4: one kill
+    ladder for both runners, no mirrored copies)."""
+    await turn_engine.async_stop_proc(proc, KILL_GRACE)
 
 
 def _read_stderr_tail(err_file) -> str:

@@ -1849,10 +1849,12 @@ class TestBuildModelNumCtx(unittest.TestCase):
                 sys.modules["langchain_ollama"] = old
         return seen
 
-    def test_default_ctx_8192_think_off(self):
+    def test_default_ctx_16384_think_off(self):
+        # D2 raised the default from 8192 to 16384 (one derived budget,
+        # backend/exec/context_budget.py); env override still wins.
         os.environ.pop("OLLAMA_NUM_CTX", None)
         seen = self._model_kwargs()
-        self.assertEqual(seen.get("num_ctx"), 8192)
+        self.assertEqual(seen.get("num_ctx"), 16384)
         self.assertEqual(seen.get("model_kwargs"), {"think": False})
 
     def test_env_override(self):
