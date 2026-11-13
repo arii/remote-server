@@ -2,6 +2,9 @@
 // LocalForm AI - Background Service Worker (Manifest V3)
 // ============================================================================
 
+import { aliasMatches } from "./lib/matcher.js";
+import { normalizeForDedup, valueAlreadyHeld } from "./lib/delta-guards.js";
+
 // NOTE: No seed data. The vault starts empty and is populated by the user via
 // "Import Vault JSON" in the side panel (same format as "Export Vault JSON")
 // or by adding facts manually. The extension ships with zero personal data.
@@ -60,35 +63,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-function normalizeForDedup(str) {
-  return String(str || "")
-    .toLowerCase()
-    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so URL variants dedupe together
-    .replace(/[^a-z0-9]/g, "");
-}
-
-// Strict alias matching for vault entries (audit high #4): exact match for
-// short aliases, word-boundary containment for longer ones. Prevents a short
-// alias like "name" from matching "Company name".
-function escapeRegExp(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
-}
-
-const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
-
-function aliasMatches(query, alias) {
-  const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
-  const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (!q || !a) return false;
-  if (q === a) return true;
-  if (a.length < 8) return false; // short aliases match exactly only
-  let re = aliasRegexCache.get(a);
-  if (!re) {
-    re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
-    aliasRegexCache.set(a, re);
-  }
-  return re.test(q);
-}
+// Strict alias matching lives in lib/matcher.js; the dedupe guards below
+// live in lib/delta-guards.js — shared rule sets (audit high #4).
 
 async function handleFormSubmitObservation(payload, tab) {
   const { userContextVault = [], pendingDeltas = [], activeSessionContext = null } = await chrome.storage.local.get([
@@ -109,16 +85,10 @@ async function handleFormSubmitObservation(payload, tab) {
     if (!normProp || normProp.length < 2) continue;
 
     // GUARDRAIL 1: Strict URL / Value Deduplication (ignores http/https/www/hyphens)
-    const alreadyInVault = userContextVault.some((v) => {
-      const normVault = normalizeForDedup(v.value);
-      return normVault === normProp || (normProp.length > 10 && normVault.includes(normProp));
-    });
+    const alreadyInVault = userContextVault.some((v) => valueAlreadyHeld(v.value, propText));
     if (alreadyInVault) continue;
 
-    const alreadyInPending = pendingDeltas.some((d) => {
-      const normD = normalizeForDedup(d.proposedValue);
-      return normD === normProp || (normProp.length > 10 && normD.includes(normProp));
-    });
+    const alreadyInPending = pendingDeltas.some((d) => valueAlreadyHeld(d.proposedValue, propText));
     if (alreadyInPending) continue;
 
     let key = field.query;

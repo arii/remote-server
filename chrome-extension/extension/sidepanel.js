@@ -3,6 +3,10 @@
 // Implements Phases 1 through 7 for Chrome's Built-in On-Device AI
 // ============================================================================
 
+import { aliasMatches } from "./lib/matcher.js";
+import { deduplicateVault } from "./lib/vault.js";
+import { summarizeHydrationResult } from "./lib/hydration.js";
+
 // Global state cache & pre-warmed AI pool
 let currentExportDoc = null;
 let baseWarmSession = null;
@@ -131,29 +135,8 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-// Strict alias matching for vault entries (audit high #4). Short aliases must
-// match exactly; longer aliases may match as whole words inside the query.
-// The old bidirectional substring test (q.includes(a) || a.includes(q)) made a
-// two-letter-overlap alias like "name" match "Company name".
-function escapeRegExp(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
-}
-
-const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
-
-function aliasMatches(query, alias) {
-  const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
-  const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (!q || !a) return false;
-  if (q === a) return true;
-  if (a.length < 8) return false; // short aliases match exactly only
-  let re = aliasRegexCache.get(a);
-  if (!re) {
-    re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
-    aliasRegexCache.set(a, re);
-  }
-  return re.test(q);
-}
+// Strict alias matching for vault entries lives in lib/matcher.js — the one
+// shared rule set (audit high #4).
 
 // ============================================================================
 // OBSERVABILITY & UX PROGRESS CONTROLLER
@@ -703,7 +686,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       type: "HYDRATE",
       title: "Hydrate Stage 1 Atomic Fields",
       durationMs: performance.now() - stage1T0,
-      details: { filledCount: stage1Result.filledCount, failedCount: stage1Result.failedFields?.length || 0 }
+      details: summarizeHydrationResult(stage1Result)
     });
     statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
@@ -835,37 +818,7 @@ document.getElementById("btn-run-manual-import").addEventListener("click", async
 // ----------------------------------------------------------------------------
 // PHASE 5: USER-CONTEXT VAULT (CRUD & LOCAL STORAGE)
 // ----------------------------------------------------------------------------
-function deduplicateVault(entries) {
-  if (!Array.isArray(entries)) return [];
-  // Sort so canonical IDs (like "identity.full_name" without random timestamps) come FIRST
-  const sorted = [...entries].sort((a, b) => {
-    const aIsTimestamp = /\.\d{10,}$/.test(a.id || "");
-    const bIsTimestamp = /\.\d{10,}$/.test(b.id || "");
-    return Number(aIsTimestamp) - Number(bIsTimestamp);
-  });
-
-  const cleaned = [];
-  for (const item of sorted) {
-    const normKey = String(item.key || "").toLowerCase().trim();
-    const normVal = String(item.value || "").toLowerCase().replace(/\s+/g, " ").trim();
-    if (!normVal) continue;
-
-    // If another entry already has the exact same normalized value and overlapping key/category, merge aliases instead of duplicating
-    const existing = cleaned.find((c) => {
-      const cVal = String(c.value || "").toLowerCase().replace(/\s+/g, " ").trim();
-      const cKey = String(c.key || "").toLowerCase().trim();
-      return cVal === normVal && (cKey === normKey || c.category === item.category || item.tags?.includes("observed"));
-    });
-
-    if (existing) {
-      const mergedAliases = new Set([...(existing.aliases || []), ...(item.aliases || []), normKey]);
-      existing.aliases = Array.from(mergedAliases);
-      continue;
-    }
-    cleaned.push(item);
-  }
-  return cleaned;
-}
+// Entry deduplication is lib/vault.js's deduplicateVault (imported above).
 
 async function renderVault() {
   const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
