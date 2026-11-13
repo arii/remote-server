@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<!-- Lever-style application form fixture.
+     Conventions captured: .application-field wrappers with
+     data-attribute keys, wrapping <label> around inputs, a
+     "Name" single-field full-name input, and links section with
+     https:// placeholders instead of labels. -->
+<html>
+<head><title>Software Engineer — Lever</title></head>
+<body>
+  <div class="content-wrapper">
+    <h2>Application</h2>
+    <form id="application-form" class="application-form">
+      <div class="application-field" data-attribute="name">
+        <label>Name<input type="text" name="name" id="name" autocomplete="name" /></label>
+      </div>
+      <div class="application-field" data-attribute="email">
+        <label>Email<input type="email" name="email" id="email" autocomplete="email" /></label>
+      </div>
+      <div class="application-field" data-attribute="phone">
+        <label>Phone (optional)<input type="tel" name="phone" id="phone" /></label>
+      </div>
+      <div class="application-field" data-attribute="current-location">
+        <label>Where are you currently based?
+          <input type="text" name="location" id="location" placeholder="City, State, Country" />
+        </label>
+      </div>
+      <div class="application-field" data-attribute="resume">
+        <label>Resume<span class="mark-required">*</span></label>
+        <input type="file" name="resume" id="resume" />
+      </div>
+      <div class="application-field" data-attribute="links">
+        <div class="link-field">
+          <label class="application-label">LinkedIn profile</label>
+          <input type="url" name="urls[linkedin]" id="layoutsContainer" placeholder="https://" />
+        </div>
+        <div class="link-field">
+          <label class="application-label">GitHub profile</label>
+          <input type="url" name="urls[github]" id="github-urls" placeholder="https://" />
+        </div>
+        <div class="link-field">
+          <label class="application-label">Other website</label>
+          <input type="url" name="urls[other]" id="other-urls" placeholder="https://" />
+        </div>
+      </div>
+      <div class="application-field" data-attribute="source">
+        <label>How did you hear about this job?
+          <select name="card" id="source">
+            <option value="">Select...</option>
+            <option value="linkedin">LinkedIn</option>
+            <option value="referral">Referral</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+      </div>
+      <div class="application-field" data-attribute="demographic">
+        <label>Will you now or in the future require sponsorship?
+          <input type="radio" name="sponsorship" value="yes" /> Yes
+          <input type="radio" name="sponsorship" value="no" /> No
+        </label>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
