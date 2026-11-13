@@ -622,11 +622,26 @@
     };
   }
 
+  // Passive form-submit observation is OPT-IN per domain (audit high #6 /
+  // spec FR-7.2). Hostnames live in chrome.storage.local under
+  // observerDomainAllowlist, toggled from the side panel's Observer tab.
+  // Fail closed: nothing is captured without explicit opt-in.
+  async function isObserverEnabledForCurrentDomain() {
+    try {
+      const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+      return Array.isArray(observerDomainAllowlist) && observerDomainAllowlist.includes(window.location.hostname);
+    } catch (e) {
+      console.warn("Observer allowlist check failed; treating as disabled:", e);
+      return false;
+    }
+  }
+
   // Listen for passive form submissions to propose context updates
   document.addEventListener(
     "submit",
-    () => {
+    async () => {
       try {
+        if (!(await isObserverEnabledForCurrentDomain())) return;
         const snapshot = capturePageSnapshot();
         if (snapshot.filledFormFields.length > 0) {
           chrome.runtime.sendMessage({
@@ -634,7 +649,9 @@
             payload: snapshot
           });
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Submit observation failed:", e);
+      }
     },
     true
   );

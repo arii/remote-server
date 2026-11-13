@@ -253,6 +253,14 @@
         Capture job/target context to ground your next application, or extract your own profile facts from your resume/portfolio into the Review Queue.
       </div>
 
+      <!-- Per-domain opt-in for passive submit observation -->
+      <div style="border:1px solid #1e293b; border-radius:6px; padding:8px 10px; margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="chk-observer-domain" style="width:auto;" />
+        <label for="chk-observer-domain" style="font-size:11px; color:#cbd5e1; cursor:pointer;">
+          Observe form submits on <strong id="observer-current-domain">this site</strong>
+        </label>
+      </div>
+
       <div style="display:flex; gap:6px; margin-bottom:10px;">
         <button class="btn btn-primary" id="btn-capture-target-context" style="flex:1;">
           🎯 Capture Target / Job Context

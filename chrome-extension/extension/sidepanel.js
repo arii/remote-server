@@ -339,6 +339,9 @@ document.querySelectorAll(".nav button").forEach((btn) => {
     if (targetId === "tab-observer" || targetId === "tab-fill") {
       renderSessionContext();
     }
+    if (targetId === "tab-observer") {
+      renderObserverDomainToggle();
+    }
   });
 });
 
@@ -1148,6 +1151,66 @@ document.getElementById("btn-discard-all-deltas").addEventListener("click", asyn
 });
 
 // ----------------------------------------------------------------------------
+// OBSERVER OPT-IN (PER-DOMAIN ALLOWLIST)
+// Passive submit observation is off for every site until the user enables it
+// for that domain here; the content script checks the same allowlist at
+// submit time and fails closed.
+// ----------------------------------------------------------------------------
+async function renderObserverDomainToggle() {
+  const chk = document.getElementById("chk-observer-domain");
+  const domainEl = document.getElementById("observer-current-domain");
+  if (!chk || !domainEl) return;
+
+  const tab = await getActiveTab();
+  let hostname = "";
+  try {
+    hostname = tab?.url ? new URL(tab.url).hostname : "";
+  } catch {
+    hostname = ""; // chrome:// and other non-standard URLs have no hostname
+  }
+
+  if (!hostname) {
+    domainEl.textContent = "this site";
+    chk.checked = false;
+    chk.disabled = true;
+    return;
+  }
+
+  domainEl.textContent = hostname;
+  chk.disabled = false;
+  const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+  chk.checked = Array.isArray(observerDomainAllowlist) && observerDomainAllowlist.includes(hostname);
+}
+
+document.getElementById("chk-observer-domain")?.addEventListener("change", async (e) => {
+  const chk = e.target;
+  let hostname = "";
+  try {
+    const tab = await getActiveTab();
+    hostname = tab?.url ? new URL(tab.url).hostname : "";
+  } catch {
+    hostname = "";
+  }
+  if (!hostname) {
+    chk.checked = false;
+    return;
+  }
+
+  const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+  const updated = new Set(Array.isArray(observerDomainAllowlist) ? observerDomainAllowlist : []);
+  if (chk.checked) updated.add(hostname);
+  else updated.delete(hostname);
+  await chrome.storage.local.set({ observerDomainAllowlist: Array.from(updated) });
+
+  Telemetry.logTrace({
+    type: "OBSERVER",
+    title: `Submit observer ${chk.checked ? "enabled" : "disabled"} for ${hostname}`,
+    durationMs: 0,
+    details: { hostname, enabled: chk.checked }
+  });
+});
+
+// ----------------------------------------------------------------------------
 // SESSION CONTEXT CONTROLLER (TARGET JOB / EPHEMERAL PAGE CONTEXT)
 // ----------------------------------------------------------------------------
 async function renderSessionContext() {
@@ -1551,5 +1614,6 @@ async function init() {
   renderVault();
   renderObserverQueue();
   renderSessionContext();
+  renderObserverDomainToggle();
 }
 init();
