@@ -889,15 +889,15 @@ async function renderVault() {
   container.innerHTML = filtered
     .map(
       (entry) => `
-    <div class="item-card" data-id="${entry.id}">
+    <div class="item-card" data-id="${escapeHtml(entry.id)}">
       <div class="item-header">
-        <span class="item-key">${entry.key}</span>
+        <span class="item-key">${escapeHtml(entry.key)}</span>
         <div style="display:flex; align-items:center; gap:6px;">
-          <span class="item-cat">${entry.category}</span>
-          <button class="btn-delete-fact" data-id="${entry.id}" style="background:transparent; border:none; color:var(--rose); cursor:pointer; font-size:12px;">✕</button>
+          <span class="item-cat">${escapeHtml(entry.category)}</span>
+          <button class="btn-delete-fact" data-id="${escapeHtml(entry.id)}" style="background:transparent; border:none; color:var(--rose); cursor:pointer; font-size:12px;">✕</button>
         </div>
       </div>
-      <input type="text" class="vault-value-input" data-id="${entry.id}" value="${escapeHtml(String(entry.value))}" style="margin-top:2px;" />
+      <input type="text" class="vault-value-input" data-id="${escapeHtml(entry.id)}" value="${escapeHtml(String(entry.value))}" style="margin-top:2px;" />
     </div>`
     )
     .join("");
@@ -1024,18 +1024,18 @@ async function renderObserverQueue() {
       const actionText = isCreate ? "New Fact" : "Update Existing";
 
       return `
-      <div class="item-card" data-delta-id="${delta.deltaId}" style="margin-bottom:8px;">
+      <div class="item-card" data-delta-id="${escapeHtml(delta.deltaId)}" style="margin-bottom:8px;">
         <div class="item-header">
           <span class="${badgeClass}">${actionText}</span>
           <span style="font-size:10px; color:var(--text-muted);">${Math.round(delta.confidence * 100)}% confidence</span>
         </div>
-        <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${delta.key}</div>
+        <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
         <div style="font-size:11px; color:var(--accent-light); font-weight:600;">Proposed: ${escapeHtml(delta.proposedValue)}</div>
         <div style="font-size:10px; color:var(--text-muted); font-style:italic; margin-top:2px;">${escapeHtml(delta.evidenceSnippet || "")}</div>
         <div class="btn-row" style="margin-top:6px;">
-          <button class="btn btn-primary btn-sm btn-approve-delta" data-delta-id="${delta.deltaId}">Approve & Merge</button>
-          <button class="btn btn-subtle btn-sm btn-discard-delta" data-delta-id="${delta.deltaId}">Discard</button>
+          <button class="btn btn-primary btn-sm btn-approve-delta" data-delta-id="${escapeHtml(delta.deltaId)}">Approve & Merge</button>
+          <button class="btn btn-subtle btn-sm btn-discard-delta" data-delta-id="${escapeHtml(delta.deltaId)}">Discard</button>
         </div>
       </div>`;
     })
