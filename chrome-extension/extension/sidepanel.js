@@ -15,7 +15,7 @@ async function getClonedSession() {
       baseWarmSession = await lmGlobal.create({
         outputLanguage: "en",
         systemPrompt:
-          "You are an expert technical career assistant for Dr. Ariel Anders (MIT PhD Roboticist, former Waymo Motion Planning Senior SWE, Robust.AI first roboticist, Civ Robotics Senior Algorithms Engineer). Always write tailored, concrete, first-person responses."
+          "You are an expert career application assistant. Write tailored, concrete, first-person responses grounded ONLY in the candidate facts supplied in each prompt. Never invent employers, schools, or links."
       });
     }
     if (typeof baseWarmSession.clone === "function") {
@@ -688,11 +688,9 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
       if (session) {
         const portfolioUrl =
-          userContextVault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value ||
-          "https://arii.github.io";
+          userContextVault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value || "";
         const githubUrl =
-          userContextVault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value ||
-          "https://github.com/arii";
+          userContextVault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value || "";
 
         for (const field of longFormFields) {
           if (field.skipLLM) continue;
@@ -710,13 +708,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             `- Company: ${ctx.organization || "this organization"}\n` +
             `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
             `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
-            `CANDIDATE FACTS (Dr. Ariel Anders):\n${bioEntry}\n${expEntries}\n` +
-            `- Portfolio URL: ${portfolioUrl}\n` +
-            `- GitHub URL: ${githubUrl}\n` +
-            `- Civ Robotics (Senior Algorithms Engineer): Built C++, Python, and ROS 2 navigation/localization for autonomous forklifts; solved field localization drift via custom IMU/GPS drivers and tilt-compensation logic.\n\n` +
-            `INSTRUCTIONS:\n` +
+            `CANDIDATE FACTS (from your local vault):\n${bioEntry}\n${expEntries}\n` +
+            (portfolioUrl ? `- Portfolio URL: ${portfolioUrl}\n` : "") +
+            (githubUrl ? `- GitHub URL: ${githubUrl}\n` : "") +
+            `\nINSTRUCTIONS:\n` +
             `- DO NOT repeat the candidate bio word-for-word.\n` +
-            `- Explicitly connect Ariel's MIT PhD, Waymo motion planning, Robust.AI behavior trees, and Civ Robotics C++/Python/ROS 2 work to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
+            `- Explicitly connect the candidate's experience from CANDIDATE FACTS to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
             `- Output ONLY the final response text (no markdown headers, no placeholders, max 175 words).`;
 
           let lastLiveUpdate = 0;
@@ -738,10 +735,11 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
           if (synthesized && synthesized.trim()) {
             let finalText = synthesized.trim();
-            // Task 2.3: Deterministic Portfolio Link Guarantee in Stage 2 Live Synthesis
+            // Deterministic Portfolio Link Guarantee in Stage 2 Live Synthesis
             const isProjectOrShowcase = /share something cool|built|project|portfolio|repo|link|work sample|cover letter/i.test(field.query);
-            if (isProjectOrShowcase && !finalText.includes("arii.github.io")) {
-              finalText = `${finalText}\n\nPortfolio: ${portfolioUrl} | GitHub: ${githubUrl}`;
+            if (isProjectOrShowcase && portfolioUrl && !finalText.includes(portfolioUrl)) {
+              const linkLine = `Portfolio: ${portfolioUrl}` + (githubUrl ? ` | GitHub: ${githubUrl}` : "");
+              finalText = `${finalText}\n\n${linkLine}`;
             }
             field.value = finalText;
             field.confidence = 0.92;
@@ -864,6 +862,24 @@ async function renderVault() {
   });
 
   document.getElementById("vault-count-badge").textContent = `${cleanedVault.length} facts`;
+
+  // First-run flow: the vault ships empty (no seed PII). Point the user at the
+  // import path — the file format is exactly what "Export Vault JSON" produces.
+  if (cleanedVault.length === 0) {
+    container.innerHTML = `
+      <div class="item-card" style="text-align:center; padding:16px;">
+        <div style="font-weight:600; color:#e2e8f0; margin-bottom:6px;">Your vault is empty</div>
+        <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
+          Import a previously exported Vault JSON file to restore your profile locally, or add facts manually below.
+          Nothing is bundled with the extension and nothing leaves this browser.
+        </div>
+        <button id="btn-first-run-import" class="btn btn-secondary btn-sm">Import Profile JSON</button>
+      </div>`;
+    document.getElementById("btn-first-run-import")?.addEventListener("click", () => {
+      document.getElementById("file-import-vault").click();
+    });
+    return;
+  }
 
   if (filtered.length === 0) {
     container.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:16px;">No matching facts found.</div>`;
@@ -1188,11 +1204,9 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
     Telemetry.startTask(`Pre-drafting tailored response for ${ctx.organization || "target role"}...`, 35);
 
     const portfolioUrl =
-      vault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value ||
-      "https://arii.github.io";
+      vault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value || "";
     const githubUrl =
-      vault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value ||
-      "https://github.com/arii";
+      vault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value || "";
 
     const bioEntry = vault.find((v) => v.id === "custom.bio")?.value || "";
     const allFacts = vault
@@ -1201,22 +1215,18 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
       .join("\n");
 
     const prompt =
-      `Write a concise, high-impact 2-paragraph technical application response for Dr. Ariel Anders applying to:\n` +
+      `Write a concise, high-impact 2-paragraph technical application response for the candidate applying to:\n` +
       `- Target Role: ${ctx.role || ctx.roleOrTopic || "Software Engineer"}\n` +
       `- Target Organization: ${ctx.organization || "Company"}\n` +
       `- Key Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
       `- Tech Stack / Keywords: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
       `CANDIDATE FACTS (USE ONLY THESE REAL FACTS):\n` +
-      `- Portfolio URL: ${portfolioUrl}\n` +
-      `- GitHub URL: ${githubUrl}\n` +
-      `- Civ Robotics (Senior Algorithms Engineer): Built C++, Python, and ROS 2 navigation/localization for autonomous forklifts; solved field localization drift via custom IMU/GPS drivers and tilt-compensation logic.\n` +
-      `- Waymo (Senior SWE, Planning): Engineered onboard C++ motion planning and trajectory decision-making software.\n` +
-      `- Robust.AI (First Roboticist): Architected reactive social navigation stack using behavior trees.\n` +
-      `- Education: MIT CSAIL Ph.D. in Computer Science & EE (robotic manipulation under uncertainty); UC Santa Cruz B.S. in Computer Engineering.\n` +
+      (portfolioUrl ? `- Portfolio URL: ${portfolioUrl}\n` : "") +
+      (githubUrl ? `- GitHub URL: ${githubUrl}\n` : "") +
       `${bioEntry}\n${allFacts}\n\n` +
       `STRICT RULES:\n` +
-      `1. Directly connect Ariel's hands-on robot bring-up, sensor calibration/filtering (IMU/GPS/ROS 2 at Civ Robotics), behavior trees (Robust.AI), and C++/Python motion planning (Waymo, MIT PhD) to ${ctx.organization || "the team"}'s stack.\n` +
-      `2. Explicitly include the portfolio link (${portfolioUrl}) and GitHub (${githubUrl}).\n` +
+      `1. Directly connect the candidate's hands-on experience and education from CANDIDATE FACTS to ${ctx.organization || "the team"}'s stack.\n` +
+      (portfolioUrl ? `2. Explicitly include the portfolio link (${portfolioUrl})${githubUrl ? ` and GitHub (${githubUrl})` : ""}.\n` : "") +
       `3. Keep it under 175 words, concrete, first-person, and free of placeholders.`;
 
     const drafted = await runObservablePrompt(session, prompt, {
@@ -1227,9 +1237,9 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
 
     if (drafted && drafted.trim().length > 40) {
       let cleanText = drafted.trim();
-      // Deterministic Link Guarantee: If Nano omitted the portfolio URL, append a clean link line
-      if (!cleanText.includes("arii.github.io")) {
-        cleanText = `${cleanText}\n\nPortfolio & Projects: ${portfolioUrl} | GitHub: ${githubUrl}`;
+      // Deterministic Link Guarantee: if the vault has a portfolio URL and Nano omitted it, append a clean link line
+      if (portfolioUrl && !cleanText.includes(portfolioUrl)) {
+        cleanText = `${cleanText}\n\nPortfolio & Projects: ${portfolioUrl}` + (githubUrl ? ` | GitHub: ${githubUrl}` : "");
       }
       ctx.preDraftedCoverLetter = cleanText;
       await chrome.storage.local.set({ activeSessionContext: ctx });
@@ -1247,7 +1257,7 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
 function normalizeForDedup(str) {
   return String(str || "")
     .toLowerCase()
-    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so "www.linkedin.com/in/ariel-anders" matches "https://www.linkedin.com/in/arielanders"
+    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so URL variants dedupe together
     .replace(/[^a-z0-9]/g, "");
 }
 
@@ -1383,7 +1393,7 @@ Text Content:
 Respond ONLY with a JSON object in this format:
 {
   "role": "Title of the job, grant, or opportunity (e.g. Senior Software Engineer)",
-  "organization": "Company or organization name (e.g. OpenMind, Waymo)",
+  "organization": "Company or organization name (e.g. Acme Robotics)",
   "keyRequirements": ["requirement 1", "requirement 2"],
   "techStack": ["tech 1", "tech 2"],
   "missionSummary": "1-2 sentence overview of what the company/team does and what they need."
