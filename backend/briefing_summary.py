@@ -115,8 +115,8 @@ ENRICHMENT_CAP = 10
 # default gh path would silently brief the wrong repo.
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-REPO_KEY = "tech-dancer"
-REPO_GH = "arii/tech-dancer"
+REPO_KEY = "remote-server"
+REPO_GH = "arii/remote-server"
 FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 
 
