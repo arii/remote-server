@@ -97,10 +97,12 @@ def main(argv=None) -> int:
                 return 1
             if mode == "messages":
                 chunk = payload[0]
-                if (
-                    isinstance(chunk, AIMessageChunk)
-                    and isinstance(chunk.content, str)
-                    and chunk.content
+                if isinstance(chunk, AIMessageChunk) and (
+                    # Tool-call deltas are model tokens streaming too —
+                    # counting content only would misread a working
+                    # tool-calling turn as the zero-token lock-up.
+                    (isinstance(chunk.content, str) and chunk.content)
+                    or chunk.tool_call_chunks
                 ):
                     chunk_count += 1
                     last_token_at = time.time()
