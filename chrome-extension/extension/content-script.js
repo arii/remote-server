@@ -44,6 +44,29 @@
       .slice(0, 160);
   }
 
+  // Strict label matching (audit high #4): exact match, or word-boundary
+  // containment when the resolved label is long. Replaces the old bidirectional
+  // substring test that let loose labels swallow unrelated fields.
+  function escapeRegExp(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
+  }
+
+  const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
+
+  function aliasMatches(query, alias) {
+    const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!q || !a) return false;
+    if (q === a) return true;
+    if (a.length < 8) return false; // short labels match exactly only
+    let re = aliasRegexCache.get(a);
+    if (!re) {
+      re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
+      aliasRegexCache.set(a, re);
+    }
+    return re.test(q);
+  }
+
   // 1. Resolve human-readable label for any form input via strict waterfall
   function resolveFieldLabel(el) {
     // Priority 1: aria-labelledby target elements
@@ -326,7 +349,9 @@
   }
 
   // 5. React / Vue / Ashby / Typeahead Compatible Native Value Setter (Phase 3 & 6)
-  function setReactSafeValue(el, value) {
+  // Returns a verification result — { ok: true } or { ok: false, reason } — so the
+  // hydrator only counts fills it can prove happened (no more silent wrong fills).
+  async function setReactSafeValue(el, value) {
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
 
@@ -355,19 +380,32 @@
         el.click();
         el.checked = shouldCheck;
       }
+
+      // Verify: a native checkbox must report the target state. A clicked Yes/No
+      // pill is accepted as-is (selected styling is site-specific).
+      if (!clickedPill && el.checked !== shouldCheck) {
+        return { ok: false, reason: `Checkbox did not reach "${shouldCheck ? "checked" : "unchecked"}"` };
+      }
     } else if (tag === "select") {
-      const strVal = String(value).toLowerCase();
+      const strVal = String(value).trim().toLowerCase();
       const matchedOption = Array.from(el.options).find(
         (opt) =>
           opt.value.toLowerCase() === strVal ||
           opt.text.trim().toLowerCase() === strVal ||
           opt.text.trim().toLowerCase().includes(strVal)
       );
-      if (matchedOption) {
-        el.value = matchedOption.value;
+      if (!matchedOption) {
+        return { ok: false, reason: `No <option> matches "${String(value).slice(0, 60)}"` };
+      }
+      el.value = matchedOption.value;
+      if (el.value !== matchedOption.value || !Array.from(el.selectedOptions || []).includes(matchedOption)) {
+        return { ok: false, reason: `<select> did not accept option "${matchedOption.text.trim()}"` };
       }
     } else if (el.isContentEditable) {
       el.innerText = String(value);
+      if (el.innerText.trim() !== String(value).trim()) {
+        return { ok: false, reason: "Contenteditable value did not stick" };
+      }
     } else {
       el.focus();
       const prototype = Object.getPrototypeOf(el);
@@ -382,7 +420,8 @@
         el.value = String(value);
       }
 
-      // If this is a combobox/typeahead (like Ashby's location picker), select the first dropdown suggestion
+      // If this is a combobox/typeahead (like Ashby's location picker), select
+      // the dropdown suggestion whose text matches the intended value.
       const isTypeahead =
         el.getAttribute("role") === "combobox" ||
         el.getAttribute("placeholder")?.toLowerCase().includes("start typing") ||
@@ -391,23 +430,65 @@
       if (isTypeahead) {
         el.focus();
         el.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
-        setTimeout(() => {
-          const listbox = document.querySelector('[role="listbox"], [class*="menu"], [class*="options"]');
-          const firstOpt = listbox
-            ? listbox.querySelector('[role="option"], [class*="option"], li, div[id*="option"]')
-            : document.querySelector('[role="option"], [class*="option"], [class*="Option"], [class*="menu"] li');
-          if (firstOpt) {
-            firstOpt.click();
-          } else {
-            el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+        const ta = await clickMatchingTypeaheadOption(el, String(value));
+        if (!ta.ok) {
+          // Nothing matching appeared — commit the typed text with Enter instead
+          el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, bubbles: true }));
+          await new Promise((r) => setTimeout(r, 80));
+          const committed = (el.value || "").trim().toLowerCase();
+          if (committed !== String(value).trim().toLowerCase()) {
+            return { ok: false, reason: ta.reason || "Typeahead suggestion did not match the intended value" };
           }
-        }, 300);
+        }
+      } else if (el.value !== String(value)) {
+        return {
+          ok: false,
+          reason: `Input value is "${String(el.value).slice(0, 60)}", expected "${String(value).slice(0, 60)}"`
+        };
       }
     }
 
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { ok: true };
+  }
+
+  const TYPEAHEAD_WAIT_MS = 1500;
+  const TYPEAHEAD_POLL_MS = 60;
+
+  // Bounded wait for the typeahead dropdown, then click the option whose text
+  // matches the intended value (replaces the old fixed 300ms blind first-option click).
+  async function clickMatchingTypeaheadOption(el, intendedValue) {
+    const wanted = String(intendedValue).trim().toLowerCase();
+    const deadline = Date.now() + TYPEAHEAD_WAIT_MS;
+    while (Date.now() < deadline) {
+      const option = findMatchingTypeaheadOption(wanted);
+      if (option) {
+        option.click();
+        return { ok: true, chosenText: (option.innerText || option.textContent || "").trim() };
+      }
+      await new Promise((r) => setTimeout(r, TYPEAHEAD_POLL_MS));
+    }
+    return {
+      ok: false,
+      reason: `No typeahead suggestion matching "${String(intendedValue).slice(0, 60)}" appeared within ${TYPEAHEAD_WAIT_MS}ms`
+    };
+  }
+
+  function findMatchingTypeaheadOption(wanted) {
+    const listbox = document.querySelector('[role="listbox"], [class*="menu"], [class*="options"]');
+    const options = listbox
+      ? listbox.querySelectorAll('[role="option"], [class*="option"], li, div[id*="option"]')
+      : document.querySelectorAll('[role="option"], [class*="option"], [class*="Option"], [class*="menu"] li');
+    for (const opt of options) {
+      const text = (opt.innerText || opt.textContent || "").trim().toLowerCase();
+      if (!text) continue;
+      if (text === wanted || text.includes(wanted) || (wanted.includes(text) && text.length >= 4)) {
+        return opt;
+      }
+    }
+    return null;
   }
 
   function isVisibleInput(el) {
@@ -454,7 +535,7 @@
 
       for (const el of candidates) {
         const elLabel = resolveFieldLabel(el).toLowerCase().replace(/\s+/g, " ").trim();
-        if (elLabel === targetQ || (targetQ.length > 8 && (elLabel.includes(targetQ) || targetQ.includes(elLabel)))) {
+        if (aliasMatches(targetQ, elLabel)) {
           return el;
         }
       }
@@ -464,7 +545,8 @@
   }
 
   // 6. Hydrate Page Forms from Export Document (Phase 3 & Phase 6)
-  function hydratePageForms(doc, options = { highlightConfidence: true }) {
+  // Counts a field as filled ONLY when the setter verified the value landed.
+  async function hydratePageForms(doc, options = { highlightConfidence: true }) {
     let filledCount = 0;
     const failedFields = [];
 
@@ -484,6 +566,10 @@
           );
           if (matchedRadio) {
             matchedRadio.click();
+            if (!matchedRadio.checked) {
+              failedFields.push({ fieldId: field.fieldId, query: field.query, reason: "Radio click did not select the option" });
+              continue;
+            }
             matchedRadio.checked = true;
             matchedRadio.dispatchEvent(new Event("change", { bubbles: true }));
             filledCount++;
@@ -501,7 +587,11 @@
           continue;
         }
 
-        setReactSafeValue(el, field.value);
+        const setResult = await setReactSafeValue(el, field.value);
+        if (!setResult.ok) {
+          failedFields.push({ fieldId: field.fieldId, query: field.query, reason: setResult.reason || "Fill could not be verified" });
+          continue;
+        }
         filledCount++;
 
         if (options.highlightConfidence) {
@@ -539,11 +629,26 @@
     };
   }
 
+  // Passive form-submit observation is OPT-IN per domain (audit high #6 /
+  // spec FR-7.2). Hostnames live in chrome.storage.local under
+  // observerDomainAllowlist, toggled from the side panel's Observer tab.
+  // Fail closed: nothing is captured without explicit opt-in.
+  async function isObserverEnabledForCurrentDomain() {
+    try {
+      const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+      return Array.isArray(observerDomainAllowlist) && observerDomainAllowlist.includes(window.location.hostname);
+    } catch (e) {
+      console.warn("Observer allowlist check failed; treating as disabled:", e);
+      return false;
+    }
+  }
+
   // Listen for passive form submissions to propose context updates
   document.addEventListener(
     "submit",
-    () => {
+    async () => {
       try {
+        if (!(await isObserverEnabledForCurrentDomain())) return;
         const snapshot = capturePageSnapshot();
         if (snapshot.filledFormFields.length > 0) {
           chrome.runtime.sendMessage({
@@ -551,7 +656,9 @@
             payload: snapshot
           });
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Submit observation failed:", e);
+      }
     },
     true
   );
@@ -702,7 +809,11 @@
         sendResponse(fresh);
       }
     } else if (msg.action === "HYDRATE_PAGE_FORMS") {
-      sendResponse(hydratePageForms(msg.document, msg.options || {}));
+      // hydratePageForms is async (fill verification) — resolve before responding
+      hydratePageForms(msg.document, msg.options || {})
+        .then(sendResponse)
+        .catch((err) => sendResponse({ error: err.message, totalFields: 0, filledCount: 0, failedFields: [] }));
+      return true;
     } else if (msg.action === "CAPTURE_PAGE_SNAPSHOT") {
       sendResponse(capturePageSnapshot());
     } else if (msg.action === "RUN_UX_AUDIT") {

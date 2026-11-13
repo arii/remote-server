@@ -15,7 +15,7 @@ async function getClonedSession() {
       baseWarmSession = await lmGlobal.create({
         outputLanguage: "en",
         systemPrompt:
-          "You are an expert technical career assistant for Dr. Ariel Anders (MIT PhD Roboticist, former Waymo Motion Planning Senior SWE, Robust.AI first roboticist, Civ Robotics Senior Algorithms Engineer). Always write tailored, concrete, first-person responses."
+          "You are an expert career application assistant. Write tailored, concrete, first-person responses grounded ONLY in the candidate facts supplied in each prompt. Never invent employers, schools, or links."
       });
     }
     if (typeof baseWarmSession.clone === "function") {
@@ -129,6 +129,30 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+// Strict alias matching for vault entries (audit high #4). Short aliases must
+// match exactly; longer aliases may match as whole words inside the query.
+// The old bidirectional substring test (q.includes(a) || a.includes(q)) made a
+// two-letter-overlap alias like "name" match "Company name".
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
+}
+
+const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
+
+function aliasMatches(query, alias) {
+  const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!q || !a) return false;
+  if (q === a) return true;
+  if (a.length < 8) return false; // short aliases match exactly only
+  let re = aliasRegexCache.get(a);
+  if (!re) {
+    re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
+    aliasRegexCache.set(a, re);
+  }
+  return re.test(q);
 }
 
 // ============================================================================
@@ -322,6 +346,9 @@ document.querySelectorAll(".nav button").forEach((btn) => {
 
     if (targetId === "tab-observer" || targetId === "tab-fill") {
       renderSessionContext();
+    }
+    if (targetId === "tab-observer") {
+      renderObserverDomainToggle();
     }
   });
 });
@@ -613,8 +640,8 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
         let matchedVaultEssay = null;
         for (const entry of userContextVault) {
-          const aliases = [entry.key.toLowerCase(), ...(entry.aliases || []).map((a) => a.toLowerCase())];
-          if (aliases.some((a) => q === a || q.includes(a) || a.includes(q))) {
+          const aliases = [entry.key, ...(entry.aliases || [])];
+          if (aliases.some((a) => aliasMatches(q, a))) {
             matchedVaultEssay = entry.value;
             break;
           }
@@ -652,8 +679,8 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           field.confidence = 0.99;
           break;
         }
-        const aliases = [entry.key.toLowerCase(), ...(entry.aliases || []).map((a) => a.toLowerCase())];
-        if (aliases.some((a) => q === a || q.includes(a) || a.includes(q))) {
+        const aliases = [entry.key, ...(entry.aliases || [])];
+        if (aliases.some((a) => aliasMatches(q, a))) {
           if (field.inputType === "checkbox") {
             field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
           } else {
@@ -688,11 +715,9 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
       if (session) {
         const portfolioUrl =
-          userContextVault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value ||
-          "https://arii.github.io";
+          userContextVault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value || "";
         const githubUrl =
-          userContextVault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value ||
-          "https://github.com/arii";
+          userContextVault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value || "";
 
         for (const field of longFormFields) {
           if (field.skipLLM) continue;
@@ -710,13 +735,12 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
             `- Company: ${ctx.organization || "this organization"}\n` +
             `- Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
             `- Tech Stack: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
-            `CANDIDATE FACTS (Dr. Ariel Anders):\n${bioEntry}\n${expEntries}\n` +
-            `- Portfolio URL: ${portfolioUrl}\n` +
-            `- GitHub URL: ${githubUrl}\n` +
-            `- Civ Robotics (Senior Algorithms Engineer): Built C++, Python, and ROS 2 navigation/localization for autonomous forklifts; solved field localization drift via custom IMU/GPS drivers and tilt-compensation logic.\n\n` +
-            `INSTRUCTIONS:\n` +
+            `CANDIDATE FACTS (from your local vault):\n${bioEntry}\n${expEntries}\n` +
+            (portfolioUrl ? `- Portfolio URL: ${portfolioUrl}\n` : "") +
+            (githubUrl ? `- GitHub URL: ${githubUrl}\n` : "") +
+            `\nINSTRUCTIONS:\n` +
             `- DO NOT repeat the candidate bio word-for-word.\n` +
-            `- Explicitly connect Ariel's MIT PhD, Waymo motion planning, Robust.AI behavior trees, and Civ Robotics C++/Python/ROS 2 work to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
+            `- Explicitly connect the candidate's experience from CANDIDATE FACTS to ${ctx.organization || "the role"}'s specific tech stack and domain.\n` +
             `- Output ONLY the final response text (no markdown headers, no placeholders, max 175 words).`;
 
           let lastLiveUpdate = 0;
@@ -738,10 +762,11 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
 
           if (synthesized && synthesized.trim()) {
             let finalText = synthesized.trim();
-            // Task 2.3: Deterministic Portfolio Link Guarantee in Stage 2 Live Synthesis
+            // Deterministic Portfolio Link Guarantee in Stage 2 Live Synthesis
             const isProjectOrShowcase = /share something cool|built|project|portfolio|repo|link|work sample|cover letter/i.test(field.query);
-            if (isProjectOrShowcase && !finalText.includes("arii.github.io")) {
-              finalText = `${finalText}\n\nPortfolio: ${portfolioUrl} | GitHub: ${githubUrl}`;
+            if (isProjectOrShowcase && portfolioUrl && !finalText.includes(portfolioUrl)) {
+              const linkLine = `Portfolio: ${portfolioUrl}` + (githubUrl ? ` | GitHub: ${githubUrl}` : "");
+              finalText = `${finalText}\n\n${linkLine}`;
             }
             field.value = finalText;
             field.confidence = 0.92;
@@ -865,6 +890,24 @@ async function renderVault() {
 
   document.getElementById("vault-count-badge").textContent = `${cleanedVault.length} facts`;
 
+  // First-run flow: the vault ships empty (no seed PII). Point the user at the
+  // import path — the file format is exactly what "Export Vault JSON" produces.
+  if (cleanedVault.length === 0) {
+    container.innerHTML = `
+      <div class="item-card" style="text-align:center; padding:16px;">
+        <div style="font-weight:600; color:#e2e8f0; margin-bottom:6px;">Your vault is empty</div>
+        <div style="color:var(--text-muted); font-size:11px; margin-bottom:10px;">
+          Import a previously exported Vault JSON file to restore your profile locally, or add facts manually below.
+          Nothing is bundled with the extension and nothing leaves this browser.
+        </div>
+        <button id="btn-first-run-import" class="btn btn-secondary btn-sm">Import Profile JSON</button>
+      </div>`;
+    document.getElementById("btn-first-run-import")?.addEventListener("click", () => {
+      document.getElementById("file-import-vault").click();
+    });
+    return;
+  }
+
   if (filtered.length === 0) {
     container.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:16px;">No matching facts found.</div>`;
     return;
@@ -873,15 +916,15 @@ async function renderVault() {
   container.innerHTML = filtered
     .map(
       (entry) => `
-    <div class="item-card" data-id="${entry.id}">
+    <div class="item-card" data-id="${escapeHtml(entry.id)}">
       <div class="item-header">
-        <span class="item-key">${entry.key}</span>
+        <span class="item-key">${escapeHtml(entry.key)}</span>
         <div style="display:flex; align-items:center; gap:6px;">
-          <span class="item-cat">${entry.category}</span>
-          <button class="btn-delete-fact" data-id="${entry.id}" style="background:transparent; border:none; color:var(--rose); cursor:pointer; font-size:12px;">✕</button>
+          <span class="item-cat">${escapeHtml(entry.category)}</span>
+          <button class="btn-delete-fact" data-id="${escapeHtml(entry.id)}" style="background:transparent; border:none; color:var(--rose); cursor:pointer; font-size:12px;">✕</button>
         </div>
       </div>
-      <input type="text" class="vault-value-input" data-id="${entry.id}" value="${escapeHtml(String(entry.value))}" style="margin-top:2px;" />
+      <input type="text" class="vault-value-input" data-id="${escapeHtml(entry.id)}" value="${escapeHtml(String(entry.value))}" style="margin-top:2px;" />
     </div>`
     )
     .join("");
@@ -1008,18 +1051,18 @@ async function renderObserverQueue() {
       const actionText = isCreate ? "New Fact" : "Update Existing";
 
       return `
-      <div class="item-card" data-delta-id="${delta.deltaId}" style="margin-bottom:8px;">
+      <div class="item-card" data-delta-id="${escapeHtml(delta.deltaId)}" style="margin-bottom:8px;">
         <div class="item-header">
           <span class="${badgeClass}">${actionText}</span>
           <span style="font-size:10px; color:var(--text-muted);">${Math.round(delta.confidence * 100)}% confidence</span>
         </div>
-        <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${delta.key}</div>
+        <div style="font-weight:700; color:white; font-size:11.5px; margin: 2px 0;">${escapeHtml(delta.key)}</div>
         ${delta.previousValue ? `<div style="font-size:10.5px; color:var(--rose); text-decoration:line-through;">Previous: ${escapeHtml(delta.previousValue)}</div>` : ""}
         <div style="font-size:11px; color:var(--accent-light); font-weight:600;">Proposed: ${escapeHtml(delta.proposedValue)}</div>
         <div style="font-size:10px; color:var(--text-muted); font-style:italic; margin-top:2px;">${escapeHtml(delta.evidenceSnippet || "")}</div>
         <div class="btn-row" style="margin-top:6px;">
-          <button class="btn btn-primary btn-sm btn-approve-delta" data-delta-id="${delta.deltaId}">Approve & Merge</button>
-          <button class="btn btn-subtle btn-sm btn-discard-delta" data-delta-id="${delta.deltaId}">Discard</button>
+          <button class="btn btn-primary btn-sm btn-approve-delta" data-delta-id="${escapeHtml(delta.deltaId)}">Approve & Merge</button>
+          <button class="btn btn-subtle btn-sm btn-discard-delta" data-delta-id="${escapeHtml(delta.deltaId)}">Discard</button>
         </div>
       </div>`;
     })
@@ -1116,6 +1159,66 @@ document.getElementById("btn-discard-all-deltas").addEventListener("click", asyn
 });
 
 // ----------------------------------------------------------------------------
+// OBSERVER OPT-IN (PER-DOMAIN ALLOWLIST)
+// Passive submit observation is off for every site until the user enables it
+// for that domain here; the content script checks the same allowlist at
+// submit time and fails closed.
+// ----------------------------------------------------------------------------
+async function renderObserverDomainToggle() {
+  const chk = document.getElementById("chk-observer-domain");
+  const domainEl = document.getElementById("observer-current-domain");
+  if (!chk || !domainEl) return;
+
+  const tab = await getActiveTab();
+  let hostname = "";
+  try {
+    hostname = tab?.url ? new URL(tab.url).hostname : "";
+  } catch {
+    hostname = ""; // chrome:// and other non-standard URLs have no hostname
+  }
+
+  if (!hostname) {
+    domainEl.textContent = "this site";
+    chk.checked = false;
+    chk.disabled = true;
+    return;
+  }
+
+  domainEl.textContent = hostname;
+  chk.disabled = false;
+  const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+  chk.checked = Array.isArray(observerDomainAllowlist) && observerDomainAllowlist.includes(hostname);
+}
+
+document.getElementById("chk-observer-domain")?.addEventListener("change", async (e) => {
+  const chk = e.target;
+  let hostname = "";
+  try {
+    const tab = await getActiveTab();
+    hostname = tab?.url ? new URL(tab.url).hostname : "";
+  } catch {
+    hostname = "";
+  }
+  if (!hostname) {
+    chk.checked = false;
+    return;
+  }
+
+  const { observerDomainAllowlist = [] } = await chrome.storage.local.get(["observerDomainAllowlist"]);
+  const updated = new Set(Array.isArray(observerDomainAllowlist) ? observerDomainAllowlist : []);
+  if (chk.checked) updated.add(hostname);
+  else updated.delete(hostname);
+  await chrome.storage.local.set({ observerDomainAllowlist: Array.from(updated) });
+
+  Telemetry.logTrace({
+    type: "OBSERVER",
+    title: `Submit observer ${chk.checked ? "enabled" : "disabled"} for ${hostname}`,
+    durationMs: 0,
+    details: { hostname, enabled: chk.checked }
+  });
+});
+
+// ----------------------------------------------------------------------------
 // SESSION CONTEXT CONTROLLER (TARGET JOB / EPHEMERAL PAGE CONTEXT)
 // ----------------------------------------------------------------------------
 async function renderSessionContext() {
@@ -1188,11 +1291,9 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
     Telemetry.startTask(`Pre-drafting tailored response for ${ctx.organization || "target role"}...`, 35);
 
     const portfolioUrl =
-      vault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value ||
-      "https://arii.github.io";
+      vault.find((v) => v.id === "social.portfolio" || /portfolio|website/i.test(v.key))?.value || "";
     const githubUrl =
-      vault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value ||
-      "https://github.com/arii";
+      vault.find((v) => v.id === "social.github" || /github/i.test(v.key))?.value || "";
 
     const bioEntry = vault.find((v) => v.id === "custom.bio")?.value || "";
     const allFacts = vault
@@ -1201,22 +1302,18 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
       .join("\n");
 
     const prompt =
-      `Write a concise, high-impact 2-paragraph technical application response for Dr. Ariel Anders applying to:\n` +
+      `Write a concise, high-impact 2-paragraph technical application response for the candidate applying to:\n` +
       `- Target Role: ${ctx.role || ctx.roleOrTopic || "Software Engineer"}\n` +
       `- Target Organization: ${ctx.organization || "Company"}\n` +
       `- Key Requirements: ${(ctx.keyRequirements || []).join("; ")}\n` +
       `- Tech Stack / Keywords: ${(ctx.techStack || ctx.keywords || []).join(", ")}\n\n` +
       `CANDIDATE FACTS (USE ONLY THESE REAL FACTS):\n` +
-      `- Portfolio URL: ${portfolioUrl}\n` +
-      `- GitHub URL: ${githubUrl}\n` +
-      `- Civ Robotics (Senior Algorithms Engineer): Built C++, Python, and ROS 2 navigation/localization for autonomous forklifts; solved field localization drift via custom IMU/GPS drivers and tilt-compensation logic.\n` +
-      `- Waymo (Senior SWE, Planning): Engineered onboard C++ motion planning and trajectory decision-making software.\n` +
-      `- Robust.AI (First Roboticist): Architected reactive social navigation stack using behavior trees.\n` +
-      `- Education: MIT CSAIL Ph.D. in Computer Science & EE (robotic manipulation under uncertainty); UC Santa Cruz B.S. in Computer Engineering.\n` +
+      (portfolioUrl ? `- Portfolio URL: ${portfolioUrl}\n` : "") +
+      (githubUrl ? `- GitHub URL: ${githubUrl}\n` : "") +
       `${bioEntry}\n${allFacts}\n\n` +
       `STRICT RULES:\n` +
-      `1. Directly connect Ariel's hands-on robot bring-up, sensor calibration/filtering (IMU/GPS/ROS 2 at Civ Robotics), behavior trees (Robust.AI), and C++/Python motion planning (Waymo, MIT PhD) to ${ctx.organization || "the team"}'s stack.\n` +
-      `2. Explicitly include the portfolio link (${portfolioUrl}) and GitHub (${githubUrl}).\n` +
+      `1. Directly connect the candidate's hands-on experience and education from CANDIDATE FACTS to ${ctx.organization || "the team"}'s stack.\n` +
+      (portfolioUrl ? `2. Explicitly include the portfolio link (${portfolioUrl})${githubUrl ? ` and GitHub (${githubUrl})` : ""}.\n` : "") +
       `3. Keep it under 175 words, concrete, first-person, and free of placeholders.`;
 
     const drafted = await runObservablePrompt(session, prompt, {
@@ -1227,9 +1324,9 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
 
     if (drafted && drafted.trim().length > 40) {
       let cleanText = drafted.trim();
-      // Deterministic Link Guarantee: If Nano omitted the portfolio URL, append a clean link line
-      if (!cleanText.includes("arii.github.io")) {
-        cleanText = `${cleanText}\n\nPortfolio & Projects: ${portfolioUrl} | GitHub: ${githubUrl}`;
+      // Deterministic Link Guarantee: if the vault has a portfolio URL and Nano omitted it, append a clean link line
+      if (portfolioUrl && !cleanText.includes(portfolioUrl)) {
+        cleanText = `${cleanText}\n\nPortfolio & Projects: ${portfolioUrl}` + (githubUrl ? ` | GitHub: ${githubUrl}` : "");
       }
       ctx.preDraftedCoverLetter = cleanText;
       await chrome.storage.local.set({ activeSessionContext: ctx });
@@ -1247,7 +1344,7 @@ async function preDraftTailoredCoverLetter(ctx, vault) {
 function normalizeForDedup(str) {
   return String(str || "")
     .toLowerCase()
-    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so "www.linkedin.com/in/ariel-anders" matches "https://www.linkedin.com/in/arielanders"
+    .replace(/^https?:\/\/(www\.)?/, "") // Strip protocol + www so URL variants dedupe together
     .replace(/[^a-z0-9]/g, "");
 }
 
@@ -1383,7 +1480,7 @@ Text Content:
 Respond ONLY with a JSON object in this format:
 {
   "role": "Title of the job, grant, or opportunity (e.g. Senior Software Engineer)",
-  "organization": "Company or organization name (e.g. OpenMind, Waymo)",
+  "organization": "Company or organization name (e.g. Acme Robotics)",
   "keyRequirements": ["requirement 1", "requirement 2"],
   "techStack": ["tech 1", "tech 2"],
   "missionSummary": "1-2 sentence overview of what the company/team does and what they need."
@@ -1525,5 +1622,6 @@ async function init() {
   renderVault();
   renderObserverQueue();
   renderSessionContext();
+  renderObserverDomainToggle();
 }
 init();
