@@ -2,8 +2,10 @@
 name: shared_browser_access
 description: How to drive the shared headed browser: Grid session lifecycle, CDP endpoint, single-slot discipline, persistent profiles, and the human stream URL.
 trigger_nodes:
-  - visual_interaction_node
-  - td_impact_and_visual_node
+  - intent_explain
+  - intent_fix
+  - intent_implement
+  - intent_review
 ---
 # Skill: Shared Headed Browser Access
 
