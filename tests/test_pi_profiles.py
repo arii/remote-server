@@ -15,7 +15,9 @@ class TestPiProfiles(unittest.TestCase):
         scripts = ["pi-code", "pi-review", "pi-triage"]
         for name in scripts:
             script_path = os.path.join(self.bin_dir, name)
-            self.assertTrue(os.path.isfile(script_path), f"{name} must exist in terminal/bin/")
+            self.assertTrue(
+                os.path.isfile(script_path), f"{name} must exist in terminal/bin/"
+            )
             mode = os.stat(script_path).st_mode
             self.assertTrue(bool(mode & stat.S_IXUSR), f"{name} must be executable")
 
@@ -84,28 +86,47 @@ class TestPiProfiles(unittest.TestCase):
         self.assertEqual(exposure.get("*.*"), "hidden")
         # Removed tools stay out (#1105: never existed on the live
         # surface, or dropped by the td worktree split).
-        for tool in ("github_get_pr_diff", "github_search_open_prs",
-                     "github_comment_triage_summary",
-                     "repo_get_changed_files", "td_init_and_rag",
-                     "worktree_create", "worktree_list",
-                     "worktree_remove"):
+        for tool in (
+            "github_get_pr_diff",
+            "github_search_open_prs",
+            "github_comment_triage_summary",
+            "repo_get_changed_files",
+            "td_init_and_rag",
+            "worktree_create",
+            "worktree_list",
+            "worktree_remove",
+        ):
             self.assertNotIn(tool, exposure, tool)
         # The 8 names retired by the 2026-11 surface consolidation
         # (boomtick PR #1259) stay out of the allowlist: they now
         # return "Tool not found".
-        for tool in ("boomtick_health", "repo_read_agent_context",
-                     "repo_read_ci_logs", "repo_run_tests",
-                     "github_get_pr", "github_issue_view",
-                     "github_issue_update", "github_issue_comment"):
+        for tool in (
+            "boomtick_health",
+            "repo_read_agent_context",
+            "repo_read_ci_logs",
+            "repo_run_tests",
+            "github_get_pr",
+            "github_issue_view",
+            "github_issue_update",
+            "github_issue_comment",
+        ):
             self.assertNotIn(tool, exposure, tool)
         # The 11-tool live surface (post boomtick PR #1259) stays
         # directly callable: the wildcard hides everything not listed
         # here.
-        for tool in ("repo_context", "repo_test",
-                     "github_pr", "github_issue",
-                     "github_create_issue", "agent_submit_pr",
-                     "td_init", "td_rag", "td_validate_issue",
-                     "td_verify_scope", "td_audit_worktree"):
+        for tool in (
+            "repo_context",
+            "repo_test",
+            "github_pr",
+            "github_issue",
+            "github_create_issue",
+            "agent_submit_pr",
+            "td_init",
+            "td_rag",
+            "td_validate_issue",
+            "td_verify_scope",
+            "td_audit_worktree",
+        ):
             self.assertEqual(exposure.get(tool), "direct", tool)
 
     def test_docs_describe_tool_profiles_and_benchmarks(self):
