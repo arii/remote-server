@@ -11,11 +11,11 @@ export interface PaletteCommand {
   run: () => void;
 }
 
-type PaletteTab = 'now' | 'chat' | 'briefing' | 'history';
+type PaletteTab = 'now' | 'chat' | 'history';
 
 export interface CommandContext {
   go: (tab: PaletteTab) => void;
-  openSection: (section: 'review' | 'jobs' | 'queue') => void;
+  openSection: (section: 'review' | 'jobs' | 'queue' | 'briefing') => void;
   reportBug: () => void;
   focusChat: () => void;
   refreshBriefing: () => void;
@@ -59,7 +59,7 @@ export function buildCommands(ctx: CommandContext): PaletteCommand[] {
   const base: PaletteCommand[] = [
     { id: 'go-now', label: 'Go to Now', hint: 'Navigate', keywords: 'triage inbox attention', run: () => ctx.go('now') },
     { id: 'go-chat', label: 'Go to Chat', hint: 'Navigate', keywords: 'agent ask prompt', run: () => ctx.go('chat') },
-    { id: 'go-briefing', label: 'Go to Briefing', hint: 'Navigate', keywords: 'digest summary', run: () => ctx.go('briefing') },
+    { id: 'go-briefing', label: 'Go to Briefing', hint: 'Navigate', keywords: 'digest summary', run: () => ctx.openSection('briefing') },
     { id: 'go-history', label: 'Go to History', hint: 'Navigate', keywords: 'trail ledger past runs', run: () => ctx.go('history') },
     { id: 'open-review', label: 'Open Review section', hint: 'Now', keywords: 'prs issues merge pr status', run: () => ctx.openSection('review') },
     { id: 'open-jobs', label: 'Open Jobs section', hint: 'Now', keywords: 'runs repair dispatch', run: () => ctx.openSection('jobs') },

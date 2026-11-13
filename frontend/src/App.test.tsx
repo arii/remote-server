@@ -963,9 +963,13 @@ describe('merge relevance', () => {
 });
 
 describe('app', () => {
-  it('App renders Now nav, one repo readout, and Now loading state', () => {
+  it('App opens on the conversation with the status strip (D5 chat-first)', () => {
     const html = renderToStaticMarkup(<App />);
-    expect(html).toContain('data-testid="now-loading"');
+    // Chat-first home: the conversation mounts by default; Now's
+    // loading state does not exist until the operator navigates.
+    expect(html).toContain('data-testid="chat-view"');
+    expect(html).not.toContain('data-testid="now-loading"');
+    expect(html).toContain('data-testid="status-strip"');
     expect(html).toContain('data-testid="repo-picker"');
     expect(html).toContain('for="repo-picker"');
     expect(html).not.toContain('data-testid="repo-chip"');
@@ -1030,28 +1034,23 @@ describe('app', () => {
     expect(html).toContain('data-testid="nav-browser"');
   });
 
-  it('navPressed lights exactly the visible destination (issue #896)', () => {
+  it('navPressed lights exactly the visible destination (D5)', () => {
     const entry = (id: string) => NAV_ENTRIES.find((e) => e.id === id)!;
-    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['now', 'chat', 'briefing', 'history', 'browser', 'review', 'jobs', 'queue']);
-    // Tabs light on tab match.
+    expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['chat', 'now', 'history', 'browser', 'review', 'jobs', 'queue', 'briefing']);
+    // Tabs light on tab match — Now no longer yields to sections,
+    // which live in the triage drawer now.
     expect(navPressed('chat', null, entry('chat'))).toBe(true);
     expect(navPressed('browser', null, entry('browser'))).toBe(true);
     expect(navPressed('browser', null, entry('chat'))).toBe(false);
     expect(navPressed('chat', null, entry('now'))).toBe(false);
-    expect(navPressed('briefing', null, entry('briefing'))).toBe(true);
-    // Now yields to an open section entry.
     expect(navPressed('now', null, entry('now'))).toBe(true);
-    expect(navPressed('now', 'review', entry('now'))).toBe(false);
-    expect(navPressed('now', 'review', entry('review'))).toBe(true);
+    // Section entries light while the triage drawer holds them,
+    // on any tab (the drawer overlays) — Briefing included.
+    expect(navPressed('chat', 'briefing', entry('briefing'))).toBe(true);
+    expect(navPressed('chat', 'review', entry('review'))).toBe(true);
     expect(navPressed('now', 'jobs', entry('jobs'))).toBe(true);
-    expect(navPressed('now', 'jobs', entry('review'))).toBe(false);
-    // Queue has its own entry since #930: Now yields to it too.
-    expect(navPressed('now', 'queue', entry('now'))).toBe(false);
-    expect(navPressed('now', 'queue', entry('queue'))).toBe(true);
-    expect(navPressed('now', null, entry('queue'))).toBe(false);
-    // Section entries never light off the Now tab.
-    expect(navPressed('chat', 'review', entry('review'))).toBe(false);
-    expect(navPressed('chat', 'queue', entry('queue'))).toBe(false);
+    expect(navPressed('chat', 'jobs', entry('review'))).toBe(false);
+    expect(navPressed('chat', null, entry('queue'))).toBe(false);
   });
 });
 

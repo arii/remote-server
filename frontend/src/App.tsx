@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import NowView from './views/NowView';
 import ChatView from './views/ChatView';
-import BriefingView from './views/BriefingView';
 import HistoryView, { type HistoryFilterRequest } from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
+import { stripHealthState } from './components/StatusStrip';
 import SyncBanner from './components/SyncBanner';
+import type { TriageSection } from './views/TriageDrawer';
 import SessionBanner from './components/SessionBanner';
 
 // Bottom-bar auto-hide (issue #1033): pure scroll state so the
@@ -84,6 +85,7 @@ import RepoDiffModal from './views/RepoDiffModal';
 import type { RepoDiffData } from './views/RepoDiffModal';
 import ContainerDrawer, { mergeStatsRows, restartActionFor, serviceRestartable, statsRowsFromHealth } from './views/ContainerDrawer';
 import ContainerLogsDrawer from './views/ContainerLogsDrawer';
+import TriageDrawer from './views/TriageDrawer';
 import BrowserView from './views/BrowserView';
 import { dangerEntryFor } from './views/DangerZone';
 import { clickChatSend, useAppShortcuts } from './shortcuts';
@@ -127,7 +129,7 @@ function healthSummary(health: SystemHealthResponse | null): string {
   return `Status: ${up}/${health.containers.length} containers up`;
 }
 
-export type Tab = 'now' | 'chat' | 'briefing' | 'history' | 'browser';
+export type Tab = 'now' | 'chat' | 'history' | 'browser';
 
 // Cross-reload nav memory (bug 3 of the 2026-11-02 functional
 // review): the picked repo and open tab survive a reload, so a
@@ -144,7 +146,7 @@ export interface NavMemory {
   tab: Tab;
 }
 
-const NAV_MEMORY_TABS: readonly Tab[] = ['now', 'chat', 'briefing', 'history', 'browser'];
+const NAV_MEMORY_TABS: readonly Tab[] = ['now', 'chat', 'history', 'browser'];
 
 export function loadNavMemory(): NavMemory | null {
   try {
@@ -172,38 +174,31 @@ export function saveNavMemory(memory: NavMemory): void {
   }
 }
 
-// Persistent console nav (#896): one bar, seven destinations. Review,
-// Jobs, and Queue live inside Now as sections (not routes); the nav
-// reaches them through the palette's section-request path. Queue
-// joined the bar in #930 (it was orphaned: reachable only from the
-// duplicate toggle row that issue removed).
+// Persistent console nav (#896): one bar, seven destinations. The
+// chat-first shell (D5) moves Review/Jobs/Queue into the triage
+// drawer behind the StatusStrip tap — the section entries open that
+// drawer, they no longer route into Now.
 export type NavEntry =
   | { kind: 'tab'; id: Tab; label: string; key: string }
-  | { kind: 'section'; id: 'review' | 'jobs' | 'queue'; label: string };
+  | { kind: 'section'; id: 'review' | 'jobs' | 'queue' | 'briefing'; label: string };
 
 export const NAV_ENTRIES: NavEntry[] = [
-  { kind: 'tab', id: 'now', label: 'Now', key: '1' },
-  { kind: 'tab', id: 'chat', label: 'Chat', key: '2' },
-  { kind: 'tab', id: 'briefing', label: 'Briefing', key: '3' },
-  { kind: 'tab', id: 'history', label: 'History', key: '4' },
-  { kind: 'tab', id: 'browser', label: 'Browser', key: '5' },
+  { kind: 'tab', id: 'chat', label: 'Chat', key: '1' },
+  { kind: 'tab', id: 'now', label: 'Now', key: '2' },
+  { kind: 'tab', id: 'history', label: 'History', key: '3' },
+  { kind: 'tab', id: 'browser', label: 'Browser', key: '4' },
   { kind: 'section', id: 'review', label: 'Review' },
   { kind: 'section', id: 'jobs', label: 'Jobs' },
   { kind: 'section', id: 'queue', label: 'Queue' },
+  { kind: 'section', id: 'briefing', label: 'Briefing' },
 ];
 
-export type NowSection = 'review' | 'jobs' | 'queue' | null;
-
-// Pressed rule for the unified nav: tabs light on tab match, except
-// Now yields to an open section entry; Now stays lit for the inbox
-// only (every section has an entry since #930).
-export function navPressed(tab: Tab, section: NowSection, entry: NavEntry): boolean {
-  if (entry.kind === 'tab') {
-    if (tab !== entry.id) return false;
-    if (entry.id !== 'now') return true;
-    return section !== 'review' && section !== 'jobs' && section !== 'queue';
-  }
-  return tab === 'now' && section === entry.id;
+// Pressed rule for the unified nav: tabs light on tab match;
+// section entries light while the triage drawer holds that section
+// (drawer closed passes null).
+export function navPressed(tab: Tab, section: TriageSection | null, entry: NavEntry): boolean {
+  if (entry.kind === 'tab') return tab === entry.id;
+  return section === entry.id;
 }
 
 // One shell nav button, shared by the top tab bar and the bottom
@@ -248,9 +243,10 @@ const FALLBACK_REPOS: RepoInfo[] = [
   { name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: true },
 ];
 
-// Rollup guard (issue #610): Chat/Briefing/History are per-repo
+// Rollup guard (issue #610): Chat/History are per-repo
 // views with no `repo=all` API; prompt for a repo instead of
-// firing per-repo fetches at a pseudo-repo.
+// firing per-repo fetches at a pseudo-repo. (Briefing moved into
+// the triage drawer in D5, which hides its section on rollup.)
 export function RollupGate({ view }: { view: string }) {
   return (
     <section data-testid="rollup-gate" role="status">
@@ -264,8 +260,10 @@ export function RollupGate({ view }: { view: string }) {
 export default function App() {
   // Boot memory (bug 3): one read per mount seeds both restored
   // states — last-used repo (bug 4's "last-used" half) and tab.
+  // Chat-first home (D5): the console opens on the conversation;
+  // a stored tab wins, an unknown one falls back to chat.
   const [bootMemory] = useState(() => loadNavMemory());
-  const [tab, setTab] = useState<Tab>(bootMemory?.tab ?? 'now');
+  const [tab, setTab] = useState<Tab>(bootMemory?.tab ?? 'chat');
   const [repos, setRepos] = useState<RepoInfo[]>(FALLBACK_REPOS);
   const [repo, setRepo] = useState(bootMemory?.repo ?? 'remote-server');
   const [health, setHealth] = useState<SystemHealthResponse | null>(null);
@@ -335,14 +333,16 @@ export default function App() {
   // cross-view request, so a command lands even when its view is
   // already mounted (or mounts fresh on the tab switch).
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [sectionRequest, setSectionRequest] = useState<{
-    section: 'review' | 'jobs' | 'queue' | null;
-    nonce: number;
-    tdCommand?: string;
-  } | null>(null);
-  // Open Now section mirrored up from NowView (#896): drives the
-  // nav pressed state for the Review/Jobs entries.
-  const [nowSection, setNowSection] = useState<NowSection>(null);
+  // Triage drawer (D5): where Review/Jobs/Queue live now — one
+  // open flag plus the mounted section. The drawer mounts fresh
+  // per open, so section switches need no nonce plumbing.
+  const [triageOpen, setTriageOpen] = useState(false);
+  const [triageSection, setTriageSection] = useState<TriageSection | null>('review');
+  // Palette-dispatched td command (#1057): handed to the drawer's
+  // Jobs view; consumed (dropped) once Jobs has it. The ref mints
+  // fresh nonces per dispatch.
+  const [pendingTd, setPendingTd] = useState<{ command: string; nonce: number } | null>(null);
+  const tdNonce = useRef(0);
   const [reportRequest, setReportRequest] = useState(0);
   const [chatFocusRequest, setChatFocusRequest] = useState(0);
   const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
@@ -363,7 +363,7 @@ export default function App() {
   // subscription, so the chord can never double-fire.
   const [helpOpen, setHelpOpen] = useState(false);
   useAppShortcuts({
-    suspended: diffRepo !== null || statsOpen,
+    suspended: diffRepo !== null || statsOpen || triageOpen,
     helpOpen,
     onTab: setTab,
     onSend: () => clickChatSend(),
@@ -377,12 +377,6 @@ export default function App() {
     setTab('chat');
   }
 
-  // Leaving Now unmounts it (its section resets to the inbox on
-  // return); mirror that here so the pressed state never goes stale.
-  useEffect(() => {
-    if (tab !== 'now') setNowSection(null);
-  }, [tab]);
-
   // Report-a-bug (#961): same path as the palette command —
   // land on Now first so the report dialog's nonce effect fires.
   function reportBugNow() {
@@ -390,25 +384,25 @@ export default function App() {
     setReportRequest((n) => n + 1);
   }
 
-  // Unified nav handler (#896): tabs switch; Now also closes any
-  // open section (inbox home); Review/Jobs ride the section-request
-  // path like their palette commands.
+  // Unified nav handler (D5): tabs switch; Review/Jobs/Queue open
+  // the triage drawer on that section.
   function goNav(entry: NavEntry) {
-    if (entry.kind === 'tab' && entry.id !== 'now') {
+    if (entry.kind === 'tab') {
       setTab(entry.id);
       return;
     }
-    setTab('now');
-    const section = entry.kind === 'section' ? entry.id : null;
-    setSectionRequest((r) => ({ section, nonce: (r?.nonce ?? 0) + 1 }));
+    setTriageOpen(true);
+    setTriageSection(entry.id);
   }
 
   const commands = useMemo(
     () =>
       buildCommands({
         go: (t) => setTab(t),
-        openSection: (s) =>
-          setSectionRequest((r) => ({ section: s, nonce: (r?.nonce ?? 0) + 1 })),
+        openSection: (s) => {
+          setTriageOpen(true);
+          setTriageSection(s);
+        },
         reportBug: () => setReportRequest((n) => n + 1),
         focusChat: () => setChatFocusRequest((n) => n + 1),
         refreshBriefing: () => setBriefingReloadRequest((n) => n + 1),
@@ -420,11 +414,15 @@ export default function App() {
           window.location.href = url;
         },
         // Doctor/Preflight from anywhere (#1016, #1057): hand the
-        // command to the Jobs section so it launches through the same
-        // progress/notice path as the Jobs buttons. Nothing runs here;
-        // a failed dispatch surfaces in Jobs with visible errors.
+        // command to the triage drawer's Jobs section so it launches
+        // through the same progress/notice path as the Jobs buttons.
+        // Nothing runs here; a failed dispatch surfaces in Jobs
+        // with visible errors.
         runCheck: (command) => {
-          setSectionRequest((r) => ({ section: 'jobs', nonce: (r?.nonce ?? 0) + 1, tdCommand: command }));
+          tdNonce.current += 1;
+          setPendingTd({ command, nonce: tdNonce.current });
+          setTriageOpen(true);
+          setTriageSection('jobs');
         },
         terminalUrl: `${stackBase()}/`,
         codeUrl: `${stackBase()}/code`,
@@ -437,19 +435,29 @@ export default function App() {
   function runCommand(cmd: PaletteCommand) {
     setPaletteOpen(false);
     // Section/report/chat/briefing commands navigate first: the nonce
-    // effects in the target view fire on the tab switch.
+    // effects in the target view fire on the tab switch. Review/
+    // Jobs/Queue land in the triage drawer (D5); report-bug still
+    // needs the Now tab (its dialog lives there).
     if (
       cmd.id === 'open-review' ||
       cmd.id === 'open-jobs' ||
-      cmd.id === 'open-queue' ||
-      cmd.id === 'report-bug' ||
-      cmd.id === 'new-issue'
+      cmd.id === 'open-queue'
     ) {
+      setTriageOpen(true);
+      setTriageSection(cmd.id === 'open-review' ? 'review' : cmd.id === 'open-jobs' ? 'jobs' : 'queue');
+    } else if (cmd.id === 'new-issue') {
+      setTriageOpen(true);
+      setTriageSection('review');
+    } else if (cmd.id === 'report-bug') {
       setTab('now');
     } else if (cmd.id === 'focus-chat') {
       setTab('chat');
     } else if (cmd.id === 'refresh-briefing') {
-      setTab('briefing');
+      // Briefing lives in the triage drawer now (D5): open it on
+      // the Briefing section and bump the reload nonce.
+      setTriageOpen(true);
+      setTriageSection('briefing');
+      setBriefingReloadRequest((n) => n + 1);
     }
     cmd.run();
   }
@@ -812,11 +820,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo]);
 
-  // Keep-alive tabs (issue #897): Briefing + History mount on
-  // first visit and stay mounted hidden afterwards, so warm
+  // Keep-alive tabs (issue #897): History mounts on
+  // first visit and stays mounted hidden afterwards, so warm
   // switches render with zero remount and zero network. Now keeps
   // remounting (its section resets to the inbox on return); Chat
   // keeps remounting (#573 persistence restores the conversation).
+  // Briefing lives in the triage drawer since D5, which mounts
+  // its section fresh per visit.
   const [seenTabs, setSeenTabs] = useState<Set<string>>(() => new Set(['now']));
   useEffect(() => {
     setSeenTabs((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
@@ -870,7 +880,7 @@ export default function App() {
             <ShellNavButton
               key={t.id}
               entry={t}
-              pressed={navPressed(tab, nowSection, t)}
+              pressed={navPressed(tab, triageOpen ? triageSection : null, t)}
               badge={navBadge(t.id, badgeCounts)}
               onGo={() => goNav(t)}
             />
@@ -931,6 +941,30 @@ export default function App() {
           onClose={closeStats}
         />
       )}
+      {triageOpen && triageSection !== null && (
+        <TriageDrawer
+          open
+          section={triageSection}
+          onSectionChange={setTriageSection}
+          onClose={() => setTriageOpen(false)}
+          repo={repo}
+          defaultBranch={repos.find((r) => r.name === repo)?.branch}
+          onAskAgent={(seed) => askAgent(seed)}
+          onOpenChat={() => {
+            setTriageOpen(false);
+            setTab('chat');
+          }}
+          createRequest={createRequest}
+          pendingTdCommand={pendingTd}
+          onPendingTdHandled={() => setPendingTd(null)}
+          badgeCounts={badgeCounts}
+          onOpenHistory={() => {
+            setTriageOpen(false);
+            setTab('history');
+          }}
+          reloadRequest={briefingReloadRequest}
+        />
+      )}
       {seenTabs.has('browser') && (
         <div hidden={tab !== 'browser'} data-testid="keepalive-browser">
           <BrowserView
@@ -964,20 +998,29 @@ export default function App() {
       {tab === 'now' && (
         <NowView
           repo={repo}
-          defaultBranch={repos.find((r) => r.name === repo)?.branch}
           repos={repos}
           health={health}
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}
-          onOpenTab={(t) => setTab(t)}
+          onOpenTab={(t) => {
+            // Briefing is a drawer section now (D5): the attention
+            // rows' briefing hop lands in the triage drawer.
+            if (t === 'briefing') {
+              setTriageOpen(true);
+              setTriageSection('briefing');
+            } else {
+              setTab(t);
+            }
+          }}
           onOpenHistoryQuery={(q) => {
             setHistoryQueryRequest((r) => ({ query: q, nonce: (r?.nonce ?? 0) + 1 }));
             setTab('history');
           }}
-          sectionRequest={sectionRequest}
           reportRequest={reportRequest}
-          createRequest={createRequest}
-          onSectionChange={setNowSection}
+          onOpenSection={(s) => {
+            setTriageOpen(true);
+            setTriageSection(s);
+          }}
           onOpenStats={openStats}
           onViewDiff={(name) => setDiffRepo(name)}
           onRepoAction={(name, action) => onRepoActionFor(name, action)}
@@ -995,24 +1038,18 @@ export default function App() {
             onSeedUsed={() => setChatSeed(null)}
             focusRequest={chatFocusRequest}
             onOpenDiff={() => setDiffRepo(repo)}
+            statusStrip={{
+              state: stripHealthState(health),
+              label: healthSummary(health),
+              attentionCount: badgeCounts.now,
+              openPrCount: badgeCounts.review,
+              onOpenTriage: () => {
+                setTriageOpen(true);
+                setTriageSection((s) => s ?? 'review');
+              },
+            }}
           />
         ))}
-      {tab === 'briefing' && isRollupRepo(repo) && <RollupGate view="Briefing" />}
-      {seenTabs.has('briefing') && !isRollupRepo(repo) && (
-        <div hidden={tab !== 'briefing'} data-testid="keepalive-briefing">
-          <BriefingView
-            repo={repo}
-            onAskAgent={askAgent}
-            onOpenHistory={() => setTab('history')}
-            onOpenReview={() => {
-              setTab('now');
-              setSectionRequest((r) => ({ section: 'review', nonce: (r?.nonce ?? 0) + 1 }));
-            }}
-            reloadRequest={briefingReloadRequest}
-            active={tab === 'briefing'}
-          />
-        </div>
-      )}
       {tab === 'history' && isRollupRepo(repo) && <RollupGate view="History" />}
       {seenTabs.has('history') && !isRollupRepo(repo) && (
         <div hidden={tab !== 'history'} data-testid="keepalive-history">
@@ -1034,7 +1071,7 @@ export default function App() {
           <ShellNavButton
             key={t.id}
             entry={t}
-            pressed={navPressed(tab, nowSection, t)}
+            pressed={navPressed(tab, triageOpen ? triageSection : null, t)}
             badge={navBadge(t.id, badgeCounts)}
             onGo={() => goNav(t)}
           />
