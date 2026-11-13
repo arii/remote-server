@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalForm AI — Side Panel</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <!-- HEADER -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div class="brand-title">LocalForm AI</div>
+      </div>
+    </div>
+    <div id="ai-status-badge" class="badge badge-downloadable">
+      <span class="dot">●</span>
+      <span id="ai-status-text">Checking AI...</span>
+    </div>
+  </header>
+
+  <!-- Global Live Activity & Token Bar (Sticky below header) -->
+  <div id="ux-activity-bar" style="display:none; background:#0f172a; border-bottom:1px solid #3b82f6; padding:8px 12px; font-size:11px; margin:-12px -12px 12px -12px; position:sticky; top:0; z-index:100;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span class="lf-spinner"></span>
+        <strong id="ux-stage-label" style="color:#93c5fd;">Initializing...</strong>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <span id="ux-elapsed-timer" style="font-family:monospace; color:#38bdf8;">0.0s</span>
+        <button id="btn-abort-ai" class="btn btn-danger" style="width:auto; padding:1px 6px; font-size:10px; margin:0;">Abort</button>
+      </div>
+    </div>
+    <!-- Progress Bar Track -->
+    <div style="width:100%; height:4px; background:#1e293b; border-radius:2px; overflow:hidden;">
+      <div id="ux-progress-fill" style="width:15%; height:100%; background:linear-gradient(90deg, #3b82f6, #10b981); transition:width 0.2s ease;"></div>
+    </div>
+    <div id="ux-stream-preview" style="font-family:monospace; font-size:10px; color:#94a3b8; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+  </div>
+
+  <!-- NAVIGATION TABS -->
+  <nav class="nav">
+    <button data-tab="tab-ai" class="active">
+      <span>AI Model</span>
+    </button>
+    <button data-tab="tab-export">
+      <span>Export</span>
+    </button>
+    <button data-tab="tab-fill">
+      <span>Auto-Fill</span>
+    </button>
+    <button data-tab="tab-vault">
+      <span>Vault</span>
+    </button>
+    <button data-tab="tab-observer">
+      <span id="tab-observer-label">Observer</span>
+    </button>
+  </nav>
+
+  <!-- TAB 1: AI MODEL BOOTSTRAPPER (PHASE 1) -->
+  <main id="tab-ai" class="tab-pane">
+    <div class="card">
+      <div class="card-title">Chrome Built-in AI (Gemini Nano)</div>
+      <div class="card-desc">
+        Runs 100% on-device via Chrome's native Prompt and Summarizer APIs. No external API keys or cloud calls required.
+      </div>
+
+      <div class="status-grid">
+        <div class="status-pill">
+          <div class="label">Prompt API</div>
+          <div id="pill-prompt-status" class="val">...</div>
+        </div>
+        <div class="status-pill">
+          <div class="label">Summarizer</div>
+          <div id="pill-summarizer-status" class="val">...</div>
+        </div>
+        <div class="status-pill">
+          <div class="label">Writer API</div>
+          <div id="pill-writer-status" class="val">...</div>
+        </div>
+      </div>
+
+      <div id="download-progress-container" style="display: none;">
+        <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted);">
+          <span>Downloading Gemini Nano Weights</span>
+          <span id="download-progress-text">0%</span>
+        </div>
+        <div class="progress-bar-container">
+          <div id="download-progress-fill" class="progress-bar" style="width: 0%;"></div>
+        </div>
+      </div>
+
+      <button id="btn-bootstrap-model" class="btn btn-primary">
+        Initialize / Download Built-in Models
+      </button>
+
+      <pre id="model-details-box">Checking capabilities...</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Prompt API Diagnostic Sandbox</div>
+      <textarea id="sandbox-prompt-input" rows="2" placeholder="Ask on-device Gemini Nano a test question...">Why is local on-device form autofill safer for privacy?</textarea>
+      <div class="btn-row">
+        <button id="btn-run-sandbox" class="btn btn-secondary">Run Test Prompt</button>
+      </div>
+      <pre id="sandbox-response-box" style="display: none;"></pre>
+    </div>
+  </main>
+
+  <!-- TAB 2: FORM-EXPORT & FORM-EXPORT++ (PHASES 2 & 4) -->
+  <main id="tab-export" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Form-Export (v1 & v2)</div>
+      <div class="card-desc">
+        Extracts all form inputs on the active tab into a portable JSON schema with labels, CSS selectors, constraints, and hierarchy.
+      </div>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="chk-export-plus" checked style="width:auto;" />
+        <span><strong>Enable Form-Export++ (v2):</strong> Include page context, heading hierarchy & AI Summarizer digest</span>
+      </label>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px; cursor:pointer;">
+        <input type="checkbox" id="chk-include-values" checked style="width:auto;" />
+        <span>Include currently typed input values in schema</span>
+      </label>
+
+      <button id="btn-scan-page" class="btn btn-primary">
+        Scan Active Tab Forms
+      </button>
+
+      <div class="btn-row" id="export-actions-row" style="display: none;">
+        <button id="btn-download-export-json" class="btn btn-secondary">
+          Download .JSON File
+        </button>
+        <button id="btn-copy-export-json" class="btn btn-subtle">
+          Copy to Clipboard
+        </button>
+      </div>
+
+      <button id="btn-run-ux-audit" class="btn btn-subtle btn-sm" style="margin-top:8px;">
+        🔍 Run UX & Touch Target Audit (Phase 8)
+      </button>
+
+      <pre id="export-preview-box">Click "Scan Active Tab Forms" to inspect schema...</pre>
+    </div>
+  </main>
+
+  <!-- TAB 3: AUTO-FILL & MANUAL IMPORT (PHASES 3 & 6) -->
+  <main id="tab-fill" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Phase 6: Form-Import++ (1-Click AI Auto-Fill)</div>
+      <div class="card-desc">
+        Scans the page in memory, resolves fields against your User-Context Vault and active Target Context using local Gemini Nano, and populates the form.
+      </div>
+
+      <!-- Active Target Context Indicator in Auto-Fill Tab -->
+      <div id="autofill-target-context-card" style="display:none; border:1px solid #3b82f6; border-radius:6px; background:rgba(30,58,138,0.18); padding:8px 10px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:600; font-size:11px; color:#93c5fd;">🎯 Grounded with Target Context</span>
+          <span id="autofill-target-role" style="color:#e2e8f0; font-size:10.5px; font-weight:600;"></span>
+        </div>
+        <div id="autofill-target-desc" style="color:var(--text-muted); font-size:10px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+      </div>
+
+      <!-- Consent Checkbox Control -->
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:10px; cursor:pointer; font-size:11px; color:#cbd5e1;">
+        <input type="checkbox" id="chk-agree-consent" checked style="width:auto;" />
+        <span>Auto-check "I agree to terms & privacy policy" checkboxes</span>
+      </label>
+
+      <button id="btn-autofill-now" class="btn btn-primary">
+        ✨ Auto-Fill Active Form with AI
+      </button>
+
+      <pre id="autofill-status-box">Ready to fill active form.</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 3: Manual Form-Import (JSON)</div>
+      <div class="card-desc">
+        Load an exported .json schema file to populate matching fields via React-safe native setters.
+      </div>
+
+      <input type="file" id="file-import-input" accept=".json" style="margin-bottom: 8px;" />
+      <button id="btn-run-manual-import" class="btn btn-subtle">
+        Populate Form from Selected File
+      </button>
+    </div>
+  </main>
+
+  <!-- TAB 4: USER-CONTEXT VAULT (PHASE 5) -->
+  <main id="tab-vault" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">
+        <span>User-Context Vault</span>
+        <span id="vault-count-badge" class="badge badge-available">0 entries</span>
+      </div>
+      <div class="card-desc">
+        Your transparent, private on-device facts and recurring application answers.
+      </div>
+
+      <div class="filter-bar">
+        <input type="text" id="vault-search-input" placeholder="Search keys, values, or tags..." />
+        <select id="vault-category-filter" style="width: 110px;">
+          <option value="all">All</option>
+          <option value="identity">Identity</option>
+          <option value="contact">Contact</option>
+          <option value="location">Location</option>
+          <option value="professional">Professional</option>
+          <option value="social">Social</option>
+          <option value="preferences">Preferences</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+
+      <div id="vault-entries-container" style="max-height: 260px; overflow-y: auto; margin-bottom: 10px;"></div>
+
+      <div class="btn-row">
+        <button id="btn-export-vault" class="btn btn-subtle btn-sm">Export Vault JSON</button>
+        <button id="btn-import-vault-trigger" class="btn btn-subtle btn-sm">Import Vault JSON</button>
+        <input type="file" id="file-import-vault" accept=".json" style="display:none;" />
+      </div>
+    </div>
+
+    <!-- ADD NEW FACT CARD -->
+    <div class="card">
+      <div class="card-title">+ Add New Fact to Vault</div>
+      <div style="display:grid; grid-template-columns: 1fr 100px; gap: 6px; margin-bottom: 6px;">
+        <input type="text" id="new-fact-key" placeholder="Key (e.g., Portfolio URL)" />
+        <select id="new-fact-category">
+          <option value="custom">Custom</option>
+          <option value="identity">Identity</option>
+          <option value="contact">Contact</option>
+          <option value="location">Location</option>
+          <option value="professional">Professional</option>
+          <option value="social">Social</option>
+          <option value="preferences">Preferences</option>
+        </select>
+      </div>
+      <input type="text" id="new-fact-value" placeholder="Value (e.g., https://example.com)" style="margin-bottom: 8px;" />
+      <button id="btn-add-fact" class="btn btn-secondary">Save Fact to Vault</button>
+    </div>
+  </main>
+
+  <!-- TAB 5: OBSERVER (PHASE 7) -->
+  <main id="tab-observer" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div class="card-title">Observer — Target Context & Profile Learning</div>
+      <div class="card-desc">
+        Capture job/target context to ground your next application, or extract your own profile facts from your resume/portfolio into the Review Queue.
+      </div>
+
+      <!-- Per-domain opt-in for passive submit observation -->
+      <div style="border:1px solid #1e293b; border-radius:6px; padding:8px 10px; margin-bottom:10px; display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="chk-observer-domain" style="width:auto;" />
+        <label for="chk-observer-domain" style="font-size:11px; color:#cbd5e1; cursor:pointer;">
+          Observe form submits on <strong id="observer-current-domain">this site</strong>
+        </label>
+      </div>
+
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <button class="btn btn-primary" id="btn-capture-target-context" style="flex:1;">
+          🎯 Capture Target / Job Context
+        </button>
+        <button class="btn btn-secondary" id="btn-snapshot-user-facts" style="flex:1;">
+          👤 Extract My Profile Facts
+        </button>
+      </div>
+
+      <!-- Active Target Context Card -->
+      <div class="card" id="session-context-card" style="display:none; border-color:#3b82f6; background:rgba(30,58,138,0.15);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong style="font-size:11px; color:#93c5fd;">🎯 Active Target Context (For Next Form Fill)</strong>
+          <button class="btn btn-danger" id="btn-clear-target-context" style="width:auto; padding:2px 8px; font-size:10px; margin:0;">Clear</button>
+        </div>
+        <div id="session-context-badge" style="margin-top:5px; font-size:10.5px; color:#38bdf8; font-weight:600;"></div>
+        <div id="session-context-summary" style="font-size:11px; color:#cbd5e1; margin-top:6px; white-space:pre-wrap;"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>Review & Merge Queue</span>
+        <span id="observer-queue-count" class="badge badge-downloadable">0 pending</span>
+      </div>
+
+      <div class="btn-row" id="observer-bulk-actions" style="margin-bottom: 10px; display: none;">
+        <button id="btn-approve-all-deltas" class="btn btn-primary btn-sm">Approve All</button>
+        <button id="btn-discard-all-deltas" class="btn btn-danger btn-sm">Discard All</button>
+      </div>
+
+      <div id="observer-deltas-container">
+        <div style="text-align: center; color: var(--text-muted); padding: 16px 0;">
+          No pending fact updates. Snapshot a page or submit a form to learn new facts.
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Persistent Observability & Telemetry Footer Drawer -->
+  <div id="obs-drawer" style="border-top:1px solid #1e293b; background:#090d16; font-size:11px; margin:16px -12px -12px -12px; position:sticky; bottom:0; z-index:90;">
+    <div id="obs-drawer-toggle" style="display:flex; justify-content:space-between; align-items:center; padding:6px 12px; cursor:pointer; user-select:none;">
+      <span style="color:#94a3b8; font-weight:600;">📡 Observability & AI Trace (<span id="obs-log-count">0</span> events)</span>
+      <span id="obs-token-pill" style="font-family:monospace; font-size:10px; color:#64748b;">Tokens: 0 / 9216</span>
+    </div>
+    <div id="obs-drawer-body" style="display:none; max-height:190px; overflow-y:auto; padding:8px 12px; border-top:1px solid #1e293b; font-family:monospace; font-size:10px;">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:4px;">
+        <button id="btn-clear-traces" style="background:none; border:none; color:#64748b; cursor:pointer; font-size:10px;">Clear Logs</button>
+      </div>
+      <div id="obs-trace-list"></div>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

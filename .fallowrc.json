@@ -10,7 +10,8 @@
     ".agents/**",
     ".claude/**",
     ".github/skills/**",
-    "backend/api/routers/vendor/**"
+    "backend/api/routers/vendor/**",
+    "chrome-extension/**"
   ],
   "rules": {
     "unused-export": "warn",
