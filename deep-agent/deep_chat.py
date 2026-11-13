@@ -74,7 +74,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
 
 THREAD_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-MAX_PROMPT = 3000
 # Trace middleware nodes consume budget (~4 steps per tool call,
 # measured); 40 preserves room for ~9 tool calls per turn.
 RECURSION_LIMIT = 40
@@ -94,7 +93,9 @@ BUDGET_SPENT_NUDGE = (
 )
 # Sliding window over checkpoint history, applied at turn start.
 # Checkpoints append indefinitely; without this long threads blow
-# the context window. ~5-10 turns of history.
+# the context window. ~5-10 turns of history. The count is a guard
+# on top of the derived history token share (context_budget), not
+# an independent budget.
 MAX_HISTORY_MESSAGES = 40
 # Tool results carried into the salvage pass after a recursion cutoff.
 SALVAGE_TOOL_TAIL = 12
@@ -865,12 +866,16 @@ def build_model(prefer=None):
     # No-think is the production setting: on this CPU-only box a qwen3
     # thinking trace takes 15+ min per prompt. CHAT_THINK=1 re-enables.
     # Bounded context for the same reason: the default Ollama window
-    # lets long turns blow out CPU latency. OLLAMA_NUM_CTX overrides.
+    # lets long turns blow out CPU latency. The window default lives
+    # in context_budget (16384, matching .env.example) — OLLAMA_NUM_CTX
+    # overrides, and every share derives from this one number.
     think = os.environ.get("CHAT_THINK", "") == "1"
     if spec["provider"] == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402
 
-        kwargs["num_ctx"] = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+        from backend.exec import context_budget  # noqa: E402
+
+        kwargs["num_ctx"] = context_budget.num_ctx()
         if not think:
             kwargs["model_kwargs"] = {"think": False}
         return ChatOllama(**kwargs), spec
@@ -986,6 +991,23 @@ def tool_budget_middleware():
     return ToolBudget()
 
 
+def _check_static_budget(system: str, tools: list):
+    """Static-input budget report at agent build (D2).
+
+    System prompt and tool schemas are fixed per build: a share
+    overage logs to stderr — the schema weight is exactly what D1
+    slims, so visibility beats a bricked turn — while a total that
+    cannot fit the window at all raises, at build time, with the
+    measured numbers instead of failing every turn opaquely."""
+    from backend.exec import context_budget as cb
+
+    warnings, fatal = cb.check_static(system, str(tools))
+    for line in warnings:
+        print(f"context budget: {line}", file=sys.stderr)
+    if fatal:
+        raise RuntimeError(f"context budget: {fatal}")
+
+
 def build_agent(
     repo, checkpointer, model=None, recorder=None, intent_hint=None, spec=None
 ):
@@ -1002,9 +1024,11 @@ def build_agent(
     system = f"Repo: {repo}. " + SYSTEM
     if intent_hint:
         system += " " + intent_hint
+    tools = build_tools(s5tools.checkout_for(repo), impact_tools=True)
+    _check_static_budget(system, tools)
     return create_deep_agent(
         model=model,
-        tools=build_tools(s5tools.checkout_for(repo), impact_tools=True),
+        tools=tools,
         system_prompt=system,
         interrupt_on=dict(INTERRUPT_ON),
         permissions=permissions,
@@ -1032,14 +1056,15 @@ def _message_role(message):
     return "other"
 
 
-def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
-    """Ids to drop from checkpoint history. Pure, no langchain import.
+def history_window(messages, keep=MAX_HISTORY_MESSAGES):
+    """(kept_messages, drop_ids) after the count trim. Pure, no
+    langchain import.
 
     Keeps a leading SystemMessage plus the newest `keep` messages,
     snapped to start at a HumanMessage boundary so a ToolMessage is
-    never orphaned from its AI tool call. Returns [] when within
-    budget or when no safe boundary exists (trim skipped, not forced).
-    """
+    never orphaned from its AI tool call. Returns the list unchanged
+    when within budget or when no safe boundary exists (trim skipped,
+    not forced)."""
     messages = list(messages or [])
     rest = (
         messages[1:]
@@ -1047,27 +1072,87 @@ def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
         else messages
     )
     if len(rest) <= keep:
-        return []
+        return rest, []
     window = rest[-keep:]
     starts = [i for i, m in enumerate(window) if _message_role(m) == "human"]
     if not starts:
-        return []
+        return rest, []
     keep_ids = {id(m) for m in window[starts[0] :]}
-    return [m.id for m in rest if id(m) not in keep_ids and getattr(m, "id", None)]
+    kept = window[starts[0] :]
+    drop_ids = [m.id for m in rest if id(m) not in keep_ids and getattr(m, "id", None)]
+    return kept, drop_ids
+
+
+def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
+    """Ids to drop from checkpoint history. Pure, no langchain import.
+
+    Count trim only; the history token share is carved on top of this
+    by trim_thread_history (D2: one derived context budget)."""
+    return history_window(messages, keep=keep)[1]
+
+
+def _content_text(message):
+    """Message content as str (multimodal content str()-ed)."""
+    return str(getattr(message, "content", "") or "")
+
+
+def _history_token_drops(kept):
+    """Extra drop ids so the kept window fits the history token share.
+
+    Groups are human-boundary turns (history_window already snapped
+    the window to one), dropped oldest-first via the budget module's
+    pure arithmetic. Raises ContextBudgetError when even the newest
+    turn alone exceeds the share — the turn fails loudly with the
+    reason, never silently squeezed mid-conversation (D2)."""
+    from backend.exec import context_budget as cb
+
+    if not kept:
+        return []
+    groups: list[list] = []
+    for m in kept:
+        if _message_role(m) == "human" or not groups:
+            groups.append([m])
+        else:
+            groups[-1].append(m)
+    group_tokens = [
+        sum(cb.token_estimate(_content_text(m)) for m in group) for group in groups
+    ]
+    budget = cb.derive_budget()["history"]
+    drop_n, fits = cb.plan_group_trim(group_tokens, budget)
+    if not fits:
+        raise cb.ContextBudgetError(
+            "history", group_tokens[-1], budget, ctx=cb.num_ctx()
+        )
+    return [m.id for group in groups[:drop_n] for m in group if getattr(m, "id", None)]
+
+
+def _remove_message(mid):
+    """One checkpoint removal (langchain import stays lazy: stdlib-only
+    at module import). Test seam: patch to inspect update payloads."""
+    from langchain_core.messages import RemoveMessage  # noqa: E402
+
+    return RemoveMessage(id=mid)
 
 
 def trim_thread_history(agent, config, keep=MAX_HISTORY_MESSAGES):
-    """Drop aged-out checkpoint messages. Best-effort; never raises."""
+    """Drop aged-out checkpoint messages. Best-effort on failure —
+    with one contract: a thread whose newest safe window still
+    exceeds the history token share raises ContextBudgetError, so
+    the turn fails loudly with the reason instead of the model
+    silently squeezing an oversized window (D2)."""
+    from backend.exec import context_budget as cb
+
     try:
         snap = agent.get_state(config)
         messages = (snap.values or {}).get("messages", []) or []
-        drop = plan_history_trim(messages, keep=keep)
-        if not drop:
+        kept, count_drops = history_window(messages, keep=keep)
+        drop_ids = list(count_drops) + _history_token_drops(kept)
+        if not drop_ids:
             return 0
-        from langchain_core.messages import RemoveMessage  # noqa: E402
-
-        agent.update_state(config, {"messages": [RemoveMessage(id=i) for i in drop]})
-        return len(drop)
+        agent.update_state(config, {"messages": [_remove_message(i) for i in drop_ids]})
+        return len(drop_ids)
+    except cb.ContextBudgetError:
+        raise
     except Exception:
         return 0
 
@@ -1349,12 +1434,33 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     return 0
 
 
+def _prompt_budget_gate(prompt):
+    """Exit value when the prompt exceeds its context share, else None.
+
+    D2: the derived prompt share (context_budget) replaces the flat
+    3000-char cap. chat.py's CHAT_MAX_PROMPT stays as the composer
+    input cap and provably fits this share (tested). Only turn paths
+    reach this — the venv spawn always has the repo root importable
+    (deep_agent_env) — so there is no silent fallback: a broken
+    deployment fails loudly instead of accepting oversized input."""
+    from backend.exec import context_budget
+
+    try:
+        context_budget.require_fit("prompt", prompt)
+    except context_budget.ContextBudgetError as exc:
+        return cli.usage_error(f"prompt rejected: {exc}")
+    return None
+
+
 def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
     prompt = cli.b64decode(raw_prompt)
     if prompt is None:
         return cli.usage_error("bad base64 prompt")
-    if not prompt.strip() or len(prompt) > MAX_PROMPT:
+    if not prompt.strip():
         return cli.usage_error("bad prompt")
+    gate = _prompt_budget_gate(prompt)
+    if gate is not None:
+        return gate
     started = time.time()
     try:
         model, spec = build_model(prefer=prefer)
@@ -1389,7 +1495,16 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
         spec=spec,
     )
     config = {"configurable": {"thread_id": thread_id}}
-    trimmed = trim_thread_history(agent, config)
+    from backend.exec import context_budget
+
+    try:
+        # D2 loud gates: the skills block fits its share, and the
+        # checkpoint history fits the history share after trim.
+        if intent_hint:
+            context_budget.require_fit("skills", intent_hint)
+        trimmed = trim_thread_history(agent, config)
+    except context_budget.ContextBudgetError as exc:
+        return cli.sorry(f"Sorry, the turn exceeded the context budget: {exc}")
     if trimmed:
         print(f"trimmed {trimmed} aged-out history message(s)", file=sys.stderr)
     messages = [HumanMessage(content=prompt)]
