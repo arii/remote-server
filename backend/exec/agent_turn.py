@@ -178,26 +178,11 @@ KNOWN_SESSIONS_MAX = 10000
 
 async def _stop_proc(proc: subprocess.Popen) -> None:
     """Terminate, escalate to kill, wait bounded. Never raises and
-    returns at once when the process already exited."""
-    if proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-    except Exception:
-        pass
-    try:
-        await asyncio.wait_for(asyncio.to_thread(proc.wait), KILL_GRACE)
-    except (asyncio.TimeoutError, Exception):
-        pass
-    if proc.poll() is None:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            await asyncio.wait_for(asyncio.to_thread(proc.wait), KILL_GRACE)
-        except (asyncio.TimeoutError, Exception):
-            pass
+    returns at once when the process already exited.
+
+    Delegates to the shared turn engine's async ladder (D4: one kill
+    ladder for both runners, no mirrored copies)."""
+    await turn_engine.async_stop_proc(proc, KILL_GRACE)
 
 
 def _read_stderr_tail(err_file) -> str:

@@ -303,6 +303,16 @@ class TurnTimeoutParityTests(unittest.TestCase):
         self.assertEqual(chat.CHAT_KILL_GRACE, turn_engine.KILL_GRACE)
         self.assertEqual(agent_turn.KILL_GRACE, turn_engine.KILL_GRACE)
 
+    def test_agent_stop_proc_delegates_to_shared_ladder(self):
+        # D4: the one-shot runner no longer hand-mirrors the SIGTERM
+        # → SIGKILL escalation; it calls the shared async ladder.
+        with mock.patch.object(
+            turn_engine, "async_stop_proc", mock.AsyncMock()
+        ) as ladder:
+            asyncio.run(agent_turn._stop_proc(object()))
+        ladder.assert_awaited_once()
+        self.assertEqual(ladder.call_args.args[1], agent_turn.KILL_GRACE)
+
     def test_td_run_timeout_env_override(self):
         from backend import proposals
 
@@ -381,6 +391,8 @@ class ModelNameSingleSourceTests(unittest.TestCase):
         self.assertEqual(
             briefing.DEFAULT_NARRATOR_OLLAMA_MODEL, turn_engine.DEFAULT_MODEL
         )
+
+
 
 
 if __name__ == "__main__":
