@@ -145,14 +145,44 @@ AGENT_SESSION_MARKER = "boomtick:agentSession"
 #: first — and each shows a different browser. The first viewer
 #: tab creates the session and records it here; later tabs attach
 #: to it while it is alive, so all tabs show the same page. Agent
-#: sessions still take precedence for new viewers. Refcounted: the
-#: last viewer disconnect deletes it (no warm-TTL policy to tune).
+#: sessions still take precedence for new viewers. Refcounted with
+#: a grace window: the last viewer disconnect arms a short TTL
+#: instead of deleting, so a page refresh (websocket drop +
+#: immediate re-dial) reattaches to the same live page instead of
+#: restarting at the neutral start page and losing logins. Expiry
+#: is reaped lazily on the next claim; the Grid's own
+#: sessionTimeout bounds anything nobody ever reaps.
 #: Single-worker uvicorn owns this registry (Dockerfile CMD sets
 #: no --workers); a restart orphans the Grid session to its idle
 #: timeout, and the next viewer transparently creates a new one.
 _viewer_lock = threading.Lock()
 _viewer_session_id: "str | None" = None
 _viewer_refcount = 0
+#: Grace window keeping the shared Grid session across brief
+#: disconnects (page refresh, tab crash, redeploy blip).
+_VIEWER_GRACE_S = 120.0
+_viewer_expires_at: "float | None" = None
+#: Last page the shared session was pointed at (human address-bar
+#: go + agent navigate, via CDPBridge.navigate). Fresh sessions
+#: restore it instead of DEFAULT_URL so a refresh past the grace
+#: window (or a Grid restart) still lands back on the user's page.
+#: Cookies live in the persistent profile dir, so logins usually
+#: survive the hop; only in-memory session state is lost.
+_viewer_last_url: "str | None" = None
+
+
+def remember_viewer_url(url) -> None:
+    """Remember the shared session's current page (best-effort)."""
+    global _viewer_last_url
+    u = (url or "").strip()
+    if u.startswith(("http://", "https://")) and len(u) <= 2048:
+        _viewer_last_url = u
+
+
+def _fresh_start_url() -> str:
+    """Start page for a fresh viewer session: the last live page
+    when one is known, else the neutral DEFAULT_URL."""
+    return _viewer_last_url or DEFAULT_URL
 #: Canonical viewport for the shared session: the owner's
 #: (viewport, mobile). Joining tabs adopt it so a desktop tab
 #: joining a phone-owned session does not re-emulate the shared
@@ -176,13 +206,34 @@ def _viewer_claim():
     """Attach to the live shared viewer session, if any.
 
     Returns the session id (refcounted) or None. Stale records are
-    cleared so the next claim creates fresh.
+    cleared so the next claim creates fresh; warm records inside
+    the grace window (last viewer recently out) revive to the same
+    live session so a page refresh keeps its page. Expired records
+    are deleted best-effort to free the single Grid slot.
     """
     global _viewer_session_id, _viewer_refcount, _viewer_viewport
+    global _viewer_expires_at
     with _viewer_lock:
         sid = _viewer_session_id
         if sid is None:
             return None
+        warming = _viewer_refcount <= 0
+        expired = warming and (
+            _viewer_expires_at is not None and time.time() > _viewer_expires_at
+        )
+    if expired:
+        # Past the grace window: free the slot now so the caller
+        # can mint a fresh session instead of failing on a busy
+        # slot the next line would otherwise leave behind.
+        with contextlib.suppress(Exception):
+            _grid_session_delete(sid)
+        with _viewer_lock:
+            if _viewer_session_id == sid and _viewer_refcount <= 0:
+                _viewer_session_id = None
+                _viewer_refcount = 0
+                _viewer_viewport = None
+                _viewer_expires_at = None
+        return None
     # Validate outside the lock: network I/O under a mutex serializes
     # every viewer connect behind Grid latency and stalls disconnect
     # teardown (which needs the same lock) behind a wedged Grid
@@ -194,8 +245,10 @@ def _viewer_claim():
                 _viewer_session_id = None
                 _viewer_refcount = 0
                 _viewer_viewport = None
+                _viewer_expires_at = None
             return None
         _viewer_refcount += 1
+        _viewer_expires_at = None
         return sid
 
 
@@ -207,9 +260,11 @@ def _viewer_create(session_id, viewport=None, mobile=False):
     re-emulating with their own.
     """
     global _viewer_session_id, _viewer_refcount, _viewer_viewport
+    global _viewer_expires_at
     with _viewer_lock:
         _viewer_session_id = session_id
         _viewer_refcount = 1
+        _viewer_expires_at = None
         _viewer_viewport = {
             "viewport": dict(viewport) if viewport is not None else dict(VIEWPORT),
             "mobile": bool(mobile),
@@ -230,34 +285,35 @@ def _viewer_viewport_for(session_id):
 
 
 def _viewer_release(session_id):
-    """Drop one viewer reference; True when the session must be
-    deleted (last viewer out and the record is still ours)."""
+    """Drop one viewer reference; always False (nothing for the
+    caller to delete). The last viewer out arms the grace window
+    instead of clearing the record, so a refresh re-dial reattaches
+    to the same live session; expiry is reaped lazily by the next
+    claim. Pure registry work, no I/O: safe to call from the
+    disconnect path behind a wedged Grid (issue #1202)."""
     global _viewer_session_id, _viewer_refcount, _viewer_viewport
+    global _viewer_expires_at
     with _viewer_lock:
         if _viewer_session_id != session_id:
             return False
         _viewer_refcount -= 1
         if _viewer_refcount <= 0:
-            _viewer_session_id = None
             _viewer_refcount = 0
-            _viewer_viewport = None
-            return True
+            _viewer_expires_at = time.time() + _VIEWER_GRACE_S
         return False
 
 
 async def _viewer_teardown(session_id, kind):
     """Refcounted teardown for viewer-owned sessions (issue #1026):
-    the last viewer out deletes the Grid session; agent attaches
-    own nothing. Split out so the policy is unit-testable — the
-    websocket finally only calls it."""
+    the last viewer out arms the grace window (no immediate Grid
+    delete); agent attaches own nothing. Split out so the policy is
+    unit-testable — the websocket finally only calls it."""
     import asyncio as aio
 
     if kind not in ("own", "viewer-shared"):
         return False
-    last_out = await aio.to_thread(_viewer_release, session_id)
-    if last_out:
-        await aio.to_thread(_grid_session_delete, session_id)
-    return last_out
+    await aio.to_thread(_viewer_release, session_id)
+    return False
 
 
 def _grid_live_session():
@@ -973,6 +1029,10 @@ class CDPBridge:
         await self.reattach()
 
     async def navigate(self, url):
+        # Every navigation (human address-bar go, agent drive) goes
+        # through here: remember the page so a fresh session past
+        # the grace window restores it instead of DEFAULT_URL.
+        remember_viewer_url(url)
         await self.call("Page.navigate", {"url": url})
 
     async def close(self):
@@ -1202,6 +1262,24 @@ def create_app():
                 lock,
                 json.dumps({"type": "view", "mobile": bridge.mobile}),
             )
+            if kind != "own":
+                # Sync the viewer address box to the live page: a
+                # refresh re-dial serving the baked DEFAULT_URL would
+                # otherwise show the start-page address over the
+                # restored page. Best-effort: a failed probe leaves
+                # the baked default.
+                with contextlib.suppress(Exception):
+                    current = await bridge.call(
+                        "Runtime.evaluate",
+                        {"expression": "location.href", "returnByValue": True},
+                        timeout=10,
+                    )
+                    current_url = ((current or {}).get("result") or {}).get("value")
+                    if isinstance(current_url, str) and current_url.startswith("http"):
+                        remember_viewer_url(current_url)
+                        await _ws_send_text(
+                            send, lock, json.dumps({"type": "url", "url": current_url})
+                        )
             await bridge.start_screencast(on_frame)
 
             async def do_go(url):
@@ -1217,14 +1295,23 @@ def create_app():
                     send, lock, json.dumps({"type": "dsf", "dsf": bridge.dsf})
                 )
                 await bridge.start_screencast(on_frame)
+                # Sync the address box to where the session actually
+                # went (folded into do_go so human go navigations
+                # report their committed target too).
+                with contextlib.suppress(Exception):
+                    await _ws_send_text(
+                        send, lock, json.dumps({"type": "url", "url": url})
+                    )
 
             if kind == "own":
                 # A fresh tab never repaints: without this the new
                 # viewer sits on a black canvas (fps: -) until the
-                # human types a URL. Start on the neutral page.
+                # human types a URL. Restore the last live page when
+                # one is known (refresh past the grace window, Grid
+                # restart), else the neutral start page.
                 # Shared/agent attaches skip this: re-navigating
                 # would yank the other tabs' page out from under them.
-                await recover_once(lambda: do_go(DEFAULT_URL))
+                await recover_once(lambda: do_go(_fresh_start_url()))
             while True:
                 event = await receive()
                 if event["type"] == "websocket.disconnect":

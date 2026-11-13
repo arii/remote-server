@@ -128,11 +128,18 @@ function connect() {
       document.getElementById('state').textContent = m.msg || m.type;
       return;
     }
+    // Server-pushed page sync: a refresh re-dial serves the baked
+    // start-page address by default — this corrects the box to the
+    // live page the session actually shows.
+    if (m.type === 'url') { if (m.url) document.getElementById('url').value = m.url; return; }
     if (m.type === 'error') {
       document.getElementById('state').textContent = 'error: ' + (m.msg || 'browser op failed');
       return;
     }
     if (m.type === 'frame') {
+      // Native base64 decode via a data URL: the previous
+      // atob + Uint8Array.from + Blob + ObjectURL round-trip ran a
+      // per-byte JS callback on every frame and janked the stream.
       img.onload = () => {
         // First frame clears a stale slot-busy hint, if shown.
         if (frames === 0) {
@@ -152,10 +159,9 @@ function connect() {
             'fps: ' + (frames / el).toFixed(1) +
             ' | last activity→frame: ' + (lastClick ? (performance.now() - lastClick).toFixed(0) + ' ms' : '-');
         }
-        URL.revokeObjectURL(img.src);
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
       };
-      img.src = URL.createObjectURL(new Blob(
-        [Uint8Array.from(atob(m.data), c => c.charCodeAt(0))], {type: 'image/jpeg'}));
+      img.src = 'data:image/jpeg;base64,' + m.data;
     }
   };
   ws.onclose = () => {

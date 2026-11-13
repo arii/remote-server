@@ -200,9 +200,13 @@ class SharedViewerSessionTest(unittest.TestCase):
         self._sid = browser_view._viewer_session_id
         self._ref = browser_view._viewer_refcount
         self._vp = browser_view._viewer_viewport
+        self._exp = browser_view._viewer_expires_at
+        self._last = browser_view._viewer_last_url
         browser_view._viewer_session_id = None
         browser_view._viewer_refcount = 0
         browser_view._viewer_viewport = None
+        browser_view._viewer_expires_at = None
+        browser_view._viewer_last_url = None
         self._bridge = mock.patch.object(browser_view, "CDPBridge", FakeBridge)
         self._bridge.start()
         self.addCleanup(self._bridge.stop)
@@ -212,6 +216,8 @@ class SharedViewerSessionTest(unittest.TestCase):
         browser_view._viewer_session_id = self._sid
         browser_view._viewer_refcount = self._ref
         browser_view._viewer_viewport = self._vp
+        browser_view._viewer_expires_at = self._exp
+        browser_view._viewer_last_url = self._last
 
     def test_two_tabs_share_one_session(self):
         # Issue #1026: first tab creates, second tab attaches to the
@@ -633,35 +639,104 @@ class SharedViewerSessionTest(unittest.TestCase):
                 with self.assertRaises(WebSocketDisconnect):
                     ws.receive_text()
 
-    def test_teardown_policy(self):
-        # The websocket finally only calls _viewer_teardown: last
-        # viewer out deletes, agent attaches own nothing, unknown
-        # sessions are left alone.
+    def test_refresh_reconnect_reuses_live_session(self):
+        # Page refresh drops the viewer websocket and immediately
+        # re-dials: the Grid session must survive the gap so the tab
+        # keeps its page (and logins) instead of restarting at the
+        # neutral start page. Pre-fix the last disconnect deleted
+        # the session, so every refresh browsed back to example.com.
+        browser_view._viewer_session_id = "AAA"
+        browser_view._viewer_refcount = 1
         import asyncio as _aio
 
-        browser_view._viewer_session_id = "AAA"
-        browser_view._viewer_refcount = 2
-        with mock.patch.object(browser_view, "_grid_session_delete") as delete:
-            self.assertFalse(
-                _aio.run(browser_view._viewer_teardown("AAA", "viewer-shared"))
-            )
-            self.assertEqual(delete.call_count, 0)
-            self.assertTrue(_aio.run(browser_view._viewer_teardown("AAA", "own")))
-            delete.assert_called_once_with("AAA")
+        with (
+            mock.patch.object(browser_view, "_grid_session_alive", return_value=True),
+            mock.patch.object(browser_view, "_grid_session_delete") as delete,
+        ):
+            # Tab closes: teardown must NOT delete while the session
+            # is still live on the Grid.
             self.assertFalse(_aio.run(browser_view._viewer_teardown("AAA", "own")))
-            self.assertFalse(_aio.run(browser_view._viewer_teardown("AGENT", "agent")))
+            self.assertEqual(delete.call_count, 0)
+            # Refresh re-dials: same live session, not a fresh one.
+            self.assertEqual(browser_view._viewer_claim(), "AAA")
+
+    def test_remember_viewer_url_validation(self):
+        # Only http(s) pages are worth restoring; junk never
+        # overwrites the last live page (or the neutral default).
+        self.assertIsNone(browser_view._viewer_last_url)
+        self.assertEqual(browser_view._fresh_start_url(), browser_view.DEFAULT_URL)
+        browser_view.remember_viewer_url("https://restored.example/x")
+        self.assertEqual(
+            browser_view._fresh_start_url(), "https://restored.example/x"
+        )
+        for junk in ("", "   ", "file:///etc/passwd", "chrome://newtab", "x" * 3000):
+            browser_view.remember_viewer_url(junk)
+        self.assertEqual(
+            browser_view._fresh_start_url(), "https://restored.example/x"
+        )
+
+    def test_fresh_session_restores_last_live_page(self):
+        # Past the grace window (or a Grid restart) a new session is
+        # unavoidable — but it must open the last live page, not
+        # restart the agent/human at example.com.
+        import json as _json
+
+        browser_view.remember_viewer_url("https://restored.example/x")
+        shared = FakeBridge("NEW")
+        client = TestClient(browser_view.create_app())
+        with (
+            mock.patch.object(browser_view, "_grid_live_session", return_value=None),
+            mock.patch.object(
+                browser_view, "_grid_session_create", return_value="NEW"
+            ),
+            mock.patch.object(browser_view, "_grid_session_alive", return_value=True),
+            mock.patch.object(browser_view, "_grid_session_delete"),
+            mock.patch.object(browser_view, "CDPBridge", return_value=shared),
+        ):
+            with client.websocket_connect("/ws") as ws:
+                first = _json.loads(ws.receive_text())
+                self.assertEqual(first["kind"], "own")
+                self.assertTrue(
+                    self._wait_calls(shared, ("navigate", "https://restored.example/x")),
+                    f"fresh session did not restore last page: {shared.calls}",
+                )
+                # The viewer address box follows the restored page.
+                seen_url = None
+                for _ in range(8):
+                    msg = _json.loads(ws.receive_text())
+                    if msg.get("type") == "url":
+                        seen_url = msg.get("url")
+                        break
+                self.assertEqual(seen_url, "https://restored.example/x")
 
     def test_viewport_record_follows_session_lifecycle(self):
         # The canonical viewport is stored at create, served only
         # for the recorded session, and cleared with it — a new
-        # owner never inherits a stale emulation.
+        # owner never inherits a stale emulation. The last release
+        # arms the grace window (no immediate clear); expiry reaps
+        # the record so a later owner starts clean.
+        import time as _time
+
         browser_view._viewer_create("AAA", {"width": 390, "height": 844}, True)
         self.assertEqual(
             browser_view._viewer_viewport_for("AAA"),
             ({"width": 390, "height": 844}, True),
         )
         self.assertIsNone(browser_view._viewer_viewport_for("BBB"))
-        self.assertTrue(browser_view._viewer_release("AAA"))
+        self.assertFalse(browser_view._viewer_release("AAA"))
+        # Still ours while warm: a refresh re-dial keeps the owner's
+        # emulation instead of re-measuring mid-session.
+        self.assertEqual(
+            browser_view._viewer_viewport_for("AAA"),
+            ({"width": 390, "height": 844}, True),
+        )
+        browser_view._viewer_expires_at = _time.time() - 1
+        with (
+            mock.patch.object(browser_view, "_grid_session_alive", return_value=True),
+            mock.patch.object(browser_view, "_grid_session_delete") as delete,
+        ):
+            self.assertIsNone(browser_view._viewer_claim())
+            delete.assert_called_once_with("AAA")
         self.assertIsNone(browser_view._viewer_viewport_for("AAA"))
 
     def test_stale_record_creates_fresh(self):
@@ -1250,6 +1325,23 @@ class ViewerHtmlTest(unittest.TestCase):
         self.assertIn("function normalizeUrl(raw)", html)
         self.assertIn("https://' + v", html)
 
+    def test_viewer_applies_server_page_sync(self):
+        # A refresh re-dial serves the baked start-page address: the
+        # server pushes the live page ({type: 'url'}) and the viewer
+        # corrects the box, or the tab shows the start-page address
+        # over the restored session.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("m.type === 'url'", html)
+        self.assertIn("getElementById('url').value = m.url", html)
+
+    def test_viewer_frame_decodes_natively(self):
+        # Per-frame atob + Uint8Array.from + Blob + ObjectURL ran a
+        # per-byte JS callback on every screencast frame and janked
+        # the stream; data URLs decode natively instead.
+        html = browser_view.VIEWER_HTML
+        self.assertIn("data:image/jpeg;base64", html)
+        self.assertNotIn("Uint8Array.from(atob", html)
+
 
 class MobileViewportTest(unittest.TestCase):
     def setUp(self):
@@ -1259,15 +1351,21 @@ class MobileViewportTest(unittest.TestCase):
         self._sid = browser_view._viewer_session_id
         self._ref = browser_view._viewer_refcount
         self._vp = browser_view._viewer_viewport
+        self._exp = browser_view._viewer_expires_at
+        self._last = browser_view._viewer_last_url
         browser_view._viewer_session_id = None
         browser_view._viewer_refcount = 0
         browser_view._viewer_viewport = None
+        browser_view._viewer_expires_at = None
+        browser_view._viewer_last_url = None
         self.addCleanup(self._restore)
 
     def _restore(self):
         browser_view._viewer_session_id = self._sid
         browser_view._viewer_refcount = self._ref
         browser_view._viewer_viewport = self._vp
+        browser_view._viewer_expires_at = self._exp
+        browser_view._viewer_last_url = self._last
 
     PHONE_UAS = (
         # iPhone Safari.

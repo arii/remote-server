@@ -61,23 +61,29 @@ class DisconnectTeardownTest(unittest.TestCase):
         self._sid = browser_view._viewer_session_id
         self._ref = browser_view._viewer_refcount
         self._vp = browser_view._viewer_viewport
+        self._exp = browser_view._viewer_expires_at
         browser_view._viewer_session_id = None
         browser_view._viewer_refcount = 0
         browser_view._viewer_viewport = None
+        browser_view._viewer_expires_at = None
         self.addCleanup(self._restore)
 
     def _restore(self):
         browser_view._viewer_session_id = self._sid
         browser_view._viewer_refcount = self._ref
         browser_view._viewer_viewport = self._vp
+        browser_view._viewer_expires_at = self._exp
 
     def test_disconnect_teardown_survives_hung_bridge_close(self):
         # The core #1202 regression: tab closes while the Grid
         # connection is wedged (close() hangs 30s). The bounded
-        # close (5s) must give way to the refcounted teardown, so
-        # the Grid DELETE still fires and the slot is freed.
-        # Pre-fix this awaited the hanging close() unbounded and
-        # the session leaked.
+        # close (5s) must give way to the refcounted teardown. The
+        # teardown arms the refresh grace window instead of
+        # deleting: the Grid DELETE fires only when a later claim
+        # finds the record expired, so the slot is still freed
+        # without stranding a refresh at the start page. Pre-fix
+        # this awaited the hanging close() unbounded and the
+        # session leaked.
         #
         # The raw ASGI app is driven directly (not via TestClient):
         # the test portal tears app tasks down on socket close,
@@ -114,9 +120,12 @@ class DisconnectTeardownTest(unittest.TestCase):
                 if m["type"] == "websocket.send"
             ]
             self.assertIn("attached", kinds)
-            self.assertEqual(delete.call_count, 1)
-            delete.assert_called_once_with("AAA")
-            self.assertIsNone(browser_view._viewer_session_id)
+            # No immediate delete: the session stays warm for a
+            # refresh re-dial.
+            self.assertEqual(delete.call_count, 0)
+            self.assertEqual(browser_view._viewer_session_id, "AAA")
+            self.assertEqual(browser_view._viewer_refcount, 0)
+            self.assertIsNotNone(browser_view._viewer_expires_at)
             # Bounded close (~5s) + teardown, not the 30s hang.
             self.assertLess(elapsed, 25, "disconnect blocked on close()")
 
@@ -126,22 +135,28 @@ class ClaimLockOrderingTest(unittest.TestCase):
         self._sid = browser_view._viewer_session_id
         self._ref = browser_view._viewer_refcount
         self._vp = browser_view._viewer_viewport
+        self._exp = browser_view._viewer_expires_at
         browser_view._viewer_session_id = "AAA"
         browser_view._viewer_refcount = 1
         browser_view._viewer_viewport = None
+        browser_view._viewer_expires_at = None
         self.addCleanup(self._restore)
 
     def _restore(self):
         browser_view._viewer_session_id = self._sid
         browser_view._viewer_refcount = self._ref
         browser_view._viewer_viewport = self._vp
+        browser_view._viewer_expires_at = self._exp
 
     def test_liveness_probe_does_not_hold_registry_lock(self):
         # A wedged Grid probe (3s) must not serialize disconnect
         # teardown behind it: _viewer_claim validates outside the
         # registry lock, so _viewer_release completes promptly.
         # Pre-fix the claim held the lock across the probe and the
-        # release below blocked for the full probe duration.
+        # release below blocked for the full probe duration. The
+        # release arms the refresh grace window (returns False:
+        # nothing to delete); the in-flight claim then revives the
+        # warm record to the same live session.
         entered = threading.Event()
 
         def slow_probe(session_id):
@@ -164,7 +179,7 @@ class ClaimLockOrderingTest(unittest.TestCase):
                 start = time.monotonic()
                 released = browser_view._viewer_release("AAA")
                 elapsed = time.monotonic() - start
-                self.assertTrue(released)
+                self.assertFalse(released)
                 self.assertLess(
                     elapsed,
                     2.0,
@@ -173,7 +188,7 @@ class ClaimLockOrderingTest(unittest.TestCase):
             finally:
                 worker.join(timeout=10)
             self.assertFalse(worker.is_alive(), "claim thread stuck")
-            self.assertIsNone(result.get("claim"))
+            self.assertEqual(result.get("claim"), "AAA")
 
 
 if __name__ == "__main__":

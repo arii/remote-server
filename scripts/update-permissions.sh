@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Script to canonically configure permissions in Antigravity settings:
-# - Boomtick MCP commands
-# - Browser MCP commands
-# - Common agent and developer CLI tools (git, gh, docker, pnpm, fallow, pytest, etc.)
+# - Boomtick & Browser / Chrome DevTools MCP commands
+# - Common agent and developer CLI tools (git, gh, archil, pytest, python, venv, etc.)
 # - Common CLI utility commands (echo, head, tail, stat, file, touch, sed, etc.)
+# Both exact command and wildcard argument forms 'command(<tool> *)' are registered
+# so that subcommands and flags never trigger repeated manual confirmation prompts.
 
 SETTINGS_FILE="${SETTINGS_FILE:-${HOME}/.gemini/antigravity-cli/settings.json}"
 CONFIG_FILE="${CONFIG_FILE:-${HOME}/.gemini/config/config.json}"
@@ -19,126 +20,176 @@ import os
 import shutil
 from datetime import datetime
 
-RULES_TO_ALLOW = [
-    # Boomtick MCP server wildcard
-    "mcp(boomtick/*)",
+# Tool names that will have both "command(<tool>)" and "command(<tool> *)" added
+CLI_TOOLS = [
+    # Developer & agent execution tooling
+    "git",
+    "gh",
+    "archil",
+    "docker",
+    "docker-compose",
+    "pnpm",
+    "npm",
+    "node",
+    "npx",
+    "yarn",
+    "corepack",
+    "fallow",
+    "pytest",
+    "python",
+    "python3",
+    "python3.10",
+    "python3.11",
+    "python3.12",
+    "pip",
+    "pip3",
+    "py",
+    "uv",
+    "td",
+    "curl",
+    "wget",
+    "bash",
+    "sh",
+    "make",
+    "go",
+    "cargo",
+    "shellcheck",
+    "oxlint",
+    "eslint",
+    "openssl",
+    "ssh-keyscan",
+    "playwright-cli",
+    "boomtick",
+    "boomtick-mcp",
 
-    # Browser MCP server wildcards
+    # Remote copy / shell
+    "ssh",
+    "scp",
+    "rsync",
+
+    # Inspection / utility commands
+    "echo",
+    "head",
+    "tail",
+    "stat",
+    "file",
+    "touch",
+    "sed",
+    "cat",
+    "ls",
+    "grep",
+    "find",
+    "awk",
+    "diff",
+    "wc",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "which",
+    "basename",
+    "dirname",
+    "less",
+    "more",
+    "nl",
+    "tee",
+    "xargs",
+    "jq",
+    "rg",
+    "patch",
+    "cmp",
+    "base64",
+    "sha256sum",
+    "md5sum",
+
+    # File operations
+    "cp",
+    "mv",
+    "mkdir",
+    "rmdir",
+    "ln",
+    "tar",
+    "gzip",
+    "gunzip",
+    "zip",
+    "unzip",
+    "chmod",
+    "chown",
+
+    # System inspection & cleanup
+    "ps",
+    "df",
+    "du",
+    "free",
+    "uptime",
+    "lscpu",
+    "date",
+    "hostname",
+    "uname",
+    "id",
+    "whoami",
+    "printenv",
+    "env",
+    "lsblk",
+    "ss",
+    "journalctl",
+    "fuser",
+    "kill",
+    "killall",
+    "pkill",
+]
+
+# Specific paths, patterns, and MCP wildcards
+EXPLICIT_RULES = [
+    # Boomtick MCP server wildcards
+    "mcp(boomtick/*)",
+    "mcp(boomtick-mcp/*)",
+
+    # Browser & DevTools MCP server wildcards
     "mcp(browser-mcp/*)",
     "mcp(browsermcp/*)",
     "mcp(browser/*)",
+    "mcp(chrome-devtools/*)",
 
-    # Developer & agent execution tooling
-    "command(git)",
-    "command(gh)",
-    "command(docker)",
-    "command(pnpm)",
-    "command(npm)",
-    "command(node)",
-    "command(npx)",
-    "command(yarn)",
-    "command(corepack)",
-    "command(fallow)",
-    "command(pytest)",
-    "command(python)",
-    "command(python3)",
-    "command(pip)",
-    "command(pip3)",
-    "command(uv)",
-    "command(td)",
-    "command(curl)",
-    "command(wget)",
-    "command(bash)",
-    "command(sh)",
-    "command(make)",
-    "command(go)",
-    "command(cargo)",
-    "command(shellcheck)",
-    "command(openssl)",
-    "command(ssh-keyscan)",
+    # Virtual environment binaries (both relative and path wildcards)
+    "command(.venv/bin/*)",
+    "command(.venv/bin/python *)",
+    "command(.venv/bin/python)",
+    "command(.venv/bin/python3 *)",
+    "command(.venv/bin/python3)",
+    "command(.venv/bin/pytest *)",
+    "command(.venv/bin/pytest)",
+    "command(./.venv/bin/*)",
+    "command(./.venv/bin/python *)",
+    "command(./.venv/bin/python)",
+    "command(./.venv/bin/python3 *)",
+    "command(./.venv/bin/python3)",
+    "command(./.venv/bin/pytest *)",
+    "command(./.venv/bin/pytest)",
 
-    # Remote copy / shell (routine deploy and checkout sync)
-    "command(ssh)",
-    "command(scp)",
-    "command(rsync)",
+    # Common docker compose forms
+    "command(docker compose)",
+    "command(docker compose *)",
 
-    # User-requested common CLI inspection/utility commands
-    "command(echo)",
-    "command(head)",
-    "command(tail)",
-    "command(stat)",
-    "command(file)",
-    "command(touch)",
-    "command(sed)",
-
-    # Standard complementary CLI utilities
-    "command(cat)",
-    "command(ls)",
-    "command(grep)",
-    "command(find)",
-    "command(awk)",
-    "command(diff)",
-    "command(wc)",
-    "command(sort)",
-    "command(uniq)",
-    "command(cut)",
-    "command(tr)",
-    "command(which)",
-    "command(basename)",
-    "command(dirname)",
-    "command(less)",
-    "command(more)",
-    "command(nl)",
-    "command(tee)",
-    "command(xargs)",
-    "command(jq)",
-    "command(rg)",
-    "command(patch)",
-    "command(cmp)",
-    "command(base64)",
-    "command(sha256sum)",
-    "command(md5sum)",
-
-    # File operations (routine workspace and build-dir management)
-    "command(cp)",
-    "command(mv)",
-    "command(mkdir)",
-    "command(rmdir)",
-    "command(ln)",
-    "command(tar)",
-    "command(gzip)",
-    "command(gunzip)",
-    "command(zip)",
-    "command(unzip)",
-    "command(chmod)",
-    "command(chown)",
-
-    # System inspection and stale-process cleanup
-    "command(ps)",
-    "command(df)",
-    "command(du)",
-    "command(free)",
-    "command(uptime)",
-    "command(date)",
-    "command(hostname)",
-    "command(uname)",
-    "command(id)",
-    "command(whoami)",
-    "command(printenv)",
-    "command(env)",
-    "command(lsblk)",
-    "command(ss)",
-    "command(journalctl)",
-    "command(fuser)",
-    "command(kill)",
-    "command(killall)",
-    "command(pkill)",
+    # Impeccable script binary
+    "command(./.agents/skills/impeccable/scripts/bin/linux-x64/impeccable)",
+    "command(./.agents/skills/impeccable/scripts/bin/linux-x64/impeccable *)",
 ]
 
-# Deliberately NOT allowlisted (stay prompt-gated): rm (destructive),
+# Generate composite rule list
+RULES_TO_ALLOW = list(EXPLICIT_RULES)
+for tool in CLI_TOOLS:
+    base_rule = f"command({tool})"
+    wildcard_rule = f"command({tool} *)"
+    if base_rule not in RULES_TO_ALLOW:
+        RULES_TO_ALLOW.append(base_rule)
+    if wildcard_rule not in RULES_TO_ALLOW:
+        RULES_TO_ALLOW.append(wildcard_rule)
+
+# Deliberately NOT allowlisted (stay prompt-gated):
 # sudo/su/passwd (privilege boundary), shutdown/reboot (availability),
-# dd/mkfs/fdisk/parted (disk destruction), systemctl/service (host
-# control), crontab (silent persistence), mount, iptables/nft/ufw.
+# dd/mkfs/fdisk/parted (disk destruction), systemctl/service (host control),
+# crontab (silent persistence), mount, iptables/nft/ufw.
 
 def update_cli_settings(filepath):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -199,10 +250,8 @@ config_path = os.getenv("CONFIG_FILE", os.path.expanduser("~/.gemini/config/conf
 update_cli_settings(cli_path)
 update_global_config(config_path)
 
-print("\nRules allowed:")
-for r in RULES_TO_ALLOW:
-    print(f"  + {r}")
+print(f"\nSuccessfully configured {len(RULES_TO_ALLOW)} permissions.")
 EOF
 
 echo ""
-echo "Done! Restart your Antigravity CLI session (or run /permissions in chat) to verify."
+echo "Done! Antigravity permissions updated."

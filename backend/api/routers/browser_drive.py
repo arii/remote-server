@@ -260,6 +260,11 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             # previous page's hash.
             page_hash=(None if body.op == "navigate" else pre_hash),
         )
+        if body.op == "navigate":
+            # Fresh viewer sessions past the grace window restore the
+            # last live page instead of the neutral start page — the
+            # agent's navigations count, not just the human's.
+            browser_view.remember_viewer_url(body.url)
         page = await _snapshot(bridge)
         # Presence for the drawer banner + a re-snapshot flag for any
         # later pipeline run: best-effort, the drive already landed.

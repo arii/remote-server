@@ -190,6 +190,36 @@ class DriveApiTest(unittest.TestCase):
         self.assertEqual(seen["url"], "https://example.com/")
         self.assertEqual(resp.json()["url"], "https://example.com/")
 
+    def test_drive_navigate_remembers_last_live_page(self):
+        # Agent navigations count toward the restore page: asking
+        # the agent to go somewhere must not strand the next fresh
+        # session back at example.com.
+        prev = browser_drive.browser_view._viewer_last_url
+        browser_drive.browser_view._viewer_last_url = None
+        self.addCleanup(
+            setattr,
+            browser_drive.browser_view,
+            "_viewer_last_url",
+            prev,
+        )
+        with (
+            mock.patch.object(
+                browser_drive.browser_view,
+                "_grid_live_session",
+                return_value="agent-sess-1",
+            ),
+            mock.patch.object(browser_drive.browser_view, "CDPBridge", FakeBridge),
+        ):
+            resp = make_client().post(
+                "/api/browser/drive",
+                json={"op": "navigate", "url": "https://agent-drove.example/w"},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            browser_drive.browser_view._viewer_last_url,
+            "https://agent-drove.example/w",
+        )
+
     def test_drive_records_chat_presence_step(self):
         with (
             mock.patch.object(
