@@ -61,6 +61,7 @@ from backend import proposals as proposal_exec
 from backend.core.repos import get_checkout_path
 from backend.core.validation import validate_repo_name
 from backend.exec import turn_engine
+from backend.exec import verify as proposal_verify
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -287,6 +288,41 @@ def validate_action_request(args: dict) -> tuple[bool, str]:
     except (ValueError, IndexError):
         return False, "REJECTED: validator output unreadable"
     return bool(out.get("ok")), str(out.get("text", ""))
+
+
+def verify_proposal_content(args: dict, repo: str) -> tuple[bool, str]:
+    """Content verify pass before any approval card renders (D3).
+
+    Shape validation proves the proposal is well-formed; this proves
+    it points at real things (repo, PR number). Injectable for tests.
+    Returns (True, "") or (False, "VERIFY-FAILED: <check>: <detail>").
+    Provider-blind: local and cloud proposals pass the same gate.
+    """
+    try:
+        return proposal_verify.verify_proposal(args, repo)
+    except Exception as exc:
+        # Fail closed: an unverified proposal never renders a card.
+        return False, f"{proposal_verify.VERIFY_REASON_PREFIX}verify errored: {exc}"
+
+
+def checked_requests(requests: list[dict], repo: str) -> list[tuple[bool, str]]:
+    """Shape-validate then content-verify each request (D3 gate).
+
+    One order for every approval surface: a request that fails shape
+    never reaches verify, so the returned reasons are REJECTED (shape)
+    or VERIFY-FAILED (content), each naming the failed check.
+    """
+    out = []
+    for args in requests:
+        ok, text = validate_action_request(args)
+        if ok:
+            # Verify only ever replaces a PASS with a FAIL: the card
+            # text stays shape validation's, the reason is the gate's.
+            v_ok, reason = verify_proposal_content(args, repo)
+            if not v_ok:
+                ok, text = False, reason
+        out.append((ok, text))
+    return out
 
 
 def run_resume_spawn(
@@ -567,10 +603,13 @@ def _approval_events(
             }
         )
         return
-    checked = [validate_action_request(a) for a in requests]
+    checked = checked_requests(requests, repo)
     if not all(ok for ok, _ in checked):
         reason = next(t for ok, t in checked if not ok)
-        rej = base64.b64encode(b"invalid proposal").decode()
+        # The reject message carries the specific reason (shape or
+        # verify) so the model re-proposes against the named check
+        # instead of guessing (D3). decision_for_verdict caps at 500.
+        rej = base64.b64encode(reason[:500].encode()).decode()
         try:
             run_resume_spawn(info["gh"], session_id, "reject", rej)
         except Exception:
@@ -738,8 +777,9 @@ def _resume_decision(
             ivs = (blob.get("interrupts") or []) if blob else []
             value = ivs[0].get("value") if ivs else None
             requests = approval_requests(value)
+            checked: list[tuple[bool, str]] = []
             if requests:
-                checked = [validate_action_request(a) for a in requests]
+                checked = checked_requests(requests, st["repo"])
                 if all(ok for ok, _ in checked):
                     st["pending"] = True
                     st["value"] = value
@@ -754,7 +794,17 @@ def _resume_decision(
                     return body, 202, ""
             # Uninterpretable re-interrupt: auto-reject once (bounded)
             # so the thread never strands behind an unshowable card.
-            rej = base64.b64encode(b"unreadable proposal").decode()
+            # A readable-but-unverified batch is not "unreadable": the
+            # rejection carries the specific verify reason so the
+            # re-prompt can fix the actual target (D3 reason quality).
+            if checked and not all(ok for ok, _ in checked):
+                reason = "; ".join(t for ok, t in checked if not ok and t)
+                rej = base64.b64encode(
+                    f"Previous proposal was rejected: {reason}".encode()
+                ).decode()
+            else:
+                reason = "follow-up approval unreadable"
+                rej = base64.b64encode(b"unreadable proposal").decode()
             try:
                 code2, out2 = run_resume_spawn(gh, session_id, "reject", rej)
             except Exception:
@@ -766,7 +816,7 @@ def _resume_decision(
                     "session_id": session_id,
                     "repo": st["repo"],
                     "event": "chat auto-rejected",
-                    "error": "follow-up approval unreadable",
+                    "error": reason,
                 }
             )
             if code2 == 3:
@@ -775,7 +825,7 @@ def _resume_decision(
                 value2 = ivs2[0].get("value") if ivs2 else None
                 requests2 = approval_requests(value2)
                 if requests2:
-                    checked2 = [validate_action_request(a) for a in requests2]
+                    checked2 = checked_requests(requests2, st["repo"])
                     if all(ok for ok, _ in checked2):
                         st["pending"] = True
                         st["value"] = value2
@@ -790,12 +840,18 @@ def _resume_decision(
                             "proposals": st["proposals"],
                         }
                         return body, 202, ""
-            body["text"] = (
-                strip_agent_markers(out2)
-                or "The agent asked for approval in a form I "
-                "can't display, so I rejected it. Ask again "
-                "if still needed."
-            ) + exec_suffix
+            if checked and not all(ok for ok, _ in checked):
+                body["text"] = (
+                    f"Auto-rejected before approval — {reason}. The model "
+                    "was asked to re-propose; ask again if still needed."
+                ) + exec_suffix
+            else:
+                body["text"] = (
+                    strip_agent_markers(out2)
+                    or "The agent asked for approval in a form I "
+                    "can't display, so I rejected it. Ask again "
+                    "if still needed."
+                ) + exec_suffix
             body["exit"] = code2
             body.pop("approval", None)
             return body, 202, ""
