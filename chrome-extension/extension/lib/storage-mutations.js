@@ -14,6 +14,16 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// IDs derive from Date.now(); a batch approve creates N entries in one
+// synchronous loop, so plain Date.now() ids can collide and later
+// delete/update lookups by id would hit the wrong entry. Disambiguate
+// against the entries already in the vault under construction.
+function uniqueVaultId(base, vault) {
+  let id = base;
+  for (let n = 0; vault.some((e) => e.id === id); n++) id = `${base}_${n}`;
+  return id;
+}
+
 // Replace-by-id or prepend. The panel's "Add New Fact" builds the entry and
 // sends vault:upsert (new id -> unshift); the inline value edit sends the same
 // message for an existing id, which updates in place and keeps its position.
@@ -53,7 +63,7 @@ export function applyDeltaApprove(state, deltaId) {
     }
   } else {
     vault.unshift({
-      id: `${targetDelta.category || "custom"}.${Date.now()}`,
+      id: uniqueVaultId(`${targetDelta.category || "custom"}.${Date.now()}`, vault),
       category: targetDelta.category || "custom",
       key: targetDelta.key,
       aliases: [targetDelta.key.toLowerCase()],
@@ -82,10 +92,15 @@ export function applyDeltaApproveAll(state) {
   for (const delta of pendingDeltas) {
     if (delta.action === "update" && delta.targetEntryId) {
       const existing = vault.find((e) => e.id === delta.targetEntryId);
-      if (existing) existing.value = delta.proposedValue;
+      // updatedAt stamped here exactly as applyDeltaApprove does, so single
+      // and bulk approval leave the same shape behind.
+      if (existing) {
+        existing.value = delta.proposedValue;
+        existing.updatedAt = nowIso();
+      }
     } else {
       vault.unshift({
-        id: `${delta.category || "custom"}.${Date.now()}`,
+        id: uniqueVaultId(`${delta.category || "custom"}.${Date.now()}`, vault),
         category: delta.category || "custom",
         key: delta.key,
         aliases: [delta.key.toLowerCase()],

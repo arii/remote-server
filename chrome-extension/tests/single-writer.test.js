@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  applyDeltaApprove,
   applyDeltaApproveAll,
   applyDeltaQueue,
   applyVaultDelete,
@@ -113,6 +114,40 @@ describe("storage-mutations", () => {
     const full = Array.from({ length: 100 }, (_, i) => ({ deltaId: `d${i}` }));
     expect(applyDeltaQueue({ pendingDeltas: full }, queued).pendingDeltas).toHaveLength(100);
     expect(applyDeltaQueue({ pendingDeltas: full }, queued).pendingDeltas[0].deltaId).toBe("new");
+  });
+
+  it("batch approve gives every created entry a distinct id and stamps updatedAt", () => {
+    const state = {
+      userContextVault: [{ id: "identity.1", key: "Name", value: "old", category: "identity", aliases: [] }],
+      pendingDeltas: [
+        { deltaId: "d1", action: "create", category: "custom", key: "Alpha", proposedValue: "va" },
+        { deltaId: "d2", action: "create", category: "custom", key: "Beta", proposedValue: "vb" },
+        { deltaId: "d3", action: "create", category: "custom", key: "Gamma", proposedValue: "vc" },
+        { deltaId: "d4", action: "update", targetEntryId: "identity.1", proposedValue: "new" }
+      ]
+    };
+    const next = applyDeltaApproveAll(state);
+    const ids = next.userContextVault.map((e) => e.id);
+    // All 4 ids unique — a batch of same-millisecond creates must not collide
+    // (delete/update lookups by id would hit the wrong entry).
+    expect(new Set(ids).size).toBe(ids.length);
+    // Bulk update stamps updatedAt exactly as single approve does.
+    const updated = next.userContextVault.find((e) => e.id === "identity.1");
+    expect(updated.value).toBe("new");
+    expect(Number.isNaN(Date.parse(updated.updatedAt))).toBe(false);
+  });
+
+  it("single approve disambiguates its id when the vault already holds the same-ms id", () => {
+    const collidingId = `custom.${Date.now()}`;
+    const state = {
+      userContextVault: [{ id: collidingId, key: "Held", value: "v0", category: "custom", aliases: [] }],
+      pendingDeltas: [{ deltaId: "d1", action: "create", category: "custom", key: "New", proposedValue: "v1" }]
+    };
+    const next = applyDeltaApprove(state, "d1");
+    const ids = next.userContextVault.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(next.userContextVault.find((e) => e.id === collidingId).value).toBe("v0"); // untouched
+    expect(next.userContextVault.find((e) => e.key === "New").id).not.toBe(collidingId);
   });
 
   it("approveAll applies every delta and empties the queue", () => {
