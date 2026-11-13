@@ -31,6 +31,7 @@ import {
   defaultComparePair,
   diffLineTone,
   filterOutputLines,
+  capJobList,
   isConflictError,
   isNotFoundError,
   isTabVisible,
@@ -818,6 +819,13 @@ export function JobsListPanel({
   onSchedule: (job: JobRecord) => void;
   onOpenChat?: () => void;
 }) {
+  // List cap (2026-11-02 functional review): the registry only grows,
+  // so render the newest runs and expand on demand. Hooks stay above
+  // the empty-list return; a fresh list load re-collapses the view.
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => {
+    setShowAll(false);
+  }, [list.length]);
   if (list.length === 0) {
     return (
       <div data-testid="jobs-empty">
@@ -835,9 +843,10 @@ export function JobsListPanel({
       </div>
     );
   }
+  const { visible, hidden } = showAll ? { visible: list, hidden: 0 } : capJobList(list);
   return (
     <ul className="session-list" data-testid="jobs-list">
-      {list.map((j, ji) => (
+      {visible.map((j, ji) => (
         <JobListItem
           key={j.id}
           job={j}
@@ -849,6 +858,17 @@ export function JobsListPanel({
           onSchedule={onSchedule}
         />
       ))}
+      {hidden > 0 && (
+        <li className="detail">
+          <button
+            type="button"
+            data-testid="jobs-show-more"
+            onClick={() => setShowAll(true)}
+          >
+            Show {hidden} more run{hidden === 1 ? '' : 's'}
+          </button>
+        </li>
+      )}
     </ul>
   );
 }
