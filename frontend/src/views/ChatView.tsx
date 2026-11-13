@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import StatusStrip, { type StripHealthState } from '../components/StatusStrip';
 import CopyButton from '../components/CopyButton';
 import TapToFire from '../components/TapToFire';
 import {
@@ -1705,6 +1706,7 @@ export default function ChatView({
   initialRuns,
   focusRequest = 0,
   onOpenDiff,
+  statusStrip = null,
 }: {
   repo: string;
   seed: string | null;
@@ -1717,6 +1719,16 @@ export default function ChatView({
   focusRequest?: number;
   // Dirty-tree hop to the diff modal (#907).
   onOpenDiff?: () => void;
+  // One-glance status above the composer (D5): facts arrive from
+  // the App-level single sources (health snapshot, badge counts);
+  // a tap opens the triage drawer. Absent in older callers/tests.
+  statusStrip?: {
+    state: StripHealthState;
+    label: string;
+    attentionCount: number | null;
+    openPrCount: number | null;
+    onOpenTriage: () => void;
+  } | null;
 }) {
   // Restored live exchange (#573): the initializer replays the
   // sessionStorage snapshot, so a tab switch (unmount/remount) keeps
@@ -2669,16 +2681,22 @@ export default function ChatView({
       {approval && (
         <ApprovalCard approval={approval} decided={decided} onDecide={(d) => void onDecide(d)} />
       )}
-      {metricsLoading && !metrics && (
-        <p className="row-meta" data-testid="chat-metrics-loading" role="status">
-          Loading repo metrics…
-        </p>
-      )}
-      {metrics && <RepoMetricsStrip metrics={metrics} onOpenDiff={onOpenDiff} />}
       {/* Starters only start conversations: once a thread
           exists the chips would be a third button row (#839). */}
       {messages.length === 0 && (
         <PromptChips disabled={streaming} onPick={(text, altKey) => onPickChip(text, altKey)} />
+      )}
+      {/* One-glance status (D5): the strip rides above the composer;
+          its facts come from the App-level single sources and a tap
+          opens the triage drawer. */}
+      {statusStrip && (
+        <StatusStrip
+          healthState={statusStrip.state}
+          healthLabel={statusStrip.label}
+          attentionCount={statusStrip.attentionCount}
+          openPrCount={statusStrip.openPrCount}
+          onTap={statusStrip.onOpenTriage}
+        />
       )}
       <form className="composer" onSubmit={(e) => void onSend(e)}>
         <label className="row-meta" htmlFor="chat-prompt">
@@ -2785,16 +2803,9 @@ export default function ChatView({
             onDelete={(id) => onDeleteTemplate(id)}
           />
         )}
-        {/* Auto resolves the backend per turn, so the model + cost
-            line is the send decision and reads at full weight (#933).
-            Explicit picks already name the backend on the pill. */}
-        <p
-          className={backend === 'auto' ? 'chat-route-auto' : 'row-meta'}
-          data-testid="chat-route-hint"
-          role="status"
-        >
-          {hint ? hintLine(hint) : 'Next reply via …'}
-        </p>
+        {/* Composer chrome shed into the agent drawer (D5): the
+            pre-send route line and repo metrics render there, one
+            glance from the composer, without claiming its rows. */}
         {dictationHint && <DictationHint text={dictationHint} />}
         {/* One composer action row (#839): backend pills ride
             inline with Send instead of owning a second row. */}
@@ -2873,7 +2884,19 @@ export default function ChatView({
       </form>
       </div>
       <aside className="chat-side" aria-label="Past runs and agent launcher">
-      <AgentDrawer repo={repo} />
+      <AgentDrawer
+        repo={repo}
+        routeHint={hint ? hintLine(hint) : 'Next reply via …'}
+        metricsSlot={
+          metricsLoading && !metrics ? (
+            <p className="row-meta" data-testid="chat-metrics-loading" role="status">
+              Loading repo metrics…
+            </p>
+          ) : metrics ? (
+            <RepoMetricsStrip metrics={metrics} onOpenDiff={onOpenDiff} />
+          ) : null
+        }
+      />
       <RunsPane
         runs={runs}
         repo={repo}

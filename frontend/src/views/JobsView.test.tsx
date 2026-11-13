@@ -426,6 +426,46 @@ describe('jobs actionable rows (issue #907)', () => {
     expect(html).toContain('Open Chat past runs');
   });
 
+  it('caps the list at the newest runs with a show-more control', () => {
+    const list = Array.from({ length: 25 }, (_, i) =>
+      mkJob({ id: `cap${String(i).padStart(12, '0')}` }),
+    );
+    const html = renderToStaticMarkup(
+      <JobsListPanel
+        list={list}
+        repo="demo"
+        cursor={null}
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(html).toContain('data-testid="jobs-show-more"');
+    expect(html).toContain('Show 5 more runs');
+    // Newest-first: the first 20 render, the tail stays behind the control.
+    expect(html).toContain('job-cap000000000000');
+    expect(html).not.toContain('job-cap000000000024');
+  });
+
+  it('renders a capped-exactly list with no show-more control', () => {
+    const list = Array.from({ length: 20 }, (_, i) =>
+      mkJob({ id: `cap${String(i).padStart(12, '0')}` }),
+    );
+    const html = renderToStaticMarkup(
+      <JobsListPanel
+        list={list}
+        repo="demo"
+        cursor={null}
+        onSelect={noop}
+        onRerun={noop}
+        onCancel={noop}
+        onSchedule={noop}
+      />,
+    );
+    expect(html).not.toContain('data-testid="jobs-show-more"');
+  });
+
   it('shows a loading indicator while findings load', () => {
     const html = renderToStaticMarkup(<UxAuditGroups site="buttons" />);
     expect(html).toContain('data-testid="ux-audit-groups-loading"');

@@ -1,6 +1,192 @@
 {
   "jobs": [
-    { "id": "job-1", "kind": "briefing", "repo": "remote-server", "done": false },
-    { "id": "job-2", "kind": "preflight", "repo": "remote-server", "done": true }
+    {
+      "id": "job-1",
+      "kind": "briefing",
+      "repo": "remote-server",
+      "done": false
+    },
+    {
+      "id": "job-2",
+      "kind": "preflight",
+      "repo": "remote-server",
+      "done": true
+    },
+    {
+      "id": "job-3",
+      "kind": "doctor",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 1,
+      "detail": "Preflight check failed: td impact ENV_MISSING"
+    },
+    {
+      "id": "job-4",
+      "kind": "preflight",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-5",
+      "kind": "triage-fanout",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-6",
+      "kind": "logs",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-7",
+      "kind": "check-notifications",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 1,
+      "detail": "Preflight check failed: td impact ENV_MISSING"
+    },
+    {
+      "id": "job-8",
+      "kind": "doctor",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-9",
+      "kind": "preflight",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-10",
+      "kind": "triage-fanout",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-11",
+      "kind": "logs",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 1,
+      "detail": "Preflight check failed: td impact ENV_MISSING"
+    },
+    {
+      "id": "job-12",
+      "kind": "check-notifications",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-13",
+      "kind": "doctor",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-14",
+      "kind": "preflight",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-15",
+      "kind": "triage-fanout",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 1,
+      "detail": "Preflight check failed: td impact ENV_MISSING"
+    },
+    {
+      "id": "job-16",
+      "kind": "logs",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-17",
+      "kind": "check-notifications",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-18",
+      "kind": "doctor",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-19",
+      "kind": "preflight",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 1,
+      "detail": "Preflight check failed: td impact ENV_MISSING"
+    },
+    {
+      "id": "job-20",
+      "kind": "triage-fanout",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-21",
+      "kind": "logs",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-22",
+      "kind": "check-notifications",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    },
+    {
+      "id": "job-23",
+      "kind": "doctor",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 1,
+      "detail": "Preflight check failed: td impact ENV_MISSING"
+    },
+    {
+      "id": "job-24",
+      "kind": "preflight",
+      "repo": "remote-server",
+      "done": true,
+      "exit_code": 0,
+      "detail": "Finished."
+    }
   ]
 }

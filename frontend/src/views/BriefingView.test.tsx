@@ -38,6 +38,7 @@ import {
   RepairPicker,
   reviewsErrText,
   splitRunUrls,
+  truncateRunName,
   visibleBoardItems,
 } from './BriefingView';
 import { isHistoryFailure } from './historyUtils';
@@ -678,6 +679,25 @@ describe('actionable briefing (issue #839)', () => {
     expect(html).toContain('Same failure repeated 2 times.');
     expect(html).toContain('solo');
     expect(html).not.toContain('solo ×');
+  });
+
+  it('truncates failing-run names at ~120 chars with the full line on hover', () => {
+    const long = 'npm_and_yarn in /. for @grpc/grpc-js, @grpc/grpc-microservices (×40 packages) and 60 more packages listed in the workflow name for completeness';
+    expect(long.length).toBeGreaterThan(120);
+    const short = truncateRunName(long);
+    expect(short.length).toBeLessThanOrEqual(121);
+    expect(short.endsWith('…')).toBe(true);
+    expect(truncateRunName('short failure')).toBe('short failure');
+
+    const html = renderToStaticMarkup(<GroupedLines lines={[long]} max={120} />);
+    expect(html).toContain('…');
+    expect(html).toContain(long); // full line rides the title attribute
+  });
+
+  it('leaves grouped lines uncapped without max', () => {
+    const long = 'a very long failing line that goes on and on and on well past any reasonable display cap for a briefing row';
+    const html = renderToStaticMarkup(<GroupedLines lines={[long]} />);
+    expect(html).toContain(long);
   });
 
   it('matches review lines to PR numbers', () => {
