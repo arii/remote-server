@@ -6,7 +6,15 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
-import StatusStrip from './StatusStrip';
+import StatusStrip, { stripHealthState } from './StatusStrip';
+import type { SystemHealthResponse } from '../apiClient';
+
+function healthFixture(
+  containers: Array<{ state?: string; health?: string }>,
+  containers_error?: string | null,
+): SystemHealthResponse {
+  return { disk: {}, memory: {}, containers, containers_error };
+}
 
 function renderStrip(props: Parameters<typeof StatusStrip>[0]) {
   const host = document.createElement('div');
@@ -22,6 +30,26 @@ function renderStrip(props: Parameters<typeof StatusStrip>[0]) {
   });
   return { host, teardown };
 }
+
+describe('stripHealthState derivation', () => {
+  it('reads loading before the first snapshot arrives', () => {
+    expect(stripHealthState(null)).toBe('loading');
+  });
+
+  it('reads ok only when every container is running and healthy', () => {
+    expect(stripHealthState(healthFixture([{ state: 'running' }, { state: 'running', health: 'healthy' }]))).toBe('ok');
+  });
+
+  it('reads degraded when a container is down or unhealthy', () => {
+    expect(stripHealthState(healthFixture([{ state: 'running' }, { state: 'exited' }]))).toBe('degraded');
+    expect(stripHealthState(healthFixture([{ state: 'running', health: 'unhealthy' }]))).toBe('degraded');
+    expect(stripHealthState(healthFixture([]))).toBe('degraded');
+  });
+
+  it('reads error when the container list is unavailable', () => {
+    expect(stripHealthState(healthFixture([], 'docker unreachable'))).toBe('error');
+  });
+});
 
 describe('StatusStrip props contract', () => {
   it('renders the health pill with its state and label', () => {

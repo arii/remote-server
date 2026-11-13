@@ -1967,10 +1967,15 @@ describe('past runs repo scope (issue #933)', () => {
 describe('composer auto route line (issue #933)', () => {
   const noop = () => {};
 
-  it('reads at full weight in Auto mode', () => {
+  it('renders in the agent drawer as muted metadata (D5)', () => {
     const html = renderToStaticMarkup(<ChatView repo="r" seed={null} onSeedUsed={noop} />);
+    // The route line shed the composer for the agent drawer (D5):
+    // present once, muted metadata, never the full-weight send
+    // decision it used to be.
     expect(html).toContain('data-testid="chat-route-hint"');
-    expect(html).toContain('class="chat-route-auto"');
+    expect(html.match(/data-testid="chat-route-hint"/g)).toHaveLength(1);
+    expect(html).toContain('class="row-meta"');
+    expect(html).not.toContain('chat-route-auto');
   });
 });
 

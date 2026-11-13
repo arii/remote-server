@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import TapToFire from '../components/TapToFire';
 import {
   abortAgentSession,
@@ -214,10 +214,17 @@ export default function AgentDrawer({
   repo,
   initialProviders,
   initialStatus,
+  routeHint = null,
+  metricsSlot = null,
 }: {
   repo: string;
   initialProviders?: string[];
   initialStatus?: Record<string, boolean>;
+  // Composer chrome shed into the drawer (D5): the pre-send route
+  // line (backend + cost) and the repo metrics strip render here
+  // instead of claiming composer rows.
+  routeHint?: string | null;
+  metricsSlot?: ReactNode | null;
 }) {
   // Optimistic: the picker renders instantly with the allowlist and
   // live status refines it. Probes are binary checks now (issue
@@ -736,6 +743,20 @@ export default function AgentDrawer({
   return (
     <section data-testid="agent-drawer" className="chat-module">
       <h3>Agent session</h3>
+      {/* Composer chrome shed into the drawer (D5): the pre-send
+          route line and repo metrics live here, one tap from the
+          composer, instead of claiming composer rows. */}
+      {routeHint !== null && routeHint !== undefined && (
+        <p
+          className="row-meta"
+          data-testid="chat-route-hint"
+          role="status"
+        >
+          {routeHint}
+        </p>
+      )}
+      {metricsSlot ?? null}
+
       {error && failure && (
         <GuidanceCard
           message={error}

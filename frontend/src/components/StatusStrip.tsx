@@ -4,7 +4,24 @@
 // the App-level single sources (header health snapshot, nav badge
 // counts), so the strip can never disagree with the nav or the
 // status drawer. Tapping it opens the triage drawer.
-type StripHealthState = 'loading' | 'ok' | 'degraded' | 'error';
+import type { SystemHealthResponse } from '../apiClient';
+
+export type StripHealthState = 'loading' | 'ok' | 'degraded' | 'error';
+
+// One health fact, one derivation: the strip, the header pill, and
+// the old Now containers section all read the same snapshot, so the
+// strip's state derives from it with the same rule the container
+// section used (all running + nothing unhealthy = ok).
+export function stripHealthState(health: SystemHealthResponse | null): StripHealthState {
+  if (!health) return 'loading';
+  if (health.containers_error) return 'error';
+  if (health.containers.length === 0) return 'degraded';
+  const allUp = health.containers.every(
+    (c) => (c.state ?? '').toLowerCase() === 'running' &&
+      (c.health ?? '').toLowerCase() !== 'unhealthy',
+  );
+  return allUp ? 'ok' : 'degraded';
+}
 
 export interface StatusStripProps {
   healthState: StripHealthState;
