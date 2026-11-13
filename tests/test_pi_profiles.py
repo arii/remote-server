@@ -36,16 +36,19 @@ class TestPiProfiles(unittest.TestCase):
 
     def test_pi_review_profile_definition(self):
         exec_line = self._exec_line("pi-review")
-        self.assertIn("mcp__boomtick__github_get_pr", exec_line)
-        self.assertIn("mcp__boomtick__github_issue_comment", exec_line)
-        self.assertNotIn("github_get_pr_diff", exec_line)
+        self.assertIn("mcp__boomtick__github_pr", exec_line)
+        self.assertIn("mcp__boomtick__github_issue", exec_line)
+        self.assertNotIn("github_get_pr", exec_line)
+        self.assertNotIn("github_issue_comment", exec_line)
         self.assertNotIn("comment_triage_summary", exec_line)
 
     def test_pi_triage_profile_definition(self):
         exec_line = self._exec_line("pi-triage")
-        self.assertIn("mcp__boomtick__github_get_pr", exec_line)
-        self.assertIn("mcp__boomtick__repo_read_ci_logs", exec_line)
-        self.assertIn("mcp__boomtick__github_issue_comment", exec_line)
+        self.assertIn("mcp__boomtick__github_pr", exec_line)
+        self.assertIn("mcp__boomtick__github_issue", exec_line)
+        self.assertNotIn("repo_read_ci_logs", exec_line)
+        self.assertNotIn("github_get_pr", exec_line)
+        self.assertNotIn("github_issue_comment", exec_line)
         self.assertNotIn("search_open_prs", exec_line)
         self.assertNotIn("get_changed_files", exec_line)
 
@@ -87,12 +90,19 @@ class TestPiProfiles(unittest.TestCase):
                      "worktree_create", "worktree_list",
                      "worktree_remove"):
             self.assertNotIn(tool, exposure, tool)
-        # The 15-tool live surface stays directly callable: the
-        # wildcard hides everything not listed here.
+        # The 8 names retired by the 2026-11 surface consolidation
+        # (boomtick PR #1259) stay out of the allowlist: they now
+        # return "Tool not found".
         for tool in ("boomtick_health", "repo_read_agent_context",
                      "repo_read_ci_logs", "repo_run_tests",
                      "github_get_pr", "github_issue_view",
-                     "github_issue_update", "github_issue_comment",
+                     "github_issue_update", "github_issue_comment"):
+            self.assertNotIn(tool, exposure, tool)
+        # The 11-tool live surface (post boomtick PR #1259) stays
+        # directly callable: the wildcard hides everything not listed
+        # here.
+        for tool in ("repo_context", "repo_test",
+                     "github_pr", "github_issue",
                      "github_create_issue", "agent_submit_pr",
                      "td_init", "td_rag", "td_validate_issue",
                      "td_verify_scope", "td_audit_worktree"):
