@@ -2,8 +2,10 @@
 name: co_browsing_state_takeover
 description: Protocol governing human-in-the-loop co-browsing, immediate takeover handling, command buffer suppression, and post-takeover DOM re-indexing.
 trigger_nodes:
-  - visual_interaction_node
-  - td_impact_and_visual_node
+  - intent_explain
+  - intent_fix
+  - intent_implement
+  - intent_review
 ---
 # Skill: Co-Browsing Interaction & Immediate Takeover Protocol
 

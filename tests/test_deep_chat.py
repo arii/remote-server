@@ -690,7 +690,7 @@ class TestTrivialTrace(unittest.TestCase):
 class TestToolSurface(unittest.TestCase):
     def test_tool_surface(self):
         tools = deep_chat.build_tools("/tmp")
-        self.assertEqual(len(tools), 13)
+        self.assertEqual(len(tools), 14)
         self.assertEqual(
             {t.name for t in tools},
             {
@@ -707,6 +707,7 @@ class TestToolSurface(unittest.TestCase):
                 "browser_snapshot",
                 "browser_act",
                 "browser_notes",
+                "request_human_cobrowse_handoff",
             },
         )
 

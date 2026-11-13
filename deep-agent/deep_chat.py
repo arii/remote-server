@@ -699,6 +699,27 @@ def build_tools(checkout, *, impact_tools=False):
         """
         return cobrowse_handoff.browser_notes_impl(site, note)
 
+    @tool
+    def request_human_cobrowse_handoff(
+        thread_id: str, reason: str, current_url: str = ""
+    ) -> str:
+        """Park the browser agent on a human handoff (#1097).
+
+        Call IMMEDIATELY on a login wall, MFA/2FA prompt, CAPTCHA,
+        payment confirmation, or ambiguous UI you cannot resolve
+        after one retry — do not keep retrying or guess credentials.
+        Pauses agent driving and shows the human a waiting banner;
+        their Hand Back resumes you with a mandatory re-snapshot.
+
+        Args:
+            thread_id: Co-browse session/thread owning the browser.
+            reason: Why a human is needed (shown in the banner).
+            current_url: Page the agent is stuck on (may be blank).
+        """
+        return cobrowse_handoff.request_human_cobrowse_handoff_impl(
+            thread_id, reason, current_url=current_url
+        )
+
     base = [
         read_repo_file,
         grep_repo,
@@ -713,6 +734,7 @@ def build_tools(checkout, *, impact_tools=False):
         browser_snapshot,
         browser_act,
         browser_notes,
+        request_human_cobrowse_handoff,
     ]
     if not impact_tools:
         return base

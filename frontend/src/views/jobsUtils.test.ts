@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   auditDoneFromOutput,
+  capJobList,
   completionOutcome,
   uxAuditPagesFromInput,
   uxAuditSiteRepo,
@@ -424,5 +425,31 @@ describe('tab visibility gate (issue #401)', () => {
     expect(fn).toHaveBeenCalledTimes(1);
     stop();
     expect(doc.listeners.has('visibilitychange')).toBe(false);
+  });
+});
+
+describe('jobs list cap (2026-11-02 functional review)', () => {
+  const jobs = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `job${i}`, kind: 'logs', name: 'logs', repo: 'remote-server', done: true,
+    }));
+
+  it('keeps the newest runs (the API is newest-first) and counts the rest', () => {
+    const capped = capJobList(jobs(25));
+    expect(capped.visible).toHaveLength(20);
+    expect(capped.visible[0].id).toBe('job0');
+    expect(capped.hidden).toBe(5);
+  });
+
+  it('leaves a list at or under the cap untouched', () => {
+    const capped = capJobList(jobs(20));
+    expect(capped.visible).toHaveLength(20);
+    expect(capped.hidden).toBe(0);
+  });
+
+  it('honors a custom limit', () => {
+    const capped = capJobList(jobs(3), 2);
+    expect(capped.visible).toHaveLength(2);
+    expect(capped.hidden).toBe(1);
   });
 });

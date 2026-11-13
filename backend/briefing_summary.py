@@ -115,8 +115,8 @@ ENRICHMENT_CAP = 10
 # default gh path would silently brief the wrong repo.
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 GH_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-REPO_KEY = "tech-dancer"
-REPO_GH = "arii/tech-dancer"
+REPO_KEY = "remote-server"
+REPO_GH = "arii/remote-server"
 FAILING_CONCLUSIONS = {"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}
 
 
@@ -152,9 +152,14 @@ def _json_error_message(blob):
 def run_json(cmd, timeout, cwd=None):
     """Run cmd, return (parsed JSON or None, raw stdout, error str)."""
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=timeout,
-                              text=True, cwd=cwd)
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            text=True,
+            cwd=cwd,
+        )
     except Exception as exc:
         return None, "", str(exc)
     raw = proc.stdout or ""
@@ -174,13 +179,11 @@ def run_json(cmd, timeout, cwd=None):
         pools.append(raw.strip().splitlines())
         detail = ""
         for pool in pools:
-            meaningful = [line for line in pool
-                          if any(ch.isalnum() for ch in line)]
+            meaningful = [line for line in pool if any(ch.isalnum() for ch in line)]
             if meaningful:
                 detail = meaningful[-1].strip()
                 break
-        return None, raw, (detail[:160] if detail
-                           else f"exit {proc.returncode}")
+        return None, raw, (detail[:160] if detail else f"exit {proc.returncode}")
     try:
         return json.loads(raw), raw, ""
     except Exception:
@@ -208,8 +211,8 @@ def _target_checkout_cwd():
 def fetch_pr_diff(pr_number: int, max_file_lines: int = 200) -> str:
     """Fetch PR diff via td and pre-filter using context_filter.filter_diff()."""
     data, _, _ = run_json(
-        ["td", "--json", "gh", "pr-diff", "--pr", str(pr_number),
-         "--repo", REPO_GH], 30)
+        ["td", "--json", "gh", "pr-diff", "--pr", str(pr_number), "--repo", REPO_GH], 30
+    )
     text = (data or {}).get("diffText") or ""
     if not text:
         return ""
@@ -225,8 +228,11 @@ def ci_summary(rollup):
         return "unknown", []
     if not rollup:
         return "no checks", []
-    failing = [getf(c, "name", default="?") for c in rollup
-               if getf(c, "conclusion") in FAILING_CONCLUSIONS]
+    failing = [
+        getf(c, "name", default="?")
+        for c in rollup
+        if getf(c, "conclusion") in FAILING_CONCLUSIONS
+    ]
     if failing:
         return "failing", failing
     if any(getf(c, "status") != "COMPLETED" for c in rollup):
@@ -271,11 +277,12 @@ def _normalize_review(raw):
     user = raw.get("user")
     user = user.get("login") if isinstance(user, dict) else user
     state = str(getf(raw, "state", default="") or "").upper()
-    return (str(user or "?"),
-            state,
-            _excerpt(getf(raw, "body", default="")),
-            str(getf(raw, "submitted_at", "submittedAt",
-                     default="") or ""))
+    return (
+        str(user or "?"),
+        state,
+        _excerpt(getf(raw, "body", default="")),
+        str(getf(raw, "submitted_at", "submittedAt", default="") or ""),
+    )
 
 
 def _overlap_prs(node, out, in_conf=False):
@@ -298,8 +305,7 @@ def _overlap_prs(node, out, in_conf=False):
         if isinstance(prs_val, list):
             nums.extend(n for n in prs_val if isinstance(n, int))
         files = []
-        for key in ("conflicts", "conflictedFiles", "conflicted_files",
-                    "files"):
+        for key in ("conflicts", "conflictedFiles", "conflicted_files", "files"):
             val = node.get(key)
             if isinstance(val, list) and val and key != "conflicts":
                 files = [str(v) for v in val]
@@ -316,16 +322,19 @@ def _overlap_prs(node, out, in_conf=False):
                     if peer != n and peer not in entry["with"]:
                         entry["with"].append(peer)
         for key, val in node.items():
-            _overlap_prs(val, out,
-                         in_conf or key in ("conflicts", "conflictedFiles",
-                                            "conflicted_files"))
+            _overlap_prs(
+                val,
+                out,
+                in_conf or key in ("conflicts", "conflictedFiles", "conflicted_files"),
+            )
     elif isinstance(node, list):
         for item in node:
             _overlap_prs(item, out, in_conf)
 
 
-PR_LIST_FIELDS = ("number,title,author,headRefName,baseRefName,"
-                  "isDraft,mergeStateStatus,updatedAt,url")
+PR_LIST_FIELDS = (
+    "number,title,author,headRefName,baseRefName,isDraft,mergeStateStatus,updatedAt,url"
+)
 
 
 def _updated_key(pr):
@@ -350,37 +359,64 @@ def fetch():
     # REST source, not td search-prs: the search index lags merges
     # by minutes (#446). gh pr list returns a bare list.
     data["prs"], data["prs_raw"], data["prs_err"] = run_json(
-        ["gh", "pr", "list", "--state", "open", "--repo", REPO_GH,
-         "--limit", "50", "--json", PR_LIST_FIELDS], 60)
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--repo",
+            REPO_GH,
+            "--limit",
+            "50",
+            "--json",
+            PR_LIST_FIELDS,
+        ],
+        60,
+    )
     # Recently-merged heads for the board relabel below. Failure
     # degrades to today's board rendering (no relabel), never an
     # error section: this is enrichment, like the per-PR gh views.
     merged, _, _ = run_json(
-        ["gh", "pr", "list", "--state", "merged", "--repo", REPO_GH,
-         "--limit", "50", "--json", "number,headRefName"], 30)
+        [
+            "gh",
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--repo",
+            REPO_GH,
+            "--limit",
+            "50",
+            "--json",
+            "number,headRefName",
+        ],
+        30,
+    )
     data["merged_heads"] = {
-        row.get("headRefName") for row in (merged or [])
-        if isinstance(row, dict) and row.get("headRefName")}
+        row.get("headRefName")
+        for row in (merged or [])
+        if isinstance(row, dict) and row.get("headRefName")
+    }
     # status-board/detect-conflicts have no --repo flag: they read the
     # checkout td discovers from cwd. Scope via the target checkout
     # when it exists; otherwise say so instead of showing the wrong
     # repo's data.
     scoped_cwd = _target_checkout_cwd() or None
     if not scoped_cwd and REPO_GH != _config_repo():
-        unscoped = (f"unavailable for {REPO_GH} "
-                    "(needs a local checkout)")
-        data["board"], data["board_raw"], data["board_err"] = \
-            None, "", unscoped
-        data["conf"], data["conf_raw"], data["conf_err"] = \
-            None, "", unscoped
+        unscoped = f"unavailable for {REPO_GH} (needs a local checkout)"
+        data["board"], data["board_raw"], data["board_err"] = None, "", unscoped
+        data["conf"], data["conf_raw"], data["conf_err"] = None, "", unscoped
     else:
         data["board"], data["board_raw"], data["board_err"] = run_json(
-            ["td", "--json", "gh", "status-board"], 60, cwd=scoped_cwd)
+            ["td", "--json", "gh", "status-board"], 60, cwd=scoped_cwd
+        )
         data["conf"], data["conf_raw"], data["conf_err"] = run_json(
-            ["td", "--json", "gh", "detect-conflicts", "--all"], 120,
-            cwd=scoped_cwd)
+            ["td", "--json", "gh", "detect-conflicts", "--all"], 120, cwd=scoped_cwd
+        )
     data["runs"], data["runs_raw"], data["runs_err"] = run_json(
-        ["td", "--json", "repo", "workflow-runs", "--repo", REPO_GH], 60)
+        ["td", "--json", "repo", "workflow-runs", "--repo", REPO_GH], 60
+    )
     prs = data["prs"] if isinstance(data["prs"], list) else []
     data["pr_list"] = [p for p in prs if isinstance(p, dict)]
     # Per-PR enrichment, capped (#487): both loops share one bound
@@ -391,13 +427,13 @@ def fetch():
     data["enrichment_total"] = len(data["pr_list"])
     data["enrichment_cap"] = ENRICHMENT_CAP
     data["enrichment_shown"] = len(targets)
-    data["enrichment_truncated"] = (
-        len(data["pr_list"]) > ENRICHMENT_CAP)
+    data["enrichment_truncated"] = len(data["pr_list"]) > ENRICHMENT_CAP
     if data["enrichment_truncated"]:
         data["enrichment_note"] = (
             f"showing enrichment for {len(targets)} of "
             f"{len(data['pr_list'])} open PRs "
-            f"(most-recently-updated first, cap {ENRICHMENT_CAP})")
+            f"(most-recently-updated first, cap {ENRICHMENT_CAP})"
+        )
     else:
         data["enrichment_note"] = ""
     # gh enrichment, one call per enriched PR.
@@ -406,11 +442,20 @@ def fetch():
         num = getf(pr, "number")
         if not isinstance(num, int):
             continue
-        view, _, _ = run_json([
-            "gh", "pr", "view", str(num), "--repo", REPO_GH, "--json",
-            "number,title,headRefName,mergeable,mergeStateStatus,"
-            "reviewDecision,statusCheckRollup,updatedAt,author,isDraft,url",
-        ], 30)
+        view, _, _ = run_json(
+            [
+                "gh",
+                "pr",
+                "view",
+                str(num),
+                "--repo",
+                REPO_GH,
+                "--json",
+                "number,title,headRefName,mergeable,mergeStateStatus,"
+                "reviewDecision,statusCheckRollup,updatedAt,author,isDraft,url",
+            ],
+            30,
+        )
         if view:
             data["gh"][num] = view
     # Review substance, one td call per enriched PR (same cap and
@@ -423,9 +468,18 @@ def fetch():
         if not isinstance(num, int):
             continue
         payload, raw, err = run_json(
-            ["td", "--json", "gh", "read-pr-reviews", "--pr", str(num),
-             "--repo", REPO_GH],
-            30)
+            [
+                "td",
+                "--json",
+                "gh",
+                "read-pr-reviews",
+                "--pr",
+                str(num),
+                "--repo",
+                REPO_GH,
+            ],
+            30,
+        )
         if raw:
             data["reviews_raw_parts"].append(raw[:4000])
         if payload is None:
@@ -445,8 +499,9 @@ def fetch():
     data["jobs"] = {}
     runs_list = []
     if data["runs"]:
-        runs_list = getf(data["runs"], "workflow_runs", "workflowRuns",
-                         default=[]) or []
+        runs_list = (
+            getf(data["runs"], "workflow_runs", "workflowRuns", default=[]) or []
+        )
     if not isinstance(runs_list, list):
         runs_list = []
     for run in runs_list:
@@ -460,8 +515,8 @@ def fetch():
         if run_id is None:
             continue
         jobs_payload, _, _ = run_json(
-            ["gh", "api",
-             f"repos/{REPO_GH}/actions/runs/{run_id}/jobs"], 30)
+            ["gh", "api", f"repos/{REPO_GH}/actions/runs/{run_id}/jobs"], 30
+        )
         jobs = _deep_list(jobs_payload, "jobs") if jobs_payload else None
         failed = []
         if isinstance(jobs, list):
@@ -470,10 +525,11 @@ def fetch():
                     continue
                 if getf(job, "conclusion") != "failure":
                     continue
-                steps = [getf(s, "name", default="?")
-                         for s in (job.get("steps") or [])
-                         if isinstance(s, dict)
-                         and getf(s, "conclusion") == "failure"]
+                steps = [
+                    getf(s, "name", default="?")
+                    for s in (job.get("steps") or [])
+                    if isinstance(s, dict) and getf(s, "conclusion") == "failure"
+                ]
                 failed.append((getf(job, "name", default="?"), steps[:3]))
         data["jobs"][str(run_id)] = failed[:3]
     return data
@@ -503,9 +559,11 @@ def analyze(data):
         view = gh.get(num, {}) if isinstance(num, int) else {}
         rollup = getf(view, "statusCheckRollup", "status_check_rollup")
         ci, failing = ci_summary(rollup)
-        merge = (getf(view, "mergeStateStatus", "merge_state_status")
-                 or getf(pr, "mergeStateStatus", "merge_state_status")
-                 or "?")
+        merge = (
+            getf(view, "mergeStateStatus", "merge_state_status")
+            or getf(pr, "mergeStateStatus", "merge_state_status")
+            or "?"
+        )
         merge = str(merge).lower()
         # True merge conflicts come only from GitHub's own mergeability
         # verdict (mergeStateStatus DIRTY). The td overlap scan is PR-vs-PR
@@ -517,16 +575,16 @@ def analyze(data):
         ov_peers = sorted(ov.get("with", []))
         ov_files = sorted(ov.get("files", []))
         review = getf(view, "reviewDecision", "review_decision")
-        pr_reviews = data["reviews"].get(num, []) \
-            if isinstance(num, int) else []
+        pr_reviews = data["reviews"].get(num, []) if isinstance(num, int) else []
         latest_by_state = {}
         for user, state, body, _submitted in pr_reviews:
             latest_by_state.setdefault(state, (user, body))
         review_suffix = ""
         if latest_by_state:
             review_suffix = " — reviews: " + "; ".join(
-                f"@{user} {state}" for state, (user, _body)
-                in sorted(latest_by_state.items()))
+                f"@{user} {state}"
+                for state, (user, _body) in sorted(latest_by_state.items())
+            )
         requested = latest_by_state.get("CHANGES_REQUESTED")
         # Stale: updated more than STALE_DAYS ago (unparseable = not stale).
         stale = False
@@ -550,34 +608,56 @@ def analyze(data):
         for want in ("CHANGES_REQUESTED", "APPROVED", "COMMENTED"):
             for user, state, body, _s in pr_reviews:
                 if state == want:
-                    picked.append({"user": user, "state": state,
-                                   "body": body})
+                    picked.append({"user": user, "state": state, "body": body})
                     break
             if len(picked) >= 2:
                 break
-        pr_infos.append({
-            "number": num, "title": title, "branch": branch,
-            "draft": draft, "updated": updated_day, "ci": ci,
-            "failing": failing, "merge": merge,
-            "conflicted": bool(is_conflict), "stale": stale,
-            "overlaps": {"with": ov_peers, "files": ov_files},
-            "review": review, "line": f"- {label} {detail}",
-            "verdicts": [{"state": s, "user": u}
-                         for s, (u, _b) in sorted(latest_by_state.items())],
-            "requested": ({"user": requested[0], "body": requested[1]}
-                          if requested else None),
-            "reviews_picked": picked, "reviews_total": len(pr_reviews),
-            "url": getf(view, "url") or getf(pr, "url"),
-        })
+        pr_infos.append(
+            {
+                "number": num,
+                "title": title,
+                "branch": branch,
+                "draft": draft,
+                "updated": updated_day,
+                "ci": ci,
+                "failing": failing,
+                "merge": merge,
+                "conflicted": bool(is_conflict),
+                "stale": stale,
+                "overlaps": {"with": ov_peers, "files": ov_files},
+                "review": review,
+                "line": f"- {label} {detail}",
+                "verdicts": [
+                    {"state": s, "user": u}
+                    for s, (u, _b) in sorted(latest_by_state.items())
+                ],
+                "requested": (
+                    {"user": requested[0], "body": requested[1]} if requested else None
+                ),
+                "reviews_picked": picked,
+                "reviews_total": len(pr_reviews),
+                "url": getf(view, "url") or getf(pr, "url"),
+            }
+        )
         if draft:
             continue
         if is_conflict:
-            attention.append((0, f"{label} — conflicted with base",
-                             f"<!-- action:update pr:{num} -->"))
+            attention.append(
+                (
+                    0,
+                    f"{label} — conflicted with base",
+                    f"<!-- action:update pr:{num} -->",
+                )
+            )
         elif ci == "failing":
-            attention.append((1, f"{label} — CI failing"
-                             + (f": {', '.join(failing[:3])}" if failing else ""),
-                             f"<!-- action:fix-ci pr:{num} -->"))
+            attention.append(
+                (
+                    1,
+                    f"{label} — CI failing"
+                    + (f": {', '.join(failing[:3])}" if failing else ""),
+                    f"<!-- action:fix-ci pr:{num} -->",
+                )
+            )
         elif review == "CHANGES_REQUESTED":
             item = f"{label} — changes requested"
             if requested:
@@ -589,12 +669,22 @@ def analyze(data):
         elif ov_peers:
             peers = ", ".join(f"#{p}" for p in ov_peers)
             on_files = ", ".join(ov_files[:3]) if ov_files else "shared files"
-            attention.append((2, f"{label} — overlaps with {peers} on "
-                                f"{on_files} (coordinate merge order)",
-                             f"<!-- action:review pr:{num} -->"))
+            attention.append(
+                (
+                    2,
+                    f"{label} — overlaps with {peers} on "
+                    f"{on_files} (coordinate merge order)",
+                    f"<!-- action:review pr:{num} -->",
+                )
+            )
         elif stale:
-            attention.append((3, f"{label} — stale (updated {updated_day})",
-                             f"<!-- action:review pr:{num} -->"))
+            attention.append(
+                (
+                    3,
+                    f"{label} — stale (updated {updated_day})",
+                    f"<!-- action:review pr:{num} -->",
+                )
+            )
     reviews_lines = []
     reviews = data["reviews"]
     reviews_err = data["reviews_err"]
@@ -639,10 +729,10 @@ def analyze(data):
     # auto-deleted so the row lingers). Relabel, never drop: the row
     # still names a live branch. A branch with an open PR is never
     # relabeled, even if an older same-branch PR merged.
-    merged_heads = {h for h in (data.get("merged_heads") or set())
-                    if h}
-    open_heads = {getf(p, "headRefName", "head_ref_name")
-                  for p in prs if isinstance(p, dict)}
+    merged_heads = {h for h in (data.get("merged_heads") or set()) if h}
+    open_heads = {
+        getf(p, "headRefName", "head_ref_name") for p in prs if isinstance(p, dict)
+    }
     open_heads = {h for h in open_heads if h}
     if data["board_err"]:
         board_lines.append(f"Work board unavailable: {data['board_err']}")
@@ -653,18 +743,24 @@ def analyze(data):
             def _present(value):
                 value = (value or "").strip()
                 return "" if value in ("", "?", "—") else value
+
             branch = _present(getf(item, "branch", default="?")) or "?"
             issue = _present(getf(item, "issue", default="?"))
             status = _present(getf(item, "status", default="?"))
-            if (status.lower() == "open" and branch != "?"
-                    and branch in merged_heads
-                    and branch not in open_heads):
+            if (
+                status.lower() == "open"
+                and branch != "?"
+                and branch in merged_heads
+                and branch not in open_heads
+            ):
                 status = "Merged"
-            board_items.append({
-                "branch": branch,
-                "issue": issue,
-                "status": status,
-            })
+            board_items.append(
+                {
+                    "branch": branch,
+                    "issue": issue,
+                    "status": status,
+                }
+            )
             parts = [branch]
             if issue:
                 parts.append(f"issue {issue}")
@@ -673,35 +769,39 @@ def analyze(data):
             board_lines.append("- " + " — ".join(parts))
     # No "no items" placeholder: empty stays empty (all-clear above).
 
-    conflicts_list = [{"number": p["number"], "merge": "dirty"}
-                      for p in pr_infos if p["conflicted"]]
+    conflicts_list = [
+        {"number": p["number"], "merge": "dirty"} for p in pr_infos if p["conflicted"]
+    ]
     conflicts_lines = []
     if conflicts_list:
         for entry in conflicts_list:
             conflicts_lines.append(f"- PR #{entry['number']} (merge: dirty)")
     # No "none detected" placeholder: empty stays empty.
-    overlaps_list = [{"number": num, "with": sorted(e["with"]),
-                      "files": sorted(e["files"])}
-                     for num, e in sorted(overlaps.items())]
+    overlaps_list = [
+        {"number": num, "with": sorted(e["with"]), "files": sorted(e["files"])}
+        for num, e in sorted(overlaps.items())
+    ]
     overlaps_lines = []
     if data["conf_err"]:
         overlaps_lines.append(f"Overlap scan unavailable: {data['conf_err']}")
     elif overlaps_list:
         for entry in overlaps_list:
             peers = ", ".join(f"#{p}" for p in entry["with"]) or "—"
-            files = ", ".join(entry["files"]) if entry["files"] \
-                else "shared files"
-            overlaps_lines.append(f"- PR #{entry['number']} overlaps with "
-                                  f"{peers} on: {files}")
+            files = ", ".join(entry["files"]) if entry["files"] else "shared files"
+            overlaps_lines.append(
+                f"- PR #{entry['number']} overlaps with {peers} on: {files}"
+            )
     # No "none detected" placeholder: empty stays empty.
 
-    runs = getf(data["runs"], "workflow_runs", "workflowRuns",
-                default=[]) if data["runs"] else []
+    runs = (
+        getf(data["runs"], "workflow_runs", "workflowRuns", default=[])
+        if data["runs"]
+        else []
+    )
     failing_runs = []
     workflow_lines = []
     if data["runs_err"]:
-        workflow_lines.append(
-            f"Workflow run list unavailable: {data['runs_err']}")
+        workflow_lines.append(f"Workflow run list unavailable: {data['runs_err']}")
     else:
         raw_failing = []
         if isinstance(runs, list):
@@ -711,16 +811,17 @@ def analyze(data):
                 if concl == "failure" or (concl is None and status == "failure"):
                     raw_failing.append(run)
         for run in raw_failing[:5]:
-            name = getf(run, "name", "workflow", "workflowName",
-                        default="?")
-            line = (f"- failing: {name} on "
-                    f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
-                    f"({getf(run, 'event', default='?')})")
+            name = getf(run, "name", "workflow", "workflowName", default="?")
+            line = (
+                f"- failing: {name} on "
+                f"{getf(run, 'branch', 'headBranch', 'head_branch', default='?')} "
+                f"({getf(run, 'event', default='?')})"
+            )
             run_id = getf(run, "id")
-            failed_jobs = data["jobs"].get(str(run_id), []) \
-                if run_id is not None else []
-            failed_struct = [{"job": j, "steps": s}
-                             for j, s in failed_jobs]
+            failed_jobs = (
+                data["jobs"].get(str(run_id), []) if run_id is not None else []
+            )
+            failed_struct = [{"job": j, "steps": s} for j, s in failed_jobs]
             if failed_jobs:
                 causes = []
                 for job_name, steps in failed_jobs:
@@ -733,13 +834,17 @@ def analyze(data):
             if url:
                 line += f" — {url}"
             workflow_lines.append(line)
-            failing_runs.append({
-                "name": name,
-                "branch": getf(run, "branch", "headBranch", "head_branch",
-                               default="?"),
-                "event": getf(run, "event", default="?"),
-                "url": url, "failed": failed_struct,
-            })
+            failing_runs.append(
+                {
+                    "name": name,
+                    "branch": getf(
+                        run, "branch", "headBranch", "head_branch", default="?"
+                    ),
+                    "event": getf(run, "event", default="?"),
+                    "url": url,
+                    "failed": failed_struct,
+                }
+            )
         # No "no failing runs" placeholder: empty stays empty.
 
     for fr in failing_runs:
@@ -756,28 +861,33 @@ def analyze(data):
                 failed_parts.append(jname)
         cause_summary = "; ".join(failed_parts) if failed_parts else "workflow failed"
         attention_text = f"Failing run: {run_name} on {branch_name} ({event_name}) — likely cause: {cause_summary}"
-        marker = f"<!-- action:diagnose-run workflow:{run_name} branch:{branch_name} -->"
+        marker = (
+            f"<!-- action:diagnose-run workflow:{run_name} branch:{branch_name} -->"
+        )
         attention.append((1, attention_text, marker))
 
     # Rank order, not PR-list order: conflicts (0) before CI / failing runs (1)
     # before reviews (2) before stale (3), regardless of which arrived first.
     attention_ranked = sorted(attention, key=lambda x: x[0])
     attention = [t[1] for t in attention_ranked]
-    attention_with_markers = [(t[1], t[2] if len(t) > 2 else "")
-                              for t in attention_ranked]
+    attention_with_markers = [
+        (t[1], t[2] if len(t) > 2 else "") for t in attention_ranked
+    ]
 
     enrichment_note = data.get("enrichment_note", "")
     enrichment_total = data.get("enrichment_total", len(prs))
     enrichment_shown = data.get("enrichment_shown", len(prs))
     enrichment_truncated = data.get(
         "enrichment_truncated",
-        enrichment_total > data.get("enrichment_cap", ENRICHMENT_CAP))
+        enrichment_total > data.get("enrichment_cap", ENRICHMENT_CAP),
+    )
     if enrichment_truncated and not enrichment_note:
         enrichment_note = (
             f"showing enrichment for {enrichment_shown} of "
             f"{enrichment_total} open PRs "
             f"(most-recently-updated first, "
-            f"cap {data.get('enrichment_cap', ENRICHMENT_CAP)})")
+            f"cap {data.get('enrichment_cap', ENRICHMENT_CAP)})"
+        )
 
     return {
         "repo": REPO_KEY,
@@ -791,12 +901,16 @@ def analyze(data):
         "enrichment_truncated": enrichment_truncated,
         "reviews_lines": reviews_lines,
         "reviews_err": {str(k): v for k, v in reviews_err.items()},
-        "board": board_items, "board_lines": board_lines,
+        "board": board_items,
+        "board_lines": board_lines,
         "board_err": data["board_err"],
-        "conflicts": conflicts_list, "conflicts_lines": conflicts_lines,
+        "conflicts": conflicts_list,
+        "conflicts_lines": conflicts_lines,
         "conf_err": data["conf_err"],
-        "overlaps": overlaps_list, "overlaps_lines": overlaps_lines,
-        "failing_runs": failing_runs, "workflow_lines": workflow_lines,
+        "overlaps": overlaps_list,
+        "overlaps_lines": overlaps_lines,
+        "failing_runs": failing_runs,
+        "workflow_lines": workflow_lines,
         "runs_err": data["runs_err"],
     }
 
@@ -820,6 +934,7 @@ def build(data, analysis=None):
             lines.append(f"Note: {a['enrichment_note']}.")
     else:
         lines.append("No open PRs.")
+
     # analyze() leaves empty sections empty for the API (the app
     # condenses them); the markdown rendering keeps a (none) marker
     # so headings never dangle over a blank gap.
@@ -844,9 +959,12 @@ def build(data, analysis=None):
     lines.append("")
 
     raw_parts = []
-    for name, key in (("pr-list", "prs_raw"), ("status-board", "board_raw"),
-                      ("detect-conflicts", "conf_raw"),
-                      ("workflow-runs", "runs_raw")):
+    for name, key in (
+        ("pr-list", "prs_raw"),
+        ("status-board", "board_raw"),
+        ("detect-conflicts", "conf_raw"),
+        ("workflow-runs", "runs_raw"),
+    ):
         raw = data[key]
         if raw:
             if key == "runs_raw":
@@ -855,10 +973,13 @@ def build(data, analysis=None):
             raw_parts.append(f"### {name}\n{cleaned[:RAW_CAP]}")
     if data["reviews_raw_parts"]:
         rev_combined = "\n".join(data["reviews_raw_parts"])
-        rev_cleaned = context_filter.enforce_context_budget(rev_combined, max_tokens=2000)
+        rev_cleaned = context_filter.enforce_context_budget(
+            rev_combined, max_tokens=2000
+        )
         raw_parts.append(f"### read-pr-reviews\n{rev_cleaned[:RAW_CAP]}")
     raw_text = "\n\n".join(raw_parts)
     return "\n".join(lines), a["attention"], raw_text
+
 
 def main(argv):
     global REPO_KEY, REPO_GH
@@ -873,8 +994,10 @@ def main(argv):
             print(f"bad repo name: {key}", file=sys.stderr)
             return 2
         if "--gh" not in argv:
-            print("--repo needs --gh (refusing to brief with the "
-                  "default gh path)", file=sys.stderr)
+            print(
+                "--repo needs --gh (refusing to brief with the default gh path)",
+                file=sys.stderr,
+            )
             return 2
         REPO_KEY = key
     if "--gh" in argv:
@@ -886,9 +1009,11 @@ def main(argv):
         if "--repo" not in argv:
             REPO_KEY = gh.split("/")[1]
     if not briefing and not briefing_json and not plan_dir:
-        print("usage: briefing_summary.py --briefing | --briefing-json | "
-              "--plan-dir DIR [--repo NAME --gh OWNER/REPO]",
-              file=sys.stderr)
+        print(
+            "usage: briefing_summary.py --briefing | --briefing-json | "
+            "--plan-dir DIR [--repo NAME --gh OWNER/REPO]",
+            file=sys.stderr,
+        )
         return 2
     data = fetch()
     analysis = analyze(data)
@@ -903,7 +1028,9 @@ def main(argv):
         return 0 if (data["pr_list"] or data["board"]) else 1
     os.makedirs(plan_dir, exist_ok=True)
     path = os.path.join(plan_dir, f"{date.today().isoformat()}-briefing-plan.md")
-    attn_items = analysis.get("attention_with_markers") or [(it, "") for it in attention]
+    attn_items = analysis.get("attention_with_markers") or [
+        (it, "") for it in attention
+    ]
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
         if not text.endswith("\n\n"):
@@ -914,8 +1041,9 @@ def main(argv):
                 marker_str = f" {marker}" if marker else ""
                 f.write(f"- [ ] {item}{marker_str}\n")
         else:
-            f.write("- [ ] No action needed — re-run the briefing "
-                    "after the next change\n")
+            f.write(
+                "- [ ] No action needed — re-run the briefing after the next change\n"
+            )
         f.write("- [ ] Re-run the briefing after acting <!-- action:briefing-td -->\n")
         f.write("\n## Raw output\n\n")
         f.write(raw_text)

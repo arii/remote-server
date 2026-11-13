@@ -5,7 +5,7 @@
       "source": "miqdadbadjuber/anti-slop",
       "sourceType": "github",
       "skillPath": "skills/antislop-code/SKILL.md",
-      "computedHash": "004933009d352710dcbea7817101d5c188474a442e3ece26a6e0c18d3223898f"
+      "computedHash": "cac8f34af374f085900fd9b211a92fdfb387f63826571e1221cfb927fb31a5ca"
     },
     "deep-agents-core": {
       "source": "langchain-ai/langchain-skills",
@@ -53,7 +53,7 @@
       "source": "pbakaus/impeccable",
       "sourceType": "github",
       "skillPath": ".agents/skills/impeccable/SKILL.md",
-      "computedHash": "c6921e830b7a565ebbe9aabe11516d34092062cd7fa2b442f030134857bf86a8"
+      "computedHash": "abe4fbda3f5ed6fb45dafb00b8c2c741cdc22e66b7aac821c0386c79ddbf5c64"
     },
     "karpathy-guidelines": {
       "source": "nvidia/nemo-fabric",
@@ -149,7 +149,7 @@
       "source": "langchain-ai/langchain-skills",
       "sourceType": "github",
       "skillPath": "config/skills/managed-deep-agents/SKILL.md",
-      "computedHash": "fe1020c6727002aaade34ec23ca0ebab9c9b455b59a3ac0b50485059c566c200"
+      "computedHash": "2d36944c6bf05e4be3e522fc2ed983c95bfee06db740fbeec584f75c1f3b8b23"
     }
   }
 }

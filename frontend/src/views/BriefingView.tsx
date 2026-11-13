@@ -769,12 +769,26 @@ export function splitRunUrls(cleaned: string): Array<{ text: string; url?: strin
   return parts.length > 0 ? parts : [{ text: '' }];
 }
 
-function BriefingText({ text }: { text: string }) {
+// Failing-run names arrive as workflow names with full dependabot
+// package lists (2026-11-02 functional review): the package list is
+// never the actionable part — the likely cause is. Word-boundary
+// truncate to ~120 chars; the full line stays on hover (title).
+const RUN_NAME_MAX = 120;
+
+export function truncateRunName(text: string, max: number = RUN_NAME_MAX): string {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max - 1);
+  const cut = head.lastIndexOf(' ');
+  return `${(cut > 0 ? head.slice(0, cut) : head).replace(/\s+$/g, '')}…`;
+}
+
+function BriefingText({ text, max }: { text: string; max?: number }) {
   const cleaned = cleanBriefingLine(text);
   const parts = splitRunUrls(cleaned);
+  const plain = (t: string) => (max ? truncateRunName(t, max) : t);
   // No URLs: return the bare string so surrounding markup (repeat
   // counts, single-line sections) keeps its contiguous text.
-  if (parts.length === 1 && !parts[0].url) return parts[0].text;
+  if (parts.length === 1 && !parts[0].url) return plain(parts[0].text);
   return (
     <>
       {parts.map((part, i) =>
@@ -783,7 +797,7 @@ function BriefingText({ text }: { text: string }) {
             View run
           </a>
         ) : (
-          <span key={i}>{part.text}</span>
+          <span key={i}>{plain(part.text)}</span>
         ),
       )}
     </>
@@ -793,17 +807,21 @@ function BriefingText({ text }: { text: string }) {
 export function GroupedLines({
   lines,
   onInvestigate,
+  max,
 }: {
   lines: string[];
   onInvestigate?: (group: BriefingLineGroup) => void;
+  // Optional display cap for long lines (run names); the full line
+  // stays on hover via the title.
+  max?: number;
 }) {
   return (
     <ul className="session-list">
       {groupBriefingLines(lines).map((g, i) => (
         // eslint-disable-next-line react/no-array-index-key
         <li key={i} className="detail">
-          <p>
-            <BriefingText text={g.text} />
+          <p title={max ? cleanBriefingLine(g.text) : undefined}>
+            <BriefingText text={g.text} max={max} />
             {g.count > 1 ? ` ×${g.count}` : ''}
           </p>
           {g.count > 1 && (
@@ -1605,6 +1623,7 @@ export function BriefingBody({
               )}
               <GroupedLines
                 lines={actionableWorkflowLines(data)}
+                max={RUN_NAME_MAX}
                 onInvestigate={(g) =>
                   onAskAgent(
                     `Investigate this repeated console failure (${g.count}×) in ${data.repo}: ${cleanBriefingLine(g.text)}`,

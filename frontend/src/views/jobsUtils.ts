@@ -33,6 +33,19 @@ export function isNotFoundError(message: string): boolean {
   return /: 404\b/.test(message);
 }
 
+// Jobs list cap (2026-11-02 functional review): the run registry
+// only ever grows, so a long-lived box renders dozens of mostly-
+// finished cards. The list API is newest-first, so the cap keeps
+// the newest runs; "show more" expands on demand.
+const JOBS_LIST_CAP = 20;
+
+export function capJobList(
+  list: JobRecord[],
+  limit: number = JOBS_LIST_CAP,
+): { visible: JobRecord[]; hidden: number } {
+  return { visible: list.slice(0, limit), hidden: Math.max(0, list.length - limit) };
+}
+
 // Finished-record detection for cancel: the run completed between
 // the list snapshot and the tap, so cancel 409s.
 export function isConflictError(message: string): boolean {
