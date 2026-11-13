@@ -14,11 +14,9 @@ test.describe('chat-first home', () => {
     await expect(page.getByTestId('nav-chat')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByTestId('status-strip')).toBeVisible();
     // Strip sits above the composer in the chat column.
-    const strip = page.getByTestId('status-strip');
-    const composer = page.getByTestId('chat-prompt');
-    await expect(strip.boundingBox().then((b) => b!.y)).toBeLessThan(
-      (await composer.boundingBox())!.y,
-    );
+    const stripY = (await page.getByTestId('status-strip').boundingBox())!.y;
+    const composerY = (await page.getByTestId('chat-prompt').boundingBox())!.y;
+    expect(stripY).toBeLessThan(composerY);
   });
 
   test('strip tap opens the triage drawer; Briefing reachable in two taps', async ({ page }) => {
