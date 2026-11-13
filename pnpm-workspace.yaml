@@ -1,8 +1,10 @@
-# Single-lockfile monorepo: root scripts package + frontend SPA.
-# The root pnpm-lock.yaml governs all workspaces; no nested lockfiles.
+# Single-lockfile monorepo: root scripts package + frontend SPA +
+# chrome-extension unit-test package. The root pnpm-lock.yaml governs all
+# workspaces; no nested lockfiles.
 packages:
   - .
   - frontend
+  - chrome-extension
 
 # Matches the previous Dockerfile SPA-stage override (esbuild native
 # binding must build on install).
