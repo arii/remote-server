@@ -133,15 +133,32 @@ class SkillsRegistry:
             raise SkillNotFoundError(f"Skill '{name}' not found in {self.skills_dir}")
         return self._body_cache[name]
 
-    def inject_skills_for_node(self, node_name: str, base_system_prompt: str) -> str:
-        """Appends full Markdown instructions ONLY for skills targeting `node_name`."""
+    def inject_skills_for_node(
+        self, node_name: str, base_system_prompt: str, *, compact: bool = False
+    ) -> str:
+        """Appends skill instructions ONLY for skills targeting `node_name`.
+
+        Default injects the full Markdown runbooks. compact=True injects
+        one index line per matched skill plus its checkout-relative
+        path, so the full runbook loads on demand via read_repo_file
+        instead of riding in every turn's window (D1: the skills block
+        has its own token share inside the shared context budget).
+        """
         self.refresh_if_stale()
         matched = [
-            self._body_cache[name]
+            self._meta_cache[name]
             for name, meta in self._meta_cache.items()
             if node_name in meta.trigger_nodes
         ]
         if not matched:
             return base_system_prompt
-        injected_block = "\n\n---\n\n".join(matched)
+        if compact:
+            lines = [meta.to_index_line() for meta in matched]
+            paths = ", ".join(f"deep-agent/skills/{meta.path.name}" for meta in matched)
+            header = (
+                f"## Active Node Skills (`{node_name}`) — summaries only; "
+                f"read the full runbook with read_repo_file from: {paths}"
+            )
+            return f"{base_system_prompt.rstrip()}\n\n{header}\n\n" + "\n".join(lines) + "\n"
+        injected_block = "\n\n---\n\n".join(self._body_cache[meta.name] for meta in matched)
         return f"{base_system_prompt.rstrip()}\n\n## Active Node Skills (`{node_name}`)\n\n{injected_block}\n"

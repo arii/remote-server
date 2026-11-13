@@ -52,6 +52,42 @@ class TestInjection(unittest.TestCase):
             self.assertTrue(out.startswith("base prompt"))
             self.assertEqual(reg.inject_skills_for_node("node_z", "base prompt"), "base prompt")
 
+    def test_compact_injects_index_lines_not_bodies(self):
+        # D1: the chat path injects one index line per matched skill
+        # plus its checkout-relative path — full runbooks load on
+        # demand via read_repo_file, keeping the block inside its
+        # token share.
+        with tempfile.TemporaryDirectory() as tmp:
+            from pathlib import Path
+
+            write_skill(
+                tmp,
+                "one",
+                "name: one\ndescription: One long runbook.\ntrigger_nodes:\n  - node_a\n",
+                "# One\n" + "detail line\n" * 50,
+            )
+            reg = SkillsRegistry(skills_dir=Path(tmp))
+            out = reg.inject_skills_for_node("node_a", "base prompt", compact=True)
+            self.assertTrue(out.startswith("base prompt"))
+            self.assertIn("**one**", out)
+            self.assertIn("deep-agent/skills/one.md", out)
+            self.assertNotIn("detail line", out)
+
+    def test_compact_no_match_returns_base(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from pathlib import Path
+
+            write_skill(
+                tmp,
+                "one",
+                "name: one\ndescription: One.\ntrigger_nodes:\n  - node_a\n",
+                "# One\n",
+            )
+            reg = SkillsRegistry(skills_dir=Path(tmp))
+            self.assertEqual(
+                reg.inject_skills_for_node("node_z", "base", compact=True), "base"
+            )
+
     def test_index_summary_lists_all(self):
         with tempfile.TemporaryDirectory() as tmp:
             from pathlib import Path
