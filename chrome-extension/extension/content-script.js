@@ -31,10 +31,6 @@
   const SENSITIVE_PATTERNS = /password|passcode|cvv|cvc|cc-number|card-number|ssn|social-security/i;
   const CAPTCHA_FIELD_PATTERNS = /g-recaptcha-response|h-captcha-response|cf-turnstile-response|recaptcha/i;
 
-  function cleanLabelText(raw) {
-    return (raw || '').replace(/\s+/g, ' ').replace(/\*+$/, '').trim();
-  }
-
   function cleanText(text) {
     if (!text) return "";
     return text
@@ -74,7 +70,7 @@
     if (labelledBy) {
       const texts = labelledBy
         .split(/\s+/)
-        .map((id) => document.getElementById(id)?.innerText?.trim())
+        .map((id) => document.getElementById(id)?.textContent?.trim())
         .filter(Boolean);
       const cleaned = cleanText(texts.join(" "));
       if (cleaned) return cleaned;
@@ -91,8 +87,8 @@
     if (el.id) {
       try {
         const explicitLabel = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (explicitLabel?.innerText?.trim()) {
-          const cleaned = cleanText(explicitLabel.innerText);
+        if (explicitLabel?.textContent?.trim()) {
+          const cleaned = cleanText(explicitLabel.textContent);
           if (cleaned) return cleaned;
         }
       } catch {}
@@ -103,7 +99,7 @@
     if (parentLabel) {
       const clone = parentLabel.cloneNode(true);
       clone.querySelectorAll("input, select, textarea, button").forEach((n) => n.remove());
-      const cleaned = cleanText(clone.innerText);
+      const cleaned = cleanText(clone.textContent);
       if (cleaned) return cleaned;
     }
 
@@ -112,13 +108,13 @@
     let curr = el;
     for (let depth = 0; depth < 5 && curr && curr !== document.body; depth++) {
       const fieldLabel = curr.querySelector('label, [class*="label"], [class*="Label"], legend');
-      if (fieldLabel && !fieldLabel.contains(el) && fieldLabel.innerText?.trim()) {
-        const cleaned = cleanText(fieldLabel.innerText);
+      if (fieldLabel && !fieldLabel.contains(el) && fieldLabel.textContent?.trim()) {
+        const cleaned = cleanText(fieldLabel.textContent);
         if (cleaned) return cleaned;
       }
       const prev = curr.previousElementSibling;
-      if (prev && /^(LABEL|SPAN|DIV|P|H[1-6])$/i.test(prev.tagName) && prev.innerText?.trim()) {
-        const cleaned = cleanText(prev.innerText);
+      if (prev && /^(LABEL|SPAN|DIV|P|H[1-6])$/i.test(prev.tagName) && prev.textContent?.trim()) {
+        const cleaned = cleanText(prev.textContent);
         if (cleaned) return cleaned;
       }
       curr = curr.parentElement;
@@ -173,14 +169,14 @@
     const fieldset = el.closest("fieldset");
     if (fieldset) {
       const legend = fieldset.querySelector("legend");
-      if (legend?.innerText?.trim()) return legend.innerText.trim();
+      if (legend?.textContent?.trim()) return legend.textContent.trim();
     }
     let node = el;
     while (node && node !== document.body) {
       let prev = node.previousElementSibling;
       while (prev) {
-        if (/^H[1-4]$/.test(prev.tagName) && prev.innerText?.trim()) {
-          return prev.innerText.trim();
+        if (/^H[1-4]$/.test(prev.tagName) && prev.textContent?.trim()) {
+          return prev.textContent.trim();
         }
         prev = prev.previousElementSibling;
       }
