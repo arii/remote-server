@@ -74,13 +74,20 @@ function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
 }
 
+const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
+
 function aliasMatches(query, alias) {
   const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
   const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
   if (!q || !a) return false;
   if (q === a) return true;
   if (a.length < 8) return false; // short aliases match exactly only
-  return new RegExp(`\\b${escapeRegExp(a)}\\b`).test(q);
+  let re = aliasRegexCache.get(a);
+  if (!re) {
+    re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
+    aliasRegexCache.set(a, re);
+  }
+  return re.test(q);
 }
 
 async function handleFormSubmitObservation(payload, tab) {
