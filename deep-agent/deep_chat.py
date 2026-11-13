@@ -235,24 +235,23 @@ def _td_shape_re(shape):
     return re.compile(r"\s+".join(parts) + r"\Z")
 
 
-BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 DISPATCH_TASK_LIMIT = 4000
 
 
 def _valid_branch(branch):
-    """git-plausible branch name: charset, length, no dot-dot."""
-    return (
-        isinstance(branch, str)
-        and 1 <= len(branch) <= 120
-        and bool(BRANCH_RE.match(branch))
-        and ".." not in branch
-        and branch[0] not in "/-."
-    )
+    """git-plausible branch name — single-sourced in
+    backend/exec/validate.py (D4: the deep-agent copy was a
+    hand-mirror that could drift from the execution path)."""
+    from backend.exec.validate import valid_branch
+
+    return valid_branch(branch)
 
 
 def _valid_pr_number(value):
-    """Positive-int PR number (bools are not PRs)."""
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    """Positive-int PR number — single-sourced (D4)."""
+    from backend.exec.validate import valid_pr_number
+
+    return valid_pr_number(value)
 
 
 REVIEW_EVENTS = ("comment", "request-changes")

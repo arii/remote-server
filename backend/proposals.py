@@ -86,24 +86,21 @@ WORKTREE_TIMEOUT = 120
 DISPATCH_TIMEOUT = 120
 GH_TIMEOUT = 120
 
-# Mirror of deep_chat._valid_branch (git-plausible branch names).
-BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+# Branch/PR shape checks are single-sourced in
+# backend/exec/validate.py (D4): this module used to hand-mirror
+# deep_chat's copies, and the mirrors could drift.
 
 
 def _valid_branch(branch) -> bool:
-    return (
-        isinstance(branch, str)
-        and 1 <= len(branch) <= 120
-        and bool(BRANCH_RE.match(branch))
-        and ".." not in branch
-        and branch[0] not in "/-."
-    )
+    from backend.exec.validate import valid_branch
+
+    return valid_branch(branch)
 
 
 def _valid_pr_number(value) -> bool:
-    """Mirror of deep_chat._valid_pr_number (kept local: backend
-    must not import the venv-only chat module)."""
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    from backend.exec.validate import valid_pr_number
+
+    return valid_pr_number(value)
 
 
 def _valid_pr_repo(args: dict) -> str:

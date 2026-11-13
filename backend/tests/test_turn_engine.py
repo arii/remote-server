@@ -393,6 +393,70 @@ class ModelNameSingleSourceTests(unittest.TestCase):
         )
 
 
+class ValidationSingleSourceTests(unittest.TestCase):
+    """D4: the git-shape validators exist exactly once."""
+
+    def _py_sources(self):
+        for base in (Path("backend"), Path("deep-agent")):
+            for path in base.rglob("*.py"):
+                yield path
+
+    def test_no_mirrored_branch_regex(self):
+        offenders = [
+            str(path)
+            for path in self._py_sources()
+            if "/tests/" not in str(path)
+            and path.name != "validate.py"
+            and re.search(r"BRANCH_RE\s*=\s*re\.compile", path.read_text())
+        ]
+        self.assertEqual(offenders, [], f"mirrored branch regex in: {offenders}")
+
+    def test_no_mirrored_pr_number_logic(self):
+        offenders = [
+            str(path)
+            for path in self._py_sources()
+            if "/tests/" not in str(path)
+            and path.name != "validate.py"
+            and "not isinstance(value, bool) and value > 0" in path.read_text()
+        ]
+        self.assertEqual(offenders, [], f"mirrored PR-number logic in: {offenders}")
+
+    def test_runners_delegate_to_the_shared_module(self):
+        import backend.proposals as proposals
+        import deep_chat
+        from backend.exec.validate import valid_branch, valid_pr_number
+
+        for checker, fn in (
+            (deep_chat._valid_branch, valid_branch),
+            (proposals._valid_branch, valid_branch),
+        ):
+            self.assertEqual(fn.__module__, "backend.exec.validate")
+            # Behavior parity through the delegates.
+            self.assertEqual(bool(checker("feat/runner-core")), True)
+            self.assertEqual(bool(checker("bad..name")), False)
+        for checker, fn in (
+            (deep_chat._valid_pr_number, valid_pr_number),
+            (proposals._valid_pr_number, valid_pr_number),
+        ):
+            self.assertEqual(fn.__module__, "backend.exec.validate")
+            self.assertEqual(bool(checker(7)), True)
+            self.assertEqual(bool(checker(0)), False)
+
+    def test_valid_branch_contract(self):
+        from backend.exec.validate import valid_branch
+
+        for good in ("main", "feat/runner-core", "a.b.c", "release/2026-11-13"):
+            self.assertTrue(valid_branch(good), good)
+        for bad in ("", None, "a..b", "/leading", ".hidden", "-dash", "x" * 121, 7):
+            self.assertFalse(valid_branch(bad), repr(bad))
+
+    def test_valid_pr_number_contract(self):
+        from backend.exec.validate import valid_pr_number
+
+        self.assertTrue(valid_pr_number(1))
+        self.assertTrue(valid_pr_number(1305))
+        for bad in (0, -1, "7", True, False, None, 1.0):
+            self.assertFalse(valid_pr_number(bad), repr(bad))
 
 
 if __name__ == "__main__":
