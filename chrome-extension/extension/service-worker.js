@@ -67,6 +67,22 @@ function normalizeForDedup(str) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// Strict alias matching for vault entries (audit high #4): exact match for
+// short aliases, word-boundary containment for longer ones. Prevents a short
+// alias like "name" from matching "Company name".
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
+}
+
+function aliasMatches(query, alias) {
+  const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!q || !a) return false;
+  if (q === a) return true;
+  if (a.length < 8) return false; // short aliases match exactly only
+  return new RegExp(`\\b${escapeRegExp(a)}\\b`).test(q);
+}
+
 async function handleFormSubmitObservation(payload, tab) {
   const { userContextVault = [], pendingDeltas = [], activeSessionContext = null } = await chrome.storage.local.get([
     "userContextVault",
@@ -137,7 +153,7 @@ async function handleFormSubmitObservation(payload, tab) {
     const normalizedQuery = key.toLowerCase().trim();
     const existing = userContextVault.find((e) => {
       if (e.key.toLowerCase() === normalizedQuery) return true;
-      if (e.aliases && e.aliases.some((a) => normalizedQuery.includes(a.toLowerCase()))) return true;
+      if (e.aliases && e.aliases.some((a) => aliasMatches(normalizedQuery, a))) return true;
       if (field.constraints?.autocomplete && e.autocomplete === field.constraints.autocomplete) return true;
       return false;
     });

@@ -44,6 +44,22 @@
       .slice(0, 160);
   }
 
+  // Strict label matching (audit high #4): exact match, or word-boundary
+  // containment when the resolved label is long. Replaces the old bidirectional
+  // substring test that let loose labels swallow unrelated fields.
+  function escapeRegExp(s) {
+    return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
+  }
+
+  function aliasMatches(query, alias) {
+    const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
+    if (!q || !a) return false;
+    if (q === a) return true;
+    if (a.length < 8) return false; // short labels match exactly only
+    return new RegExp(`\\b${escapeRegExp(a)}\\b`).test(q);
+  }
+
   // 1. Resolve human-readable label for any form input via strict waterfall
   function resolveFieldLabel(el) {
     // Priority 1: aria-labelledby target elements
@@ -512,7 +528,7 @@
 
       for (const el of candidates) {
         const elLabel = resolveFieldLabel(el).toLowerCase().replace(/\s+/g, " ").trim();
-        if (elLabel === targetQ || (targetQ.length > 8 && (elLabel.includes(targetQ) || targetQ.includes(elLabel)))) {
+        if (aliasMatches(targetQ, elLabel)) {
           return el;
         }
       }

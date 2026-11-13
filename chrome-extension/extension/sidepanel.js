@@ -131,6 +131,22 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+// Strict alias matching for vault entries (audit high #4). Short aliases must
+// match exactly; longer aliases may match as whole words inside the query.
+// The old bidirectional substring test (q.includes(a) || a.includes(q)) made a
+// two-letter-overlap alias like "name" match "Company name".
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
+}
+function aliasMatches(query, alias) {
+  const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!q || !a) return false;
+  if (q === a) return true;
+  if (a.length < 8) return false; // short aliases match exactly only
+  return new RegExp(`\\b${escapeRegExp(a)}\\b`).test(q);
+}
+
 // ============================================================================
 // OBSERVABILITY & UX PROGRESS CONTROLLER
 // ============================================================================
@@ -613,8 +629,8 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
         // If vault has a direct deterministic match for this essay/project prompt (e.g. "Share something cool you've built"), use it!
         let matchedVaultEssay = null;
         for (const entry of userContextVault) {
-          const aliases = [entry.key.toLowerCase(), ...(entry.aliases || []).map((a) => a.toLowerCase())];
-          if (aliases.some((a) => q === a || q.includes(a) || a.includes(q))) {
+          const aliases = [entry.key, ...(entry.aliases || [])];
+          if (aliases.some((a) => aliasMatches(q, a))) {
             matchedVaultEssay = entry.value;
             break;
           }
@@ -652,8 +668,8 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
           field.confidence = 0.99;
           break;
         }
-        const aliases = [entry.key.toLowerCase(), ...(entry.aliases || []).map((a) => a.toLowerCase())];
-        if (aliases.some((a) => q === a || q.includes(a) || a.includes(q))) {
+        const aliases = [entry.key, ...(entry.aliases || [])];
+        if (aliases.some((a) => aliasMatches(q, a))) {
           if (field.inputType === "checkbox") {
             field.value = /^(yes|true|1)$/i.test(String(entry.value).trim());
           } else {
