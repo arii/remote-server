@@ -129,6 +129,49 @@ function healthSummary(health: SystemHealthResponse | null): string {
 
 export type Tab = 'now' | 'chat' | 'briefing' | 'history' | 'browser';
 
+// Cross-reload nav memory (bug 3 of the 2026-11-02 functional
+// review): the picked repo and open tab survive a reload, so a
+// phone re-open lands where the operator left the console instead
+// of snapping back to All repos / Now every time. One validated
+// JSON key; persistence is best-effort (private-mode or quota
+// failures leave the session working, per the ChatView template
+// store). A stored repo the console no longer lists self-heals in
+// the repos fetch below (falls back to the first live repo).
+const NAV_MEMORY_KEY = 'console.nav-memory';
+
+export interface NavMemory {
+  repo: string;
+  tab: Tab;
+}
+
+const NAV_MEMORY_TABS: readonly Tab[] = ['now', 'chat', 'briefing', 'history', 'browser'];
+
+export function loadNavMemory(): NavMemory | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(NAV_MEMORY_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const { repo, tab } = parsed as { repo?: unknown; tab?: unknown };
+    if (typeof repo !== 'string' || repo === '') return null;
+    if (typeof tab !== 'string' || !NAV_MEMORY_TABS.includes(tab as Tab)) return null;
+    return { repo, tab: tab as Tab };
+  } catch {
+    // Corrupt or unreadable memory behaves like none: defaults win.
+    return null;
+  }
+}
+
+export function saveNavMemory(memory: NavMemory): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(NAV_MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    // Persistence is best-effort; the live console still works.
+  }
+}
+
 // Persistent console nav (#896): one bar, seven destinations. Review,
 // Jobs, and Queue live inside Now as sections (not routes); the nav
 // reaches them through the palette's section-request path. Queue
@@ -219,11 +262,20 @@ export function RollupGate({ view }: { view: string }) {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('now');
+  // Boot memory (bug 3): one read per mount seeds both restored
+  // states — last-used repo (bug 4's "last-used" half) and tab.
+  const [bootMemory] = useState(() => loadNavMemory());
+  const [tab, setTab] = useState<Tab>(bootMemory?.tab ?? 'now');
   const [repos, setRepos] = useState<RepoInfo[]>(FALLBACK_REPOS);
-  const [repo, setRepo] = useState('remote-server');
+  const [repo, setRepo] = useState(bootMemory?.repo ?? 'remote-server');
   const [health, setHealth] = useState<SystemHealthResponse | null>(null);
   const [chatSeed, setChatSeed] = useState<string | null>(null);
+  // Bug 3 write-back: every repo/tab change lands in the nav memory
+  // so a reload restores them. Runs after mount too — seeding from
+  // memory then writing it back is a no-op by value.
+  useEffect(() => {
+    saveNavMemory({ repo, tab });
+  }, [repo, tab]);
   // Header overlays (issue #663): the dirty-repo diff is a real
   // modal (issue #942); the container health drawer stays inline
   // under the toolbar while open.
