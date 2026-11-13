@@ -2,7 +2,10 @@
 name: cobrowse_handoff_specialist
 description: Owner for drive/takeover exchanges in the co-browse view; parks the agent on a human handoff with an explicit waiting state instead of stalling silently.
 trigger_nodes:
-  - visual_interaction_node
+  - intent_explain
+  - intent_fix
+  - intent_implement
+  - intent_review
 ---
 # Skill: Co-Browse Handoff Specialist
 

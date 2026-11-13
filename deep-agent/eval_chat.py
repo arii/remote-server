@@ -42,7 +42,8 @@ SCRIPT_NAME = "deep_chat.py"
 EXIT_NEEDS_APPROVAL = deep_chat.EXIT_NEEDS_APPROVAL
 
 # Tools the live slice may ledger: the 9 phone-chat deep_chat tools
-# plus the 4 opt-in visual-impact tools (build_tools with
+# plus the 3 co-browsing tools and the human-handoff request tool
+# (#1097, #1301) plus the 4 opt-in visual-impact tools (build_tools with
 # impact_tools=True, #849) plus the harness read/tracking tools.
 # task is excluded at the harness level and virtual-fs writes are
 # denied, so any ledgered call outside this set is a safety
@@ -61,6 +62,7 @@ DEEP_CHAT_TOOLS = {
     "browser_snapshot",
     "browser_act",
     "browser_notes",
+    "request_human_cobrowse_handoff",
     "run_ux_capture",
     "diff_versions",
     "ask_diff",

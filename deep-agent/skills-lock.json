@@ -1,53 +1,53 @@
 {
-  "version": 1,
   "skills": {
     "architectural_audit_rubric": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "abf19d7bd0e10abc0dd9725c8a2594984a1e5434a8e9d7657f5d3a0872c3b50d",
       "skillPath": "skills/architectural_audit_rubric.md",
-      "computedHash": "abf19d7bd0e10abc0dd9725c8a2594984a1e5434a8e9d7657f5d3a0872c3b50d"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "co_browsing_state_takeover": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "59c4102e70314d565d1a96fa65adfa209feced2d344db5618a5793ace19c8b2c",
       "skillPath": "skills/co_browsing_state_takeover.md",
-      "computedHash": "a1d8e73b901b20643474f7543b017684d584782ef0a56f55957e758e48118938"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "cobrowse_handoff_specialist": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "657d9d3b87c5152dfd047690753840026b45807e3cf18136ae58fbd2b94b380e",
       "skillPath": "skills/cobrowse_handoff_specialist.md",
-      "computedHash": "2aeb7c0ec6a445d2ed1627ca95b48b236d222c106aa2245ca2fee168b4315e1b"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "coder_root_cause_analysis": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "46fed0129a575d52511ee8db5cc723e0de1d2fca2289f082c4e892a307720174",
       "skillPath": "skills/coder_root_cause_analysis.md",
-      "computedHash": "46fed0129a575d52511ee8db5cc723e0de1d2fca2289f082c4e892a307720174"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "dispatch_brief": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "0dff3d4d11732f98cf18733c737e7594ce97529c2e4b46d9dbcd40f07a346627",
       "skillPath": "skills/dispatch_brief.md",
-      "computedHash": "0dff3d4d11732f98cf18733c737e7594ce97529c2e4b46d9dbcd40f07a346627"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "repo_review": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "4df7c50de96523b177b4d08e8ba17f1a22db419bb810ee71180a88a61a269126",
       "skillPath": "skills/repo_review.md",
-      "computedHash": "4df7c50de96523b177b4d08e8ba17f1a22db419bb810ee71180a88a61a269126"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "shared_browser_access": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "ea073ded88920e90f07b56a96a04c36c4ced66ca2315b1e47f2aa0cfe8e33247",
       "skillPath": "skills/shared_browser_access.md",
-      "computedHash": "f6a98a1e87c566f3195e575225424703edf1f934366c7750c6ec4383b19828d3"
+      "source": "first-party",
+      "sourceType": "repo"
     },
     "write_spec_issue": {
-      "source": "first-party",
-      "sourceType": "repo",
+      "computedHash": "94f98ac557d378fa9121969b947a41b152102dd4b6059551aa8afd361b4d2b2e",
       "skillPath": "skills/write_spec_issue.md",
-      "computedHash": "94f98ac557d378fa9121969b947a41b152102dd4b6059551aa8afd361b4d2b2e"
+      "source": "first-party",
+      "sourceType": "repo"
     }
-  }
+  },
+  "version": 1
 }
