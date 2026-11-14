@@ -60,6 +60,8 @@ from pydantic import BaseModel
 from backend import proposals as proposal_exec
 from backend.core.repos import get_checkout_path
 from backend.core.validation import validate_repo_name
+from backend.exec import turn_engine
+from backend.exec import verify as proposal_verify
 from backend.ledger import append as ledger_append
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -73,7 +75,10 @@ SPAWN_STDERR_TAIL = 4000
 SPAWN_STDERR_CHUNK = 65536
 # A hung deep_chat.py must not hold an SSE stream forever: past this
 # many seconds the turn is killed and the stream ends with an error
-# event, mirroring agent_turn.TURN_TIMEOUT.
+# event, mirroring agent_turn.TURN_TIMEOUT. Default sized against
+# measured ~6 tok/s local decode; the CHAT_TURN_TIMEOUT env var flips
+# it per deploy without a code change (shared resolver in
+# backend/exec/turn_engine.py).
 CHAT_TURN_TIMEOUT = 600
 # A client that disconnects mid-turn (page leave, reload) detaches
 # instead of killing the child (#1015): the turn keeps streaming
@@ -84,8 +89,9 @@ CHAT_TURN_TIMEOUT = 600
 DETACHED_CHAT_TTL = 300
 # Finished turns stay queryable for remount backfill this long.
 DONE_CHAT_TTL = 3600
-# Bounded wait after SIGTERM before SIGKILL (agent_turn.KILL_GRACE).
-CHAT_KILL_GRACE = 5
+# Bounded wait after SIGTERM before SIGKILL — one source
+# (turn_engine.KILL_GRACE); the agent runner shares the same ladder.
+CHAT_KILL_GRACE = turn_engine.KILL_GRACE
 # Abandoned approval cards must not leak forever: entries older than
 # this are swept opportunistically, mirroring RESULT_TTL.
 PENDING_RESUME_TTL = 3600
@@ -284,6 +290,41 @@ def validate_action_request(args: dict) -> tuple[bool, str]:
     return bool(out.get("ok")), str(out.get("text", ""))
 
 
+def verify_proposal_content(args: dict, repo: str) -> tuple[bool, str]:
+    """Content verify pass before any approval card renders (D3).
+
+    Shape validation proves the proposal is well-formed; this proves
+    it points at real things (repo, PR number). Injectable for tests.
+    Returns (True, "") or (False, "VERIFY-FAILED: <check>: <detail>").
+    Provider-blind: local and cloud proposals pass the same gate.
+    """
+    try:
+        return proposal_verify.verify_proposal(args, repo)
+    except Exception as exc:
+        # Fail closed: an unverified proposal never renders a card.
+        return False, f"{proposal_verify.VERIFY_REASON_PREFIX}verify errored: {exc}"
+
+
+def checked_requests(requests: list[dict], repo: str) -> list[tuple[bool, str]]:
+    """Shape-validate then content-verify each request (D3 gate).
+
+    One order for every approval surface: a request that fails shape
+    never reaches verify, so the returned reasons are REJECTED (shape)
+    or VERIFY-FAILED (content), each naming the failed check.
+    """
+    out = []
+    for args in requests:
+        ok, text = validate_action_request(args)
+        if ok:
+            # Verify only ever replaces a PASS with a FAIL: the card
+            # text stays shape validation's, the reason is the gate's.
+            v_ok, reason = verify_proposal_content(args, repo)
+            if not v_ok:
+                ok, text = False, reason
+        out.append((ok, text))
+    return out
+
+
 def run_resume_spawn(
     gh: str, thread: str, verdict: str, message_b64: str | None
 ) -> tuple[int, str]:
@@ -411,39 +452,20 @@ def _pi_progress_path(rid: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"pi-progress-{rid}.log")
 
 
+def chat_turn_timeout() -> int:
+    """Effective turn budget: CHAT_TURN_TIMEOUT env override wins,
+    module default falls back (same env contract as the agent
+    runner's AGENT_TURN_TIMEOUT — one resolver, two defaults)."""
+    return turn_engine.resolve_timeout(CHAT_TURN_TIMEOUT, "CHAT_TURN_TIMEOUT")
+
+
 def _stop_proc(proc) -> None:
     """Terminate, escalate to kill, reap bounded. Never raises.
 
-    Sync mirror of agent_turn._stop_proc: SIGTERM, wait
-    CHAT_KILL_GRACE, SIGKILL, wait again. Returns at once when the
-    child already exited.
-    """
-    try:
-        if proc.poll() is not None:
-            return
-    except Exception:
-        pass
-    try:
-        proc.terminate()
-    except Exception:
-        pass
-    try:
-        proc.wait(timeout=CHAT_KILL_GRACE)
-    except Exception:
-        pass
-    try:
-        alive = proc.poll() is None
-    except Exception:
-        alive = True
-    if alive:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            proc.wait(timeout=CHAT_KILL_GRACE)
-        except Exception:
-            pass
+    Delegates to the shared turn engine's sync ladder — same SIGTERM
+    → CHAT_KILL_GRACE → SIGKILL → wait the agent runner uses (D4:
+    one process model, no mirrored ladders)."""
+    turn_engine.sync_stop_proc(proc, CHAT_KILL_GRACE)
 
 
 def _sweep_pending_resumes(now: float | None = None) -> int:
@@ -581,10 +603,13 @@ def _approval_events(
             }
         )
         return
-    checked = [validate_action_request(a) for a in requests]
+    checked = checked_requests(requests, repo)
     if not all(ok for ok, _ in checked):
         reason = next(t for ok, t in checked if not ok)
-        rej = base64.b64encode(b"invalid proposal").decode()
+        # The reject message carries the specific reason (shape or
+        # verify) so the model re-proposes against the named check
+        # instead of guessing (D3). decision_for_verdict caps at 500.
+        rej = base64.b64encode(reason[:500].encode()).decode()
         try:
             run_resume_spawn(info["gh"], session_id, "reject", rej)
         except Exception:
@@ -752,8 +777,9 @@ def _resume_decision(
             ivs = (blob.get("interrupts") or []) if blob else []
             value = ivs[0].get("value") if ivs else None
             requests = approval_requests(value)
+            checked: list[tuple[bool, str]] = []
             if requests:
-                checked = [validate_action_request(a) for a in requests]
+                checked = checked_requests(requests, st["repo"])
                 if all(ok for ok, _ in checked):
                     st["pending"] = True
                     st["value"] = value
@@ -768,7 +794,17 @@ def _resume_decision(
                     return body, 202, ""
             # Uninterpretable re-interrupt: auto-reject once (bounded)
             # so the thread never strands behind an unshowable card.
-            rej = base64.b64encode(b"unreadable proposal").decode()
+            # A readable-but-unverified batch is not "unreadable": the
+            # rejection carries the specific verify reason so the
+            # re-prompt can fix the actual target (D3 reason quality).
+            if checked and not all(ok for ok, _ in checked):
+                reason = "; ".join(t for ok, t in checked if not ok and t)
+                rej = base64.b64encode(
+                    f"Previous proposal was rejected: {reason}".encode()
+                ).decode()
+            else:
+                reason = "follow-up approval unreadable"
+                rej = base64.b64encode(b"unreadable proposal").decode()
             try:
                 code2, out2 = run_resume_spawn(gh, session_id, "reject", rej)
             except Exception:
@@ -780,7 +816,7 @@ def _resume_decision(
                     "session_id": session_id,
                     "repo": st["repo"],
                     "event": "chat auto-rejected",
-                    "error": "follow-up approval unreadable",
+                    "error": reason,
                 }
             )
             if code2 == 3:
@@ -789,7 +825,7 @@ def _resume_decision(
                 value2 = ivs2[0].get("value") if ivs2 else None
                 requests2 = approval_requests(value2)
                 if requests2:
-                    checked2 = [validate_action_request(a) for a in requests2]
+                    checked2 = checked_requests(requests2, st["repo"])
                     if all(ok for ok, _ in checked2):
                         st["pending"] = True
                         st["value"] = value2
@@ -804,12 +840,18 @@ def _resume_decision(
                             "proposals": st["proposals"],
                         }
                         return body, 202, ""
-            body["text"] = (
-                strip_agent_markers(out2)
-                or "The agent asked for approval in a form I "
-                "can't display, so I rejected it. Ask again "
-                "if still needed."
-            ) + exec_suffix
+            if checked and not all(ok for ok, _ in checked):
+                body["text"] = (
+                    f"Auto-rejected before approval — {reason}. The model "
+                    "was asked to re-propose; ask again if still needed."
+                ) + exec_suffix
+            else:
+                body["text"] = (
+                    strip_agent_markers(out2)
+                    or "The agent asked for approval in a form I "
+                    "can't display, so I rejected it. Ask again "
+                    "if still needed."
+                ) + exec_suffix
             body["exit"] = code2
             body.pop("approval", None)
             return body, 202, ""
@@ -1077,10 +1119,11 @@ def _chat_events(
     err_tail = ""
     # A hung child must not hold the stream forever: stdout drains on
     # a daemon reader thread into a queue, and the loop takes each
-    # chunk with the remaining turn budget (CHAT_TURN_TIMEOUT total,
-    # mirroring agent_turn.TURN_TIMEOUT). On expiry the child is
-    # killed and the stream ends with an error event.
-    deadline = start_time + CHAT_TURN_TIMEOUT
+    # chunk with the remaining turn budget (resolved CHAT_TURN_TIMEOUT
+    # total, mirroring agent_turn's resolved budget). On expiry the
+    # child is killed and the stream ends with an error event.
+    limit = chat_turn_timeout()
+    deadline = start_time + limit
     _EOF = object()
     read_q: queue.Queue = queue.Queue()
 
@@ -1117,11 +1160,23 @@ def _chat_events(
             if budget <= 0:
                 timed_out = True
                 break
+            # D2 heartbeat: a slow local turn streams visible liveness
+            # instead of reading as a hang. Waiting in heartbeat-sized
+            # slices keeps the abort flag checked at slice boundaries.
             try:
-                chunk = read_q.get(timeout=budget)
+                chunk = read_q.get(timeout=min(budget, turn_engine.HEARTBEAT_INTERVAL))
             except queue.Empty:
-                timed_out = True
-                break
+                if time.time() >= deadline:
+                    timed_out = True
+                    break
+                yield sse_frame(
+                    "heartbeat",
+                    {
+                        "elapsed": round(time.time() - start_time, 1),
+                        "budget_left": round(deadline - time.time(), 1),
+                    },
+                )
+                continue
             if chunk is _EOF:
                 break
             if isinstance(chunk, Exception):
@@ -1198,7 +1253,7 @@ def _chat_events(
         )
         return
     if timed_out:
-        msg = f"chat timed out after {CHAT_TURN_TIMEOUT}s"
+        msg = f"chat timed out after {limit}s"
         yield sse_frame("phase", {"phase": "error", "error": msg, "elapsed": elapsed})
         yield sse_frame("error", {"error": msg})
         record = {
@@ -1365,7 +1420,7 @@ def _reattach_events(session_id: str):
     (issue #1208). Sessions predating seqs replay with fresh ids.
     """
     idx = 0
-    deadline = time.time() + CHAT_TURN_TIMEOUT
+    deadline = time.time() + chat_turn_timeout()
     while True:
         with chat_sessions_lock:
             sess = chat_sessions.get(session_id)

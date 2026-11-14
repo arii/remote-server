@@ -50,9 +50,9 @@ afterEach(() => {
 
 describe('nav memory store', () => {
   it('round-trips repo and tab through the localStorage key', () => {
-    saveNavMemory({ repo: 'boomtick', tab: 'briefing' });
+    saveNavMemory({ repo: 'boomtick', tab: 'history' });
     expect(localStorage.getItem(KEY)).toContain('boomtick');
-    expect(loadNavMemory()).toEqual({ repo: 'boomtick', tab: 'briefing' });
+    expect(loadNavMemory()).toEqual({ repo: 'boomtick', tab: 'history' });
   });
 
   it('treats corrupt, empty, and off-enum memory as none', () => {
@@ -89,42 +89,51 @@ describe('nav memory store', () => {
 
 describe('App boot restore (bug 3)', () => {
   it('seeds the picker and pressed tab from stored memory', () => {
-    seedStore({ repo: 'boomtick', tab: 'briefing' });
+    seedStore({ repo: 'boomtick', tab: 'history' });
     const html = renderToStaticMarkup(<App />);
     // The picker keeps the stored repo visible even though the
     // boot repos list does not know it (fallback option), and the
-    // Briefing nav entry lights instead of Now.
+    // History nav entry lights instead of Chat.
     expect(html).toContain('value="boomtick"');
     expect(html).toContain('selected=""');
     expect(html).toContain('aria-pressed="true"'); // one pressed tab…
-    expect(html).toMatch(/data-testid="nav-briefing"[^>]*aria-pressed="true"|aria-pressed="true"[^>]*data-testid="nav-briefing"/);
-    expect(html).not.toMatch(/data-testid="nav-now"[^>]*aria-pressed="true"/);
+    expect(html).toMatch(/data-testid="nav-history"[^>]*aria-pressed="true"|aria-pressed="true"[^>]*data-testid="nav-history"/);
+    expect(html).not.toMatch(/data-testid="nav-chat"[^>]*aria-pressed="true"/);
   });
 
-  it('defaults to remote-server on Now with empty memory', () => {
+  it('falls back to defaults when memory holds a retired tab (D5)', () => {
+    // Briefing was a tab before D5; a phone with old memory fails
+    // validation (tab off-enum) and boots on the chat-first home.
+    seedStore({ repo: 'boomtick', tab: 'briefing' });
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('value="remote-server"');
-    expect(html).toMatch(/data-testid="nav-now"[^>]*aria-pressed="true"/);
+    expect(html).toMatch(/data-testid="nav-chat"[^>]*aria-pressed="true"/);
+  });
+
+  it('defaults to remote-server on Chat with empty memory (D5 chat-first)', () => {
+    const html = renderToStaticMarkup(<App />);
+    expect(html).toContain('value="remote-server"');
+    expect(html).toMatch(/data-testid="nav-chat"[^>]*aria-pressed="true"/);
   });
 });
 
 describe('App write-back (bug 3)', () => {
   it('persists a tab switch so the next boot restores it', () => {
     mount(<App />);
-    const briefing = host!.querySelector('[data-testid="nav-briefing"]');
-    expect(briefing).not.toBeNull();
+    const history = host!.querySelector('[data-testid="nav-history"]');
+    expect(history).not.toBeNull();
     act(() => {
-      briefing!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      history!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    expect(loadNavMemory()).toEqual({ repo: 'remote-server', tab: 'briefing' });
+    expect(loadNavMemory()).toEqual({ repo: 'remote-server', tab: 'history' });
   });
 
   it('restores on the next mount end to end', () => {
-    seedStore({ repo: 'tech-dancer', tab: 'briefing' });
+    seedStore({ repo: 'tech-dancer', tab: 'history' });
     mount(<App />);
     // The write-back effect fired on mount without changing values…
-    expect(loadNavMemory()).toEqual({ repo: 'tech-dancer', tab: 'briefing' });
-    // …and the keep-alive Briefing view mounted (first visit).
-    expect(host!.querySelector('[data-testid="keepalive-briefing"]')).not.toBeNull();
+    expect(loadNavMemory()).toEqual({ repo: 'tech-dancer', tab: 'history' });
+    // …and the keep-alive History view mounted (first visit).
+    expect(host!.querySelector('[data-testid="keepalive-history"]')).not.toBeNull();
   });
 });

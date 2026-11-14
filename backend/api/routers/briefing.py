@@ -31,6 +31,7 @@ from backend.core.env_config import (
     resolve_briefing_fixture_path,
 )
 from backend.core.validation import validate_repo_name
+from backend.exec import turn_engine
 from backend.exec.engine import stack_dir
 from backend.ledger import LEDGER_KINDS, clear as ledger_clear
 from backend.ledger import read as ledger_read
@@ -90,13 +91,13 @@ NARRATOR_COMPACT_FACTS = (
     ("reviews_lines", 3),
     ("workflow_lines", 3),
 )
-NARRATOR_OFF_VALUES = frozenset(
-    {"off", "none", "disabled", "0", "false", "no"})
+NARRATOR_OFF_VALUES = frozenset({"off", "none", "disabled", "0", "false", "no"})
 NARRATOR_SKIP_KEYS = frozenset(
-    {"narrative", "narrative_at", "narrative_mode", "cached", "stale",
-     "generated_at"})
+    {"narrative", "narrative_at", "narrative_mode", "cached", "stale", "generated_at"}
+)
 DEFAULT_NARRATOR_OLLAMA_URL = "http://ollama:11434"
-DEFAULT_NARRATOR_OLLAMA_MODEL = "qwen3:8b"
+# The one default model name (D2): turn_engine owns it.
+DEFAULT_NARRATOR_OLLAMA_MODEL = turn_engine.DEFAULT_MODEL
 DEFAULT_NARRATOR_NEBIUS_URL = "https://api.tokenfactory.nebius.com/v1"
 DEFAULT_NARRATOR_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 
@@ -218,10 +219,8 @@ def narrator_spec() -> dict | None:
     if not raw:
         return {
             "provider": "ollama",
-            "model": _narrator_env(
-                "ASK_MODEL", DEFAULT_NARRATOR_OLLAMA_MODEL),
-            "base_url": _narrator_env(
-                "OLLAMA_URL", DEFAULT_NARRATOR_OLLAMA_URL),
+            "model": _narrator_env("ASK_MODEL", DEFAULT_NARRATOR_OLLAMA_MODEL),
+            "base_url": _narrator_env("OLLAMA_URL", DEFAULT_NARRATOR_OLLAMA_URL),
         }
     text = raw.strip()
     low = text.lower()
@@ -231,22 +230,18 @@ def narrator_spec() -> dict | None:
         model = text.split(":", 1)[1].strip() if ":" in text else ""
         return {
             "provider": "ollama",
-            "model": model or _narrator_env(
-                "ASK_MODEL", DEFAULT_NARRATOR_OLLAMA_MODEL),
-            "base_url": _narrator_env(
-                "OLLAMA_URL", DEFAULT_NARRATOR_OLLAMA_URL),
+            "model": model or _narrator_env("ASK_MODEL", DEFAULT_NARRATOR_OLLAMA_MODEL),
+            "base_url": _narrator_env("OLLAMA_URL", DEFAULT_NARRATOR_OLLAMA_URL),
         }
     if low == "nebius" or low.startswith("nebius:"):
         model = text.split(":", 1)[1].strip() if ":" in text else ""
         return {
             "provider": "nebius",
-            "model": model or _narrator_env(
-                "NEBIUS_MODEL", DEFAULT_NARRATOR_NEBIUS_MODEL),
-            "base_url": _narrator_env(
-                "NEBIUS_BASE_URL", DEFAULT_NARRATOR_NEBIUS_URL),
+            "model": model
+            or _narrator_env("NEBIUS_MODEL", DEFAULT_NARRATOR_NEBIUS_MODEL),
+            "base_url": _narrator_env("NEBIUS_BASE_URL", DEFAULT_NARRATOR_NEBIUS_URL),
         }
-    logger.warning("briefing: ignoring unknown %s value %r",
-                   NARRATOR_ENV, raw)
+    logger.warning("briefing: ignoring unknown %s value %r", NARRATOR_ENV, raw)
     return None
 
 
@@ -274,8 +269,7 @@ def narrator_compact_facts(data: dict) -> dict:
         peek = []
         for pr in list(prs)[:3]:
             if isinstance(pr, dict):
-                peek.append({k: pr[k] for k in ("number", "title")
-                             if k in pr})
+                peek.append({k: pr[k] for k in ("number", "title") if k in pr})
             else:
                 peek.append(str(pr))
         facts["prs"] = peek
@@ -296,8 +290,7 @@ def narrator_prompt(data: dict, compact: bool = False) -> str:
         slim = narrator_compact_facts(data)
         budget = NARRATOR_COMPACT_MAX_INPUT_CHARS
     else:
-        slim = {k: v for k, v in data.items()
-                if k not in NARRATOR_SKIP_KEYS}
+        slim = {k: v for k, v in data.items() if k not in NARRATOR_SKIP_KEYS}
         budget = NARRATOR_MAX_INPUT_CHARS
     blob = json.dumps(slim, sort_keys=True, default=str)
     if len(blob) > budget:
@@ -305,19 +298,17 @@ def narrator_prompt(data: dict, compact: bool = False) -> str:
     return f"Briefing JSON:\n{blob}\n\nLede:"
 
 
-def _post_narrator(url: str, payload: dict, headers: dict,
-                   timeout: float) -> dict:
+def _post_narrator(url: str, payload: dict, headers: dict, timeout: float) -> dict:
     """Injectable seam: one raw-HTTP LLM call, like repair's client."""
     req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"),
-        headers=headers, method="POST")
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _ollama_base(base_url: str) -> str:
-    base = ((base_url or "").strip().rstrip("/")
-            or DEFAULT_NARRATOR_OLLAMA_URL)
+    base = (base_url or "").strip().rstrip("/") or DEFAULT_NARRATOR_OLLAMA_URL
     if base.lower().endswith("/api/generate"):
         base = base[: -len("/api/generate")]
     return base
@@ -337,7 +328,7 @@ def _strip_thinking(text: str) -> str:
         if end < 0:
             text = text[:start]
             break
-        text = text[:start] + text[end + len("</think>"):]
+        text = text[:start] + text[end + len("</think>") :]
     return text
 
 
@@ -351,19 +342,23 @@ def _finish_compact(text: str) -> str:
         return ""
     if stripped[-1] in ".!?":
         return stripped
-    cut = max(stripped.rfind("."), stripped.rfind("!"),
-              stripped.rfind("?"), stripped.rfind(";"))
+    cut = max(
+        stripped.rfind("."),
+        stripped.rfind("!"),
+        stripped.rfind("?"),
+        stripped.rfind(";"),
+    )
     if cut < 0:
         return ""
-    head = stripped[:cut + 1]
+    head = stripped[: cut + 1]
     if head[-1] == ";":
         head = head[:-1].rstrip()
     return head
 
 
-def _narrate_ollama(spec: dict, prompt: str, timeout: float,
-                    system: str,
-                    max_tokens: int) -> tuple[str, bool]:
+def _narrate_ollama(
+    spec: dict, prompt: str, timeout: float, system: str, max_tokens: int
+) -> tuple[str, bool]:
     """Ollama call; second return flags token-cap truncation."""
     body = _post_narrator(
         _ollama_base(spec["base_url"]) + "/api/generate",
@@ -371,45 +366,55 @@ def _narrate_ollama(spec: dict, prompt: str, timeout: float,
         # minutes of CPU on a 2-sentence lede (measured 31s/10tok
         # with thinking vs 1.2s without on qwen3:8b). Servers that
         # predate the flag ignore it; _strip_thinking covers those.
-        {"model": spec["model"], "system": system,
-         "prompt": prompt, "stream": False, "think": False,
-         "options": {"temperature": 0.2,
-                     "num_predict": max_tokens}},
-        {"Content-Type": "application/json"}, timeout)
+        {
+            "model": spec["model"],
+            "system": system,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0.2, "num_predict": max_tokens},
+        },
+        {"Content-Type": "application/json"},
+        timeout,
+    )
     return body.get("response", ""), body.get("done_reason") == "length"
 
 
-def _narrate_nebius(spec: dict, prompt: str, timeout: float,
-                    system: str,
-                    max_tokens: int) -> tuple[str, bool]:
+def _narrate_nebius(
+    spec: dict, prompt: str, timeout: float, system: str, max_tokens: int
+) -> tuple[str, bool]:
     """Nebius call; second return flags token-cap truncation."""
     key = _narrator_env("NEBIUS_API_KEY")
     if not key:
-        logger.warning(
-            "briefing: nebius narrator opted in without NEBIUS_API_KEY")
+        logger.warning("briefing: nebius narrator opted in without NEBIUS_API_KEY")
         return "", False
     body = _post_narrator(
-        (spec["base_url"] or "").strip().rstrip("/")
-        + "/chat/completions",
-        {"model": spec["model"],
-         "messages": [
-             {"role": "system", "content": system},
-             {"role": "user", "content": prompt}],
-         "temperature": 0.2, "max_tokens": max_tokens},
-        {"Content-Type": "application/json",
-         "Authorization": f"Bearer {key}"},
-        timeout)
+        (spec["base_url"] or "").strip().rstrip("/") + "/chat/completions",
+        {
+            "model": spec["model"],
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+        },
+        {"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        timeout,
+    )
     choices = body.get("choices") or []
     if not choices:
         return "", False
     first = choices[0] or {}
-    return ((first.get("message") or {}).get("content", ""),
-            first.get("finish_reason") == "length")
+    return (
+        (first.get("message") or {}).get("content", ""),
+        first.get("finish_reason") == "length",
+    )
 
 
-def narrate_briefing(data: dict,
-                     timeout: float = NARRATOR_TIMEOUT,
-                     compact: bool = False) -> str | None:
+def narrate_briefing(
+    data: dict, timeout: float = NARRATOR_TIMEOUT, compact: bool = False
+) -> str | None:
     """Generate the lede, or None on any failure.
 
     Never raises and never makes a metered call unless the nebius:
@@ -423,24 +428,20 @@ def narrate_briefing(data: dict,
         return None
     prompt = narrator_prompt(data, compact=compact)
     if compact:
-        system, max_tokens = (
-            NARRATOR_COMPACT_SYSTEM, NARRATOR_COMPACT_MAX_TOKENS)
+        system, max_tokens = (NARRATOR_COMPACT_SYSTEM, NARRATOR_COMPACT_MAX_TOKENS)
     else:
         system, max_tokens = NARRATOR_SYSTEM, NARRATOR_MAX_TOKENS
     start = time.monotonic()
     try:
         if spec["provider"] == "ollama":
-            text, truncated = _narrate_ollama(
-                spec, prompt, timeout, system, max_tokens)
+            text, truncated = _narrate_ollama(spec, prompt, timeout, system, max_tokens)
         elif spec["provider"] == "nebius":
-            text, truncated = _narrate_nebius(
-                spec, prompt, timeout, system, max_tokens)
+            text, truncated = _narrate_nebius(spec, prompt, timeout, system, max_tokens)
         else:  # pragma: no cover - narrator_spec only yields these two
             return None
     except Exception as exc:
         elapsed = time.monotonic() - start
-        logger.warning(
-            "briefing: narrator failed after %.1fs (%s)", elapsed, exc)
+        logger.warning("briefing: narrator failed after %.1fs (%s)", elapsed, exc)
         return None
     text = _strip_thinking(text or "").strip()
     if compact and truncated:
@@ -501,7 +502,8 @@ def _spawn_narrative_patch(repo: str, ts: float, snapshot: dict) -> None:
     if narrator_spec() is None:
         return
     thread = threading.Thread(
-        target=_patch_narrative, args=(repo, ts, snapshot), daemon=True)
+        target=_patch_narrative, args=(repo, ts, snapshot), daemon=True
+    )
     thread.start()
 
 
@@ -515,8 +517,7 @@ def _refresh_briefing(repo: str, gh: str) -> None:
         return
     with _BRIEFING_LOCK:
         prev = _BRIEFING_CACHE.get(repo)
-    _store_briefing(
-        repo, _attach_narrative(data, prev[1] if prev else None))
+    _store_briefing(repo, _attach_narrative(data, prev[1] if prev else None))
 
 
 def _revalidate_briefing(repo: str, gh: str) -> None:
@@ -524,8 +525,7 @@ def _revalidate_briefing(repo: str, gh: str) -> None:
         if repo in _BRIEFING_REFRESHING:
             return
         _BRIEFING_REFRESHING.add(repo)
-    thread = threading.Thread(
-        target=_refresh_briefing, args=(repo, gh), daemon=True)
+    thread = threading.Thread(target=_refresh_briefing, args=(repo, gh), daemon=True)
     thread.start()
 
 
@@ -543,24 +543,20 @@ def get_briefing(name: str, gh: str) -> dict:
     if hit is not None:
         age = now - hit[0]
         if age < BRIEFING_CACHE_TTL:
-            return {**hit[1], "cached": True, "stale": False,
-                    "generated_at": hit[0]}
+            return {**hit[1], "cached": True, "stale": False, "generated_at": hit[0]}
         if age < BRIEFING_CACHE_MAX_STALE:
             _revalidate_briefing(name, gh)
-            return {**hit[1], "cached": True, "stale": True,
-                    "generated_at": hit[0]}
+            return {**hit[1], "cached": True, "stale": True, "generated_at": hit[0]}
     previous = hit[1] if hit is not None else None
     data = _run_briefing(name, gh)
-    if previous and previous.get("narrative") \
-            and "narrative" not in data:
+    if previous and previous.get("narrative") and "narrative" not in data:
         data["narrative"] = previous["narrative"]
         data["narrative_at"] = previous.get("narrative_at")
         if previous.get("narrative_mode"):
             data["narrative_mode"] = previous["narrative_mode"]
     ts = _store_briefing(name, data)
     _spawn_narrative_patch(name, ts, dict(data))
-    return {**data, "cached": False, "stale": False,
-            "generated_at": ts}
+    return {**data, "cached": False, "stale": False, "generated_at": ts}
 
 
 def warm_briefing_cache(repos: list[str] | None = None) -> list[str]:
@@ -591,10 +587,13 @@ def _run_briefing(repo: str, gh: str) -> dict:
     # cwd = live checkout: td discovers project_config.json upward from
     # cwd, and the image workdir (/app) has none. Script stays baked.
     proc = subprocess.run(
-        ["python3", script, "--briefing-json",
-         "--repo", repo, "--gh", gh],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=180, text=True, cwd=stack_dir())
+        ["python3", script, "--briefing-json", "--repo", repo, "--gh", gh],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=180,
+        text=True,
+        cwd=stack_dir(),
+    )
     # The script exits 1 when no main source worked (no PRs + no
     # board), but its stdout JSON is still complete and carries the
     # structured errs/empties the app renders. Only fail when stdout
@@ -606,7 +605,9 @@ def _run_briefing(repo: str, gh: str) -> dict:
     if proc.returncode != 0:
         raise RuntimeError(
             (proc.stderr or "").strip().splitlines()[-1]
-            if proc.stderr.strip() else "briefing failed")
+            if proc.stderr.strip()
+            else "briefing failed"
+        )
     raise RuntimeError("briefing returned invalid JSON")
 
 
@@ -624,8 +625,8 @@ def briefing(repo: str = "remote-server") -> dict:
     fixture_path = resolve_briefing_fixture_path()
     if fixture_path and not os.path.exists(fixture_path):
         logger.warning(
-            "briefing: fixture %s for repo %s missing; serving live",
-            fixture_path, name)
+            "briefing: fixture %s for repo %s missing; serving live", fixture_path, name
+        )
         fixture_path = ""
     if not fixture_path:
         stray = briefing_fixture_candidate()
@@ -634,7 +635,9 @@ def briefing(repo: str = "remote-server") -> dict:
                 "briefing: ignoring stray fixture %s for repo %s "
                 "(set BUTTONS_FIXTURE_BRIEFING or "
                 "BUTTONS_FIXTURE_AUTO_DISCOVER=1 to serve fixtures)",
-                stray, name)
+                stray,
+                name,
+            )
     if fixture_path:
         try:
             with open(fixture_path, encoding="utf-8") as fh:
@@ -649,13 +652,13 @@ def briefing(repo: str = "remote-server") -> dict:
                 data["stale"] = False
                 data["generated_at"] = time.time()
             logger.warning(
-                "briefing: serving fixture %s for repo %s",
-                fixture_path, name)
+                "briefing: serving fixture %s for repo %s", fixture_path, name
+            )
             return data
         except Exception as exc:
             raise HTTPException(
-                status_code=500,
-                detail=f"fixture briefing failed: {exc}")
+                status_code=500, detail=f"fixture briefing failed: {exc}"
+            )
 
     try:
         return get_briefing(name, f"arii/{name}")
@@ -683,13 +686,19 @@ def briefing_refresh(body: BriefingRefreshRequest) -> dict:
 
 @router.get("/status", response_model=BackendStatus)
 def status() -> dict:
-    return {"ok": True, "service": "backend", "runs": [],
-            "webhooks": {}, "health": get_system_health()}
+    return {
+        "ok": True,
+        "service": "backend",
+        "runs": [],
+        "webhooks": {},
+        "health": get_system_health(),
+    }
 
 
 @router.get("/ledger", response_model=LedgerList)
-def ledger(kind: str = "all", limit: int = 50,
-           since: float = 0, source: str = "all") -> dict:
+def ledger(
+    kind: str = "all", limit: int = 50, since: float = 0, source: str = "all"
+) -> dict:
     if kind != "all" and kind not in LEDGER_KINDS:
         raise HTTPException(status_code=400, detail="unknown kind")
     if source not in ("all", "console", "cli"):
