@@ -112,22 +112,32 @@ def main(argv=None) -> int:
                     print(f"{stamp()} token: {chunk.content!r}", file=sys.stderr)
             elif mode == "updates":
                 for update in payload.values():
-                    msgs = update.get("messages", []) if isinstance(update, dict) else []
+                    msgs = (
+                        update.get("messages", []) if isinstance(update, dict) else []
+                    )
                     for m in msgs:
                         for call in getattr(m, "tool_calls", None) or []:
                             tool_names.append(call.get("name", ""))
-                            print(f"{stamp()} tool: {call.get('name')}", file=sys.stderr)
+                            print(
+                                f"{stamp()} tool: {call.get('name')}", file=sys.stderr
+                            )
     except GraphRecursionError:
-        print("FAIL: recursion cutoff — the turn looped, never proposed", file=sys.stderr)
+        print(
+            "FAIL: recursion cutoff — the turn looped, never proposed", file=sys.stderr
+        )
         return 1
 
     elapsed = time.time() - started
     pending = deep_chat._pending_interrupts(agent, config)
-    proposed = any(
-        (iv.get("value") or {}).get("action_requests")
-        or ("kind" in (iv.get("value") or {}))
-        for iv in pending
-    ) if pending else False
+    proposed = (
+        any(
+            (iv.get("value") or {}).get("action_requests")
+            or ("kind" in (iv.get("value") or {}))
+            for iv in pending
+        )
+        if pending
+        else False
+    )
     reads = [n for n in tool_names if n in READ_TOOLS]
 
     summary = {

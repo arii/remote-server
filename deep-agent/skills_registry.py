@@ -159,6 +159,12 @@ class SkillsRegistry:
                 f"## Active Node Skills (`{node_name}`) — summaries only; "
                 f"read the full runbook with read_repo_file from: {paths}"
             )
-            return f"{base_system_prompt.rstrip()}\n\n{header}\n\n" + "\n".join(lines) + "\n"
-        injected_block = "\n\n---\n\n".join(self._body_cache[meta.name] for meta in matched)
+            return (
+                f"{base_system_prompt.rstrip()}\n\n{header}\n\n"
+                + "\n".join(lines)
+                + "\n"
+            )
+        injected_block = "\n\n---\n\n".join(
+            self._body_cache[meta.name] for meta in matched
+        )
         return f"{base_system_prompt.rstrip()}\n\n## Active Node Skills (`{node_name}`)\n\n{injected_block}\n"

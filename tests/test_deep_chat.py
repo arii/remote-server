@@ -1566,9 +1566,7 @@ class TestAgentMechanics(unittest.TestCase):
         # the old FilesystemPermission "permission denied", which
         # stays as defense in depth if a fs tool is ever re-enabled.
         text = self._tool_text(out)
-        self.assertTrue(
-            "not available" in text or "permission denied" in text, text
-        )
+        self.assertTrue("not available" in text or "permission denied" in text, text)
 
     def test_chat_gates_allow_virtual_reads(self):
         from langchain_core.messages import AIMessage

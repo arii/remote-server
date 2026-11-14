@@ -91,8 +91,14 @@ CHAT_TOOL_BUDGET = 8
 # propose_action alone (D1 fix to #307): summarizing "what you already
 # gathered" still needs the read tools to re-check a detail.
 BUDGET_KEEP_TOOLS = frozenset(
-    {"read_repo_file", "grep_repo", "list_dir", "search_docs", "pr_read",
-     "propose_action"}
+    {
+        "read_repo_file",
+        "grep_repo",
+        "list_dir",
+        "search_docs",
+        "pr_read",
+        "propose_action",
+    }
 )
 BUDGET_SPENT_NUDGE = (
     "Tool budget spent. Investigate further or finish from the evidence "
@@ -934,7 +940,8 @@ def build_chat_tools(checkout):
         # parameter cap (9 flat scalars); flatness still applies.
         cap = 10**6 if tool.name == "propose_action" else CHAT_MAX_TOOL_PARAMS
         problems.extend(
-            f"{tool.name}: {v}" for v in flat_schema_violations(tool.args, max_params=cap)
+            f"{tool.name}: {v}"
+            for v in flat_schema_violations(tool.args, max_params=cap)
         )
     if problems:
         raise RuntimeError("chat profile schema is not flat: " + "; ".join(problems))

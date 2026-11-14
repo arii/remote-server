@@ -860,9 +860,7 @@ class ChatOpsTest(unittest.TestCase):
         def boom(kind, args):
             raise RuntimeError("verify blew up")
 
-        value = {
-            "action_requests": [{"args": {"kind": "td", "command": "td hi"}}]
-        }
+        value = {"action_requests": [{"args": {"kind": "td", "command": "td hi"}}]}
         chat.spawn_chat_process = lambda argv: FakeProc(
             self._interrupt_text(value), code=3
         )
@@ -904,18 +902,24 @@ class ChatOpsTest(unittest.TestCase):
                 }
             ]
         }
-        self._seed_pending("followupvf01", [{"kind": "issue", "title": "t", "body": "b"}])
-        chat.validate_action_request = lambda args: (True, "PROPOSE dispatch\nEND PROPOSE")
+        self._seed_pending(
+            "followupvf01", [{"kind": "issue", "title": "t", "body": "b"}]
+        )
+        chat.validate_action_request = lambda args: (
+            True,
+            "PROPOSE dispatch\nEND PROPOSE",
+        )
         chat.verify_proposal_content = lambda args, repo: (
             False,
             "VERIFY-FAILED:repo_exists: arii/ghost not found",
         )
-        proposals.run_gh_create_issue = (
-            lambda *a: "https://github.com/arii/remote-server/issues/998"
+        proposals.run_gh_create_issue = lambda *a: (
+            "https://github.com/arii/remote-server/issues/998"
         )
         calls = []
-        chat.run_resume_spawn = lambda *a: calls.append(a) or (
-            (3, self._interrupt_text(value)) if a[2] == "approve" else (0, "ok")
+        chat.run_resume_spawn = lambda *a: (
+            calls.append(a)
+            or ((3, self._interrupt_text(value)) if a[2] == "approve" else (0, "ok"))
         )
         resp = self.client.post(
             "/api/chat/resume",
@@ -973,7 +977,10 @@ class ChatOpsTest(unittest.TestCase):
 
         def fake_verify(args, repo):
             if args.get("pr_number") == 55:
-                return False, "VERIFY-FAILED:pr_exists: PR #55 not found in arii/remote-server"
+                return (
+                    False,
+                    "VERIFY-FAILED:pr_exists: PR #55 not found in arii/remote-server",
+                )
             return True, ""
 
         chat.verify_proposal_content = fake_verify

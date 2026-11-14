@@ -47,7 +47,9 @@ class VerifyPerKind(unittest.TestCase):
         self.assertEqual(reason, "")
 
     def test_issue_fails_on_missing_turn_repo(self):
-        with mock.patch.object(verify, "repo_exists", return_value=(False, "not found")):
+        with mock.patch.object(
+            verify, "repo_exists", return_value=(False, "not found")
+        ):
             ok, reason = verify.verify_proposal(
                 {"kind": "issue", "title": "t", "body": "b"}, "arii/ghost"
             )
@@ -100,7 +102,9 @@ class VerifyPerKind(unittest.TestCase):
         pr_check.assert_not_called()
 
     def test_dispatch_fails_on_missing_repo(self):
-        with mock.patch.object(verify, "repo_exists", return_value=(False, "not found")):
+        with mock.patch.object(
+            verify, "repo_exists", return_value=(False, "not found")
+        ):
             ok, reason = verify.verify_proposal(
                 {
                     "kind": "dispatch",
@@ -114,9 +118,10 @@ class VerifyPerKind(unittest.TestCase):
         self.assertIn("repo_exists", reason)
 
     def test_comment_checks_repo_then_pr(self):
-        with mock.patch.object(
-            verify, "repo_exists", side_effect=ok_repo
-        ), mock.patch.object(verify, "pr_exists", side_effect=ok_pr) as pr_check:
+        with (
+            mock.patch.object(verify, "repo_exists", side_effect=ok_repo),
+            mock.patch.object(verify, "pr_exists", side_effect=ok_pr) as pr_check,
+        ):
             ok, reason = verify.verify_proposal(
                 {
                     "kind": "comment",
@@ -130,8 +135,13 @@ class VerifyPerKind(unittest.TestCase):
         pr_check.assert_called_once_with("arii/remote-server", 9826)
 
     def test_comment_pr_number_must_be_real(self):
-        with mock.patch.object(verify, "repo_exists", ok_repo), mock.patch.object(
-            verify, "pr_exists", return_value=(False, "Could not resolve to a PullRequest")
+        with (
+            mock.patch.object(verify, "repo_exists", ok_repo),
+            mock.patch.object(
+                verify,
+                "pr_exists",
+                return_value=(False, "Could not resolve to a PullRequest"),
+            ),
         ):
             ok, reason = verify.verify_proposal(
                 {
@@ -149,9 +159,10 @@ class VerifyPerKind(unittest.TestCase):
     def test_comment_repo_checked_before_pr(self):
         # A fake repo and a fake PR: the reason names the FIRST failed
         # check, so the re-prompt fixes one thing at a time.
-        with mock.patch.object(
-            verify, "repo_exists", return_value=(False, "not found")
-        ), mock.patch.object(verify, "pr_exists", side_effect=ok_pr) as pr_check:
+        with (
+            mock.patch.object(verify, "repo_exists", return_value=(False, "not found")),
+            mock.patch.object(verify, "pr_exists", side_effect=ok_pr) as pr_check,
+        ):
             ok, reason = verify.verify_proposal(
                 {
                     "kind": "comment",
@@ -191,7 +202,9 @@ class RealCheckersCarryTheTarget(unittest.TestCase):
         self.assertIn("arii/ghost", detail)
 
     def test_pr_exists_names_the_number_and_repo(self):
-        with mock.patch.object(verify, "_gh", return_value=(False, "Could not resolve")):
+        with mock.patch.object(
+            verify, "_gh", return_value=(False, "Could not resolve")
+        ):
             ok, detail = verify.pr_exists("arii/remote-server", 999999)
         self.assertFalse(ok)
         self.assertIn("999999", detail)
