@@ -10,15 +10,16 @@ What this proves over a stateless one-shot on create_agent:
 - create_deep_agent with a persistent SqliteSaver checkpointer keyed
   by thread_id, so conversation memory AND HITL pause state survive
   across one-shot processes (the server spawns per turn / per tap).
-- 13 custom tools reusing the shared helpers (s5tools read-only
-  file tools + retrieval RAG + one gated propose_action + one
-  allowlisted run_repo_command for verify-after-reason + one keyless
-  search_web for upstream discovery + one SSRF-guarded fetch_url for
-  upstream docs + one search_turns past-turn recall + one pr_read +
-  browser_snapshot/browser_act/browser_notes driving the shared
-  cdp-stream session), plus 4 opt-in visual impact tools
-  (run_ux_capture, diff_versions, ask_diff, lighthouse_read) via
-  build_tools(..., impact_tools=True) (#849).
+- a lean chat profile of at most 8 custom tools (D1): the read-only
+  repo set (read_repo_file, grep_repo, list_dir), doc search
+  (search_docs), PR reads (pr_read), one allowlisted
+  run_repo_command for verify-after-reason, and the single gated
+  write tool propose_action — flat schemas only, because schema
+  weight is what locks the 8b model up (Gemini round 2026-11-09).
+  build_tools still builds the full surface (13 custom tools + 4
+  opt-in visual impact tools, #849) for the eval path;
+  build_chat_tools selects the chat profile from it, and
+  build_agent mounts only that.
 - interrupt_on={"propose_action": approve/reject} mirrors the buttons
   Approve/Reject taps; resume is Command(resume={"decisions": [...]}).
 
@@ -39,12 +40,12 @@ need them, so system python can import the validators and run
 Harness note: create_deep_agent also installs its built-in tools
 (write_todos, ls/read_file/write_file/edit_file/glob/grep, task).
 Those run on the default ephemeral StateBackend — scratch state that
-never touches disk or the checkout. gate_chat_harness removes task
-from the model (ungated subagent spend) and denies virtual-fs writes
-(scratch the model could mistake for repo state); reads stay. The
-only repo-write path is propose_action, and it only formats a
-proposal; execution stays server-side behind the existing validated
-endpoints.
+never touches disk or the checkout. gate_chat_harness drops them all
+from the 8b chat profile (D1): write_todos and the virtual-fs set
+are schema weight with no job on this console, and task is ungated
+subagent spend. The only repo-write path is propose_action, and it
+only formats a proposal; execution stays server-side behind the
+existing validated endpoints.
 """
 
 import base64
@@ -86,11 +87,47 @@ RECURSION_LIMIT = 40
 # history, so a post-approval continuation stays narrowed (it only
 # needs to summarize).
 CHAT_TOOL_BUDGET = 8
-BUDGET_SPENT_NUDGE = (
-    "Tool budget spent. Either call propose_action once with the "
-    "exact change and stop, or answer from what you already gathered. "
-    "No other tools are available."
+# Past budget the model keeps the read tools plus propose_action, not
+# propose_action alone (D1 fix to #307): summarizing "what you already
+# gathered" still needs the read tools to re-check a detail.
+BUDGET_KEEP_TOOLS = frozenset(
+    {
+        "read_repo_file",
+        "grep_repo",
+        "list_dir",
+        "search_docs",
+        "pr_read",
+        "propose_action",
+    }
 )
+BUDGET_SPENT_NUDGE = (
+    "Tool budget spent. Investigate further or finish from the evidence "
+    "you have: the read tools and propose_action are still available — "
+    "call propose_action once with the exact change and stop."
+)
+
+# The lean chat profile (D1): the tool names mounted on every chat
+# turn, in schema order. Eight or fewer, each flat (top-level scalars,
+# no nested objects or arrays-of-objects, at most 6 parameters —
+# propose_action is the locked-semantics exception to the parameter
+# cap, still flat). Schema weight is what locks qwen3:8b up, so the
+# profile is deliberately narrower than the full build_tools surface:
+# no web discovery (fetch_url/search_web), no past-turn recall
+# (search_turns), no shared-browser driving (browser_* — the human
+# drives the shared session from the Browser tab), and no visual-impact
+# tools (they stay on the eval path). Pinned by tests/test_deep_chat.py.
+CHAT_TOOL_NAMES = (
+    "read_repo_file",
+    "grep_repo",
+    "list_dir",
+    "search_docs",
+    "pr_read",
+    "run_repo_command",
+    "propose_action",
+)
+CHAT_MAX_TOOLS = 8
+# Parameter cap for non-propose_action tools (D1 flat-schema rule).
+CHAT_MAX_TOOL_PARAMS = 6
 # Sliding window over checkpoint history, applied at turn start.
 # Checkpoints append indefinitely; without this long threads blow
 # the context window. ~5-10 turns of history. The count is a guard
@@ -106,12 +143,13 @@ SALVAGE_TOOL_TAIL = 12
 # this is the runnable mode.
 SUPERVISOR_BRIEF = (
     "You are the repo maintainer on a scheduled sweep. Work read-only "
-    "with list_dir/grep_repo/read_repo_file; track the sweep with "
-    "write_todos. Checks: (1) TODO/FIXME/XXX/HACK markers — report "
-    "file:line for each; (2) docs drift — docs/*.md paths that no "
-    "longer exist in the checkout. Then either report all-clean or "
-    "call propose_action(kind='issue') once per real finding (title + "
-    "file:line evidence). Propose, never fix; end with a summary."
+    "with list_dir/grep_repo/read_repo_file; no task tracking tools — "
+    "just work the checks in order. Checks: (1) TODO/FIXME/XXX/HACK "
+    "markers — report file:line for each; (2) docs drift — docs/*.md "
+    "paths that no longer exist in the checkout. Then either report "
+    "all-clean or call propose_action(kind='issue') once per real "
+    "finding (title + file:line evidence). Propose, never fix; end "
+    "with a summary."
 )
 EXIT_NEEDS_APPROVAL = 3
 
@@ -155,21 +193,35 @@ PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
 
 
 def gate_chat_harness(spec):
-    """Exclude task + deny virtual-fs writes for one chat model.
+    """Drop the deepagents built-ins for one chat model (D1).
 
     Venv-only. Registers an exact provider:model harness profile
-    excluding the task tool (spawns an ungated general-purpose
-    subagent: unbounded spend with no approval gate) and returns the
-    permissions list denying virtual-fs writes (scratch the model
-    could mistake for repo state). Reads stay allowed; our 5 real
-    tools are untouched. (#306)
+    excluding the built-in tools: task (spawns an ungated
+    general-purpose subagent — unbounded spend with no approval
+    gate), write_todos, and the whole virtual-fs set (scratch the
+    model could mistake for repo state; schema weight with no job
+    on this console). The deny-write permission stays as defense
+    in depth in case a fs tool is ever re-enabled. (#306, D1)
     """
     from deepagents import HarnessProfileConfig, register_harness_profile
     from deepagents.middleware.filesystem import FilesystemPermission
 
     provider = PROFILE_PROVIDERS.get(spec["provider"], spec["provider"])
     register_harness_profile(
-        f"{provider}:{spec['model']}", HarnessProfileConfig(excluded_tools={"task"})
+        f"{provider}:{spec['model']}",
+        HarnessProfileConfig(
+            excluded_tools={
+                "task",
+                "write_todos",
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            }
+        ),
     )
     return [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
 
@@ -179,22 +231,13 @@ SYSTEM = (
     "Answer the question directly; when it is about the repo, "
     "investigate read-only first "
     "(list_dir, grep_repo, read_repo_file, search_docs; "
-    "pr_read for GitHub PR questions). "
-    "You cannot run, change, or deploy anything yourself — the only "
+    "pr_read for GitHub PR questions; run_repo_command for an "
+    "allowlisted verification command). "
+    "You cannot change, deploy, or post anything yourself — the only "
     "repo write path is the propose_action tool: call it once with the "
-    "exact change and STOP; a human approves or rejects it. "
-    "When the user asks about or directs the shared browser (the "
-    "Buttons browser view / cdp-stream): browser_snapshot sees the "
-    "exact live page and browser_notes recalls what worked there "
-    "before — read notes first. browser_act navigates, clicks, and "
-    "types on that shared page; say what you are about to do, then "
-    "act, then report what the page shows. These drive ONLY the "
-    "shared cdp-stream session, never anything else. While the human "
-    "drives, act calls refuse — narrate instead of retrying. Login "
-    "walls, payments, and sends: hand that step to the human in "
-    "chat and stop driving until they hand back — never automate "
-    "past them. When a handoff resolves, offer the lesson back as "
-    "a browser_notes save once the human confirms it. "
+    "exact change and STOP; a human approves or rejects it. The shared "
+    "browser (the Buttons browser view) is human-driven; if asked about "
+    "it, say what you would check there and let the human drive. "
     "Always invoke tools through the function-calling interface. "
     "Never write a tool call out as JSON text. "
     "If a grep pattern has no matches, retry with a shorter distinctive "
@@ -855,6 +898,56 @@ def build_tools(checkout, *, impact_tools=False):
     return base + [run_ux_capture, diff_versions, ask_diff, lighthouse_read]
 
 
+def flat_schema_violations(args: dict, *, max_params: int) -> list[str]:
+    """Schema violations for one tool's args mapping (D1 flat rule).
+
+    Pure: takes {param_name: annotation} (langchain BaseTool.args
+    shape) and names every violation — non-scalar annotations
+    (dicts, lists, sets, tuples, Any) and, past the cap, the count
+    itself. The build-time check and the venv tests share this one
+    implementation so they can never disagree about what "flat"
+    means.
+    """
+    import typing
+
+    violations = []
+    if len(args) > max_params:
+        violations.append(f"{len(args)} params exceeds cap {max_params}")
+    for name, annotation in args.items():
+        origin = typing.get_origin(annotation)
+        if origin is not None or annotation in (dict, list, set, tuple, typing.Any):
+            violations.append(f"param {name!r} is not a top-level scalar")
+    return violations
+
+
+def build_chat_tools(checkout):
+    """The lean chat profile (D1): CHAT_TOOL_NAMES selected from
+    build_tools, flat-schema checked at build time.
+
+    Venv-only. Fails loudly (RuntimeError) when the full surface and
+    the profile drift apart — a renamed tool or a schema that grew
+    nested structure names itself here, on every turn build, instead
+    of silently re-weighting the 8b model's window.
+    """
+    built = {t.name: t for t in build_tools(checkout)}
+    missing = [name for name in CHAT_TOOL_NAMES if name not in built]
+    if missing:
+        raise RuntimeError(f"chat profile tools missing from build_tools: {missing}")
+    tools = [built[name] for name in CHAT_TOOL_NAMES]
+    problems = []
+    for tool in tools:
+        # propose_action is the locked-semantics exception to the
+        # parameter cap (9 flat scalars); flatness still applies.
+        cap = 10**6 if tool.name == "propose_action" else CHAT_MAX_TOOL_PARAMS
+        problems.extend(
+            f"{tool.name}: {v}"
+            for v in flat_schema_violations(tool.args, max_params=cap)
+        )
+    if problems:
+        raise RuntimeError("chat profile schema is not flat: " + "; ".join(problems))
+    return tools
+
+
 def build_model(prefer=None):
     """Chat model via model_router. Returns (model, spec). Venv-only.
 
@@ -938,9 +1031,10 @@ def tool_budget_middleware():
     """ToolBudgetMiddleware instance. Venv-only (langchain import).
 
     Counts ToolMessages in the thread: within budget the request
-    passes through; past CHAT_TOOL_BUDGET the model sees only
-    propose_action plus the spent nudge, and stray non-propose calls
-    are rejected at the tool boundary instead of executing (#307).
+    passes through; past CHAT_TOOL_BUDGET the model sees the read
+    tools plus propose_action (BUDGET_KEEP_TOOLS, D1) plus the spent
+    nudge, and stray other calls are rejected at the tool boundary
+    instead of executing (#307).
     Sync hooks only: chat turns use sync invoke/stream.
     """
     from langchain.agents.middleware.types import AgentMiddleware
@@ -962,7 +1056,7 @@ def tool_budget_middleware():
         def wrap_model_call(self, request, handler):
             if _spent(request.state) < CHAT_TOOL_BUDGET:
                 return handler(request)
-            narrowed = [t for t in request.tools if _name(t) == "propose_action"]
+            narrowed = [t for t in request.tools if _name(t) in BUDGET_KEEP_TOOLS]
             return handler(
                 request.override(
                     tools=narrowed,
@@ -1023,7 +1117,7 @@ def build_agent(
     system = f"Repo: {repo}. " + SYSTEM
     if intent_hint:
         system += " " + intent_hint
-    tools = build_tools(s5tools.checkout_for(repo), impact_tools=True)
+    tools = build_chat_tools(s5tools.checkout_for(repo))
     _check_static_budget(system, tools)
     return create_deep_agent(
         model=model,
@@ -1482,8 +1576,11 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
     # (skills/*.md with intent_* trigger nodes); the one-line intent
     # hint still prefixes the injection.
     skill_base = intent.hint(turn_intent) or ""
+    # D1: the skills block is a short intent-keyed summary — full
+    # runbooks load on demand via read_repo_file, keeping the
+    # injection inside its token share on the 8b window.
     intent_hint = skills_registry.SkillsRegistry().inject_skills_for_node(
-        f"intent_{turn_intent}", skill_base
+        f"intent_{turn_intent}", skill_base, compact=True
     )
     agent = build_agent(
         repo,

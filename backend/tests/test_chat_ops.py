@@ -1,5 +1,6 @@
 """Tests for the chat + ops routers (stdlib unittest only)."""
 
+import base64
 import io
 import json
 import os
@@ -86,6 +87,8 @@ class ChatOpsTest(unittest.TestCase):
         self._orig_repo = chat.get_repo_info
         self._orig_spawn = chat.spawn_chat_process
         self._orig_validate = chat.validate_action_request
+        self._orig_verify = chat.verify_proposal_content
+        self._orig_proposal_verify = chat.proposal_verify.verify_proposal
         self._orig_resume_spawn = chat.run_resume_spawn
         self._orig_venv = chat.deep_agent_python
         self._orig_script = chat.deep_agent_script
@@ -115,6 +118,11 @@ class ChatOpsTest(unittest.TestCase):
         import backend.core.git_helpers as _core
 
         _core.get_repo_status = lambda name: {"repo": name}
+        # Verify-before-write (D3): pass-through by default so the
+        # existing approval/resume cases test routing, not the gate —
+        # the gate's own behavior gets dedicated cases below.
+        chat.verify_proposal_content = lambda args, repo: (True, "")
+
         import backend.api.routers.ops as _opsmod
 
         _opsmod.get_repo_status = lambda name: {"repo": name}
@@ -141,6 +149,8 @@ class ChatOpsTest(unittest.TestCase):
         chat.spawn_chat_process = self._orig_spawn
         chat.model_router.resolve_llm = self._orig_resolve
         chat.validate_action_request = self._orig_validate
+        chat.verify_proposal_content = self._orig_verify
+        chat.proposal_verify.verify_proposal = self._orig_proposal_verify
         chat.run_resume_spawn = self._orig_resume_spawn
         chat.deep_agent_python = self._orig_venv
         chat.deep_agent_script = self._orig_script
@@ -791,6 +801,248 @@ class ChatOpsTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][2], "reject")
         self.assertNotIn("sess00000002", chat.pending_resumes)
+
+    def test_approval_verify_failure_autorejects_with_reason(self):
+        # D3: the proposal is shape-valid, so the card path is entered,
+        # but the content gate rejects it (PR number does not exist).
+        # No approval card may render; the reject resume carries the
+        # specific reason so the model re-proposes with a real target.
+        value = {
+            "action_requests": [
+                {
+                    "args": {
+                        "kind": "comment",
+                        "repo": "arii/remote-server",
+                        "pr_number": 55,
+                        "body": "hi",
+                    }
+                }
+            ]
+        }
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            self._interrupt_text(value), code=3
+        )
+        chat.validate_action_request = lambda args: (
+            True,
+            "PROPOSE comment\nEND PROPOSE",
+        )
+        chat.verify_proposal_content = lambda args, repo: (
+            False,
+            "VERIFY-FAILED:pr_exists: PR #55 not found in arii/remote-server",
+        )
+        calls = []
+        chat.run_resume_spawn = lambda *a: calls.append(a) or (0, "ok")
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={
+                "prompt": "comment on the PR",
+                "repo": "remote-server",
+                "session_id": "verifyfail001",
+            },
+        )
+        events = self._sse_events(resp)
+        self.assertEqual([e for e, _ in events if e == "approval"], [])
+        self.assertEqual(events[-1][0], "error")
+        self.assertIn("VERIFY-FAILED:pr_exists", events[-1][1]["error"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], "reject")
+        reason_msg = base64.b64decode(calls[0][3]).decode()
+        self.assertIn("VERIFY-FAILED:pr_exists", reason_msg)
+        self.assertIn("PR #55 not found", reason_msg)
+        self.assertNotIn("verifyfail001", chat.pending_resumes)
+
+    def test_approval_verify_errored_fails_closed(self):
+        # A crashing checker behaves like a failed check, never like a
+        # passed one: the error is surfaced and the proposal is
+        # auto-rejected with a VERIFY-FAILED reason. Patch the
+        # underlying seam so the wrapper's fail-closed try/except runs.
+
+        def boom(kind, args):
+            raise RuntimeError("verify blew up")
+
+        value = {"action_requests": [{"args": {"kind": "td", "command": "td hi"}}]}
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            self._interrupt_text(value), code=3
+        )
+        chat.validate_action_request = lambda args: (True, "PROPOSE td\nEND PROPOSE")
+        # Restore the real wrapper (setUp stubs it to pass-through) and
+        # crash only the underlying checker it calls.
+        chat.verify_proposal_content = self._orig_verify
+        chat.proposal_verify.verify_proposal = boom
+        calls = []
+        chat.run_resume_spawn = lambda *a: calls.append(a) or (0, "ok")
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={
+                "prompt": "do the thing",
+                "repo": "remote-server",
+                "session_id": "verifyerr0001",
+            },
+        )
+        events = self._sse_events(resp)
+        self.assertEqual([e for e, _ in events if e == "approval"], [])
+        self.assertEqual(events[-1][0], "error")
+        self.assertIn("VERIFY-FAILED:verify errored", events[-1][1]["error"])
+        self.assertEqual(calls[0][2], "reject")
+
+    def test_followup_verify_failure_autorejects(self):
+        # The same gate guards the follow-up approval interrupt: a
+        # second action_requests carried out of an approved turn's
+        # code-3 re-interrupt cannot sneak an unverified proposal
+        # through the resume path.
+        value = {
+            "action_requests": [
+                {
+                    "args": {
+                        "kind": "dispatch",
+                        "repo": "arii/ghost",
+                        "branch": "feat/x",
+                        "task": "t",
+                    }
+                }
+            ]
+        }
+        self._seed_pending(
+            "followupvf01", [{"kind": "issue", "title": "t", "body": "b"}]
+        )
+        chat.validate_action_request = lambda args: (
+            True,
+            "PROPOSE dispatch\nEND PROPOSE",
+        )
+        chat.verify_proposal_content = lambda args, repo: (
+            False,
+            "VERIFY-FAILED:repo_exists: arii/ghost not found",
+        )
+        proposals.run_gh_create_issue = lambda *a: (
+            "https://github.com/arii/remote-server/issues/998"
+        )
+        calls = []
+        chat.run_resume_spawn = lambda *a: (
+            calls.append(a)
+            or ((3, self._interrupt_text(value)) if a[2] == "approve" else (0, "ok"))
+        )
+        resp = self.client.post(
+            "/api/chat/resume",
+            json={"session_id": "followupvf01", "decision": "approve"},
+        )
+        # The approved batch still executed (202); the follow-up batch
+        # was rejected and the reason lands in the user-visible text.
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertIn("Auto-rejected before approval", body["text"])
+        self.assertIn("VERIFY-FAILED:repo_exists", body["text"])
+        self.assertNotIn("approval", body)
+        # The bad follow-up batch was itself auto-rejected, and the
+        # reject resume carried the verify reason to the model.
+        reject_calls = [c for c in calls if c[2] == "reject"]
+        self.assertEqual(len(reject_calls), 1)
+        reason_msg = base64.b64decode(reject_calls[0][3]).decode()
+        self.assertIn("VERIFY-FAILED:repo_exists", reason_msg)
+        # The entry stays (session history), consumed: not pending.
+        self.assertFalse(chat.pending_resumes["followupvf01"]["pending"])
+
+    def test_e2e_reject_repropose_approve_execute(self):
+        # Full D3 loop at the router boundary: an unverified proposal
+        # never renders a card and is auto-rejected with its reason;
+        # the re-prompt comes back with a corrected target, which does
+        # render a card; approving it executes exactly once, ledgered.
+        bad = {
+            "action_requests": [
+                {
+                    "args": {
+                        "kind": "comment",
+                        "repo": "arii/remote-server",
+                        "pr_number": 55,
+                        "body": "hi",
+                    }
+                }
+            ]
+        }
+        good = {
+            "action_requests": [
+                {
+                    "args": {
+                        "kind": "comment",
+                        "repo": "arii/remote-server",
+                        "pr_number": 12,
+                        "body": "Nice work.",
+                    }
+                }
+            ]
+        }
+        chat.validate_action_request = lambda args: (
+            True,
+            "PROPOSE comment\nEND PROPOSE",
+        )
+
+        def fake_verify(args, repo):
+            if args.get("pr_number") == 55:
+                return (
+                    False,
+                    "VERIFY-FAILED:pr_exists: PR #55 not found in arii/remote-server",
+                )
+            return True, ""
+
+        chat.verify_proposal_content = fake_verify
+        reject_calls = []
+        chat.run_resume_spawn = lambda *a: reject_calls.append(a) or (0, "ok")
+
+        # Turn 1 — unverified proposal: auto-rejected, no card.
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            self._interrupt_text(bad), code=3
+        )
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={
+                "prompt": "comment on PR 55",
+                "repo": "remote-server",
+                "session_id": "e2erepropo01",
+            },
+        )
+        events = self._sse_events(resp)
+        self.assertEqual([e for e, _ in events if e == "approval"], [])
+        self.assertIn("VERIFY-FAILED:pr_exists", events[-1][1]["error"])
+        self.assertEqual(len(reject_calls), 1)
+        reason_msg = base64.b64decode(reject_calls[0][3]).decode()
+        self.assertIn("PR #55 not found", reason_msg)
+
+        # Turn 2 — the re-prompt's corrected proposal: card renders.
+        chat.spawn_chat_process = lambda argv: FakeProc(
+            self._interrupt_text(good), code=3
+        )
+        resp = self.client.post(
+            "/api/chat/stream",
+            json={
+                "prompt": "comment on PR 12 instead",
+                "repo": "remote-server",
+                "session_id": "e2erepropo02",
+            },
+        )
+        events = self._sse_events(resp)
+        approvals = [p for e, p in events if e == "approval"]
+        self.assertEqual(len(approvals), 1)
+        self.assertTrue(chat.pending_resumes["e2erepropo02"]["pending"])
+
+        # Approve — executes exactly once, ledgered.
+        seen = []
+        proposals.run_gh_pr_comment = lambda *a: (
+            seen.append(a)
+            or "https://github.com/arii/remote-server/pull/12#issuecomment-1"
+        )
+        chat.run_resume_spawn = lambda *a: (0, "All done.")
+        resp = self.client.post(
+            "/api/chat/resume",
+            json={"session_id": "e2erepropo02", "decision": "approve"},
+        )
+        self.assertEqual(resp.status_code, 202)
+        body = resp.json()
+        self.assertEqual(seen, [("arii/remote-server", 12, "Nice work.")])
+        self.assertEqual(len(body["executions"]), 1)
+        self.assertTrue(body["executions"][0]["ok"])
+        rows = self._executed_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["proposal_kind"], "comment")
+        self.assertIn("issuecomment-1", rows[0]["detail"])
 
     def test_chat_stream_strips_machine_lines_from_tokens_and_done(self):
         blob = json.dumps(
