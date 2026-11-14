@@ -100,14 +100,14 @@ Baked into the terminal image (`/usr/local/bin/`):
    ```bash
    pi-review "review the latest PR diff"
    ```
-   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr,mcp__boomtick__github_issue_comment "$@"`.
-   Scopes tools strictly to PR diffs (via `includeDiff`) and reviews.
+   Runs `pi --tools read,bash,mcp__boomtick__github_pr,mcp__boomtick__github_issue "$@"`.
+   Scopes tools strictly to PR diffs (via `include: ["diff"]`), reviews, and posting findings (via `github_issue { comment }`).
 3. **`pi-triage`** (issue & CI triage):
    ```bash
    pi-triage "triage failing runs on tech-dancer"
    ```
-   Runs `pi --tools read,bash,mcp__boomtick__github_get_pr,mcp__boomtick__repo_read_ci_logs,mcp__boomtick__github_issue_comment "$@"`.
-   Scopes tools to PR inspection, CI logs, and posting findings (open-PR search goes through `gh pr list` on bash).
+   Runs `pi --tools read,bash,mcp__boomtick__github_pr,mcp__boomtick__github_issue "$@"`.
+   Scopes tools to PR inspection (incl. CI logs via `include: ["ciLogs"]`) and posting findings (open-PR search goes through `gh pr list` on bash).
 
 ### Selective tool exposure in `mcp.json`
 
@@ -120,14 +120,10 @@ Tool exposure can also be configured per MCP server via `toolExposure` in
     "boomtick": {
       "exposure": "direct",
       "toolExposure": {
-        "boomtick_health": "direct",
-        "repo_read_agent_context": "direct",
-        "repo_read_ci_logs": "direct",
-        "repo_run_tests": "direct",
-        "github_get_pr": "direct",
-        "github_issue_view": "direct",
-        "github_issue_update": "direct",
-        "github_issue_comment": "direct",
+        "repo_context": "direct",
+        "repo_test": "direct",
+        "github_pr": "direct",
+        "github_issue": "direct",
         "github_create_issue": "direct",
         "agent_submit_pr": "direct",
         "td_init": "direct",
@@ -144,25 +140,26 @@ Tool exposure can also be configured per MCP server via `toolExposure` in
 
 Pi flags can also override tool visibility on demand:
 - `--no-mcp`: disables all MCP servers and their schemas.
-- `--tools <list>`: explicitly allowlists tools (e.g. `pi --tools read,bash,mcp__boomtick__github_get_pr`).
+- `--tools <list>`: explicitly allowlists tools (e.g. `pi --tools read,bash,mcp__boomtick__github_pr`).
 
-## BoomTick MCP tools (active 2026-10-27)
+## BoomTick MCP tools (active 2026-11-13)
 
 Pi also loads the BoomTick MCP server (built from boomtick main in
 `terminal/Dockerfile` via `BOOMTICK_CLI_REF=main` and run from
 the baked `/usr/local/bin/boomtick-mcp` binary declared in
 `terminal/pi-config/mcp.json`), configured with `"exposure": "direct"` and
-`"toolExposure": {"*.*": "hidden"}` so the 27 underscore-named tools are
+`"toolExposure": {"*.*": "hidden"}` so the 11 underscore-named tools are
 declared directly to the model without duplicate dot-alias collisions or
 QuickJS `codemode` indirection. It adds structured tools Pi's built-ins
 don't have:
 
-- **GitHub ops:** search PRs, get diffs/reviews/commits, detect merge
-  conflicts, manage issues, comment on PRs.
-- **Repo ops:** inspect changed files, extract package scripts, read
-  CI logs, run tests, manage worktrees, dispatch agent sessions.
-- **Validation:** isolated repair-branch creation, verification suites
-  (tests, Lighthouse, Playwright).
+- **GitHub ops:** PR view/search with `include` sections (diffs, reviews,
+  commits, conflicts, CI logs, workflow runs), issue read/write/comment,
+  issue creation.
+- **Repo ops:** repository/ecosystem context (`repo_context`, includes
+  server health), run tests (`repo_test`), submit agent PRs.
+- **RAG & validation:** RAG init/query (`td_init` / `td_rag`),
+  deterministic gates (spec validation, scope verification, worktree audit).
 - **Resources & prompts:** MCP resources (`mcp://workspace/agent-contract`, `repo://diff/{pr}`, `repo://ci/{pr}` … accessed via server `boomtick`)
   and prompts (`prompt://repair-agent`, `prompt://pr-writer` …).
 

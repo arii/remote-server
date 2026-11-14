@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Task-scoped Pi profile: pr-review
-# Scoped tools for reviewing PR diffs and posting triage summaries.
-# github_get_pr covers diffs (includeDiff) + changed files; posting
-# goes through github_issue_comment. The old get_pr_diff /
-# comment_triage_summary tools never existed on the MCP surface.
+# Scoped tools for reviewing PR diffs (github_pr include:["diff","reviews"])
+# and posting triage summaries via github_issue { comment }. The old
+# get_pr_diff / comment_triage_summary tools never existed on the MCP surface.
 set -euo pipefail
 
-exec pi --tools read,bash,mcp__boomtick__github_get_pr,mcp__boomtick__github_issue_comment "$@"
+exec pi --tools read,bash,mcp__boomtick__github_pr,mcp__boomtick__github_issue "$@"

@@ -16,14 +16,10 @@
       },
       "exposure": "direct",
       "toolExposure": {
-        "boomtick_health": "direct",
-        "repo_read_agent_context": "direct",
-        "repo_read_ci_logs": "direct",
-        "repo_run_tests": "direct",
-        "github_get_pr": "direct",
-        "github_issue_view": "direct",
-        "github_issue_update": "direct",
-        "github_issue_comment": "direct",
+        "repo_context": "direct",
+        "repo_test": "direct",
+        "github_pr": "direct",
+        "github_issue": "direct",
         "github_create_issue": "direct",
         "agent_submit_pr": "direct",
         "td_init": "direct",
@@ -31,6 +27,7 @@
         "td_validate_issue": "direct",
         "td_verify_scope": "direct",
         "td_audit_worktree": "direct",
+        "run_workflow": "direct",
         "*.*": "hidden"
       }
     },

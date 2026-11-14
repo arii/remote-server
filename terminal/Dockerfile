@@ -92,8 +92,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp... --store-dir /pnpm/store) \
  && (cd /tmp/boomtick/mcp && PATH="/opt/venvs/td/bin:${PATH}" pnpm run build) \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
- && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 15 \
- && echo "boomtick ${BOOMTICK_CLI_REF} ships 15 MCP schemas (floor matches the release)" \
+ && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 11 \
+ && echo "boomtick ${BOOMTICK_CLI_REF} ships 11 MCP schemas (floor matches the consolidated surface)" \
  && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
  && npm install -g /tmp/*.tgz \
  && rm -rf /tmp/boomtick /tmp/*.tgz \
