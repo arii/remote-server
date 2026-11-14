@@ -70,7 +70,9 @@ def main(argv=None) -> int:
         return 1
 
     saver, _, _holder = deep_chat.open_checkpointer()
-    thread_id = "live-turn-smoke"
+    # Unique per run: resuming a fixed thread id replays the previous
+    # run's checkpointed events instead of making a live model call.
+    thread_id = f"live-turn-smoke-{int(time.time())}"
     agent = deep_chat.build_agent(repo, saver, model=model, spec=spec)
     config = {
         **{"configurable": {"thread_id": thread_id}},
