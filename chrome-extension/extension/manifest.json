@@ -38,6 +38,7 @@
         "<all_urls>"
       ],
       "js": [
+        "lib/matcher.legacy.js",
         "content-script.js"
       ],
       "run_at": "document_idle",

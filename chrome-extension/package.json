@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test:syntax": "node --check extension/service-worker.js && node --check extension/content-script.js && node --check extension/sidepanel.js",
+    "test": "vitest run",
+    "test:syntax": "node --check extension/service-worker.js && node --check extension/content-script.js && node --check extension/sidepanel.js && node --check extension/lib/matcher.legacy.js",
     "check": "npm run test:syntax && npm run build"
   },
   "keywords": [
@@ -18,5 +19,9 @@
     "autofill"
   ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "happy-dom": "^21.0.4",
+    "vitest": "^3.0.0"
+  }
 }

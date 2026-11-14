@@ -1,0 +1,27 @@
+{
+  "_comment": "Golden matcher decisions for the form fixtures, encoding the strict sidepanel.js aliasMatches rules as of the PR #1302 squash: normalize (lowercase, collapse whitespace, trim); exact match always wins; aliases shorter than 8 chars match EXACTLY ONLY; longer aliases match as whole words (\\b) inside the query. Each case's `query` is a label that exists in the named fixture. Do not change an `expect` value to make a test pass — that is a behavior change (OD-19 locked decision).",
+  "cases": [
+    { "fixture": "ashby-form.html", "query": "First name", "alias": "first name", "expect": true, "why": "exact after normalization" },
+    { "fixture": "ashby-form.html", "query": "First name", "alias": "name", "expect": false, "why": "short alias matches exactly only" },
+    { "fixture": "ashby-form.html", "query": "Company name", "alias": "name", "expect": false, "why": "the audit's cross-match case: short alias must not swallow longer labels" },
+    { "fixture": "ashby-form.html", "query": "Are you legally authorized to work in the US?", "alias": "work authorization", "expect": false, "why": "long alias, phrase absent from query" },
+    { "fixture": "ashby-form.html", "query": "Where are you currently based?", "alias": "location", "expect": false, "why": "8-char alias needs whole-word presence; query lacks it" },
+    { "fixture": "ashby-form.html", "query": "LinkedIn profile", "alias": "linkedin", "expect": true, "why": "8-char alias as whole word in query" },
+    { "fixture": "ashby-form.html", "query": "Email", "alias": "email address", "expect": false, "why": "long alias must appear as whole words in the query; short queries do not match" },
+    { "fixture": "greenhouse-form.html", "query": "Email Address", "alias": "email", "expect": false, "why": "short alias matches exactly only; label carries extra words" },
+    { "fixture": "greenhouse-form.html", "query": "Email Address", "alias": "email address", "expect": true, "why": "exact after normalization (case differs)" },
+    { "fixture": "greenhouse-form.html", "query": "Link to your LinkedIn profile", "alias": "linkedin", "expect": true, "why": "8-char alias as whole word in long query" },
+    { "fixture": "greenhouse-form.html", "query": "Link to your LinkedIn profile", "alias": "github", "expect": false, "why": "short alias, absent" },
+    { "fixture": "greenhouse-form.html", "query": "How many years of software engineering experience do you have?", "alias": "years of experience", "expect": false, "why": "word-boundary match requires the phrase contiguously; query interleaves words" },
+    { "fixture": "greenhouse-form.html", "query": "Personal website or portfolio", "alias": "portfolio", "expect": true, "why": "9-char alias as whole word" },
+    { "fixture": "greenhouse-form.html", "query": "Current Location", "alias": "location", "expect": true, "why": "8-char alias as whole word" },
+    { "fixture": "greenhouse-form.html", "query": "Cover Letter (paste your text cover letter here)", "alias": "cover letter", "expect": true, "why": "long alias as whole words inside label text that includes the instruction span" },
+    { "fixture": "lever-form.html", "query": "Name", "alias": "name", "expect": true, "why": "short alias still matches when EXACT" },
+    { "fixture": "lever-form.html", "query": "Name", "alias": "full name", "expect": false, "why": "long alias must appear inside the query; query is shorter" },
+    { "fixture": "lever-form.html", "query": "Phone (optional)", "alias": "phone", "expect": false, "why": "short alias exactly-only; label carries decoration" },
+    { "fixture": "lever-form.html", "query": "Where are you currently based?", "alias": "currently based", "expect": true, "why": "long alias as whole words" },
+    { "fixture": "lever-form.html", "query": "GitHub profile", "alias": "github", "expect": false, "why": "short alias, absent" },
+    { "fixture": "lever-form.html", "query": "How did you hear about this job?", "alias": "how did you hear", "expect": true, "why": "long alias as whole words" },
+    { "fixture": "ashby-form.html", "query": "  First   NAME ", "alias": "first name", "expect": true, "why": "normalization collapses whitespace and case before comparing" }
+  ]
+}
