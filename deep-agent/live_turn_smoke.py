@@ -35,9 +35,10 @@ import deep_chat  # noqa: E402
 from backend.exec import turn_engine  # noqa: E402
 
 PROMPT = (
-    "Use grep_repo to find one TODO or FIXME marker in this repo, "
-    "then propose_action(kind='issue') proposing an issue to fix the "
-    "clearest one. Then stop and wait."
+    "First, use grep_repo to find one TODO or FIXME marker in this repo. "
+    "Then propose_action(kind='issue') proposing an issue to fix the "
+    "clearest one, quoting the exact TODO marker text verbatim in the "
+    "issue body. Then stop and wait."
 )
 
 READ_TOOLS = {"grep_repo", "list_dir", "read_repo_file", "search_docs", "pr_read"}
