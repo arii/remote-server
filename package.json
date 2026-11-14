@@ -55,5 +55,10 @@
     "playwright": "1.61.1",
     "tsx": "^4.21.0"
   },
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "workspaces": [
+    ".",
+    "frontend"
+  ],
+  "trustedDependencies": ["esbuild"]
 }

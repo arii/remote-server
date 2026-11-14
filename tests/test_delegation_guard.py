@@ -18,6 +18,7 @@ Part B needs the deep-agent venv and builds each harness for real
 Run: python3 tests/test_delegation_guard.py  (A only under system python)
      deep-agent/.venv/bin/python tests/test_delegation_guard.py  (A + B)
 """
+
 import os
 import sys
 import tempfile
@@ -31,6 +32,7 @@ import deep_chat
 try:
     from deepagents import create_deep_agent  # noqa: F401
     from langchain_ollama import ChatOllama  # noqa: F401
+
     HAS_AGENT_DEPS = True
 except ImportError:
     HAS_AGENT_DEPS = False
@@ -54,6 +56,7 @@ def _recording_stubs():
         def _wrap(g):
             g.description = g.__doc__ or ""
             return g
+
         return _wrap(func) if func else _wrap
 
     class _Dummy:
@@ -72,44 +75,44 @@ def _recording_stubs():
         REGISTERED.append((key, profile))
 
     return {
-        "dotenv": _stub_module(
-            "dotenv", load_dotenv=lambda *a, **k: None),
+        "dotenv": _stub_module("dotenv", load_dotenv=lambda *a, **k: None),
         "langchain_core": _stub_module("langchain_core"),
-        "langchain_core.tools": _stub_module(
-            "langchain_core.tools", tool=_tool),
+        "langchain_core.tools": _stub_module("langchain_core.tools", tool=_tool),
         "langchain_core.messages": _stub_module(
-            "langchain_core.messages", ToolMessage=_Dummy,
-            SystemMessage=_Dummy),
-        "langchain_openai": _stub_module(
-            "langchain_openai", ChatOpenAI=_Dummy),
-        "langchain_ollama": _stub_module(
-            "langchain_ollama", ChatOllama=_Dummy),
+            "langchain_core.messages", ToolMessage=_Dummy, SystemMessage=_Dummy
+        ),
+        "langchain_openai": _stub_module("langchain_openai", ChatOpenAI=_Dummy),
+        "langchain_ollama": _stub_module("langchain_ollama", ChatOllama=_Dummy),
         "langchain": _stub_module("langchain"),
         "langchain.agents": _stub_module("langchain.agents"),
         "langchain.agents.middleware": _stub_module(
             "langchain.agents.middleware",
             before_model=lambda f: f,
             after_model=lambda f: f,
-            wrap_tool_call=lambda f: f),
+            wrap_tool_call=lambda f: f,
+        ),
         "langchain.agents.middleware.types": _stub_module(
-            "langchain.agents.middleware.types",
-            AgentMiddleware=object),
+            "langchain.agents.middleware.types", AgentMiddleware=object
+        ),
         "langgraph": _stub_module("langgraph"),
         "langgraph.checkpoint": _stub_module("langgraph.checkpoint"),
         "langgraph.checkpoint.memory": _stub_module(
-            "langgraph.checkpoint.memory", MemorySaver=_Dummy),
+            "langgraph.checkpoint.memory", MemorySaver=_Dummy
+        ),
         "deepagents": _stub_module(
             "deepagents",
             create_deep_agent=_create,
             HarnessProfileConfig=_Dummy,
             GeneralPurposeSubagentProfile=_Dummy,
-            register_harness_profile=_register),
+            register_harness_profile=_register,
+        ),
         "deepagents.backends": _stub_module(
-            "deepagents.backends", FilesystemBackend=_Dummy),
+            "deepagents.backends", FilesystemBackend=_Dummy
+        ),
         "deepagents.middleware": _stub_module("deepagents.middleware"),
         "deepagents.middleware.filesystem": _stub_module(
-            "deepagents.middleware.filesystem",
-            FilesystemPermission=_Permission),
+            "deepagents.middleware.filesystem", FilesystemPermission=_Permission
+        ),
     }
 
 
@@ -149,8 +152,7 @@ def _record_create(*args, **kwargs):
 def _gp_disabled(profile):
     """True when a stub profile carries enabled=False GP config."""
     sub = profile.kwargs.get("general_purpose_subagent")
-    return (sub is not None
-            and sub.kwargs.get("enabled") is False)
+    return sub is not None and sub.kwargs.get("enabled") is False
 
 
 class _StubbedCase(unittest.TestCase):
@@ -166,8 +168,11 @@ class TestCoderImplementGate(_StubbedCase):
     def test_registers_gp_disable_for_spec_key(self):
         with tempfile.TemporaryDirectory() as d:
             coder.build_agent(
-                d, coder.build_system(d, ""), model=object(),
-                spec={"provider": "ollama", "model": "q8"})
+                d,
+                coder.build_system(d, ""),
+                model=object(),
+                spec={"provider": "ollama", "model": "q8"},
+            )
         self.assertEqual(len(REGISTERED), 1)
         key, profile = REGISTERED[0]
         self.assertEqual(key, "ollama:q8")
@@ -177,20 +182,20 @@ class TestCoderImplementGate(_StubbedCase):
     def test_nebius_spec_translates_to_openai_key(self):
         with tempfile.TemporaryDirectory() as d:
             coder.build_agent(
-                d, "SYS", model=object(),
-                spec={"provider": "nebius", "model": "nv"})
+                d, "SYS", model=object(), spec={"provider": "nebius", "model": "nv"}
+            )
         self.assertEqual(REGISTERED[0][0], "openai:nv")
         self.assertTrue(_gp_disabled(REGISTERED[0][1]))
 
     def test_tools_still_just_run_check(self):
         with tempfile.TemporaryDirectory() as d:
             coder.build_agent(
-                d, "SYS", model=object(),
-                spec={"provider": "ollama", "model": "q8"})
+                d, "SYS", model=object(), spec={"provider": "ollama", "model": "q8"}
+            )
         _args, kwargs = CREATED[0]
         self.assertEqual(
-            [getattr(t, "__name__", "") for t in kwargs["tools"]],
-            ["run_check"])
+            [getattr(t, "__name__", "") for t in kwargs["tools"]], ["run_check"]
+        )
         self.assertNotIn("subagents", kwargs)
 
 
@@ -198,8 +203,8 @@ class TestCoderPlanGate(_StubbedCase):
     def test_plan_agent_gated_with_writes_denied(self):
         with tempfile.TemporaryDirectory() as d:
             coder.build_plan_agent(
-                d, "SYS", model=object(),
-                spec={"provider": "ollama", "model": "q8"})
+                d, "SYS", model=object(), spec={"provider": "ollama", "model": "q8"}
+            )
         self.assertEqual(len(REGISTERED), 1)
         self.assertEqual(REGISTERED[0][0], "ollama:q8")
         self.assertTrue(_gp_disabled(REGISTERED[0][1]))
@@ -207,18 +212,15 @@ class TestCoderPlanGate(_StubbedCase):
         self.assertIn("propose_plan", kwargs["interrupt_on"])
         self.assertEqual(len(kwargs["permissions"]), 1)
         self.assertEqual(
-            [getattr(t, "__name__", "") for t in kwargs["tools"]],
-            ["propose_plan"])
+            [getattr(t, "__name__", "") for t in kwargs["tools"]], ["propose_plan"]
+        )
 
 
 class TestResolverGate(_StubbedCase):
     def test_registers_gp_disable_and_passes_no_subagents(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(
-                    rc, "create_deep_agent", _record_create):
-                rc.build_agent(
-                    d, object(),
-                    {"provider": "nebius", "model": "nv-flash"})
+            with mock.patch.object(rc, "create_deep_agent", _record_create):
+                rc.build_agent(d, object(), {"provider": "nebius", "model": "nv-flash"})
         self.assertEqual(len(REGISTERED), 1)
         key, profile = REGISTERED[0]
         self.assertEqual(key, "openai:nv-flash")
@@ -240,29 +242,30 @@ class TestResolverGate(_StubbedCase):
             seen["spec"] = spec
             seen["worktree"] = worktree
             agent = mock.Mock()
-            agent.invoke.return_value = {"messages": [
-                SimpleNamespace(content="done")]}
+            agent.invoke.return_value = {"messages": [SimpleNamespace(content="done")]}
             return agent
 
         with tempfile.TemporaryDirectory() as d:
             worktree = os.path.join(d, "wt")
             os.makedirs(os.path.join(worktree, ".git"))
             argv = ["resolve_conflicts.py", worktree]
-            with mock.patch.object(sys, "argv", argv), \
-                    mock.patch.dict(os.environ,
-                                    {"NEBIUS_API_KEY": "k"}, clear=True), \
-                    mock.patch.object(
-                        rc.model_router, "resolve_llm",
-                        return_value={"provider": "nebius",
-                                      "model": "x",
-                                      "base_url": "y"}), \
-                    mock.patch.object(rc, "build_agent",
-                                      side_effect=_spy), \
-                    mock.patch.object(rc.ledger, "record"), \
-                    mock.patch.object(
-                        rc.observe, "default_trace_path",
-                        return_value=os.path.join(d, "t.jsonl")), \
-                    redirect_stdout(io.StringIO()):
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.dict(os.environ, {"NEBIUS_API_KEY": "k"}, clear=True),
+                mock.patch.object(
+                    rc.model_router,
+                    "resolve_llm",
+                    return_value={"provider": "nebius", "model": "x", "base_url": "y"},
+                ),
+                mock.patch.object(rc, "build_agent", side_effect=_spy),
+                mock.patch.object(rc.ledger, "record"),
+                mock.patch.object(
+                    rc.observe,
+                    "default_trace_path",
+                    return_value=os.path.join(d, "t.jsonl"),
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
                 self.assertEqual(rc.main(), 0)
         self.assertEqual(seen["spec"]["provider"], "nebius")
         self.assertIn("model", seen["spec"])
@@ -273,8 +276,10 @@ class TestTriageGate(_StubbedCase):
     def test_scout_kept_gp_disabled(self):
         with mock.patch.object(tf, "create_deep_agent", _record_create):
             tf.build_agent(
-                object(), ["arii/boomtick", "arii/tech-dancer"],
-                {"provider": "nebius", "model": "nv-flash"})
+                object(),
+                ["arii/boomtick", "arii/tech-dancer"],
+                {"provider": "nebius", "model": "nv-flash"},
+            )
         self.assertEqual(len(REGISTERED), 1)
         key, profile = REGISTERED[0]
         self.assertEqual(key, "openai:nv-flash")
@@ -297,29 +302,30 @@ class TestTriageGate(_StubbedCase):
             seen["spec"] = spec
             seen["repos"] = repos
             agent = mock.Mock()
-            agent.invoke.return_value = {"messages": [
-                SimpleNamespace(content="ok")]}
+            agent.invoke.return_value = {"messages": [SimpleNamespace(content="ok")]}
             return agent
 
         argv = ["triage_fanout.py", "arii/boomtick"]
         with tempfile.TemporaryDirectory() as d:
-            env = {"NEBIUS_API_KEY": "k",
-                   "DEEP_AGENT_STATE_DIR": d}
-            with mock.patch.object(sys, "argv", argv), \
-                    mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch.object(
-                        tf.model_router, "resolve_llm",
-                        return_value={"provider": "nebius",
-                                      "model": "x",
-                                      "base_url": "y"}), \
-                    mock.patch.object(tf, "build_agent",
-                                      side_effect=_spy), \
-                    mock.patch.object(tf.ledger, "record"), \
-                    mock.patch.object(
-                        tf.observe, "default_trace_path",
-                        return_value=os.path.join(d, "t.jsonl")), \
-                    redirect_stdout(io.StringIO()), \
-                    redirect_stderr(io.StringIO()):
+            env = {"NEBIUS_API_KEY": "k", "DEEP_AGENT_STATE_DIR": d}
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch.object(
+                    tf.model_router,
+                    "resolve_llm",
+                    return_value={"provider": "nebius", "model": "x", "base_url": "y"},
+                ),
+                mock.patch.object(tf, "build_agent", side_effect=_spy),
+                mock.patch.object(tf.ledger, "record"),
+                mock.patch.object(
+                    tf.observe,
+                    "default_trace_path",
+                    return_value=os.path.join(d, "t.jsonl"),
+                ),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(io.StringIO()),
+            ):
                 self.assertEqual(tf.main(), 0)
         self.assertEqual(seen["spec"]["provider"], "nebius")
         self.assertEqual(seen["repos"], ["arii/boomtick"])
@@ -332,11 +338,13 @@ class TestChatGateLocked(_StubbedCase):
         # needs a patch (real one needs langchain). D1 moved the chat
         # path onto build_chat_tools, so mock that seam (build_tools
         # alone returns raw objects build_chat_tools would introspect).
-        with mock.patch.object(
-                deep_chat, "build_chat_tools", return_value=["T1"]):
+        with mock.patch.object(deep_chat, "build_chat_tools", return_value=["T1"]):
             deep_chat.build_agent(
-                "arii/boomtick", "CHECKPOINTER", model=object(),
-                spec={"provider": "nebius", "model": "nv"})
+                "arii/boomtick",
+                "CHECKPOINTER",
+                model=object(),
+                spec={"provider": "nebius", "model": "nv"},
+            )
         self.assertEqual(len(REGISTERED), 1)
         key, profile = REGISTERED[0]
         self.assertEqual(key, "openai:nv")
@@ -391,29 +399,38 @@ class TestRealSurfaces(unittest.TestCase):
     def test_coder_implement_has_no_task(self):
         with tempfile.TemporaryDirectory() as d:
             agent = coder.build_agent(
-                d, coder.build_system(d, ""),
+                d,
+                coder.build_system(d, ""),
                 model=_ollama_probe("guard-coder"),
-                spec={"provider": "ollama", "model": "guard-coder"})
+                spec={"provider": "ollama", "model": "guard-coder"},
+            )
         self.assertNotIn("task", _tool_surface(agent))
 
     def test_coder_plan_has_no_task(self):
         with tempfile.TemporaryDirectory() as d:
             agent = coder.build_plan_agent(
-                d, "SYS", model=_ollama_probe("guard-plan"),
-                spec={"provider": "ollama", "model": "guard-plan"})
+                d,
+                "SYS",
+                model=_ollama_probe("guard-plan"),
+                spec={"provider": "ollama", "model": "guard-plan"},
+            )
         self.assertNotIn("task", _tool_surface(agent))
 
     def test_resolver_has_no_task(self):
         with tempfile.TemporaryDirectory() as d:
             agent = rc.build_agent(
-                d, _ollama_probe("guard-resolver"),
-                {"provider": "ollama", "model": "guard-resolver"})
+                d,
+                _ollama_probe("guard-resolver"),
+                {"provider": "ollama", "model": "guard-resolver"},
+            )
         self.assertNotIn("task", _tool_surface(agent))
 
     def test_triage_task_lists_only_scout(self):
         agent = tf.build_agent(
-            _ollama_probe("guard-triage"), ["arii/boomtick"],
-            {"provider": "ollama", "model": "guard-triage"})
+            _ollama_probe("guard-triage"),
+            ["arii/boomtick"],
+            {"provider": "ollama", "model": "guard-triage"},
+        )
         surface = _tool_surface(agent)
         self.assertIn("task", surface)
         # List-item form: the static usage notes below still name
@@ -429,29 +446,28 @@ class TestRealSurfaces(unittest.TestCase):
         # this leg asserts the model-visible layer: one canned turn
         # through a capturing ChatOllama (no network).
         from langchain_core.messages import AIMessage
-        from langchain_core.outputs import (
-            ChatGeneration, ChatResult)
+        from langchain_core.outputs import ChatGeneration, ChatResult
         from langchain_ollama import ChatOllama
 
         seen = {}
 
         class _CapOllama(ChatOllama):
             def bind_tools(self, tools, **kwargs):
-                seen["names"] = [
-                    getattr(t, "name", None) for t in tools]
+                seen["names"] = [getattr(t, "name", None) for t in tools]
                 return self
 
-            def _generate(self, messages, stop=None,
-                          run_manager=None, **kwargs):
-                return ChatResult(generations=[ChatGeneration(
-                    message=AIMessage(content="canned"))])
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                return ChatResult(
+                    generations=[ChatGeneration(message=AIMessage(content="canned"))]
+                )
 
         agent = deep_chat.build_agent(
-            "arii/tech-dancer", None,
+            "arii/tech-dancer",
+            None,
             model=_CapOllama(model="guard-chat-bind"),
-            spec={"provider": "ollama", "model": "guard-chat-bind"})
-        agent.invoke({"messages": [{"role": "user",
-                                    "content": "hi"}]})
+            spec={"provider": "ollama", "model": "guard-chat-bind"},
+        )
+        agent.invoke({"messages": [{"role": "user", "content": "hi"}]})
         self.assertIn("propose_action", seen["names"])
         self.assertNotIn("task", seen["names"])
 
