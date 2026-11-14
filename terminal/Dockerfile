@@ -94,7 +94,11 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && test -f /tmp/boomtick/mcp/dist/mcp/server.js \
  && test "$(find /tmp/boomtick/mcp/.mcp/schemas -name '*.json' | wc -l)" -ge 11 \
  && echo "boomtick ${BOOMTICK_CLI_REF} ships 11 MCP schemas (floor matches the consolidated surface)" \
- && (cd /tmp/boomtick/mcp && npm pack --pack-destination /tmp > /dev/null) \
+ # pnpm pack resolves workspace:* deps (npm pack cannot); mcp depends on the
+ # unpublished workflows workspace package, so both tarballs must be packed and
+ # co-installed for boomtick-mcp's runtime import to resolve.
+ && (cd /tmp/boomtick/mcp && pnpm pack --pack-destination /tmp > /dev/null) \
+ && (cd /tmp/boomtick/workflows && pnpm pack --pack-destination /tmp > /dev/null) \
  && npm install -g /tmp/*.tgz \
  && rm -rf /tmp/boomtick /tmp/*.tgz \
  && test -x /usr/local/bin/boomtick-mcp \
