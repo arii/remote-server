@@ -328,17 +328,35 @@ class TestTriageGate(_StubbedCase):
 class TestChatGateLocked(_StubbedCase):
     def test_task_exclusion_precedent_unchanged(self):
         # build_agent imports create_deep_agent lazily, so the
-        # sys.modules stub records it; only build_tools needs a patch
-        # (real one needs langchain).
+        # sys.modules stub records it; only the tool-building seam
+        # needs a patch (real one needs langchain). D1 moved the chat
+        # path onto build_chat_tools, so mock that seam (build_tools
+        # alone returns raw objects build_chat_tools would introspect).
         with mock.patch.object(
-                deep_chat, "build_tools", return_value=["T1"]):
+                deep_chat, "build_chat_tools", return_value=["T1"]):
             deep_chat.build_agent(
                 "arii/boomtick", "CHECKPOINTER", model=object(),
                 spec={"provider": "nebius", "model": "nv"})
         self.assertEqual(len(REGISTERED), 1)
         key, profile = REGISTERED[0]
         self.assertEqual(key, "openai:nv")
-        self.assertEqual(profile.kwargs.get("excluded_tools"), {"task"})
+        # D1 (#306) extends the locked exclusion with the deepagents
+        # built-ins; the delegation precedent ("task" is never
+        # available to the model) is the subset that must not drift.
+        self.assertEqual(
+            profile.kwargs.get("excluded_tools"),
+            {
+                "task",
+                "write_todos",
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            },
+        )
         self.assertEqual(len(CREATED), 1)
         _args, kwargs = CREATED[0]
         self.assertEqual(kwargs["tools"], ["T1"])
