@@ -111,9 +111,9 @@ class TestPiProfiles(unittest.TestCase):
             "github_issue_comment",
         ):
             self.assertNotIn(tool, exposure, tool)
-        # The 11-tool live surface (post boomtick PR #1259) stays
-        # directly callable: the wildcard hides everything not listed
-        # here.
+        # The 12-tool live surface (post boomtick PR #1259 plus the
+        # #1263 run_workflow gateway) stays directly callable: the
+        # wildcard hides everything not listed here.
         for tool in (
             "repo_context",
             "repo_test",
@@ -126,6 +126,7 @@ class TestPiProfiles(unittest.TestCase):
             "td_validate_issue",
             "td_verify_scope",
             "td_audit_worktree",
+            "run_workflow",
         ):
             self.assertEqual(exposure.get(tool), "direct", tool)
 
