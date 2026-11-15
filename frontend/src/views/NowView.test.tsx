@@ -888,7 +888,6 @@ describe('now loading skeleton (issue #897)', () => {
         reportContext="c"
         onAskAgent={() => {}}
         onOpenTab={() => {}}
-        onSectionChange={() => {}}
         onOpenStats={() => {}}
       />,
     );

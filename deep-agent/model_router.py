@@ -48,10 +48,19 @@ import runs
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 DEFAULT_OLLAMA_URL = "http://ollama:11434"
 DEFAULT_NEBIUS_MODEL = "zai-org/GLM-5.3-Flash"
 DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
+
+
+def _default_ollama_model():
+    """The one default model name (D2): defined in
+    backend/exec/turn_engine.py; this module only surfaces it
+    through ASK_MODEL. Import is lazy so the module stays
+    importable where the repo root is not on sys.path."""
+    from backend.exec.turn_engine import DEFAULT_MODEL
+
+    return DEFAULT_MODEL
 
 
 def _env(name, default=""):
@@ -84,7 +93,7 @@ def ollama_reachable(base_url=None, timeout=5):
 def _ollama_spec():
     return {
         "provider": "ollama",
-        "model": _env("ASK_MODEL", DEFAULT_OLLAMA_MODEL),
+        "model": _env("ASK_MODEL", _default_ollama_model()),
         "base_url": _ollama_base(),
     }
 

@@ -27,9 +27,6 @@ import { ContainerPills, HostTelemetry } from './ObservabilitySection';
 import DirtyReposStrip from './DirtyReposStrip';
 import type { RepoAction, RepoActionResponse } from '../apiClient';
 import InboxStrips from './InboxStrips';
-import ReviewView from './ReviewView';
-import JobsView from './JobsView';
-import QueueView from './QueueView';
 import { loadJobs, loadPrs, useMock } from './mockViews';
 
 function isGetAction(item: AttentionItem): boolean {
@@ -1255,17 +1252,14 @@ export function AttentionBulkBar({
 
 export default function NowView({
   repo,
-  defaultBranch,
   repos = [],
   health,
   reportContext,
   onAskAgent,
   onOpenTab,
   onOpenHistoryQuery,
-  sectionRequest = null,
   reportRequest = 0,
-  createRequest = 0,
-  onSectionChange,
+  onOpenSection,
   onOpenStats,
   onViewDiff,
   onRepoAction,
@@ -1273,9 +1267,6 @@ export default function NowView({
   onFilterHistory,
 }: {
   repo: string;
-  // Checkout branch of the viewed repo, seeding the Review/Jobs
-  // branch fields (#708).
-  defaultBranch?: string;
   // Known checkouts, backing the attention rows' repo context
   // (issue #930). Rows look up their own repo by name, so rollup
   // rows resolve as well as single-repo ones.
@@ -1288,20 +1279,11 @@ export default function NowView({
   // seeded. Absent (older callers, tests), the deploy segment
   // falls back to a plain History tab switch.
   onOpenHistoryQuery?: (query: string) => void;
-  // Command-palette requests (issue #810): nonce bumps from App that
-  // open a section or the report dialog, including on a fresh mount
-  // after the palette navigates here from another tab. The nav bar
-  // (#896, Queue joins in #930) reuses the same path; a null
-  // section closes whichever is open (Now = inbox home).
-  sectionRequest?: { section: 'review' | 'jobs' | 'queue' | null; nonce: number; tdCommand?: string } | null;
   reportRequest?: number;
-  // Palette request (issue #839): a nonce bump opens the Review
-  // section's New-issue form (threaded through to ReviewView).
-  createRequest?: number;
-  // Section mirror for the nav active state (#896): notified on
-  // every section change (including mount and repo-switch resets),
-  // so App never shows a stale entry pressed.
-  onSectionChange?: (section: 'review' | 'jobs' | 'queue' | null) => void;
+  // Triage destinations (D5): Review/Jobs/Queue live in the App's
+  // triage drawer now, so the hero segments, attention rows, and
+  // empty state open the drawer instead of mounting sections here.
+  onOpenSection?: (section: 'review' | 'jobs' | 'queue') => void;
   // Opens the container stats drawer (#896): Containers pills navigate.
   onOpenStats?: (service?: string) => void;
   // Dirty-repos strip (#937): per-row actions carry the row's repo
@@ -1331,13 +1313,6 @@ export default function NowView({
   // fetched once when the dialog first opens, like ReviewView's
   // typeahead suggestions; null until loaded.
   const [reportLabels, setReportLabels] = useState<string[] | null>(null);
-  // One section mounted at a time: Review and Jobs each bind window
-  // triage keys, so mounting both would double-bind j/k/Enter.
-  // Queue binds none, but still mounts solo for a stable layout.
-  const [section, setSection] = useState<'review' | 'jobs' | 'queue' | null>(null);
-  // Last Review row selection, surviving section switches so Jobs can
-  // prefill its PR field from row context. Reset on repo change.
-  const [lastPr, setLastPr] = useState<number | null>(null);
   // Optimistic snooze stubs by item id. A stub collapses its card
   // instantly; refresh() reconciles against the server list.
   const [snoozed, setSnoozed] = useState<Record<string, SnoozedEntry>>({});
@@ -1347,38 +1322,6 @@ export default function NowView({
   const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const rollup = isRollupRepo(repo);
 
-  useEffect(() => {
-    setLastPr(null);
-    // Review/Jobs are per-repo sections; a repo switch (in or out
-    // of the rollup) closes whichever is open.
-    setSection(null);
-  }, [repo]);
-
-  // Palette requests: each nonce handled once; stale nonces from a
-  // previous mount still fire, since the palette navigated here.
-  const handledSectionNonce = useRef(0);
-  // Palette-dispatched td command (#1057): handed to the Jobs view so it
-  // launches through the same progress/notice path as the Jobs buttons.
-  const [pendingTd, setPendingTd] = useState<{ command: string; nonce: number } | null>(null);
-  useEffect(() => {
-    if (sectionRequest && sectionRequest.nonce !== handledSectionNonce.current) {
-      handledSectionNonce.current = sectionRequest.nonce;
-      setSection(sectionRequest.section);
-      setPendingTd(
-        sectionRequest.tdCommand ? { command: sectionRequest.tdCommand, nonce: sectionRequest.nonce } : null,
-      );
-    }
-  }, [sectionRequest]);
-  // Mirror the open section up for the nav active state (#896). One
-  // effect covers every path (internal toggles, palette/nav nonces,
-  // repo-switch resets, mount) with no call-site edits.
-  useEffect(() => {
-    onSectionChange?.(section);
-    // A palette td command only lives for the Jobs visit that consumes
-    // it (#1057): leaving the section drops a request Jobs never ran.
-    if (section !== 'jobs') setPendingTd(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [section]);
   const handledReportNonce = useRef(0);
   useEffect(() => {
     if (reportRequest !== handledReportNonce.current) {
@@ -1729,7 +1672,7 @@ export default function NowView({
           void refresh();
         }}
         onError={setError}
-        onSection={(s) => setSection(s)}
+        onSection={(s) => onOpenSection?.(s)}
         onTab={(t) => onOpenTab(t)}
         onAskAgent={onAskAgent}
         onSnooze={(target, m) => void onSnooze(target, m)}
@@ -1767,9 +1710,9 @@ export default function NowView({
             void refresh();
           }}
           onError={setError}
-          onSection={(s) => setSection(s)}
+          onSection={(s) => onOpenSection?.(s)}
           onTab={(t) => onOpenTab(t)}
-          onAttention={() => setSection(null)}
+          onAttention={() => {}}
           onAskAgent={onAskAgent}
           onHistoryDeploys={() => {
             if (onOpenHistoryQuery) onOpenHistoryQuery('deploy');
@@ -1828,8 +1771,8 @@ export default function NowView({
               repo={repo}
               deferred={deferred}
               onDeferredChange={setDeferred}
-              onOpenReview={() => setSection('review')}
-              onOpenJobs={() => setSection('jobs')}
+              onOpenReview={() => onOpenSection?.('review')}
+              onOpenJobs={() => onOpenSection?.('jobs')}
             />
           )}
           <section aria-label="Attention" data-testid="now-attention">
@@ -1861,7 +1804,7 @@ export default function NowView({
       {visibleAttention.length === 0 &&
       stubRows.length === 0 &&
       snoozedLive.length === 0 ? (
-        <NowEmptyState onRunCheck={() => setSection('jobs')} />
+        <NowEmptyState onRunCheck={() => onOpenSection?.('jobs')} />
       ) : (
         <>
           {selectable && (
@@ -1893,21 +1836,6 @@ export default function NowView({
         </>
       )}
           </section>
-          {section === 'review' && <ReviewView repo={repo} defaultBranch={defaultBranch} onAskAgent={onAskAgent} onSelectPr={setLastPr} createRequest={createRequest} />}
-          {section === 'jobs' && (
-            <JobsView
-              repo={repo}
-              defaultBranch={defaultBranch}
-              onAskAgent={onAskAgent}
-              initialPr={lastPr}
-              onOpenChat={() => onOpenTab('chat')}
-              pendingTdCommand={pendingTd}
-              onPendingTdHandled={(nonce) =>
-                setPendingTd((p) => (p && p.nonce === nonce ? null : p))
-              }
-            />
-          )}
-          {section === 'queue' && <QueueView repo={repo} />}
         </>
       )}
     </section>

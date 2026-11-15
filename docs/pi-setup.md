@@ -18,6 +18,9 @@ infrastructure: Pi runs inside the phone terminal, Ollama serves the model.
   on the phone, 0.5s warm response, 16k context) and `qwen2.5-coder:14b` (stronger,
   16k context). `qwen3:8b` and `qwen3:14b` remain available.
   Switch mid-session with `/model`.
+  Unrelated to pi: the Buttons console's chat default is `qwen3:8b`, defined
+  once in `backend/exec/turn_engine.py` (`DEFAULT_MODEL`) and surfaced through
+  `ASK_MODEL`.
 
 ## Deploy / update on the S5
 

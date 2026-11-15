@@ -296,10 +296,35 @@ label.label-chip input { accent-color: var(--accent); margin: 0; }
 label.label-chip:has(input:checked) { border-color: var(--accent); }
 label.label-chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Pre-send route line in Auto mode (issue #933): the resolved model
-   + cost is the send decision, so it reads at full weight instead of
-   muted metadata. */
-.chat-route-auto { font-size: 0.9rem; font-weight: 650; margin: 0; }
+/* StatusStrip (D5, chat-first shell): the slim one-glance row above
+   the composer. Same pill vocabulary as the header repo-chips; state
+   colors reuse the existing ok/warn/bad tokens. */
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.status-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status-pill {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.status-pill.status-ok { border-color: var(--ok); }
+.status-pill.status-degraded,
+.status-pill.status-loading { border-color: var(--warn); }
+.status-pill.status-error { border-color: var(--bad); }
 
 /* Page-head freshness stamp: metadata riding the heading baseline. */
 .head-stamp {

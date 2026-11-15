@@ -15,7 +15,7 @@ export interface KeyPress {
   shiftKey: boolean;
 }
 
-export type AppTab = 'now' | 'chat' | 'briefing' | 'history' | 'browser';
+export type AppTab = 'now' | 'chat' | 'history' | 'browser';
 
 export type AppShortcutAction = AppTab | 'send' | 'help' | 'help-close' | 'palette';
 
@@ -28,11 +28,10 @@ export interface AppShortcutDef {
 // ONE table: the cheatsheet renders from this, so adding a shortcut
 // is one entry + one matcher case + test.
 export const APP_SHORTCUTS: AppShortcutDef[] = [
-  { key: '1', label: 'Go to Now', action: 'now' },
-  { key: '2', label: 'Go to Chat', action: 'chat' },
-  { key: '3', label: 'Go to Briefing', action: 'briefing' },
-  { key: '4', label: 'Go to History', action: 'history' },
-  { key: '5', label: 'Go to Browser', action: 'browser' },
+  { key: '1', label: 'Go to Chat (home)', action: 'chat' },
+  { key: '2', label: 'Go to Now', action: 'now' },
+  { key: '3', label: 'Go to History', action: 'history' },
+  { key: '4', label: 'Go to Browser', action: 'browser' },
   { key: 'Ctrl+Enter', label: 'Send chat message (chat tab)', action: 'send' },
   { key: '?', label: 'Toggle this cheatsheet', action: 'help' },
   { key: 'Ctrl+K', label: 'Open command palette', action: 'palette' },
@@ -67,14 +66,12 @@ export function matchAppShortcut(e: KeyPress, s: ShortcutState): AppShortcutActi
   if (s.suspended) return null;
   switch (e.key) {
     case '1':
-      return 'now';
-    case '2':
       return 'chat';
+    case '2':
+      return 'now';
     case '3':
-      return 'briefing';
-    case '4':
       return 'history';
-    case '5':
+    case '4':
       return 'browser';
     default:
       return null;

@@ -23,7 +23,7 @@ describe('shortcut table', () => {
       expect(s.label.length).toBeGreaterThan(0);
     }
     const actions = new Set(APP_SHORTCUTS.map((s) => s.action));
-    for (const a of ['now', 'chat', 'briefing', 'history', 'send', 'help', 'help-close', 'palette']) {
+    for (const a of ['now', 'chat', 'history', 'browser', 'send', 'help', 'help-close', 'palette']) {
       expect(actions.has(a as never)).toBe(true);
     }
   });
@@ -43,12 +43,11 @@ describe('shortcut table', () => {
 });
 
 describe('matchAppShortcut', () => {
-  it('maps digits to tabs in nav order', () => {
-    expect(matchAppShortcut(press({ key: '1' }), state())).toBe('now');
-    expect(matchAppShortcut(press({ key: '2' }), state())).toBe('chat');
-    expect(matchAppShortcut(press({ key: '3' }), state())).toBe('briefing');
-    expect(matchAppShortcut(press({ key: '4' }), state())).toBe('history');
-    expect(matchAppShortcut(press({ key: '5' }), state())).toBe('browser');
+  it('maps digits to tabs in nav order (chat-first, D5)', () => {
+    expect(matchAppShortcut(press({ key: '1' }), state())).toBe('chat');
+    expect(matchAppShortcut(press({ key: '2' }), state())).toBe('now');
+    expect(matchAppShortcut(press({ key: '3' }), state())).toBe('history');
+    expect(matchAppShortcut(press({ key: '4' }), state())).toBe('browser');
   });
 
   it('opens help on ? only; Ctrl/Cmd+K opens the palette (issue #902)', () => {

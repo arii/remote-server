@@ -10,15 +10,16 @@ What this proves over a stateless one-shot on create_agent:
 - create_deep_agent with a persistent SqliteSaver checkpointer keyed
   by thread_id, so conversation memory AND HITL pause state survive
   across one-shot processes (the server spawns per turn / per tap).
-- 13 custom tools reusing the shared helpers (s5tools read-only
-  file tools + retrieval RAG + one gated propose_action + one
-  allowlisted run_repo_command for verify-after-reason + one keyless
-  search_web for upstream discovery + one SSRF-guarded fetch_url for
-  upstream docs + one search_turns past-turn recall + one pr_read +
-  browser_snapshot/browser_act/browser_notes driving the shared
-  cdp-stream session), plus 4 opt-in visual impact tools
-  (run_ux_capture, diff_versions, ask_diff, lighthouse_read) via
-  build_tools(..., impact_tools=True) (#849).
+- a lean chat profile of at most 8 custom tools (D1): the read-only
+  repo set (read_repo_file, grep_repo, list_dir), doc search
+  (search_docs), PR reads (pr_read), one allowlisted
+  run_repo_command for verify-after-reason, and the single gated
+  write tool propose_action — flat schemas only, because schema
+  weight is what locks the 8b model up (Gemini round 2026-11-09).
+  build_tools still builds the full surface (13 custom tools + 4
+  opt-in visual impact tools, #849) for the eval path;
+  build_chat_tools selects the chat profile from it, and
+  build_agent mounts only that.
 - interrupt_on={"propose_action": approve/reject} mirrors the buttons
   Approve/Reject taps; resume is Command(resume={"decisions": [...]}).
 
@@ -39,12 +40,12 @@ need them, so system python can import the validators and run
 Harness note: create_deep_agent also installs its built-in tools
 (write_todos, ls/read_file/write_file/edit_file/glob/grep, task).
 Those run on the default ephemeral StateBackend — scratch state that
-never touches disk or the checkout. gate_chat_harness removes task
-from the model (ungated subagent spend) and denies virtual-fs writes
-(scratch the model could mistake for repo state); reads stay. The
-only repo-write path is propose_action, and it only formats a
-proposal; execution stays server-side behind the existing validated
-endpoints.
+never touches disk or the checkout. gate_chat_harness drops them all
+from the 8b chat profile (D1): write_todos and the virtual-fs set
+are schema weight with no job on this console, and task is ungated
+subagent spend. The only repo-write path is propose_action, and it
+only formats a proposal; execution stays server-side behind the
+existing validated endpoints.
 """
 
 import base64
@@ -74,7 +75,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 THREAD_DB = os.path.join(HERE, ".chat_threads", "chat.db")
 
 THREAD_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-MAX_PROMPT = 3000
 # Trace middleware nodes consume budget (~4 steps per tool call,
 # measured); 40 preserves room for ~9 tool calls per turn.
 RECURSION_LIMIT = 40
@@ -87,14 +87,52 @@ RECURSION_LIMIT = 40
 # history, so a post-approval continuation stays narrowed (it only
 # needs to summarize).
 CHAT_TOOL_BUDGET = 8
-BUDGET_SPENT_NUDGE = (
-    "Tool budget spent. Either call propose_action once with the "
-    "exact change and stop, or answer from what you already gathered. "
-    "No other tools are available."
+# Past budget the model keeps the read tools plus propose_action, not
+# propose_action alone (D1 fix to #307): summarizing "what you already
+# gathered" still needs the read tools to re-check a detail.
+BUDGET_KEEP_TOOLS = frozenset(
+    {
+        "read_repo_file",
+        "grep_repo",
+        "list_dir",
+        "search_docs",
+        "pr_read",
+        "propose_action",
+    }
 )
+BUDGET_SPENT_NUDGE = (
+    "Tool budget spent. Investigate further or finish from the evidence "
+    "you have: the read tools and propose_action are still available — "
+    "call propose_action once with the exact change and stop."
+)
+
+# The lean chat profile (D1): the tool names mounted on every chat
+# turn, in schema order. Eight or fewer, each flat (top-level scalars,
+# no nested objects or arrays-of-objects, at most 6 parameters —
+# propose_action is the locked-semantics exception to the parameter
+# cap, still flat). Schema weight is what locks qwen3:8b up, so the
+# profile is deliberately narrower than the full build_tools surface:
+# no web discovery (fetch_url/search_web), no past-turn recall
+# (search_turns), no shared-browser driving (browser_* — the human
+# drives the shared session from the Browser tab), and no visual-impact
+# tools (they stay on the eval path). Pinned by tests/test_deep_chat.py.
+CHAT_TOOL_NAMES = (
+    "read_repo_file",
+    "grep_repo",
+    "list_dir",
+    "search_docs",
+    "pr_read",
+    "run_repo_command",
+    "propose_action",
+)
+CHAT_MAX_TOOLS = 8
+# Parameter cap for non-propose_action tools (D1 flat-schema rule).
+CHAT_MAX_TOOL_PARAMS = 6
 # Sliding window over checkpoint history, applied at turn start.
 # Checkpoints append indefinitely; without this long threads blow
-# the context window. ~5-10 turns of history.
+# the context window. ~5-10 turns of history. The count is a guard
+# on top of the derived history token share (context_budget), not
+# an independent budget.
 MAX_HISTORY_MESSAGES = 40
 # Tool results carried into the salvage pass after a recursion cutoff.
 SALVAGE_TOOL_TAIL = 12
@@ -105,12 +143,13 @@ SALVAGE_TOOL_TAIL = 12
 # this is the runnable mode.
 SUPERVISOR_BRIEF = (
     "You are the repo maintainer on a scheduled sweep. Work read-only "
-    "with list_dir/grep_repo/read_repo_file; track the sweep with "
-    "write_todos. Checks: (1) TODO/FIXME/XXX/HACK markers — report "
-    "file:line for each; (2) docs drift — docs/*.md paths that no "
-    "longer exist in the checkout. Then either report all-clean or "
-    "call propose_action(kind='issue') once per real finding (title + "
-    "file:line evidence). Propose, never fix; end with a summary."
+    "with list_dir/grep_repo/read_repo_file; no task tracking tools — "
+    "just work the checks in order. Checks: (1) TODO/FIXME/XXX/HACK "
+    "markers — report file:line for each; (2) docs drift — docs/*.md "
+    "paths that no longer exist in the checkout. Then either report "
+    "all-clean or call propose_action(kind='issue') once per real "
+    "finding (title + file:line evidence). Propose, never fix; end "
+    "with a summary."
 )
 EXIT_NEEDS_APPROVAL = 3
 
@@ -154,21 +193,35 @@ PROFILE_PROVIDERS = {"ollama": "ollama", "nebius": "openai"}
 
 
 def gate_chat_harness(spec):
-    """Exclude task + deny virtual-fs writes for one chat model.
+    """Drop the deepagents built-ins for one chat model (D1).
 
     Venv-only. Registers an exact provider:model harness profile
-    excluding the task tool (spawns an ungated general-purpose
-    subagent: unbounded spend with no approval gate) and returns the
-    permissions list denying virtual-fs writes (scratch the model
-    could mistake for repo state). Reads stay allowed; our 5 real
-    tools are untouched. (#306)
+    excluding the built-in tools: task (spawns an ungated
+    general-purpose subagent — unbounded spend with no approval
+    gate), write_todos, and the whole virtual-fs set (scratch the
+    model could mistake for repo state; schema weight with no job
+    on this console). The deny-write permission stays as defense
+    in depth in case a fs tool is ever re-enabled. (#306, D1)
     """
     from deepagents import HarnessProfileConfig, register_harness_profile
     from deepagents.middleware.filesystem import FilesystemPermission
 
     provider = PROFILE_PROVIDERS.get(spec["provider"], spec["provider"])
     register_harness_profile(
-        f"{provider}:{spec['model']}", HarnessProfileConfig(excluded_tools={"task"})
+        f"{provider}:{spec['model']}",
+        HarnessProfileConfig(
+            excluded_tools={
+                "task",
+                "write_todos",
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+            }
+        ),
     )
     return [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
 
@@ -178,22 +231,13 @@ SYSTEM = (
     "Answer the question directly; when it is about the repo, "
     "investigate read-only first "
     "(list_dir, grep_repo, read_repo_file, search_docs; "
-    "pr_read for GitHub PR questions). "
-    "You cannot run, change, or deploy anything yourself — the only "
+    "pr_read for GitHub PR questions; run_repo_command for an "
+    "allowlisted verification command). "
+    "You cannot change, deploy, or post anything yourself — the only "
     "repo write path is the propose_action tool: call it once with the "
-    "exact change and STOP; a human approves or rejects it. "
-    "When the user asks about or directs the shared browser (the "
-    "Buttons browser view / cdp-stream): browser_snapshot sees the "
-    "exact live page and browser_notes recalls what worked there "
-    "before — read notes first. browser_act navigates, clicks, and "
-    "types on that shared page; say what you are about to do, then "
-    "act, then report what the page shows. These drive ONLY the "
-    "shared cdp-stream session, never anything else. While the human "
-    "drives, act calls refuse — narrate instead of retrying. Login "
-    "walls, payments, and sends: hand that step to the human in "
-    "chat and stop driving until they hand back — never automate "
-    "past them. When a handoff resolves, offer the lesson back as "
-    "a browser_notes save once the human confirms it. "
+    "exact change and STOP; a human approves or rejects it. The shared "
+    "browser (the Buttons browser view) is human-driven; if asked about "
+    "it, say what you would check there and let the human drive. "
     "Always invoke tools through the function-calling interface. "
     "Never write a tool call out as JSON text. "
     "If a grep pattern has no matches, retry with a shorter distinctive "
@@ -234,24 +278,23 @@ def _td_shape_re(shape):
     return re.compile(r"\s+".join(parts) + r"\Z")
 
 
-BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 DISPATCH_TASK_LIMIT = 4000
 
 
 def _valid_branch(branch):
-    """git-plausible branch name: charset, length, no dot-dot."""
-    return (
-        isinstance(branch, str)
-        and 1 <= len(branch) <= 120
-        and bool(BRANCH_RE.match(branch))
-        and ".." not in branch
-        and branch[0] not in "/-."
-    )
+    """git-plausible branch name — single-sourced in
+    backend/exec/validate.py (D4: the deep-agent copy was a
+    hand-mirror that could drift from the execution path)."""
+    from backend.exec.validate import valid_branch
+
+    return valid_branch(branch)
 
 
 def _valid_pr_number(value):
-    """Positive-int PR number (bools are not PRs)."""
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+    """Positive-int PR number — single-sourced (D4)."""
+    from backend.exec.validate import valid_pr_number
+
+    return valid_pr_number(value)
 
 
 REVIEW_EVENTS = ("comment", "request-changes")
@@ -855,6 +898,56 @@ def build_tools(checkout, *, impact_tools=False):
     return base + [run_ux_capture, diff_versions, ask_diff, lighthouse_read]
 
 
+def flat_schema_violations(args: dict, *, max_params: int) -> list[str]:
+    """Schema violations for one tool's args mapping (D1 flat rule).
+
+    Pure: takes {param_name: annotation} (langchain BaseTool.args
+    shape) and names every violation — non-scalar annotations
+    (dicts, lists, sets, tuples, Any) and, past the cap, the count
+    itself. The build-time check and the venv tests share this one
+    implementation so they can never disagree about what "flat"
+    means.
+    """
+    import typing
+
+    violations = []
+    if len(args) > max_params:
+        violations.append(f"{len(args)} params exceeds cap {max_params}")
+    for name, annotation in args.items():
+        origin = typing.get_origin(annotation)
+        if origin is not None or annotation in (dict, list, set, tuple, typing.Any):
+            violations.append(f"param {name!r} is not a top-level scalar")
+    return violations
+
+
+def build_chat_tools(checkout):
+    """The lean chat profile (D1): CHAT_TOOL_NAMES selected from
+    build_tools, flat-schema checked at build time.
+
+    Venv-only. Fails loudly (RuntimeError) when the full surface and
+    the profile drift apart — a renamed tool or a schema that grew
+    nested structure names itself here, on every turn build, instead
+    of silently re-weighting the 8b model's window.
+    """
+    built = {t.name: t for t in build_tools(checkout)}
+    missing = [name for name in CHAT_TOOL_NAMES if name not in built]
+    if missing:
+        raise RuntimeError(f"chat profile tools missing from build_tools: {missing}")
+    tools = [built[name] for name in CHAT_TOOL_NAMES]
+    problems = []
+    for tool in tools:
+        # propose_action is the locked-semantics exception to the
+        # parameter cap (9 flat scalars); flatness still applies.
+        cap = 10**6 if tool.name == "propose_action" else CHAT_MAX_TOOL_PARAMS
+        problems.extend(
+            f"{tool.name}: {v}"
+            for v in flat_schema_violations(tool.args, max_params=cap)
+        )
+    if problems:
+        raise RuntimeError("chat profile schema is not flat: " + "; ".join(problems))
+    return tools
+
+
 def build_model(prefer=None):
     """Chat model via model_router. Returns (model, spec). Venv-only.
 
@@ -865,12 +958,16 @@ def build_model(prefer=None):
     # No-think is the production setting: on this CPU-only box a qwen3
     # thinking trace takes 15+ min per prompt. CHAT_THINK=1 re-enables.
     # Bounded context for the same reason: the default Ollama window
-    # lets long turns blow out CPU latency. OLLAMA_NUM_CTX overrides.
+    # lets long turns blow out CPU latency. The window default lives
+    # in context_budget (16384, matching .env.example) — OLLAMA_NUM_CTX
+    # overrides, and every share derives from this one number.
     think = os.environ.get("CHAT_THINK", "") == "1"
     if spec["provider"] == "ollama":
         from langchain_ollama import ChatOllama  # noqa: E402
 
-        kwargs["num_ctx"] = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+        from backend.exec import context_budget  # noqa: E402
+
+        kwargs["num_ctx"] = context_budget.num_ctx()
         if not think:
             kwargs["model_kwargs"] = {"think": False}
         return ChatOllama(**kwargs), spec
@@ -934,9 +1031,10 @@ def tool_budget_middleware():
     """ToolBudgetMiddleware instance. Venv-only (langchain import).
 
     Counts ToolMessages in the thread: within budget the request
-    passes through; past CHAT_TOOL_BUDGET the model sees only
-    propose_action plus the spent nudge, and stray non-propose calls
-    are rejected at the tool boundary instead of executing (#307).
+    passes through; past CHAT_TOOL_BUDGET the model sees the read
+    tools plus propose_action (BUDGET_KEEP_TOOLS, D1) plus the spent
+    nudge, and stray other calls are rejected at the tool boundary
+    instead of executing (#307).
     Sync hooks only: chat turns use sync invoke/stream.
     """
     from langchain.agents.middleware.types import AgentMiddleware
@@ -958,7 +1056,7 @@ def tool_budget_middleware():
         def wrap_model_call(self, request, handler):
             if _spent(request.state) < CHAT_TOOL_BUDGET:
                 return handler(request)
-            narrowed = [t for t in request.tools if _name(t) == "propose_action"]
+            narrowed = [t for t in request.tools if _name(t) in BUDGET_KEEP_TOOLS]
             return handler(
                 request.override(
                     tools=narrowed,
@@ -986,6 +1084,23 @@ def tool_budget_middleware():
     return ToolBudget()
 
 
+def _check_static_budget(system: str, tools: list):
+    """Static-input budget report at agent build (D2).
+
+    System prompt and tool schemas are fixed per build: a share
+    overage logs to stderr — the schema weight is exactly what D1
+    slims, so visibility beats a bricked turn — while a total that
+    cannot fit the window at all raises, at build time, with the
+    measured numbers instead of failing every turn opaquely."""
+    from backend.exec import context_budget as cb
+
+    warnings, fatal = cb.check_static(system, str(tools))
+    for line in warnings:
+        print(f"context budget: {line}", file=sys.stderr)
+    if fatal:
+        raise RuntimeError(f"context budget: {fatal}")
+
+
 def build_agent(
     repo, checkpointer, model=None, recorder=None, intent_hint=None, spec=None
 ):
@@ -1002,9 +1117,11 @@ def build_agent(
     system = f"Repo: {repo}. " + SYSTEM
     if intent_hint:
         system += " " + intent_hint
+    tools = build_chat_tools(s5tools.checkout_for(repo))
+    _check_static_budget(system, tools)
     return create_deep_agent(
         model=model,
-        tools=build_tools(s5tools.checkout_for(repo), impact_tools=True),
+        tools=tools,
         system_prompt=system,
         interrupt_on=dict(INTERRUPT_ON),
         permissions=permissions,
@@ -1032,14 +1149,15 @@ def _message_role(message):
     return "other"
 
 
-def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
-    """Ids to drop from checkpoint history. Pure, no langchain import.
+def trim_history_by_count(messages, keep=MAX_HISTORY_MESSAGES):
+    """(kept_messages, drop_ids) after the count trim. Pure, no
+    langchain import.
 
     Keeps a leading SystemMessage plus the newest `keep` messages,
     snapped to start at a HumanMessage boundary so a ToolMessage is
-    never orphaned from its AI tool call. Returns [] when within
-    budget or when no safe boundary exists (trim skipped, not forced).
-    """
+    never orphaned from its AI tool call. Returns the list unchanged
+    when within budget or when no safe boundary exists (trim skipped,
+    not forced)."""
     messages = list(messages or [])
     rest = (
         messages[1:]
@@ -1047,27 +1165,87 @@ def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
         else messages
     )
     if len(rest) <= keep:
-        return []
+        return rest, []
     window = rest[-keep:]
     starts = [i for i, m in enumerate(window) if _message_role(m) == "human"]
     if not starts:
-        return []
+        return rest, []
     keep_ids = {id(m) for m in window[starts[0] :]}
-    return [m.id for m in rest if id(m) not in keep_ids and getattr(m, "id", None)]
+    kept = window[starts[0] :]
+    drop_ids = [m.id for m in rest if id(m) not in keep_ids and getattr(m, "id", None)]
+    return kept, drop_ids
+
+
+def plan_history_trim(messages, keep=MAX_HISTORY_MESSAGES):
+    """Ids to drop from checkpoint history. Pure, no langchain import.
+
+    Count trim only; the history token share is carved on top of this
+    by trim_thread_history (D2: one derived context budget)."""
+    return trim_history_by_count(messages, keep=keep)[1]
+
+
+def _content_text(message):
+    """Message content as str (multimodal content str()-ed)."""
+    return str(getattr(message, "content", "") or "")
+
+
+def _history_token_drops(kept):
+    """Extra drop ids so the kept window fits the history token share.
+
+    Groups are human-boundary turns (trim_history_by_count already snapped
+    the window to one), dropped oldest-first via the budget module's
+    pure arithmetic. Raises ContextBudgetError when even the newest
+    turn alone exceeds the share — the turn fails loudly with the
+    reason, never silently squeezed mid-conversation (D2)."""
+    from backend.exec import context_budget as cb
+
+    if not kept:
+        return []
+    groups: list[list] = []
+    for m in kept:
+        if _message_role(m) == "human" or not groups:
+            groups.append([m])
+        else:
+            groups[-1].append(m)
+    group_tokens = [
+        sum(cb.token_estimate(_content_text(m)) for m in group) for group in groups
+    ]
+    budget = cb.derive_budget()["history"]
+    drop_n, fits = cb.plan_group_trim(group_tokens, budget)
+    if not fits:
+        raise cb.ContextBudgetError(
+            "history", group_tokens[-1], budget, ctx=cb.num_ctx()
+        )
+    return [m.id for group in groups[:drop_n] for m in group if getattr(m, "id", None)]
+
+
+def _remove_message(mid):
+    """One checkpoint removal (langchain import stays lazy: stdlib-only
+    at module import). Test seam: patch to inspect update payloads."""
+    from langchain_core.messages import RemoveMessage  # noqa: E402
+
+    return RemoveMessage(id=mid)
 
 
 def trim_thread_history(agent, config, keep=MAX_HISTORY_MESSAGES):
-    """Drop aged-out checkpoint messages. Best-effort; never raises."""
+    """Drop aged-out checkpoint messages. Best-effort on failure —
+    with one contract: a thread whose newest safe window still
+    exceeds the history token share raises ContextBudgetError, so
+    the turn fails loudly with the reason instead of the model
+    silently squeezing an oversized window (D2)."""
+    from backend.exec import context_budget as cb
+
     try:
         snap = agent.get_state(config)
         messages = (snap.values or {}).get("messages", []) or []
-        drop = plan_history_trim(messages, keep=keep)
-        if not drop:
+        kept, count_drops = trim_history_by_count(messages, keep=keep)
+        drop_ids = list(count_drops) + _history_token_drops(kept)
+        if not drop_ids:
             return 0
-        from langchain_core.messages import RemoveMessage  # noqa: E402
-
-        agent.update_state(config, {"messages": [RemoveMessage(id=i) for i in drop]})
-        return len(drop)
+        agent.update_state(config, {"messages": [_remove_message(i) for i in drop_ids]})
+        return len(drop_ids)
+    except cb.ContextBudgetError:
+        raise
     except Exception:
         return 0
 
@@ -1349,12 +1527,33 @@ def _cmd_trivial_turn(repo, thread_id, prompt, started, model, spec):
     return 0
 
 
+def _prompt_budget_gate(prompt):
+    """Exit value when the prompt exceeds its context share, else None.
+
+    D2: the derived prompt share (context_budget) replaces the flat
+    3000-char cap. chat.py's CHAT_MAX_PROMPT stays as the composer
+    input cap and provably fits this share (tested). Only turn paths
+    reach this — the venv spawn always has the repo root importable
+    (deep_agent_env) — so there is no silent fallback: a broken
+    deployment fails loudly instead of accepting oversized input."""
+    from backend.exec import context_budget
+
+    try:
+        context_budget.require_fit("prompt", prompt)
+    except context_budget.ContextBudgetError as exc:
+        return cli.usage_error(f"prompt rejected: {exc}")
+    return None
+
+
 def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
     prompt = cli.b64decode(raw_prompt)
     if prompt is None:
         return cli.usage_error("bad base64 prompt")
-    if not prompt.strip() or len(prompt) > MAX_PROMPT:
+    if not prompt.strip():
         return cli.usage_error("bad prompt")
+    gate = _prompt_budget_gate(prompt)
+    if gate is not None:
+        return gate
     started = time.time()
     try:
         model, spec = build_model(prefer=prefer)
@@ -1377,8 +1576,11 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
     # (skills/*.md with intent_* trigger nodes); the one-line intent
     # hint still prefixes the injection.
     skill_base = intent.hint(turn_intent) or ""
+    # D1: the skills block is a short intent-keyed summary — full
+    # runbooks load on demand via read_repo_file, keeping the
+    # injection inside its token share on the 8b window.
     intent_hint = skills_registry.SkillsRegistry().inject_skills_for_node(
-        f"intent_{turn_intent}", skill_base
+        f"intent_{turn_intent}", skill_base, compact=True
     )
     agent = build_agent(
         repo,
@@ -1389,7 +1591,16 @@ def _cmd_turn(repo, thread_id, raw_prompt, prefer=None):
         spec=spec,
     )
     config = {"configurable": {"thread_id": thread_id}}
-    trimmed = trim_thread_history(agent, config)
+    from backend.exec import context_budget
+
+    try:
+        # D2 loud gates: the skills block fits its share, and the
+        # checkpoint history fits the history share after trim.
+        if intent_hint:
+            context_budget.require_fit("skills", intent_hint)
+        trimmed = trim_thread_history(agent, config)
+    except context_budget.ContextBudgetError as exc:
+        return cli.sorry(f"Sorry, the turn exceeded the context budget: {exc}")
     if trimmed:
         print(f"trimmed {trimmed} aged-out history message(s)", file=sys.stderr)
     messages = [HumanMessage(content=prompt)]

@@ -1472,6 +1472,43 @@ class TestAgentMechanics(unittest.TestCase):
         ):
             self.assertIn(name, seen)
 
+    def test_chat_harness_binds_exactly_the_profile(self):
+        # D1: the 8b model's bound surface is exactly the lean
+        # profile — deepagents built-ins (task, write_todos, the
+        # virtual fs) are gone from the bind, not merely
+        # permission-gated.
+        from langchain_core.messages import AIMessage
+        from langchain_ollama import ChatOllama
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        seen = []
+        model = self._spying_model(
+            ChatOllama, [AIMessage(content="hi-done")], seen, model="qwen3:8b"
+        )
+        agent = deep_chat.build_agent(
+            "arii/remote-server",
+            InMemorySaver(),
+            model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"},
+        )
+        agent.invoke(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            {"configurable": {"thread_id": "t-profile-bind"}},
+        )
+        self.assertEqual(set(seen), set(deep_chat.CHAT_TOOL_NAMES))
+        for builtin in (
+            "write_todos",
+            "task",
+            "ls",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete",
+            "glob",
+            "grep",
+        ):
+            self.assertNotIn(builtin, seen)
+
     def test_chat_gates_translate_nebius_provider(self):
         from langchain_core.messages import AIMessage
         from langgraph.checkpoint.memory import InMemorySaver
@@ -1524,7 +1561,12 @@ class TestAgentMechanics(unittest.TestCase):
             {"messages": [{"role": "user", "content": "write it"}]},
             {"configurable": {"thread_id": "t-gate-write"}},
         )
-        self.assertIn("permission denied", self._tool_text(out))
+        # D1: the virtual-fs tools are unbound entirely, so a write
+        # attempt fails with "not available" — a stronger denial than
+        # the old FilesystemPermission "permission denied", which
+        # stays as defense in depth if a fs tool is ever re-enabled.
+        text = self._tool_text(out)
+        self.assertTrue("not available" in text or "permission denied" in text, text)
 
     def test_chat_gates_allow_virtual_reads(self):
         from langchain_core.messages import AIMessage
@@ -1598,13 +1640,54 @@ class TestAgentMechanics(unittest.TestCase):
         ]
         return Looper(replies=calls + [AIMessage(content="done")])
 
-    def test_tool_budget_narrows_to_propose(self):
+    def test_tool_budget_narrows_keeps_read_tools(self):
+        # D1: past-budget models keep the read tools plus
+        # propose_action — never propose_action alone (a write-only
+        # blind loop is how the budget gets burned proposing garbage).
+        # Provider-typed model (real ChatOllama class, offline
+        # generate) so the harness profile applies at bind time.
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_ollama import ChatOllama
         from langgraph.checkpoint.memory import InMemorySaver
+        from pydantic import Field
+
+        n_calls = deep_chat.CHAT_TOOL_BUDGET + 1
+        replies = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "grep_repo",
+                        "args": {"pattern": f"zzz-{i}"},
+                        "id": f"loop-{i}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for i in range(n_calls)
+        ] + [AIMessage(content="done")]
 
         binds, msgs = [], []
-        model = self._looper_model(deep_chat.CHAT_TOOL_BUDGET + 1, binds, msgs)
+
+        class BindSpy(ChatOllama):
+            replies: list = Field(default_factory=list)
+
+            def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+                msgs.append(list(messages))
+                msg = self.replies.pop(0) if self.replies else AIMessage(content="")
+                return ChatResult(generations=[ChatGeneration(message=msg)])
+
+            def bind_tools(self, tools, **kwargs):
+                binds.append({t.name for t in tools})
+                return self
+
+        model = BindSpy(replies=replies, model="qwen3:8b")
         agent = deep_chat.build_agent(
-            "arii/remote-server", InMemorySaver(), model=model
+            "arii/remote-server",
+            InMemorySaver(),
+            model=model,
+            spec={"provider": "ollama", "model": "qwen3:8b"},
         )
         agent.invoke(
             {"messages": [{"role": "user", "content": "dig deep"}]},
@@ -1612,7 +1695,16 @@ class TestAgentMechanics(unittest.TestCase):
         )
         self.assertGreater(len(binds), 1)
         self.assertIn("grep_repo", binds[0])
-        self.assertIn({"propose_action"}, binds[1:])
+        # The final bind is the narrowed surface: exactly the read
+        # tools plus propose_action, never propose_action alone.
+        self.assertEqual(binds[-1], set(deep_chat.BUDGET_KEEP_TOOLS))
+        self.assertNotEqual(binds[0], binds[-1], "budget never narrowed")
+        self.assertIn("propose_action", binds[-1])
+        read_tools = set(deep_chat.CHAT_TOOL_NAMES) - {
+            "propose_action",
+            "run_repo_command",
+        }
+        self.assertTrue(binds[-1] & read_tools, "narrowing dropped the read tools")
         nudge_seen = any(
             m.__class__.__name__ == "SystemMessage"
             and "budget" in str(m.content).lower()
@@ -1634,6 +1726,41 @@ class TestAgentMechanics(unittest.TestCase):
             {"configurable": {"thread_id": "t-budget-reject"}},
         )
         self.assertIn("budget spent", self._tool_text(out))
+
+
+@unittest.skipUnless(HAS_AGENT_DEPS, "needs deep-agent venv")
+class TestChatToolProfile(unittest.TestCase):
+    """D1 invariants against the real tool builder (deep-agent deps)."""
+
+    def test_profile_within_cap_and_flat(self):
+        import tempfile
+
+        tools = deep_chat.build_chat_tools(tempfile.mkdtemp())
+        self.assertLessEqual(len(tools), 8)
+        self.assertEqual([t.name for t in tools], list(deep_chat.CHAT_TOOL_NAMES))
+        violations = []
+        for tool in tools:
+            # propose_action is the locked-semantics exception to the
+            # parameter cap; flatness still applies.
+            cap = (
+                10**6
+                if tool.name == "propose_action"
+                else deep_chat.CHAT_MAX_TOOL_PARAMS
+            )
+            violations.extend(
+                f"{tool.name}: {v}"
+                for v in deep_chat.flat_schema_violations(tool.args, max_params=cap)
+            )
+        self.assertEqual(violations, [])
+
+    def test_propose_action_present_alongside_reads(self):
+        import tempfile
+
+        names = {t.name for t in deep_chat.build_chat_tools(tempfile.mkdtemp())}
+        self.assertIn("propose_action", names)
+        self.assertTrue(
+            names - {"propose_action"}, "profile cannot be propose_action alone"
+        )
 
 
 def _msg(cls_name, mid):
@@ -1849,10 +1976,12 @@ class TestBuildModelNumCtx(unittest.TestCase):
                 sys.modules["langchain_ollama"] = old
         return seen
 
-    def test_default_ctx_8192_think_off(self):
+    def test_default_ctx_16384_think_off(self):
+        # D2 raised the default from 8192 to 16384 (one derived budget,
+        # backend/exec/context_budget.py); env override still wins.
         os.environ.pop("OLLAMA_NUM_CTX", None)
         seen = self._model_kwargs()
-        self.assertEqual(seen.get("num_ctx"), 8192)
+        self.assertEqual(seen.get("num_ctx"), 16384)
         self.assertEqual(seen.get("model_kwargs"), {"think": False})
 
     def test_env_override(self):

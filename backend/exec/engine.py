@@ -54,6 +54,22 @@ ALLOWED_PLANS = ("issue-audit", "workflow-audit", "review", "aggregation")
 # Exact port of the timeouts used by buttons/server.py:
 # _td_run default timeout, and the run-plan call timeout.
 TD_RUN_TIMEOUT = 120
+
+
+def _resolve_td_timeout(timeout):
+    """TD_RUN_TIMEOUT env override wins at call time (D2: configurable
+    per deploy, sized against ~6 tok/s local decode); the module
+    constant stays the pinned default tests assert. Lazy import keeps
+    engine.py importable without the repo root on sys.path."""
+    if timeout is not None:
+        return timeout
+    try:
+        from backend.exec import turn_engine
+    except ImportError:
+        return TD_RUN_TIMEOUT
+    return turn_engine.resolve_timeout(TD_RUN_TIMEOUT, "TD_RUN_TIMEOUT")
+
+
 PLAN_TIMEOUT = 300
 
 # Watchdog: no single engine step may run longer than this (#288).
@@ -78,6 +94,7 @@ def step_timeout(action) -> int:
     """Watchdog budget for one step of ``action`` (STEP_TIMEOUT
     unless ACTION_STEP_TIMEOUTS overrides it)."""
     return ACTION_STEP_TIMEOUTS.get(action, STEP_TIMEOUT)
+
 
 # Action names ported from buttons/server.py::ACTIONS (dead-agent
 # actions cut: sync-agents/nudge-agents, #102). "recreate"
@@ -146,16 +163,15 @@ def stack_dir() -> str:
 def deep_agent_dir() -> str:
     """deep-agent checkout dir. Same DEEP_AGENT_DIR override the
     chat router uses, so jobs and chat resolve one venv."""
-    return os.environ.get("DEEP_AGENT_DIR",
-                           os.path.join(ENGINE_ROOT, "deep-agent"))
+    return os.environ.get("DEEP_AGENT_DIR", os.path.join(ENGINE_ROOT, "deep-agent"))
 
 
 def deep_agent_python() -> str:
     """Venv python for deep-agent scripts. Same DEEP_AGENT_VENV
     override the chat router uses; never a hardcoded home path."""
     return os.environ.get(
-        "DEEP_AGENT_VENV",
-        os.path.join(deep_agent_dir(), ".venv", "bin", "python"))
+        "DEEP_AGENT_VENV", os.path.join(deep_agent_dir(), ".venv", "bin", "python")
+    )
 
 
 def deep_agent_script(name: str) -> str:
@@ -163,8 +179,9 @@ def deep_agent_script(name: str) -> str:
 
 
 def compose_file() -> str:
-    return os.environ.get("BUTTONS_COMPOSE_FILE",
-                           os.path.join(stack_dir(), "docker-compose.yml"))
+    return os.environ.get(
+        "BUTTONS_COMPOSE_FILE", os.path.join(stack_dir(), "docker-compose.yml")
+    )
 
 
 def compose_env_file() -> str | None:
@@ -173,8 +190,7 @@ def compose_env_file() -> str | None:
     override = os.environ.get("BUTTONS_ENV_FILE")
     if override:
         return override
-    for cand in (os.path.join(stack_dir(), ".env"),
-                 "/srv/remote-server/.env"):
+    for cand in (os.path.join(stack_dir(), ".env"), "/srv/remote-server/.env"):
         if os.path.isfile(cand):
             return cand
     return None
@@ -194,13 +210,16 @@ def exec_argv(shell: str) -> list:
 
 def td_prefix(cwd: str) -> str:
     """Shell prefix ported from buttons/server.py::_td_prefix."""
-    return ("set -a && [ -f /srv/remote-server/.env ] && "
-            f". /srv/remote-server/.env; set +a && cd {cwd} && ")
+    return (
+        "set -a && [ -f /srv/remote-server/.env ] && "
+        f". /srv/remote-server/.env; set +a && cd {cwd} && "
+    )
 
 
 def git_argv(*args: str) -> list:
     stack = stack_dir()
     return ["git", "-c", f"safe.directory={stack}", "-C", stack, *args]
+
 
 TARGET_RE = re.compile(r"[A-Za-z0-9._/-]{1,64}\Z")
 
@@ -301,8 +320,12 @@ def validate_plan_argv(tokens):
     if sub == "plan-workflow-audit":
         return rest == []
     if sub == "plan-review":
-        return (len(rest) == 2 and rest[0] == "--pr"
-                and rest[1].isdigit() and int(rest[1]) > 0)
+        return (
+            len(rest) == 2
+            and rest[0] == "--pr"
+            and rest[1].isdigit()
+            and int(rest[1]) > 0
+        )
     if sub == "plan-aggregation":
         # ["--pr", N] pairs (1..10) + ["--target", T].
         if len(rest) < 4 or len(rest) % 2 != 0:
@@ -345,8 +368,11 @@ def validate_ux_audit_argv(tokens):
         return False
     if len(tokens) == 2:
         return True
-    return (tokens[2] == "--max-pages" and tokens[3].isdigit()
-            and 1 <= int(tokens[3]) <= 200)
+    return (
+        tokens[2] == "--max-pages"
+        and tokens[3].isdigit()
+        and 1 <= int(tokens[3]) <= 200
+    )
 
 
 def validate_review_pr_argv(tokens):
@@ -389,15 +415,17 @@ def _td_failure_message(stderr, stdout):
     return "command failed"
 
 
-def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
+def td_run(cmd, timeout=None, runner=None):
     """Run one fixed td/gh command string; return stdout.
 
     Exact port of buttons/server.py::_td_run semantics: raises
     RuntimeError with the last stderr line on failure. The command
     string is built from validated values only. ``runner`` is an
     injectable subprocess-like module (for tests); defaults to the
-    real subprocess.
+    real subprocess. ``timeout`` defaults to the env-resolved
+    TD_RUN_TIMEOUT budget.
     """
+    timeout = _resolve_td_timeout(timeout)
     run = runner or subprocess
     # cwd = live checkout: td discovers project_config.json upward from
     # cwd, and the image workdir (/app) has none.
@@ -414,14 +442,18 @@ def td_run(cmd, timeout=TD_RUN_TIMEOUT, runner=None):
     return proc.stdout
 
 
-async def td_run_async(cmd, timeout=TD_RUN_TIMEOUT):
+async def td_run_async(cmd, timeout=None):
     """Async td_run: same command shape and error contract, but the
     wait happens on the event loop instead of blocking a sync worker
     thread, so concurrent plan runs overlap instead of starving
     FastAPI's sync pool (#294). Runs in its own session so a
-    timeout kills the whole tree, not just the bash child (#445)."""
+    timeout kills the whole tree, not just the bash child (#445).
+    ``timeout`` defaults to the env-resolved TD_RUN_TIMEOUT budget."""
+    timeout = _resolve_td_timeout(timeout)
     proc = await asyncio.create_subprocess_exec(
-        "bash", "-c", cmd,
+        "bash",
+        "-c",
+        cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=stack_dir(),
@@ -435,8 +467,11 @@ async def td_run_async(cmd, timeout=TD_RUN_TIMEOUT):
         await proc.wait()
         raise RuntimeError(f"command timed out after {timeout}s")
     if proc.returncode != 0:
-        raise RuntimeError(_td_failure_message(
-            err.decode("utf-8", "replace"), out.decode("utf-8", "replace")))
+        raise RuntimeError(
+            _td_failure_message(
+                err.decode("utf-8", "replace"), out.decode("utf-8", "replace")
+            )
+        )
     return out.decode("utf-8", "replace")
 
 
@@ -452,18 +487,20 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         return [
             ["df", "-h", stack_dir(), "/"],
             ["free", "-m"],
-            compose_argv("ps", "--format",
-                         "table {{.Name}}\t{{.State}}\t{{.Status}}"),
+            compose_argv("ps", "--format", "table {{.Name}}\t{{.State}}\t{{.Status}}"),
         ], None
     if action == "status":
         return [
             git_argv("status", "--short", "--branch"),
             git_argv("log", "--oneline", "-3"),
             compose_argv("ps"),
-            ["docker", "images",
-             "ghcr.io/arii/remote-server-terminal",
-             "--format", "{{.Repository}}:{{.Tag}}  {{.Size}}  "
-                        "{{.CreatedSince}}"],
+            [
+                "docker",
+                "images",
+                "ghcr.io/arii/remote-server-terminal",
+                "--format",
+                "{{.Repository}}:{{.Tag}}  {{.Size}}  {{.CreatedSince}}",
+            ],
         ], None
     if action == "logs":
         return [
@@ -471,19 +508,25 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         ], None
     if action == "deploy-buttons":
         return [
-            exec_argv("git -c safe.directory=/srv/remote-server "
-                      "-c core.hooksPath=/dev/null -C /srv/remote-server "
-                      "pull --ff-only && chmod +x "
-                      "/srv/remote-server/scripts/*.sh 2>/dev/null || true"),
-            exec_argv("HOST_HOME=/home/ari HOME=/home/ari docker compose "
-                      "-f /srv/remote-server/docker-compose.yml up -d "
-                      "--build buttons"),
-            exec_argv("for i in $(seq 1 30); do if curl -sf "
-                      "http://buttons:8000/api/status >/dev/null; "
-                      "then echo buttons up; exit 0; fi; sleep 2; done; "
-                      "HOST_HOME=/home/ari HOME=/home/ari docker compose "
-                      "-f /srv/remote-server/docker-compose.yml ps buttons; "
-                      "exit 1"),
+            exec_argv(
+                "git -c safe.directory=/srv/remote-server "
+                "-c core.hooksPath=/dev/null -C /srv/remote-server "
+                "pull --ff-only && chmod +x "
+                "/srv/remote-server/scripts/*.sh 2>/dev/null || true"
+            ),
+            exec_argv(
+                "HOST_HOME=/home/ari HOME=/home/ari docker compose "
+                "-f /srv/remote-server/docker-compose.yml up -d "
+                "--build buttons"
+            ),
+            exec_argv(
+                "for i in $(seq 1 30); do if curl -sf "
+                "http://buttons:8000/api/status >/dev/null; "
+                "then echo buttons up; exit 0; fi; sleep 2; done; "
+                "HOST_HOME=/home/ari HOME=/home/ari docker compose "
+                "-f /srv/remote-server/docker-compose.yml ps buttons; "
+                "exit 1"
+            ),
         ], None
     if action == "recreate-code":
         return [
@@ -492,24 +535,29 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
     prefix = td_prefix(td_cwd)
     if action == "briefing-td":
         return [
-            exec_argv(prefix +
-                      "python3 /srv/remote-server/backend/briefing_summary.py "
-                      f"--briefing --repo {repo} --gh {gh}"),
+            exec_argv(
+                prefix + "python3 /srv/remote-server/backend/briefing_summary.py "
+                f"--briefing --repo {repo} --gh {gh}"
+            ),
         ], None
     if action == "warm-context":
         return [exec_argv(prefix + "td context-warm")], None
     if action == "preflight":
         return [
-            exec_argv(prefix + "set -o pipefail; td --json preflight | "
-                      "python3 /srv/remote-server/backend/preflight_digest.py"),
+            exec_argv(
+                prefix + "set -o pipefail; td --json preflight | "
+                "python3 /srv/remote-server/backend/preflight_digest.py"
+            ),
         ], None
     if action == "create-plan":
         return [
-            exec_argv(prefix + "mkdir -p .agents/plans && "
-                      "python3 /srv/remote-server/backend/briefing_summary.py "
-                      "--plan-dir .agents/plans "
-                      f"--repo {repo} --gh {gh} && "
-                      "git status --short .agents/plans/"),
+            exec_argv(
+                prefix + "mkdir -p .agents/plans && "
+                "python3 /srv/remote-server/backend/briefing_summary.py "
+                "--plan-dir .agents/plans "
+                f"--repo {repo} --gh {gh} && "
+                "git status --short .agents/plans/"
+            ),
         ], None
     if action == "run-td":
         if not td_argv or validate_td_command(" ".join(td_argv)) != td_argv:
@@ -528,8 +576,7 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         return [list(td_argv)], None
     if action == "merge-approved":
         return [
-            exec_argv(prefix + "td --json agent merge-approved -r "
-                      f"{gh} --execute"),
+            exec_argv(prefix + f"td --json agent merge-approved -r {gh} --execute"),
         ], None
     if action == "merge-approved-gated":
         # Scheduled-safe by construction (#867): every gate is
@@ -541,8 +588,9 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # step_cwd resolve the module from this backend's tree.
         if not gh:
             return None, "merge-approved-gated needs a repo"
-        return [[sys.executable, "-m", "backend.merge_gated",
-                 "--repo", repo, "--gh", gh]], None
+        return [
+            [sys.executable, "-m", "backend.merge_gated", "--repo", repo, "--gh", gh]
+        ], None
     if action == "triage-fanout":
         # One-repo sweep for the run's repo (#670). --prefer is
         # omitted so the script's auto ladder applies (Nebius when
@@ -553,11 +601,12 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         python = deep_agent_python()
         script = deep_agent_script("triage_fanout.py")
         if not os.path.isfile(python):
-            return (None, "deep-agent venv python not found at "
-                    f"{python} (set DEEP_AGENT_VENV)")
+            return (
+                None,
+                f"deep-agent venv python not found at {python} (set DEEP_AGENT_VENV)",
+            )
         if not os.path.isfile(script):
-            return (None, "triage fanout script not found at "
-                    f"{script}")
+            return (None, f"triage fanout script not found at {script}")
         return [[python, script, gh]], None
     if action == "check-notifications":
         # One-repo notify scan (#822): local exec (like run-plan, not
@@ -566,8 +615,9 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # this backend's tree: stack_dir() lags the image.
         if not gh:
             return None, "check-notifications needs a repo"
-        return [[sys.executable, "-m", "backend.notify_check",
-                 "--repo", repo, "--gh", gh]], None
+        return [
+            [sys.executable, "-m", "backend.notify_check", "--repo", repo, "--gh", gh]
+        ], None
     if action == "autofile-scan":
         # One-repo repeated-failure scan (#825): local exec (like
         # check-notifications) so the scan reads the same ledger
@@ -575,8 +625,9 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         # crossed signature (marker-deduped, filing only).
         if not gh:
             return None, "autofile-scan needs a repo"
-        return [[sys.executable, "-m", "backend.autofile_scan",
-                 "--repo", repo, "--gh", gh]], None
+        return [
+            [sys.executable, "-m", "backend.autofile_scan", "--repo", repo, "--gh", gh]
+        ], None
     if action == "ux-audit":
         # Dispatched multi-page UX audit (#850): local exec of the
         # deep-agent runner (like triage-fanout) so the report lands
@@ -589,11 +640,12 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         python = deep_agent_python()
         script = deep_agent_script("ux_audit.py")
         if not os.path.isfile(python):
-            return (None, "deep-agent venv python not found at "
-                    f"{python} (set DEEP_AGENT_VENV)")
+            return (
+                None,
+                f"deep-agent venv python not found at {python} (set DEEP_AGENT_VENV)",
+            )
         if not os.path.isfile(script):
-            return (None, "ux audit script not found at "
-                    f"{script}")
+            return (None, f"ux audit script not found at {script}")
         argv = [python, script, "audit", td_argv[1]]
         if len(td_argv) == 4:
             argv += ["--max-pages", td_argv[3]]
@@ -617,8 +669,15 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
             return None, "review-pr needs a repo"
         if not td_argv or not validate_review_pr_argv(td_argv):
             return None, "review-pr needs attached [review-pr, N]"
-        argv = [sys.executable, "-m", "backend.review",
-               "--repo", gh, "--pr", td_argv[1]]
+        argv = [
+            sys.executable,
+            "-m",
+            "backend.review",
+            "--repo",
+            gh,
+            "--pr",
+            td_argv[1],
+        ]
         argv.append("--post" if len(td_argv) == 3 else "--dry-run")
         return [argv], None
     if action == "supervise":
@@ -632,11 +691,12 @@ def action_steps(action, repo, gh, td_cwd, td_argv=None):
         python = deep_agent_python()
         script = deep_agent_script("deep_chat.py")
         if not os.path.isfile(python):
-            return (None, "deep-agent venv python not found at "
-                    f"{python} (set DEEP_AGENT_VENV)")
+            return (
+                None,
+                f"deep-agent venv python not found at {python} (set DEEP_AGENT_VENV)",
+            )
         if not os.path.isfile(script):
-            return (None, "deep chat script not found at "
-                    f"{script}")
+            return (None, f"deep chat script not found at {script}")
         return [[python, script, gh, "--supervise"]], None
     return None, "unknown action"
 
@@ -683,8 +743,9 @@ def step_cwd(steps):
     return None
 
 
-def run_step_pipe(step, append, runner=None, timeout=None,
-                  on_proc=None, env=None, cwd=None):
+def run_step_pipe(
+    step, append, runner=None, timeout=None, on_proc=None, env=None, cwd=None
+):
     """Run one step, streaming output through append(chunk).
 
     Pipes (not a PTY: no ANSI in the UI). ``runner`` injects tests:
@@ -710,11 +771,15 @@ def run_step_pipe(step, append, runner=None, timeout=None,
         return code
     limit = STEP_TIMEOUT if timeout is None else timeout
     proc = subprocess.Popen(
-        step, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=cwd or stack_dir(), start_new_session=True,
-        env={**os.environ, "TERM": "xterm-256color",
-             **(env or {})})
+        step,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=cwd or stack_dir(),
+        start_new_session=True,
+        env={**os.environ, "TERM": "xterm-256color", **(env or {})},
+    )
     assert proc.stdout is not None
     if on_proc is not None:
         try:
@@ -740,8 +805,10 @@ def run_step_pipe(step, append, runner=None, timeout=None,
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
         code = 124
-        append(f"\nnote: step killed after {limit}s without finishing "
-               f"(watchdog; exit 124)\n")
+        append(
+            f"\nnote: step killed after {limit}s without finishing "
+            f"(watchdog; exit 124)\n"
+        )
     finally:
         drained.wait(timeout=5)
         try:
@@ -815,8 +882,7 @@ def _terminate_tree(proc, grace=3.0):
             time.sleep(0.05)
 
 
-def execute_run(registry, run_id, action, repo, gh, td_cwd,
-                td_argv=None, runner=None):
+def execute_run(registry, run_id, action, repo, gh, td_cwd, td_argv=None, runner=None):
     """Worker body: run an action's steps to completion. Never raises."""
     from backend.ledger import append as ledger_append
 
@@ -824,9 +890,13 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
 
     def _done(code):
         registry.finish_run(run_id, code)
-        entry = {"kind": "run", "action": action, "repo": repo,
-                 "exit": code,
-                 "elapsed_s": round(time.time() - started, 2)}
+        entry = {
+            "kind": "run",
+            "action": action,
+            "repo": repo,
+            "exit": code,
+            "elapsed_s": round(time.time() - started, 2),
+        }
         if td_argv:
             entry["command"] = " ".join(td_argv)
         ledger_append(entry)
@@ -868,10 +938,15 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
                 registry.append(run_id, text)
 
             try:
-                code = run_step_pipe(step, _cb, runner=runner,
-                                     timeout=step_timeout(action),
-                                     on_proc=_track, env=child_env,
-                                     cwd=child_cwd)
+                code = run_step_pipe(
+                    step,
+                    _cb,
+                    runner=runner,
+                    timeout=step_timeout(action),
+                    on_proc=_track,
+                    env=child_env,
+                    cwd=child_cwd,
+                )
             except Exception as exc:
                 registry.append(run_id, f"error: {exc}\n")
                 chunks.append("error")
@@ -887,9 +962,11 @@ def execute_run(registry, run_id, action, repo, gh, td_cwd,
                     # the command line (echoed above), so the record
                     # alone can diagnose without re-running.
                     registry.append(
-                        run_id, f"note: the step exited {code} with no "
+                        run_id,
+                        f"note: the step exited {code} with no "
                         "output — re-run the $ command above on the "
-                        "host to diagnose.\n")
+                        "host to diagnose.\n",
+                    )
                 _done(code)
                 return
         _done(0)
@@ -924,16 +1001,16 @@ RUN_STORE_SAVE_INTERVAL = 2.0
 # at once, and how long an active run may go without output before
 # it reads as wedged and gets reaped. Module-attr lookups at call
 # time so tests can override them without env surgery.
-MAX_CONCURRENT_RUNS = int(os.environ.get("BUTTONS_JOBS_MAX_CONCURRENT",
-                                         "2"))
-RUN_STALE_TTL = int(os.environ.get("BUTTONS_JOBS_STALE_TTL",
-                                   "1800"))
+MAX_CONCURRENT_RUNS = int(os.environ.get("BUTTONS_JOBS_MAX_CONCURRENT", "2"))
+RUN_STALE_TTL = int(os.environ.get("BUTTONS_JOBS_STALE_TTL", "1800"))
 
 # Suffix for runs that were active when the previous process died:
 # the tail above it ends at the last persist, and the outcome is
 # honestly unknown (exit stays None).
-RESTART_NOTE = ("note: console restarted while this run was active; "
-                "output ends at the last persist.\n")
+RESTART_NOTE = (
+    "note: console restarted while this run was active; "
+    "output ends at the last persist.\n"
+)
 
 # Completed-run TTL (#451): done runs older than this are evicted
 # opportunistically at store sites (start/finish), by the public
@@ -1031,11 +1108,11 @@ class RunRegistry:
         if self._store_path is None:
             return
         try:
-            ordered = sorted(self.runs.values(),
-                             key=lambda r: r.get("seq", 0))
-            snap = [{k: v for k, v in r.items()
-                     if not k.startswith("_")}
-                    for r in ordered[-RUN_STORE_MAX_RUNS:]]
+            ordered = sorted(self.runs.values(), key=lambda r: r.get("seq", 0))
+            snap = [
+                {k: v for k, v in r.items() if not k.startswith("_")}
+                for r in ordered[-RUN_STORE_MAX_RUNS:]
+            ]
             d = os.path.dirname(self._store_path)
             if d:
                 os.makedirs(d, exist_ok=True)
@@ -1069,19 +1146,18 @@ class RunRegistry:
             rid = rec.get("id")
             if not rid or not isinstance(rid, str):
                 continue
-            run = {k: v for k, v in rec.items()
-                   if not k.startswith("_")}
+            run = {k: v for k, v in rec.items() if not k.startswith("_")}
             run.pop("cancel_requested", None)
             run["id"] = rid
             keep = run.get("seq")
-            run["seq"] = keep if isinstance(keep, int) \
-                and not isinstance(keep, bool) else seq
+            run["seq"] = (
+                keep if isinstance(keep, int) and not isinstance(keep, bool) else seq
+            )
             seq = max(seq, run["seq"]) + 1
             out = run.get("output", "")
             run["output"] = out if isinstance(out, str) else ""
             argv = run.get("td_argv", [])
-            run["td_argv"] = list(argv) if isinstance(argv, list) \
-                else []
+            run["td_argv"] = list(argv) if isinstance(argv, list) else []
             run.setdefault("action", "")
             run.setdefault("repo", "")
             run.setdefault("exit_code", None)
@@ -1148,12 +1224,15 @@ class RunRegistry:
         dispatch response and the job rows."""
         with self._lock:
             run = self.runs.get(run_id)
-            if (run is None or run.get("done")
-                    or run_id in self.active_ids):
+            if run is None or run.get("done") or run_id in self.active_ids:
                 return 0
-            ahead = [r for r in self.runs.values()
-                     if not r.get("done") and r.get("queued")
-                     and r.get("seq", 0) < run.get("seq", 0)]
+            ahead = [
+                r
+                for r in self.runs.values()
+                if not r.get("done")
+                and r.get("queued")
+                and r.get("seq", 0) < run.get("seq", 0)
+            ]
             return len(ahead) + 1
 
     def acquire(self, run_id):
@@ -1179,9 +1258,13 @@ class RunRegistry:
         """Fill free slots with the oldest queued runs, FIFO. Caller
         must hold _lock; bumps + notifies when anything moves."""
         while len(self.active_ids) < MAX_CONCURRENT_RUNS:
-            nxt = [r for r in self.runs.values()
-                   if not r.get("done") and r.get("queued")
-                   and r.get("id") not in self.active_ids]
+            nxt = [
+                r
+                for r in self.runs.values()
+                if not r.get("done")
+                and r.get("queued")
+                and r.get("id") not in self.active_ids
+            ]
             if not nxt:
                 return
             nxt.sort(key=lambda r: r.get("seq", 0))
@@ -1201,11 +1284,18 @@ class RunRegistry:
         """
         now = time.time()
         with self._lock:
-            stale = [rid for rid in self.active_ids
-                     if (lambda r: r is not None and not r.get("done")
+            stale = [
+                rid
+                for rid in self.active_ids
+                if (
+                    lambda r: (
+                        r is not None
+                        and not r.get("done")
                         and not r.get("awaiting_approval")
-                        and now - r.get("last_output_at", now)
-                        > RUN_STALE_TTL)(self.runs.get(rid))]
+                        and now - r.get("last_output_at", now) > RUN_STALE_TTL
+                    )
+                )(self.runs.get(rid))
+            ]
         for rid in stale:
             run = self.runs.get(rid)
             if run is not None and not run.get("done"):
@@ -1230,7 +1320,8 @@ class RunRegistry:
                     run["finished_at"] = time.time()
                     run["output"] += (
                         "note: reaped after silence exceeded "
-                        "the stale lease; slot released.\n")
+                        "the stale lease; slot released.\n"
+                    )
                     self.active_ids.discard(rid)
             self._promote_locked()
             self._persist_locked()
@@ -1241,8 +1332,7 @@ class RunRegistry:
             if run is not None:
                 append_output(run, text)
                 self._bump()
-                if time.monotonic() - self._last_save >= \
-                        RUN_STORE_SAVE_INTERVAL:
+                if time.monotonic() - self._last_save >= RUN_STORE_SAVE_INTERVAL:
                     self._persist_locked()
 
     def finish_run(self, run_id, exit_code):
@@ -1324,8 +1414,9 @@ class RunRegistry:
         with self._lock:
             run = self.runs.get(run_id) if run_id else None
             if run is None:
-                actives = [self.runs[rid] for rid in self.active_ids
-                           if rid in self.runs]
+                actives = [
+                    self.runs[rid] for rid in self.active_ids if rid in self.runs
+                ]
                 if actives:
                     run = min(actives, key=lambda r: r.get("seq", 0))
                 elif self.runs:
@@ -1351,19 +1442,14 @@ class RunRegistry:
             if all_jobs:
                 if self.active_ids:
                     oldest = min(self.active_ids)
-                    return (None,
-                            "a run is still active: "
-                            f"{oldest}")
-                unfinished = [rid for rid, run in self.runs.items()
-                              if not run.get("done")]
+                    return (None, f"a run is still active: {oldest}")
+                unfinished = [
+                    rid for rid, run in self.runs.items() if not run.get("done")
+                ]
                 if unfinished:
-                    return (None,
-                            "a run is still active: "
-                            f"{unfinished[0]}")
+                    return (None, f"a run is still active: {unfinished[0]}")
             to_del = [
-                rid
-                for rid, run in self.runs.items()
-                if all_jobs or run.get("done")
+                rid for rid, run in self.runs.items() if all_jobs or run.get("done")
             ]
             for rid in to_del:
                 del self.runs[rid]
@@ -1390,8 +1476,7 @@ class RunRegistry:
             stamp = run.get("finished_at")
             if stamp is None:
                 stamp = run.get("started_at")
-            if isinstance(stamp, bool) or \
-                    not isinstance(stamp, (int, float)):
+            if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
                 continue
             if at - stamp > COMPLETED_RUN_TTL:
                 stale.append(rid)
@@ -1425,13 +1510,17 @@ class RunRegistry:
         """
         with self._lock:
             waiting = sorted(
-                (r for r in self.runs.values()
-                 if not r.get("done") and r.get("queued")
-                 and r.get("id") not in self.active_ids),
-                key=lambda r: r.get("seq", 0))
-            positions = {r.get("id"): i + 1
-                         for i, r in enumerate(waiting)}
-            ordered = sorted(self.runs.values(),
-                             key=lambda r: r.get("seq", 0), reverse=True)
-            return [_run_to_job(r, positions.get(r.get("id"), 0))
-                    for r in ordered]
+                (
+                    r
+                    for r in self.runs.values()
+                    if not r.get("done")
+                    and r.get("queued")
+                    and r.get("id") not in self.active_ids
+                ),
+                key=lambda r: r.get("seq", 0),
+            )
+            positions = {r.get("id"): i + 1 for i, r in enumerate(waiting)}
+            ordered = sorted(
+                self.runs.values(), key=lambda r: r.get("seq", 0), reverse=True
+            )
+            return [_run_to_job(r, positions.get(r.get("id"), 0)) for r in ordered]
