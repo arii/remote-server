@@ -3,6 +3,10 @@
 // Implements Phases 1 through 7 for Chrome's Built-in On-Device AI
 // ============================================================================
 
+import { aliasMatches } from "./lib/matcher.js";
+import { deduplicateVault } from "./lib/vault.js";
+import { summarizeHydrationResult } from "./lib/hydration.js";
+
 // Global state cache & pre-warmed AI pool
 let currentExportDoc = null;
 let baseWarmSession = null;
@@ -131,29 +135,8 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-// Strict alias matching for vault entries (audit high #4). Short aliases must
-// match exactly; longer aliases may match as whole words inside the query.
-// The old bidirectional substring test (q.includes(a) || a.includes(q)) made a
-// two-letter-overlap alias like "name" match "Company name".
-function escapeRegExp(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
-}
-
-const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
-
-function aliasMatches(query, alias) {
-  const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
-  const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
-  if (!q || !a) return false;
-  if (q === a) return true;
-  if (a.length < 8) return false; // short aliases match exactly only
-  let re = aliasRegexCache.get(a);
-  if (!re) {
-    re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
-    aliasRegexCache.set(a, re);
-  }
-  return re.test(q);
-}
+// Strict alias matching for vault entries lives in lib/matcher.js — the one
+// shared rule set (audit high #4).
 
 // ============================================================================
 // OBSERVABILITY & UX PROGRESS CONTROLLER
@@ -703,7 +686,7 @@ document.getElementById("btn-autofill-now").addEventListener("click", async () =
       type: "HYDRATE",
       title: "Hydrate Stage 1 Atomic Fields",
       durationMs: performance.now() - stage1T0,
-      details: { filledCount: stage1Result.filledCount, failedCount: stage1Result.failedFields?.length || 0 }
+      details: summarizeHydrationResult(stage1Result)
     });
     statusBox.textContent = `Stage 1 filled ${stage1Result.filledCount} fields instantly...`;
 
@@ -835,44 +818,15 @@ document.getElementById("btn-run-manual-import").addEventListener("click", async
 // ----------------------------------------------------------------------------
 // PHASE 5: USER-CONTEXT VAULT (CRUD & LOCAL STORAGE)
 // ----------------------------------------------------------------------------
-function deduplicateVault(entries) {
-  if (!Array.isArray(entries)) return [];
-  // Sort so canonical IDs (like "identity.full_name" without random timestamps) come FIRST
-  const sorted = [...entries].sort((a, b) => {
-    const aIsTimestamp = /\.\d{10,}$/.test(a.id || "");
-    const bIsTimestamp = /\.\d{10,}$/.test(b.id || "");
-    return Number(aIsTimestamp) - Number(bIsTimestamp);
-  });
-
-  const cleaned = [];
-  for (const item of sorted) {
-    const normKey = String(item.key || "").toLowerCase().trim();
-    const normVal = String(item.value || "").toLowerCase().replace(/\s+/g, " ").trim();
-    if (!normVal) continue;
-
-    // If another entry already has the exact same normalized value and overlapping key/category, merge aliases instead of duplicating
-    const existing = cleaned.find((c) => {
-      const cVal = String(c.value || "").toLowerCase().replace(/\s+/g, " ").trim();
-      const cKey = String(c.key || "").toLowerCase().trim();
-      return cVal === normVal && (cKey === normKey || c.category === item.category || item.tags?.includes("observed"));
-    });
-
-    if (existing) {
-      const mergedAliases = new Set([...(existing.aliases || []), ...(item.aliases || []), normKey]);
-      existing.aliases = Array.from(mergedAliases);
-      continue;
-    }
-    cleaned.push(item);
-  }
-  return cleaned;
-}
+// Entry deduplication is lib/vault.js's deduplicateVault (imported above).
 
 async function renderVault() {
   const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
+  // Read-only dedupe for display: the worker owns the stored form and
+  // sanitizes on write, so the panel never writes here (the old write-back
+  // fired on every vault-search keystroke and could clobber a concurrent
+  // observer delta merge).
   const cleanedVault = deduplicateVault(userContextVault);
-  if (cleanedVault.length !== userContextVault.length) {
-    await chrome.storage.local.set({ userContextVault: cleanedVault });
-  }
 
   const container = document.getElementById("vault-entries-container");
   const search = document.getElementById("vault-search-input").value.toLowerCase().trim();
@@ -932,10 +886,7 @@ async function renderVault() {
   // Attach delete listeners
   container.querySelectorAll(".btn-delete-fact").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const id = btn.dataset.id;
-      const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
-      const updated = userContextVault.filter((e) => e.id !== id);
-      await chrome.storage.local.set({ userContextVault: updated });
+      await chrome.runtime.sendMessage({ type: "vault:delete", id: btn.dataset.id });
       renderVault();
     });
   });
@@ -944,14 +895,10 @@ async function renderVault() {
   container.querySelectorAll(".vault-value-input").forEach((inp) => {
     inp.addEventListener("change", async () => {
       const id = inp.dataset.id;
-      const val = inp.value;
       const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
       const target = userContextVault.find((e) => e.id === id);
-      if (target) {
-        target.value = val;
-        target.updatedAt = new Date().toISOString();
-        await chrome.storage.local.set({ userContextVault });
-      }
+      if (!target) return;
+      await chrome.runtime.sendMessage({ type: "vault:upsert", entry: { ...target, value: inp.value } });
     });
   });
 }
@@ -974,8 +921,7 @@ document.getElementById("btn-add-fact").addEventListener("click", async () => {
     return;
   }
 
-  const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
-  userContextVault.unshift({
+  const entry = {
     id: `${category}.${Date.now()}`,
     category,
     key,
@@ -983,9 +929,9 @@ document.getElementById("btn-add-fact").addEventListener("click", async () => {
     value,
     tags: [category, "manual"],
     updatedAt: new Date().toISOString()
-  });
+  };
 
-  await chrome.storage.local.set({ userContextVault });
+  await chrome.runtime.sendMessage({ type: "vault:upsert", entry });
   keyInput.value = "";
   valInput.value = "";
   renderVault();
@@ -1013,8 +959,7 @@ document.getElementById("file-import-vault").addEventListener("change", async (e
     const text = await e.target.files[0].text();
     const imported = JSON.parse(text);
     if (!Array.isArray(imported)) throw new Error("Expected an array of context entries.");
-    const cleaned = deduplicateVault(imported);
-    await chrome.storage.local.set({ userContextVault: cleaned });
+    await chrome.runtime.sendMessage({ type: "vault:replace", entries: imported });
     renderVault();
     alert("Vault successfully restored!");
   } catch (err) {
@@ -1080,81 +1025,26 @@ async function renderObserverQueue() {
 }
 
 async function approveDelta(deltaId) {
-  const { userContextVault = [], pendingDeltas = [] } = await chrome.storage.local.get([
-    "userContextVault",
-    "pendingDeltas"
-  ]);
-
-  const targetDelta = pendingDeltas.find((d) => d.deltaId === deltaId);
-  if (!targetDelta) return;
-
-  if (targetDelta.action === "update" && targetDelta.targetEntryId) {
-    const existing = userContextVault.find((e) => e.id === targetDelta.targetEntryId);
-    if (existing) {
-      existing.value = targetDelta.proposedValue;
-      existing.updatedAt = new Date().toISOString();
-    }
-  } else {
-    userContextVault.unshift({
-      id: `${targetDelta.category || "custom"}.${Date.now()}`,
-      category: targetDelta.category || "custom",
-      key: targetDelta.key,
-      aliases: [targetDelta.key.toLowerCase()],
-      value: targetDelta.proposedValue,
-      tags: ["observed", targetDelta.category || "custom"],
-      updatedAt: new Date().toISOString()
-    });
-  }
-
-  const remaining = pendingDeltas.filter((d) => d.deltaId !== deltaId);
-  const dedupedVault = deduplicateVault(userContextVault);
-  await chrome.storage.local.set({ userContextVault: dedupedVault, pendingDeltas: remaining });
-  chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: remaining.length });
+  // The worker applies the delta and dedupes the vault; the panel re-renders
+  // from storage afterwards.
+  await chrome.runtime.sendMessage({ type: "delta:approve", deltaId });
   renderVault();
   renderObserverQueue();
 }
 
 async function discardDelta(deltaId) {
-  const { pendingDeltas = [] } = await chrome.storage.local.get(["pendingDeltas"]);
-  const remaining = pendingDeltas.filter((d) => d.deltaId !== deltaId);
-  await chrome.storage.local.set({ pendingDeltas: remaining });
-  chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: remaining.length });
+  await chrome.runtime.sendMessage({ type: "delta:discard", deltaId });
   renderObserverQueue();
 }
 
 document.getElementById("btn-approve-all-deltas").addEventListener("click", async () => {
-  const { userContextVault = [], pendingDeltas = [] } = await chrome.storage.local.get([
-    "userContextVault",
-    "pendingDeltas"
-  ]);
-
-  for (const delta of pendingDeltas) {
-    if (delta.action === "update" && delta.targetEntryId) {
-      const existing = userContextVault.find((e) => e.id === delta.targetEntryId);
-      if (existing) existing.value = delta.proposedValue;
-    } else {
-      userContextVault.unshift({
-        id: `${delta.category || "custom"}.${Date.now()}`,
-        category: delta.category || "custom",
-        key: delta.key,
-        aliases: [delta.key.toLowerCase()],
-        value: delta.proposedValue,
-        tags: ["observed"],
-        updatedAt: new Date().toISOString()
-      });
-    }
-  }
-
-  const dedupedVault = deduplicateVault(userContextVault);
-  await chrome.storage.local.set({ userContextVault: dedupedVault, pendingDeltas: [] });
-  chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: 0 });
+  await chrome.runtime.sendMessage({ type: "delta:approveAll" });
   renderVault();
   renderObserverQueue();
 });
 
 document.getElementById("btn-discard-all-deltas").addEventListener("click", async () => {
-  await chrome.storage.local.set({ pendingDeltas: [] });
-  chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: 0 });
+  await chrome.runtime.sendMessage({ type: "delta:discardAll" });
   renderObserverQueue();
 });
 
@@ -1355,7 +1245,7 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
     "activeSessionContext"
   ]);
 
-  let addedCount = 0;
+  const queued = [];
   for (const f of rawFacts) {
     const propText = String(f.proposedValue || "").trim();
     const normProp = normalizeForDedup(propText);
@@ -1403,7 +1293,7 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
       targetEntryId = undefined;
     }
 
-    pendingDeltas.unshift({
+    queued.unshift({
       deltaId: `delta_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       action,
       targetEntryId,
@@ -1415,22 +1305,25 @@ async function queueVerifiedDeltas(rawFacts, sourceTitle = "", sourceUrl = "") {
       sourceUrl: f.sourceUrl || sourceUrl || "",
       confidence: f.confidence || 0.92
     });
-    addedCount++;
   }
 
-  if (addedCount > 0) {
-    await chrome.storage.local.set({ pendingDeltas });
-    chrome.runtime.sendMessage({ action: "UPDATE_BADGE_COUNT", count: pendingDeltas.length });
+  let totalPending = pendingDeltas.length;
+  if (queued.length > 0) {
+    // The worker owns the pendingDeltas write; it merges (and re-counts)
+    // under the same serialized queue the observer merge uses, so this can
+    // no longer clobber a concurrently-merged delta.
+    const res = await chrome.runtime.sendMessage({ type: "delta:queue", deltas: queued });
+    if (res && typeof res.pendingDeltas === "number") totalPending = res.pendingDeltas;
   }
 
   Telemetry.logTrace({
     type: "OBSERVER",
-    title: `Observer Queued ${addedCount} Fact(s)`,
+    title: `Observer Queued ${queued.length} Fact(s)`,
     durationMs: 0,
-    details: { addedCount, totalPending: pendingDeltas.length }
+    details: { addedCount: queued.length, totalPending }
   });
 
-  return addedCount;
+  return queued.length;
 }
 
 // Clear Active Target Context Button
@@ -1607,17 +1500,8 @@ document.getElementById("btn-snapshot-user-facts")?.addEventListener("click", as
 // INITIALIZATION
 // ----------------------------------------------------------------------------
 async function init() {
-  try {
-    const { userContextVault = [] } = await chrome.storage.local.get(["userContextVault"]);
-    if (userContextVault.length > 0) {
-      const cleaned = deduplicateVault(userContextVault);
-      if (cleaned.length !== userContextVault.length) {
-        await chrome.storage.local.set({ userContextVault: cleaned });
-      }
-    }
-  } catch (err) {
-    console.warn("Vault initialization sanitization warning:", err);
-  }
+  // Vault sanitization moved to the worker (startup + on-write); the panel is
+  // read-only for vault/delta state.
   checkBuiltInAIStatus();
   renderVault();
   renderObserverQueue();

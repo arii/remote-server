@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!-- Ashby-style application form fixture.
+     Conventions captured: label elements with hashed classes
+     (_label-xxxx) inside fieldset/_field wrappers resolved by ancestor
+     scanning, a "Start typing..." typeahead location field, and radio
+     groups for work-authorization questions. -->
+<html>
+<head><title>Apply — Senior Platform Engineer at Meridian Labs | Ashby</title></head>
+<body>
+  <main class="job-application-page">
+    <h1>Apply for this role</h1>
+    <form class="_form" aria-label="Application form">
+      <fieldset class="_fieldset">
+        <div class="_field-1a2b3c">
+          <label class="_label-1111">First name</label>
+          <input type="text" name="firstname" class="_input" aria-label="First name" />
+        </div>
+        <div class="_field-2b3c4d">
+          <label class="_label-2222">Last name</label>
+          <input type="text" name="lastname" class="_input" />
+        </div>
+        <div class="_field-3c4d5e">
+          <label class="_label-3333">Email</label>
+          <input type="email" name="email" class="_input" />
+        </div>
+        <div class="_field-4d5e6f">
+          <label class="_label-4444">Phone</label>
+          <input type="tel" name="phone" class="_input" />
+        </div>
+        <div class="_field-5e6f7a">
+          <label class="_label-5555">Where are you currently based?</label>
+          <input type="text" name="location" class="_input" role="combobox"
+                 placeholder="Start typing..." aria-autocomplete="list" />
+        </div>
+        <div class="_field-6f7a8b">
+          <span class="_label-6666">Are you legally authorized to work in the US?</span>
+          <label><input type="radio" name="workAuth" value="yes" /> Yes</label>
+          <label><input type="radio" name="workAuth" value="no" /> No</label>
+        </div>
+        <div class="_field-7a8b9c">
+          <label class="_label-7777">Company name</label>
+          <input type="text" name="currentCompany" class="_input" />
+        </div>
+        <div class="_field-8b9c0d">
+          <label class="_label-8888">LinkedIn profile</label>
+          <input type="url" name="linkedinUrl" class="_input" placeholder="https://" />
+        </div>
+      </fieldset>
+    </form>
+  </main>
+</body>
+</html>

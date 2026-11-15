@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<!-- Greenhouse-style application form fixture.
+     Conventions captured: explicit <label for="id"> bindings on
+     .field wrapper divs, long instruction text inside the label,
+     a select for a screening question, and a cover-letter textarea. -->
+<html>
+<head><title>Application for Software Engineer at Greenhouse Co</title></head>
+<body>
+  <div id="main">
+    <h1 id="app-header">Apply for this job</h1>
+    <form id="application-form" method="post">
+      <div class="field">
+        <label for="first_name">First Name</label>
+        <input id="first_name" name="first_name" type="text" />
+      </div>
+      <div class="field">
+        <label for="last_name">Last Name</label>
+        <input id="last_name" name="last_name" type="text" />
+      </div>
+      <div class="field">
+        <label for="email">Email Address</label>
+        <input id="email" name="email" type="email" />
+      </div>
+      <div class="field">
+        <label for="phone">Phone Number</label>
+        <input id="phone" name="phone" type="tel" />
+      </div>
+      <div class="field">
+        <label for="location">Current Location</label>
+        <input id="location" name="location" type="text" />
+      </div>
+      <div class="field">
+        <label for="linkedin_profile_url">Link to your LinkedIn profile</label>
+        <input id="linkedin_profile_url" name="linkedin_profile_url" type="text" />
+      </div>
+      <div class="field">
+        <label for="github_url">Link to your GitHub profile</label>
+        <input id="github_url" name="github_url" type="text" />
+      </div>
+      <div class="field">
+        <label for="cover_letter">Cover Letter <span class="instruction">(paste your text cover letter here)</span></label>
+        <textarea id="cover_letter" name="cover_letter"></textarea>
+      </div>
+      <div class="field">
+        <label for="years_experience">How many years of software engineering experience do you have?</label>
+        <select id="years_experience" name="years_experience">
+          <option value="">Select an option</option>
+          <option value="0-2">0 - 2</option>
+          <option value="3-5">3 - 5</option>
+          <option value="6-9">6 - 9</option>
+          <option value="10+">10+</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="portfolio_url">Personal website or portfolio</label>
+        <input id="portfolio_url" name="portfolio_url" type="text" />
+      </div>
+    </form>
+  </div>
+</body>
+</html>

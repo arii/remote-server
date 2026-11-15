@@ -149,6 +149,26 @@ jobs:
       - name: unit tests
         run: pnpm --filter frontend test
 
+  extension:
+    name: extension vitest + syntax + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # packageManager is the single pnpm source; a version: here fails the setup.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.16.0
+          cache: 'pnpm'
+      - name: install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: unit tests (vitest + happy-dom over golden fixtures)
+        run: pnpm --filter localform-ai-extension test
+      - name: syntax check
+        run: pnpm --filter localform-ai-extension run test:syntax
+      - name: build
+        run: pnpm --filter localform-ai-extension run build
+
   backend:
     # Display name pinned by branch protection (required context
     # "backend tests + type-check"): the steps inside are honestly
@@ -226,7 +246,7 @@ jobs:
     name: comment CI failures on the PR
     # A failing PR yields a PR comment, never a new issue per failure
     # (issue #1081). One marker comment per PR, updated per run.
-    needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, backend, eval-fixtures, format]
+    needs: [shell, compose, terminal-image, skills-lock, skill-shadows, secret-scan, audit, frontend, extension, backend, eval-fixtures, format]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:

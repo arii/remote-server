@@ -31,105 +31,18 @@
   const SENSITIVE_PATTERNS = /password|passcode|cvv|cvc|cc-number|card-number|ssn|social-security/i;
   const CAPTCHA_FIELD_PATTERNS = /g-recaptcha-response|h-captcha-response|cf-turnstile-response|recaptcha/i;
 
-  function cleanText(text) {
-    if (!text) return "";
-    return text
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/^[\*\:\s]+|[\*\:\s]+$/g, "")
-      .slice(0, 160);
+  // Shared matcher (lib/matcher.js) consumed through the build-emitted
+  // classic-script twin — the same window.__LOCALFORM_*__ hook pattern as
+  // the scan/hydrate fallbacks below (OD-19 D2). A missing bridge is a
+  // hard, visible failure: matching is the core of scan and hydrate, so
+  // silently degrading is not an option.
+  const matcher = window.__LOCALFORM_MATCHER__;
+  if (!matcher?.aliasMatches || !matcher.resolveLabel) {
+    throw new Error(
+      "LocalForm AI: lib/matcher.legacy.js is not loaded — run `npm run build` in chrome-extension/ to emit it from lib/matcher.js."
+    );
   }
-
-  // Strict label matching (audit high #4): exact match, or word-boundary
-  // containment when the resolved label is long. Replaces the old bidirectional
-  // substring test that let loose labels swallow unrelated fields.
-  function escapeRegExp(s) {
-    return String(s).replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch);
-  }
-
-  const aliasRegexCache = new Map(); // compiled word-boundary matchers per normalized alias
-
-  function aliasMatches(query, alias) {
-    const q = String(query || "").toLowerCase().replace(/\s+/g, " ").trim();
-    const a = String(alias || "").toLowerCase().replace(/\s+/g, " ").trim();
-    if (!q || !a) return false;
-    if (q === a) return true;
-    if (a.length < 8) return false; // short labels match exactly only
-    let re = aliasRegexCache.get(a);
-    if (!re) {
-      re = new RegExp(`\\b${escapeRegExp(a)}\\b`);
-      aliasRegexCache.set(a, re);
-    }
-    return re.test(q);
-  }
-
-  // 1. Resolve human-readable label for any form input via strict waterfall
-  function resolveFieldLabel(el) {
-    // Priority 1: aria-labelledby target elements
-    const labelledBy = el.getAttribute("aria-labelledby");
-    if (labelledBy) {
-      const texts = labelledBy
-        .split(/\s+/)
-        .map((id) => document.getElementById(id)?.textContent?.trim())
-        .filter(Boolean);
-      const cleaned = cleanText(texts.join(" "));
-      if (cleaned) return cleaned;
-    }
-
-    // Priority 2: aria-label attribute
-    const ariaLabel = el.getAttribute("aria-label");
-    if (ariaLabel) {
-      const cleaned = cleanText(ariaLabel);
-      if (cleaned) return cleaned;
-    }
-
-    // Priority 3: Explicit <label for="id">
-    if (el.id) {
-      try {
-        const explicitLabel = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (explicitLabel?.textContent?.trim()) {
-          const cleaned = cleanText(explicitLabel.textContent);
-          if (cleaned) return cleaned;
-        }
-      } catch {}
-    }
-
-    // Priority 4: Wrapping <label>
-    const parentLabel = el.closest("label");
-    if (parentLabel) {
-      const clone = parentLabel.cloneNode(true);
-      clone.querySelectorAll("input, select, textarea, button").forEach((n) => n.remove());
-      const cleaned = cleanText(clone.textContent);
-      if (cleaned) return cleaned;
-    }
-
-    // Priority 5: Walk up to 5 ancestor levels for Ashby/Lever/Workday field containers
-    // (Important: Runs BEFORE placeholder so "Start typing..." doesn't mask "Where are you currently based?")
-    let curr = el;
-    for (let depth = 0; depth < 5 && curr && curr !== document.body; depth++) {
-      const fieldLabel = curr.querySelector('label, [class*="label"], [class*="Label"], legend');
-      if (fieldLabel && !fieldLabel.contains(el) && fieldLabel.textContent?.trim()) {
-        const cleaned = cleanText(fieldLabel.textContent);
-        if (cleaned) return cleaned;
-      }
-      const prev = curr.previousElementSibling;
-      if (prev && /^(LABEL|SPAN|DIV|P|H[1-6])$/i.test(prev.tagName) && prev.textContent?.trim()) {
-        const cleaned = cleanText(prev.textContent);
-        if (cleaned) return cleaned;
-      }
-      curr = curr.parentElement;
-    }
-
-    // Priority 6: placeholder attribute
-    const placeholder = el.getAttribute("placeholder");
-    if (placeholder) {
-      const cleaned = cleanText(placeholder);
-      if (cleaned) return cleaned;
-    }
-
-    // Priority 7: name or id fallback
-    return cleanText(el.name || el.id) || "Unnamed Field";
-  }
+  const { aliasMatches, resolveLabel: resolveFieldLabel } = matcher;
 
   // 2. Build unique, resilient CSS selector
   function buildCssSelector(el) {
