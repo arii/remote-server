@@ -45,7 +45,7 @@ test.describe('responsive console layout', () => {
   }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/');
-    await expect(page.getByTestId('repo-diff-chip')).toBeVisible();
+    await expect(page.getByTestId('stack-status')).not.toContainText('loading');
     await expect(page.getByTestId('nav-badge-review')).toBeVisible();
     const bar = page.getByTestId('topbar');
     await expect(bar).toBeVisible();
@@ -88,7 +88,7 @@ test.describe('responsive console layout', () => {
   test('all header destinations wrap without clipping at 360px', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 360, height: 844 });
     await page.goto('/');
-    await expect(page.getByTestId('repo-diff-chip')).toBeVisible();
+    await expect(page.getByTestId('stack-status')).not.toContainText('loading');
     await expect(page.getByTestId('nav-badge-review')).toBeVisible();
     const bar = page.getByTestId('topbar');
     const nav = bar.getByRole('navigation', { name: 'Views' });
