@@ -58,6 +58,7 @@ export function QueueHeader({
       >
         Dispatch all ({dispatchable.length})
       </button>{' '}
+      {dispatchable.length === 0 && <span className="row-meta">Nothing queued to dispatch.</span>}
       <button type="button" data-testid="queue-refresh" onClick={onRefresh}>
         Refresh
       </button>
@@ -181,6 +182,7 @@ export function QueueRepoGroup({
         >
           Dispatch next
         </button>
+        {!next && <span className="row-meta">Nothing queued to dispatch.</span>}
       </div>
       <ul className="session-list" data-testid={`queue-group-${group.repo}`}>
         {group.items.map((item) => (

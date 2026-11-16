@@ -248,6 +248,7 @@ export default function JobSchedulesSection({
       )}
       {selectedRows.length > 0 && (
         <div className="actions" data-testid="jobs-schedule-bulkbar" role="group" aria-label="Bulk schedule actions">
+          {busyOp !== null && <span className="row-meta">Updating schedules…</span>}
           <span className="row-meta" data-testid="jobs-schedule-bulkcount">
             {selectedRows.length} selected
           </span>{' '}
@@ -322,6 +323,8 @@ export default function JobSchedulesSection({
                 >
                   Pause all
                 </button>{' '}
+                {busyOp !== null && <span className="row-meta">Updating schedules…</span>}
+                {!g.rows.some((s) => s.enabled !== false) && <span className="row-meta">All schedules are paused.</span>}
                 <button
                   type="button"
                   data-testid={`jobs-schedule-group-resume-${g.action}`}
@@ -331,6 +334,7 @@ export default function JobSchedulesSection({
                 >
                   Resume all
                 </button>
+                {!g.rows.some((s) => s.enabled === false) && <span className="row-meta">All schedules are running.</span>}
               </p>
               <ul className="session-list jobs-schedule-scroll">
                 {g.rows.map((s) => (
@@ -370,6 +374,7 @@ export default function JobSchedulesSection({
                       </p>
                     </details>
                     <div className="actions">
+                      {busyOp !== null && <span className="row-meta">Updating schedules…</span>}
                       {s.enabled === false ? (
                         <button
                           type="button"

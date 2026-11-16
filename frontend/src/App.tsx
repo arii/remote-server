@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import NowView from './views/NowView';
 import ChatView from './views/ChatView';
+import NowComposer from './components/NowComposer';
 import HistoryView, { type HistoryFilterRequest } from './views/HistoryView';
 import RepoPicker, { ALL_REPOS, isRollupRepo } from './components/RepoPicker';
 import { stripHealthState } from './components/StatusStrip';
@@ -8,25 +9,6 @@ import SyncBanner from './components/SyncBanner';
 import type { TriageSection } from './views/TriageDrawer';
 import SessionBanner from './components/SessionBanner';
 
-// Bottom-bar auto-hide (issue #1033): pure scroll state so the
-// rule itself is unit-testable. Top of page always shows; scroll
-// up reveals and resets the run; a sustained downward run past
-// 64px hides (per-event deltas alone miss slow trackpad drags).
-export interface BarHideState {
-  hidden: boolean;
-  downPx: number;
-}
-
-export function nextBarHidden(prevY: number, y: number, state: BarHideState): BarHideState {
-  if (y <= 8) return { hidden: false, downPx: 0 };
-  if (y < prevY - 4) return { hidden: false, downPx: 0 };
-  if (!state.hidden) {
-    const downPx = state.downPx + Math.max(0, y - prevY);
-    if (downPx > 64) return { hidden: true, downPx: 0 };
-    return { hidden: false, downPx };
-  }
-  return state;
-}
 import CommandPalette from './components/CommandPalette';
 import { buildCommands, type PaletteCommand } from './components/commandRegistry';
 import {
@@ -174,10 +156,6 @@ export function saveNavMemory(memory: NavMemory): void {
   }
 }
 
-// Persistent console nav (#896): one bar, seven destinations. The
-// chat-first shell (D5) moves Review/Jobs/Queue into the triage
-// drawer behind the StatusStrip tap — the section entries open that
-// drawer, they no longer route into Now.
 export type NavEntry =
   | { kind: 'tab'; id: Tab; label: string; key: string }
   | { kind: 'section'; id: 'review' | 'jobs' | 'queue' | 'briefing'; label: string };
@@ -201,9 +179,6 @@ export function navPressed(tab: Tab, section: TriageSection | null, entry: NavEn
   return section === entry.id;
 }
 
-// One shell nav button, shared by the top tab bar and the bottom
-// section cluster (#961): label plus the live count pill (#936),
-// hidden until loaded and when zero.
 function ShellNavButton({
   entry,
   pressed,
@@ -268,6 +243,9 @@ export default function App() {
   const [repo, setRepo] = useState(bootMemory?.repo ?? 'remote-server');
   const [health, setHealth] = useState<SystemHealthResponse | null>(null);
   const [chatSeed, setChatSeed] = useState<string | null>(null);
+  const [nowPrompt, setNowPrompt] = useState('');
+  const [nowFocusRequest, setNowFocusRequest] = useState(0);
+  const [sendChatSeed, setSendChatSeed] = useState(false);
   // Bug 3 write-back: every repo/tab change lands in the nav memory
   // so a reload restores them. Runs after mount too — seeding from
   // memory then writing it back is a no-op by value.
@@ -292,34 +270,6 @@ export default function App() {
   // Log slide-over selection (issue #928): which container's tail
   // is open atop the stats drawer, if any.
   const [logService, setLogService] = useState<string | null>(null);
-  // Bottom bar auto-hide (issue #1033): hides on a sustained
-  // scroll-down run, reveals on scroll up; the CSS only applies it
-  // on narrow viewports and never under reduced motion.
-  const [barHidden, setBarHidden] = useState(false);
-  const barHiddenRef = useRef(barHidden);
-  barHiddenRef.current = barHidden;
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    // Lazy prev: scroll restoration firing after mount must not
-    // look like a user flick. The ref seeds remounts so a hidden
-    // bar cannot stick through an effect re-run.
-    let prev: number | null = null;
-    let state: BarHideState = { hidden: barHiddenRef.current, downPx: 0 };
-    const onScroll = () => {
-      const y = window.scrollY;
-      if (prev === null) {
-        prev = y;
-        return;
-      }
-      const was = state.hidden;
-      state = nextBarHidden(prev, y, state);
-      prev = y;
-      if (state.hidden !== was) setBarHidden(state.hidden);
-    };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, []);
   // Shared browser page (follow_up Issue 11): embedded
   // headed-Chromium head with takeover interception. Polls the agent
   // control API while the Browser tab is live; pause/resume POST
@@ -344,7 +294,6 @@ export default function App() {
   const [pendingTd, setPendingTd] = useState<{ command: string; nonce: number } | null>(null);
   const tdNonce = useRef(0);
   const [reportRequest, setReportRequest] = useState(0);
-  const [chatFocusRequest, setChatFocusRequest] = useState(0);
   const [briefingReloadRequest, setBriefingReloadRequest] = useState(0);
   const [createRequest, setCreateRequest] = useState(0);
   // History deep-link search seed (issue #930): the Now hero's
@@ -372,14 +321,22 @@ export default function App() {
     onPalette: () => setPaletteOpen((o) => !o),
   });
 
+  function focusNow() {
+    setTriageOpen(false);
+    setDiffRepo(null);
+    setNowFocusRequest((n) => n + 1);
+    setTab('now');
+  }
+
   function askAgent(seed: string) {
-    setChatSeed(seed);
-    setTab('chat');
+    setNowPrompt(seed);
+    focusNow();
   }
 
   // Report-a-bug (#961): same path as the palette command —
   // land on Now first so the report dialog's nonce effect fires.
   function reportBugNow() {
+    setTriageOpen(false);
     setTab('now');
     setReportRequest((n) => n + 1);
   }
@@ -388,6 +345,7 @@ export default function App() {
   // the triage drawer on that section.
   function goNav(entry: NavEntry) {
     if (entry.kind === 'tab') {
+      setTriageOpen(false);
       setTab(entry.id);
       return;
     }
@@ -404,7 +362,7 @@ export default function App() {
           setTriageSection(s);
         },
         reportBug: () => setReportRequest((n) => n + 1),
-        focusChat: () => setChatFocusRequest((n) => n + 1),
+        focusChat: focusNow,
         refreshBriefing: () => setBriefingReloadRequest((n) => n + 1),
         switchRepo: (name) => setRepo(name),
         syncNow: () => void flushOutbox(),
@@ -451,7 +409,7 @@ export default function App() {
     } else if (cmd.id === 'report-bug') {
       setTab('now');
     } else if (cmd.id === 'focus-chat') {
-      setTab('chat');
+      setTab('now');
     } else if (cmd.id === 'refresh-briefing') {
       // Briefing lives in the triage drawer now (D5): open it on
       // the Briefing section and bump the reload nonce.
@@ -875,8 +833,8 @@ export default function App() {
             {healthSummary(health)}
           </button>
         </div>
-        <nav className="topnav topbar-views" aria-label="Views">
-          {NAV_ENTRIES.filter((t) => t.kind === 'tab').map((t) => (
+        <nav className="topnav" aria-label="Views">
+          {NAV_ENTRIES.map((t) => (
             <ShellNavButton
               key={t.id}
               entry={t}
@@ -887,6 +845,9 @@ export default function App() {
           ))}
         </nav>
         <div className="topbar-group topbar-tools">
+          <button type="button" data-testid="report-bug-header" onClick={reportBugNow}>
+            Report a bug
+          </button>
           <button
             type="button"
             data-testid="palette-open"
@@ -957,7 +918,6 @@ export default function App() {
           createRequest={createRequest}
           pendingTdCommand={pendingTd}
           onPendingTdHandled={() => setPendingTd(null)}
-          badgeCounts={badgeCounts}
           onOpenHistory={() => {
             setTriageOpen(false);
             setTab('history');
@@ -1002,6 +962,20 @@ export default function App() {
           health={health}
           reportContext={`${isRollupRepo(repo) ? 'All repos' : `Repo ${repo}`} · ${healthSummary(health)}`}
           onAskAgent={askAgent}
+          composer={
+            <NowComposer
+              prompt={nowPrompt}
+              onChange={setNowPrompt}
+              focusRequest={nowFocusRequest}
+              blockedReason={isRollupRepo(repo) ? 'Choose a repository before sending.' : null}
+              onSend={() => {
+                setChatSeed(nowPrompt.trim());
+                setSendChatSeed(true);
+                setNowPrompt('');
+                setTab('chat');
+              }}
+            />
+          }
           onOpenTab={(t) => {
             // Briefing is a drawer section now (D5): the attention
             // rows' briefing hop lands in the triage drawer.
@@ -1035,8 +1009,11 @@ export default function App() {
           <ChatView
             repo={repo}
             seed={chatSeed}
-            onSeedUsed={() => setChatSeed(null)}
-            focusRequest={chatFocusRequest}
+            sendSeed={sendChatSeed}
+            onSeedUsed={() => {
+              setChatSeed(null);
+              setSendChatSeed(false);
+            }}
             onOpenDiff={() => setDiffRepo(repo)}
             statusStrip={{
               state: stripHealthState(health),
@@ -1062,24 +1039,6 @@ export default function App() {
         </div>
       )}
       <ShortcutCheatsheet open={helpOpen} onClose={() => setHelpOpen(false)} />
-      <nav
-        className={barHidden ? 'bottombar bottombar-hidden' : 'bottombar'}
-        aria-label="Sections"
-        data-testid="bottombar"
-      >
-        {NAV_ENTRIES.filter((t) => t.kind === 'section').map((t) => (
-          <ShellNavButton
-            key={t.id}
-            entry={t}
-            pressed={navPressed(tab, triageOpen ? triageSection : null, t)}
-            badge={navBadge(t.id, badgeCounts)}
-            onGo={() => goNav(t)}
-          />
-        ))}
-        <button type="button" data-testid="report-bug" title="Report a bug" onClick={reportBugNow}>
-          Report a bug
-        </button>
-      </nav>
     </main>
   );
 }

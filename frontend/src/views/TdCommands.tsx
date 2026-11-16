@@ -107,7 +107,7 @@ export default function TdCommands({
               inputMode="numeric"
               value={issue}
               onChange={(e) => setIssue(e.target.value)}
-              placeholder="123"
+              placeholder="Issue number"
             />
           </label>
         </div>
@@ -121,6 +121,7 @@ export default function TdCommands({
           >
             {checking ? 'Validating…' : 'Validate issue'}
           </button>
+          {!issue.trim() && <span className="row-meta">Enter an issue number to validate.</span>}
         </div>
         {verdict && (
           <p className="row-meta" data-testid="td-verify-verdict">
@@ -146,7 +147,7 @@ export default function TdCommands({
               inputMode="numeric"
               value={pr}
               onChange={(e) => onPrChange(e.target.value)}
-              placeholder="123"
+              placeholder="PR number"
             />
           </label>
         </div>
@@ -157,6 +158,7 @@ export default function TdCommands({
           </p>
         )}
         <div className="actions">
+          {!prOk && <span className="row-meta">Enter a valid PR number to run a PR command.</span>}
           {TD_COMMANDS.filter((c) => c.needsPr).map((c) => (
             <button
               key={c.slug}

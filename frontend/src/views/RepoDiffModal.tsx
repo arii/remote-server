@@ -512,6 +512,7 @@ export default function RepoDiffModal({
               </details>
             )}
             <div className="actions">
+              {actionsOff && <span className="row-meta">{error ? `Repo actions unavailable: ${error}` : busy ? 'A repo action is running…' : 'Loading repo state…'}</span>}
               <button
                 type="button"
                 data-testid="repo-diff-stash"

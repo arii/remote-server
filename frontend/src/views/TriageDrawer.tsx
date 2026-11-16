@@ -8,15 +8,10 @@ import ReviewView from './ReviewView';
 import JobsView from './JobsView';
 import QueueView from './QueueView';
 // Briefing fold-down (D5): the digest, notification controls, and
-// next actions render as a drawer section — two taps from anywhere
-// (StatusStrip tap → Briefing) instead of a parallel tab.
+// next actions render as a drawer section.
 import BriefingView from './BriefingView';
-import { isRollupRepo } from '../components/RepoPicker';
-import { navBadge, type NavBadgeCounts } from '../tabBadges';
 
 export type TriageSection = 'review' | 'jobs' | 'queue' | 'briefing';
-
-const TRIAGE_SECTIONS: readonly TriageSection[] = ['review', 'jobs', 'queue', 'briefing'];
 
 interface TriageDrawerProps {
   open: boolean;
@@ -34,9 +29,6 @@ interface TriageDrawerProps {
   // Jobs buttons.
   pendingTdCommand?: { command: string; nonce: number } | null;
   onPendingTdHandled?: (nonce: number) => void;
-  // Nav badge counts: the switcher pills share the App-level single
-  // source with the nav bar, never a second counter.
-  badgeCounts: NavBadgeCounts;
   // Briefing section plumbing: the digest hops to History, the
   // pipeline pills hop to the drawer's Review section (#902), and
   // a palette nonce bumps the re-fetch while the section is open.
@@ -56,7 +48,6 @@ export default function TriageDrawer({
   createRequest = 0,
   pendingTdCommand = null,
   onPendingTdHandled,
-  badgeCounts,
   onOpenHistory,
   reloadRequest = 0,
 }: TriageDrawerProps): ReactNode {
@@ -64,35 +55,10 @@ export default function TriageDrawer({
   // can prefill its PR field from row context. Drawer-local: the
   // selection belongs to the drawer visit, not the app session.
   const [lastPr, setLastPr] = useState<number | null>(null);
-  // Briefing is per-repo (rollup has no single briefing to show);
-  // the section button hides on the All-repos picker like the
-  // Briefing tab's rollup gate did.
-  const sections = isRollupRepo(repo)
-    ? TRIAGE_SECTIONS.filter((s) => s !== 'briefing')
-    : TRIAGE_SECTIONS;
   if (!open) return null;
   return (
     <section className="detail triage-drawer" data-testid="triage-drawer" aria-label="Triage">
-      <div className="triage-head" role="group" aria-label="Triage sections" data-testid="triage-sections">
-        {sections.map((s) => {
-          const badge = navBadge(s, badgeCounts);
-          return (
-            <button
-              key={s}
-              type="button"
-              data-testid={`triage-section-${s}`}
-              aria-pressed={section === s}
-              onClick={() => onSectionChange(s)}
-            >
-              {s.charAt(0).toUpperCase() + s.slice(1)}
-              {badge && (
-                <span className="nav-badge" data-testid={`triage-badge-${s}`} title={badge.label} aria-label={badge.label}>
-                  {badge.count}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      <div className="triage-head">
         <button type="button" data-testid="triage-close" onClick={onClose}>
           Close
         </button>

@@ -339,6 +339,7 @@ export function TemplatePanel({
       >
         Save draft as template
       </button>
+      {!canSave && <span className="row-meta">Enter a draft before saving a template.</span>}
       {templates.length === 0 && (
         <span className="row-meta" data-testid="chat-templates-empty">
           No templates yet — save the draft above.
@@ -1081,6 +1082,7 @@ export function RunsPane({
                 >
                   Continue
                 </button>
+                {!r.has_prompt && <span className="row-meta">No stored prompt for this run.</span>}
                 <TapToFire
                   label="Delete"
                   name={`Delete ${r.id}`}
@@ -1690,10 +1692,6 @@ export async function pumpStream(
   );
 }
 
-// Seed staging (#507): Briefing/Now/Review "Ask agent" seeds land
-// in the composer for review and edit — never auto-sent, so one
-// tap can't start a metered turn. Returns the text to stage, or
-// null when there is no seed or it was already staged.
 export function stageSeed(seed: string | null, staged: boolean): string | null {
   if (!seed || staged) return null;
   return seed;
@@ -1703,6 +1701,7 @@ export default function ChatView({
   repo,
   seed,
   onSeedUsed,
+  sendSeed = false,
   initialRuns,
   focusRequest = 0,
   onOpenDiff,
@@ -1711,6 +1710,7 @@ export default function ChatView({
   repo: string;
   seed: string | null;
   onSeedUsed: () => void;
+  sendSeed?: boolean;
   // Test seam (drawer-precedented): pins the composer-above-runs
   // order without waiting on the runs fetch.
   initialRuns?: AgentRun[];
@@ -1753,19 +1753,8 @@ export default function ChatView({
     seed ?? (useMock() ? '' : loadChatDraft()),
   );
   const promptRef = useRef<HTMLTextAreaElement>(null);
-  // A seed stages into the composer for review and edit — the turn
-  // starts only when the user taps Send (#507). The ref survives
-  // StrictMode's double effect-invoke so dev never double-stages.
+  // Shortcuts stage text; Now's explicit Send starts the turn (#1317).
   const seedStagedRef = useRef(false);
-  useEffect(() => {
-    const staged = stageSeed(seed, seedStagedRef.current);
-    if (staged === null) return;
-    seedStagedRef.current = true;
-    setPrompt(staged);
-    onSeedUsed();
-    promptRef.current?.focus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Palette focus request: each nonce handled once.
   const handledFocusNonce = useRef(0);
   useEffect(() => {
@@ -1972,34 +1961,46 @@ export default function ChatView({
   const stalledRef = useRef(false);
 
   useEffect(() => {
-    if (useMock()) {
-      setMessages(loadChat().messages);
-      return;
-    }
+    const mock = useMock();
+    if (mock) setMessages(loadChat().messages);
     let cancelled = false;
     const ctrl = new AbortController();
     (async () => {
-      try {
-        const live = await fetchAgentRuns();
-        if (!cancelled) setRuns(live.runs);
-      } catch {
-        // Past runs stay hidden; live chat still works.
+      if (!mock) {
+        try {
+          const live = await fetchAgentRuns();
+          if (!cancelled) setRuns(live.runs);
+        } catch {
+          // Past runs stay hidden; live chat still works.
+        }
+        try {
+          const budget = await fetchBudget();
+          if (!cancelled) setBudget(budget);
+        } catch {
+          // Budget line stays hidden; runs still render.
+        }
+        // Turn survival (#1015): a stored thread whose turn outlived
+        // the page resumes here: live turns re-attach their stream,
+        // finished ones backfill. Unknown sessions stay on the
+        // interrupted-resend banner.
+        try {
+          const sid = loadChatSessionId();
+          if (sid && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
+        } catch {
+          // Resume is best-effort; the snapshot still renders.
+        }
       }
-      try {
-        const budget = await fetchBudget();
-        if (!cancelled) setBudget(budget);
-      } catch {
-        // Budget line stays hidden; runs still render.
-      }
-      // Turn survival (#1015): a stored thread whose turn outlived
-      // the page resumes here — live turns re-attach their stream,
-      // finished ones backfill. Unknown sessions stay on the
-      // interrupted-resend banner.
-      try {
-        const sid = loadChatSessionId();
-        if (sid && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
-      } catch {
-        // Resume is best-effort; the snapshot still renders.
+      // Resume must finish before a new turn claims the thread (#1317).
+      if (cancelled) return;
+      const staged = stageSeed(seed, seedStagedRef.current);
+      if (staged === null) return;
+      seedStagedRef.current = true;
+      onSeedUsed();
+      if (sendSeed) {
+        await sendText(staged);
+      } else {
+        setPrompt(staged);
+        promptRef.current?.focus();
       }
     })();
     return () => {
@@ -2231,6 +2232,7 @@ export default function ChatView({
       setInterrupted(null);
       setMessages((m) => {
         const last = m[m.length - 1];
+        if (last?.role === 'assistant' && last.text === text) return m;
         if (last && last.role === 'assistant' && last.text === '') {
           const next = [...m];
           next[next.length - 1] = { role: 'assistant', text };
@@ -2837,8 +2839,10 @@ export default function ChatView({
             title="Send (Ctrl+Enter or Cmd+Enter)"
             disabled={streaming || !prompt.trim()}
           >
-            Send
+            {streaming ? 'Sending…' : 'Send'}
           </button>
+          {!streaming && !prompt.trim() && <span className="row-meta">Enter a prompt to send.</span>}
+          {streaming && <span className="row-meta">Reply streaming. Chat controls unlock when it finishes.</span>}
           {/* Session utilities trail the pills + Send behind a
               hairline divider (#897): one row, three groups. */}
           <div
@@ -2870,6 +2874,7 @@ export default function ChatView({
           >
             Export
           </button>
+          {messages.length === 0 && <span className="row-meta">No messages to export.</span>}
           <button
             type="button"
             data-testid="chat-templates"
@@ -2897,20 +2902,23 @@ export default function ChatView({
           ) : null
         }
       />
-      <RunsPane
-        runs={runs}
-        repo={repo}
-        showAllRepos={showAllRepos}
-        onToggleScope={() => setShowAllRepos((s) => !s)}
-        selected={selected}
-        detail={detail}
-        onSelect={(id) => void onSelectRun(id)}
-        onContinue={(id) => void onContinueRun(id)}
-        onDelete={(id) => void onDeleteRun(id)}
-        onClearFinished={() => void onClearFinished()}
-        notice={runsNotice}
-        budget={budget}
-      />
+      <details data-testid="chat-past-runs">
+        <summary>Past runs ({filterRunsByRepo(runs, repo, showAllRepos).length})</summary>
+        <RunsPane
+          runs={runs}
+          repo={repo}
+          showAllRepos={showAllRepos}
+          onToggleScope={() => setShowAllRepos((s) => !s)}
+          selected={selected}
+          detail={detail}
+          onSelect={(id) => void onSelectRun(id)}
+          onContinue={(id) => void onContinueRun(id)}
+          onDelete={(id) => void onDeleteRun(id)}
+          onClearFinished={() => void onClearFinished()}
+          notice={runsNotice}
+          budget={budget}
+        />
+      </details>
       </aside>
       </div>
     </section>

@@ -4,7 +4,6 @@ import InboxStrips, {
   STRIPS_BUSY_NOTICE,
   stripsBusyNotice,
   SWIPE_ACT_PX,
-  StripsBulkBar,
   swipeDirection,
 } from './InboxStrips';
 import type { InboxFeed } from '../apiClient';
@@ -37,19 +36,21 @@ function renderStrips(f: InboxFeed = feed, deferred: DeferredRow[] = []): string
   );
 }
 
-describe('inbox strips bulk selection (issue #591)', () => {
-  it('renders selectable rows for merge-ready PRs plus select-all', () => {
+describe('inbox strips per-item actions (#1317)', () => {
+  it('renders merge-ready PRs without checkboxes or bulk controls', () => {
     const html = renderStrips();
     expect(html).toContain('data-testid="inbox-strips"');
-    expect(html).toContain('data-testid="strips-row-check-pr-12"');
-    expect(html).toContain('data-testid="strips-row-check-pr-13"');
+    expect(html).toContain('data-testid="strips-row-pr-12"');
+    expect(html).toContain('data-testid="strips-row-pr-13"');
     expect(html).toContain('#12 Fix it');
-    expect(html).toContain('data-testid="strips-select-all"');
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).toContain('>Defer</button>');
   });
 
-  it('renders deferred rows as selectable restore candidates', () => {
+  it('renders deferred rows with a restore action', () => {
     const html = renderStrips(feed, [{ kind: 'issue', number: 3 }]);
-    expect(html).toContain('data-testid="strips-row-check-issue-3"');
+    expect(html).toContain('data-testid="strips-row-issue-3"');
+    expect(html).toContain('>Restore</button>');
     expect(html).toContain('#3');
   });
 
@@ -59,10 +60,7 @@ describe('inbox strips bulk selection (issue #591)', () => {
 
   it('hides deferred PRs from the merge-ready rows (Review parity)', () => {
     const html = renderStrips(feed, [{ kind: 'pr', number: 12 }]);
-    // Title survives once in the nav button; the row lives only in
-    // the deferred section.
-    expect(html.split('#12 Fix it').length - 1).toBe(1);
-    expect(html.split('strips-row-check-pr-12').length - 1).toBe(1);
+    expect(html).not.toContain('#12 Fix it');
     expect(html).toContain('data-testid="strips-row-pr-12"');
   });
 
@@ -83,33 +81,11 @@ describe('inbox strips bulk selection (issue #591)', () => {
     };
     const html = renderStrips(empty, [{ kind: 'pr', number: 7 }]);
     expect(html).toContain('data-testid="inbox-strips"');
-    expect(html).toContain('strips-row-check-pr-7');
-  });
-
-  it('renders Defer n + Restore n with the live count', () => {
-    const html = renderToStaticMarkup(
-      <StripsBulkBar count={3} busyOp={null} onDefer={() => {}} onRestore={() => {}} />,
-    );
-    expect(html).toContain('data-testid="strips-bulk-bar"');
-    expect(html).toContain('3 selected');
-    expect(html).toContain('data-testid="strips-bulk-defer"');
-    expect(html).toContain('>Defer 3<');
-    expect(html).toContain('data-testid="strips-bulk-restore"');
-    expect(html).toContain('>Restore 3<');
+    expect(html).toContain('strips-row-pr-7');
   });
 
   it('shows no undo control before any swipe op', () => {
     expect(renderStrips()).not.toContain('data-testid="strips-undo"');
-  });
-
-  it('disables both actions while one request is in flight', () => {
-    const html = renderToStaticMarkup(
-      <StripsBulkBar count={2} busyOp="defer" onDefer={() => {}} onRestore={() => {}} />,
-    );
-    expect(html).toContain('>Deferring…<');
-    expect(html).not.toContain('>Restoring…<');
-    // Both buttons disabled: two disabled attributes.
-    expect(html.split('disabled').length - 1).toBe(2);
   });
 });
 
@@ -143,8 +119,8 @@ describe('inbox strips swipe classifier (issue #403)', () => {
     const html = renderStrips();
     expect(html).toContain('data-testid="strips-rows"');
     expect(html).toContain('data-testid="strips-row-pr-12"');
-    expect(html).toContain('data-testid="strips-row-check-pr-12"');
-    expect(html).toContain('aria-label="Select PR #12"');
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).toContain('>Defer</button>');
   });
 });
 

@@ -42,9 +42,11 @@ test.describe('responsive console layout', () => {
 
   test('top bar reads as one row with views between context and tools', async ({
     page,
-  }) => {
+  }, testInfo) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/');
+    await expect(page.getByTestId('stack-status')).not.toContainText('loading');
+    await expect(page.getByTestId('nav-badge-review')).toBeVisible();
     const bar = page.getByTestId('topbar');
     await expect(bar).toBeVisible();
     const rows = await bar
@@ -72,6 +74,40 @@ test.describe('responsive console layout', () => {
     });
     expect(xs[1]).toBeGreaterThan(xs[0]);
     expect(xs[2]).toBeGreaterThan(xs[1]);
+    const nav = bar.getByRole('navigation', { name: 'Views' });
+    await expect(nav.locator('button')).toHaveCount(8);
+    expect(await nav.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    for (const overflow of await nav.locator('button').evaluateAll((buttons) =>
+      buttons.map((button) => button.scrollWidth - button.clientWidth),
+    )) {
+      expect(overflow).toBeLessThanOrEqual(1);
+    }
+    await page.screenshot({ path: testInfo.outputPath('header-1440.png') });
+  });
+
+  test('all header destinations wrap without clipping at 360px', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 360, height: 844 });
+    await page.goto('/');
+    await expect(page.getByTestId('stack-status')).not.toContainText('loading');
+    await expect(page.getByTestId('nav-badge-review')).toBeVisible();
+    const bar = page.getByTestId('topbar');
+    const nav = bar.getByRole('navigation', { name: 'Views' });
+    await expect(nav.locator('button')).toHaveCount(8);
+    const rows = await nav.locator('button').evaluateAll((buttons) =>
+      buttons.map((button) => Math.round(button.getBoundingClientRect().top)),
+    );
+    expect(new Set(rows).size).toBeGreaterThan(1);
+    const controls = await bar.locator('button, a, select').evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right };
+      }),
+    );
+    for (const control of controls) {
+      expect(control.left).toBeGreaterThanOrEqual(0);
+      expect(control.right).toBeLessThanOrEqual(360);
+    }
+    await page.screenshot({ path: testInfo.outputPath('header-360.png') });
   });
 
   test('tool row never clips at 390px', async ({ page }) => {
