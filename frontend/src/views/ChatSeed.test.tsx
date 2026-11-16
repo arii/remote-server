@@ -57,10 +57,10 @@ it('sends an explicit Now handoff exactly once in StrictMode (#1317)', async () 
   expect(vi.mocked(postChatStream).mock.calls[0][4]!.aborted).toBe(false);
   await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="chat-templates"]')!.click());
   expect(host.querySelector('[data-testid="chat-templates-panel"]')).not.toBeNull();
-  expect(host.textContent!.match(/Reply streaming —/g)).toHaveLength(1);
+  expect(host.textContent!.match(/Reply streaming\./g)).toHaveLength(1);
   await act(async () => finish());
   expect(host.textContent).toContain('Completed reply');
-  expect(host.textContent).not.toContain('Reply streaming —');
+  expect(host.textContent).not.toContain('Reply streaming.');
 });
 
 it('finishes a stored live turn before sending the Now seed exactly once in StrictMode', async () => {

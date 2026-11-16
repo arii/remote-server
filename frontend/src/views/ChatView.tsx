@@ -1980,7 +1980,7 @@ export default function ChatView({
           // Budget line stays hidden; runs still render.
         }
         // Turn survival (#1015): a stored thread whose turn outlived
-        // the page resumes here — live turns re-attach their stream,
+        // the page resumes here: live turns re-attach their stream,
         // finished ones backfill. Unknown sessions stay on the
         // interrupted-resend banner.
         try {
@@ -2842,7 +2842,7 @@ export default function ChatView({
             {streaming ? 'Sending…' : 'Send'}
           </button>
           {!streaming && !prompt.trim() && <span className="row-meta">Enter a prompt to send.</span>}
-          {streaming && <span className="row-meta">Reply streaming — chat controls unlock when it finishes.</span>}
+          {streaming && <span className="row-meta">Reply streaming. Chat controls unlock when it finishes.</span>}
           {/* Session utilities trail the pills + Send behind a
               hairline divider (#897): one row, three groups. */}
           <div
