@@ -43,6 +43,9 @@ class HangBridge:
     async def connect(self):
         pass
 
+    async def wait_closed(self):
+        await asyncio.Event().wait()
+
     async def start_screencast(self, on_frame):
         pass
 
