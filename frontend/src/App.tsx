@@ -333,8 +333,7 @@ export default function App() {
     setReportRequest((n) => n + 1);
   }
 
-  // Unified nav handler (D5): tabs switch; Review/Jobs/Queue open
-  // the triage drawer on that section.
+  // Tabs and sections replace the main view.
   function openTab(nextTab: Tab) {
     setTriageOpen(false);
     setTab(nextTab);

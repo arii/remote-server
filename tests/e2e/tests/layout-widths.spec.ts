@@ -41,33 +41,33 @@ test.describe('responsive console layout', () => {
   }
 
   for (const width of [1280, 1440]) {
-  test(`all header destinations fit without scrolling at ${width}px`, async ({
-    page,
-  }, testInfo) => {
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto('/');
-    await expect(page.getByTestId('stack-status')).not.toContainText('loading');
-    await expect(page.getByTestId('nav-badge-review')).toBeVisible();
-    const bar = page.getByTestId('topbar');
-    await expect(bar).toBeVisible();
-    const controls = bar.locator('button, a, select');
-    for (const control of await controls.all()) {
-      await expect(control).toBeVisible();
-      const box = (await control.boundingBox())!;
-      expect(box.x).toBeGreaterThanOrEqual(0);
-      expect(box.x + box.width).toBeLessThanOrEqual(width);
-    }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
-    const nav = bar.getByRole('navigation', { name: 'Views' });
-    await expect(nav.locator('button')).toHaveCount(8);
-    expect(await nav.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
-    for (const overflow of await nav.locator('button').evaluateAll((buttons) =>
-      buttons.map((button) => button.scrollWidth - button.clientWidth),
-    )) {
-      expect(overflow).toBeLessThanOrEqual(1);
-    }
-    await page.screenshot({ path: testInfo.outputPath(`header-${width}.png`) });
-  });
+    test(`all header destinations fit without scrolling at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto('/');
+      await expect(page.getByTestId('stack-status')).not.toContainText('loading');
+      await expect(page.getByTestId('nav-badge-review')).toBeVisible();
+      const bar = page.getByTestId('topbar');
+      await expect(bar).toBeVisible();
+      const controls = bar.locator('button, a, select');
+      for (const control of await controls.all()) {
+        await expect(control).toBeVisible();
+        const box = (await control.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+      const nav = bar.getByRole('navigation', { name: 'Views' });
+      await expect(nav.locator('button')).toHaveCount(8);
+      expect(await nav.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+      for (const overflow of await nav.locator('button').evaluateAll((buttons) =>
+        buttons.map((button) => button.scrollWidth - button.clientWidth),
+      )) {
+        expect(overflow).toBeLessThanOrEqual(1);
+      }
+      await page.screenshot({ path: testInfo.outputPath(`header-${width}.png`) });
+    });
   }
 
   test('all header destinations wrap without clipping at 360px', async ({ page }, testInfo) => {

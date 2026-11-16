@@ -1028,10 +1028,6 @@ describe('app', () => {
     expect(navPressed('browser', null, entry('chat'))).toBe(false);
     expect(navPressed('chat', null, entry('now'))).toBe(false);
     expect(navPressed('now', null, entry('now'))).toBe(true);
-    expect(navPressed('chat', 'briefing', entry('briefing'))).toBe(true);
-    expect(navPressed('chat', 'review', entry('review'))).toBe(true);
-    expect(navPressed('now', 'jobs', entry('jobs'))).toBe(true);
-    expect(navPressed('chat', 'jobs', entry('review'))).toBe(false);
     expect(navPressed('chat', null, entry('queue'))).toBe(false);
     for (const tab of ['chat', 'now', 'history', 'browser'] as const) {
       for (const section of ['review', 'jobs', 'queue', 'briefing'] as const) {
