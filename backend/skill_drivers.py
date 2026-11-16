@@ -105,23 +105,28 @@ class GridCDPDriver:
             raise BrowserDriverError("browser busy: no shared Grid session")
         return claimed, claimed
 
-    def _run(self, fn):
+    def _run(self, fn, *, mutating=True):
         import contextlib
 
-        from backend.api.routers import browser_view
+        from backend.api.routers import browser_drive, browser_view
 
-        session_id, owned = self._acquire()
+        owned = None
 
         async def go():
             bridge = browser_view.CDPBridge(session_id)
             await bridge.connect()
             try:
+                if mutating:
+                    browser_drive._require_human_not_driving()
                 return await fn(bridge)
             finally:
                 with contextlib.suppress(Exception):
                     await bridge.close()
 
         try:
+            if mutating:
+                browser_drive._require_human_not_driving()
+            session_id, owned = self._acquire()
             return asyncio.run(go())
         except BrowserDriverError:
             raise
@@ -142,7 +147,7 @@ class GridCDPDriver:
             return browser_drive.snapshot_from_cdp(raw)
 
         try:
-            return self._run(go)
+            return self._run(go, mutating=False)
         except Exception as exc:
             raise BrowserDriverError(f"snapshot failed: {exc}") from exc
 

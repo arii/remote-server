@@ -642,6 +642,19 @@ KEYCODES = {
 }
 
 
+CREDENTIAL_FOCUS_JS = """(() => {
+    let e = document.activeElement;
+    while (e && e.shadowRoot && e.shadowRoot.activeElement) {
+        e = e.shadowRoot.activeElement;
+    }
+    if (!e) return false;
+    if (e.tagName === 'IFRAME' || e.tagName === 'FRAME' || e.tagName.includes('-')) return true;
+    const tokens = (e.getAttribute('autocomplete') || '').toLowerCase().split(/\\s+/);
+    return e.matches('input[type="password"]') || tokens.some(t =>
+        ['username', 'current-password', 'new-password', 'one-time-code', 'webauthn'].includes(t));
+})()"""
+
+
 class CDPBridge:
     """Minimal CDP client over the per-session Grid endpoint.
 
@@ -908,6 +921,18 @@ class CDPBridge:
             },
         )
 
+    async def credential_focused(self):
+        try:
+            await self.ensure_focus()
+            raw = await self.call(
+                "Runtime.evaluate",
+                {"expression": CREDENTIAL_FOCUS_JS, "returnByValue": True},
+            )
+            return "exceptionDetails" in raw or raw["result"]["value"] is not False
+        except Exception:
+            # Unknown focus must not expose credential text.
+            return True
+
     async def key(self, key, code):
         try:
             await self.ensure_focus()
@@ -1094,7 +1119,6 @@ def create_app():
             ),
         )
         bridge = None
-        paused = False
         lock = asyncio.Lock()
 
         async def on_frame(params):
@@ -1105,9 +1129,11 @@ def create_app():
             )
 
         async def human_input():
-            nonlocal paused
-            if not paused:
-                paused = await asyncio.to_thread(_pause_agent)
+            from backend.api.routers import agent_control
+
+            state = await asyncio.to_thread(agent_control.read_control_state)
+            if state.state != "PAUSED_BY_USER":
+                await asyncio.to_thread(_pause_agent)
 
         async def recover_once(op):
             # One reattach + screencast restart, then retry: a swapped
@@ -1269,6 +1295,7 @@ def create_app():
                         x, y = int(msg["x"]), int(msg["y"])
                     except (KeyError, TypeError, ValueError):
                         continue
+                    await human_input()
                     if phase != "move":
                         _log_activity(
                             "touch", f"{phase} {x},{y}", **_human_context(x, y)
@@ -1277,14 +1304,24 @@ def create_app():
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
-                    _log_activity("key", key or code, **_human_context())
+                    sensitive = await bridge.credential_focused()
+                    _log_activity(
+                        "key",
+                        "[redacted]" if sensitive else key or code,
+                        **_human_context(),
+                    )
                     await recover_once(lambda: bridge.key(key, code))
                 elif msg.get("t") == "type":
                     await human_input()
                     text = str(msg.get("text", ""))
                     if not text:
                         continue
-                    _log_activity("type", f"{len(text)} chars", **_human_context())
+                    sensitive = await bridge.credential_focused()
+                    _log_activity(
+                        "type",
+                        "[redacted]" if sensitive else f"{len(text)} chars",
+                        **_human_context(),
+                    )
                     await recover_once(lambda: bridge.type_text(text))
                 elif msg.get("t") == "viewport":
                     mode = str(msg.get("mode", ""))
