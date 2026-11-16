@@ -158,12 +158,15 @@ _viewer_viewport: "dict | None" = None
 def _grid_session_alive(session_id):
     """True when Grid still has the session (cheap read-only probe)."""
     try:
-        with urllib.request.urlopen(
-            GRID_BASE + f"/session/{session_id}/url", timeout=10
-        ) as resp:
-            return resp.status == 200
+        with urllib.request.urlopen(GRID_BASE + "/status", timeout=10) as resp:
+            nodes = json.load(resp)["value"]["nodes"]
+        return any(
+            slot["session"] and slot["session"]["sessionId"] == session_id
+            for node in nodes
+            for slot in node["slots"]
+        )
     except Exception:
-        return False
+        return True
 
 
 def _viewer_claim():
