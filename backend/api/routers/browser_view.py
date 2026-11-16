@@ -441,9 +441,9 @@ def last_page() -> tuple[dict | None, str | None]:
     return _LAST_PAGE["page"], _LAST_PAGE["hash"]
 
 
-def remember_url(url: str) -> None:
+def remember_url(url: str, *, new_document: bool = False) -> None:
     page = _LAST_PAGE["page"]
-    if page is None or page.get("url") != url:
+    if new_document or page is None or page.get("url") != url:
         _LAST_PAGE.update(page={"url": url, "elements": []}, hash=None)
 
 
@@ -703,6 +703,8 @@ class CDPBridge:
         # response can never collide with a tracked call future.
         self._ack_id = 10**9
         self._pending = {}
+        self._pending_inputs: set[int] = set()
+        self.dialog: dict | None = None
         # Held-modifier bitmask (CDP bits: Alt=1, Control=2,
         # Meta=4, Shift=8), maintained from rawKeyDown/rawKeyUp
         # so chorded keys carry the live physical state.
@@ -751,6 +753,10 @@ class CDPBridge:
             "Target.attachToTarget", {"targetId": page["targetId"], "flatten": True}
         )
         self.cdp_session = attached["sessionId"]
+        self.dialog = None
+        await self.call("Page.enable")
+        if self.dialog is not None:
+            return
         # Crisp text: render at device pixels, input stays in CSS px.
         # Detaching an emulation writer resets the renderer, even if its
         # override matched the viewer. Observers must remain read-only.
@@ -827,21 +833,32 @@ class CDPBridge:
             if msg["params"]["frameId"] == self._main_frame_id:
                 url = msg["params"].get("url")
         if url:
-            remember_url(url)
+            remember_url(url, new_document=method == "Page.frameNavigated")
             if self._url_cb is not None:
                 asyncio.get_running_loop().create_task(self._url_cb(url))
         if method in ("Page.javascriptDialogOpening", "Page.javascriptDialogClosed"):
+            params = msg.get("params", {})
+            dialog = (
+                {
+                    "type": params["type"],
+                    "message": params["message"],
+                    "defaultPrompt": params.get("defaultPrompt", ""),
+                }
+                if method == "Page.javascriptDialogOpening"
+                else None
+            )
+            self.dialog = (
+                {key: dialog[key] for key in ("type", "message")}
+                if dialog is not None
+                else None
+            )
+            if dialog is not None:
+                # Chrome holds input replies until the dialog closes.
+                for identifier in tuple(self._pending_inputs):
+                    future = self._pending.get(identifier)
+                    if future is not None and not future.done():
+                        future.set_result({})
             if self._dialog_cb is not None:
-                params = msg.get("params", {})
-                dialog = (
-                    {
-                        "type": params["type"],
-                        "message": params["message"],
-                        "defaultPrompt": params.get("defaultPrompt", ""),
-                    }
-                    if method == "Page.javascriptDialogOpening"
-                    else None
-                )
                 asyncio.get_running_loop().create_task(self._dialog_cb(dialog))
         if method == "Page.screencastFrame":
             if getattr(self, "_frame_cb", None) is not None:
@@ -903,14 +920,20 @@ class CDPBridge:
         self._id += 1
         fut = aio.get_event_loop().create_future()
         self._pending[self._id] = fut
+        is_input = method.startswith("Input.")
+        if is_input:
+            self._pending_inputs.add(self._id)
         envelope = {"id": self._id, "method": method, "params": params or {}}
         if getattr(self, "cdp_session", None):
             envelope["sessionId"] = self.cdp_session
         try:
             await self.ws.send(json.dumps(envelope))
+            if is_input and self.dialog is not None and not fut.done():
+                fut.set_result({})
             return await aio.wait_for(fut, timeout)
         finally:
             self._pending.pop(envelope["id"], None)
+            self._pending_inputs.discard(envelope["id"])
             if not fut.done():
                 fut.cancel()
             elif not fut.cancelled():
@@ -920,7 +943,6 @@ class CDPBridge:
         self._frame_cb = on_frame
         self._latest_params = None
         self._dispatch_in_flight = False
-        await self.call("Page.enable")
         if self._url_cb is not None:
             tree = await self.call("Page.getFrameTree")
             frame = tree["frameTree"]["frame"]

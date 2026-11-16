@@ -260,7 +260,11 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             # previous page's hash.
             page_hash=(None if body.op == "navigate" else pre_hash),
         )
-        page = await _snapshot(bridge)
+        result = {"ok": True, "op": body.op, "kind": kind}
+        if bridge.dialog is not None:
+            result["dialog"] = dict(bridge.dialog)
+        else:
+            result.update(await _snapshot(bridge))
         # Presence for the drawer banner + a re-snapshot flag for any
         # later pipeline run: best-effort, the drive already landed.
         with contextlib.suppress(Exception):
@@ -268,4 +272,4 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             control.current_step = f"{CHAT_DRIVE_PREFIX} {body.op} {target}"[:120]
             control.requires_dom_refresh = True
             agent_control.write_control_state(control)
-    return {"ok": True, "op": body.op, "kind": kind, **page}
+    return result

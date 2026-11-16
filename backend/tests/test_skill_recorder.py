@@ -57,6 +57,7 @@ class FakeBridge:
 
     def __init__(self, session_id):
         self.calls = []
+        self.dialog = None
 
     async def connect(self):
         pass

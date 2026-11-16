@@ -7,6 +7,30 @@ from backend.api.routers import browser_view
 
 
 class NavigationContextTest(unittest.TestCase):
+    def test_same_url_new_document_discards_snapshot_but_initial_url_keeps_it(self):
+        with mock.patch.dict(browser_view._LAST_PAGE, {"page": None, "hash": None}):
+            url = "https://example.com/reload"
+            page = {
+                "url": url,
+                "elements": [{"id": "old", "x": 5, "y": 5, "w": 10, "h": 10}],
+            }
+            browser_view.remember_page(page)
+            browser_view.remember_url(url)
+            self.assertEqual(browser_view._human_context(5, 5)["selector"], "#old")
+            self.assertIsNotNone(browser_view._human_context()["page_hash"])
+            bridge = browser_view.CDPBridge("test")
+            bridge.on_message(
+                {
+                    "method": "Page.frameNavigated",
+                    "params": {"frame": {"id": "main", "url": url, "loaderId": "new"}},
+                }
+            )
+            context = browser_view._human_context(5, 5)
+            self.assertEqual(context["url"], url)
+            self.assertIsNone(context["selector"])
+            self.assertIsNone(context["page_hash"])
+            self.assertEqual(browser_view.last_page()[0]["elements"], [])
+
     def test_main_frame_change_invalidates_snapshot_without_url_subscriber(self):
         with mock.patch.dict(browser_view._LAST_PAGE, {"page": None, "hash": None}):
             old = {
