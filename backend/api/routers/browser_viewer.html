@@ -259,14 +259,14 @@ function touchEnd(e) {
 }
 cv.addEventListener('touchend', touchEnd);
 cv.addEventListener('touchcancel', touchEnd);
-function sendKey(key, code, modifiers = 0) {
+function sendKey(key, code, modifiers = 0, altGraph = false) {
   if (!sendable()) return;
   // Mobile IMEs report Unidentified/229 composition placeholders on
   // keydown with no usable data — the text itself arrives through the
   // on-screen keyboard below, so drop these instead of erroring.
   if (key === 'Unidentified' || key === 'Process') return;
   lastClick = performance.now();
-  ws.send(JSON.stringify({t: 'key', key, code, modifiers}));
+  ws.send(JSON.stringify({t: 'key', key, code, modifiers, altGraph}));
 }
 function typeText(text) {
   if (!sendable() || !text) return;
@@ -344,10 +344,9 @@ document.addEventListener('keydown', (e) => {
       (e.target.tagName === 'BUTTON' || e.target.type === 'submit')) return;
   if (!sendable()) return;
   e.preventDefault();
-  let modifiers = (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) |
+  const modifiers = (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) |
     (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
-  if (e.key.length === 1 && e.getModifierState?.('AltGraph')) modifiers &= ~2;
-  sendKey(e.key, e.code || e.key, modifiers);
+  sendKey(e.key, e.code || e.key, modifiers, !!e.getModifierState?.('AltGraph'));
 });
 // Off-the-shelf on-screen keyboard (simple-keyboard, MIT): the remote
 // page gets real CDP input, so tapping the Keyboard button works on a

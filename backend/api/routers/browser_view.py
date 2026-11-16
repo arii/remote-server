@@ -20,6 +20,7 @@ from pathlib import Path
 import os
 import threading
 import time
+import unicodedata
 import urllib.request
 
 GRID_BASE = "http://browser:4444"
@@ -638,6 +639,41 @@ KEYCODES = {
 }
 KEYCODES.update({f"F{n}": 111 + n for n in range(1, 25)})
 
+_UNMODIFIED_KEYS = {
+    **{f"Key{letter}": letter.lower() for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+    **{f"Digit{digit}": str(digit) for digit in range(10)},
+    **{f"Numpad{digit}": str(digit) for digit in range(10)},
+    "Space": " ",
+    "Backquote": "`",
+    "Minus": "-",
+    "Equal": "=",
+    "BracketLeft": "[",
+    "BracketRight": "]",
+    "Backslash": "\\",
+    "Semicolon": ";",
+    "Quote": "'",
+    "Comma": ",",
+    "Period": ".",
+    "Slash": "/",
+    "NumpadAdd": "+",
+    "NumpadSubtract": "-",
+    "NumpadMultiply": "*",
+    "NumpadDivide": "/",
+    "NumpadDecimal": ".",
+    "NumpadEqual": "=",
+}
+
+
+def _is_text_key(key, code, modifiers, alt_graph):
+    if len(key) != 1 or not (key.isprintable() or unicodedata.category(key) == "Zs"):
+        return False
+    if not modifiers & 7:
+        return True
+    if not modifiers & 1 or modifiers & 4 or (modifiers & 2 and not alt_graph):
+        return False
+    base = _UNMODIFIED_KEYS.get(code)
+    return base is not None and key not in (base, base.upper())
+
 
 class CDPBridge:
     """Minimal CDP client over the per-session Grid endpoint.
@@ -953,7 +989,7 @@ class CDPBridge:
             },
         )
 
-    async def key(self, key, code, modifiers=None):
+    async def key(self, key, code, modifiers=None, alt_graph=False):
         try:
             await self.ensure_focus()
         except Exception:
@@ -961,7 +997,7 @@ class CDPBridge:
             # eat the keystroke when something is already focused.
             pass
         modifiers = self._modifiers if modifiers is None else modifiers
-        if len(key) == 1 and not modifiers & 6:
+        if _is_text_key(key, code, modifiers, alt_graph):
             await self.call("Input.insertText", {"text": key})
             return
         if len(key) == 1:
@@ -1000,6 +1036,8 @@ class CDPBridge:
             }
             if typ == "keyDown":
                 params["text"] = "\r" if key == "Enter" else ""
+            if len(key) == 1:
+                params["unmodifiedText"] = key
             await self.call("Input.dispatchKeyEvent", params)
 
     async def type_text(self, text):
@@ -1380,7 +1418,11 @@ def create_app():
                     if not 0 <= modifiers <= 15:
                         continue
                     _log_activity("key", key or code, **_human_context())
-                    await recover_once(lambda: bridge.key(key, code, modifiers))
+                    await recover_once(
+                        lambda: bridge.key(
+                            key, code, modifiers, msg.get("altGraph") is True
+                        )
+                    )
                 elif msg.get("t") == "type":
                     await human_input()
                     text = str(msg.get("text", ""))

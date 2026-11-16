@@ -130,6 +130,32 @@ class ViewerLifecycleTest(unittest.TestCase):
                 [c for c in bridge.calls if c[0] == "key"], [("key", "a", "KeyA")]
             )
 
+    def test_websocket_preserves_altgraph_and_original_modifiers(self):
+        bridge = FakeBridge("agent")
+        with (
+            mock.patch.object(browser_view, "CDPBridge", return_value=bridge),
+            mock.patch.object(browser_view, "_grid_live_session", return_value="agent"),
+            mock.patch.object(browser_view, "_pause_agent", return_value=True),
+            TestClient(browser_view.create_app()).websocket_connect("/ws") as ws,
+        ):
+            while ws.receive_json()["type"] != "view":
+                pass
+            processed = threading.Event()
+            bridge.move = mock.AsyncMock(side_effect=lambda *_: processed.set())
+            ws.send_json(
+                {
+                    "t": "key",
+                    "key": "@",
+                    "code": "KeyQ",
+                    "modifiers": 3,
+                    "altGraph": True,
+                }
+            )
+            ws.send_json({"t": "move", "x": 0, "y": 0})
+            self.assertTrue(processed.wait(5))
+            self.assertEqual(bridge.modifiers, 3)
+            self.assertTrue(bridge.alt_graph)
+
     def test_control_a_dispatches_chord_not_insert_text(self):
         bridge = browser_view.CDPBridge("agent")
         bridge.ensure_focus = mock.AsyncMock()
@@ -263,13 +289,13 @@ let listener, sent = [], connected = true, focused = false;
 vm.runInNewContext(HANDLER, {document:{addEventListener:(_, fn)=>listener=fn,
  getElementById:(id)=>({focus:()=>{if(id!=='url') throw Error(id);focused=true}})},
  sendable:()=>connected, sendKey:(...args)=>sent.push(args)});
-for(const [key,flags,expected] of [['Tab',{},0],['Escape',{},0],['a',{ctrlKey:true},2],
+for(const [key,flags,expected,graph=false] of [['Tab',{},0],['Escape',{},0],['a',{ctrlKey:true},2],
  ['a',{metaKey:true},4],['ArrowLeft',{altKey:true,shiftKey:true},9],['F1',{},0],
- ['@',{ctrlKey:true,altKey:true,getModifierState:()=>true},1],
+ ['@',{ctrlKey:true,altKey:true,getModifierState:()=>true},3,true],
  ['@',{ctrlKey:true,altKey:true,getModifierState:()=>false},3]]) {
  let prevented=false;
  listener({key,code:key,target:{tagName:'BODY'},...flags,preventDefault(){prevented=true}});
- if(!prevented || sent.at(-1)[2]!==expected) throw Error(key);
+ if(!prevented || sent.at(-1)[2]!==expected || sent.at(-1)[3]!==graph) throw Error(key);
 }
 const count=sent.length;
 listener({key:'F6',target:{id:'screen'},preventDefault(){}});

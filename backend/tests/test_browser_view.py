@@ -173,8 +173,9 @@ class FakeBridge:
     async def move(self, x, y):
         self.calls.append(("move", x, y))
 
-    async def key(self, key, code, modifiers=None):
+    async def key(self, key, code, modifiers=None, alt_graph=False):
         self.modifiers = modifiers
+        self.alt_graph = alt_graph
         self.calls.append(("key", key, code))
 
     async def type_text(self, text):
