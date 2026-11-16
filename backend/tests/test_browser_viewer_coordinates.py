@@ -14,6 +14,28 @@ from backend.tests.test_browser_view import FakeBridge
 
 
 class FrameCoordinatesTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "requires Node.js")
+    def test_height_only_frame_resize_updates_canvas_and_bottom_click(self):
+        body = re.search(
+            r"img.onload = \(\) => \{([\s\S]*?)\n      \};", browser_view.VIEWER_HTML
+        ).group(1)
+        position = re.search(
+            r"function pos\(e\) \{[\s\S]*?\n\}", browser_view.VIEWER_HTML
+        ).group(0)
+        script = """
+const assert=require('node:assert/strict');
+const cv={width:1280,height:800,getBoundingClientRect(){return {left:0,top:0,width:this.width,height:this.height}}};
+const img={width:1280,height:772},m={metadata:{deviceWidth:1912,deviceHeight:1153}};
+let frameSize=null,frames=1;const t0=0,dsf=1,performance={now:()=>0},URL={revokeObjectURL(){}};
+const ctx={drawImage(){assert.equal(cv.height,img.height)}};
+(()=>{FRAME})();
+assert.equal(cv.height,772);assert.equal(cv.width,1280);
+POSITION
+assert.deepEqual(pos({clientX:1671*1280/1912,clientY:1085*772/1153}),{x:1671,y:1085});
+""".replace("FRAME", body).replace("POSITION", position)
+        result = subprocess.run(["node", "-e", script], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_frame_metadata_reaches_viewer(self):
         bridge = FakeBridge("agent")
         metadata = {"deviceWidth": 1600, "deviceHeight": 1000}

@@ -437,14 +437,18 @@ def remember_page(page: dict) -> dict:
 
 
 def last_page() -> tuple[dict | None, str | None]:
-    """Cached page and hash (both None before the first snapshot)."""
+    """Cached page context; hash is unset until a current snapshot."""
     return _LAST_PAGE["page"], _LAST_PAGE["hash"]
 
 
+def remember_url(url: str) -> None:
+    page = _LAST_PAGE["page"]
+    if page is None or page.get("url") != url:
+        _LAST_PAGE.update(page={"url": url, "elements": []}, hash=None)
+
+
 def _human_context(x: int | None = None, y: int | None = None) -> dict:
-    """Replay fields for a human input: selector matched against
-    the last snapshot page (pixels-only viewer never snapshots),
-    plus that page's url and hash. All None before any snapshot."""
+    """Current URL and, when available, snapshot-derived selector and hash."""
     page, phash = last_page()
     selector = None
     if x is not None and y is not None:
@@ -706,6 +710,7 @@ class CDPBridge:
         self.ws = None
         self.closed = asyncio.Event()
         self._url_cb = None
+        self._dialog_cb = None
         self._main_frame_id = None
         self._latest_params = None
         self._dispatch_in_flight = False
@@ -821,8 +826,23 @@ class CDPBridge:
         elif method == "Page.navigatedWithinDocument":
             if msg["params"]["frameId"] == self._main_frame_id:
                 url = msg["params"].get("url")
-        if url and self._url_cb is not None:
-            asyncio.get_running_loop().create_task(self._url_cb(url))
+        if url:
+            remember_url(url)
+            if self._url_cb is not None:
+                asyncio.get_running_loop().create_task(self._url_cb(url))
+        if method in ("Page.javascriptDialogOpening", "Page.javascriptDialogClosed"):
+            if self._dialog_cb is not None:
+                params = msg.get("params", {})
+                dialog = (
+                    {
+                        "type": params["type"],
+                        "message": params["message"],
+                        "defaultPrompt": params.get("defaultPrompt", ""),
+                    }
+                    if method == "Page.javascriptDialogOpening"
+                    else None
+                )
+                asyncio.get_running_loop().create_task(self._dialog_cb(dialog))
         if method == "Page.screencastFrame":
             if getattr(self, "_frame_cb", None) is not None:
                 try:
@@ -905,6 +925,7 @@ class CDPBridge:
             tree = await self.call("Page.getFrameTree")
             frame = tree["frameTree"]["frame"]
             self._main_frame_id = frame["id"]
+            remember_url(frame["url"])
             await self._url_cb(frame["url"])
         try:
             await self.call("Page.stopScreencast")
@@ -1213,6 +1234,11 @@ def create_app():
         async def on_url(url):
             await _ws_send_text(send, lock, json.dumps({"type": "url", "url": url}))
 
+        async def on_dialog(dialog):
+            await _ws_send_text(
+                send, lock, json.dumps({"type": "dialog", "dialog": dialog})
+            )
+
         async def human_input():
             nonlocal paused
             if not paused:
@@ -1282,6 +1308,7 @@ def create_app():
             bridge = CDPBridge(session_id, viewport=viewport, mobile=mobile)
             bridge._owns_emulation = kind == "own"
             bridge._url_cb = on_url
+            bridge._dialog_cb = on_dialog
             try:
                 await bridge.connect()
             except Exception as exc:
@@ -1408,6 +1435,24 @@ def create_app():
                             "touch", f"{phase} {x},{y}", **_human_context(x, y)
                         )
                     await recover_once(lambda: bridge.touch(phase, x, y))
+                elif msg.get("t") == "dialog":
+                    if not isinstance(msg.get("accept"), bool):
+                        continue
+                    await human_input()
+                    _log_activity(
+                        "dialog",
+                        "accept" if msg["accept"] else "cancel",
+                        **_human_context(),
+                    )
+                    await recover_once(
+                        lambda: bridge.call(
+                            "Page.handleJavaScriptDialog",
+                            {
+                                "accept": msg["accept"],
+                                "promptText": str(msg.get("promptText", "")),
+                            },
+                        )
+                    )
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))

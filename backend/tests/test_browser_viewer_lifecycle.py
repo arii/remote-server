@@ -17,6 +17,11 @@ from backend.tests.test_browser_view import FakeBridge
 
 
 class ViewerLifecycleTest(unittest.TestCase):
+    def setUp(self):
+        context = mock.patch.dict(browser_view._LAST_PAGE, {"page": None, "hash": None})
+        context.start()
+        self.addCleanup(context.stop)
+
     def test_grid_deletion_closes_even_when_proxy_remains_open(self):
         async def check():
             bridge = browser_view.CDPBridge("dead")
@@ -288,7 +293,7 @@ const vm = require('node:vm');
 let listener, sent = [], connected = true, focused = false;
 vm.runInNewContext(HANDLER, {document:{addEventListener:(_, fn)=>listener=fn,
  getElementById:(id)=>({focus:()=>{if(id!=='url') throw Error(id);focused=true}})},
- sendable:()=>connected, sendKey:(...args)=>sent.push(args)});
+ pageDialog:{open:false}, sendable:()=>connected, sendKey:(...args)=>sent.push(args)});
 for(const [key,flags,expected,graph=false] of [['Tab',{},0],['Escape',{},0],['a',{ctrlKey:true},2],
  ['a',{metaKey:true},4],['ArrowLeft',{altKey:true,shiftKey:true},9],['F1',{},0],
  ['@',{ctrlKey:true,altKey:true,getModifierState:()=>true},3,true],
