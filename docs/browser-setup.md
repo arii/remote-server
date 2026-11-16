@@ -8,11 +8,13 @@ service. No VNC anywhere in the loop.
 - Agent CDP: Selenium Grid at `http://browser:4444` (compose
   network). Agents open a Grid session with the agent-profile caps
   (`--user-data-dir=/data/shared-browser/agent`,
-  `--enable-features=WebMCP`, `--disable-dev-shm-usage`) and drive
-  the per-session CDP
+  `--enable-features=WebMCP`, `--disable-dev-shm-usage`,
+  `--disable-blink-features=AutomationControlled`,
+  `excludeSwitches: [enable-automation]` — measured 2026-11-09:
+  `navigator.webdriver` reads false) and drive the per-session CDP
   endpoint `/session/<id>/se/cdp`; the session is deleted
   afterwards (`SE_NODE_MAX_SESSIONS=1`, so a leaked session wedges
-  the single slot). Idle sessions are reaped after 3600s
+  the single slot). Idle sessions are reaped after 600s
   (`SE_NODE_SESSION_TIMEOUT`).
 - Human stream: the CDP-direct viewer served by the buttons backend
   at `/cdp-stream` (routed by Caddy, embedded in the Shared-browser
@@ -33,6 +35,25 @@ service. No VNC anywhere in the loop.
 Containerized `browserless/chromium` stays decommissioned. For the
 extension-pairing alternative see
 [`docs/browser-mcp-pairing.md`](browser-mcp-pairing.md).
+
+## Google sign-in (one-time pre-auth)
+
+Google's risk checks fingerprint active CDP sessions, so a cold
+profile can stall at login. The agent profile persists on the host
+(`~/.s5-shared-browser/agent`), so sign in once and every later
+session reuses the cookies:
+
+1. First try the normal path: open `/cdp-stream/`, navigate to
+   `https://accounts.google.com/`, and sign in (verified
+   2026-11-09: the email step proceeds to the password prompt with
+   no automation block on the pinned Grid flags).
+2. If a step is ever challenged, fall back to a real browser on
+   the same profile: `docker compose stop browser`, copy
+   `~/.s5-shared-browser/agent` to a desktop Chrome as its
+   `--user-data-dir`, sign in there, copy it back (owner
+   `1200:1201`), and `docker compose up -d browser`.
+3. Never `--enable-automation` on the Grid caps: it forces the
+   automation banner and hardcodes `navigator.webdriver=true`.
 
 ## Spec deviation (recorded, not rebuilt — issue #1104)
 

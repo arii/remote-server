@@ -97,7 +97,18 @@ def _grid_session_create():
                 "--user-data-dir=/data/shared-browser/agent",
                 "--disable-dev-shm-usage",
                 "--enable-features=WebMCP",
-            ]
+                # Drop the AutomationControlled blink flag so pages
+                # cannot trivially fingerprint the Grid session.
+                # Measured 2026-11-09 on the pinned Grid: with
+                # enable-automation excluded, navigator.webdriver
+                # reads false and Google proceeds past email entry.
+                # CDP attach itself stays detectable, so a fully
+                # cold profile may still trip heavier risk checks.
+                "--disable-blink-features=AutomationControlled",
+            ],
+            # Never pass --enable-automation: it forces the
+            # automation banner and hardcodes navigator.webdriver.
+            "excludeSwitches": ["enable-automation"],
         },
     }
     req = urllib.request.Request(
@@ -282,6 +293,14 @@ def _pause_agent():
         return False
 
 
+# CDP `modifiers` bitmask for Input.dispatchKeyEvent: Alt=1,
+# Control=2, Meta/Command=4, Shift=8. Pure modifiers travel as
+# rawKeyDown/rawKeyUp WITH the mask so Chromium tracks the held
+# state server-side; later keys in the same chord then resolve
+# correctly (Shift+Arrow, Ctrl+Enter). A bare physical Shift used
+# to die here as "unknown key: 'Shift'" and reject the whole op.
+_MODIFIER_MASK = {"Shift": 8, "Control": 2, "Alt": 1, "Meta": 4}
+
 KEYCODES = {
     "Enter": 13,
     "Backspace": 8,
@@ -294,6 +313,18 @@ KEYCODES = {
     "ArrowDown": 40,
     "Home": 36,
     "End": 35,
+    "Shift": 16,
+    "ShiftLeft": 16,
+    "ShiftRight": 16,
+    "Control": 17,
+    "ControlLeft": 17,
+    "ControlRight": 17,
+    "Alt": 18,
+    "AltLeft": 18,
+    "AltRight": 18,
+    "Meta": 91,
+    "MetaLeft": 91,
+    "MetaRight": 91,
 }
 
 
@@ -320,6 +351,10 @@ class CDPBridge:
         # response can never collide with a tracked call future.
         self._ack_id = 10**9
         self._pending = {}
+        # Held-modifier bitmask (CDP bits: Alt=1, Control=2,
+        # Meta=4, Shift=8), maintained from rawKeyDown/rawKeyUp
+        # so chorded keys carry the live physical state.
+        self._modifiers = 0
         self.ws = None
         self._latest_params = None
         self._dispatch_in_flight = False
@@ -572,12 +607,32 @@ class CDPBridge:
         vk = KEYCODES.get(key)
         if vk is None:
             raise ValueError(f"unknown key: {key!r}")
+        mask = _MODIFIER_MASK.get(key)
+        if mask is not None:
+            for typ in ("rawKeyDown", "rawKeyUp"):
+                if typ == "rawKeyDown":
+                    self._modifiers |= mask
+                else:
+                    self._modifiers &= ~mask
+                await self.call(
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": typ,
+                        "key": key,
+                        "windowsVirtualKeyCode": vk,
+                        "nativeVirtualKeyCode": vk,
+                        "code": code or key,
+                        "modifiers": self._modifiers,
+                    },
+                )
+            return
         for typ in ("keyDown", "keyUp"):
             params = {
                 "type": typ,
                 "key": key,
                 "windowsVirtualKeyCode": vk,
                 "code": code or key,
+                "modifiers": self._modifiers,
             }
             if typ == "keyDown":
                 params["text"] = "\r" if key == "Enter" else ""
