@@ -105,14 +105,19 @@ class SkillRecorderTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        for key, name in (
-            ("BROWSER_ACTIVITY_FILE", "activity.jsonl"),
-            ("BROWSER_NOTES_FILE", "notes.md"),
-            ("AGENT_CONTROL_STATE_FILE", "control.json"),
-        ):
-            path = os.path.join(self.tmp.name, name)
-            os.environ[key] = path
-            self.addCleanup(os.environ.pop, key)
+        environment = mock.patch.dict(
+            os.environ,
+            {
+                key: os.path.join(self.tmp.name, name)
+                for key, name in (
+                    ("BROWSER_ACTIVITY_FILE", "activity.jsonl"),
+                    ("BROWSER_NOTES_FILE", "notes.md"),
+                    ("AGENT_CONTROL_STATE_FILE", "control.json"),
+                )
+            },
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
         self.saved_ring = list(browser_view._ACTIVITY)
         self.saved_total = browser_view._LEARN_TOTAL[0]
         self.saved_state = dict(browser_view._LEARN_STATE)
