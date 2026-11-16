@@ -178,6 +178,9 @@ class FakeBridge:
         self.alt_graph = alt_graph
         self.calls.append(("key", key, code))
 
+    async def credential_focused(self):
+        return False
+
     async def type_text(self, text):
         self.calls.append(("type_text", text))
 

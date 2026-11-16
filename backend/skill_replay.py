@@ -21,6 +21,9 @@ validator (#1253) and refuses to run an invalid skill.
 
 from __future__ import annotations
 
+from fastapi import HTTPException
+
+from backend.api.routers.browser_drive import _require_human_not_driving
 from backend.skill_check import check_step, match_selector
 from backend.skill_drivers import BrowserDriver
 from backend.skill_format import validate_skill
@@ -65,6 +68,7 @@ def _resolve(step: dict, page: dict) -> tuple[str, dict | None, str]:
 def _perform(driver, action: str, kwargs: dict) -> str:
     """Execute one resolved action. Returns an error or ''."""
     try:
+        _require_human_not_driving()
         if action == "navigate":
             driver.navigate(kwargs["url"])
         elif action == "click":
@@ -110,6 +114,15 @@ def run_skill(skill: dict, driver: BrowserDriver) -> dict:
     }
     for step in skill.get("steps", []):
         n = step.get("n")
+        try:
+            _require_human_not_driving()
+        except HTTPException as exc:
+            reason = f"replay refused: {exc.detail}"
+            result["steps"].append(
+                {"n": n, "action": step["action"], "ok": False, "reason": reason}
+            )
+            result.update(passed=False, failed_step=n, reason=reason)
+            break
         pre_page = driver.snapshot()
         action, kwargs, resolve_error = _resolve(step, pre_page)
         if resolve_error:

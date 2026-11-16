@@ -76,10 +76,12 @@ class DriveApiTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        os.environ["AGENT_CONTROL_STATE_FILE"] = os.path.join(
-            self.tmp.name, "control.json"
+        control_env = mock.patch.dict(
+            os.environ,
+            {"AGENT_CONTROL_STATE_FILE": os.path.join(self.tmp.name, "control.json")},
         )
-        self.addCleanup(os.environ.pop, "AGENT_CONTROL_STATE_FILE")
+        control_env.start()
+        self.addCleanup(control_env.stop)
 
     def test_snapshot_prefers_live_agent_session(self):
         with (
