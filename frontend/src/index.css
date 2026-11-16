@@ -132,9 +132,6 @@ h1, h2, h3 { text-wrap: balance; }
   display: inline-flex;
   align-items: center;
 }
-/* Center group takes the middle: auto margins on both sides push
-   context left and tools right; on wrap the row stacks cleanly. */
-.topbar-views { margin-left: auto; margin-right: auto; }
 .topbar .repo-chip { max-width: 8rem; padding-inline: 0.5rem; white-space: normal; }
 
 

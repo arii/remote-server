@@ -833,7 +833,7 @@ export default function App() {
             {healthSummary(health)}
           </button>
         </div>
-        <nav className="topnav topbar-views" aria-label="Views">
+        <nav className="topnav" aria-label="Views">
           {NAV_ENTRIES.map((t) => (
             <ShellNavButton
               key={t.id}
