@@ -259,8 +259,9 @@ class ViewerLifecycleTest(unittest.TestCase):
         ]
         harness = """
 const vm = require('node:vm');
-let listener, sent = [], connected = true;
-vm.runInNewContext(HANDLER, {document:{addEventListener:(_, fn)=>listener=fn},
+let listener, sent = [], connected = true, focused = false;
+vm.runInNewContext(HANDLER, {document:{addEventListener:(_, fn)=>listener=fn,
+ getElementById:(id)=>({focus:()=>{if(id!=='url') throw Error(id);focused=true}})},
  sendable:()=>connected, sendKey:(...args)=>sent.push(args)});
 for(const [key,flags,expected] of [['Tab',{},0],['Escape',{},0],['a',{ctrlKey:true},2],
  ['a',{metaKey:true},4],['ArrowLeft',{altKey:true,shiftKey:true},9],['F1',{},0]]) {
@@ -269,6 +270,8 @@ for(const [key,flags,expected] of [['Tab',{},0],['Escape',{},0],['a',{ctrlKey:tr
  if(!prevented || sent.at(-1)[2]!==expected) throw Error(key);
 }
 const count=sent.length;
+listener({key:'F6',target:{id:'screen'},preventDefault(){}});
+if(!focused || sent.length!==count) throw Error('F6 did not escape remote focus');
 for(const e of [{key:'r',ctrlKey:true},{key:'R',metaKey:true,shiftKey:true},
  {key:'l',ctrlKey:true},{key:'l',metaKey:true},{key:'F5'},{key:'F12'},
  {key:'a',target:{id:'url'}},{key:'Enter',target:{tagName:'BUTTON'}},

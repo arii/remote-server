@@ -329,6 +329,11 @@ document.getElementById('view').addEventListener('click', () => {
   ws.send(JSON.stringify({t: 'viewport', mode: mobileView ? 'mobile' : 'desktop'}));
 });
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'F6') {
+    e.preventDefault();
+    document.getElementById('url').focus();
+    return;
+  }
   if (e.defaultPrevented || (e.target && e.target.id === 'url')) return;
   // Keep local reload, location access and devtools as recovery controls.
   if (e.key === 'F5' || e.key === 'F12' ||
