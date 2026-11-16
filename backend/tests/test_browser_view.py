@@ -1,5 +1,6 @@
 """Tests for the CDP-direct viewer mount (no live Grid needed)."""
 
+import asyncio
 import unittest
 from unittest import mock
 
@@ -152,9 +153,13 @@ class FakeBridge:
         self.mobile = mobile
         self.dsf = browser_view.DSF
         self.calls = []
+        self.closed = asyncio.Event()
 
     async def connect(self):
         pass
+
+    async def wait_closed(self):
+        await self.closed.wait()
 
     async def start_screencast(self, on_frame):
         self.calls.append(("screencast",))
@@ -168,7 +173,8 @@ class FakeBridge:
     async def move(self, x, y):
         self.calls.append(("move", x, y))
 
-    async def key(self, key, code):
+    async def key(self, key, code, modifiers=None):
+        self.modifiers = modifiers
         self.calls.append(("key", key, code))
 
     async def type_text(self, text):
@@ -1358,7 +1364,7 @@ class MobileViewportTest(unittest.TestCase):
     def test_bridge_desktop_skips_touch_emulation(self):
         import asyncio
 
-        bridge = browser_view.CDPBridge("sid")
+        bridge = browser_view.CDPBridge("sid", viewport=dict(browser_view.VIEWPORT))
         calls = []
 
         async def fake_call(method, params=None, timeout=15):

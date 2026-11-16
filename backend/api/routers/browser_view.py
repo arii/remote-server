@@ -38,10 +38,7 @@ def is_phone_user_agent(user_agent):
 
 
 def viewport_for(kind, user_agent):
-    """(viewport, mobile) for a viewer session. Phone viewers with
-    their OWN session get a 390x844 mobile viewport with touch
-    emulation; shared/agent sessions keep the desktop viewport so
-    every tab sees the same page. Pure (no I/O): unit-testable."""
+    """Initial (viewport, mobile) defaults before adopting shared state."""
     if kind == "own" and is_phone_user_agent(user_agent):
         return dict(MOBILE_VIEWPORT), True
     return dict(VIEWPORT), False
@@ -153,11 +150,8 @@ AGENT_SESSION_MARKER = "boomtick:agentSession"
 _viewer_lock = threading.Lock()
 _viewer_session_id: "str | None" = None
 _viewer_refcount = 0
-#: Canonical viewport for the shared session: the owner's
-#: (viewport, mobile). Joining tabs adopt it so a desktop tab
-#: joining a phone-owned session does not re-emulate the shared
-#: Grid session out from under the phone (and vice versa) —
-#: last-writer-wins metrics flap the screencast size for all.
+# Canonical viewport for the active Grid session, set by the owner
+# or an explicit view-mode change, including on agent sessions.
 _viewer_viewport: "dict | None" = None
 
 
@@ -193,7 +187,8 @@ def _viewer_claim():
             if _viewer_session_id == sid:
                 _viewer_session_id = None
                 _viewer_refcount = 0
-                _viewer_viewport = None
+                if _viewer_viewport and _viewer_viewport["session_id"] == sid:
+                    _viewer_viewport = None
             return None
         _viewer_refcount += 1
         return sid
@@ -211,20 +206,16 @@ def _viewer_create(session_id, viewport=None, mobile=False):
         _viewer_session_id = session_id
         _viewer_refcount = 1
         _viewer_viewport = {
+            "session_id": session_id,
             "viewport": dict(viewport) if viewport is not None else dict(VIEWPORT),
             "mobile": bool(mobile),
         }
 
 
 def _viewer_viewport_for(session_id):
-    """Canonical (viewport, mobile) for a shared session, or None.
-
-    None when the record is stale (owner predates this worker, or
-    the session id does not match): callers fall back to computing
-    their own via viewport_for.
-    """
+    """Canonical (viewport, mobile) for the matching Grid session."""
     with _viewer_lock:
-        if _viewer_session_id != session_id or _viewer_viewport is None:
+        if _viewer_viewport is None or _viewer_viewport["session_id"] != session_id:
             return None
         return (dict(_viewer_viewport["viewport"]), _viewer_viewport["mobile"])
 
@@ -240,7 +231,8 @@ def _viewer_release(session_id):
         if _viewer_refcount <= 0:
             _viewer_session_id = None
             _viewer_refcount = 0
-            _viewer_viewport = None
+            if _viewer_viewport and _viewer_viewport["session_id"] == session_id:
+                _viewer_viewport = None
             return True
         return False
 
@@ -640,6 +632,7 @@ KEYCODES = {
     "MetaLeft": 91,
     "MetaRight": 91,
 }
+KEYCODES.update({f"F{n}": 111 + n for n in range(1, 25)})
 
 
 class CDPBridge:
@@ -659,6 +652,7 @@ class CDPBridge:
         # metrics and screencast sizing both follow it, so a phone
         # viewer stays 390x844 across target swaps and restarts.
         self.viewport = dict(viewport) if viewport is not None else dict(VIEWPORT)
+        self._owns_emulation = viewport is not None
         self.mobile = mobile
         self._id = 0
         # Fire-and-forget ack ids live far above call ids so an ack
@@ -670,6 +664,9 @@ class CDPBridge:
         # so chorded keys carry the live physical state.
         self._modifiers = 0
         self.ws = None
+        self.closed = asyncio.Event()
+        self._url_cb = None
+        self._main_frame_id = None
         self._latest_params = None
         self._dispatch_in_flight = False
         # Set by the app: reattach + restart the screencast after a
@@ -695,6 +692,9 @@ class CDPBridge:
         # Re-run after every navigation: a cross-origin load can swap
         # the page target, leaving the old session (and its screencast)
         # pointed at a dead target with zero frames and dead input.
+        adopted = _viewer_viewport_for(self.session_id)
+        if adopted is not None:
+            self.viewport, self.mobile = adopted
         targets = await self.call("Target.getTargets")
         pages = [t for t in targets["targetInfos"] if t["type"] == "page"]
         if not pages:
@@ -707,16 +707,19 @@ class CDPBridge:
         )
         self.cdp_session = attached["sessionId"]
         # Crisp text: render at device pixels, input stays in CSS px.
-        await self.call(
-            "Emulation.setDeviceMetricsOverride",
-            {
-                "width": self.viewport["width"],
-                "height": self.viewport["height"],
-                "deviceScaleFactor": DSF,
-                "mobile": self.mobile,
-            },
-        )
-        if self.mobile:
+        # Detaching an emulation writer resets the renderer, even if its
+        # override matched the viewer. Observers must remain read-only.
+        if self._owns_emulation:
+            await self.call(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": self.viewport["width"],
+                    "height": self.viewport["height"],
+                    "deviceScaleFactor": DSF,
+                    "mobile": self.mobile,
+                },
+            )
+        if self.mobile and self._owns_emulation:
             # Phone-owned sessions get touch input: without this,
             # taps land as mouse events and mobile pages misbehave.
             # Best-effort: a Grid that rejects it must not fail the
@@ -740,13 +743,26 @@ class CDPBridge:
             pass
 
     async def _reader(self):
-        from websockets.exceptions import ConnectionClosed
-
+        error = ConnectionError("browser connection closed")
         try:
             async for raw in self.ws:
                 self.on_message(json.loads(raw))
-        except ConnectionClosed:
-            pass
+        except Exception as exc:
+            error = ConnectionError(f"browser connection closed: {exc}")
+        finally:
+            for future in list(self._pending.values()):
+                if not future.done():
+                    future.set_exception(error)
+            self.closed.set()
+
+    async def wait_closed(self):
+        while not self.closed.is_set():
+            try:
+                await asyncio.wait_for(self.closed.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                # Grid can keep its CDP proxy open after deleting the session.
+                if not await asyncio.to_thread(_grid_session_alive, self.session_id):
+                    self.closed.set()
 
     def on_message(self, msg):
         # Unwrap flattened target messages to the inner page event.
@@ -756,6 +772,17 @@ class CDPBridge:
             except Exception:
                 return
         method = msg.get("method", "")
+        url = None
+        if method == "Page.frameNavigated":
+            frame = msg["params"]["frame"]
+            if not frame.get("parentId"):
+                self._main_frame_id = frame["id"]
+                url = frame.get("url")
+        elif method == "Page.navigatedWithinDocument":
+            if msg["params"]["frameId"] == self._main_frame_id:
+                url = msg["params"].get("url")
+        if url and self._url_cb is not None:
+            asyncio.get_running_loop().create_task(self._url_cb(url))
         if method == "Page.screencastFrame":
             if getattr(self, "_frame_cb", None) is not None:
                 try:
@@ -811,20 +838,34 @@ class CDPBridge:
     async def call(self, method, params=None, timeout=15):
         import asyncio as aio
 
+        if self.closed.is_set():
+            raise ConnectionError("browser connection closed")
         self._id += 1
         fut = aio.get_event_loop().create_future()
         self._pending[self._id] = fut
         envelope = {"id": self._id, "method": method, "params": params or {}}
         if getattr(self, "cdp_session", None):
             envelope["sessionId"] = self.cdp_session
-        await self.ws.send(json.dumps(envelope))
-        return await aio.wait_for(fut, timeout)
+        try:
+            await self.ws.send(json.dumps(envelope))
+            return await aio.wait_for(fut, timeout)
+        finally:
+            self._pending.pop(envelope["id"], None)
+            if not fut.done():
+                fut.cancel()
+            elif not fut.cancelled():
+                fut.exception()
 
     async def start_screencast(self, on_frame):
         self._frame_cb = on_frame
         self._latest_params = None
         self._dispatch_in_flight = False
         await self.call("Page.enable")
+        if self._url_cb is not None:
+            tree = await self.call("Page.getFrameTree")
+            frame = tree["frameTree"]["frame"]
+            self._main_frame_id = frame["id"]
+            await self._url_cb(frame["url"])
         try:
             await self.call("Page.stopScreencast")
         except Exception:
@@ -908,17 +949,22 @@ class CDPBridge:
             },
         )
 
-    async def key(self, key, code):
+    async def key(self, key, code, modifiers=None):
         try:
             await self.ensure_focus()
         except Exception:
             # Focus is best-effort: a failed focus probe must not
             # eat the keystroke when something is already focused.
             pass
-        if len(key) == 1:
+        modifiers = self._modifiers if modifiers is None else modifiers
+        if len(key) == 1 and not modifiers & 7:
             await self.call("Input.insertText", {"text": key})
             return
-        vk = KEYCODES.get(key)
+        if len(key) == 1:
+            upper = key.upper()
+            vk = ord(upper) if len(upper) == 1 else 0
+        else:
+            vk = KEYCODES.get(key)
         if vk is None:
             raise ValueError(f"unknown key: {key!r}")
         mask = _MODIFIER_MASK.get(key)
@@ -946,7 +992,7 @@ class CDPBridge:
                 "key": key,
                 "windowsVirtualKeyCode": vk,
                 "code": code or key,
-                "modifiers": self._modifiers,
+                "modifiers": modifiers,
             }
             if typ == "keyDown":
                 params["text"] = "\r" if key == "Enter" else ""
@@ -969,7 +1015,15 @@ class CDPBridge:
         # Shared/agent sessions are single-slot: the toggle applies
         # to the session every attached tab sees.
         self.mobile = bool(mobile)
+        self._owns_emulation = True
         self.viewport = dict(MOBILE_VIEWPORT if self.mobile else VIEWPORT)
+        global _viewer_viewport
+        with _viewer_lock:
+            _viewer_viewport = {
+                "session_id": self.session_id,
+                "viewport": dict(self.viewport),
+                "mobile": self.mobile,
+            }
         await self.reattach()
 
     async def navigate(self, url):
@@ -1094,6 +1148,8 @@ def create_app():
             ),
         )
         bridge = None
+        receive_task = None
+        closed_task = None
         paused = False
         lock = asyncio.Lock()
 
@@ -1103,6 +1159,9 @@ def create_app():
             await _ws_send_text(
                 send, lock, json.dumps({"type": "frame", "data": params["data"]})
             )
+
+        async def on_url(url):
+            await _ws_send_text(send, lock, json.dumps({"type": "url", "url": url}))
 
         async def human_input():
             nonlocal paused
@@ -1171,6 +1230,8 @@ def create_app():
                 if adopted is not None:
                     viewport, mobile = adopted
             bridge = CDPBridge(session_id, viewport=viewport, mobile=mobile)
+            bridge._owns_emulation = kind == "own"
+            bridge._url_cb = on_url
             try:
                 await bridge.connect()
             except Exception as exc:
@@ -1203,6 +1264,7 @@ def create_app():
                 json.dumps({"type": "view", "mobile": bridge.mobile}),
             )
             await bridge.start_screencast(on_frame)
+            closed_task = asyncio.create_task(bridge.wait_closed())
 
             async def do_go(url):
                 await bridge.navigate(url)
@@ -1218,6 +1280,16 @@ def create_app():
                 )
                 await bridge.start_screencast(on_frame)
 
+            async def do_viewport(mobile):
+                await bridge.set_viewport_mode(mobile)
+                await bridge.start_screencast(on_frame)
+                await _ws_send_text(
+                    send, lock, json.dumps({"type": "dsf", "dsf": bridge.dsf})
+                )
+                await _ws_send_text(
+                    send, lock, json.dumps({"type": "view", "mobile": bridge.mobile})
+                )
+
             if kind == "own":
                 # A fresh tab never repaints: without this the new
                 # viewer sits on a black canvas (fps: -) until the
@@ -1226,7 +1298,19 @@ def create_app():
                 # would yank the other tabs' page out from under them.
                 await recover_once(lambda: do_go(DEFAULT_URL))
             while True:
-                event = await receive()
+                receive_task = asyncio.create_task(receive())
+                done, _ = await asyncio.wait(
+                    (receive_task, closed_task), return_when=asyncio.FIRST_COMPLETED
+                )
+                if closed_task in done:
+                    await _ws_send_text(
+                        send,
+                        lock,
+                        json.dumps({"type": "error", "msg": "browser disconnected"}),
+                    )
+                    await send({"type": "websocket.close", "code": 1011})
+                    return
+                event = receive_task.result()
                 if event["type"] == "websocket.disconnect":
                     break
                 if event["type"] != "websocket.receive":
@@ -1277,8 +1361,14 @@ def create_app():
                 elif msg.get("t") == "key":
                     await human_input()
                     key, code = (str(msg.get("key", "")), str(msg.get("code", "")))
+                    try:
+                        modifiers = int(msg.get("modifiers", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if not 0 <= modifiers <= 15:
+                        continue
                     _log_activity("key", key or code, **_human_context())
-                    await recover_once(lambda: bridge.key(key, code))
+                    await recover_once(lambda: bridge.key(key, code, modifiers))
                 elif msg.get("t") == "type":
                     await human_input()
                     text = str(msg.get("text", ""))
@@ -1291,9 +1381,7 @@ def create_app():
                     if mode not in ("mobile", "desktop"):
                         continue
                     _log_activity("viewport", mode, **_human_context())
-                    await recover_once(
-                        lambda: bridge.set_viewport_mode(mode == "mobile")
-                    )
+                    await recover_once(lambda: do_viewport(mode == "mobile"))
                 elif msg.get("t") == "go":
                     await human_input()
                     url = str(msg.get("url") or "")
@@ -1308,6 +1396,11 @@ def create_app():
                     _log_activity("go", url, **ctx)
                     await recover_once(lambda: do_go(url))
         finally:
+            for task in (receive_task, closed_task):
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
             # The Grid session must release even when the bridge is
             # wedged: close() handshakes on the same Grid connection
             # that just died, so an unbounded close starves the
