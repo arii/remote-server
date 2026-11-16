@@ -9,6 +9,7 @@ rejection-reason shape (VERIFY-FAILED: <check>: <detail>), and the
 fail-closed contract when the checker itself cannot run.
 """
 
+import subprocess
 import unittest
 from unittest import mock
 
@@ -209,6 +210,17 @@ class RealCheckersCarryTheTarget(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("999999", detail)
         self.assertIn("arii/remote-server", detail)
+
+    def test_pr_exists_gh_argv(self):
+        # gh rejects unknown flags before querying; _gh mocks never see argv.
+        done = subprocess.CompletedProcess([], 0, stdout='{"number":7}', stderr="")
+        with mock.patch.object(verify.subprocess, "run", return_value=done) as run:
+            ok, _ = verify.pr_exists("arii/remote-server", 7)
+        self.assertTrue(ok)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["gh", "pr", "view", "7", "-R", "arii/remote-server", "--json", "number"],
+        )
 
 
 class VerifyFailClosed(unittest.TestCase):
