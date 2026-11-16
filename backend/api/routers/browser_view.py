@@ -608,7 +608,7 @@ def _maybe_auto_learn() -> None:
 # state server-side; later keys in the same chord then resolve
 # correctly (Shift+Arrow, Ctrl+Enter). A bare physical Shift used
 # to die here as "unknown key: 'Shift'" and reject the whole op.
-_MODIFIER_MASK = {"Shift": 8, "Control": 2, "Alt": 1, "Meta": 4}
+_MODIFIER_MASK = {"Shift": 8, "Control": 2, "Alt": 1, "AltGraph": 1, "Meta": 4}
 
 KEYCODES = {
     "Enter": 13,
@@ -631,6 +631,7 @@ KEYCODES = {
     "Alt": 18,
     "AltLeft": 18,
     "AltRight": 18,
+    "AltGraph": 18,
     "Meta": 91,
     "MetaLeft": 91,
     "MetaRight": 91,
@@ -960,7 +961,7 @@ class CDPBridge:
             # eat the keystroke when something is already focused.
             pass
         modifiers = self._modifiers if modifiers is None else modifiers
-        if len(key) == 1 and not modifiers & 7:
+        if len(key) == 1 and not modifiers & 6:
             await self.call("Input.insertText", {"text": key})
             return
         if len(key) == 1:

@@ -264,7 +264,9 @@ vm.runInNewContext(HANDLER, {document:{addEventListener:(_, fn)=>listener=fn,
  getElementById:(id)=>({focus:()=>{if(id!=='url') throw Error(id);focused=true}})},
  sendable:()=>connected, sendKey:(...args)=>sent.push(args)});
 for(const [key,flags,expected] of [['Tab',{},0],['Escape',{},0],['a',{ctrlKey:true},2],
- ['a',{metaKey:true},4],['ArrowLeft',{altKey:true,shiftKey:true},9],['F1',{},0]]) {
+ ['a',{metaKey:true},4],['ArrowLeft',{altKey:true,shiftKey:true},9],['F1',{},0],
+ ['@',{ctrlKey:true,altKey:true,getModifierState:()=>true},1],
+ ['@',{ctrlKey:true,altKey:true,getModifierState:()=>false},3]]) {
  let prevented=false;
  listener({key,code:key,target:{tagName:'BODY'},...flags,preventDefault(){prevented=true}});
  if(!prevented || sent.at(-1)[2]!==expected) throw Error(key);

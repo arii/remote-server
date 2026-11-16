@@ -344,8 +344,9 @@ document.addEventListener('keydown', (e) => {
       (e.target.tagName === 'BUTTON' || e.target.type === 'submit')) return;
   if (!sendable()) return;
   e.preventDefault();
-  const modifiers = (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) |
+  let modifiers = (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) |
     (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+  if (e.key.length === 1 && e.getModifierState?.('AltGraph')) modifiers &= ~2;
   sendKey(e.key, e.code || e.key, modifiers);
 });
 // Off-the-shelf on-screen keyboard (simple-keyboard, MIT): the remote
