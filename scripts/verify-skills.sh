@@ -14,9 +14,8 @@
 #   --repin           rewrite computedHash values from the installed files
 #                     (the bump procedure: reinstall/upgrade, review the diff,
 #                     re-pin, commit the lock).
-#   --check-upstream  clone each locked source repo shallowly and prove the
-#                     lock matches upstream (the CI path: fresh checkouts have
-#                     no .agents/skills to verify against).
+#   --check-upstream  fetch each locked commit and verify its skill hashes
+#                     (the CI path: fresh checkouts have no installed skills).
 #
 # Limitation: the lock pins SKILL.md only. Sibling files shipped inside a
 # skill dir (references/, scripts/) are not hash-checked.
@@ -50,14 +49,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Print "name|source|skillPath|computedHash" lines from the lock.
+# Print "name|source|skillPath|computedHash|ref" lines from the lock.
 lock_entries() {
   python3 - "$LOCK" <<'EOF'
 import json, sys
 with open(sys.argv[1]) as f:
     lock = json.load(f)
 for name, e in lock["skills"].items():
-    print(f"{name}|{e['source']}|{e['skillPath']}|{e['computedHash']}")
+    print(f"{name}|{e['source']}|{e['skillPath']}|{e['computedHash']}|{e.get('ref', '')}")
 EOF
 }
 
@@ -72,7 +71,7 @@ is_tracked_skill() {
 
 do_verify() {
   local failures=0 checked=0
-  while IFS='|' read -r name _source _path want; do
+  while IFS='|' read -r name _source _path want _ref; do
     checked=$((checked + 1))
     local file="$SKILLS_DIR/$name/SKILL.md"
     if [[ ! -f "$file" ]]; then
@@ -113,7 +112,7 @@ do_verify() {
 
 do_repin() {
   local failures=0 repinned=0
-  while IFS='|' read -r name _source _path _want; do
+  while IFS='|' read -r name _source _path _want _ref; do
     local file="$SKILLS_DIR/$name/SKILL.md"
     if [[ ! -f "$file" ]]; then
       echo "MISSING  $name (cannot pin what is not installed)" >&2
@@ -147,23 +146,30 @@ do_upstream() {
   WORK_DIR="$(mktemp -d)"
   local n=0
   declare -A cloned=()
-  while IFS='|' read -r name source path want; do
+  while IFS='|' read -r name source path want ref; do
     checked=$((checked + 1))
-    if [[ -z "${cloned[$source]:-}" ]]; then
-      n=$((n + 1))
-      git clone -q --depth 1 "https://github.com/$source" "$WORK_DIR/repo-$n" >&2
-      cloned[$source]="$WORK_DIR/repo-$n"
+    if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "UNPINNED $name ($source requires a full commit SHA in ref)" >&2
+      failures=$((failures + 1))
+      continue
     fi
-    local file="${cloned[$source]}/$path"
-    if [[ ! -f "$file" ]]; then
-      echo "NO-UPSTREAM-PATH $name ($source:$path)" >&2
+    local key="$source@$ref"
+    if [[ -z "${cloned[$key]:-}" ]]; then
+      n=$((n + 1))
+      git init -q "$WORK_DIR/repo-$n"
+      git -C "$WORK_DIR/repo-$n" fetch -q --depth 1 "https://github.com/$source" "$ref" >&2
+      cloned[$key]="$WORK_DIR/repo-$n"
+    fi
+    local file="$WORK_DIR/SKILL.md"
+    if ! git -C "${cloned[$key]}" show "$ref:$path" > "$file"; then
+      echo "NO-UPSTREAM-PATH $name ($source@$ref:$path)" >&2
       failures=$((failures + 1))
       continue
     fi
     local got
     got="$(sha256_file "$file")"
     if [[ "$got" != "$want" ]]; then
-      echo "UPSTREAM-MISMATCH $name (lock does not match $source default branch)" >&2
+      echo "UPSTREAM-MISMATCH $name (lock does not match $source@$ref)" >&2
       failures=$((failures + 1))
     fi
   done < <(lock_entries)
