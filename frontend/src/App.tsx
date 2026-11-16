@@ -298,15 +298,15 @@ export default function App() {
   } | null>(null);
 
   // Cheatsheet visibility for the app-level shortcuts (#808). Tab/send
-  // shortcuts suspend while a modal/drawer owns the screen; the
+  // shortcuts suspend while a diff or stats overlay owns the screen; the
   // cheatsheet and the palette stay reachable. Ctrl+K toggles the
   // palette through this one listener (#902) — no second keydown
   // subscription, so the chord can never double-fire.
   const [helpOpen, setHelpOpen] = useState(false);
   useAppShortcuts({
-    suspended: diffRepo !== null || statsOpen || triageOpen,
+    suspended: diffRepo !== null || statsOpen,
     helpOpen,
-    onTab: setTab,
+    onTab: openTab,
     onSend: () => clickChatSend(),
     onToggleHelp: () => setHelpOpen((v) => !v),
     onCloseHelp: () => setHelpOpen(false),

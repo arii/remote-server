@@ -34,7 +34,8 @@ vi.mock('./views/RepoDiffModal', () => ({
   default: ({ onAskAgent }: { onAskAgent: (s: string) => void }) =>
     <button data-testid="diff-shortcut" onClick={() => onAskAgent('Review this diff')}>Ask agent</button>,
 }));
-vi.mock('./views/ChatView', () => ({
+vi.mock('./views/ChatView', async (original) => ({
+  ...await original<typeof import('./views/ChatView')>(),
   default: ({ seed, sendSeed }: { seed: string | null; sendSeed: boolean }) =>
     <div data-testid="chat-handoff" data-send={sendSeed}>{seed}</div>,
 }));
@@ -67,6 +68,18 @@ afterEach(async () => {
 });
 
 describe('console audit routing (#1317)', () => {
+  it('returns from Review to Chat with the 1 shortcut', async () => {
+    await act(async () => root.render(<App />));
+    await click('nav-review');
+    expect(host.querySelector('[data-testid="review-view"]')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="chat-handoff"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="review-view"]')).toBeNull();
+    expect(host.querySelector('[data-testid="nav-chat"]')!.getAttribute('aria-current')).toBe('page');
+  });
+
   it('defaults to Chat despite a persistent tab and restores the session tab on reload', async () => {
     localStorage.setItem('console.nav-memory', JSON.stringify({ repo: 'remote-server', tab: 'now' }));
     await act(async () => root.render(<App />));
