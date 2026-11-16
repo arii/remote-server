@@ -61,7 +61,6 @@ def repo_exists(repo: str) -> tuple[bool, str]:
 
 def pr_exists(repo: str, number: int) -> tuple[bool, str]:
     """The quoted PR number is real in the target repo (any state)."""
-    # gh pr view resolves a number in any state; it has no --state flag (#1320).
     ok, out = _gh(["pr", "view", str(number), "-R", repo, "--json", "number"])
     if ok:
         return True, out
