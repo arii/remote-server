@@ -107,8 +107,21 @@ SNAPSHOT_JS = (
     "role:e.getAttribute('role'),"
     "cls:(typeof e.className==='string'?e.className:"
     "((e.className&&e.className.baseVal)||''))||null,"
-    "val:('value' in e?e.value:null)}}}})()"
+    "val:('value' in e?e.value:null)};})};})()"
 )
+
+
+def snapshot_from_cdp(raw: dict[str, Any]) -> dict[str, Any]:
+    if "exceptionDetails" in raw:
+        details = raw["exceptionDetails"]
+        message = details.get("exception", {}).get("description") or details["text"]
+        raise ValueError(f"snapshot evaluation failed: {message}")
+    value = raw["result"]["value"]
+    return {
+        "url": value["url"],
+        "title": value["title"],
+        "elements": value["els"],
+    }
 
 
 async def _snapshot(bridge: browser_view.CDPBridge) -> dict[str, Any]:
@@ -117,16 +130,10 @@ async def _snapshot(bridge: browser_view.CDPBridge) -> dict[str, Any]:
             "Runtime.evaluate",
             {"expression": SNAPSHOT_JS, "returnByValue": True},
         )
+        page = snapshot_from_cdp(raw)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"snapshot failed: {exc}") from exc
-    value = (raw or {}).get("result", {}).get("value") or {}
-    return browser_view.remember_page(
-        {
-            "url": value.get("url", ""),
-            "title": value.get("title", ""),
-            "elements": value.get("els", []),
-        }
-    )
+    return browser_view.remember_page(page)
 
 
 @router.get("/snapshot")
