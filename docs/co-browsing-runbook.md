@@ -92,6 +92,20 @@ Live self-test against the real Grid (needs no browser):
 Expected: `frames=<n> ... typed='hi42'` + `OK` (proves frames flow,
 click + atomic `insertText` typing land, cleanup runs).
 
+## Viewer recovery and keyboard routing
+
+A lost Grid connection closes the viewer socket visibly, dims the old frame,
+and disables input. The viewer reconnects after two seconds, adopting a live
+agent/shared session or creating a new session if none remains.
+
+Remote keys include Tab, Escape and modified chords. F6 moves focus to the
+viewer address field so keyboard users can leave the remote focus cycle.
+Local exceptions:
+Ctrl/Meta+R and F5 reload the viewer for recovery; Ctrl/Meta+L keeps access
+to the browser location bar to leave a stuck viewer; F12 opens local devtools
+for diagnosis. Address-field editing stays local. Enter/Space on viewer
+buttons activates those controls instead of also driving the remote page.
+
 ## CI shape
 
 `tests/test_co_browsing_e2e.py` wraps the same stages as unittest

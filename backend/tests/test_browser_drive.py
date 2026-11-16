@@ -14,6 +14,7 @@ from backend.api.routers import agent_control, browser_drive
 class FakeBridge:
     def __init__(self, *args, **kwargs):
         self.calls = []
+        self.dialog = None
         self.session_id = args[0] if args else kwargs.get("session_id")
 
     async def connect(self):
