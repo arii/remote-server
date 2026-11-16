@@ -79,8 +79,7 @@ def _td_cwd(repo):
     s5tools.checkout_for.
     """
     name = repo.split("/", 1)[1] if "/" in repo else repo
-    checkout = ("/srv/remote-server" if name == "remote-server"
-                else f"/srv/repos/{name}")
+    checkout = "/srv/remote-server" if name == "remote-server" else f"/srv/repos/{name}"
     return checkout if os.path.isdir(checkout) else None
 
 
@@ -89,8 +88,11 @@ def _td_json(argv, timeout=TD_TIMEOUT, cwd=None):
     try:
         proc = subprocess.run(
             ["td", "--json", *argv],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=timeout, text=True, cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            text=True,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired:
         raise ReviewError(f"td {' '.join(argv)} timed out after {timeout}s")
@@ -110,20 +112,20 @@ def _td_json(argv, timeout=TD_TIMEOUT, cwd=None):
 
 def fetch_pr_diff(repo, pr):
     """(files, diff_text, truncated) via td's diff primitive."""
-    payload = _td_json(["gh", "pr-diff", "--pr", str(pr), "--repo", repo],
-                       cwd=_td_cwd(repo))
+    payload = _td_json(
+        ["gh", "pr-diff", "--pr", str(pr), "--repo", repo], cwd=_td_cwd(repo)
+    )
     files = payload.get("files")
-    files = [f for f in files if isinstance(f, dict)] \
-        if isinstance(files, list) else []
-    return files, str(payload.get("diff_text") or ""), \
-        bool(payload.get("is_truncated"))
+    files = [f for f in files if isinstance(f, dict)] if isinstance(files, list) else []
+    return files, str(payload.get("diffText") or ""), bool(payload.get("isTruncated"))
 
 
 def fetch_pr_view(repo, pr):
     """PR title/state snapshot via td; {} when unavailable (best-effort)."""
     try:
-        return _td_json(["gh", "pr-view", "--pr", str(pr), "--repo", repo],
-                        cwd=_td_cwd(repo))
+        return _td_json(
+            ["gh", "pr-view", "--pr", str(pr), "--repo", repo], cwd=_td_cwd(repo)
+        )
     except ReviewError as exc:
         print(f"review: pr-view unavailable ({exc}); continuing", file=sys.stderr)
         return {}
@@ -145,10 +147,16 @@ def _split_diff(diff_text):
 def _is_test_path(path):
     name = path.rsplit("/", 1)[-1].lower()
     lower = path.lower()
-    return (name.startswith("test_") or name.endswith("_test.py")
-            or name.endswith(".test.ts") or name.endswith(".test.tsx")
-            or "/test/" in lower or "/tests/" in lower
-            or lower.startswith("test/") or lower.startswith("tests/"))
+    return (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or name.endswith(".test.ts")
+        or name.endswith(".test.tsx")
+        or "/test/" in lower
+        or "/tests/" in lower
+        or lower.startswith("test/")
+        or lower.startswith("tests/")
+    )
 
 
 def _risk_prompts(path):
@@ -161,20 +169,23 @@ def _risk_prompts(path):
     ]
     lower = path.lower()
     if lower.endswith(".py"):
-        prompts.append("Any unhandled exceptions, mutable default args, "
-                       "or import-time side effects?")
+        prompts.append(
+            "Any unhandled exceptions, mutable default args, "
+            "or import-time side effects?"
+        )
     elif lower.endswith((".ts", ".tsx", ".js", ".jsx")):
-        prompts.append("Any unhandled promise rejections, missing null "
-                       "checks, or useEffect dependency bugs?")
+        prompts.append(
+            "Any unhandled promise rejections, missing null "
+            "checks, or useEffect dependency bugs?"
+        )
     if ".github/workflows/" in lower or lower.endswith((".yml", ".yaml")):
-        prompts.append("Does the job fail closed? Are secrets referenced, "
-                       "never printed?")
+        prompts.append(
+            "Does the job fail closed? Are secrets referenced, never printed?"
+        )
     if lower.endswith(".md"):
-        prompts.append("Do the referenced paths, commands, and flags "
-                       "still exist?")
+        prompts.append("Do the referenced paths, commands, and flags still exist?")
     if _is_test_path(path):
-        prompts.append("Would these assertions fail without the fix "
-                       "(not tautologies)?")
+        prompts.append("Would these assertions fail without the fix (not tautologies)?")
     return prompts[:5]
 
 
@@ -187,30 +198,30 @@ def build_plan(repo, pr, meta, files, diff_text):
         path = str(f.get("path") or "")
         if not path:
             continue
-        entries.append({
-            "path": path,
-            "status": str(f.get("status") or "modified"),
-            "additions": f.get("additions"),
-            "deletions": f.get("deletions"),
-            "risk_prompts": _risk_prompts(path),
-        })
-    test_files = sorted({e["path"] for e in entries
-                         if _is_test_path(e["path"])})
-    uncovered = sorted({e["path"] for e in entries
-                        if not _is_test_path(e["path"])})
-    top_dirs = sorted({e["path"].split("/", 1)[0] for e in entries
-                       if "/" in e["path"]})
+        entries.append(
+            {
+                "path": path,
+                "status": str(f.get("status") or "modified"),
+                "additions": f.get("additions"),
+                "deletions": f.get("deletions"),
+                "risk_prompts": _risk_prompts(path),
+            }
+        )
+    test_files = sorted({e["path"] for e in entries if _is_test_path(e["path"])})
+    uncovered = sorted({e["path"] for e in entries if not _is_test_path(e["path"])})
+    top_dirs = sorted({e["path"].split("/", 1)[0] for e in entries if "/" in e["path"]})
     return {
         "repo": repo,
         "pr": pr,
         "title": title,
         "state": str(meta.get("state") or "UNKNOWN"),
         "model": {"preferred": "ollama", "fallback": "nebius"},
-        "scope": {"file_count": len(entries), "top_dirs": top_dirs,
-                  "title": title},
-        "test_coverage": {"tests_changed": bool(test_files),
-                          "test_files": test_files,
-                          "uncovered_src": uncovered if not test_files else []},
+        "scope": {"file_count": len(entries), "top_dirs": top_dirs, "title": title},
+        "test_coverage": {
+            "tests_changed": bool(test_files),
+            "test_files": test_files,
+            "uncovered_src": uncovered if not test_files else [],
+        },
         "diff_truncated": bool(meta.get("diff_truncated", False)),
         "files": entries,
     }
@@ -225,8 +236,10 @@ def gather_context(repo, paths, limit=CONTEXT_CAP):
     try:
         import s5tools
     except Exception as exc:
-        print(f"review: s5tools unavailable ({_short(exc)}); "
-              "skipping context reads", file=sys.stderr)
+        print(
+            f"review: s5tools unavailable ({_short(exc)}); skipping context reads",
+            file=sys.stderr,
+        )
         return ""
     try:
         checkout = s5tools.checkout_for(repo)
@@ -251,6 +264,7 @@ def gather_context(repo, paths, limit=CONTEXT_CAP):
 def _default_model_factory(prefer):
     """(model, spec) via deep_chat.build_model. Venv-only at call time."""
     import deep_chat
+
     return deep_chat.build_model(prefer=prefer)
 
 
@@ -259,26 +273,29 @@ def _review_prompt(plan, diff_text, context):
         f"- {e['path']} ({e['status']}"
         f"{', +' + str(e['additions']) if e['additions'] is not None else ''}"
         f"{', -' + str(e['deletions']) if e['deletions'] is not None else ''})"
-        for e in plan["files"][:40])
+        for e in plan["files"][:40]
+    )
     cov = plan["test_coverage"]
-    cov_line = ("tests changed: " + ", ".join(cov["test_files"])
-                if cov["tests_changed"]
-                else "NO test files changed in this PR")
-    return f"""You are reviewing PR #{plan['pr']} ({plan['repo']}): {plan['title']}.
-State: {plan['state']}. Scope: {plan['scope']['file_count']} files \
-({', '.join(plan['scope']['top_dirs']) or 'repo root'}). {cov_line}.
+    cov_line = (
+        "tests changed: " + ", ".join(cov["test_files"])
+        if cov["tests_changed"]
+        else "NO test files changed in this PR"
+    )
+    return f"""You are reviewing PR #{plan["pr"]} ({plan["repo"]}): {plan["title"]}.
+State: {plan["state"]}. Scope: {plan["scope"]["file_count"]} files \
+({", ".join(plan["scope"]["top_dirs"]) or "repo root"}). {cov_line}.
 
 Changed files:
-{files or '(none listed)'}
+{files or "(none listed)"}
 
 Risk prompts per file:
-{json.dumps({e['path']: e['risk_prompts'] for e in plan['files'][:40]}, indent=1)}
+{json.dumps({e["path"]: e["risk_prompts"] for e in plan["files"][:40]}, indent=1)}
 
 Repo context (may be empty):
-{context or '(no local checkout)'}
+{context or "(no local checkout)"}
 
 Diff (may be truncated):
-{diff_text[:DIFF_PROMPT_CAP] or '(empty diff)'}
+{diff_text[:DIFF_PROMPT_CAP] or "(empty diff)"}
 
 Reply with JSON ONLY, no prose, matching this schema:
 {{"summary": "2-3 sentences: what the PR does and overall shape",
@@ -300,8 +317,9 @@ def _extract_json(text):
         return json.loads(text)
     except Exception:
         pass
-    fence = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```",
-                      text, re.DOTALL | re.IGNORECASE)
+    fence = re.search(
+        r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL | re.IGNORECASE
+    )
     if fence:
         try:
             return json.loads(fence.group(1))
@@ -312,7 +330,7 @@ def _extract_json(text):
         end = text.rfind(close_ch)
         if 0 <= start < end:
             try:
-                return json.loads(text[start:end + 1])
+                return json.loads(text[start : end + 1])
             except Exception:
                 continue
     return None
@@ -341,15 +359,20 @@ def normalize_findings(raw, known_paths):
         if isinstance(line, bool) or not isinstance(line, int) or line <= 0:
             line = None
         severity = item.get("severity")
-        severity = severity.strip().lower() \
-            if isinstance(severity, str) else ""
+        severity = severity.strip().lower() if isinstance(severity, str) else ""
         if severity not in SEVERITIES:
             severity = "info"
         suggestion = item.get("suggestion")
         suggestion = suggestion.strip() if isinstance(suggestion, str) else ""
-        out.append({"file": path.strip(), "line": line,
-                    "severity": severity, "claim": claim.strip()[:500],
-                    "suggestion": suggestion[:500]})
+        out.append(
+            {
+                "file": path.strip(),
+                "line": line,
+                "severity": severity,
+                "claim": claim.strip()[:500],
+                "suggestion": suggestion[:500],
+            }
+        )
     return out
 
 
@@ -372,8 +395,7 @@ def _response_text(resp):
     return str(content)
 
 
-def synthesize(plan, diff_text, context="", prefer="ollama",
-               model_factory=None):
+def synthesize(plan, diff_text, context="", prefer="ollama", model_factory=None):
     """(findings, summary, verdict, model_label) from the local model.
 
     prefer="ollama" tries Ollama then falls back to Nebius;
@@ -392,13 +414,15 @@ def synthesize(plan, diff_text, context="", prefer="ollama",
             last_exc = exc
             falled_back = True
     if model is None:
-        raise ReviewError(f"no model available ({'/'.join(order)}): "
-                          f"{_short(last_exc)}")
+        raise ReviewError(f"no model available ({'/'.join(order)}): {_short(last_exc)}")
     label = f"{spec.get('provider', '?')}:{spec.get('model', '?')}"
     if falled_back:
         label += " (fallback)"
-        print(f"review: ollama unavailable ({_short(last_exc)}); "
-              f"using {spec.get('provider')}", file=sys.stderr)
+        print(
+            f"review: ollama unavailable ({_short(last_exc)}); "
+            f"using {spec.get('provider')}",
+            file=sys.stderr,
+        )
     prompt = _review_prompt(plan, diff_text, context)
     try:
         raw = _extract_json(_response_text(model.invoke(prompt)))
@@ -407,23 +431,31 @@ def synthesize(plan, diff_text, context="", prefer="ollama",
     known = [e["path"] for e in plan["files"]]
     findings = normalize_findings(raw, known)
     summary = raw.get("summary") if isinstance(raw, dict) else None
-    summary = summary.strip() if isinstance(summary, str) and summary.strip() \
-        else (f"{len(findings)} finding(s) across "
-              f"{len({f['file'] for f in findings})} file(s).")
+    summary = (
+        summary.strip()
+        if isinstance(summary, str) and summary.strip()
+        else (
+            f"{len(findings)} finding(s) across "
+            f"{len({f['file'] for f in findings})} file(s)."
+        )
+    )
     verdict = raw.get("verdict") if isinstance(raw, dict) else None
-    verdict = verdict.strip() if isinstance(verdict, str) and verdict.strip() \
-        else ("Needs attention" if any(f["severity"] in ("major", "critical")
-                                       for f in findings)
-              else "Looks good")
+    verdict = (
+        verdict.strip()
+        if isinstance(verdict, str) and verdict.strip()
+        else (
+            "Needs attention"
+            if any(f["severity"] in ("major", "critical") for f in findings)
+            else "Looks good"
+        )
+    )
     return findings, summary[:800], verdict[:300], label
 
 
 def render_markdown(repo, pr, meta, findings, summary, verdict, model_label):
     """Markdown body with the Gemini review sections."""
     title = str(meta.get("title") or "(unknown)")
-    lines = [f"# Review: #{pr} — {title}", "",
-             "## Summary", summary, "",
-             "## Findings"]
+    lines = [f"# Review: #{pr}: {title}", "", "## Summary", summary, "", "## Findings"]
     if not findings:
         lines.append("No findings.")
     else:
@@ -432,9 +464,14 @@ def render_markdown(repo, pr, meta, findings, summary, verdict, model_label):
             lines.append(f"- **{f['severity']}** {where} — {f['claim']}")
             if f["suggestion"]:
                 lines.append(f"  - Suggestion: {f['suggestion']}")
-    lines += ["", "## Verdict", verdict, "",
-              f"_Local review of {repo}#{pr} via {model_label}; "
-              "heuristic plan + local LLM synthesis, not the Gemini reviewer._"]
+    lines += [
+        "",
+        "## Verdict",
+        verdict,
+        "",
+        f"_Local review of {repo}#{pr} via {model_label}; "
+        "heuristic plan + local LLM synthesis, not the Gemini reviewer._",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -455,10 +492,10 @@ def split_body(body, limit=BODY_CHUNK_LIMIT):
             break
         cut = body.rfind("\n\n", start, start + limit - 1)
         if cut == -1:
-            chunks.append(body[start:start + limit])
+            chunks.append(body[start : start + limit])
             start += limit
         else:
-            chunks.append(body[start:cut + 2])
+            chunks.append(body[start : cut + 2])
             start = cut + 2
     return chunks
 
@@ -478,14 +515,31 @@ def post_body(repo, pr, body):
     parts = split_body(body)
     total = len(parts)
     for index, part in enumerate(parts, 1):
-        chunk = (part if total == 1 else
-                 f"{part.rstrip()}\n\n_(review part {index} of {total})_\n")
-        argv = ["td", "gh", "post-comment", "--pr", str(pr),
-               "--repo", repo, "--body", chunk]
+        chunk = (
+            part
+            if total == 1
+            else f"{part.rstrip()}\n\n_(review part {index} of {total})_\n"
+        )
+        argv = [
+            "td",
+            "gh",
+            "post-comment",
+            "--pr",
+            str(pr),
+            "--repo",
+            repo,
+            "--body",
+            chunk,
+        ]
         try:
-            proc = subprocess.run(argv, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, timeout=TD_TIMEOUT,
-                                  text=True, cwd=_td_cwd(repo))
+            proc = subprocess.run(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=TD_TIMEOUT,
+                text=True,
+                cwd=_td_cwd(repo),
+            )
         except subprocess.TimeoutExpired:
             raise ReviewError(f"td post-comment timed out after {TD_TIMEOUT}s")
         except OSError as exc:
@@ -494,46 +548,54 @@ def post_body(repo, pr, body):
             detail = (proc.stderr or proc.stdout or "").strip()
             if len(detail) > 2000:
                 detail = detail[:2000] + "…"
-            raise ReviewError(
-                f"td post-comment: {detail or f'exit {proc.returncode}'}")
+            raise ReviewError(f"td post-comment: {detail or f'exit {proc.returncode}'}")
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="python3 -m backend.review",
         description="Local-model PR review: review plan + Ollama/Nebius "
-                    "diff review. Prints; posts only with --post.")
-    parser.add_argument("--repo", required=True,
-                        help="Target repo as owner/name.")
-    parser.add_argument("--pr", required=True, type=int,
-                        help="PR number to review.")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print the review plan as JSON; no model, no post.")
-    parser.add_argument("--json", action="store_true",
-                        help="Print the findings envelope instead of markdown.")
-    parser.add_argument("--post", action="store_true",
-                        help="Post the markdown body to the PR (explicit "
-                             "human flag; default prints only).")
-    parser.add_argument("--prefer", default="ollama",
-                        choices=["ollama", "nebius"],
-                        help="ollama (default, nebius fallback) or nebius.")
+        "diff review. Prints; posts only with --post.",
+    )
+    parser.add_argument("--repo", required=True, help="Target repo as owner/name.")
+    parser.add_argument("--pr", required=True, type=int, help="PR number to review.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the review plan as JSON; no model, no post.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the findings envelope instead of markdown.",
+    )
+    parser.add_argument(
+        "--post",
+        action="store_true",
+        help="Post the markdown body to the PR (explicit "
+        "human flag; default prints only).",
+    )
+    parser.add_argument(
+        "--prefer",
+        default="ollama",
+        choices=["ollama", "nebius"],
+        help="ollama (default, nebius fallback) or nebius.",
+    )
     return parser
 
 
 def main(argv=None):
-    args = build_parser().parse_args(
-        sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     if not valid_repo(args.repo):
-        print(f"review: invalid --repo {args.repo!r}: want owner/name",
-              file=sys.stderr)
+        print(f"review: invalid --repo {args.repo!r}: want owner/name", file=sys.stderr)
         return 2
     if args.pr <= 0:
-        print(f"review: invalid --pr {args.pr}: want a positive integer",
-              file=sys.stderr)
+        print(
+            f"review: invalid --pr {args.pr}: want a positive integer", file=sys.stderr
+        )
         return 2
     if args.dry_run and args.post:
-        print("review: --dry-run prints the plan; nothing to --post",
-              file=sys.stderr)
+        print("review: --dry-run prints the plan; nothing to --post", file=sys.stderr)
         return 2
     try:
         meta = fetch_pr_view(args.repo, args.pr)
@@ -547,15 +609,14 @@ def main(argv=None):
         print(json.dumps(plan, indent=2))
         return 0
     try:
-        context = gather_context(
-            args.repo, [e["path"] for e in plan["files"]])
+        context = gather_context(args.repo, [e["path"] for e in plan["files"]])
         findings, summary, verdict, label = synthesize(
-            plan, diff_text, context, prefer=args.prefer)
+            plan, diff_text, context, prefer=args.prefer
+        )
     except ReviewError as exc:
         print(f"review: {exc}", file=sys.stderr)
         return 1
-    body = render_markdown(args.repo, args.pr, meta, findings,
-                           summary, verdict, label)
+    body = render_markdown(args.repo, args.pr, meta, findings, summary, verdict, label)
     if args.post:
         try:
             post_body(args.repo, args.pr, body)
@@ -566,10 +627,19 @@ def main(argv=None):
         print(f"review: posted to {args.repo}#{args.pr}", file=sys.stderr)
         return 0
     if args.json:
-        print(json.dumps({"repo": args.repo, "pr": args.pr,
-                          "model": label, "summary": summary,
-                          "verdict": verdict, "findings": findings},
-                         indent=2))
+        print(
+            json.dumps(
+                {
+                    "repo": args.repo,
+                    "pr": args.pr,
+                    "model": label,
+                    "summary": summary,
+                    "verdict": verdict,
+                    "findings": findings,
+                },
+                indent=2,
+            )
+        )
         return 0
     print(body, end="")
     return 0

@@ -1,0 +1,13 @@
+{
+  "prNumber": 1319,
+  "files": [
+    {
+      "path": "backend/review.py",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 2
+    }
+  ],
+  "diffText": "diff --git a/backend/review.py b/backend/review.py\n--- a/backend/review.py\n+++ b/backend/review.py\n@@ -118,2 +118,2 @@\n-    return files, str(payload.get(\"diff_text\") or \"\"), \\\n-        bool(payload.get(\"is_truncated\"))\n+    return files, str(payload.get(\"diffText\") or \"\"), \\\n+        bool(payload.get(\"isTruncated\"))\n",
+  "isTruncated": true
+}
