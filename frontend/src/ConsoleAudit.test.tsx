@@ -24,8 +24,11 @@ vi.mock('./apiClient', async (original) => ({
   prefetchTabPayloads: vi.fn(),
 }));
 vi.mock('./views/TriageDrawer', () => ({
-  default: ({ open, onAskAgent }: { open: boolean; onAskAgent: (s: string) => void }) =>
-    open ? <button data-testid="triage-shortcut" onClick={() => onAskAgent('Investigate this PR')}>Ask agent</button> : null,
+  default: ({ open, section, onClose, onAskAgent }: { open: boolean; section: string; onClose: () => void; onAskAgent: (s: string) => void }) =>
+    open ? <section data-testid={`${section}-view`}>
+      <button data-testid="triage-close" onClick={onClose}>Close</button>
+      <button data-testid="triage-shortcut" onClick={() => onAskAgent('Investigate this PR')}>Ask agent</button>
+    </section> : null,
 }));
 vi.mock('./views/RepoDiffModal', () => ({
   default: ({ onAskAgent }: { onAskAgent: (s: string) => void }) =>
@@ -64,11 +67,64 @@ afterEach(async () => {
 });
 
 describe('console audit routing (#1317)', () => {
-  it('defaults to Chat and persists the selected tab', async () => {
+  it('defaults to Chat despite a persistent tab and restores the session tab on reload', async () => {
+    localStorage.setItem('console.nav-memory', JSON.stringify({ repo: 'remote-server', tab: 'now' }));
     await act(async () => root.render(<App />));
     expect(host.querySelector('[data-testid="chat-handoff"]')).not.toBeNull();
     await click('nav-now');
-    expect(JSON.parse(localStorage.getItem('console.nav-memory')!).tab).toBe('now');
+    expect(sessionStorage.getItem('console.nav-tab')).toBe('now');
+    expect(JSON.parse(localStorage.getItem('console.nav-memory')!)).toEqual({ repo: 'remote-server' });
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(<App />));
+    expect(host.querySelector('[data-testid="now-view"]')).not.toBeNull();
+    await act(async () => root.unmount());
+    sessionStorage.clear();
+    root = createRoot(host);
+    await act(async () => root.render(<App />));
+    expect(host.querySelector('[data-testid="chat-handoff"]')).not.toBeNull();
+  });
+
+  it.each(['review', 'jobs', 'queue', 'briefing'])('shows only %s until Close returns to Now', async (section) => {
+    await act(async () => root.render(<App />));
+    await click('nav-now');
+    await click(`nav-${section}`);
+    expect(host.querySelector(`[data-testid="${section}-view"]`)).not.toBeNull();
+    expect(host.querySelector('[data-testid="now-view"]')).toBeNull();
+    expect(host.querySelector('[data-testid="chat-handoff"]')).toBeNull();
+    expect(host.querySelectorAll('[aria-label="Views"] [aria-pressed="true"]')).toHaveLength(1);
+    expect(host.querySelector(`[data-testid="nav-${section}"]`)!.getAttribute('aria-current')).toBe('page');
+    await click('triage-close');
+    expect(host.querySelector('[data-testid="now-view"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="nav-now"]')!.getAttribute('aria-current')).toBe('page');
+    expect(host.querySelector(`[data-testid="${section}-view"]`)).toBeNull();
+  });
+
+  it('keeps the saved All repos gate on the Chat home', async () => {
+    localStorage.setItem('console.nav-memory', JSON.stringify({ repo: 'all', tab: 'now' }));
+    await act(async () => root.render(<App />));
+    expect(host.querySelector('[data-testid="chat-handoff"]')).toBeNull();
+    expect(host.querySelector('[data-testid="nav-chat"]')!.getAttribute('aria-current')).toBe('page');
+    expect(host.querySelector('[data-testid="rollup-gate"]')!.textContent).toContain('Chat needs one repo');
+  });
+
+  it.each(['chat', 'now', 'history'])('leaves a section through the palette for %s', async (tab) => {
+    await act(async () => root.render(<App />));
+    await click('nav-review');
+    await click('palette-open');
+    await act(async () => host.querySelector<HTMLButtonElement>(`[data-testid="palette-item-go-${tab}"] button`)!.click());
+    expect(host.querySelector('[data-testid="review-view"]')).toBeNull();
+    expect(host.querySelector(`[data-testid="nav-${tab}"]`)!.getAttribute('aria-current')).toBe('page');
+    expect(host.querySelectorAll('[aria-label="Views"] [aria-current="page"]')).toHaveLength(1);
+  });
+
+  it('leaves a section when the palette opens bug reporting', async () => {
+    await act(async () => root.render(<App />));
+    await click('nav-review');
+    await click('palette-open');
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-testid="palette-item-report-bug"] button')!.click());
+    expect(host.querySelector('[data-testid="review-view"]')).toBeNull();
+    expect(host.querySelector('[data-testid="report-dialog"]')).not.toBeNull();
   });
 
   it('orders Attention, Review, composer, then a collapsed system disclosure without selection UI', async () => {

@@ -1023,20 +1023,21 @@ describe('app', () => {
   it('navPressed lights exactly the visible destination (D5)', () => {
     const entry = (id: string) => NAV_ENTRIES.find((e) => e.id === id)!;
     expect(NAV_ENTRIES.map((e) => e.id)).toEqual(['chat', 'now', 'history', 'browser', 'review', 'jobs', 'queue', 'briefing']);
-    // Tabs light on tab match — Now no longer yields to sections,
-    // which live in the triage drawer now.
     expect(navPressed('chat', null, entry('chat'))).toBe(true);
     expect(navPressed('browser', null, entry('browser'))).toBe(true);
     expect(navPressed('browser', null, entry('chat'))).toBe(false);
     expect(navPressed('chat', null, entry('now'))).toBe(false);
     expect(navPressed('now', null, entry('now'))).toBe(true);
-    // Section entries light while the triage drawer holds them,
-    // on any tab (the drawer overlays) — Briefing included.
     expect(navPressed('chat', 'briefing', entry('briefing'))).toBe(true);
     expect(navPressed('chat', 'review', entry('review'))).toBe(true);
     expect(navPressed('now', 'jobs', entry('jobs'))).toBe(true);
     expect(navPressed('chat', 'jobs', entry('review'))).toBe(false);
     expect(navPressed('chat', null, entry('queue'))).toBe(false);
+    for (const tab of ['chat', 'now', 'history', 'browser'] as const) {
+      for (const section of ['review', 'jobs', 'queue', 'briefing'] as const) {
+        expect(NAV_ENTRIES.filter((candidate) => navPressed(tab, section, candidate))).toEqual([entry(section)]);
+      }
+    }
   });
 });
 

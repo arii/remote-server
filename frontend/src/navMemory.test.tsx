@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import App, { loadNavMemory, saveNavMemory } from './App';
 
 const KEY = 'console.nav-memory';
+const TAB_KEY = 'console.nav-tab';
 
 function seedStore(value: unknown): void {
   localStorage.setItem(
@@ -37,6 +38,7 @@ beforeEach(() => {
   // memory key starts each test empty.
   window.history.replaceState(null, '', '/?mock=1');
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 afterEach(() => {
@@ -49,13 +51,15 @@ afterEach(() => {
 });
 
 describe('nav memory store', () => {
-  it('round-trips repo and tab through the localStorage key', () => {
+  it('round-trips the persistent repo and session tab', () => {
     saveNavMemory({ repo: 'boomtick', tab: 'history' });
     expect(localStorage.getItem(KEY)).toContain('boomtick');
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({ repo: 'boomtick' });
+    expect(sessionStorage.getItem(TAB_KEY)).toBe('history');
     expect(loadNavMemory()).toEqual({ repo: 'boomtick', tab: 'history' });
   });
 
-  it('treats corrupt, empty, and off-enum memory as none', () => {
+  it('treats corrupt and empty repository memory as none', () => {
     for (const bad of [
       '{not json',
       'null',
@@ -63,15 +67,22 @@ describe('nav memory store', () => {
       '[]',
       {},
       { repo: '', tab: 'now' },
-      { repo: 'boomtick' },
-      { repo: 'boomtick', tab: 'settings' },
-      { repo: 'boomtick', tab: null },
     ]) {
       seedStore(bad);
       expect(loadNavMemory()).toBeNull();
     }
     localStorage.removeItem(KEY);
     expect(loadNavMemory()).toBeNull();
+  });
+
+  it('defaults to Chat for empty, corrupt, or retired session tabs without losing the repo', () => {
+    seedStore({ repo: 'boomtick', tab: 'now' });
+    for (const tab of ['', '{not json', 'settings', 'briefing']) {
+      sessionStorage.setItem(TAB_KEY, tab);
+      expect(loadNavMemory()).toEqual({ repo: 'boomtick', tab: 'chat' });
+    }
+    sessionStorage.removeItem(TAB_KEY);
+    expect(loadNavMemory()).toEqual({ repo: 'boomtick', tab: 'chat' });
   });
 
   it('treats a thrown localStorage read as none (private mode)', () => {
@@ -90,6 +101,7 @@ describe('nav memory store', () => {
 describe('App boot restore (bug 3)', () => {
   it('seeds the picker and pressed tab from stored memory', () => {
     seedStore({ repo: 'boomtick', tab: 'history' });
+    sessionStorage.setItem(TAB_KEY, 'history');
     const html = renderToStaticMarkup(<App />);
     // The picker keeps the stored repo visible even though the
     // boot repos list does not know it (fallback option), and the
@@ -101,12 +113,10 @@ describe('App boot restore (bug 3)', () => {
     expect(html).not.toMatch(/data-testid="nav-chat"[^>]*aria-pressed="true"/);
   });
 
-  it('falls back to defaults when memory holds a retired tab (D5)', () => {
-    // Briefing was a tab before D5; a phone with old memory fails
-    // validation (tab off-enum) and boots on the chat-first home.
+  it('ignores a retired persistent tab without losing the saved repository', () => {
     seedStore({ repo: 'boomtick', tab: 'briefing' });
     const html = renderToStaticMarkup(<App />);
-    expect(html).toContain('value="remote-server"');
+    expect(html).toContain('value="boomtick"');
     expect(html).toMatch(/data-testid="nav-chat"[^>]*aria-pressed="true"/);
   });
 
@@ -130,6 +140,7 @@ describe('App write-back (bug 3)', () => {
 
   it('restores on the next mount end to end', () => {
     seedStore({ repo: 'tech-dancer', tab: 'history' });
+    sessionStorage.setItem(TAB_KEY, 'history');
     mount(<App />);
     // The write-back effect fired on mount without changing values…
     expect(loadNavMemory()).toEqual({ repo: 'tech-dancer', tab: 'history' });
