@@ -70,6 +70,7 @@ const cv = document.getElementById('screen'), ctx = cv.getContext('2d');
 cv.tabIndex = 0;
 const img = new Image(); let frames = 0, t0 = performance.now(), lastClick = 0;
 let dsf = 1;
+let frameSize = null;
 let ws = null;
 let reconnectTimer = 0;
 let noFrameTimer = 0;
@@ -135,6 +136,7 @@ function connect() {
     }
     if (m.type === 'frame') {
       img.onload = () => {
+        frameSize = m.metadata ? {width: m.metadata.deviceWidth, height: m.metadata.deviceHeight} : null;
         // First frame clears a stale slot-busy hint, if shown.
         if (frames === 0) {
           clearTimeout(noFrameTimer);
@@ -175,9 +177,10 @@ function connect() {
 connect();
 function pos(e) {
   const r = cv.getBoundingClientRect();
-  // Canvas backing store is device pixels; CDP input is CSS pixels.
-  return {x: Math.round((e.clientX - r.left) * cv.width / r.width / dsf),
-          y: Math.round((e.clientY - r.top) * cv.height / r.height / dsf)};
+  const width = frameSize?.width ?? cv.width / dsf;
+  const height = frameSize?.height ?? cv.height / dsf;
+  return {x: Math.round((e.clientX - r.left) * width / r.width),
+          y: Math.round((e.clientY - r.top) * height / r.height)};
 }
 // Hover/cursor feedback: stream pointer moves (rAF-throttled) as
 // CDP mouseMoved so the remote page hovers, links highlight, and

@@ -1160,7 +1160,15 @@ def create_app():
             # Ack-first + latest-wins live in the bridge: this only
             # flushes the coalesced frame to the viewer.
             await _ws_send_text(
-                send, lock, json.dumps({"type": "frame", "data": params["data"]})
+                send,
+                lock,
+                json.dumps(
+                    {
+                        "type": "frame",
+                        "data": params["data"],
+                        "metadata": params.get("metadata", {}),
+                    }
+                ),
             )
 
         async def on_url(url):
