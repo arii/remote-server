@@ -171,6 +171,9 @@ class FakeBridge:
     async def key(self, key, code):
         self.calls.append(("key", key, code))
 
+    async def credential_focused(self):
+        return False
+
     async def type_text(self, text):
         self.calls.append(("type_text", text))
 
