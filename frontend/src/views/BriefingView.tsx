@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchBriefing, fetchDigestSchedule, fetchLedger, fetchNotificationPreferences, fetchNotificationStatus, fetchPlan, fetchPlans, invalidateViewCaches, refreshBriefing, saveNotificationPreferences, setDigestSchedule, triggerDigest } from '../apiClient';
 import type { DigestChannelResult, DigestResults, DigestSchedule, NotificationPreferences, NotificationsStatus, PlanListRow } from '../apiClient';
 import type { BoardItem, BriefingResponse, LedgerEntry } from '../apiTypes';
-import { isHistoryFailure, toHistoryRows } from './historyUtils';
+import { toHistoryRows } from './historyUtils';
 import { dedupAttentionLines, isActionableLine } from '../attentionFilters';
 import { loadBriefing, loadHistory, useMock } from './mockViews';
 import RepoLabel from '../components/RepoLabel';
@@ -378,7 +378,9 @@ export function DigestControlsView({
         >
           {running ? 'Sending…' : 'Run briefing now'}
         </button>{' '}
+        {reason && <span className="row-meta">{reason}</span>}
         <div className="actions" role="group" aria-label="Digest schedule" data-testid="briefing-digest-schedule">
+          {schedBusy && <span className="row-meta">Updating digest schedule…</span>}
           {DIGEST_CADENCES.map((c) => (
             <button
               key={c.value}
@@ -520,6 +522,7 @@ export function PrefsControlsView({
         aria-label="Muted events"
         data-testid="briefing-prefs-events"
       >
+        {busy && <span className="row-meta">Saving notification preferences…</span>}
         {(prefs?.events ?? []).map((e) => (
           <button
             key={e}
@@ -657,18 +660,6 @@ export function inActivityWindow(
 }
 
 // Activity counts from ledger timestamps, labelled by window.
-// Failures reuse the History tone predicate (issue #506): only
-// webhook entries carry ok, so ok-only missed run/chat/agent
-// failures and the two views disagreed on the same ledger.
-export function dayTrend(
-  entries: LedgerEntry[],
-  nowSec: number,
-  window: ActivityWindow = '24h',
-): string {
-  const recent = inActivityWindow(entries, window, nowSec);
-  const failures = recent.filter(isHistoryFailure).length;
-  return `Last ${window}: ${recent.length} event${recent.length === 1 ? '' : 's'}, ${failures} failure${failures === 1 ? '' : 's'}.`;
-}
 
 // Reviews errors arrive as a per-PR dict ({PR number: error});
 // condense to one alert line for the Reviews section (issue #463).
@@ -1059,6 +1050,7 @@ export function RepairPicker({
           >
             Repair
           </button>
+          {!picked && <span className="row-meta">Select a PR to repair.</span>}
         </div>
       )}
     </section>
@@ -1188,44 +1180,39 @@ function PrRow({
   const openReview = () => onOpenReview(number);
   return (
     <li className="detail" data-testid="briefing-pr-row">
-      <button
-        type="button"
-        className="row-title link-chip"
-        data-testid="briefing-pr-open"
-        onClick={openReview}
-        title={`Open #${number} in Review`}
-      >
-        #{number} {title}
-      </button>
-      {meta.length > 0 && <p className="row-meta pipeline-meta">{meta.join(' · ')}</p>}
-      {(ci || verdict) && (
-        <p className="row-meta chip-row">
-          {ci && (
-            <PrPill
-              testid="briefing-ci"
-              label={`CI ${ci}`}
-              title={prUrl ? `Open checks for #${number}` : `Open #${number} in Review`}
-              href={prChecksUrl(prUrl)}
-              onOpenReview={openReview}
-            />
-          )}
-          {verdict && (
-            <PrPill
-              testid="briefing-verdict"
-              label={`Verdict: ${verdict}`}
-              title={prUrl ? `Open PR #${number}` : `Open #${number} in Review`}
-              href={prUrl}
-              onOpenReview={openReview}
-            />
-          )}
-        </p>
-      )}
-      {note && <p className="row-meta">Review: {note}</p>}
-      <div className="actions">
-        <button type="button" data-testid="briefing-ask-agent" onClick={() => onAskAgent(prAskSeed(repo, number, title))}>
-          Ask agent
-        </button>
-      </div>
+      <details>
+        <summary>#{number} {title} <span className="repo-chip">{ci || (pr.draft ? 'draft' : 'open')}</span></summary>
+        <button type="button" data-testid="briefing-pr-open" title={`Open #${number} in Review`} onClick={openReview}>Open in Review</button>
+        {meta.length > 0 && <p className="row-meta pipeline-meta">{meta.join(' · ')}</p>}
+        {(ci || verdict) && (
+          <p className="row-meta chip-row">
+            {ci && (
+              <PrPill
+                testid="briefing-ci"
+                label={`CI ${ci}`}
+                title={prUrl ? `Open checks for #${number}` : `Open #${number} in Review`}
+                href={prChecksUrl(prUrl)}
+                onOpenReview={openReview}
+              />
+            )}
+            {verdict && (
+              <PrPill
+                testid="briefing-verdict"
+                label={`Verdict: ${verdict}`}
+                title={prUrl ? `Open PR #${number}` : `Open #${number} in Review`}
+                href={prUrl}
+                onOpenReview={openReview}
+              />
+            )}
+          </p>
+        )}
+        {note && <p className="row-meta">Review: {note}</p>}
+        <div className="actions">
+          <button type="button" data-testid="briefing-ask-agent" onClick={() => onAskAgent(prAskSeed(repo, number, title))}>
+            Ask agent
+          </button>
+        </div>
+      </details>
     </li>
   );
 }
@@ -1615,7 +1602,7 @@ export function BriefingBody({
           <RepairPicker repo={data.repo} prs={data.prs} onAskAgent={onAskAgent} />
           {(actionableWorkflowLines(data).length > 0 || data.runs_err) && (
             <section>
-              <h3>Failing runs</h3>
+              <h3>Workflow failures</h3>
               {data.runs_err && (
                 <p className="row-meta" role="alert">
                   {data.runs_err}
@@ -1634,9 +1621,12 @@ export function BriefingBody({
           )}
         </>
       )}
-      <PlansSection repo={data.repo} onAskAgent={onAskAgent} />
-      <section aria-label="Next actions">
-        <h3>Next actions</h3>
+      <details>
+        <summary>Plans</summary>
+        <PlansSection repo={data.repo} onAskAgent={onAskAgent} />
+      </details>
+      <details aria-label="Next actions">
+        <summary>Next actions</summary>
         {/* The top action already rides inline under the lead; the
             section keeps the remainder so no seed renders twice.
             Without a lead the full list renders, as before. */}
@@ -1656,9 +1646,9 @@ export function BriefingBody({
             ))}
           </div>
         )}
-      </section>
-      <section aria-label="Recent activity">
-        <h3>Recent activity</h3>
+      </details>
+      <details aria-label="Recent activity">
+        <summary>Recent activity</summary>
         <div
           className="actions"
           role="group"
@@ -1691,15 +1681,12 @@ export function BriefingBody({
         ) : (
           <p className="row-meta">No recent activity to show.</p>
         )}
-        <p className="row-meta" data-testid="briefing-trend">
-          {dayTrend(inWindow, nowSec, window)}
-        </p>
         <div className="actions">
           <button type="button" data-testid="briefing-history" onClick={onOpenHistory}>
             Full log in History
           </button>
         </div>
-      </section>
+      </details>
     </>
   );
 }

@@ -74,7 +74,7 @@ h3 { font-size: 1.12rem; font-weight: 650; margin: 1.25rem 0 0.35rem; }
 
 h1, h2, h3 { text-wrap: balance; }
 
-.layout { max-width: 1400px; margin: 0 auto; padding: 1.25rem 1.25rem 5.5rem; }
+.layout { max-width: 1400px; margin: 0 auto; padding: 1.25rem; }
 
 /* Screen-reader-only: keeps the document outline honest (h1) without
    adding visual chrome the Operate surface does not need. */
@@ -100,7 +100,8 @@ h1, h2, h3 { text-wrap: balance; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 1rem;
+  gap: 0.25rem;
+  font-size: 0.875rem;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -111,7 +112,7 @@ h1, h2, h3 { text-wrap: balance; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
+  gap: 0.375rem;
   min-width: 0;
 }
 /* Terminal/Code are anchors, so they miss base button chrome;
@@ -131,28 +132,8 @@ h1, h2, h3 { text-wrap: balance; }
   display: inline-flex;
   align-items: center;
 }
-/* Center group takes the middle: auto margins on both sides push
-   context left and tools right; on wrap the row stacks cleanly. */
-.topbar-views { margin-left: auto; margin-right: auto; }
+.topbar .repo-chip { max-width: 8rem; padding-inline: 0.5rem; white-space: normal; }
 
-/* Bottom section cluster (#961): Review/Jobs/Queue plus Report a
-   bug ride a fixed bar so secondary destinations never scroll away.
-   Layout bottom padding clears it; safe-area inset covers notched
-   phones. */
-.bottombar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 40;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem calc(0.5rem + env(safe-area-inset-bottom));
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-}
-.bottombar button { min-height: 44px; }
 
 /* Dirty repos strip (issue #1069): row buttons meet the 44px touch
    target; below 768px the table stacks into cards so repo, status,
@@ -319,7 +300,9 @@ label.label-chip:has(input:focus-visible) { outline: 2px solid var(--accent); ou
   border-radius: 999px;
   padding: 0.2rem 0.7rem;
   font-size: 0.82rem;
-  white-space: nowrap;
+  white-space: normal;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .status-pill.status-ok { border-color: var(--ok); }
 .status-pill.status-degraded,
@@ -359,7 +342,7 @@ label.label-chip:has(input:focus-visible) { outline: 2px solid var(--accent); ou
 .columns.columns-single { grid-template-columns: 1fr; }
 @media (max-width: 900px) {
   .columns { grid-template-columns: 1fr; }
-  .layout { padding: 0.9rem 0.9rem 5.5rem; }
+  .layout { padding: 0.9rem; }
   .page-head { flex-direction: column; align-items: stretch; }
 }
 
@@ -416,6 +399,8 @@ label.label-chip:has(input:focus-visible) { outline: 2px solid var(--accent); ou
 /* Now status hero (issue #811): the health-row look as one
    glanceable strip; wraps on narrow screens. Dots stay flat. */
 .now-hero { flex-wrap: wrap; row-gap: 0.35rem; }
+.now-hero > * { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+#now-prompt { display: block; width: 100%; box-sizing: border-box; margin: 0.5rem 0; }
 .now-hero .spacer { flex: 1 1 auto; }
 .now-hero strong { font-size: 0.9rem; }
 
@@ -826,15 +811,9 @@ a.link-chip:hover { border-color: var(--accent); }
 .row-overflow > summary:hover { border-color: var(--accent); }
 .row-overflow .actions { margin-top: 0.5rem; }
 
-/* Triage card header (issue #935): the bulk checkbox rides the
-   title line instead of floating above the card. */
+/* Attention card title. */
 .attention-head { display: flex; align-items: flex-start; gap: 0.5rem; }
 .attention-head .row-title { flex: 1 1 auto; min-width: 0; }
-.attention-check { flex: none; width: 1.15rem; height: 1.15rem; margin-top: 0.15rem; cursor: pointer; }
-/* Double-qualified to beat label.row-meta outright; a single
-   qualifier only ties and loses to source order. */
-label.row-meta.attention-select-all { display: inline-flex; align-items: center; gap: 0.45rem; margin: 0 0 0.5rem; cursor: pointer; }
-.attention-select-all input { width: 1.15rem; height: 1.15rem; cursor: pointer; }
 
 /* Ask-agent preview (issue #935): the disclosure summary carries
    the button hierarchy; the panel shows the exact sends. */
@@ -906,25 +885,32 @@ li.detail .actions button { min-height: 44px; }
   color: #fff;
   font-weight: 650;
 }
-/* In-bar variant: inside the unified topbar the tab group is
-   borderless — the bar owns the surface, not the nav. One row:
-   five tabs ride a non-wrapping line with horizontal scroll as the
-   escape hatch (same pattern as phones below), so the bar keeps
-   its single-row read at desktop widths. */
+/* Compact pills keep all destinations on the desktop row (#1317). */
 .topbar .topnav {
   position: static;
   background: transparent;
   border: none;
   border-radius: 0;
   padding: 0.1rem 0;
+  margin: 0;
+  gap: 0.1rem;
+  flex: 1 1 0;
   flex-wrap: nowrap;
   overflow-x: auto;
   max-width: 100%;
   min-width: 0;
 }
+.topbar .topnav button {
+  padding: 0.35rem 0.1rem;
+  font-size: 0.875rem;
+  min-width: 44px;
+  flex-shrink: 0;
+}
+.topbar .nav-badge { margin-left: 0.2rem; padding-inline: 0.25rem; }
+.topbar-tools button, .topbar-tools a { padding-inline: 0.35rem; font-size: 0.8rem; }
 /* Tool row holds one line at desktop widths (phones re-enable
    wrap in the ≤700px query below). */
-.topbar-group.topbar-tools { flex-wrap: nowrap; }
+.topbar-group.topbar-tools { flex-wrap: nowrap; gap: 0.25rem; }
 
 /* Command palette: overlay panel reusing the console's row grammar —
    surface, border, and the selected-row accent. No chrome beyond that. */
@@ -1215,35 +1201,14 @@ label.row-meta { display: grid; gap: 0.3rem; }
 /* Phone-first: keyboard and triage hints are unactionable on touch. */
 @media (pointer: coarse) { .triage-hint, .shortcut-hint { display: none; } }
 
-/* Narrow phone chrome (issue #1033): one slim pinned bar at a time.
-   The header scrolls away with the page; the tab row rides one
-   horizontally scrollable line; the bottom bar compacts and
-   auto-hides on scroll-down (App toggles .bottombar-hidden).
-   44px touch targets are untouched — reach, not size, is what
-   collapses. */
+/* Narrow phone chrome: the header scrolls away with the page. */
 @media (max-width: 700px) {
-  .layout { padding: 0.75rem 0.75rem 5rem; }
+  .layout { padding: 0.75rem; }
   .topbar { position: static; margin-bottom: 0.5rem; }
-  .topbar-group { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
-  /* Tool row (Commands/Terminal/Code/Browser) is wider than a 390px
-     phone even squeezed: unlike the view tabs it must wrap to a
-     second line so nothing is reachable only by blind sideways
-     swipe. The bar itself is static on phones, so the extra row
-     costs no sticky-chrome space. */
+  .topbar-group { flex-wrap: wrap; max-width: 100%; }
   .topbar-group.topbar-tools { flex-wrap: wrap; overflow-x: visible; }
+  .topbar .topnav { flex: 1 1 100%; flex-wrap: wrap; overflow-x: visible; }
   .topnav { flex-wrap: nowrap; overflow-x: auto; }
-  .bottombar {
-    gap: 0.25rem;
-    padding: 0.4rem 0.5rem calc(0.4rem + env(safe-area-inset-bottom));
-    transition: transform 0.2s ease, visibility 0.2s;
-  }
-  /* Hidden buttons leave tab order and the accessibility tree
-     with the bar (review follow-up): visibility flips with the
-     slide so screen readers and keyboards agree with the eye. */
-  .bottombar-hidden { transform: translateY(110%); visibility: hidden; }
-}
-@media (max-width: 700px) and (prefers-reduced-motion: reduce) {
-  .bottombar { transition: none; }
 }
 /* Session-expiry strip (issue #1035): same surface as the sync
    banner, alert role for the sign-in call to action. */

@@ -473,13 +473,3 @@ export function toHistoryRows(
   }
   return rows;
 }
-
-// Shared failure predicate (issue #506): true when one ledger
-// entry renders tone bad on its own row. Delegates to
-// toHistoryRows so Briefing and History share one definition;
-// per-entry (no incident-collapse) so the trend counts entries,
-// not collapsed rows.
-export function isHistoryFailure(entry: LedgerEntry): boolean {
-  const rows = toHistoryRows([], [entry]);
-  return rows.length > 0 && rows[0].tone === 'bad';
-}

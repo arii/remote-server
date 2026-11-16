@@ -204,6 +204,7 @@ export function HistoryInspector({
               >
                 {rerunBusy === m.runId ? 'Re-running…' : 'Re-run'}
               </button>
+              {rerunBusy !== null && rerunBusy !== m.runId && <span className="row-meta">Another run is restarting…</span>}
             </div>
           )}
         </div>

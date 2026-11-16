@@ -1250,27 +1250,33 @@ export default function JobsView({
 
       <section className="jobs-workflows" data-testid="jobs-workflows" aria-label="Agent Workflows & Diagnostics">
         <h3>Agent Workflows &amp; Diagnostics</h3>
-        <p className="row-meta">
-          Safe, non-disruptive agent runs and diagnostics. Triggering shows live streaming output above — no service is restarted.
-        </p>
 
-        <RepairSection repo={repo} defaultBranch={defaultBranch} />
+        <details>
+          <summary>Repair worker</summary>
+          <RepairSection repo={repo} defaultBranch={defaultBranch} />
+        </details>
 
-        <TriageFanoutSection
-          repo={repo}
-          onDispatch={() =>
-            void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)), 'triage fanout')
-          }
-        />
+        <details>
+          <summary>Triage fanout</summary>
+          <TriageFanoutSection
+            repo={repo}
+            onDispatch={() =>
+              void guarded(() => launch('triage fanout', () => startJobRun('triage-fanout', repo, false, branch)), 'triage fanout')
+            }
+          />
+        </details>
 
-        <UxAuditSection
-          onDispatch={(site, maxPages) =>
-            void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)), `ux audit ${site}`)
-          }
-        />
+        <details>
+          <summary>UX audit</summary>
+          <UxAuditSection
+            onDispatch={(site, maxPages) =>
+              void guarded(() => launch(`ux audit ${site}`, () => startUxAuditRun(site, maxPages)), `ux audit ${site}`)
+            }
+          />
+        </details>
 
-        <section aria-label="Briefing plan">
-          <h3>Briefing plan</h3>
+        <details aria-label="Briefing plan">
+          <summary>Briefing plan</summary>
           <p className="row-meta">Writes a dated plan file into .agents/plans for the briefing.</p>
           <div className="actions">
             <button
@@ -1281,34 +1287,43 @@ export default function JobsView({
               Write briefing plan
             </button>
           </div>
-        </section>
+        </details>
 
-        <TdCommands
-          pr={pr}
-          onPrChange={setPr}
-          prStateCurrent={prStateCurrent}
-          prOk={prOk}
-          conflictBlock={conflictBlock}
-          onDispatch={onDispatchTd}
-          repo={repo}
-        />
+        <details>
+          <summary>Agent commands</summary>
+          <TdCommands
+            pr={pr}
+            onPrChange={setPr}
+            prStateCurrent={prStateCurrent}
+            prOk={prOk}
+            conflictBlock={conflictBlock}
+            onDispatch={onDispatchTd}
+            repo={repo}
+          />
+        </details>
 
-        <JobSchedulesSection
-          repo={repo}
-          draft={schedDraft}
-          onScheduled={(s) => setNotice(`Scheduled ${s.action}: ${s.id}`)}
-          onClearDraft={() => setSchedDraft(null)}
-        />
+        <details>
+          <summary>Scheduled runs</summary>
+          <JobSchedulesSection
+            repo={repo}
+            draft={schedDraft}
+            onScheduled={(s) => setNotice(`Scheduled ${s.action}: ${s.id}`)}
+            onClearDraft={() => setSchedDraft(null)}
+          />
+        </details>
       </section>
 
-      <DangerZone
-        mergeReady={mergeReady}
-        finishedCount={finishedCount}
-        runCount={list.length}
-        onDangerAction={onDangerAction}
-        onClear={handleClear}
-        onTakeover={handleTakeover}
-      />
+      <details>
+        <summary>Danger / System Operations</summary>
+        <DangerZone
+          mergeReady={mergeReady}
+          finishedCount={finishedCount}
+          runCount={list.length}
+          onDangerAction={onDangerAction}
+          onClear={handleClear}
+          onTakeover={handleTakeover}
+        />
+      </details>
 
       <TriageHint />
       <JobsListPanel

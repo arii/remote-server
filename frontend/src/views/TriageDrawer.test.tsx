@@ -1,7 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import TriageDrawer from './TriageDrawer';
-import { EMPTY_BADGE_COUNTS } from '../tabBadges';
 
 const base = {
   open: true,
@@ -12,7 +11,6 @@ const base = {
   onAskAgent: () => {},
   onOpenChat: () => {},
   onOpenHistory: () => {},
-  badgeCounts: EMPTY_BADGE_COUNTS,
 };
 
 describe('TriageDrawer (D5)', () => {
@@ -21,18 +19,13 @@ describe('TriageDrawer (D5)', () => {
     expect(html).not.toContain('data-testid="triage-drawer"');
   });
 
-  it('renders the section switcher with Briefing included (two-tap guard)', () => {
+  it('leaves section navigation to the top header (#1317)', () => {
     const html = renderToStaticMarkup(<TriageDrawer {...base} />);
     for (const s of ['review', 'jobs', 'queue', 'briefing']) {
-      expect(html).toContain(`data-testid="triage-section-${s}"`);
+      expect(html).not.toContain(`data-testid="triage-section-${s}"`);
     }
   });
 
-  it('hides the Briefing section on the rollup picker (per-repo view)', () => {
-    const html = renderToStaticMarkup(<TriageDrawer {...base} repo="all" />);
-    expect(html).not.toContain('data-testid="triage-section-briefing"');
-    expect(html).toContain('data-testid="triage-section-review"');
-  });
 
   it('mounts the requested section view', () => {
     expect(renderToStaticMarkup(<TriageDrawer {...base} />)).toContain(
@@ -47,9 +40,8 @@ describe('TriageDrawer (D5)', () => {
     ).toContain('data-testid="briefing-loading"');
   });
 
-  it('marks exactly the held section pressed', () => {
+  it('keeps the close control when showing a section', () => {
     const html = renderToStaticMarkup(<TriageDrawer {...base} section="jobs" />);
-    expect(html).toMatch(/data-testid="triage-section-jobs"[^>]*aria-pressed="true"/);
-    expect(html).not.toMatch(/data-testid="triage-section-review"[^>]*aria-pressed="true"/);
+    expect(html).toContain('data-testid="triage-close"');
   });
 });

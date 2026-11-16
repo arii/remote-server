@@ -280,6 +280,8 @@ export default function RepairSection({
         >
           Dispatch repair
         </button>
+        {!target && <span className="row-meta">Select an issue before dispatching or scheduling a repair.</span>}
+        {status.status === 'running' && <span className="row-meta">A repair is already running.</span>}
         {status.status === 'running' && (
           <button type="button" data-testid="repair-abort" onClick={() => void onAbortRepair()}>
             Abort
