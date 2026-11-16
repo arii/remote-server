@@ -665,14 +665,14 @@ _UNMODIFIED_KEYS = {
 
 
 def _is_text_key(key, code, modifiers, alt_graph):
-    if len(key) != 1 or not (key.isprintable() or unicodedata.category(key) == "Zs"):
+    if len(key) != 1 or unicodedata.category(key) == "Cc":
         return False
     if not modifiers & 7:
         return True
     if not modifiers & 1 or modifiers & 4 or (modifiers & 2 and not alt_graph):
         return False
     base = _UNMODIFIED_KEYS.get(code)
-    return base is not None and key not in (base, base.upper())
+    return base is None or key not in (base, base.upper())
 
 
 class CDPBridge:

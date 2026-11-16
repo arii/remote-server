@@ -51,7 +51,6 @@ class PrintableChordTest(unittest.TestCase):
                 ("b", "KeyB", 3, True),
                 ("@", "KeyQ", 3, False),
                 ("å", "KeyA", 5, False),
-                ("å", "Unknown", 1, False),
             ]:
                 bridge = browser_view.CDPBridge("test")
                 bridge.ensure_focus = mock.AsyncMock()
@@ -66,6 +65,24 @@ class PrintableChordTest(unittest.TestCase):
                 self.assertEqual(calls[0].args[1]["modifiers"], modifiers)
                 self.assertEqual(calls[0].args[1]["text"], "")
                 self.assertEqual(calls[0].args[1]["unmodifiedText"], key)
+
+        asyncio.run(check())
+
+    def test_unmapped_layout_and_format_characters_are_text(self):
+        async def check():
+            for key, code, modifiers, graph in [
+                ("|", "IntlBackslash", 3, True),
+                ("|", "IntlBackslash", 1, False),
+                ("\u200c", "Space", 8, False),
+                ("å", "Unknown", 1, False),
+            ]:
+                bridge = browser_view.CDPBridge("test")
+                bridge.ensure_focus = mock.AsyncMock()
+                bridge.call = mock.AsyncMock(return_value={})
+                await bridge.key(key, code, modifiers, graph)
+                bridge.call.assert_awaited_once_with("Input.insertText", {"text": key})
+            for key in ("\x00", "\n", "\x1f", "\x7f", "\x85"):
+                self.assertFalse(browser_view._is_text_key(key, "Unknown", 1, False))
 
         asyncio.run(check())
 
