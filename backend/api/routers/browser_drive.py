@@ -97,9 +97,12 @@ SNAPSHOT_JS = (
     f".filter(e=>e.offsetParent!==null).slice(0,{MAX_ELEMENTS});"
     "return {url:document.URL,title:document.title,"
     "els:els.map((e,i)=>{const r=e.getBoundingClientRect();"
+    "const tokens=(e.getAttribute('autocomplete')||'').toLowerCase().split(/\\s+/);"
+    "const sensitive=e.matches('input[type=\"password\"]')||tokens.some(t=>"
+    "['username','current-password','new-password','one-time-code','webauthn'].includes(t));"
+    "const text=e.innerText||e.value||e.getAttribute('aria-label')||'';"
     "return {i,tag:e.tagName,"
-    "text:(e.innerText||e.value||e.getAttribute('aria-label')||'')"
-    ".slice(0,80),"
+    "text:sensitive?(text?'[redacted]':''):text.slice(0,80),"
     "x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),"
     "w:Math.round(r.width),h:Math.round(r.height),"
     "tid:e.getAttribute('data-testid'),"
@@ -107,7 +110,7 @@ SNAPSHOT_JS = (
     "role:e.getAttribute('role'),"
     "cls:(typeof e.className==='string'?e.className:"
     "((e.className&&e.className.baseVal)||''))||null,"
-    "val:('value' in e?e.value:null)};})};})()"
+    "val:('value' in e?(sensitive&&e.value?'[redacted]':e.value):null)};})};})()"
 )
 
 

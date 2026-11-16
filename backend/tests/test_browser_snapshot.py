@@ -1,5 +1,6 @@
 """Shared snapshot expression and error handling (#1297)."""
 
+import json
 import shutil
 import subprocess
 import unittest
@@ -30,6 +31,48 @@ ERRORS = (
 
 
 class SnapshotTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "requires Node.js")
+    def test_real_javascript_redacts_credential_fields(self):
+        harness = """
+const assert = require('node:assert/strict');
+const cases = [
+  {type:'password',value:'password-probe'},
+  ...['username','current-password','new-password','one-time-code','webauthn']
+    .map(token=>({autocomplete:'section-login '+token.toUpperCase(),value:token+'-probe'})),
+  {type:'password',value:'',label:'Credential label'},
+  {autocomplete:'username',value:''},
+  {type:'text',value:'ordinary value'},
+  {autocomplete:'email',value:'ordinary email'},
+];
+const elements=cases.map(c=>({
+  tagName:'INPUT',offsetParent:{},id:'',className:'',innerText:'',value:c.value,
+  matches(selector){assert.equal(selector,'input[type="password"]');return c.type==='password'},
+  getAttribute(name){return {autocomplete:c.autocomplete,'aria-label':c.label}[name]??null},
+  getBoundingClientRect(){return {x:0,y:0,width:100,height:20}},
+}));
+global.document={URL:'https://example.com/',title:'Credential probe',querySelectorAll(){return elements}};
+console.log(JSON.stringify(eval(EXPRESSION)));
+""".replace("EXPRESSION", json.dumps(browser_drive.SNAPSHOT_JS))
+        result = subprocess.run(
+            ["node", "-e", harness], text=True, capture_output=True, timeout=10
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elements = json.loads(result.stdout)["els"]
+        self.assertEqual(len(elements), 10)
+        for element in elements[:6]:
+            self.assertEqual(element["text"], "[redacted]")
+            self.assertEqual(element["val"], "[redacted]")
+        self.assertEqual(elements[6]["val"], "")
+        self.assertEqual(elements[6]["text"], "[redacted]")
+        self.assertEqual(elements[7]["val"], "")
+        self.assertEqual(elements[7]["text"], "")
+        for element, expected in zip(
+            elements[8:], ("ordinary value", "ordinary email")
+        ):
+            self.assertEqual(element["val"], expected)
+            self.assertEqual(element["text"], expected)
+        self.assertNotIn("password-probe", result.stdout)
+
     @unittest.skipUnless(shutil.which("node"), "requires Node.js")
     def test_shared_javascript_parses(self):
         result = subprocess.run(
