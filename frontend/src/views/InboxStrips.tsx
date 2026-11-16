@@ -9,49 +9,8 @@ import {
   bulkRestoreNotice,
   bulkRowKey,
   isRowDeferred,
-  parseBulkSelection,
-  toggleBulkSelectAll,
-  toggleBulkSelected,
 } from './ReviewView';
 
-// Bulk bar for the inbox strips: one bar, both actions. Mixed
-// selections are safe — the bulk endpoint no-ops rows its op
-// doesn't apply to (re-defer / restore-absent).
-export function StripsBulkBar({
-  count,
-  busyOp,
-  onDefer,
-  onRestore,
-}: {
-  count: number;
-  busyOp: 'defer' | 'restore' | null;
-  onDefer: () => void;
-  onRestore: () => void;
-}) {
-  return (
-    <div className="actions" data-testid="strips-bulk-bar" role="status">
-      {count} selected{' '}
-      <button
-        type="button"
-        data-testid="strips-bulk-defer"
-        aria-label={`Defer ${count} selected row${count === 1 ? '' : 's'}`}
-        disabled={busyOp !== null}
-        onClick={onDefer}
-      >
-        {busyOp === 'defer' ? 'Deferring…' : `Defer ${count}`}
-      </button>{' '}
-      <button
-        type="button"
-        data-testid="strips-bulk-restore"
-        aria-label={`Restore ${count} selected row${count === 1 ? '' : 's'}`}
-        disabled={busyOp !== null}
-        onClick={onRestore}
-      >
-        {busyOp === 'restore' ? 'Restoring…' : `Restore ${count}`}
-      </button>
-    </div>
-  );
-}
 
 // Swipe-to-act threshold for inbox strips (issue #403): a
 // horizontal touch drag past this distance fires the row action;
@@ -79,7 +38,7 @@ export function swipeDirection(dx: number, dy: number): 'left' | 'right' | null 
   return dx < 0 ? 'left' : 'right';
 }
 
-// Touch-only swipe wrapper for one strip row. Taps, checkboxes,
+// Touch-only swipe wrapper for one strip row. Taps
 // and keyboard focus are untouched: the action fires only on a
 // committed horizontal drag past SWIPE_ACT_PX, and no default is
 // prevented, so scrolling and tap activation behave as before.
@@ -134,10 +93,10 @@ type RowRef = { kind: 'pr' | 'issue'; number: number };
 
 // Compact actionable strips between the attention feed and the
 // Review/Jobs sections: merge-ready PRs and the active run, plus
-// selectable inbox rows with a bulk defer/restore bar (issue #591).
+// per-item defer/restore actions (#1317).
 // Deferred flags hide rows from the merge-ready list (Review parity)
 // and surface them in the deferred section instead. The parent owns
-// the deferred flags; selection and dispatch live here.
+// the deferred flags; dispatch lives here.
 export default function InboxStrips({
   feed,
   repo,
@@ -153,7 +112,6 @@ export default function InboxStrips({
   onOpenReview: () => void;
   onOpenJobs: () => void;
 }) {
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [busyOp, setBusyOp] = useState<'defer' | 'restore' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -161,9 +119,6 @@ export default function InboxStrips({
   const ready = feed.merge_ready;
   const active = feed.runs.active;
   const visibleTop = ready.top.filter((p) => !isRowDeferred(deferred, 'pr', p.number));
-  const topKeys = visibleTop.map((p) => bulkRowKey('pr', p.number));
-  const deferredKeys = deferred.map((d) => bulkRowKey(d.kind, d.number));
-  const allKeys = [...topKeys, ...deferredKeys];
   if (ready.count === 0 && !active && deferred.length === 0) return null;
 
   async function applyOp(op: 'defer' | 'restore', rows: RowRef[]): Promise<void> {
@@ -185,23 +140,6 @@ export default function InboxStrips({
     }
   }
 
-  async function runBulk(op: 'defer' | 'restore') {
-    const rows = parseBulkSelection(selected);
-    if (rows.length === 0) return;
-    setError(null);
-    setDone(null);
-    setUndo(null);
-    setBusyOp(op);
-    try {
-      await applyOp(op, rows);
-      setSelected(new Set());
-      setDone(op === 'defer' ? bulkDeferNotice(rows.length) : bulkRestoreNotice(rows.length));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyOp(null);
-    }
-  }
 
   // Single-row swipe op (issue #403): same dispatch as bulk, plus
   // an undo snapshot so a swipe-dismiss is reversible from the
@@ -267,26 +205,8 @@ export default function InboxStrips({
           </button>
         )}
       </div>
-      {allKeys.length > 0 && (
+      {(visibleTop.length > 0 || deferred.length > 0) && (
         <>
-          <label className="row-meta">
-            <input
-              type="checkbox"
-              data-testid="strips-select-all"
-              aria-label="Select all inbox rows"
-              checked={allKeys.every((k) => selected.has(k))}
-              onChange={() => setSelected((prev) => toggleBulkSelectAll(prev, allKeys))}
-            />{' '}
-            all
-          </label>
-          {selected.size > 0 && (
-            <StripsBulkBar
-              count={selected.size}
-              busyOp={busyOp}
-              onDefer={() => void runBulk('defer')}
-              onRestore={() => void runBulk('restore')}
-            />
-          )}
           {error && (
             <p role="alert" data-testid="strips-error">
               Couldn&apos;t update rows: {error}
@@ -302,7 +222,7 @@ export default function InboxStrips({
                   disabled={busyOp !== null}
                   onClick={() => void runUndo()}
                 >
-                  Undo
+                  {busyOp !== null ? 'Updating…' : 'Undo'}
                 </button>
               )}
             </p>
@@ -317,16 +237,11 @@ export default function InboxStrips({
                   else onOpenReview();
                 }}
               >
-                <input
-                  type="checkbox"
-                  data-testid={`strips-row-check-pr-${p.number}`}
-                  aria-label={`Select PR #${p.number}`}
-                  checked={selected.has(bulkRowKey('pr', p.number))}
-                  onChange={() => setSelected((prev) => toggleBulkSelected(prev, bulkRowKey('pr', p.number)))}
-                />{' '}
                 <span className="row-title">
                   #{p.number} {p.title}
                 </span>
+                <button type="button" onClick={onOpenReview}>Review</button>
+                <button type="button" onClick={() => void runSingle('defer', [{ kind: 'pr', number: p.number }])}>Defer</button>
               </SwipeRow>
             ))}
             {deferred.map((d) => (
@@ -335,16 +250,10 @@ export default function InboxStrips({
                 testId={`strips-row-${d.kind}-${d.number}`}
                 onSwipe={() => void runSingle('restore', [{ kind: d.kind, number: d.number }])}
               >
-                <input
-                  type="checkbox"
-                  data-testid={`strips-row-check-${d.kind}-${d.number}`}
-                  aria-label={`Select ${d.kind} #${d.number}`}
-                  checked={selected.has(bulkRowKey(d.kind, d.number))}
-                  onChange={() => setSelected((prev) => toggleBulkSelected(prev, bulkRowKey(d.kind, d.number)))}
-                />{' '}
                 <span className="row-title">
                   #{d.number} {d.kind}
                 </span>
+                <button type="button" onClick={() => void runSingle('restore', [{ kind: d.kind, number: d.number }])}>Restore</button>
               </SwipeRow>
             ))}
           </ul>

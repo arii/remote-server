@@ -830,6 +830,7 @@ export default function AgentDrawer({
               }
               onFire={() => void onLaunch()}
             />
+            {providers.length === 0 && <span className="row-meta">No agent providers are available.</span>}
             {provider !== '' && status[provider] === false && (
               <p className="row-meta" data-testid="agent-provider-dead" role="status">
                 {provider} is unreachable — pick a live provider.
@@ -906,8 +907,9 @@ export default function AgentDrawer({
             </label>
             <div className="actions">
               <button type="submit" data-testid="agent-send" disabled={working || !prompt.trim()}>
-                Send
+                {working ? 'Sending…' : 'Send'}
               </button>
+              {!working && !prompt.trim() && <span className="row-meta">Enter a message to send.</span>}
               {working && (
                 <button type="button" data-testid="agent-abort" onClick={() => void onAbort()}>
                   Abort

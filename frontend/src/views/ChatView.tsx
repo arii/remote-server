@@ -114,6 +114,7 @@ export function PromptChips({
 }) {
   return (
     <div className="actions" role="group" aria-label="Prompt starters" data-testid="chat-prompt-chips">
+      {disabled && <span className="row-meta">Reply streaming — wait before starting another prompt.</span>}
       {CHAT_PROMPT_CHIPS.map((c) => (
         <button
           key={c.id}
@@ -327,6 +328,7 @@ export function TemplatePanel({
       aria-label="Prompt templates"
       data-testid="chat-templates-panel"
     >
+      {disabled && <span className="row-meta">Reply streaming — templates are locked until it finishes.</span>}
       <button
         type="button"
         data-testid="chat-template-save"
@@ -339,6 +341,7 @@ export function TemplatePanel({
       >
         Save draft as template
       </button>
+      {!canSave && <span className="row-meta">Enter a draft before saving a template.</span>}
       {templates.length === 0 && (
         <span className="row-meta" data-testid="chat-templates-empty">
           No templates yet — save the draft above.
@@ -1081,6 +1084,7 @@ export function RunsPane({
                 >
                   Continue
                 </button>
+                {!r.has_prompt && <span className="row-meta">No stored prompt for this run.</span>}
                 <TapToFire
                   label="Delete"
                   name={`Delete ${r.id}`}
@@ -1703,6 +1707,7 @@ export default function ChatView({
   repo,
   seed,
   onSeedUsed,
+  sendSeed = false,
   initialRuns,
   focusRequest = 0,
   onOpenDiff,
@@ -1711,6 +1716,7 @@ export default function ChatView({
   repo: string;
   seed: string | null;
   onSeedUsed: () => void;
+  sendSeed?: boolean;
   // Test seam (drawer-precedented): pins the composer-above-runs
   // order without waiting on the runs fetch.
   initialRuns?: AgentRun[];
@@ -1753,13 +1759,21 @@ export default function ChatView({
     seed ?? (useMock() ? '' : loadChatDraft()),
   );
   const promptRef = useRef<HTMLTextAreaElement>(null);
-  // A seed stages into the composer for review and edit — the turn
-  // starts only when the user taps Send (#507). The ref survives
-  // StrictMode's double effect-invoke so dev never double-stages.
+  // Shortcuts stage text; Now's explicit Send starts the turn (#1317).
   const seedStagedRef = useRef(false);
   useEffect(() => {
     const staged = stageSeed(seed, seedStagedRef.current);
     if (staged === null) return;
+    if (sendSeed) {
+      let cancelled = false;
+      void Promise.resolve().then(() => {
+        if (cancelled || seedStagedRef.current) return;
+        seedStagedRef.current = true;
+        onSeedUsed();
+        void sendText(staged);
+      });
+      return () => { cancelled = true; };
+    }
     seedStagedRef.current = true;
     setPrompt(staged);
     onSeedUsed();
@@ -1997,7 +2011,7 @@ export default function ChatView({
       // interrupted-resend banner.
       try {
         const sid = loadChatSessionId();
-        if (sid && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
+        if (sid && !sendSeed && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
       } catch {
         // Resume is best-effort; the snapshot still renders.
       }
@@ -2837,8 +2851,10 @@ export default function ChatView({
             title="Send (Ctrl+Enter or Cmd+Enter)"
             disabled={streaming || !prompt.trim()}
           >
-            Send
+            {streaming ? 'Sending…' : 'Send'}
           </button>
+          {!streaming && !prompt.trim() && <span className="row-meta">Enter a prompt to send.</span>}
+          {streaming && <span className="row-meta">Reply streaming — chat controls unlock when it finishes.</span>}
           {/* Session utilities trail the pills + Send behind a
               hairline divider (#897): one row, three groups. */}
           <div
@@ -2870,6 +2886,7 @@ export default function ChatView({
           >
             Export
           </button>
+          {messages.length === 0 && <span className="row-meta">No messages to export.</span>}
           <button
             type="button"
             data-testid="chat-templates"
@@ -2897,20 +2914,23 @@ export default function ChatView({
           ) : null
         }
       />
-      <RunsPane
-        runs={runs}
-        repo={repo}
-        showAllRepos={showAllRepos}
-        onToggleScope={() => setShowAllRepos((s) => !s)}
-        selected={selected}
-        detail={detail}
-        onSelect={(id) => void onSelectRun(id)}
-        onContinue={(id) => void onContinueRun(id)}
-        onDelete={(id) => void onDeleteRun(id)}
-        onClearFinished={() => void onClearFinished()}
-        notice={runsNotice}
-        budget={budget}
-      />
+      <details data-testid="chat-past-runs">
+        <summary>Past runs ({filterRunsByRepo(runs, repo, showAllRepos).length})</summary>
+        <RunsPane
+          runs={runs}
+          repo={repo}
+          showAllRepos={showAllRepos}
+          onToggleScope={() => setShowAllRepos((s) => !s)}
+          selected={selected}
+          detail={detail}
+          onSelect={(id) => void onSelectRun(id)}
+          onContinue={(id) => void onContinueRun(id)}
+          onDelete={(id) => void onDeleteRun(id)}
+          onClearFinished={() => void onClearFinished()}
+          notice={runsNotice}
+          budget={budget}
+        />
+      </details>
       </aside>
       </div>
     </section>

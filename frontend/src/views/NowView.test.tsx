@@ -7,10 +7,8 @@ import NowView, {
   AskAgentControl,
   askAgentPrompt,
   askAgentSeed,
-  AttentionBulkBar,
   AttentionGroupRow,
   AttentionRow,
-  AttentionSelectAll,
   attentionGroupKey,
   attentionTargetName,
   cardDisplayTitle,
@@ -760,9 +758,9 @@ describe('attention grouping (issue #839)', () => {
         item={item({ id: 'job-j1' })}
         viewRepo="remote-server"
         rollup={false}
-        selected={false}
+
         busy={false}
-        onToggleSelect={noop}
+
         onDone={noop}
         onError={noop}
         onSection={noop}
@@ -772,7 +770,7 @@ describe('attention grouping (issue #839)', () => {
       />,
     );
     expect(html).toContain('data-testid="now-item-job-j1"');
-    expect(html).toContain('data-testid="now-select-job-j1"');
+    expect(html).not.toContain('type="checkbox"');
     expect(html).toContain('class="attention-head"');
     expect(html).toContain('data-testid="now-source-job-j1"');
     expect(html).toContain('repo: remote-server');
@@ -799,9 +797,9 @@ describe('attention grouping (issue #839)', () => {
     const props = {
       viewRepo: 'remote-server',
       rollup: false,
-      selected: false,
+
       busy: false,
-      onToggleSelect: noop,
+
       onDone: noop,
       onError: noop,
       onSection: noop,
@@ -835,9 +833,9 @@ describe('attention grouping (issue #839)', () => {
         viewRepo="remote-server"
         rollup={false}
         repoInfo={{ name: 'remote-server', full: 'arii/remote-server', branch: 'main', clean: false }}
-        selected={false}
+
         busy={false}
-        onToggleSelect={noop}
+
         onDone={noop}
         onError={noop}
         onSection={noop}
@@ -866,17 +864,6 @@ describe('attention grouping (issue #839)', () => {
     expect(html).toContain('sev-crit');
     expect(html).toContain('first ');
   });
-
-  it('AttentionBulkBar names the count with one button per preset', () => {
-    const html = renderToStaticMarkup(
-      <AttentionBulkBar count={3} busy={false} onSnooze={() => {}} onClear={() => {}} />,
-    );
-    expect(html).toContain('data-testid="now-bulk-bar"');
-    expect(html).toContain('3 selected');
-    expect(html).toContain('data-testid="now-bulk-snooze-60"');
-    expect(html).toContain('data-testid="now-bulk-snooze-480"');
-    expect(html).toContain('data-testid="now-bulk-clear"');
-  });
 });
 
 describe('now loading skeleton (issue #897)', () => {
@@ -900,7 +887,7 @@ describe('now loading skeleton (issue #897)', () => {
 describe('triage card CTAs (issue #935)', () => {
   const noop = () => {};
   const rowHandlers = {
-    onToggleSelect: noop,
+
     onDone: noop,
     onError: noop,
     onSection: noop,
@@ -935,7 +922,7 @@ describe('triage card CTAs (issue #935)', () => {
         item={itemToRender}
         viewRepo="remote-server"
         rollup={false}
-        selected={false}
+
         busy={false}
         {...rowHandlers}
         {...(extra as object)}
@@ -1031,25 +1018,6 @@ describe('triage card CTAs (issue #935)', () => {
     expect(html).toContain('>Read-Only Diagnosis</button>');
     expect(html).toContain('data-testid="ask-agent-fix-webhook-skip-1"');
     expect(html).toContain('>Auto-Fix in Worktree</button>');
-  });
-
-  it('hides the card checkbox when the list opts out of bulk selection', () => {
-    expect(renderRow(skip(), { showSelect: false })).not.toContain('now-select-webhook-skip-1');
-    expect(renderRow(skip())).toContain('data-testid="now-select-webhook-skip-1"');
-    expect(renderRow(skip())).toContain('class="attention-head"');
-  });
-
-  it('AttentionSelectAll reflects the selection state', () => {
-    const none = renderToStaticMarkup(
-      <AttentionSelectAll total={3} selectedCount={0} onToggle={noop} />,
-    );
-    expect(none).toContain('data-testid="now-select-all"');
-    expect(none).toContain('Select all');
-    expect(none).not.toContain('checked');
-    const all = renderToStaticMarkup(
-      <AttentionSelectAll total={3} selectedCount={3} onToggle={noop} />,
-    );
-    expect(all).toContain('checked');
   });
 
   function heroHealth(): SystemHealthResponse {
@@ -1215,28 +1183,13 @@ describe('hero deep-link tap targets (issue #1177)', () => {
     expect(rule).not.toBeNull();
     expect(rule![0]).toContain('min-height: 44px');
   });
-});
 
-describe('attention select-all line (issue #1178)', () => {
-  const noop = () => {};
-  const indexCss = readFileSync(fileURLToPath(new URL('../index.css', import.meta.url)), 'utf8');
-
-  it('renders as a label carrying the select-all hook', () => {
-    const html = renderToStaticMarkup(
-      <AttentionSelectAll total={3} selectedCount={0} onToggle={noop} />,
-    );
-    const label = html.match(/<label[^>]*>/);
-    expect(label).not.toBeNull();
-    expect(label![0]).toContain('attention-select-all');
-  });
-
-  it('stylesheet double-qualifies the hook to beat label.row-meta', () => {
-    // Bare .attention-select-all (0,1,0) loses to label.row-meta
-    // (0,1,1) and renders as grid; a single label qualifier only ties
-    // (0,1,1) and loses to source order. The double-qualified rule
-    // wins outright, keeping one line.
-    const rule = indexCss.match(/^label\.row-meta\.attention-select-all \{[^}]*\}/m);
-    expect(rule).not.toBeNull();
-    expect(rule![0]).toContain('display: inline-flex');
+  it('keeps top-item text wrappable at every viewport (#1317)', () => {
+    const hero = indexCss.match(/\.now-hero > \* \{([^}]+)\}/)![1];
+    expect(hero).toContain('min-width: 0');
+    expect(hero).toContain('white-space: normal');
+    expect(hero).toContain('overflow-wrap: anywhere');
+    expect(indexCss.match(/\.status-pill \{([^}]+)\}/)![1]).not.toContain('nowrap');
+    expect(indexCss).not.toContain('.bottombar');
   });
 });

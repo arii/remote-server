@@ -13,7 +13,6 @@ import {
   briefingActions,
   briefingFreshness,
   briefingAllClear,
-  dayTrend,
   DigestControlsView,
   digestChannels,
   digestDisabledReason,
@@ -41,7 +40,6 @@ import {
   truncateRunName,
   visibleBoardItems,
 } from './BriefingView';
-import { isHistoryFailure } from './historyUtils';
 
 function status(over: Partial<NotificationsStatus> = {}): NotificationsStatus {
   return {
@@ -239,12 +237,6 @@ describe('activity window (issue #609)', () => {
     ]);
   });
 
-  it('labels trend counts by window', () => {
-    expect(dayTrend(entries, now, '1h')).toBe('Last 1h: 1 event, 0 failures.');
-    expect(dayTrend(entries, now)).toBe('Last 24h: 2 events, 1 failure.');
-    expect(dayTrend(entries, now, '7d')).toBe('Last 7d: 4 events, 2 failures.');
-  });
-
   it('renders the window selector with the active window pressed', () => {
     const empty = {
       repo: 'r',
@@ -286,8 +278,8 @@ describe('activity window (issue #609)', () => {
     expect(html).toContain('data-testid="briefing-window-24h"');
     expect(html).toContain('data-testid="briefing-window-7d"');
     expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain('data-testid="briefing-trend"');
-    expect(html).toContain('Last 1h: 1 event, 0 failures.');
+    expect(html).not.toContain('data-testid="briefing-trend"');
+    expect(html).not.toContain('0 failures');
   });
 });
 
@@ -393,6 +385,7 @@ describe('notification preferences (issue #656)', () => {
       <PrefsControlsView prefs={prefs()} prefsErr={null} busy onToggle={noop} />,
     );
     expect(busy).toContain('disabled');
+    expect(busy).toContain('Saving notification preferences…');
     const failed = renderToStaticMarkup(
       <PrefsControlsView prefs={null} prefsErr="boom" busy={false} onToggle={noop} />,
     );
@@ -460,44 +453,6 @@ describe('briefing narrative lede (issue #671)', () => {
       const html = renderBody(briefing({ narrative }));
       expect(html).not.toContain('briefing-narrative');
     }
-  });
-});
-
-describe('trend failure predicate (issue #506)', () => {
-  const now = 1793745800;
-  const entries = [
-    { kind: 'run', action: 'briefing-td', command: 'td preflight', exit: 1, ts: now - 100 },
-    { kind: 'run', action: 'briefing-td', command: 'td preflight', exit: 0, ts: now - 200 },
-    { kind: 'chat', session_id: 's1', event: 'chat failed', error: 'boom', exit: 2, ts: now - 300 },
-    { kind: 'chat', session_id: 's2', event: 'chat finished', exit: 0, ts: now - 400 },
-    {
-      kind: 'agent-turn',
-      session_id: 's3',
-      exit: 3,
-      error: 'muse turn failed (exit 3): oops',
-      detail: 'asked: hi\nverdict: exit 3 in 1.0s\nwhy: oops',
-      ts: now - 500,
-    },
-    {
-      kind: 'agent-turn',
-      session_id: 's4',
-      provider: 'muse',
-      prompt: 'list files',
-      exit: 0,
-      detail: 'asked: list files\nverdict: exit 0 in 1.2s\nsaid: yo',
-      ts: now - 600,
-    },
-    { kind: 'webhook', event: 'push', ok: false, ts: now - 700 },
-  ] as LedgerEntry[];
-
-  it('counts run/chat/agent failures, not webhook-ok only', () => {
-    expect(dayTrend(entries, now)).toBe('Last 24h: 7 events, 4 failures.');
-  });
-
-  it('matches History bad tones on the same window', () => {
-    const recent = inActivityWindow(entries, '24h', now);
-    expect(recent.filter(isHistoryFailure)).toHaveLength(4);
-    expect(dayTrend(entries, now)).toContain('4 failures');
   });
 });
 

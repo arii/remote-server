@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import App, { HEALTH_POLL_MS, NAV_ENTRIES, navPressed, nextBarHidden, RollupGate, singleFlight } from './App';
+import App, { HEALTH_POLL_MS, NAV_ENTRIES, navPressed, RollupGate, singleFlight } from './App';
 import AgentDrawer, { pumpTurn } from './views/AgentDrawer';
 import InboxStrips from './views/InboxStrips';
 import type { AgentRun, InboxFeed, SystemHealthResponse } from './apiClient';
@@ -15,7 +15,6 @@ import BriefingView, {
   briefingFreshness,
   briefingSummary,
   cleanBriefingLine,
-  dayTrend,
   truncateChip,
 } from './views/BriefingView';
 import RepoLabel, { repoLabelText } from './components/RepoLabel';
@@ -454,19 +453,6 @@ describe('briefing substance', () => {
     const failing = briefingActions({ ...empty, workflow_lines: ['x failed'] });
     expect(failing.some((a) => a.label.includes('fail'))).toBe(true);
     expect(briefingActions(loadBriefing()).length).toBeLessThanOrEqual(3);
-  });
-  it('counts last-day events and failures', () => {
-    const now = 1793745800;
-    expect(
-      dayTrend(
-        [
-          { kind: 'chat', event: 'a', ts: now - 100, ok: true },
-          { kind: 'webhook', event: 'b', ts: now - 200, ok: false },
-          { kind: 'webhook', event: 'old', ts: now - 100000, ok: false },
-        ],
-        now,
-      ),
-    ).toBe('Last 24h: 2 events, 1 failure.');
   });
   it('all-clear body shows actions and a History pointer', () => {
     const html = renderToStaticMarkup(
@@ -1003,16 +989,16 @@ describe('app', () => {
     expect(html).not.toContain('data-testid="briefing-');
   });
 
-  it('App splits primary tabs from the section cluster (issue #961; was one bar in #896, Queue in #930)', () => {
+  it('keeps every destination and bug reporting in the top header (#1317)', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('aria-label="Views"');
-    expect(html).toContain('aria-label="Sections"');
+    expect(html).not.toContain('aria-label="Sections"');
     expect(html).toContain('data-testid="topbar"');
-    expect(html).toContain('data-testid="bottombar"');
+    expect(html).not.toContain('data-testid="bottombar"');
     for (const label of ['Now', 'Chat', 'Briefing', 'History', 'Review', 'Jobs', 'Queue']) {
       expect(html).toContain(`>${label}</button>`);
     }
-    expect(html).toContain('data-testid="report-bug"');
+    expect(html).toContain('data-testid="report-bug-header"');
     expect(html).toContain('aria-keyshortcuts="1"');
     expect(html).toContain('aria-keyshortcuts="4"');
   });
@@ -1562,44 +1548,6 @@ describe('header health revalidation (issue #588)', () => {
     await new Promise((resolve) => { setTimeout(resolve, 0); });
     refresh();
     expect(runs).toBe(2);
-  });
-});
-
-describe('bottom-bar auto-hide (issue #1033)', () => {
-  const shown = { hidden: false, downPx: 0 };
-
-  it('always shows at the top of the page', () => {
-    expect(nextBarHidden(100, 0, { hidden: true, downPx: 99 })).toEqual({
-      hidden: false,
-      downPx: 0,
-    });
-  });
-
-  it('hides on a sustained scroll-down run, not one flick', () => {
-    let state = shown;
-    for (const y of [110, 120, 130, 140]) state = nextBarHidden(y - 10, y, state);
-    expect(state.hidden).toBe(false);
-    state = nextBarHidden(140, 180, state);
-    expect(state.hidden).toBe(true);
-  });
-
-  it('catches slow trackpad drags that per-event thresholds miss', () => {
-    let state = shown;
-    for (let i = 0; i < 8; i += 1) state = nextBarHidden(100 + i * 10, 110 + i * 10, state);
-    expect(state.hidden).toBe(true);
-  });
-
-  it('reveals on scroll up and resets the run', () => {
-    const hidden = { hidden: true, downPx: 0 };
-    expect(nextBarHidden(140, 100, hidden)).toEqual({ hidden: false, downPx: 0 });
-  });
-
-  it('holds state on jitter', () => {
-    expect(nextBarHidden(100, 103, shown)).toEqual({ hidden: false, downPx: 3 });
-    expect(nextBarHidden(100, 103, { hidden: true, downPx: 0 })).toEqual({
-      hidden: true,
-      downPx: 0,
-    });
   });
 });
 

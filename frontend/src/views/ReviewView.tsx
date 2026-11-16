@@ -25,7 +25,7 @@ import type { PrDiffResponse } from '../apiClient';
 import type { DeferredRow, IssueRow, PrDetailsResponse, PrRow } from '../reviewTypes';
 import { extractBracketTags } from '../attentionFilters';
 import { HEALTH_POLL_MS } from '../tabBadges';
-import { approveBlockReason, approveMergeEligible, detailsMergeBlockReason, isDependabotPr, isOwnPr, mergeBlockReason } from '../reviewTypes';
+import { approveBlockReason, approveMergeEligible, detailsMergeBlockReason, isDependabotPr, mergeBlockReason } from '../reviewTypes';
 import { useTriageKeys } from '../triageKeys';
 import { loadIssues, loadPrDetails, loadPrs, useMock } from './mockViews';
 
@@ -477,7 +477,7 @@ export function PrDetails({
       <MergeBlockDetail details={details} head={mergeBlocked} />
       <div className="actions">
         <TapToFire
-          label={`Merge PR #${details.number}`}
+          label={mergeDisabled && !mergeBlocked ? `Merging PR #${details.number}…` : `Merge PR #${details.number}`}
           confirm="This cannot be undone."
           disabled={mergeDisabled}
           onFire={() => onMerge(details.number)}
@@ -511,13 +511,17 @@ export function PrRowMerge({
   onMerge: (n: number) => void;
 }) {
   return (
-    <TapToFire
-      label="Merge"
-      testid={`merge-pr-${pr.number}`}
-      confirm="This cannot be undone."
-      disabled={mergeBlockReason(pr) !== null || merging}
-      onFire={() => onMerge(pr.number)}
-    />
+    <>
+      <TapToFire
+        label="Merge"
+        testid={`merge-pr-${pr.number}`}
+        confirm="This cannot be undone."
+        disabled={mergeBlockReason(pr) !== null || merging}
+        onFire={() => onMerge(pr.number)}
+      />
+      {mergeBlockReason(pr) && <span className="row-meta">{mergeBlockReason(pr)}</span>}
+      {merging && <span className="row-meta">Merging…</span>}
+    </>
   );
 }
 
@@ -551,7 +555,7 @@ export function PrRowApprove({
   const blocked = approveBlockReason(pr, viewer);
   // #848: an impossible approval (own PR) names its reason inline —
   // a disabled chip alone reads as broken, a live chip 500s.
-  const showInline = isOwnPr(pr, viewer) && blocked !== null;
+  const showInline = blocked !== null;
   return (
     <>
       <button
@@ -562,7 +566,7 @@ export function PrRowApprove({
         disabled={blocked !== null || busy}
         onClick={() => onApprove(pr.number)}
       >
-        Approve
+        {busy ? 'Approving…' : 'Approve'}
       </button>
       {showInline && (
         <span className="row-meta" data-testid={`approve-self-note-${pr.number}`}>
@@ -598,7 +602,7 @@ export function PrRowReviewActions({
   if (approveMergeEligible(pr, viewer)) {
     return (
       <TapToFire
-        label="Approve & Merge"
+        label={merging || reviewing ? 'Approving & merging…' : 'Approve & Merge'}
         testid={`approve-merge-pr-${pr.number}`}
         confirm="This cannot be undone."
         disabled={merging || reviewing}
@@ -636,7 +640,7 @@ export function PrRowRequestChanges({
       disabled={busy}
       onClick={() => onToggle(pr.number)}
     >
-      Request changes
+      {busy ? 'Sending…' : 'Request changes'}
     </button>
   );
 }
@@ -936,7 +940,7 @@ export function IssueRowLabels({
                   disabled={busy}
                   onClick={() => onRemove(name)}
                 >
-                  ×
+                  {busy ? 'Saving…' : '×'}
                 </button>
               </span>
             ))}
@@ -1006,7 +1010,7 @@ export function IssueRowLabels({
             aria-label={`Add label to issue #${n}`}
             disabled={busy}
           >
-            {pending?.op === 'add' ? 'Saving…' : 'Add'}
+            {busy ? 'Saving…' : 'Add'}
           </button>
         </form>
       )}
@@ -1025,7 +1029,7 @@ export function IssueRowLabels({
             disabled={busy}
             onClick={onRetry}
           >
-            Retry
+            {busy ? 'Saving…' : 'Retry'}
           </button>
         </p>
       )}
@@ -1303,6 +1307,7 @@ export function BulkDeferBar({
   const eitherBusy = busy || approveBusy;
   return (
     <div className="actions" data-testid="defer-bulk-bar" role="status">
+      {eitherBusy && <span className="row-meta">Updating selected rows…</span>}
       {count} selected{' '}
       <button
         type="button"
@@ -1325,6 +1330,7 @@ export function BulkDeferBar({
           {approveBusy ? 'Approving…' : `Approve ${approvable}`}
         </button>
       )}
+      {onApprove && approvable === 0 && <span className="row-meta">No selected PR is approvable.</span>}
       {skippedNote && (
         <span className="row-meta" data-testid="defer-bulk-approve-skipped">
           {skippedNote}

@@ -1,0 +1,141 @@
+// @vitest-environment happy-dom
+import { act, StrictMode } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import App from './App';
+import * as api from './apiClient';
+import { loadInbox } from './mocks/inbox';
+import { loadRepoDiff, loadRepos, loadSystemHealth } from './views/mockViews';
+
+vi.mock('./apiClient', async (original) => ({
+  ...await original<typeof import('./apiClient')>(),
+  fetchInbox: vi.fn(),
+  fetchRepos: vi.fn(),
+  fetchSystemHealth: vi.fn(),
+  fetchPrs: vi.fn().mockResolvedValue({ prs: [] }),
+  fetchJobs: vi.fn().mockResolvedValue({ jobs: [] }),
+  fetchLedger: vi.fn().mockResolvedValue({ entries: [] }),
+  fetchDispatchQueue: vi.fn().mockResolvedValue({ items: [] }),
+  fetchDeferred: vi.fn().mockResolvedValue({ deferred: [] }),
+  fetchSnoozed: vi.fn().mockResolvedValue({ snoozed: [] }),
+  fetchRepoDiff: vi.fn(),
+  warmRepoMetrics: vi.fn(),
+  warmViewCaches: vi.fn(),
+  prefetchTabPayloads: vi.fn(),
+}));
+vi.mock('./views/TriageDrawer', () => ({
+  default: ({ open, onAskAgent }: { open: boolean; onAskAgent: (s: string) => void }) =>
+    open ? <button data-testid="triage-shortcut" onClick={() => onAskAgent('Investigate this PR')}>Ask agent</button> : null,
+}));
+vi.mock('./views/RepoDiffModal', () => ({
+  default: ({ onAskAgent }: { onAskAgent: (s: string) => void }) =>
+    <button data-testid="diff-shortcut" onClick={() => onAskAgent('Review this diff')}>Ask agent</button>,
+}));
+vi.mock('./views/ChatView', () => ({
+  default: ({ seed, sendSeed }: { seed: string | null; sendSeed: boolean }) =>
+    <div data-testid="chat-handoff" data-send={sendSeed}>{seed}</div>,
+}));
+
+let root: Root;
+let host: HTMLDivElement;
+const click = async (id: string) => {
+  await act(async () => { host.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)!.click(); });
+};
+
+beforeEach(() => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Unconfigured test endpoint')));
+  localStorage.clear();
+  sessionStorage.clear();
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  vi.mocked(api.fetchInbox).mockResolvedValue(loadInbox());
+  vi.mocked(api.fetchRepos).mockResolvedValue({ repos: loadRepos() });
+  vi.mocked(api.fetchSystemHealth).mockResolvedValue(loadSystemHealth());
+  vi.mocked(api.fetchRepoDiff).mockImplementation(async (repo) => loadRepoDiff(repo));
+  host = document.createElement('div');
+  document.body.append(host);
+  root = createRoot(host);
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  host.remove();
+  vi.unstubAllGlobals();
+  vi.clearAllMocks();
+});
+
+describe('console audit routing (#1317)', () => {
+  it('keeps Chat as fresh-boot default and retains saved navigation', async () => {
+    await act(async () => root.render(<App />));
+    expect(host.querySelector('[data-testid="chat-handoff"]')).not.toBeNull();
+    await click('nav-now');
+    expect(JSON.parse(localStorage.getItem('console.nav-memory')!).tab).toBe('now');
+  });
+
+  it('orders Attention, Review, composer, then a collapsed system disclosure without selection UI', async () => {
+    await act(async () => root.render(<App />));
+    await click('nav-now');
+    const order = ['now-attention', 'now-composer', 'now-system'].map((id) => host.innerHTML.indexOf(`data-testid="${id}"`));
+    expect(order[0]).toBeGreaterThan(0);
+    expect(order[1]).toBeGreaterThan(order[0]);
+    expect(order[2]).toBeGreaterThan(order[1]);
+    expect(host.innerHTML.indexOf('aria-label="Review summary"')).toBeGreaterThan(order[0]);
+    expect(host.innerHTML.indexOf('aria-label="Review summary"')).toBeLessThan(order[1]);
+    expect(host.querySelector<HTMLDetailsElement>('[data-testid="now-system"]')!.open).toBe(false);
+    expect(host.querySelector('[data-testid="now-view"] input[type="checkbox"]')).toBeNull();
+    expect(host.querySelector('[data-testid="bottombar"]')).toBeNull();
+    expect(host.querySelector('[data-testid="report-bug"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Views"] [data-testid="nav-briefing"]')).not.toBeNull();
+  });
+
+  it('stages and focuses triage shortcuts on Now, then explicitly sends through Chat', async () => {
+    await act(async () => root.render(<StrictMode><App /></StrictMode>));
+    await click('nav-review');
+    await click('triage-shortcut');
+    expect(host.querySelector('[data-testid="triage-shortcut"]')).toBeNull();
+    const prompt = host.querySelector<HTMLTextAreaElement>('#now-prompt')!;
+    expect(prompt.value).toBe('Investigate this PR');
+    expect(document.activeElement).toBe(prompt);
+    expect(host.querySelector('[data-testid="chat-handoff"]')).toBeNull();
+    await act(async () => host.querySelector<HTMLFormElement>('[data-testid="now-composer"]')!.requestSubmit());
+    const handoff = host.querySelector('[data-testid="chat-handoff"]')!;
+    expect(handoff.textContent).toBe('Investigate this PR');
+    expect(handoff.getAttribute('data-send')).toBe('true');
+  });
+
+  it('closes the diff modal before staging its shortcut', async () => {
+    await act(async () => root.render(<App />));
+    await click('nav-now');
+    const diff = host.querySelector<HTMLButtonElement>('[data-testid^="dirty-view-diff-"]')!;
+    expect(diff).not.toBeNull();
+    await act(async () => diff.click());
+    await click('diff-shortcut');
+    expect(host.querySelector('[data-testid="diff-shortcut"]')).toBeNull();
+    expect(host.querySelector<HTMLTextAreaElement>('#now-prompt')!.value).toBe('Review this diff');
+  });
+
+  it('does not send an empty Now prompt and explains the disabled control', async () => {
+    await act(async () => root.render(<App />));
+    await click('nav-now');
+    const form = host.querySelector<HTMLFormElement>('[data-testid="now-composer"]')!;
+    expect(form.querySelector('button')!.disabled).toBe(true);
+    expect(form.textContent).toContain('Enter a prompt to send.');
+    await act(async () => form.requestSubmit());
+    expect(host.querySelector('[data-testid="chat-handoff"]')).toBeNull();
+  });
+
+  it('opens and closes bug reporting from the header', async () => {
+    await act(async () => root.render(<App />));
+    await click('report-bug-header');
+    expect(host.querySelector('[data-testid="report-dialog"]')).not.toBeNull();
+    await click('report-cancel');
+    expect(host.querySelector('[data-testid="report-dialog"]')).toBeNull();
+  });
+
+  it('keeps the composer usable when the inbox request fails', async () => {
+    vi.mocked(api.fetchInbox).mockRejectedValue(new Error('Inbox unavailable'));
+    await act(async () => root.render(<App />));
+    await click('nav-now');
+    expect(host.textContent).toContain('Inbox unavailable');
+    expect(host.querySelector('#now-prompt')).not.toBeNull();
+  });
+});

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import Dialog from '../components/Dialog';
 import TapToFire from '../components/TapToFire';
 import { isRollupRepo } from '../components/RepoPicker';
@@ -207,6 +208,7 @@ export function SnoozeButtons({
           {snoozePresetLabel(m)}
         </button>
       ))}
+      {busy && <span className="row-meta">Updating attention…</span>}
     </>
   );
 }
@@ -979,41 +981,13 @@ export function AskAgentControl({
   );
 }
 
-// Select-all header toggle (issue #935): bulk selection reads as
-// a designed affordance from the first paint, not a toolbar that
-// materialises after the first checkbox click.
-export function AttentionSelectAll({
-  total,
-  selectedCount,
-  onToggle,
-}: {
-  total: number;
-  selectedCount: number;
-  onToggle: () => void;
-}) {
-  return (
-    <label className="row-meta attention-select-all">
-      <input
-        type="checkbox"
-        data-testid="now-select-all"
-        aria-label="Select all attention items"
-        checked={total > 0 && selectedCount >= total}
-        onChange={onToggle}
-      />{' '}
-      Select all
-    </label>
-  );
-}
 
 // One attention row (issue #839, #935): the primary action, Ask
 // agent, Snooze 1h, and Dismiss stay inline; only the 8h snooze
 // sits in the More overflow, which never carries Review/Jobs nav
 // links. A blocked Retry pull (diverged/dirty checkout) demotes
 // to a disabled secondary while Ask agent takes the primary slot.
-// The bulk checkbox rides the title line; single-item lists hide
-// it (the parent passes showSelect). The source line names the
-// row's repo context and, when the action resolves to an in-app
-// surface, its destination.
+// The source line names the row's repo and destination.
 
 // Long diagnostics fold (issue #1245): details past the fold
 // threshold render in a disclosure with a Copy button instead
@@ -1046,10 +1020,7 @@ export function AttentionRow({
   viewRepo,
   rollup,
   repoInfo,
-  selected,
   busy,
-  showSelect = true,
-  onToggleSelect,
   onDone,
   onError,
   onSection,
@@ -1061,26 +1032,13 @@ export function AttentionRow({
   viewRepo: string;
   rollup: boolean;
   repoInfo?: RepoInfo | null;
-  selected: boolean;
   busy: boolean;
-  showSelect?: boolean;
-  onToggleSelect: () => void;
 }) {
   const block = retryBlocked(item, repoInfo);
   const [blockNudge, setBlockNudge] = useState(false);
   return (
     <li className="detail" data-testid={`now-item-${item.id}`}>
       <div className="attention-head">
-        {showSelect && (
-          <input
-            type="checkbox"
-            className="attention-check"
-            data-testid={`now-select-${item.id}`}
-            aria-label={`Select ${item.title}`}
-            checked={selected}
-            onChange={onToggleSelect}
-          />
-        )}
         {showRepoTag(rollup, item.repo, viewRepo) ? (
           <h3 className="row-title">
             <RepoTag repo={item.repo} /> {item.title}
@@ -1166,6 +1124,7 @@ export function AttentionRow({
         >
           Dismiss
         </button>
+        {busy && <span className="row-meta">Updating attention…</span>}
         <details className="row-overflow" data-testid={`now-more-${item.id}`}>
           <summary>More</summary>
           <div className="actions">
@@ -1215,40 +1174,6 @@ export function AttentionGroupRow({
   );
 }
 
-// Bulk bar: rendered only while attention rows are selected. One
-// snooze action per preset across the selection, plus clear.
-export function AttentionBulkBar({
-  count,
-  busy,
-  onSnooze,
-  onClear,
-}: {
-  count: number;
-  busy: boolean;
-  onSnooze: (minutes: number) => void;
-  onClear: () => void;
-}) {
-  return (
-    <div className="actions" data-testid="now-bulk-bar" role="status">
-      {count} selected{' '}
-      {SNOOZE_PRESETS.map((m) => (
-        <button
-          key={m}
-          type="button"
-          data-testid={`now-bulk-snooze-${m}`}
-          aria-label={`${snoozePresetLabel(m)} ${count} selected item${count === 1 ? '' : 's'}`}
-          disabled={busy}
-          onClick={() => onSnooze(m)}
-        >
-          {snoozePresetLabel(m)} ({count})
-        </button>
-      ))}
-      <button type="button" data-testid="now-bulk-clear" onClick={onClear}>
-        Clear
-      </button>
-    </div>
-  );
-}
 
 export default function NowView({
   repo,
@@ -1265,6 +1190,7 @@ export default function NowView({
   onRepoAction,
   onOpenChat,
   onFilterHistory,
+  composer,
 }: {
   repo: string;
   // Known checkouts, backing the attention rows' repo context
@@ -1296,10 +1222,10 @@ export default function NowView({
   // Filters the History feed to one container (#931): the pill's
   // History action navigates to the feed, pre-filtered.
   onFilterHistory?: (service: string) => void;
+  composer?: ReactNode;
 }) {
   const [data, setData] = useState<InboxFeed | null>(null);
-  // Deferred flags backing the strips bulk bar (issue #591). The
-  // strips render outside the rollup only; rollup keeps [].
+  // Deferred flags backing the inbox strips.
   const [deferred, setDeferred] = useState<DeferredRow[]>([]);
   // Hero extras (issue #811): open-PR count (per-repo; the rollup
   // keeps null and hides the segment) and last deploy start.
@@ -1317,9 +1243,6 @@ export default function NowView({
   // instantly; refresh() reconciles against the server list.
   const [snoozed, setSnoozed] = useState<Record<string, SnoozedEntry>>({});
   const [snoozeBusy, setSnoozeBusy] = useState<string | null>(null);
-  // Bulk selection across attention rows (issue #839): snooze-n via
-  // the bulk bar instead of tapping each row's overflow.
-  const [bulkSelected, setBulkSelected] = useState<ReadonlySet<string>>(new Set());
   const rollup = isRollupRepo(repo);
 
   const handledReportNonce = useRef(0);
@@ -1393,13 +1316,6 @@ export default function NowView({
           Date.now() / 1000,
         ),
       );
-      // A bulk-selected row that left the list drops from the
-      // selection so the count never names a resolved item.
-      setBulkSelected((prev) => {
-        const liveIds = new Set(live.attention.map((i) => i.id));
-        if ([...prev].every((id) => liveIds.has(id))) return prev;
-        return new Set([...prev].filter((id) => liveIds.has(id)));
-      });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1460,70 +1376,23 @@ export default function NowView({
     }
   }
 
-  // One preset across the whole bulk selection: snooze each live
-  // row, then refresh once. A mid-loop failure keeps the stubs that
-  // landed and reports; refresh reconciles the rest.
-  async function onBulkSnooze(minutes: number) {
-    if (!data) return;
-    const busyNotice = snoozeBusyNotice(snoozeBusy);
-    if (busyNotice) {
-      setError(busyNotice);
-      return;
-    }
-    const targets = data.attention.filter((i) => bulkSelected.has(i.id));
-    if (targets.length === 0) return;
-    setSnoozeBusy('bulk');
-    try {
-      for (const item of targets) {
-        const res = await snoozeAttention(item.id, minutes, item.repo);
-        setSnoozed((prev) => ({
-          ...prev,
-          [item.id]: { until: res.snoozed_until, title: item.title },
-        }));
-      }
-      setFired(
-        `Snoozed ${targets.length} item${targets.length === 1 ? '' : 's'} (${snoozePresetLabel(minutes).toLowerCase()})`,
-      );
-      setBulkSelected(new Set());
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSnoozeBusy(null);
-    }
-  }
-
-  function toggleBulkSelect(id: string) {
-    setBulkSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
 
   // Snoozed members leave the actionable list at render time
-  // (issue #1109.6): groups and bulk selection see active items
+  // (issue #1109.6): groups see active items
   // only, so counts reconcile instead of double-showing.
   // Non-required workflow failures never surface at all (issue
   // #1109.1): console-e2e smoke stays out of the queue, groups,
-  // hero, and bulk selection until its gate flips to required.
+  // and hero until its gate flips to required.
   const { active: activeAttention, snoozed: snoozedLive } = data
     ? partitionAttention(data.attention, snoozed)
     : { active: [], snoozed: [] };
   // Missing card titles (issue #1109.8) read back a bracket tag from
   // the body — "[CI] 2 failing: build…" titles as "CI" — instead of
-  // a blank or generic chip. Derived once so the hero, groups, and
-  // bulk selection all reconcile on the same titles.
+  // a blank or generic chip. Hero and groups share these titles.
   const visibleAttention = activeAttention
     .filter(isActionableAttention)
     .map((item) => ({ ...item, title: cardDisplayTitle(item) }));
 
-  function toggleSelectAll() {
-    const ids = visibleAttention.map((i) => i.id);
-    const all = ids.length > 0 && ids.every((id) => bulkSelected.has(id));
-    setBulkSelected(all ? new Set() : new Set(ids));
-  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1647,10 +1516,6 @@ export default function NowView({
   }
 
   const stubRows = data ? snoozedRows(snoozed, data.attention.map((i) => i.id)) : [];
-  // Bulk checkboxes only earn their place with a real choice
-  // (issue #935): a lone card hides them, longer lists pair them
-  // with the Select all header toggle. Only actionable rows count.
-  const selectable = visibleAttention.length > 1;
 
   // Group members are active-only by construction (see the
   // partition above): the snoozed branch is gone, so a repeat can
@@ -1663,10 +1528,7 @@ export default function NowView({
         viewRepo={repo}
         rollup={rollup}
         repoInfo={repos.find((r) => r.name === item.repo) ?? null}
-        selected={bulkSelected.has(item.id)}
         busy={snoozeBusy !== null}
-        showSelect={selectable}
-        onToggleSelect={() => toggleBulkSelect(item.id)}
         onDone={(title) => {
           setFired(title);
           void refresh();
@@ -1693,9 +1555,6 @@ export default function NowView({
             )}
           </h2>
         </div>
-        <button type="button" data-testid="report-bug" onClick={() => { setDialogOpen(true); void ensureReportLabels(); }}>
-          Report a bug
-        </button>
       </header>
       {data && (
         <NowHero
@@ -1734,7 +1593,7 @@ export default function NowView({
           availableLabels={reportLabels ?? []}
           onSubmit={(t, b, l) => void onSubmitReport(t, b, l)}
           onCancel={() => setDialogOpen(false)}
-          returnFocusTo='[data-testid="report-bug"]'
+          returnFocusTo='[data-testid="report-bug-header"]'
         />
       )}
       {reported && (
@@ -1747,34 +1606,8 @@ export default function NowView({
           Done: {fired}
         </p>
       )}
-      <DirtyReposStrip
-        repos={repos}
-        onViewDiff={
-          onViewDiff ??
-          ((name) => onAskAgent(`In ${name}, review git status and diff.`))
-        }
-        onAction={
-          onRepoAction ??
-          (async () => {
-            throw new Error('Repo actions unavailable here');
-          })
-        }
-        onAskAgent={onAskAgent}
-        onOpenChat={onOpenChat ?? (() => onOpenTab('chat'))}
-      />
-      <ContainersSection health={health} onOpenStats={onOpenStats} onFilterHistory={onFilterHistory} />
       {data && (
         <>
-          {!rollup && (
-            <InboxStrips
-              feed={data}
-              repo={repo}
-              deferred={deferred}
-              onDeferredChange={setDeferred}
-              onOpenReview={() => onOpenSection?.('review')}
-              onOpenJobs={() => onOpenSection?.('jobs')}
-            />
-          )}
           <section aria-label="Attention" data-testid="now-attention">
             <h2>Attention</h2>
           {(stubRows.length > 0 || snoozedLive.length > 0) && (
@@ -1807,21 +1640,6 @@ export default function NowView({
         <NowEmptyState onRunCheck={() => onOpenSection?.('jobs')} />
       ) : (
         <>
-          {selectable && (
-            <AttentionSelectAll
-              total={visibleAttention.length}
-              selectedCount={bulkSelected.size}
-              onToggle={toggleSelectAll}
-            />
-          )}
-          {bulkSelected.size > 0 && (
-            <AttentionBulkBar
-              count={bulkSelected.size}
-              busy={snoozeBusy !== null}
-              onSnooze={(m) => void onBulkSnooze(m)}
-              onClear={() => setBulkSelected(new Set())}
-            />
-          )}
           <ul className="session-list" data-testid="now-list">
             {groupAttentionItems(visibleAttention).map((group, gi) =>
               group.items.length === 1 ? (
@@ -1838,6 +1656,37 @@ export default function NowView({
           </section>
         </>
       )}
+      {data && (
+        <section aria-label="Review summary">
+          <h2>Review</h2>
+          <button type="button" onClick={() => onOpenSection?.('review')}>
+            Ready to merge ({data.merge_ready.count})
+            {data.merge_ready.top.length > 0 ? `: ${data.merge_ready.top.map((p) => `#${p.number} ${p.title}`).join(', ')}` : ''}
+          </button>
+        </section>
+      )}
+      {composer}
+      <details data-testid="now-system">
+        <summary>Repos &amp; system ({repos.length} repos, {health ? health.containers.length : '…'} containers)</summary>
+        <DirtyReposStrip
+          repos={repos}
+          onViewDiff={onViewDiff ?? ((name) => onAskAgent(`In ${name}, review git status and diff.`))}
+          onAction={onRepoAction ?? (async () => { throw new Error('Repo actions unavailable here'); })}
+          onAskAgent={onAskAgent}
+          onOpenChat={onOpenChat ?? (() => onOpenTab('chat'))}
+        />
+        <ContainersSection health={health} onOpenStats={onOpenStats} onFilterHistory={onFilterHistory} />
+        {data && !rollup && (
+          <InboxStrips
+            feed={data}
+            repo={repo}
+            deferred={deferred}
+            onDeferredChange={setDeferred}
+            onOpenReview={() => onOpenSection?.('review')}
+            onOpenJobs={() => onOpenSection?.('jobs')}
+          />
+        )}
+      </details>
     </section>
   );
 }
