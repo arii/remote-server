@@ -1692,10 +1692,6 @@ export async function pumpStream(
   );
 }
 
-// Seed staging (#507): Briefing/Now/Review "Ask agent" seeds land
-// in the composer for review and edit — never auto-sent, so one
-// tap can't start a metered turn. Returns the text to stage, or
-// null when there is no seed or it was already staged.
 export function stageSeed(seed: string | null, staged: boolean): string | null {
   if (!seed || staged) return null;
   return seed;
@@ -1759,19 +1755,6 @@ export default function ChatView({
   const promptRef = useRef<HTMLTextAreaElement>(null);
   // Shortcuts stage text; Now's explicit Send starts the turn (#1317).
   const seedStagedRef = useRef(false);
-  useEffect(() => {
-    const staged = stageSeed(seed, seedStagedRef.current);
-    if (staged === null) return;
-    seedStagedRef.current = true;
-    onSeedUsed();
-    if (sendSeed) {
-      void sendText(staged);
-    } else {
-      setPrompt(staged);
-      promptRef.current?.focus();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   // Palette focus request: each nonce handled once.
   const handledFocusNonce = useRef(0);
   useEffect(() => {
@@ -1978,35 +1961,46 @@ export default function ChatView({
   const stalledRef = useRef(false);
 
   useEffect(() => {
-    if (useMock()) {
-      setMessages(loadChat().messages);
-      return;
-    }
+    const mock = useMock();
+    if (mock) setMessages(loadChat().messages);
     let cancelled = false;
     const ctrl = new AbortController();
     (async () => {
-      try {
-        const live = await fetchAgentRuns();
-        if (!cancelled) setRuns(live.runs);
-      } catch {
-        // Past runs stay hidden; live chat still works.
+      if (!mock) {
+        try {
+          const live = await fetchAgentRuns();
+          if (!cancelled) setRuns(live.runs);
+        } catch {
+          // Past runs stay hidden; live chat still works.
+        }
+        try {
+          const budget = await fetchBudget();
+          if (!cancelled) setBudget(budget);
+        } catch {
+          // Budget line stays hidden; runs still render.
+        }
+        // Turn survival (#1015): a stored thread whose turn outlived
+        // the page resumes here — live turns re-attach their stream,
+        // finished ones backfill. Unknown sessions stay on the
+        // interrupted-resend banner.
+        try {
+          const sid = loadChatSessionId();
+          if (sid && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
+        } catch {
+          // Resume is best-effort; the snapshot still renders.
+        }
       }
-      try {
-        const budget = await fetchBudget();
-        if (!cancelled) setBudget(budget);
-      } catch {
-        // Budget line stays hidden; runs still render.
-      }
-      // Turn survival (#1015): a stored thread whose turn outlived
-      // the page resumes here — live turns re-attach their stream,
-      // finished ones backfill. Unknown sessions stay on the
-      // interrupted-resend banner.
-      try {
-        const sid = loadChatSessionId();
-        // An explicit seed already owns this thread via sendText (#1317).
-        if (sid && !sendSeed && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
-      } catch {
-        // Resume is best-effort; the snapshot still renders.
+      // Resume must finish before a new turn claims the thread (#1317).
+      if (cancelled) return;
+      const staged = stageSeed(seed, seedStagedRef.current);
+      if (staged === null) return;
+      seedStagedRef.current = true;
+      onSeedUsed();
+      if (sendSeed) {
+        await sendText(staged);
+      } else {
+        setPrompt(staged);
+        promptRef.current?.focus();
       }
     })();
     return () => {
@@ -2238,6 +2232,7 @@ export default function ChatView({
       setInterrupted(null);
       setMessages((m) => {
         const last = m[m.length - 1];
+        if (last?.role === 'assistant' && last.text === text) return m;
         if (last && last.role === 'assistant' && last.text === '') {
           const next = [...m];
           next[next.length - 1] = { role: 'assistant', text };

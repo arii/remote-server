@@ -2,16 +2,15 @@
 import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import ChatView, { saveChatSessionId } from './ChatView';
-import { fetchChatSessionStatus, postChatStream } from '../apiClient';
+import ChatView, { saveChatMessages, saveChatSessionId } from './ChatView';
+import { fetchChatSessionStatus, postChatStream, reattachChatStream } from '../apiClient';
 
 vi.mock('./AgentDrawer', () => ({ default: () => null }));
 vi.mock('../apiClient', async (original) => ({
   ...await original<typeof import('../apiClient')>(),
   postChatStream: vi.fn(),
-  fetchChatSessionStatus: vi.fn().mockResolvedValue({
-    ok: true, session_id: 'stored', state: 'done', text: 'Previous answer', phase: '', elapsed: 0,
-  }),
+  fetchChatSessionStatus: vi.fn(),
+  reattachChatStream: vi.fn(),
   fetchAgentRuns: vi.fn().mockResolvedValue({ runs: [] }),
   fetchBudget: vi.fn().mockRejectedValue(new Error('Budget unavailable')),
   fetchRepoMetrics: vi.fn().mockRejectedValue(new Error('Metrics unavailable')),
@@ -26,7 +25,10 @@ beforeEach(() => {
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
-  vi.mocked(postChatStream).mockResolvedValue(new Response('data: {"token":"hello"}\n\n', { status: 200 }));
+  vi.mocked(fetchChatSessionStatus).mockResolvedValue({
+    ok: true, session_id: 'stored', state: 'done', text: 'Previous answer', phase: '', elapsed: 0,
+  });
+  vi.mocked(postChatStream).mockResolvedValue(new Response('event: done\ndata: {"text":"New answer"}\n\n'));
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -61,12 +63,52 @@ it('sends an explicit Now handoff exactly once in StrictMode (#1317)', async () 
   expect(host.textContent).not.toContain('Reply streaming —');
 });
 
-it('reuses a stored thread for an explicit send without concurrently replaying its previous turn', async () => {
+it('finishes a stored live turn before sending the Now seed exactly once in StrictMode', async () => {
+  const used = vi.fn();
   saveChatSessionId('stored');
+  saveChatMessages([{ role: 'user', text: 'Previous question' }]);
+  vi.mocked(fetchChatSessionStatus).mockResolvedValue({
+    ok: true, session_id: 'stored', state: 'live', text: '', phase: '', elapsed: 0,
+  });
+  let finish!: () => void;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      finish = () => {
+        controller.enqueue(new TextEncoder().encode('event: done\ndata: {"text":"Previous answer"}\n\n'));
+        controller.close();
+      };
+    },
+  });
+  vi.mocked(reattachChatStream).mockResolvedValue(new Response(body));
+  await act(async () => root.render(<StrictMode><ChatView repo="r" seed="Next question" sendSeed onSeedUsed={used} /></StrictMode>));
+  expect(reattachChatStream).toHaveBeenCalledTimes(1);
+  expect(postChatStream).not.toHaveBeenCalled();
+  expect(used).not.toHaveBeenCalled();
+  await act(async () => finish());
+  expect(postChatStream).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(postChatStream).mock.calls[0].slice(0, 3)).toEqual(['Next question', 'r', 'stored']);
+  expect(vi.mocked(postChatStream).mock.calls[0][4]!.aborted).toBe(false);
+  expect(used).toHaveBeenCalledTimes(1);
+  const history = host.querySelector('[data-testid="chat-history"]')!;
+  expect(Array.from(history.querySelectorAll('li > p')).map((row) => row.textContent)).toEqual([
+    'Previous question', 'Previous answer', 'Next question', 'New answer',
+  ]);
+});
+
+it.each([false, true])('backfills a finished reply before sending, without duplication when already saved=%s', async (saved) => {
+  saveChatSessionId('stored');
+  saveChatMessages([
+    { role: 'user', text: 'Previous question' },
+    ...(saved ? [{ role: 'assistant' as const, text: 'Previous answer' }] : []),
+  ]);
   await act(async () => root.render(<ChatView repo="r" seed="Next question" sendSeed onSeedUsed={() => {}} />));
+  expect(fetchChatSessionStatus).toHaveBeenCalledWith('stored');
+  expect(postChatStream).toHaveBeenCalledTimes(1);
   expect(vi.mocked(postChatStream).mock.calls[0][2]).toBe('stored');
-  expect(fetchChatSessionStatus).not.toHaveBeenCalled();
-  expect(host.textContent).not.toContain('Previous answer');
+  const history = host.querySelector('[data-testid="chat-history"]')!;
+  expect(Array.from(history.querySelectorAll('li > p')).map((row) => row.textContent)).toEqual([
+    'Previous question', 'Previous answer', 'Next question', 'New answer',
+  ]);
 });
 
 it('still resumes stored conversations on an ordinary Chat mount', async () => {
