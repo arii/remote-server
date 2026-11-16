@@ -144,12 +144,7 @@ class GridCDPDriver:
                 "Runtime.evaluate",
                 {"expression": browser_drive.SNAPSHOT_JS, "returnByValue": True},
             )
-            value = (raw or {}).get("result", {}).get("value") or {}
-            return {
-                "url": value.get("url", ""),
-                "title": value.get("title", ""),
-                "elements": value.get("els", []),
-            }
+            return browser_drive.snapshot_from_cdp(raw)
 
         try:
             return self._run(go, mutating=False)
@@ -232,13 +227,13 @@ class PlaywrightDriver:
         page = self._ensure()
         try:
             value = page.evaluate(self._snapshot_js)
+            return {
+                "url": value["url"],
+                "title": value["title"],
+                "elements": value["els"],
+            }
         except Exception as exc:
             raise BrowserDriverError(f"snapshot failed: {exc}") from exc
-        return {
-            "url": value.get("url", ""),
-            "title": value.get("title", ""),
-            "elements": value.get("els", []),
-        }
 
     def navigate(self, url: str) -> None:
         try:
