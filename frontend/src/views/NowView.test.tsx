@@ -34,8 +34,6 @@ import NowView, {
   resolveAttentionTarget,
   showRepoTag,
   SnoozedStub,
-  SNOOZE_PRESETS,
-  SnoozeButtons,
   SNOOZE_BUSY_NOTICE,
   snoozeBusyNotice,
   snoozedRows,
@@ -50,7 +48,6 @@ import type { AttentionItem } from '../attentionTypes';
 
 describe('snooze presets (issue #614)', () => {
   it('offers 1h and 8h', () => {
-    expect(SNOOZE_PRESETS).toEqual([60, 480]);
     expect(snoozePresetLabel(60)).toBe('Snooze 1h');
     expect(snoozePresetLabel(480)).toBe('Snooze 8h');
   });
@@ -173,26 +170,6 @@ describe('partitionAttention (issue #1109.6)', () => {
     const { active, snoozed: moved } = partitionAttention(items, snoozed);
     expect(active.map((i) => i.id)).toEqual(['a1']);
     expect(moved.map((i) => i.id)).toEqual(['s1', 's2']);
-  });
-});
-
-describe('SnoozeButtons (issue #614)', () => {
-  it('renders one button per preset with stable testids', () => {
-    const html = renderToStaticMarkup(
-      <SnoozeButtons itemId="job-j1" busy={false} onSnooze={() => {}} />,
-    );
-    expect(html).toContain('data-testid="snooze-job-j1-60"');
-    expect(html).toContain('data-testid="snooze-job-j1-480"');
-    expect(html).toContain('Snooze 1h');
-    expect(html).toContain('Snooze 8h');
-    expect(html).not.toContain('disabled');
-  });
-
-  it('disables while a snooze is in flight', () => {
-    const html = renderToStaticMarkup(
-      <SnoozeButtons itemId="job-j1" busy onSnooze={() => {}} />,
-    );
-    expect(html).toContain('disabled');
   });
 });
 
@@ -708,6 +685,21 @@ describe('attention grouping (issue #839)', () => {
     expect(attentionGroupKey(item())).toBe('failed-job‖check-notifications failed');
   });
 
+  it.each([false, true])('renders snooze presets on the live row with busy=%s (#1317)', (busy) => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      <AttentionRow item={item({ id: 'job-j1' })} viewRepo="remote-server" rollup={false} busy={busy}
+        onDone={noop} onError={noop} onSection={noop} onTab={noop} onAskAgent={noop} onSnooze={noop} />,
+    );
+    expect(html).toContain('Snooze 1h');
+    expect(html).toContain('Snooze 8h');
+    for (const minutes of [60, 480]) {
+      const button = html.match(new RegExp(`<button[^>]*data-testid="snooze-job-j1-${minutes}"[^>]*>`))!;
+      expect(button[0].includes('disabled')).toBe(busy);
+    }
+    expect(html.includes('Updating attention…')).toBe(busy);
+  });
+
   it('derives a card title from a bracket tag when the title is blank', () => {
     expect(cardDisplayTitle(item({ title: '', detail: '[CI] 2 failing: build, e2e' }))).toBe('CI');
     expect(cardDisplayTitle(item({ title: 'Attention', detail: '[E2E] smoke red' }))).toBe('E2E');
@@ -876,6 +868,9 @@ describe('now loading skeleton (issue #897)', () => {
         onAskAgent={() => {}}
         onOpenTab={() => {}}
         onOpenStats={() => {}}
+        onViewDiff={() => {}}
+        onOpenChat={() => {}}
+        onRepoAction={async () => { throw new Error('Unexpected action in loading-state test'); }}
       />,
     );
     expect(html).toContain('data-testid="now-loading"');

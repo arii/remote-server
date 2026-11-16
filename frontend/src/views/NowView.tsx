@@ -97,9 +97,6 @@ export function nowPollMs(itemCount: number): number {
   return itemCount > 0 ? 15000 : 60000;
 }
 
-// Attention snooze presets (issue #614), minutes. Server validates.
-export const SNOOZE_PRESETS = [60, 480];
-
 // Busy-guard feedback (issue #1010): a tap landing while a snooze is
 // in flight must surface a notice — silently dropping it leaves the
 // controls reading dead. Null when idle (no notice).
@@ -184,33 +181,6 @@ export function snoozedRows(
   liveIds: string[],
 ): Array<[string, SnoozedEntry]> {
   return Object.entries(snoozed).filter(([id]) => !liveIds.includes(id));
-}
-
-export function SnoozeButtons({
-  itemId,
-  busy,
-  onSnooze,
-}: {
-  itemId: string;
-  busy: boolean;
-  onSnooze: (minutes: number) => void;
-}) {
-  return (
-    <>
-      {SNOOZE_PRESETS.map((m) => (
-        <button
-          key={m}
-          type="button"
-          data-testid={`snooze-${itemId}-${m}`}
-          disabled={busy}
-          onClick={() => onSnooze(m)}
-        >
-          {snoozePresetLabel(m)}
-        </button>
-      ))}
-      {busy && <span className="row-meta">Updating attention…</span>}
-    </>
-  );
 }
 
 export function SnoozedStub({
@@ -1212,13 +1182,9 @@ export default function NowView({
   onOpenSection?: (section: 'review' | 'jobs' | 'queue') => void;
   // Opens the container stats drawer (#896): Containers pills navigate.
   onOpenStats?: (service?: string) => void;
-  // Dirty-repos strip (#937): per-row actions carry the row's repo
-  // so the global picker never moves first. Absent (older callers,
-  // tests), View Diff / Open in Chat fall back to Ask-agent seeds
-  // and the Chat tab, and git actions report unavailable.
-  onViewDiff?: (repo: string) => void;
-  onRepoAction?: (repo: string, action: RepoAction) => Promise<RepoActionResponse>;
-  onOpenChat?: (repo: string) => void;
+  onViewDiff: (repo: string) => void;
+  onRepoAction: (repo: string, action: RepoAction) => Promise<RepoActionResponse>;
+  onOpenChat: (repo: string) => void;
   // Filters the History feed to one container (#931): the pill's
   // History action navigates to the feed, pre-filtered.
   onFilterHistory?: (service: string) => void;
@@ -1670,10 +1636,10 @@ export default function NowView({
         <summary>Repos &amp; system ({repos.length} repos, {health ? health.containers.length : '…'} containers)</summary>
         <DirtyReposStrip
           repos={repos}
-          onViewDiff={onViewDiff ?? ((name) => onAskAgent(`In ${name}, review git status and diff.`))}
-          onAction={onRepoAction ?? (async () => { throw new Error('Repo actions unavailable here'); })}
+          onViewDiff={onViewDiff}
+          onAction={onRepoAction}
           onAskAgent={onAskAgent}
-          onOpenChat={onOpenChat ?? (() => onOpenTab('chat'))}
+          onOpenChat={onOpenChat}
         />
         <ContainersSection health={health} onOpenStats={onOpenStats} onFilterHistory={onFilterHistory} />
         {data && !rollup && (

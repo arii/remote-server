@@ -156,7 +156,6 @@ export function saveNavMemory(memory: NavMemory): void {
   }
 }
 
-// Tabs and triage sections share the top bar (#1317).
 export type NavEntry =
   | { kind: 'tab'; id: Tab; label: string; key: string }
   | { kind: 'section'; id: 'review' | 'jobs' | 'queue' | 'briefing'; label: string };
@@ -180,8 +179,6 @@ export function navPressed(tab: Tab, section: TriageSection | null, entry: NavEn
   return section === entry.id;
 }
 
-// One shell nav button: label plus the live count pill (#936),
-// hidden until loaded and when zero.
 function ShellNavButton({
   entry,
   pressed,

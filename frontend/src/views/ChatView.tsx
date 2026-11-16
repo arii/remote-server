@@ -114,7 +114,6 @@ export function PromptChips({
 }) {
   return (
     <div className="actions" role="group" aria-label="Prompt starters" data-testid="chat-prompt-chips">
-      {disabled && <span className="row-meta">Reply streaming — wait before starting another prompt.</span>}
       {CHAT_PROMPT_CHIPS.map((c) => (
         <button
           key={c.id}
@@ -328,7 +327,6 @@ export function TemplatePanel({
       aria-label="Prompt templates"
       data-testid="chat-templates-panel"
     >
-      {disabled && <span className="row-meta">Reply streaming — templates are locked until it finishes.</span>}
       <button
         type="button"
         data-testid="chat-template-save"
@@ -1764,20 +1762,14 @@ export default function ChatView({
   useEffect(() => {
     const staged = stageSeed(seed, seedStagedRef.current);
     if (staged === null) return;
-    if (sendSeed) {
-      let cancelled = false;
-      void Promise.resolve().then(() => {
-        if (cancelled || seedStagedRef.current) return;
-        seedStagedRef.current = true;
-        onSeedUsed();
-        void sendText(staged);
-      });
-      return () => { cancelled = true; };
-    }
     seedStagedRef.current = true;
-    setPrompt(staged);
     onSeedUsed();
-    promptRef.current?.focus();
+    if (sendSeed) {
+      void sendText(staged);
+    } else {
+      setPrompt(staged);
+      promptRef.current?.focus();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Palette focus request: each nonce handled once.
@@ -2011,6 +2003,7 @@ export default function ChatView({
       // interrupted-resend banner.
       try {
         const sid = loadChatSessionId();
+        // An explicit seed already owns this thread via sendText (#1317).
         if (sid && !sendSeed && !cancelled) await resumeStoredTurn(sid, ctrl.signal, () => cancelled);
       } catch {
         // Resume is best-effort; the snapshot still renders.

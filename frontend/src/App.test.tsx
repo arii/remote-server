@@ -1096,7 +1096,7 @@ describe('inbox strips', () => {
     },
   };
 
-  it('renders merge-ready and active-run strips', () => {
+  it('renders actionable PR rows and the active-run strip without repeating the Review preview', () => {
     const html = renderToStaticMarkup(
       <InboxStrips
         feed={feed}
@@ -1107,17 +1107,17 @@ describe('inbox strips', () => {
         onOpenJobs={() => {}}
       />,
     );
-    expect(html).toContain('data-testid="inbox-merge-ready"');
-    expect(html).toContain('Ready to merge (2)');
+    expect(html).not.toContain('Ready to merge');
+    expect(html).toContain('>Review</button>');
     expect(html).toContain('#12 Fix it');
     expect(html).toContain('data-testid="inbox-active-run"');
     expect(html).toContain('Active: run-td');
   });
 
-  it('renders nothing when there is nothing actionable', () => {
+  it.each([0, 2])('renders nothing without actionable rows even if the summary count is %i', (count) => {
     const empty: InboxFeed = {
       ...feed,
-      merge_ready: { count: 0, top: [] },
+      merge_ready: { count, top: [] },
       runs: { active: null, recent: [] },
     };
     const html = renderToStaticMarkup(
@@ -1217,7 +1217,9 @@ describe('p2 a11y batch', () => {
   it('loading states across views use role=status', () => {
     const noop = () => {};
     expect(renderToStaticMarkup(
-      <NowView repo="r" health={null} reportContext="" onAskAgent={noop} onOpenTab={noop} />,
+      <NowView repo="r" health={null} reportContext="" onAskAgent={noop} onOpenTab={noop}
+        onViewDiff={noop} onOpenChat={noop}
+        onRepoAction={async () => { throw new Error('Unexpected action in loading-state test'); }} />,
     )).toContain('data-testid="now-loading" role="status"');
     expect(renderToStaticMarkup(<BriefingView repo="r" onAskAgent={noop} onOpenHistory={noop} onOpenReview={noop} />)).toContain(
       'data-testid="briefing-loading" role="status"',

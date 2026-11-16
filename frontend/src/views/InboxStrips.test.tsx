@@ -60,9 +60,7 @@ describe('inbox strips per-item actions (#1317)', () => {
 
   it('hides deferred PRs from the merge-ready rows (Review parity)', () => {
     const html = renderStrips(feed, [{ kind: 'pr', number: 12 }]);
-    // Title survives once in the nav button; the row lives only in
-    // the deferred section.
-    expect(html.split('#12 Fix it').length - 1).toBe(1);
+    expect(html).not.toContain('#12 Fix it');
     expect(html).toContain('data-testid="strips-row-pr-12"');
   });
 

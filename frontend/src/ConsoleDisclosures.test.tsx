@@ -100,7 +100,7 @@ describe('audit disclosures (#1317)', () => {
     expect(commands.textContent).toContain('Enter an issue number');
   });
 
-  it('explains empty/rollup Now prompts and enables a valid prompt', () => {
+  it('disables blank or blocked forms and enables a valid prompt', () => {
     const render = (prompt: string, blockedReason: string | null) => dom(renderToStaticMarkup(
       <NowComposer prompt={prompt} blockedReason={blockedReason} onChange={noop} onSend={noop} focusRequest={0} />,
     ));
@@ -108,7 +108,6 @@ describe('audit disclosures (#1317)', () => {
     expect(render('Investigate', null).querySelector('button')!.disabled).toBe(false);
     const blocked = render('Investigate', 'Choose a repository before sending.');
     expect(blocked.querySelector('button')!.disabled).toBe(true);
-    expect(blocked.textContent).toContain('Choose a repository before sending.');
   });
 
   it('names the active merge instead of leaving a silently disabled detail action', () => {

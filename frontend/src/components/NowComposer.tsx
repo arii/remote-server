@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 
-// Now hands Send to Chat; shortcuts only stage editable text (#1317).
 export default function NowComposer({
   prompt,
   onChange,

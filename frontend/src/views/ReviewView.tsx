@@ -510,16 +510,17 @@ export function PrRowMerge({
   merging: boolean;
   onMerge: (n: number) => void;
 }) {
+  const blocked = mergeBlockReason(pr);
   return (
     <>
       <TapToFire
         label="Merge"
         testid={`merge-pr-${pr.number}`}
         confirm="This cannot be undone."
-        disabled={mergeBlockReason(pr) !== null || merging}
+        disabled={blocked !== null || merging}
         onFire={() => onMerge(pr.number)}
       />
-      {mergeBlockReason(pr) && <span className="row-meta">{mergeBlockReason(pr)}</span>}
+      {blocked && <span className="row-meta">{blocked}</span>}
       {merging && <span className="row-meta">Merging…</span>}
     </>
   );

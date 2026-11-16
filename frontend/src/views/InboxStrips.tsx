@@ -119,7 +119,7 @@ export default function InboxStrips({
   const ready = feed.merge_ready;
   const active = feed.runs.active;
   const visibleTop = ready.top.filter((p) => !isRowDeferred(deferred, 'pr', p.number));
-  if (ready.count === 0 && !active && deferred.length === 0) return null;
+  if (visibleTop.length === 0 && !active && deferred.length === 0) return null;
 
   async function applyOp(op: 'defer' | 'restore', rows: RowRef[]): Promise<void> {
     if (useMock()) {
@@ -192,19 +192,13 @@ export default function InboxStrips({
 
   return (
     <div data-testid="inbox-strips">
-      <div className="actions">
-        {ready.count > 0 && (
-          <button type="button" data-testid="inbox-merge-ready" onClick={onOpenReview}>
-            Ready to merge ({ready.count}
-            {ready.top.length > 0 ? `): ${ready.top.map((p) => `#${p.number} ${p.title}`).join(', ')}` : ')'}
-          </button>
-        )}
-        {active && (
+      {active && (
+        <div className="actions">
           <button type="button" data-testid="inbox-active-run" onClick={onOpenJobs}>
             Active: {active.action}
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {(visibleTop.length > 0 || deferred.length > 0) && (
         <>
           {error && (

@@ -64,7 +64,7 @@ afterEach(async () => {
 });
 
 describe('console audit routing (#1317)', () => {
-  it('keeps Chat as fresh-boot default and retains saved navigation', async () => {
+  it('defaults to Chat and persists the selected tab', async () => {
     await act(async () => root.render(<App />));
     expect(host.querySelector('[data-testid="chat-handoff"]')).not.toBeNull();
     await click('nav-now');
@@ -111,6 +111,40 @@ describe('console audit routing (#1317)', () => {
     await click('diff-shortcut');
     expect(host.querySelector('[data-testid="diff-shortcut"]')).toBeNull();
     expect(host.querySelector<HTMLTextAreaElement>('#now-prompt')!.value).toBe('Review this diff');
+  });
+
+  it('refocuses an already-mounted composer when the same shortcut is chosen again', async () => {
+    await act(async () => root.render(<App />));
+    for (let visit = 0; visit < 2; visit++) {
+      host.querySelector<HTMLButtonElement>('[data-testid="nav-review"]')!.focus();
+      await click('nav-review');
+      await click('triage-shortcut');
+      const prompt = host.querySelector<HTMLTextAreaElement>('#now-prompt')!;
+      expect(prompt.value).toBe('Investigate this PR');
+      expect(document.activeElement).toBe(prompt);
+    }
+  });
+
+  it('blocks a populated prompt for All repos without handing it to Chat', async () => {
+    await act(async () => root.render(<App />));
+    await click('nav-now');
+    await act(async () => {
+      const prompt = host.querySelector<HTMLTextAreaElement>('#now-prompt')!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(prompt, 'Investigate');
+      prompt.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const form = host.querySelector<HTMLFormElement>('[data-testid="now-composer"]')!;
+    expect(form.querySelector('button')!.disabled).toBe(false);
+    await act(async () => {
+      const picker = host.querySelector<HTMLSelectElement>('[data-testid="repo-picker"]')!;
+      picker.value = 'all';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.querySelector<HTMLTextAreaElement>('#now-prompt')!.value).toBe('Investigate');
+    expect(form.querySelector('button')!.disabled).toBe(true);
+    expect(form.textContent).toContain('Choose a repository before sending.');
+    await act(async () => form.requestSubmit());
+    expect(host.querySelector('[data-testid="chat-handoff"]')).toBeNull();
   });
 
   it('does not send an empty Now prompt and explains the disabled control', async () => {
