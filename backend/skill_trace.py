@@ -70,7 +70,8 @@ def step_trace(
     if proposal.get("action") != "navigate":
         selected = match_selector(page, selector)
     action = proposal["action"]
-    targets = selected if selector else focused if action in ("type", "key") else []
+    input_action = action in ("type", "key")
+    targets = selected + focused if input_action else selected
     declared_sensitive = bool(
         re.search(
             r"password|passwd|username|one-time-code|webauthn",
@@ -79,8 +80,10 @@ def step_trace(
         )
     )
     observed = targets
-    unknown = not observed or any(
-        "sensitive" not in el and not el.get("type") for el in observed
+    unknown = (
+        (input_action and not focused)
+        or not observed
+        or any("sensitive" not in el and not el.get("type") for el in observed)
     )
     reads_value = proposal.get("check", {}).get("type") in (
         "value_equals",
@@ -89,7 +92,7 @@ def step_trace(
     sensitive = action != "navigate" and (
         declared_sensitive
         or any(sensitive_element(el) for el in targets)
-        or (action in ("type", "key") or reads_value)
+        or (input_action or reads_value)
         and unknown
     )
     return {

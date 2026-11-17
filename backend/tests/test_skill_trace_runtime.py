@@ -43,6 +43,9 @@ class TraceRuntimeTest(unittest.TestCase):
         secret = "focused-password-fc51"
         skill = sample_skill()
         skill["steps"][0]["value"] = skill["source_url"]
+        skill["steps"][1].update(
+            action="click", value="", check={"type": "element_visible", "expected": ""}
+        )
         driver = TraceDriver()
         original = driver.snapshot
 
@@ -66,6 +69,32 @@ class TraceRuntimeTest(unittest.TestCase):
         self.assertEqual(row["steps"][0]["proposal"]["value"], skill["source_url"])
         self.assertFalse(row["steps"][1]["sensitive"])
         self.assertNotIn(secret, json.dumps(row))
+
+    def test_keyboard_input_protects_focused_password_despite_safe_selector(self):
+        for action in ("type", "key"):
+            with self.subTest(action=action):
+                secret = "focused-keyboard-password-d761"
+                skill = sample_skill(secret, secret)
+                skill["steps"] = [dict(skill["steps"][1], n=1, action=action)]
+                driver = TraceDriver()
+                page = driver.snapshot()
+                page["elements"].append(
+                    {
+                        "tag": "INPUT",
+                        "tid": "password",
+                        "type": "password",
+                        "focused": True,
+                        "val": "[redacted]",
+                    }
+                )
+                with mock.patch.object(driver, "snapshot", return_value=page):
+                    row = skill_runs.run_and_record(skill, driver)
+                self.assertNotIn(secret, json.dumps(row))
+                self.assertEqual(row["steps"][0]["input"]["value"], "[redacted]")
+                self.assertEqual(
+                    skill_runs.replay_trace(row)["steps"][0]["replay_status"],
+                    "human_intervention",
+                )
 
     def test_sensitive_click_url_check_does_not_redact_urls(self):
         skill = sample_skill()
