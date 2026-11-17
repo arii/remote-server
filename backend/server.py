@@ -26,7 +26,6 @@ from backend.api.routers import (
     issues,
     jobs,
     notify,
-    openwebui_shell,
     ops,
     pulls,
     repo,
@@ -103,7 +102,6 @@ app.include_router(repo.repos_router)
 app.include_router(system.router)
 app.include_router(jobs.router)
 app.include_router(notify.router)
-app.include_router(openwebui_shell.router)
 app.include_router(chat.router)
 app.include_router(ops.router)
 app.include_router(pulls.router)
