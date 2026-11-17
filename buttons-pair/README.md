@@ -6,7 +6,7 @@ Requires Chrome 116+. This is separate from LocalForm; nothing under
 1. Open `chrome://extensions`, enable Developer mode, click **Load unpacked**,
    and select this `buttons-pair/` directory. No build is needed.
 2. Sign in once to https://dev-onasafari.ddns.net:8443/buttons **in that Chrome
-   profile**. The extension reuses the browser's OAuth cookie, not a password.
+   profile**. The extension reuses this profile's OAuth cookie.
 3. Click **Buttons pair** and **Connect**. Installation alone never pairs.
    The popup shows **Paired**, **Not paired**, or **sign in to Buttons first**.
 4. Select the backend's `paired` target. The first operation creates a tab in
@@ -37,7 +37,10 @@ WebSocket traffic every 20 seconds keeps the MV3 worker active. The heartbeat
 is `{}`, ignored by the existing backend protocol. Drops reconnect through one
 alarm path with persisted backoff of 1, 2, 4, then 5 minutes (capped). A restart
 detaches only the previously recorded agent tab before creating a fresh one.
-No LLM or paid service is used by the extension.
+
+Task reports retain instructions, URLs, titles and screenshot pixels on the
+Buttons data volume. Credential masking covers recognized snapshot fields;
+screenshots and other page content may still contain sensitive information.
 
 Development: `pnpm --filter buttons-pair lint` and
 `pnpm --filter buttons-pair test`. Root lint and extension tests include these;

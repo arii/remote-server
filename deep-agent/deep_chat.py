@@ -684,7 +684,7 @@ def build_tools(checkout, *, impact_tools=False):
         driving it: returns the live page URL, title, and up to 100
         click targets with coordinates. Grid uses the live shared
         viewer; paired uses the connected Buttons pair Chrome tab.
-        Returns text, not pixels.
+        Returns page text.
 
         Args:
             target: 'grid' for the shared viewer or 'paired' for My Chrome.

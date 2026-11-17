@@ -1,5 +1,3 @@
-// Browser targets, task reports and the shared Grid viewer.
-// Agent control remains owned by the parent.
 import { useEffect, useState } from 'react';
 import type {
   AgentBrowserState,
@@ -290,7 +288,7 @@ export default function BrowserView({
           />
           </>}
         </div>
-        <aside className="cobrowse-chat" aria-label={target === 'grid' ? 'Browser agent — ask it to drive the shared page' : 'My Chrome tasks'}>
+        <aside className="cobrowse-chat" aria-label={target === 'grid' ? 'Browser agent: ask it to drive the shared page' : 'My Chrome tasks'}>
           <BrowserTasks target={target} paired={paired?.connected ?? false} tasks={tasks} onChange={setTasks} />
           {target === 'grid' && <>
           <p className="row-meta" data-testid="cobrowse-chat-hint">

@@ -834,7 +834,7 @@ class AgentTurnManager:
                     "GET /snapshot", "GET /snapshot?target=paired"
                 ).replace("/drive {", "/drive?target=paired {")
                 guidance = (
-                    "Target: paired Chrome (not the Grid viewer). Use ?target=paired on every snapshot, drive and state request.\n"
+                    "Target: paired Chrome. Use ?target=paired on every snapshot, drive and state request.\n"
                     + guidance
                 )
             send = guidance + send

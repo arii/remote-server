@@ -18,7 +18,7 @@ _paired: PairedBridge | None = None
 
 
 class PairedBridge(browser_view.CDPBridge):
-    """Reuse CDP input and credential handling, not Grid target attachment."""
+    """Tab-attached CDP relay using shared input and credential helpers."""
 
     def __init__(self, websocket: WebSocket):
         super().__init__("paired")
@@ -30,6 +30,9 @@ class PairedBridge(browser_view.CDPBridge):
 
     def disconnect(self, reason: str) -> None:
         self.closed.set()
+        self._fail_pending(reason)
+
+    def _fail_pending(self, reason: str) -> None:
         for future in self._pending.values():
             if not future.done():
                 future.set_exception(ConnectionError(reason))
@@ -82,10 +85,6 @@ class PairedBridge(browser_view.CDPBridge):
         if not self._opened or self.closed.is_set():
             raise ConnectionError("paired Chrome tab closed")
 
-    async def close(self):
-        # Per-request release must not tear down the persistent pairing.
-        pass
-
     async def receive(self, message: dict[str, Any]):
         if "id" in message:
             future = self._pending.get(message["id"])
@@ -112,9 +111,7 @@ class PairedBridge(browser_view.CDPBridge):
             self._opened = False
             self.url = self.title = None
             self.dialog = None
-            for future in self._pending.values():
-                if not future.done():
-                    future.set_exception(ConnectionError("paired Chrome tab closed"))
+            self._fail_pending("paired Chrome tab closed")
             browser_view.clear_page("paired")
         elif event == "cdp":
             method = message.get("method")

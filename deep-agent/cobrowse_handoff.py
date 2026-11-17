@@ -158,7 +158,7 @@ def browser_snapshot_impl(target: str = "grid") -> str:
     """Read URL, title and click targets from Grid or paired Chrome.
 
     Grid requires a live viewer session; paired requires Buttons pair.
-    Returns masked text rather than pixels.
+    Returns masked page text.
     """
     if target not in ("grid", "paired"):
         return "REJECTED: unknown browser target"
