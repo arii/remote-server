@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from backend import skill_runs
 from backend.api.routers import browser_drive, browser_view
+from backend.skill_format import validate_skill
 from backend.tests.test_skill_recorder import FakeBridge
 
 URL = "https://fixture.invalid/form"
@@ -56,6 +57,7 @@ def sample_skill(value="Example", expected="Example"):
             {
                 "n": 3,
                 "action": "key",
+                "selector": "[data-testid='field']",
                 "value": "Tab",
                 "check": {"type": "url_contains", "expected": "/form"},
             },
@@ -179,7 +181,10 @@ class SkillTraceContractTest(unittest.TestCase):
             )
         )
 
-    def recorded(self, skill, driver):
+    def recorded(self, skill, driver, *, valid=True):
+        self.assertEqual(
+            bool(validate_skill(skill)), not valid, "invalid acceptance setup"
+        )
         result = skill_runs.run_and_record(skill, driver)
         rows = [json.loads(line) for line in self.log.read_text().splitlines()]
         self.assertEqual(len(rows), 1)
@@ -411,7 +416,7 @@ with mock.patch.object(socket, 'socket', side_effect=AssertionError('offline net
         skill = sample_skill()
         skill["steps"] = []
         driver = TraceDriver()
-        row = self.recorded(skill, driver)
+        row = self.recorded(skill, driver, valid=False)
         self.assertFalse(row["passed"])
         self.assertIsNone(row["failed_step"])
         self.assertEqual(driver.calls, [])
