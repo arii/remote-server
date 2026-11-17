@@ -80,29 +80,8 @@ and mobile browsers get a native-feeling stream. Bring-up:
 
 ## Agent-driven cobrowse (the drawer rail is an agent session)
 
-The browser drawer pairs the viewer with an agent session
-(either provider picker, no repo attached), not the repo chat: browsing
-is agentic work. The agent drives the same shared session through
-the buttons backend (`GET/POST /api/browser/*`, same process as
-the viewer): `snapshot` (URL, title, click targets), `drive`
-(navigate/click/type/key/wheel), `state` (rendezvous + who holds
-the wheel), `activity` (human + agent inputs, newest last — the
-agent observes what you did and learns from it). Attach-only — the
-agent never mints a session: it joins the live agent session
-first, else the viewer-shared session, else reports browser-busy.
-Mutating ops refuse while the human drives (`PAUSED_BY_USER`);
-agent turns pause mid-stream on takeover and refuse to spawn into
-one. Every drive records a `Chat drive:` step so the drawer banner
-shows the agent at the wheel. Login walls, payments, and sends
-stay human — the agent hands the step back instead of automating
-past them. Durable lessons land in the shared notebook
-`/var/lib/buttons/browser_notes.md` (both containers mount it;
-human-editable). Learning is automatic, not just per-errand: every
-25 activity events the backend appends a dated auto-notes section
-(counts and destinations, no model, no spend — idleness never
-triggers), and `POST /api/browser/learn` runs the same pass on
-demand. The Browser tab shows all of it: the live activity feed,
-the notebook, and a Learn now button.
+See the [browser skill contract](skill-contract.md) for APIs, the skill format,
+configuration, driver interface, safety boundaries and the local three-act demo.
 
 ## Spec deviation (recorded, not rebuilt — issue #1104)
 
