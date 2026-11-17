@@ -258,6 +258,36 @@ class DriveApiTest(unittest.TestCase):
         self.assertIn(("click", 10, 20), bridges[0].calls)
         self.assertIn(("close",), bridges[0].calls)
 
+    def test_grid_type_redacts_credentials_but_preserves_ordinary_text(self):
+        for sensitive in (False, True):
+            with (
+                self.subTest(sensitive=sensitive),
+                mock.patch.object(
+                    browser_drive.browser_view,
+                    "_grid_live_session",
+                    return_value="agent-sess-1",
+                ),
+                mock.patch.object(browser_drive.browser_view, "CDPBridge", FakeBridge),
+                mock.patch.object(
+                    browser_drive.browser_view,
+                    "credential_focused",
+                    return_value=sensitive,
+                ),
+                mock.patch.object(browser_drive.browser_view, "_log_activity") as log,
+            ):
+                browser_drive.browser_view.clear_page("grid")
+                response = make_client().post(
+                    "/api/browser/drive", json={"op": "type", "text": "probe"}
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+                expected = "[redacted]" if sensitive else "probe"
+                self.assertEqual(log.call_args.args[1], f"type {expected}")
+                self.assertEqual(log.call_args.kwargs["target"], "grid")
+                self.assertEqual(
+                    agent_control.read_control_state().current_step,
+                    f"Browser drive: type {expected}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

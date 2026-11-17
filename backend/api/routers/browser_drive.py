@@ -17,7 +17,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.api.routers import agent_control, browser_view
+from backend.api.routers import agent_control, browser_ext, browser_view
 
 router = APIRouter(prefix="/api/browser", tags=["browser_drive"])
 
@@ -28,6 +28,7 @@ MAX_ELEMENTS = 100
 #: state. The drawer banner keys off this prefix to show the agent
 #: at the wheel. Plain string contract with CoBrowsingDrawer.tsx.
 CHAT_DRIVE_PREFIX = "Browser drive:"
+DriveTarget = Literal["grid", "paired"]
 
 
 class DriveRequest(BaseModel):
@@ -52,13 +53,25 @@ def _require_human_not_driving() -> None:
 
 
 @contextlib.asynccontextmanager
-async def _drive_session():
+async def _drive_session(target: DriveTarget = "grid"):
     """Attach a bridge to the shared session. Never creates one.
 
     Agent sessions first (same precedence viewers use), else the
     refcounted viewer-shared session. Yields (bridge, kind); releases
     the viewer claim and closes the bridge on exit.
     """
+    if target == "paired":
+        bridge: browser_view.CDPBridge = browser_ext.paired_bridge()
+        try:
+            await bridge.connect()
+            yield bridge, "paired"
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"paired Chrome failed: {exc}"
+            ) from exc
+        return
     session_id = await asyncio.to_thread(browser_view._grid_live_session)
     kind = "agent"
     claimed: str | None = None
@@ -127,7 +140,9 @@ def snapshot_from_cdp(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _snapshot(bridge: browser_view.CDPBridge) -> dict[str, Any]:
+async def _snapshot(
+    bridge: browser_view.CDPBridge, target: DriveTarget = "grid"
+) -> dict[str, Any]:
     try:
         raw = await bridge.call(
             "Runtime.evaluate",
@@ -136,14 +151,18 @@ async def _snapshot(bridge: browser_view.CDPBridge) -> dict[str, Any]:
         page = snapshot_from_cdp(raw)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"snapshot failed: {exc}") from exc
+    if target == "paired":
+        assert isinstance(bridge, browser_ext.PairedBridge)
+        bridge.url, bridge.title = page["url"], page["title"]
+        return browser_view.remember_page(page, target=target)
     return browser_view.remember_page(page)
 
 
 @router.get("/snapshot")
-async def snapshot() -> dict[str, Any]:
+async def snapshot(target: DriveTarget = "grid") -> dict[str, Any]:
     """Read-only view of the shared page: URL, title, click targets."""
-    async with _drive_session() as (bridge, kind):
-        page = await _snapshot(bridge)
+    async with _drive_session(target) as (bridge, kind):
+        page = await _snapshot(bridge, target)
     browser_view._log_activity(
         "snapshot",
         page["url"],
@@ -151,6 +170,7 @@ async def snapshot() -> dict[str, Any]:
         action="snapshot",
         url=page["url"],
         page_hash=browser_view.page_hash_of(page),
+        target=target,
     )
     return {"ok": True, "kind": kind, **page}
 
@@ -190,12 +210,16 @@ async def learn() -> dict[str, Any]:
 
 
 @router.get("/state")
-async def drive_state() -> dict[str, Any]:
+async def drive_state(target: DriveTarget = "grid") -> dict[str, Any]:
     """Rendezvous + wheel state without touching the browser."""
     control = agent_control.read_control_state()
-    session_id = await asyncio.to_thread(browser_view._grid_live_session)
+    session_id = (
+        await asyncio.to_thread(browser_view._grid_live_session)
+        if target == "grid"
+        else None
+    )
     shared: str | None = None
-    if session_id is None:
+    if target == "grid" and session_id is None:
         with contextlib.suppress(Exception):
             claimed = await asyncio.to_thread(browser_view._viewer_claim)
             if claimed is not None:
@@ -208,17 +232,35 @@ async def drive_state() -> dict[str, Any]:
         "agent_state": control.state,
         "human_driving": control.state == "PAUSED_BY_USER",
         "learn": browser_view.learn_status(),
+        "paired": browser_ext.paired_state(),
     }
 
 
 @router.post("/drive")
-async def drive(body: DriveRequest) -> dict[str, Any]:
+async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, Any]:
     """Drive the shared page. Refuses while the human holds the wheel."""
     _require_human_not_driving()
-    async with _drive_session() as (bridge, kind):
+    async with _drive_session(target) as (bridge, kind):
         # Pre-op page: selectors match what the action saw, not the
         # post-op snapshot taken below.
-        pre_page, pre_hash = browser_view.last_page()
+        if target == "paired":
+            _require_human_not_driving()
+        pre_page, pre_hash = browser_view.last_page(target)
+        sensitive = False
+        if body.op in ("type", "key"):
+            match = browser_view.match_target(pre_page, body.x, body.y)
+            candidates = [
+                el for el in (pre_page or {}).get("elements", []) if el.get("focused")
+            ]
+            if match:
+                candidates.append(match)
+            sensitive = any(
+                el.get("val") == "[redacted]"
+                or el.get("text") == "[redacted]"
+                or el.get("kind") in ("password", "username")
+                or el.get("type") in ("password", "username")
+                for el in candidates
+            ) or await browser_view.credential_focused(bridge)
         if body.op == "navigate":
             url = (body.url or "").strip()
             if not url.startswith(("http://", "https://")):
@@ -243,13 +285,13 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             await bridge.key(body.key, body.code or body.key)
         elif body.op == "wheel":
             await bridge.wheel(body.x, body.y, body.dx, body.dy)
-        target = (
+        detail = (
             body.url
             if body.op == "navigate"
             else (
                 f"{body.x},{body.y}"
                 if body.op in ("click", "wheel")
-                else (body.text or body.key or body.op)
+                else ("[redacted]" if sensitive else body.text or body.key or body.op)
             )
         )
         selector = None
@@ -258,7 +300,7 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             selector = browser_view.selector_for(match) if match else None
         browser_view._log_activity(
             "drive",
-            f"{body.op} {target}",
+            f"{body.op} {detail}",
             via="agent",
             action=body.op,
             selector=selector,
@@ -269,17 +311,18 @@ async def drive(body: DriveRequest) -> dict[str, Any]:
             # post-op snapshot: never pair the new URL with the
             # previous page's hash.
             page_hash=(None if body.op == "navigate" else pre_hash),
+            target=target,
         )
         result = {"ok": True, "op": body.op, "kind": kind}
         if bridge.dialog is not None:
             result["dialog"] = dict(bridge.dialog)
         else:
-            result.update(await _snapshot(bridge))
+            result.update(await _snapshot(bridge, target))
         # Presence for the drawer banner + a re-snapshot flag for any
         # later pipeline run: best-effort, the drive already landed.
         with contextlib.suppress(Exception):
             control = agent_control.read_control_state()
-            control.current_step = f"{CHAT_DRIVE_PREFIX} {body.op} {target}"[:120]
+            control.current_step = f"{CHAT_DRIVE_PREFIX} {body.op} {detail}"[:120]
             control.requires_dom_refresh = True
             agent_control.write_control_state(control)
     return result

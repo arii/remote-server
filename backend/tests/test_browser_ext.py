@@ -1,0 +1,304 @@
+"""Paired Chrome protocol and drive API, without a real browser."""
+
+import concurrent.futures
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from backend.api.routers import agent_control, browser_drive, browser_ext, browser_view
+
+
+class PairedChromeTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = mock.patch.dict(
+            os.environ,
+            {
+                "AGENT_CONTROL_STATE_FILE": os.path.join(self.tmp.name, "control.json"),
+                "BROWSER_ACTIVITY_FILE": os.path.join(self.tmp.name, "activity.jsonl"),
+            },
+        )
+        env.start()
+        self.addCleanup(env.stop)
+        activity = mock.patch.object(browser_view, "_maybe_auto_learn")
+        activity.start()
+        self.addCleanup(activity.stop)
+        self.addCleanup(browser_view.clear_page, "paired")
+        app = FastAPI()
+        app.include_router(browser_ext.router)
+        app.include_router(browser_drive.router)
+        self.client = TestClient(app, raise_server_exceptions=False)
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+        self.pool = concurrent.futures.ThreadPoolExecutor()
+        self.addCleanup(self.pool.shutdown)
+        self.page = {"url": "https://example.com/", "title": "Paired", "els": []}
+        self.commands = []
+
+    def round_trip(
+        self, ws, method="GET", path="/snapshot", body=None, sensitive=False
+    ):
+        future = self.pool.submit(
+            self.client.request,
+            method,
+            "/api/browser" + path + "?target=paired",
+            json=body,
+        )
+        while True:
+            command = ws.receive_json()
+            self.commands.append(command)
+            if command["op"] == "open":
+                self.assertEqual(command["url"], "about:blank")
+                result = {}
+                snapshot = False
+            else:
+                self.assertEqual(command["op"], "cdp")
+                expression = command["params"].get("expression")
+                snapshot = expression == browser_drive.SNAPSHOT_JS
+                if snapshot:
+                    result = {"result": {"value": self.page}}
+                elif expression == browser_view.CREDENTIAL_FOCUS_JS:
+                    result = {"result": {"value": sensitive}}
+                else:
+                    result = {"result": {"value": "INPUT"}}
+            ws.send_json({"id": command["id"], "result": result})
+            if snapshot:
+                return future.result(timeout=5)
+
+    def test_snapshot_round_trip_state_and_target_isolation(self):
+        grid_page = {"url": "https://grid.test", "title": "Grid", "elements": []}
+        with mock.patch.dict(browser_view._LAST_PAGE):
+            browser_view.remember_page(grid_page)
+            with self.client.websocket_connect("/api/browser/ext") as ws:
+                response = self.round_trip(ws)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["kind"], "paired")
+                self.assertEqual(response.json()["title"], "Paired")
+                self.assertEqual(browser_view.last_page()[0], grid_page)
+                self.assertEqual(browser_view.last_page("paired")[0]["title"], "Paired")
+                state = self.client.get("/api/browser/state?target=paired").json()
+                self.assertEqual(
+                    state["paired"],
+                    {"connected": True, "url": self.page["url"], "title": "Paired"},
+                )
+                self.assertEqual(browser_view.recent_activity(1)[0]["target"], "paired")
+        self.assertFalse(
+            self.client.get("/api/browser/state?target=paired").json()["paired"][
+                "connected"
+            ]
+        )
+
+    def test_empty_snapshot(self):
+        self.page = {"url": "about:blank", "title": "", "els": []}
+        with self.client.websocket_connect("/api/browser/ext") as ws:
+            response = self.round_trip(ws)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["elements"], [])
+
+    def test_no_pair_returns_conflict(self):
+        for method, path, body in (
+            ("GET", "/snapshot", None),
+            ("POST", "/drive", {"op": "click"}),
+        ):
+            response = self.client.request(
+                method, "/api/browser" + path + "?target=paired", json=body
+            )
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["detail"], "no paired Chrome")
+
+    def test_human_input_pauses_and_refuses_drive(self):
+        for kind in ("pointer", "key", "touch"):
+            with self.subTest(kind=kind):
+                agent_control.resume_agent()
+                with self.client.websocket_connect("/api/browser/ext") as ws:
+                    ws.send_json({"event": "human_input", "kind": kind})
+                    self.round_trip(ws)
+                    state = agent_control.read_control_state()
+                    self.assertEqual(state.state, "PAUSED_BY_USER")
+                    self.assertTrue(state.requires_dom_refresh)
+                    response = self.client.post(
+                        "/api/browser/drive?target=paired",
+                        json={"op": "type", "text": "blocked"},
+                    )
+                    self.assertEqual(response.status_code, 409)
+                    self.assertIn("human is driving", response.json()["detail"])
+
+    def test_replacement_closes_old_connection_and_fails_pending_request(self):
+        with self.client.websocket_connect("/api/browser/ext") as old:
+            future = self.pool.submit(
+                self.client.get, "/api/browser/snapshot?target=paired"
+            )
+            old.receive_json()
+            with self.client.websocket_connect("/api/browser/ext") as new:
+                with self.assertRaises(WebSocketDisconnect) as closed:
+                    old.receive_json()
+                self.assertIn("replaced", closed.exception.reason)
+                response = future.result(timeout=5)
+                self.assertEqual(response.status_code, 502)
+                self.assertIn("replaced", response.text)
+                self.assertEqual(self.round_trip(new).status_code, 200)
+
+    def test_timeout_is_loud_and_cleans_pending(self):
+        with mock.patch.object(browser_ext, "COMMAND_TIMEOUT", 0.05):
+            with self.client.websocket_connect("/api/browser/ext") as ws:
+                future = self.pool.submit(
+                    self.client.get, "/api/browser/snapshot?target=paired"
+                )
+                command = ws.receive_json()
+                self.assertEqual(command["op"], "open")
+                response = future.result(timeout=5)
+                self.assertEqual(response.status_code, 502)
+                self.assertIn("paired Chrome open", response.text)
+                self.assertIn("timed out", response.text)
+                self.assertEqual(browser_ext.paired_bridge()._pending, {})
+
+    def test_command_error_and_tab_closed_fail_loudly(self):
+        for message in ({"error": "debugger detached"}, {"event": "tab_closed"}):
+            with self.subTest(message=message):
+                with self.client.websocket_connect("/api/browser/ext") as ws:
+                    future = self.pool.submit(
+                        self.client.get, "/api/browser/snapshot?target=paired"
+                    )
+                    command = ws.receive_json()
+                    ws.send_json(
+                        {"id": command["id"], **message}
+                        if "error" in message
+                        else message
+                    )
+                    response = future.result(timeout=5)
+                    self.assertEqual(response.status_code, 502)
+                    self.assertIn("paired Chrome", response.text)
+
+    def test_type_and_key_redaction_and_plain_text(self):
+        for op in ("type", "key"):
+            for sensitive in (False, True):
+                with self.subTest(op=op, sensitive=sensitive):
+                    with self.client.websocket_connect("/api/browser/ext") as ws:
+                        self.round_trip(ws)
+                        secret = f"secret-probe-{sensitive}" if op == "type" else "s"
+                        response = self.round_trip(
+                            ws,
+                            "POST",
+                            "/drive",
+                            {"op": op, "text" if op == "type" else "key": secret},
+                            sensitive,
+                        )
+                        self.assertEqual(response.status_code, 200, response.text)
+                        expected = "[redacted]" if sensitive else secret
+                        event = browser_view.recent_activity(1)[0]
+                        self.assertEqual(event["detail"], f"{op} {expected}")
+                        self.assertEqual(
+                            agent_control.read_control_state().current_step,
+                            f"Browser drive: {op} {expected}",
+                        )
+                        if sensitive and op == "type":
+                            self.assertNotIn(
+                                secret,
+                                Path(os.environ["BROWSER_ACTIVITY_FILE"]).read_text(),
+                            )
+
+    def test_snapshot_credential_marker_and_field_kind_redact(self):
+        for marker in (
+            {"val": "[redacted]"},
+            {"kind": "password"},
+            {"type": "username"},
+        ):
+            with self.subTest(marker=marker):
+                self.page["els"] = [{"x": 0, "y": 0, "w": 20, "h": 20, **marker}]
+                with self.client.websocket_connect("/api/browser/ext") as ws:
+                    self.round_trip(ws)
+                    response = self.round_trip(
+                        ws, "POST", "/drive", {"op": "type", "text": "must-not-log"}
+                    )
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(
+                        browser_view.recent_activity(1)[0]["detail"], "type [redacted]"
+                    )
+
+    def test_paired_does_not_fall_back_to_grid(self):
+        with mock.patch.object(
+            browser_view,
+            "_grid_live_session",
+            side_effect=AssertionError("Grid queried"),
+        ):
+            self.assertEqual(
+                self.client.get("/api/browser/snapshot?target=paired").status_code, 409
+            )
+            self.assertEqual(
+                self.client.get("/api/browser/state?target=paired").status_code, 200
+            )
+
+    def test_paired_click_wheel_and_navigation_use_cdp(self):
+        with self.client.websocket_connect("/api/browser/ext") as ws:
+            self.round_trip(ws)
+            for body, expected in (
+                ({"op": "click", "x": 12, "y": 34}, "Input.dispatchMouseEvent"),
+                ({"op": "wheel", "dx": 0, "dy": 30}, "Input.dispatchMouseEvent"),
+                ({"op": "navigate", "url": "https://example.com/new"}, "Page.navigate"),
+            ):
+                self.commands.clear()
+                response = self.round_trip(ws, "POST", "/drive", body)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(
+                    any(command.get("method") == expected for command in self.commands)
+                )
+                self.assertFalse(
+                    any(command["op"] == "open" for command in self.commands)
+                )
+
+    def test_cdp_error_does_not_become_empty_result(self):
+        with self.client.websocket_connect("/api/browser/ext") as ws:
+            self.round_trip(ws)
+            future = self.pool.submit(
+                self.client.get, "/api/browser/snapshot?target=paired"
+            )
+            command = ws.receive_json()
+            self.assertEqual(command["op"], "cdp")
+            ws.send_json({"id": command["id"], "error": "debugger detached"})
+            response = future.result(timeout=5)
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("debugger detached", response.text)
+
+    def test_cdp_navigation_event_updates_only_paired_context(self):
+        with self.client.websocket_connect("/api/browser/ext") as ws:
+            self.round_trip(ws)
+            grid_page = browser_view.last_page()
+            ws.send_json(
+                {
+                    "event": "cdp",
+                    "method": "Page.frameNavigated",
+                    "params": {"frame": {"id": "main", "url": "https://new.test"}},
+                }
+            )
+            ws.send_json(
+                {
+                    "event": "cdp",
+                    "method": "Page.navigatedWithinDocument",
+                    "params": {"frameId": "child", "url": "https://child.test"},
+                }
+            )
+            future = self.pool.submit(
+                self.client.get, "/api/browser/snapshot?target=paired"
+            )
+            command = ws.receive_json()
+            self.assertEqual(browser_ext.paired_state()["url"], "https://new.test")
+            self.assertEqual(browser_view.last_page("paired")[0]["elements"], [])
+            self.assertEqual(browser_view.last_page(), grid_page)
+            ws.send_json({"id": command["id"], "error": "probe finished"})
+            self.assertEqual(future.result(timeout=5).status_code, 502)
+
+    def test_invalid_target_rejected(self):
+        self.assertEqual(
+            self.client.get("/api/browser/snapshot?target=unknown").status_code, 422
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
