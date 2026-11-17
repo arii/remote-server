@@ -21,9 +21,8 @@ validator (#1253) and refuses to run an invalid skill.
 
 from __future__ import annotations
 
-from fastapi import HTTPException
-
 from backend.browser_safety import (
+    HumanWheelPaused,
     require_human_not_driving as _require_human_not_driving,
 )
 from backend.skill_check import check_step, match_selector
@@ -85,7 +84,8 @@ def _perform(driver, action: str, kwargs: dict, trace: dict) -> str:
             driver.key(kwargs["key"])
         else:
             return f"unknown action {action!r}"
-    except HTTPException:
+    except HumanWheelPaused:
+        trace["executed"] = False
         raise
     except Exception as exc:
         return f"driver failed: {exc}"
@@ -112,6 +112,7 @@ def run_skill(skill: dict, driver: BrowserDriver) -> dict:
             "steps": [],
             "trace_version": 1,
             "context": context,
+            "_validation_error": True,
         }
     result = {
         "skill": skill.get("skill", ""),
@@ -142,13 +143,8 @@ def run_skill(skill: dict, driver: BrowserDriver) -> dict:
                     trace["context"]["post_page_hash"] = page_hash_of(post_page)
                     ok, reason = check_step(post_page, step)
                     finish_step(trace, "passed" if ok else "failed", reason)
-        except HTTPException as exc:
-            verdict = (
-                "blocked"
-                if exc.status_code == 409 and not trace["executed"]
-                else "error"
-            )
-            finish_step(trace, verdict, f"replay refused: {exc.detail}")
+        except HumanWheelPaused as exc:
+            finish_step(trace, "blocked", f"replay refused: {exc.detail}")
         except Exception as exc:
             finish_step(trace, "error", f"driver failed: {exc}")
         result["steps"].append(trace)

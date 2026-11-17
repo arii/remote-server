@@ -22,7 +22,7 @@
   form.addEventListener('submit', event => {
     event.preventDefault();
     const values = new FormData(form);
-    confirmation.textContent = `Confirmation: ${values.get('name')} — ${values.get('email')}`;
+    confirmation.textContent = `Confirmation: ${values.get('name')} (${values.get('email')})`;
     form.hidden = true;
     confirmation.hidden = false;
     history.pushState(null, '', '/confirmation');

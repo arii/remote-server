@@ -31,9 +31,7 @@ import os
 import urllib.request
 from typing import Protocol, runtime_checkable
 
-
-class BrowserDriverError(Exception):
-    """The browser link failed (busy slot, dead relay, no page)."""
+from backend.browser_safety import BrowserDriverError
 
 
 @runtime_checkable

@@ -23,9 +23,10 @@ from pydantic import BaseModel
 from backend import skill_runs
 from backend.api.routers import agent_control, browser_ext, browser_view
 from backend.browser_safety import (
+    HumanWheelPaused,
     require_human_not_driving as _require_human_not_driving,
 )
-from backend.skill_trace import finish_step, sensitive_element, step_trace
+from backend.skill_trace import finish_step, page_hash_of, sensitive_element, step_trace
 
 router = APIRouter(prefix="/api/browser", tags=["browser_drive"])
 
@@ -310,7 +311,7 @@ async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, A
         "selector": body.url
         if body.op == "navigate"
         else (browser_view.selector_for(match) if match else ""),
-        "value": body.text or body.key,
+        "value": body.url if body.op == "navigate" else body.text or body.key,
         "x": body.x,
         "y": body.y,
         "dx": body.dx,
@@ -323,15 +324,28 @@ async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, A
         "source_url": (page or {}).get("url", body.url),
     }
     trace = step_trace(1, proposal, page=page, mode="live", context=context)
+    trace["context"]["page_hash_phase"] = "cached_before" if page else "unavailable"
+    if body.op in ("type", "key"):
+        trace["sensitive"] = True
     try:
         result = await _execute_drive(body, target, trace)
+        if "url" in result:
+            trace["context"]["post_page_hash"] = page_hash_of(result)
+            if trace["page_hash"] is None:
+                trace["page_hash"] = page_hash_of(result)
+                trace["context"].update(page_hash_phase="after", url=result["url"])
+        elif "dialog" in result:
+            trace["context"]["dialog_type"] = result["dialog"]["type"]
+            if trace["page_hash"] is None:
+                trace["context"]["page_hash_unavailable"] = "dialog"
         finish_step(trace, "passed")
         return result
+    except HumanWheelPaused as exc:
+        trace["executed"] = False
+        finish_step(trace, "blocked", str(exc.detail))
+        raise
     except HTTPException as exc:
-        verdict = (
-            "blocked" if exc.status_code == 409 and not trace["executed"] else "error"
-        )
-        finish_step(trace, verdict, str(exc.detail))
+        finish_step(trace, "error", str(exc.detail))
         raise
     except Exception as exc:
         finish_step(trace, "error", f"driver failed: {exc}")
@@ -342,7 +356,7 @@ async def drive(body: DriveRequest, target: DriveTarget = "grid") -> dict[str, A
                 "trace_version": 1,
                 "skill": "live-drive",
                 "version": 1,
-                "context": context,
+                "context": trace["context"],
                 "passed": trace.get("ok", False),
                 "failed_step": None if trace.get("ok") else 1,
                 "reason": trace.get("reason", ""),
@@ -381,6 +395,7 @@ async def _execute_drive(
             raise HTTPException(status_code=400, detail="type needs text")
         if body.op == "key" and not body.key:
             raise HTTPException(status_code=400, detail="key needs key")
+        _require_human_not_driving()
         trace["executed"] = True
         if body.op == "navigate":
             url = (body.url or "").strip()

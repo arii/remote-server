@@ -17,6 +17,10 @@ _CREDENTIAL = re.compile(
     re.IGNORECASE,
 )
 _LABELS = {
+    "skill",
+    "kind",
+    "via",
+    "target",
     "action",
     "type",
     "verdict",
@@ -63,8 +67,8 @@ def step_trace(
     targets = [el for el in elements if el.get("focused")]
     if proposal.get("action") != "navigate":
         targets += match_selector(page, proposal.get("selector", ""))
-    sensitive = proposal.get("action") in ("type", "key") and any(
-        sensitive_element(el) for el in targets
+    sensitive = proposal.get("action") in ("type", "key") and (
+        not page or any(sensitive_element(el) for el in targets)
     )
     return {
         "n": n,
@@ -94,6 +98,14 @@ def finish_step(step: dict, verdict: str, reason: str = "") -> None:
 def redact_persistence(record: dict) -> dict:
     """Scrub the entire row, including errors that echo a protected input."""
     record = copy.deepcopy(record)
+    if record.get("_validation_error"):
+        record["reason"] = "invalid skill: validation failed"
+    for step in record.get("steps", []):
+        if step.get("sensitive") and step["outcome"]["verdict"] in ("error", "failed"):
+            step["reason"] = REDACTED
+            step["outcome"]["reason"] = REDACTED
+            if record.get("failed_step") == step["n"]:
+                record["reason"] = REDACTED
     secrets: set[str] = set()
 
     def collect(value):
@@ -104,6 +116,15 @@ def redact_persistence(record: dict) -> dict:
                 if isinstance(v, str) and v and v != REDACTED
             )
             if value.get("sensitive"):
+                check = value.get("proposal", {}).get("check", {})
+                if check.get("type") in ("value_equals", "text_contains"):
+                    candidate = check.get("expected")
+                    if (
+                        isinstance(candidate, str)
+                        and candidate
+                        and candidate != REDACTED
+                    ):
+                        secrets.add(candidate)
                 for part in (value.get("input", {}), value.get("proposal", {})):
                     for key in ("value", "text", "key"):
                         candidate = part.get(key)
@@ -133,6 +154,15 @@ def redact_persistence(record: dict) -> dict:
                     continue
 
     collect(record)
+    secret_pattern = (
+        re.compile(
+            "|".join(
+                re.escape(secret) for secret in sorted(secrets, key=len, reverse=True)
+            )
+        )
+        if secrets
+        else None
+    )
 
     def clean_url(match):
         try:
@@ -165,9 +195,11 @@ def redact_persistence(record: dict) -> dict:
         if isinstance(value, list):
             return [scrub(v) for v in value]
         if isinstance(value, str) and key not in _LABELS:
+            if value == REDACTED:
+                return value
             value = _URL.sub(clean_url, value)
-            for secret in sorted(secrets, key=len, reverse=True):
-                value = value.replace(secret, REDACTED)
+            if secret_pattern is not None:
+                value = secret_pattern.sub(lambda match: REDACTED, value)
         return value
 
     cleaned = scrub(record)

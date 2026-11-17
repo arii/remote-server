@@ -21,6 +21,7 @@ from pathlib import Path
 from backend.browser_config import data_path
 from backend.skill_replay import run_skill
 from backend.skill_trace import REDACTED, redact_persistence
+from backend.skill_format import ACTIONS
 
 
 def runs_file() -> Path:
@@ -58,7 +59,9 @@ def record_run(result: dict) -> dict:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
         number = 0
+        terminated = True
         for line in fh:
+            terminated = line.endswith("\n")
             try:
                 old = json.loads(line)
             except ValueError:
@@ -69,6 +72,8 @@ def record_run(result: dict) -> dict:
                     number = max(number, candidate)
         row["run_number"] = number + 1
         fh.seek(0, os.SEEK_END)
+        if not terminated:
+            fh.write("\n")
         fh.write(json.dumps(row, sort_keys=True) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
@@ -86,13 +91,21 @@ def run_and_record(skill: dict, driver) -> dict:
 
 def replay_trace(row: dict) -> dict:
     """Validate and reproduce recorded verdicts without browser or skill access."""
-    if not isinstance(row, dict) or row.get("trace_version") != 1:
+    if (
+        not isinstance(row, dict)
+        or type(row.get("trace_version")) is not int
+        or row["trace_version"] != 1
+    ):
         raise ValueError("unsupported or missing trace version")
     steps = row.get("steps")
     if not isinstance(steps, list) or not isinstance(row.get("context"), dict):
         raise ValueError("trace needs steps and context")
     if type(row.get("passed")) is not bool or not isinstance(row.get("reason"), str):
         raise ValueError("trace needs a recorded verdict and reason")
+    if "failed_step" not in row or (
+        row["failed_step"] is not None and type(row["failed_step"]) is not int
+    ):
+        raise ValueError("trace needs a failure position")
     failed_step = None
     required = {
         "input",
@@ -109,6 +122,7 @@ def replay_trace(row: dict) -> dict:
     for n, step in enumerate(steps, 1):
         if (
             not isinstance(step, dict)
+            or type(step.get("n")) is not int
             or step.get("n") != n
             or not required.issubset(step)
         ):
@@ -127,13 +141,28 @@ def replay_trace(row: dict) -> dict:
             for key in ("model_version", "gate_version")
         ):
             raise ValueError("missing step versions")
-        if step["executed"] and (
-            not isinstance(step["page_hash"], str)
-            or not re.fullmatch(r"[a-f0-9]{12,64}", step["page_hash"])
+        unobservable_dialog = (
+            step["mode"] == "live"
+            and step["page_hash"] is None
+            and step["context"].get("page_hash_unavailable") == "dialog"
+            and step["context"].get("dialog_type")
+            in ("alert", "confirm", "prompt", "beforeunload")
+        )
+        if (
+            step["executed"]
+            and not unobservable_dialog
+            and (
+                not isinstance(step["page_hash"], str)
+                or not re.fullmatch(r"[a-f0-9]{12,64}", step["page_hash"])
+            )
         ):
             raise ValueError("executed step has no page-state hash")
         gate = step["gate"].get("verdict")
         verdict = step["outcome"].get("verdict")
+        if step["proposal"].get("action") not in ACTIONS or not all(
+            isinstance(step[key].get("reason"), str) for key in ("gate", "outcome")
+        ):
+            raise ValueError("incomplete proposal or verdict")
         if gate not in ("allowed", "blocked") or verdict not in (
             "passed",
             "failed",

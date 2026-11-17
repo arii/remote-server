@@ -24,7 +24,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from backend.browser_config import data_path, grid_url
-from backend.skill_trace import page_hash_of
+from backend.skill_trace import page_hash_of, redact_persistence
 
 GRID_BASE = grid_url()
 VIEWPORT = {"width": 1280, "height": 800}
@@ -318,8 +318,8 @@ def _log_activity(
 ) -> None:
     """Append one action event to the ring and the JSONL log.
 
-    The original kind/detail/via triple is untouched (feeds, banners,
-    and the learn summarizer read it); the keyword fields make the
+    The kind/detail/via fields feed banners and the learn summarizer;
+    the keyword fields make the
     event replayable on its own: what ran (action), where
     (selector and/or x/y), on which page (url + page_hash).
     """
@@ -336,6 +336,7 @@ def _log_activity(
         "page_hash": page_hash,
         "target": target,
     }
+    event = redact_persistence(event)
     with _ACTIVITY_LOCK:
         _ACTIVITY.append(event)
         # The pass's own marker and read-only snapshots must not
