@@ -113,15 +113,9 @@ function healthSummary(health: SystemHealthResponse | null): string {
 
 export type Tab = 'now' | 'chat' | 'history' | 'browser';
 
-// Cross-reload nav memory (bug 3 of the 2026-11-02 functional
-// review): the picked repo and open tab survive a reload, so a
-// phone re-open lands where the operator left the console instead
-// of snapping back to All repos / Now every time. One validated
-// JSON key; persistence is best-effort (private-mode or quota
-// failures leave the session working, per the ChatView template
-// store). A stored repo the console no longer lists self-heals in
-// the repos fetch below (falls back to the first live repo).
+// Repository memory persists across sessions; the tab survives session reloads only.
 const NAV_MEMORY_KEY = 'console.nav-memory';
+const NAV_TAB_KEY = 'console.nav-tab';
 
 export interface NavMemory {
   repo: string;
@@ -137,10 +131,10 @@ export function loadNavMemory(): NavMemory | null {
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return null;
-    const { repo, tab } = parsed as { repo?: unknown; tab?: unknown };
+    const { repo } = parsed as { repo?: unknown };
     if (typeof repo !== 'string' || repo === '') return null;
-    if (typeof tab !== 'string' || !NAV_MEMORY_TABS.includes(tab as Tab)) return null;
-    return { repo, tab: tab as Tab };
+    const tab = sessionStorage.getItem(NAV_TAB_KEY);
+    return { repo, tab: NAV_MEMORY_TABS.includes(tab as Tab) ? tab as Tab : 'chat' };
   } catch {
     // Corrupt or unreadable memory behaves like none: defaults win.
     return null;
@@ -150,7 +144,8 @@ export function loadNavMemory(): NavMemory | null {
 export function saveNavMemory(memory: NavMemory): void {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(NAV_MEMORY_KEY, JSON.stringify(memory));
+    localStorage.setItem(NAV_MEMORY_KEY, JSON.stringify({ repo: memory.repo }));
+    sessionStorage.setItem(NAV_TAB_KEY, memory.tab);
   } catch {
     // Persistence is best-effort; the live console still works.
   }
@@ -171,12 +166,11 @@ export const NAV_ENTRIES: NavEntry[] = [
   { kind: 'section', id: 'briefing', label: 'Briefing' },
 ];
 
-// Pressed rule for the unified nav: tabs light on tab match;
-// section entries light while the triage drawer holds that section
-// (drawer closed passes null).
+// An open section replaces the selected tab as the visible destination.
 export function navPressed(tab: Tab, section: TriageSection | null, entry: NavEntry): boolean {
+  if (section !== null) return entry.kind === 'section' && section === entry.id;
   if (entry.kind === 'tab') return tab === entry.id;
-  return section === entry.id;
+  return false;
 }
 
 function ShellNavButton({
@@ -195,6 +189,7 @@ function ShellNavButton({
       type="button"
       data-testid={`nav-${entry.id}`}
       aria-pressed={pressed}
+      aria-current={pressed ? 'page' : undefined}
       aria-keyshortcuts={entry.kind === 'tab' ? entry.key : undefined}
       title={entry.kind === 'tab' ? `${entry.label} (${entry.key})` : entry.label}
       onClick={onGo}
@@ -233,10 +228,7 @@ export function RollupGate({ view }: { view: string }) {
 }
 
 export default function App() {
-  // Boot memory (bug 3): one read per mount seeds both restored
-  // states — last-used repo (bug 4's "last-used" half) and tab.
-  // Chat-first home (D5): the console opens on the conversation;
-  // a stored tab wins, an unknown one falls back to chat.
+  // New sessions start on Chat; reloads restore the session's tab.
   const [bootMemory] = useState(() => loadNavMemory());
   const [tab, setTab] = useState<Tab>(bootMemory?.tab ?? 'chat');
   const [repos, setRepos] = useState<RepoInfo[]>(FALLBACK_REPOS);
@@ -306,15 +298,15 @@ export default function App() {
   } | null>(null);
 
   // Cheatsheet visibility for the app-level shortcuts (#808). Tab/send
-  // shortcuts suspend while a modal/drawer owns the screen; the
+  // shortcuts suspend while a diff or stats overlay owns the screen; the
   // cheatsheet and the palette stay reachable. Ctrl+K toggles the
   // palette through this one listener (#902) — no second keydown
   // subscription, so the chord can never double-fire.
   const [helpOpen, setHelpOpen] = useState(false);
   useAppShortcuts({
-    suspended: diffRepo !== null || statsOpen || triageOpen,
+    suspended: diffRepo !== null || statsOpen,
     helpOpen,
-    onTab: setTab,
+    onTab: openTab,
     onSend: () => clickChatSend(),
     onToggleHelp: () => setHelpOpen((v) => !v),
     onCloseHelp: () => setHelpOpen(false),
@@ -341,12 +333,15 @@ export default function App() {
     setReportRequest((n) => n + 1);
   }
 
-  // Unified nav handler (D5): tabs switch; Review/Jobs/Queue open
-  // the triage drawer on that section.
+  // Tabs and sections replace the main view.
+  function openTab(nextTab: Tab) {
+    setTriageOpen(false);
+    setTab(nextTab);
+  }
+
   function goNav(entry: NavEntry) {
     if (entry.kind === 'tab') {
-      setTriageOpen(false);
-      setTab(entry.id);
+      openTab(entry.id);
       return;
     }
     setTriageOpen(true);
@@ -356,12 +351,12 @@ export default function App() {
   const commands = useMemo(
     () =>
       buildCommands({
-        go: (t) => setTab(t),
+        go: openTab,
         openSection: (s) => {
           setTriageOpen(true);
           setTriageSection(s);
         },
-        reportBug: () => setReportRequest((n) => n + 1),
+        reportBug: reportBugNow,
         focusChat: focusNow,
         refreshBriefing: () => setBriefingReloadRequest((n) => n + 1),
         switchRepo: (name) => setRepo(name),
@@ -697,7 +692,7 @@ export default function App() {
   // the feed pre-filtered to the pill's service.
   function openHistoryFilter(service: string) {
     setHistoryFilter((r) => ({ query: service, facet: 'all', nonce: (r?.nonce ?? 0) + 1 }));
-    setTab('history');
+    openTab('history');
   }
 
   // Prefetch repo metrics on select (issue #897): fire-and-forget
@@ -907,7 +902,10 @@ export default function App() {
           open
           section={triageSection}
           onSectionChange={setTriageSection}
-          onClose={() => setTriageOpen(false)}
+          onClose={() => {
+            setTriageOpen(false);
+            setTab('now');
+          }}
           repo={repo}
           defaultBranch={repos.find((r) => r.name === repo)?.branch}
           onAskAgent={(seed) => askAgent(seed)}
@@ -926,7 +924,7 @@ export default function App() {
         />
       )}
       {seenTabs.has('browser') && (
-        <div hidden={tab !== 'browser'} data-testid="keepalive-browser">
+        <div hidden={triageOpen || tab !== 'browser'} data-testid="keepalive-browser">
           <BrowserView
             browserState={agentBrowser?.state ?? 'IDLE'}
             currentStep={agentBrowser?.current_step || null}
@@ -955,7 +953,7 @@ export default function App() {
         />
       )}
       <ShortcutHint />
-      {tab === 'now' && (
+      {!triageOpen && tab === 'now' && (
         <NowView
           repo={repo}
           repos={repos}
@@ -1002,7 +1000,7 @@ export default function App() {
           onFilterHistory={openHistoryFilter}
         />
       )}
-      {tab === 'chat' &&
+      {!triageOpen && tab === 'chat' &&
         (isRollupRepo(repo) ? (
           <RollupGate view="Chat" />
         ) : (
@@ -1027,12 +1025,12 @@ export default function App() {
             }}
           />
         ))}
-      {tab === 'history' && isRollupRepo(repo) && <RollupGate view="History" />}
+      {!triageOpen && tab === 'history' && isRollupRepo(repo) && <RollupGate view="History" />}
       {seenTabs.has('history') && !isRollupRepo(repo) && (
-        <div hidden={tab !== 'history'} data-testid="keepalive-history">
+        <div hidden={triageOpen || tab !== 'history'} data-testid="keepalive-history">
           <HistoryView
             repo={repo}
-            active={tab === 'history'}
+            active={!triageOpen && tab === 'history'}
             queryRequest={historyQueryRequest}
             filterRequest={historyFilter}
           />
