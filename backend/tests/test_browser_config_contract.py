@@ -16,15 +16,17 @@ from cli import repo_root
 ROOT = Path(repo_root()).resolve()
 PATH_PROBE = """
 import json
+from pathlib import Path
 from backend import skill_store, skill_runs
 from backend.api.routers import browser_view, browser_tasks
-print(json.dumps({
+paths = {
     "skills": str(skill_store.skills_dir()),
     "notes": str(browser_view.notes_file()),
     "activity": str(browser_view.activity_log_file()),
     "runs": str(skill_runs.runs_file()),
     "tasks": str(browser_tasks.tasks_root()),
-}))
+}
+print(json.dumps({name: str(Path(value).resolve()) for name, value in paths.items()}))
 """
 
 
@@ -60,7 +62,9 @@ class BrowserContractCase(unittest.TestCase):
 class BrowserConfigurationContractTest(BrowserContractCase):
     def test_default_artifacts_resolve_inside_the_checkout(self):
         """#1260: unset path variables use portable repo-relative defaults."""
-        paths = self.probe(PATH_PROBE)
+        paths = self.probe(
+            f"import os\nos.chdir({str(self.directory)!r})\n" + PATH_PROBE
+        )
         for label, value in paths.items():
             with self.subTest(artifact=label):
                 path = Path(value)
