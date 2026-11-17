@@ -64,19 +64,20 @@ def step_trace(
     context = dict(context or {})
     context["url"] = page.get("url", context.get("source_url", ""))
     elements = page.get("elements", [])
+    selector = proposal.get("selector") or ""
     focused = [el for el in elements if el.get("focused")]
     selected = []
     if proposal.get("action") != "navigate":
-        selected = match_selector(page, proposal.get("selector", ""))
+        selected = match_selector(page, selector)
     targets = focused + selected
     declared_sensitive = bool(
         re.search(
             r"password|passwd|username|one-time-code|webauthn",
-            proposal.get("selector", ""),
+            selector,
             re.IGNORECASE,
         )
     )
-    observed = selected if proposal.get("selector") else focused
+    observed = selected if selector else focused
     unknown = not observed or any(
         "sensitive" not in el and not el.get("type") for el in observed
     )

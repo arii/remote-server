@@ -16,6 +16,7 @@ from jsonschema import Draft202012Validator
 
 from backend import skill_runs
 from backend.skill_format import SKILL_SCHEMA_PATH, validate_skill
+from backend.skill_trace import step_trace
 from backend.api.routers import browser_drive, browser_view
 from backend.browser_safety import HumanWheelPaused
 from backend.skill_drivers import GridCDPDriver
@@ -28,6 +29,16 @@ from backend.tests.test_skill_trace_contract import (
 
 
 class TraceRuntimeTest(unittest.TestCase):
+    def test_live_coordinate_action_without_css_hook_has_a_trace(self):
+        trace = step_trace(
+            1,
+            {"action": "click", "selector": None},
+            page={"url": "https://fixture.invalid/", "elements": []},
+            mode="live",
+        )
+        self.assertEqual(trace["proposal"]["selector"], None)
+        self.assertFalse(trace["sensitive"])
+
     def test_published_schema_and_validator_agree_on_empty_expectations(self):
         schema = json.loads(SKILL_SCHEMA_PATH.read_text())
         Draft202012Validator.check_schema(schema)
