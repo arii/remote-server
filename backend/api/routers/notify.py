@@ -106,9 +106,12 @@ async def github_webhook(request: Request):
         return JSONResponse(
             {"error": "webhook not configured (WEBHOOK_SECRET unset)"},
             status_code=503)
-    body = await request.body()
-    if len(body) > notify_webhook.WEBHOOK_MAX_BODY:
-        return JSONResponse({"error": "payload too large"}, status_code=413)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > notify_webhook.WEBHOOK_MAX_BODY:
+            return JSONResponse({"error": "payload too large"}, status_code=413)
+        body.extend(chunk)
+    body = bytes(body)
     sig = request.headers.get("X-Hub-Signature-256", "")
     if not notify_webhook.verify_signature(secret, body, sig):
         return JSONResponse({"error": "bad signature"}, status_code=401)
