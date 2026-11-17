@@ -21,12 +21,14 @@ validator (#1253) and refuses to run an invalid skill.
 
 from __future__ import annotations
 
-from fastapi import HTTPException
-
-from backend.api.routers.browser_drive import _require_human_not_driving
+from backend.browser_safety import (
+    HumanWheelPaused,
+    require_human_not_driving as _require_human_not_driving,
+)
 from backend.skill_check import check_step, match_selector
 from backend.skill_drivers import BrowserDriver
 from backend.skill_format import validate_skill
+from backend.skill_trace import finish_step, page_hash_of, step_trace
 
 
 def _resolve(step: dict, page: dict) -> tuple[str, dict | None, str]:
@@ -65,10 +67,11 @@ def _resolve(step: dict, page: dict) -> tuple[str, dict | None, str]:
     return action, None, f"unknown action {action!r}"
 
 
-def _perform(driver, action: str, kwargs: dict) -> str:
+def _perform(driver, action: str, kwargs: dict, trace: dict) -> str:
     """Execute one resolved action. Returns an error or ''."""
     try:
         _require_human_not_driving()
+        trace["executed"] = True
         if action == "navigate":
             driver.navigate(kwargs["url"])
         elif action == "click":
@@ -81,6 +84,9 @@ def _perform(driver, action: str, kwargs: dict) -> str:
             driver.key(kwargs["key"])
         else:
             return f"unknown action {action!r}"
+    except HumanWheelPaused:
+        trace["executed"] = False
+        raise
     except Exception as exc:
         return f"driver failed: {exc}"
     return ""
@@ -95,6 +101,7 @@ def run_skill(skill: dict, driver: BrowserDriver) -> dict:
     failure never execute.
     """
     errors = validate_skill(skill)
+    context = {"source_url": skill.get("source_url", ""), "mode": "replay"}
     if errors:
         return {
             "skill": skill.get("skill", ""),
@@ -103,6 +110,9 @@ def run_skill(skill: dict, driver: BrowserDriver) -> dict:
             "failed_step": None,
             "reason": f"invalid skill: {errors[0]}",
             "steps": [],
+            "trace_version": 1,
+            "context": context,
+            "_validation_error": True,
         }
     result = {
         "skill": skill.get("skill", ""),
@@ -111,39 +121,34 @@ def run_skill(skill: dict, driver: BrowserDriver) -> dict:
         "failed_step": None,
         "reason": "",
         "steps": [],
+        "trace_version": 1,
+        "context": context,
     }
     for step in skill.get("steps", []):
         n = step.get("n")
+        trace = step_trace(n, step, context=context)
         try:
             _require_human_not_driving()
-        except HTTPException as exc:
-            reason = f"replay refused: {exc.detail}"
-            result["steps"].append(
-                {"n": n, "action": step["action"], "ok": False, "reason": reason}
-            )
-            result.update(passed=False, failed_step=n, reason=reason)
-            break
-        pre_page = driver.snapshot()
-        action, kwargs, resolve_error = _resolve(step, pre_page)
-        if resolve_error:
-            result["steps"].append(
-                {"n": n, "action": action, "ok": False, "reason": resolve_error}
-            )
-            result.update(passed=False, failed_step=n, reason=resolve_error)
-            break
-        perform_error = _perform(driver, action, kwargs)
-        if perform_error:
-            result["steps"].append(
-                {"n": n, "action": action, "ok": False, "reason": perform_error}
-            )
-            result.update(passed=False, failed_step=n, reason=perform_error)
-            break
-        post_page = driver.snapshot()
-        ok, check_reason = check_step(post_page, step)
-        result["steps"].append(
-            {"n": n, "action": action, "ok": ok, "reason": check_reason}
-        )
-        if not ok:
-            result.update(passed=False, failed_step=n, reason=check_reason)
+            pre_page = driver.snapshot()
+            trace = step_trace(n, step, page=pre_page, context=context)
+            action, kwargs, resolve_error = _resolve(step, pre_page)
+            if resolve_error:
+                finish_step(trace, "error", resolve_error)
+            else:
+                perform_error = _perform(driver, action, kwargs, trace)
+                if perform_error:
+                    finish_step(trace, "error", perform_error)
+                else:
+                    post_page = driver.snapshot()
+                    trace["context"]["post_page_hash"] = page_hash_of(post_page)
+                    ok, reason = check_step(post_page, step)
+                    finish_step(trace, "passed" if ok else "failed", reason)
+        except HumanWheelPaused as exc:
+            finish_step(trace, "blocked", f"replay refused: {exc.detail}")
+        except Exception as exc:
+            finish_step(trace, "error", f"driver failed: {exc}")
+        result["steps"].append(trace)
+        if not trace["ok"]:
+            result.update(passed=False, failed_step=n, reason=trace["reason"])
             break
     return result

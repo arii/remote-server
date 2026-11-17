@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local form fixture</title>
+<style>
+  body { font: 1rem system-ui; max-width: 32rem; margin: 2rem auto; padding: 1rem; }
+  label, input, button { display: block; margin-block: .75rem; }
+  input { font: inherit; padding: .5rem; }
+</style>
+<h1>Local form fixture</h1>
+<p>Synthetic data only. This preview never sends a message.</p>
+<form>
+  <label>Name <input name="name" data-testid="name" required></label>
+  <label>Email <input name="email" type="email" data-testid="email" required></label>
+  <button data-testid="submit" type="submit">Preview confirmation</button>
+</form>
+<section data-testid="confirmation" hidden aria-live="polite"></section>
+<script>
+  const form = document.querySelector('form');
+  const confirmation = document.querySelector('[data-testid="confirmation"]');
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const values = new FormData(form);
+    confirmation.textContent = `Confirmation: ${values.get('name')} (${values.get('email')})`;
+    form.hidden = true;
+    confirmation.hidden = false;
+    history.pushState(null, '', '/confirmation');
+  });
+</script>
+</html>

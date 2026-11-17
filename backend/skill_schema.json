@@ -4,6 +4,9 @@
     "title": "Co-browse skill file (frozen, issue #1253)",
     "description": "One file per skill, versioned, human readable. Selectors use data-testid or ARIA role first; never XPath, never bare text. Every step has exactly one check of one of four types. Structural rules here; sequential step numbers, strict ints, no extra properties, and the no-bare-text selector rule are enforced by the validator in backend/skill_format.py.",
     "type": "object",
+    "$defs": {
+        "emptyExpectedCheckType": {"enum": ["element_visible"]}
+    },
     "required": ["skill", "version", "source_url", "steps"],
     "additionalProperties": false,
     "properties": {
@@ -44,8 +47,12 @@
                                     "value_equals"
                                 ]
                             },
-                            "expected": {"type": "string", "minLength": 1}
-                        }
+                            "expected": {"type": "string"}
+                        },
+                        "allOf": [{
+                            "if": {"properties": {"type": {"$ref": "#/$defs/emptyExpectedCheckType"}}},
+                            "else": {"properties": {"expected": {"minLength": 1}}}
+                        }]
                     }
                 }
             }

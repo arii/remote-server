@@ -31,9 +31,7 @@ import os
 import urllib.request
 from typing import Protocol, runtime_checkable
 
-
-class BrowserDriverError(Exception):
-    """The browser link failed (busy slot, dead relay, no page)."""
+from backend.browser_safety import BrowserDriverError
 
 
 @runtime_checkable
@@ -239,7 +237,9 @@ class PlaywrightDriver:
 
     def click(self, x: int, y: int) -> None:
         try:
-            self._ensure().mouse.click(x, y)
+            page = self._ensure()
+            page.mouse.click(x, y)
+            page.evaluate("void 0")
         except Exception as exc:
             raise BrowserDriverError(f"click failed: {exc}") from exc
 
