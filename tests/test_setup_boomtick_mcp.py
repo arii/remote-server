@@ -17,15 +17,29 @@ class SetupBoomtickMcpTest(unittest.TestCase):
             if existing:
                 for path in paths:
                     path.parent.mkdir(parents=True)
-                    path.write_text(json.dumps({"mcpServers": {
-                        "other": {"command": "keep-me"},
-                        "boomtick-mcp": {"env": {"GITHUB_TOKEN": "old-dummy-token"}},
-                    }}))
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "mcpServers": {
+                                    "other": {"command": "keep-me"},
+                                    "boomtick-mcp": {
+                                        "env": {"GITHUB_TOKEN": "old-dummy-token"}
+                                    },
+                                }
+                            }
+                        )
+                    )
             result = subprocess.run(
                 ["bash", "scripts/setup-boomtick-mcp.sh"],
-                env={**os.environ, "TARGET_HOME": directory,
-                     "GITHUB_TOKEN": token, "BOOMTICK_GITHUB_TOKEN": alias},
-                capture_output=True, text=True, timeout=30,
+                env={
+                    **os.environ,
+                    "TARGET_HOME": directory,
+                    "GITHUB_TOKEN": token,
+                    "BOOMTICK_GITHUB_TOKEN": alias,
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
                 preexec_fn=lambda: os.umask(0o022),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -41,20 +55,28 @@ class SetupBoomtickMcpTest(unittest.TestCase):
 
     def test_token_is_a_launch_time_reference(self):
         for config in self.configure(token="review-dummy-not-a-secret", existing=True):
-            self.assertEqual(config["mcpServers"]["boomtick-mcp"]["env"]["GITHUB_TOKEN"],
-                             "${GITHUB_TOKEN}")
+            self.assertEqual(
+                config["mcpServers"]["boomtick-mcp"]["env"]["GITHUB_TOKEN"],
+                "${GITHUB_TOKEN}",
+            )
             self.assertEqual(config["mcpServers"]["other"], {"command": "keep-me"})
 
     def test_alias_is_a_launch_time_reference(self):
         for config in self.configure(alias="alias-dummy-not-a-secret"):
-            self.assertEqual(config["mcpServers"]["boomtick-mcp"]["env"]["GITHUB_TOKEN"],
-                             "${BOOMTICK_GITHUB_TOKEN}")
+            self.assertEqual(
+                config["mcpServers"]["boomtick-mcp"]["env"]["GITHUB_TOKEN"],
+                "${BOOMTICK_GITHUB_TOKEN}",
+            )
 
     def test_primary_token_takes_precedence(self):
         for config in self.configure(token="primary-dummy", alias="alias-dummy"):
-            self.assertEqual(config["mcpServers"]["boomtick-mcp"]["env"]["GITHUB_TOKEN"],
-                             "${GITHUB_TOKEN}")
+            self.assertEqual(
+                config["mcpServers"]["boomtick-mcp"]["env"]["GITHUB_TOKEN"],
+                "${GITHUB_TOKEN}",
+            )
 
     def test_missing_token_removes_old_literal(self):
         for config in self.configure(existing=True):
-            self.assertNotIn("GITHUB_TOKEN", config["mcpServers"]["boomtick-mcp"]["env"])
+            self.assertNotIn(
+                "GITHUB_TOKEN", config["mcpServers"]["boomtick-mcp"]["env"]
+            )

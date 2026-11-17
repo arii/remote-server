@@ -20,10 +20,8 @@ def _load_preflight_script():
     import importlib.util
 
     # Root-relative: tests run with cwd=repo root.
-    path = os.path.join("scripts",
-                        "verify-co-browsing-preflight.py")
-    spec = importlib.util.spec_from_file_location(
-        "verify_co_browsing_preflight", path)
+    path = os.path.join("scripts", "verify-co-browsing-preflight.py")
+    spec = importlib.util.spec_from_file_location("verify_co_browsing_preflight", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -112,6 +110,7 @@ class TestPreflightDigest(unittest.TestCase):
         first = out.splitlines()[0]
         self.assertTrue(first.startswith("✗"))
         self.assertIn("FAIL", first)
+
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is not available")
 class TestBannerExtraction(unittest.TestCase):
@@ -237,8 +236,7 @@ class TestGridChromeArgs(unittest.TestCase):
         """
         mod = _load_preflight_script()
         args = list(mod.GRID_CHROME_ARGS)
-        self.assertIn("--user-data-dir=/data/shared-browser/agent",
-                      args)
+        self.assertIn("--user-data-dir=/data/shared-browser/agent", args)
         self.assertIn("--enable-features=WebMCP", args)
         self.assertIn("--disable-dev-shm-usage", args)
 
