@@ -401,7 +401,7 @@ def worktree_file_middleware(worktree, written_files):
                     )
         result = handler(request)
         if (
-            call["name"] in {"write_file", "edit_file"}
+            call["name"] in {"write_file", "edit_file", "delete"}
             and result.status == "success"
             and written_files is not None
         ):

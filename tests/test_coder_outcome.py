@@ -153,12 +153,16 @@ class TestCoderOutcome(unittest.TestCase):
         self.assertFalse(events[-1]["ok"])
 
     def test_deletion_only_implementation_succeeds(self):
-        result, events = self.run_scenario("DONE #1261", lambda b: b.delete("obsolete.txt"))
+        result, events = self.run_scenario(
+            "DONE #1261", lambda b: b.delete("obsolete.txt")
+        )
         self.assertNotIsInstance(result, RuntimeError)
         self.assertTrue(events[-1]["ok"])
 
     def test_failed_delete_does_not_count(self):
-        result, events = self.run_scenario("DONE #1261", lambda b: b.delete("missing.txt"))
+        result, events = self.run_scenario(
+            "DONE #1261", lambda b: b.delete("missing.txt")
+        )
         self.assertIsInstance(result, RuntimeError)
         self.assertFalse(events[-1]["ok"])
 
