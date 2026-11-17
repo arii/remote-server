@@ -28,6 +28,19 @@ class BrowserSkillPinsTest(unittest.TestCase):
             )
         )
 
+    def test_trailing_newline_name_does_not_poison_later_saves(self):
+        invalid = make_three_step_skill()
+        invalid["skill"] = "contact-form\n"
+        rejected = skill_store.save_skill(invalid)
+        accepted = skill_store.save_skill(make_three_step_skill())
+        self.assertIn("error", rejected, f"later valid save returned {accepted!r}")
+        self.assertNotIn("error", accepted)
+        self.assertEqual(skill_store.verify_skills(), [])
+
+    def test_listing_rejects_a_legacy_newline_name(self):
+        (self.root / "contact-form\n.v1.json").write_text("{}")
+        self.assertEqual(skill_store.list_skills(), [])
+
     def test_bad_lock_is_visible_and_cannot_be_overwritten(self):
         lock = self.root / "skills-lock.json"
         for contents in (

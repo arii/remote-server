@@ -25,7 +25,7 @@ from tempfile import NamedTemporaryFile
 from backend.browser_config import data_path
 from backend.skill_format import validate_skill
 
-_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def skills_dir() -> Path:
@@ -111,7 +111,7 @@ def verify_skills() -> list[str]:
 
 
 def _check_name(name: str) -> str | None:
-    if not isinstance(name, str) or not _NAME_RE.match(name):
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return f"invalid skill name {name!r}"
     return None
 
@@ -150,7 +150,7 @@ def list_skills() -> list:
             ver_n = int(ver)
         except ValueError:
             continue
-        if not _NAME_RE.match(name):
+        if not _NAME_RE.fullmatch(name):
             continue
         names[name] = max(names.get(name, 0), ver_n)
     return [{"skill": name, "version": ver} for name, ver in sorted(names.items())]
