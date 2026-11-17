@@ -98,10 +98,13 @@ def prune_reports() -> None:
 
 def _view(report: dict) -> dict:
     run = jobs.registry.get_run(report["id"])
-    if report["status"] in ("queued", "running"):
+    if report["status"] in ("queued", "running", "cancelling"):
         if run is None or run.get("done"):
             report["status"] = (
-                "cancelled" if run and run.get("exit_code") == 130 else "failed"
+                "cancelled"
+                if report["status"] == "cancelling"
+                or (run and run.get("exit_code") == 130)
+                else "failed"
             )
             report["error"] = (
                 "cancelled"

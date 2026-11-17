@@ -381,6 +381,29 @@ class BrowserTasksTest(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "no paired Chrome")
         self.assertEqual(self.registry.list_jobs(), [])
 
+    def test_contract_d_finished_or_missing_run_reconciles_cancelling(self):
+        """PR 1334 d: a persisted cancellation cannot remain pending after restart."""
+        for run in (
+            None,
+            {"done": True, "exit_code": 0},
+            {"done": True, "exit_code": 130},
+        ):
+            with self.subTest(run=run):
+                task_id = "abcdef123456"
+                (self.root / task_id).mkdir(parents=True, exist_ok=True)
+                browser_tasks._save(
+                    {
+                        "id": task_id,
+                        "created_at": 1,
+                        "status": "cancelling",
+                        "captures": [],
+                    }
+                )
+                with mock.patch.object(self.registry, "get_run", return_value=run):
+                    response = self.client.get(f"/api/browser/tasks/{task_id}")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["status"], "cancelled")
+
     def test_capture_failure_finishes_job_and_releases_slot(self):
         with mock.patch.object(
             browser_drive, "capture", side_effect=RuntimeError("capture rejected")
