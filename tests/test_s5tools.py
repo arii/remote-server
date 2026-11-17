@@ -305,6 +305,65 @@ class TestS5Tools(unittest.TestCase):
 
 
 class TestRunRepoCommand(unittest.TestCase):
+    def test_documented_unittest_forms_execute(self):
+        import tempfile
+
+        for prefix in ("", "PYTHONPATH=./deep-agent "):
+            with (
+                self.subTest(prefix=prefix),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                package = os.path.join(directory, "backend", "tests")
+                os.makedirs(package)
+                for path in (
+                    os.path.join(directory, "backend", "__init__.py"),
+                    os.path.join(package, "__init__.py"),
+                ):
+                    with open(path, "w", encoding="utf-8"):
+                        pass
+                with open(
+                    os.path.join(package, "test_probe.py"), "w", encoding="utf-8"
+                ) as output:
+                    output.write(
+                        "import unittest\nclass Probe(unittest.TestCase):\n def test_ok(self): pass\n"
+                    )
+                result = s5tools.run_repo_command(
+                    directory, prefix + "python3 -m unittest backend.tests.test_probe"
+                )
+                self.assertTrue(result.startswith("exit=0\n"), result)
+                self.assertIn("Ran 1 test", result)
+
+    def test_unittest_rejects_non_test_modules_and_injection(self):
+        for suffix in (
+            "",
+            "discover",
+            "backend.tests.helper",
+            "tests.test_probe",
+            "backend.tests.test_probe.py",
+            "../backend/tests/test_probe.py",
+            "backend.tests.test_probe; touch SMUGGLED",
+            "backend.tests.test_probe && whoami",
+            "backend.tests.test_probe | sh",
+            "backend.tests.test_probe > file",
+            "'backend.tests.test_probe$(whoami)'",
+            "backend.tests.test_probe -k x",
+        ):
+            for prefix in ("", "PYTHONPATH=./deep-agent "):
+                command = prefix + "python3 -m unittest " + suffix
+                with self.subTest(command=command):
+                    self.assertTrue(
+                        s5tools.run_repo_command("/tmp", command).startswith("REJECTED")
+                    )
+        for command in (
+            "PYTHONPATH=/tmp python3 -m unittest backend.tests.test_probe",
+            "PYTHONPATH=./deep-agent pytest",
+            "env python3 -m unittest backend.tests.test_probe",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(
+                    s5tools.run_repo_command("/tmp", command).startswith("REJECTED")
+                )
+
     def _checkout(self, d):
         os.mkdir(os.path.join(d, "tests"))
         probe = os.path.join(d, "tests", "test_probe.py")

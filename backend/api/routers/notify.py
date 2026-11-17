@@ -73,16 +73,17 @@ class PreferencesUpdate(BaseModel, extra="forbid"):
 def _resolve_repo_path(repo_full_name: str):
     """Map a GitHub full_name to a local checkout path, or None."""
     import os
+
     short = (repo_full_name or "").split("/")[-1].strip()
     if not short:
         return None
     # The stack checkout itself lives outside the repos dir.
     stack = os.environ.get("BUTTONS_STACK", "/home/ari/remote-server")
-    if short == os.path.basename(stack.rstrip("/")) \
-            and os.path.isdir(stack):
+    if short == os.path.basename(stack.rstrip("/")) and os.path.isdir(stack):
         return stack
     try:
         from backend.core.repos import resolve_repo_path
+
         path = resolve_repo_path(short)
     except Exception:
         return None
@@ -94,8 +95,9 @@ def _queue_pull(repo: str, path: str):
         if repo in notify_webhook.webhook_pending:
             return False
         notify_webhook.webhook_pending.add(repo)
-    threading.Thread(target=notify_webhook.webhook_worker, args=(repo, path),
-                     daemon=True).start()
+    threading.Thread(
+        target=notify_webhook.webhook_worker, args=(repo, path), daemon=True
+    ).start()
     return True
 
 
@@ -104,11 +106,14 @@ async def github_webhook(request: Request):
     secret = notify_webhook.webhook_secret()
     if not secret:
         return JSONResponse(
-            {"error": "webhook not configured (WEBHOOK_SECRET unset)"},
-            status_code=503)
-    body = await request.body()
-    if len(body) > notify_webhook.WEBHOOK_MAX_BODY:
-        return JSONResponse({"error": "payload too large"}, status_code=413)
+            {"error": "webhook not configured (WEBHOOK_SECRET unset)"}, status_code=503
+        )
+    buffer = bytearray()
+    async for chunk in request.stream():
+        if len(buffer) + len(chunk) > notify_webhook.WEBHOOK_MAX_BODY:
+            return JSONResponse({"error": "payload too large"}, status_code=413)
+        buffer.extend(chunk)
+    body = bytes(buffer)
     sig = request.headers.get("X-Hub-Signature-256", "")
     if not notify_webhook.verify_signature(secret, body, sig):
         return JSONResponse({"error": "bad signature"}, status_code=401)
@@ -153,8 +158,7 @@ class WebhookRetryResult(BaseModel):
 
 
 @router.post("/api/webhook/retry", response_model=WebhookRetryResult)
-def webhook_retry(repo: str,
-                  payload: dict | None = Body(default=None)) -> dict:
+def webhook_retry(repo: str, payload: dict | None = Body(default=None)) -> dict:
     """Operator recovery tap (#855): re-run the webhook pull for one
     checkout. The POST body (the console sends {intent, confirmed})
     is accepted and ignored; the repo rides the query string. A
@@ -162,17 +166,20 @@ def webhook_retry(repo: str,
     404 when the repo has no local checkout."""
     path = _resolve_repo_path(repo or "")
     if not path:
-        raise HTTPException(
-            status_code=404, detail=f"unknown repo: {repo}")
+        raise HTTPException(status_code=404, detail=f"unknown repo: {repo}")
     queued = _queue_pull(repo, path)
-    return {"queued": True, "repo": repo, "coalesced": not queued,
-            "skip_counts": webhook_heal.get_counts()}
+    return {
+        "queued": True,
+        "repo": repo,
+        "coalesced": not queued,
+        "skip_counts": webhook_heal.get_counts(),
+    }
 
 
-@router.get("/api/notifications/status",
-            response_model=NotificationsStatus)
+@router.get("/api/notifications/status", response_model=NotificationsStatus)
 def notifications_status() -> dict:
     import os
+
     ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip()
     webhook_url = os.environ.get("NOTIFICATION_WEBHOOK_URL", "").strip()
     state = notify_prefs.load_notifier_state()
@@ -187,35 +194,44 @@ def notifications_status() -> dict:
     }
 
 
-@router.post("/api/notifications/test",
-             response_model=NotificationResult)
+@router.post("/api/notifications/test", response_model=NotificationResult)
 def notifications_test() -> dict:
     # Explicit tap: mute never applies — `test` is not a mutable
     # class — so this always attempts a real send.
     res = notify_prefs.send_notification(
-        "Test Notification", "Test push from S5 backend.",
-        priority="default", tags=["test"], event_type="test")
+        "Test Notification",
+        "Test push from S5 backend.",
+        priority="default",
+        tags=["test"],
+        event_type="test",
+    )
     # Truth in response (#430): empty results mean no channel is
     # configured, so report failure with guidance instead of ok:true.
     # Note delivered()'s empty→True rule is digest-stamp specific
     # (nothing to retry) and must not leak into this endpoint.
     if not res:
-        return {"ok": False, "results": res,
-                "reason": "no notification channel configured "
-                          "(set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL)"}
+        return {
+            "ok": False,
+            "results": res,
+            "reason": "no notification channel configured "
+            "(set NTFY_TOPIC or NOTIFICATION_WEBHOOK_URL)",
+        }
     return {"ok": notify_digest.delivered(res), "results": res}
 
 
-@router.post("/api/notifications/trigger-digest",
-             response_model=DigestResult)
+@router.post("/api/notifications/trigger-digest", response_model=DigestResult)
 def notifications_trigger_digest() -> dict:
     digest_msg = notify_digest.build_digest_text()
     # Explicit tap, but a muted `digest` class still suppresses
     # (mute wins over tap).
     res = notify_prefs.send_notification(
-        "Manual Briefing Digest", digest_msg, priority="low",
-        tags=["clipboard", "digest"], event_type="digest",
-        click_url=notify_prefs.console_url("/api/briefing"))
+        "Manual Briefing Digest",
+        digest_msg,
+        priority="low",
+        tags=["clipboard", "digest"],
+        event_type="digest",
+        click_url=notify_prefs.console_url("/api/briefing"),
+    )
     # Stamp only on actual delivery (#532): a failed manual digest
     # must not eat the next scheduled one. ok mirrors delivery so
     # the operator sees the failure alongside the per-target errors
@@ -237,14 +253,12 @@ def _preferences_payload() -> dict:
     }
 
 
-@router.get("/api/notifications/preferences",
-            response_model=NotificationPreferences)
+@router.get("/api/notifications/preferences", response_model=NotificationPreferences)
 def notifications_preferences() -> dict:
     return _preferences_payload()
 
 
-@router.post("/api/notifications/preferences",
-             response_model=NotificationPreferences)
+@router.post("/api/notifications/preferences", response_model=NotificationPreferences)
 def notifications_set_preferences(body: PreferencesUpdate) -> dict:
     try:
         if "muted_events" in body.model_fields_set:
@@ -254,19 +268,16 @@ def notifications_set_preferences(body: PreferencesUpdate) -> dict:
     return _preferences_payload()
 
 
-@router.get("/api/notifications/digest-schedule",
-            response_model=DigestScheduleStatus)
+@router.get("/api/notifications/digest-schedule", response_model=DigestScheduleStatus)
 def notifications_digest_schedule() -> dict:
     return notify_digest.digest_schedule_status()
 
 
-@router.post("/api/notifications/digest-schedule",
-             response_model=DigestScheduleStatus)
-def notifications_set_digest_schedule(
-        body: DigestScheduleRequest) -> dict:
+@router.post("/api/notifications/digest-schedule", response_model=DigestScheduleStatus)
+def notifications_set_digest_schedule(body: DigestScheduleRequest) -> dict:
     try:
         return notify_digest.set_digest_cadence(body.cadence)
     except ValueError:
         raise HTTPException(
-            status_code=400,
-            detail="cadence must be daily, weekly, or off")
+            status_code=400, detail="cadence must be daily, weekly, or off"
+        )

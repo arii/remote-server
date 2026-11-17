@@ -106,6 +106,45 @@ class TestCheckEnv(unittest.TestCase):
 
 
 class TestRunCheckTool(unittest.TestCase):
+    def test_documented_unittest_commands_execute(self):
+        _install_fake_langchain(self)
+        with tempfile.TemporaryDirectory() as worktree:
+            package = os.path.join(worktree, "backend", "tests")
+            os.makedirs(package)
+            for path in (
+                os.path.join(worktree, "backend", "__init__.py"),
+                os.path.join(package, "__init__.py"),
+            ):
+                with open(path, "w", encoding="utf-8"):
+                    pass
+            with open(
+                os.path.join(package, "test_probe.py"), "w", encoding="utf-8"
+            ) as output:
+                output.write(
+                    "import unittest\nclass Probe(unittest.TestCase):\n def test_ok(self): pass\n"
+                )
+            run_check = coder.build_check_tool(worktree)
+            for prefix in ("", "PYTHONPATH=./deep-agent "):
+                with self.subTest(prefix=prefix):
+                    result = run_check(
+                        prefix + "python3 -m unittest backend.tests.test_probe"
+                    )
+                    self.assertTrue(result.startswith("exit=0\n"), result)
+                    self.assertIn("Ran 1 test", result)
+            result = run_check("python3 -m unittest backend.tests.test_missing")
+            self.assertTrue(result.startswith("exit=1\n"), result)
+            self.assertIn("ModuleNotFoundError", result)
+            with mock.patch("subprocess.run") as spawn:
+                for command in (
+                    "",
+                    "python3 -m unittest",
+                    "python3 -m unittest backend.tests.test_probe && whoami",
+                    "PYTHONPATH=/tmp python3 -m unittest backend.tests.test_probe",
+                ):
+                    with self.subTest(command=command):
+                        self.assertTrue(run_check(command).startswith("REJECTED"))
+                spawn.assert_not_called()
+
     def test_tool_sets_pythonpath_and_dither_notice(self):
         _install_fake_langchain(self)
         with tempfile.TemporaryDirectory() as worktree:

@@ -56,12 +56,16 @@ else
 fi
 
 # 3. Server entries in both the host-level and CLI-level configs.
-# Secrets are never written here: GITHUB_TOKEN is taken from the
-# environment when present, otherwise left out (see reminder below).
+# The MCP host expands token references from its environment at launch.
 BOOMTICK_REPO_PATH="${BOOMTICK_REPO_PATH:-${BOOMTICK_DIR:-${TARGET_HOME}/boomtick}}"
-GITHUB_TOKEN_VALUE="${GITHUB_TOKEN:-${BOOMTICK_GITHUB_TOKEN:-}}"
+GITHUB_TOKEN_ENV=""
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  GITHUB_TOKEN_ENV="GITHUB_TOKEN"
+elif [ -n "${BOOMTICK_GITHUB_TOKEN:-}" ]; then
+  GITHUB_TOKEN_ENV="BOOMTICK_GITHUB_TOKEN"
+fi
 export TARGET_HOME CONFIG_DIR AGY_CLI_DIR SERVER_COMMAND
-export BOOMTICK_REPO_PATH GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN_VALUE
+export BOOMTICK_REPO_PATH GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN_ENV
 # PATH for the server: start from this shell's live PATH (on the S5 that
 # already includes /opt/venvs/td/bin where `td` lives — never replace it
 # with a static list or the server fails with `td ENOENT`), then prepend
@@ -83,9 +87,9 @@ env = {
     "GITHUB_REPO": os.environ["GITHUB_REPO"],
     "PATH": os.environ["SERVER_PATH"],
 }
-token = os.environ.get("GITHUB_TOKEN_VALUE", "")
-if token:
-    env["GITHUB_TOKEN"] = token
+token_env = os.environ["GITHUB_TOKEN_ENV"]
+if token_env:
+    env["GITHUB_TOKEN"] = "${" + token_env + "}"
 
 targets = [
     os.path.join(os.environ["CONFIG_DIR"], "mcp_config.json"),
@@ -108,8 +112,8 @@ for cfg_path in targets:
     print(f"Updated mcp_config: {cfg_path}")
 EOF
 
-if [ -z "${GITHUB_TOKEN_VALUE}" ]; then
-  echo "Reminder: no GITHUB_TOKEN in the environment, so the server entry has no token (public read-only GitHub ops only). Re-run with GITHUB_TOKEN set to add it."
+if [ -z "${GITHUB_TOKEN_ENV}" ]; then
+  echo "Reminder: export GITHUB_TOKEN before setup and when launching the MCP host for authenticated GitHub operations."
 fi
 
 echo "==> Boomtick MCP setup completed successfully."

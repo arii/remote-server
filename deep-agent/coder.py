@@ -34,7 +34,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import sys
 import threading
 import time
@@ -51,8 +50,10 @@ from s5tools import (  # noqa: E402,F401
     CHECK_PREFIXES,
     CHECK_TIMEOUT,
     TEST_FILE_RE,
+    allowed_commands_text,
     check_allowed,
     check_env,
+    parse_check_command,
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -299,7 +300,7 @@ def build_check_tool(worktree):
     """run_check tool: allowlisted verification commands in worktree."""
     from langchain_core.tools import tool  # noqa: E402
 
-    allowed = ", ".join(" ".join(p) for p in CHECK_PREFIXES)
+    allowed = allowed_commands_text()
     # Per-tool dither streak: consecutive identical failing or
     # empty-success commands. Any different command (or a success with
     # output) resets it.
@@ -314,11 +315,9 @@ def build_check_tool(worktree):
                 {allowed}.
         """
         try:
-            argv = shlex.split(command)
+            argv = parse_check_command(command)
         except ValueError as exc:
             return f"REJECTED: bad command line: {exc}"
-        if not argv or not check_allowed(argv):
-            return f"REJECTED: command must start with one of: {allowed}"
         import subprocess  # noqa: E402
 
         try:

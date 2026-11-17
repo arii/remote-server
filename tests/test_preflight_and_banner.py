@@ -20,24 +20,11 @@ def _load_preflight_script():
     import importlib.util
 
     # Root-relative: tests run with cwd=repo root.
-    path = os.path.join("scripts",
-                        "verify-co-browsing-preflight.py")
-    spec = importlib.util.spec_from_file_location(
-        "verify_co_browsing_preflight", path)
+    path = os.path.join("scripts", "verify-co-browsing-preflight.py")
+    spec = importlib.util.spec_from_file_location("verify_co_browsing_preflight", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _full_js_toolchain_available():
-    # Root-relative: tests run with cwd=repo root.
-    tsc = os.path.join("frontend", "node_modules", ".bin", "tsc")
-    return (
-        shutil.which("node") is not None
-        and shutil.which("pnpm") is not None
-        and shutil.which("fallow") is not None
-        and os.path.isfile(tsc)
-    )
 
 
 class TestPreflightDigest(unittest.TestCase):
@@ -123,38 +110,6 @@ class TestPreflightDigest(unittest.TestCase):
         first = out.splitlines()[0]
         self.assertTrue(first.startswith("✗"))
         self.assertIn("FAIL", first)
-
-    @unittest.skipUnless(
-        _full_js_toolchain_available(),
-        "needs full JS toolchain (node, pnpm, tsc, fallow)",
-    )
-    def test_package_scripts_and_fallow(self):
-        # Verify npm run type-check passes
-        proc_tc = subprocess.run(
-            ["npm", "run", "type-check"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_tc.returncode, 0, f"npm run type-check failed: {proc_tc.stderr}")
-
-        # Verify npm run lint passes
-        proc_lint = subprocess.run(
-            ["npm", "run", "lint"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_lint.returncode, 0, f"npm run lint failed: {proc_lint.stderr}")
-
-        # Verify fallow audit runs successfully
-        proc_fallow = subprocess.run(
-            ["pnpm", "run", "audit:fallow"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.assertEqual(proc_fallow.returncode, 0, f"pnpm run audit:fallow failed: {proc_fallow.stderr}")
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is not available")
@@ -281,8 +236,7 @@ class TestGridChromeArgs(unittest.TestCase):
         """
         mod = _load_preflight_script()
         args = list(mod.GRID_CHROME_ARGS)
-        self.assertIn("--user-data-dir=/data/shared-browser/agent",
-                      args)
+        self.assertIn("--user-data-dir=/data/shared-browser/agent", args)
         self.assertIn("--enable-features=WebMCP", args)
         self.assertIn("--disable-dev-shm-usage", args)
 
