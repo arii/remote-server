@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 afterEach(() => vi.useRealTimers());
 
-it("observes only trusted input, sends kind only, debounces bursts and injects once", () => {
+it("observes only trusted input, sends kind only and injects once; worker debounces", () => {
   vi.useFakeTimers();
   const listeners = {};
   const document = {addEventListener: vi.fn((type, listener) => { listeners[type] = listener; })};
@@ -20,5 +20,5 @@ it("observes only trusted input, sends kind only, debounces bursts and injects o
   listeners.pointerdown({isTrusted: true});
   vi.advanceTimersByTime(601);
   listeners.touchstart({isTrusted: true});
-  expect(chrome.runtime.sendMessage.mock.calls).toEqual([[{type: "human_input", kind: "key"}], [{type: "human_input", kind: "touch"}]]);
+  expect(chrome.runtime.sendMessage.mock.calls).toEqual([[{type: "human_input", kind: "key"}], [{type: "human_input", kind: "pointer"}], [{type: "human_input", kind: "touch"}]]);
 });

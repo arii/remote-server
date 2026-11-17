@@ -1,6 +1,8 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { createPairing, INPUT_GRACE_MS, MAX_BACKOFF_MS, RECONNECT_ALARM } from "../pairing.js";
 import { DEFAULT_ORIGIN } from "../config.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const event = () => {
   const listeners = [];
@@ -64,6 +66,24 @@ describe("Buttons pair service worker", () => {
   async function open(socket) { await socket.message({id: 1, op: "open", url: DEFAULT_ORIGIN}); }
   const human = (kind = "key", extra = {}) => ({type: "human_input", kind, ...extra});
   const fromTab = () => ({id: "buttons", tab: {id: 7}});
+
+  it("contract A05: trusted human input 400ms after agent completion reaches the backend", async () => {
+    const socket = await connect(); await open(socket);
+    const listeners = {};
+    const document = {addEventListener: (name, handler) => { listeners[name] = handler; }};
+    const chrome = {runtime: {sendMessage: (message) => pairing.handleMessage(message, fromTab())}};
+    const source = readFileSync(join(import.meta.dirname, "../takeover.js"), "utf8");
+    new Function("document", "chrome", "globalThis", "Date", source)(document, chrome, {}, Date);
+    api.debugger.sendCommand.mockImplementation(async () => {
+      listeners.pointerdown({isTrusted: true});
+      return {};
+    });
+    await socket.message({id: 60, op: "cdp", method: "Input.dispatchMouseEvent", params: {type: "mousePressed"}});
+    expect(socket.messages().filter((message) => message.event === "human_input")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(400);
+    listeners.pointerdown({isTrusted: true}); await settle();
+    expect(socket.messages().filter((message) => message.event === "human_input")).toEqual([{event: "human_input", kind: "pointer"}]);
+  });
 
   it("contract a: observes every frame and reinjects after child-frame navigation", async () => {
     const socket = await connect(); await open(socket);
