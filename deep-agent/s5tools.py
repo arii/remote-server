@@ -52,12 +52,20 @@ CHECK_PREFIXES = (
 CHECK_TIMEOUT = 300
 CHECK_OUTPUT_LIMIT = 4000
 TEST_FILE_RE = re.compile(r"^tests/test_[A-Za-z0-9_]+\.py$")
+UNITTEST_MODULE_RE = re.compile(r"backend\.tests\.test_[A-Za-z0-9_]+")
 
 
 def check_allowed(argv):
     """True when argv starts with an allowlisted verify prefix, or
     runs one repo test file directly (python3 tests/test_x.py)."""
     tupled = tuple(argv)
+    unittest_argv = tupled[1:] if tupled[:1] == ("PYTHONPATH=./deep-agent",) else tupled
+    if unittest_argv[:3] == ("python3", "-m", "unittest"):
+        return len(unittest_argv) > 3 and all(
+            UNITTEST_MODULE_RE.fullmatch(module) for module in unittest_argv[3:]
+        )
+    if unittest_argv != tupled:
+        return False
     if len(tupled) >= 2 and tupled[0] == "python3" and TEST_FILE_RE.match(tupled[1]):
         return True
     # 1230: allow only the exact frozen-lockfile install (optional --dir),
@@ -77,7 +85,16 @@ def allowed_commands_text():
     """Human list of the allowlisted command heads (tool prompts)."""
     return ", ".join(" ".join(p) for p in CHECK_PREFIXES) + (
         ", pnpm install --frozen-lockfile"
+        ", python3 -m unittest backend.tests.test_<module>"
+        ", PYTHONPATH=./deep-agent python3 -m unittest backend.tests.test_<module>"
     )
+
+
+def parse_check_command(command):
+    argv = shlex.split(command)
+    if not argv or not check_allowed(argv):
+        raise ValueError("command must start with one of: " + allowed_commands_text())
+    return argv[1:] if argv[0] == "PYTHONPATH=./deep-agent" else argv
 
 
 def check_env(checkout):
@@ -112,11 +129,9 @@ def run_repo_command(checkout, command):
     ...", or "exec failed: ...". argv is tupled from shlex — never
     shell=True — so metachars are inert arg bytes, never control."""
     try:
-        argv = shlex.split(command)
+        argv = parse_check_command(command)
     except ValueError as exc:
         return f"REJECTED: bad command line: {exc}"
-    if not argv or not check_allowed(argv):
-        return "REJECTED: command must start with one of: " + allowed_commands_text()
     try:
         proc = subprocess.run(
             argv,
