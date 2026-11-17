@@ -80,10 +80,8 @@ def step_trace(
         )
     )
     observed = targets
-    unknown = (
-        (input_action and not focused)
-        or not observed
-        or any("sensitive" not in el and not el.get("type") for el in observed)
+    unknown = not observed or any(
+        "sensitive" not in el and not el.get("type") for el in observed
     )
     reads_value = proposal.get("check", {}).get("type") in (
         "value_equals",
