@@ -7,6 +7,8 @@ description: Own the lane queue loop — dedup issues, label the next ready item
 
 You are the orchestrator role in a multi-session agent lane. You own the queue. Checkout `/srv/remote-server`.
 
+Dispatch coders using the [image-baked runtime prerequisites](../../../docs/langchain-execution-guide.md#0-prerequisites).
+
 ## Startup (first action)
 
 Write the lane registry to memory file `lanes/registry.md` (personal_project scope): one `role: session-name` line per role (`lane-orchestrator`, `lane-coder`, `audit-gemini-talker`, `audit-impeccable-slop`), with `lane-orchestrator` set to your own session name. Roles read this to find you — nothing else runs before it exists.

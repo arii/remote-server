@@ -7,6 +7,8 @@ import os
 import re
 import unittest
 
+import yaml
+
 COMPOSE = "docker-compose.yml"
 
 
@@ -228,11 +230,24 @@ class TestComposeGuards(unittest.TestCase):
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#"):
-                        reqs.add(line.split(";")[0].strip())
+                        if line.startswith("-r "):
+                            reqs.update(
+                                parse_reqs(
+                                    os.path.join(os.path.dirname(path), line[3:])
+                                )
+                            )
+                        else:
+                            reqs.add(line.split(";")[0].strip())
             return reqs
 
         backend_deps = parse_reqs(backend_req)
         terminal_deps = parse_reqs(terminal_req)
+        agent_deps = parse_reqs("deep-agent/requirements.txt")
+        self.assertTrue(agent_deps.issubset(terminal_deps))
+        with open(terminal_req, encoding="utf-8") as handle:
+            self.assertEqual(
+                handle.read().count("-r ../deep-agent/requirements.txt"), 1
+            )
         for dep in backend_deps:
             self.assertIn(
                 dep,
@@ -243,6 +258,35 @@ class TestComposeGuards(unittest.TestCase):
             any(d.startswith("pytest") for d in terminal_deps),
             "pytest missing from terminal/requirements.txt",
         )
+
+    def test_terminal_build_context_and_inputs(self):
+        with open(COMPOSE, encoding="utf-8") as handle:
+            build = yaml.safe_load(handle)["services"]["terminal"]["build"]
+        self.assertEqual(build["context"], ".")
+        self.assertEqual(build["dockerfile"], "terminal/Dockerfile")
+        with open(".github/workflows/ci.yml", encoding="utf-8") as handle:
+            workflow = yaml.safe_load(handle)
+        builds = [
+            step["with"]
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if step.get("uses", "").startswith("docker/build-push-action")
+        ]
+        self.assertEqual(len(builds), 1)
+        self.assertEqual(builds[0]["context"], ".")
+        self.assertEqual(builds[0]["file"], "terminal/Dockerfile")
+        with open("terminal/Dockerfile", encoding="utf-8") as handle:
+            dockerfile = handle.read()
+        self.assertIn(
+            "COPY deep-agent/requirements.txt /tmp/deep-agent/requirements.txt",
+            dockerfile,
+        )
+        self.assertIn("-r /tmp/terminal/requirements.txt", dockerfile)
+        for line in dockerfile.splitlines():
+            if line.startswith("COPY "):
+                self.assertTrue(os.path.exists(line.split()[1]), line)
+        with open(".dockerignore", encoding="utf-8") as handle:
+            self.assertIn("!terminal/**", handle.read())
 
 
 if __name__ == "__main__":

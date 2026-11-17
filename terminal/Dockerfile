@@ -39,8 +39,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Vendored muse installer (#523): no pipe-to-bash at build time. The script
 # self-verifies the launcher it fetches (x-content-sha256 when advertised).
-COPY muse-install.sh /tmp/muse-install.sh
-COPY requirements.txt /tmp/requirements.txt
+COPY terminal/muse-install.sh /tmp/muse-install.sh
+COPY terminal/requirements.txt /tmp/terminal/requirements.txt
+COPY deep-agent/requirements.txt /tmp/deep-agent/requirements.txt
 # pnpm store cache mount: the vendored boomtick install below
 # reuses package content across terminal image rebuilds.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
@@ -85,8 +86,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
  && python3 --version \
  && python3 -m venv /opt/venvs/td \
  && /opt/venvs/td/bin/pip install --no-cache-dir "git+https://github.com/arii/boomtick.git@${BOOMTICK_CLI_REF}#subdirectory=cli" \
- && /opt/venvs/td/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
- && rm -f /tmp/requirements.txt \
+ && /opt/venvs/td/bin/pip install --no-cache-dir -r /tmp/terminal/requirements.txt \
+ && rm -rf /tmp/terminal /tmp/deep-agent \
  && /opt/venvs/td/bin/td --help > /dev/null \
  && git clone --depth 1 --branch "${BOOMTICK_CLI_REF}" https://github.com/arii/boomtick.git /tmp/boomtick \
  && (cd /tmp/boomtick && pnpm install --frozen-lockfile --filter @arii/boomtick-mcp... --store-dir /pnpm/store) \
@@ -125,14 +126,14 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store apt-get update \
 # pass. /root/.local/bin is first on PATH, so agy resolves without it.
 
 # System gitconfig: safe.directory = * for bind-mounted host checkouts (/srv/remote-server, /srv/repos/*).
-COPY gitconfig /etc/gitconfig
+COPY terminal/gitconfig /etc/gitconfig
 
 # System vimrc: viminfo (jumps/registers/history) on the local-data volume.
-COPY vimrc.local /etc/vim/vimrc.local
+COPY terminal/vimrc.local /etc/vim/vimrc.local
 RUN (grep -q "vimrc.local" /etc/vim/vimrc || echo "source /etc/vim/vimrc.local" >> /etc/vim/vimrc) && test -f /etc/vim/vimrc.local
 
 # Custom ttyd index.html with takeover button: extract base index.html from ttyd source and inject takeover widget
-COPY takeover.html /tmp/takeover.html
+COPY terminal/takeover.html /tmp/takeover.html
 RUN mkdir -p /etc/ttyd \
  && python3 -c "import urllib.request, gzip, re, hashlib, sys; \
     data = urllib.request.urlopen('https://raw.githubusercontent.com/tsl0922/ttyd/${TTYD_VERSION}/src/html.h').read(); \
@@ -144,7 +145,7 @@ RUN mkdir -p /etc/ttyd \
  && rm -f /tmp/takeover.html
 
 # Task-scoped Pi profile scripts (pi-code, pi-review, pi-triage)
-COPY bin/ /usr/local/bin/
+COPY terminal/bin/ /usr/local/bin/
 RUN chmod +x /usr/local/bin/pi-*
 
 # Muse resume hint on interactive shell start (#377): one line naming the
@@ -171,23 +172,23 @@ RUN touch /root/.bashrc \
 
 # zellij config (single source of truth: terminal/config.kdl).
 # Rebuild after editing: docker compose build terminal && docker compose up -d terminal
-COPY config.kdl /root/.config/zellij/config.kdl
+COPY terminal/config.kdl /root/.config/zellij/config.kdl
 
 # Pi config (Ollama provider, see docs/pi-setup.md). A named volume
 # (pi-data, see docker-compose.yml) persists sessions; the image content
 # below seeds that volume on first use. To pick up config changes later,
 # edit inside the volume or recreate it (recreating loses sessions).
-COPY pi-config/models.json /root/.pi/agent/models.json
-COPY pi-config/settings.json /root/.pi/agent/settings.json
+COPY terminal/pi-config/models.json /root/.pi/agent/models.json
+COPY terminal/pi-config/settings.json /root/.pi/agent/settings.json
 # BoomTick MCP server entry (see docs/pi-setup.md § BoomTick MCP tools).
 # Same volume-seeding caveat as above: an existing pi-data volume does
 # NOT pick this up — copy it in with docker cp (see the doc).
-COPY pi-config/mcp.json /root/.pi/agent/mcp.json
+COPY terminal/pi-config/mcp.json /root/.pi/agent/mcp.json
 # Agent brief: standing instructions for Pi (see docs/pi-setup.md § Agent brief).
 # Same volume-seeding caveat: copy it into an existing pi-data volume.
-COPY pi-config/APPEND_SYSTEM.md /root/.pi/agent/APPEND_SYSTEM.md
-COPY pi-config/AGENTS.md /root/.pi/agent/AGENTS.md
-COPY pi-config/skills /root/.pi/agent/skills
+COPY terminal/pi-config/APPEND_SYSTEM.md /root/.pi/agent/APPEND_SYSTEM.md
+COPY terminal/pi-config/AGENTS.md /root/.pi/agent/AGENTS.md
+COPY terminal/pi-config/skills /root/.pi/agent/skills
 
 WORKDIR /srv/remote-server
 EXPOSE 7681

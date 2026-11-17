@@ -8,10 +8,16 @@ what, why, status) alongside this file (how, gates, verification).
 
 - Read skills in order: `ecosystem-primer` first, then the layer skill it
   points to. Do not write agent code from training knowledge — the APIs move.
-- Python env is `deep-agent/.venv` (built from `deep-agent/requirements.txt`).
-  Anything importing `langchain*` **must** run under that interpreter, and
-  its tests must too (`deep-agent/.venv/bin/python -m pytest ...`); the
-  system python3 does not have LangChain and collection will fail.
+- Terminal dispatch uses `/opt/venvs/td/bin/python`. The terminal image
+  installs `terminal/requirements.txt`, which includes the canonical
+  `deep-agent/requirements.txt` pins. Dispatch the coder with
+  `/opt/venvs/td/bin/python deep-agent/coder.py ...` from the worktree.
+  When requirements change, use the updated terminal image before dispatch;
+  dispatch performs no package installs. Image build and publication run in
+  `.github/workflows/ci.yml`.
+- Outside the terminal image, use a Python 3.11+ environment built from
+  `deep-agent/requirements.txt` (Python 3.12 is supported). Run agent code
+  and its tests with that environment's interpreter.
 - Layer choice per the primer: no-LLM logic = plain LangChain tools/chains;
   single-purpose agents = `create_agent`; conditional orchestration =
   LangGraph; long-running planning/memory/subagents = Deep Agents. Add RAG

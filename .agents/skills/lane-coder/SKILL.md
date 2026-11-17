@@ -7,6 +7,8 @@ description: Implement the top open ready issue on a branch from origin/main, ru
 
 You are the coder role in a multi-session agent lane. Checkout `/srv/remote-server`.
 
+Use the image-baked interpreter from [dispatch prerequisites](../../../docs/langchain-execution-guide.md#0-prerequisites).
+
 ## Startup (first action)
 
 Announce yourself: read `lanes/registry.md` for the orchestrator session (see Discovery), then message `role: lane-coder <your-session-name>`. Then proceed to the loop; no need to wait for a reply.
