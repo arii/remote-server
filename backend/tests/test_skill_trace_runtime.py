@@ -134,6 +134,43 @@ class TraceRuntimeTest(unittest.TestCase):
             row = skill_runs.run_and_record(skill, driver)
         self.assertNotIn(secret, json.dumps(row))
 
+    def test_sensitive_click_and_wheel_redact_every_check_expectation(self):
+        for action in ("click", "wheel"):
+            for check_type in ("value_equals", "text_contains", "url_contains"):
+                with self.subTest(action=action, check=check_type):
+                    secret = "private-check-expectation-3f2b"
+                    skill = sample_skill()
+                    skill["steps"] = [
+                        dict(
+                            skill["steps"][1],
+                            n=1,
+                            action=action,
+                            value="",
+                            check={"type": check_type, "expected": secret},
+                        )
+                    ]
+                    row = skill_runs.run_and_record(skill, TraceDriver(sensitive=True))
+                    self.assertNotIn(secret, json.dumps(row))
+                    self.assertEqual(
+                        row["steps"][0]["proposal"]["check"]["expected"], "[redacted]"
+                    )
+
+    def test_missing_credential_click_target_still_redacts_its_check(self):
+        secret = "missing-credential-expectation-a3f2"
+        skill = sample_skill()
+        skill["steps"] = [
+            dict(
+                skill["steps"][1],
+                n=1,
+                action="click",
+                selector="[data-testid='password']",
+                value="",
+                check={"type": "value_equals", "expected": secret},
+            )
+        ]
+        row = skill_runs.run_and_record(skill, TraceDriver())
+        self.assertNotIn(secret, json.dumps(row))
+
     def test_dialog_without_cached_page_records_unobservable_hash(self):
         class DialogBridge(FakeBridge):
             async def click(self, x, y):

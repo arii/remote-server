@@ -80,8 +80,16 @@ def step_trace(
     unknown = not observed or any(
         "sensitive" not in el and not el.get("type") for el in observed
     )
-    sensitive = proposal.get("action") in ("type", "key") and (
-        declared_sensitive or unknown or any(sensitive_element(el) for el in targets)
+    reads_value = proposal.get("check", {}).get("type") in (
+        "value_equals",
+        "text_contains",
+    )
+    sensitive = (
+        proposal.get("action") != "navigate"
+        and declared_sensitive
+        or any(sensitive_element(el) for el in targets)
+        or (proposal.get("action") in ("type", "key") or reads_value)
+        and unknown
     )
     return {
         "n": n,
@@ -130,7 +138,7 @@ def redact_persistence(record: dict) -> dict:
             )
             if value.get("sensitive"):
                 check = value.get("proposal", {}).get("check", {})
-                if check.get("type") in ("value_equals", "text_contains"):
+                if "expected" in check:
                     candidate = check.get("expected")
                     if (
                         isinstance(candidate, str)
@@ -221,6 +229,9 @@ def redact_persistence(record: dict) -> dict:
             step["input"]["value"] = REDACTED
             if "value" in step["proposal"]:
                 step["proposal"]["value"] = REDACTED
+            check = step["proposal"].get("check", {})
+            if check.get("expected"):
+                check["expected"] = REDACTED
         if step["input"] != raw["input"] or step["proposal"] != raw["proposal"]:
             step["redacted"] = True
     return cleaned
