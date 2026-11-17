@@ -8,6 +8,56 @@ import { expect, test } from '@playwright/test';
 // top bar must read as one row: context, views, tools in order.
 // Stateless: opens the Browser tab and measures, mutates nothing.
 test.describe('responsive console layout', () => {
+  for (const width of [1280, 390]) {
+    test(`My Chrome tasks and reports fit at ${width}px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 844 });
+      const capture = await page.context().newPage();
+      await capture.setViewportSize({ width: 800, height: 500 });
+      await capture.setContent('<h1>Captured page</h1><p>Deterministic check completed.</p>');
+      const png = await capture.screenshot();
+      await capture.close();
+      let connected = false;
+      const observation = { url: `https://example.com/${'path'.repeat(60)}`, title: 'Captured page', observed_text: 'Observed '.repeat(100), landed_on_login: false, shot: 0 };
+      let tasks: object[] = [];
+      await page.route(/\/api\/browser\/state\?target=paired$/, (route) => route.fulfill({ json: { paired: { connected, url: null, title: null } } }));
+      await page.route(/\/api\/browser\/tasks$/, async (route) => {
+        if (route.request().method() === 'POST') {
+          const body = route.request().postDataJSON();
+          expect(body.mode).toBe('check');
+          expect(body.target).toBe('paired');
+          const report = { id: 'abc123def456', ...body, ...observation, status: 'done', captures: [observation], summary: 'Checked without an LLM.' };
+          tasks = [report];
+          await route.fulfill({ status: 202, json: report });
+        } else await route.fulfill({ json: { tasks } });
+      });
+      await page.route(/\/api\/browser\/tasks\/abc123def456\/shots\/0\.png$/, (route) => route.fulfill({ body: png, contentType: 'image/png' }));
+      await page.goto('/');
+      await page.getByTestId('nav-browser').click();
+      await expect(page.getByTestId('cobrowse-frame')).toBeVisible();
+      await page.getByLabel('Browser target').selectOption('paired');
+      await expect(page.getByTestId('cobrowse-frame')).toHaveCount(0);
+      await expect(page.getByRole('link', { name: 'buttons-pair README' })).toBeVisible();
+      await page.getByLabel('Instructions', { exact: true }).fill('Inspect '.repeat(40));
+      await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+      connected = true;
+      await page.getByRole('button', { name: 'Refresh pairing' }).click();
+      await expect(page.getByText('Paired', { exact: true })).toBeVisible();
+      await page.getByLabel('Start URL (optional)').fill(observation.url);
+      await page.getByRole('button', { name: 'Run', exact: true }).click();
+      await expect(page.getByAltText('Latest My Chrome task screenshot')).toBeVisible();
+      await page.locator('.browser-task-report > summary').click();
+      await expect(page.getByText('landed_on_login: false')).toBeVisible();
+      const observed = page.locator('.browser-task-report details');
+      await expect(observed).not.toHaveAttribute('open');
+      await observed.locator('summary').click();
+      await expect(page.locator('.browser-task-report pre')).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
+      await expect(page.getByAltText('Latest My Chrome task screenshot')).toHaveJSProperty('naturalWidth', 800);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.screenshot({ path: testInfo.outputPath(`browser-tasks-${width}.png`), fullPage: true });
+    });
+  }
+
   for (const width of [1280, 1440, 1920]) {
     test(`agent rail holds 300-380px at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });

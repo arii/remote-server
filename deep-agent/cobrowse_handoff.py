@@ -154,12 +154,15 @@ def _browser_http(
     return f"BROWSER_ERROR: {detail}"
 
 
-def browser_snapshot_impl() -> str:
-    """Read-only view of the shared cdp-stream page (URL, title,
-    click targets). Attaches to the live shared session; reports
-    browser-busy when none exists. No pixels: the human watches the
-    stream, the agent works from this text."""
-    return _browser_http("GET", "/snapshot")
+def browser_snapshot_impl(target: str = "grid") -> str:
+    """Read URL, title and click targets from Grid or paired Chrome.
+
+    Grid requires a live viewer session; paired requires Buttons pair.
+    Returns masked text rather than pixels.
+    """
+    if target not in ("grid", "paired"):
+        return "REJECTED: unknown browser target"
+    return _browser_http("GET", f"/snapshot?target={target}")
 
 
 def browser_drive_impl(
@@ -172,14 +175,17 @@ def browser_drive_impl(
     text: str = "",
     key: str = "",
     code: str = "",
+    target: str = "grid",
 ) -> str:
-    """Drive the shared cdp-stream page: navigate (http(s) only),
+    """Drive Grid or paired Chrome: navigate (http(s) only),
     click, type, key, or wheel. Refuses while the human holds the
     wheel (PAUSED_BY_USER) — narrate instead of retrying. Never
-    creates a session; browser-busy means open the drawer viewer."""
+    creates a Grid session; paired requires a connected extension."""
+    if target not in ("grid", "paired"):
+        return "REJECTED: unknown browser target"
     return _browser_http(
         "POST",
-        "/drive",
+        f"/drive?target={target}",
         {
             "op": op,
             "url": url,

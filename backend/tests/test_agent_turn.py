@@ -14,6 +14,10 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import yaml
 
 try:
     from fastapi import FastAPI
@@ -80,6 +84,29 @@ def _patch_repo(test):
 
 
 class TurnArgvTest(unittest.TestCase):
+    def test_browser_guidance_matches_compose_service_and_listener(self):
+        compose = yaml.safe_load(Path("docker-compose.yml").read_text())
+        services = compose["services"]
+        base = urlsplit(
+            re.search(r"http://[^\s]+/api/browser", agent_turn.BROWSE_GUIDANCE)[0]
+        )
+        self.assertIn(base.hostname, services)
+        buttons = services[base.hostname]
+        terminal = services["terminal"]
+        self.assertIn(str(base.port), [str(port) for port in buttons["expose"]])
+        self.assertNotIn("network_mode", terminal)
+        self.assertNotIn("network_mode", buttons)
+        self.assertEqual(
+            terminal.get("networks", ["default"]), buttons.get("networks", ["default"])
+        )
+        self.assertEqual(
+            terminal["environment"]["AGENT_API"], f"http://{base.netloc}/api/agent"
+        )
+        dockerfile = Path(buttons["build"]["dockerfile"]).read_text()
+        command = json.loads(re.search(r"^CMD (\[.*\])$", dockerfile, re.M)[1])
+        self.assertEqual(command[command.index("--host") + 1], "0.0.0.0")
+        self.assertEqual(int(command[command.index("--port") + 1]), base.port)
+
     def test_allowlist_is_headless_capable_only(self):
         self.assertEqual(set(agent_turn.PROVIDERS), {"muse", "agy"})
 

@@ -1792,6 +1792,63 @@ export function fetchAgentBrowserState(): Promise<AgentBrowserStatus> {
   return getJson<AgentBrowserStatus>('api/agent/state');
 }
 
+export type BrowserTarget = 'grid' | 'paired';
+export interface PairedBrowserState {
+  connected: boolean;
+  url: string | null;
+  title: string | null;
+}
+interface BrowserTaskCapture {
+  url: string;
+  title: string;
+  observed_text: string;
+  landed_on_login: boolean;
+  shot: number;
+}
+export interface BrowserTask {
+  id: string;
+  instructions: string;
+  target: BrowserTarget;
+  mode: 'check' | 'agent';
+  status: 'queued' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled' | 'paused_by_user';
+  captures: BrowserTaskCapture[];
+  summary: string;
+  url?: string;
+  title?: string;
+  observed_text?: string;
+  landed_on_login?: boolean;
+  error?: string;
+}
+
+export async function fetchPairedBrowserState(): Promise<PairedBrowserState> {
+  const state = await getJson<{ paired: PairedBrowserState }>('api/browser/state?target=paired');
+  return state.paired;
+}
+
+export async function fetchBrowserTasks(): Promise<BrowserTask[]> {
+  return (await getJson<{ tasks: BrowserTask[] }>('api/browser/tasks')).tasks;
+}
+
+export async function createBrowserTask(body: {
+  instructions: string;
+  target: BrowserTarget;
+  mode: 'check' | 'agent';
+  start_url?: string;
+}): Promise<BrowserTask> {
+  const path = 'api/browser/tasks';
+  const response = await fetchApi(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return readJson<BrowserTask>(response, 'POST', path);
+}
+
+export async function cancelBrowserTask(id: string): Promise<BrowserTask> {
+  const path = `api/browser/tasks/${encodeURIComponent(id)}/cancel`;
+  return readJson<BrowserTask>(await fetchApi(path, { method: 'POST' }), 'POST', path);
+}
+
+export function browserTaskShotUrl(id: string, n: number): string {
+  return apiUrl(`api/browser/tasks/${encodeURIComponent(id)}/shots/${n}.png`);
+}
+
 export async function resumeAgentBrowser(): Promise<AgentBrowserStatus> {
   const resp = await fetchApi('api/agent/resume', { method: 'POST' });
   return readJson<AgentBrowserStatus>(resp, 'POST', 'api/agent/resume');

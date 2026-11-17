@@ -1,23 +1,22 @@
-// Co-browsing page: full-viewport shared browser (CDP-direct viewer
-// at /cdp-stream via Caddy -> the headed session the agent drives)
-// with the agent console riding the side rail. The viewer pauses the
-// agent server-side on first human input, so no takeover overlay is
-// needed. The rail is an agent session (muse/agy, repo-free), not
-// the repo chat: browsing is agentic work. Presentational: the
-// parent owns state polling and the resume POST, so this renders
-// from props and stays testable via static markup like
-// ContainerDrawer.
+// Browser targets, task reports and the shared Grid viewer.
+// Agent control remains owned by the parent.
 import { useEffect, useState } from 'react';
 import type {
   AgentBrowserState,
   BrowserActivityEvent,
+  BrowserTarget,
+  BrowserTask,
+  PairedBrowserState,
 } from '../apiClient';
 import {
   fetchBrowserActivity,
   fetchBrowserNotes,
   triggerBrowserLearn,
+  fetchPairedBrowserState,
+  browserTaskShotUrl,
 } from '../apiClient';
 import AgentDrawer from './AgentDrawer';
+import BrowserTasks from './BrowserTasks';
 
 // The frame can sit blank for seconds (Grid slot wait, cold
 // browser) or fail outright (Grid down, route 404): the overlay
@@ -190,14 +189,29 @@ export default function BrowserView({
 }) {
   const [frameState, setFrameState] = useState<FrameState>('loading');
   const [frameKey, setFrameKey] = useState(0);
+  const [target, setTarget] = useState<BrowserTarget>('grid');
+  const [tasks, setTasks] = useState<BrowserTask[]>([]);
+  const [paired, setPaired] = useState<PairedBrowserState | null>(null);
+  const [pairError, setPairError] = useState<string | null>(null);
+  const [pairRefresh, setPairRefresh] = useState(0);
   useEffect(() => {
-    if (frameState !== 'loading') return;
+    if (target !== 'paired') return;
+    let active = true;
+    setPaired(null);
+    setPairError(null);
+    void fetchPairedBrowserState().then((state) => { if (active) setPaired(state); }).catch((cause) => { if (active) setPairError(String(cause)); });
+    return () => { active = false; };
+  }, [target, pairRefresh]);
+  const latest = tasks.find((task) => task.target === 'paired' && task.captures.length > 0);
+  const latestShot = latest?.captures[latest.captures.length - 1];
+  useEffect(() => {
+    if (target !== 'grid' || frameState !== 'loading') return;
     const timer = window.setTimeout(
       () => setFrameState('error'),
       FRAME_LOAD_TIMEOUT_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [frameState, frameKey]);
+  }, [target, frameState, frameKey]);
   function retryFrame() {
     setFrameKey((k) => k + 1);
     setFrameState('loading');
@@ -206,9 +220,9 @@ export default function BrowserView({
     <section className="cobrowse-page" data-testid="cobrowse-drawer" aria-label="Shared browser">
       <header className="cobrowse-head">
         <div>
-          <span className="row-title">Shared browser</span>{' '}
+          <label>Browser target{' '}<select aria-label="Browser target" value={target} onChange={(event) => { setTarget(event.target.value as BrowserTarget); setFrameState('loading'); }}><option value="grid">Shared browser</option><option value="paired">My Chrome</option></select></label>{' '}
           <span className="row-meta" role="status" data-testid="cobrowse-status">
-            {bannerTextFor(browserState, currentStep, handoffReason)}
+            {target === 'grid' || browserState === 'PAUSED_BY_USER' ? bannerTextFor(browserState, currentStep, handoffReason) : 'Your Chrome, controlled through Buttons pair'}
           </span>
           {handoffReason && handoffUrl && (
             <span className="row-meta" data-testid="cobrowse-handoff-url">
@@ -235,8 +249,17 @@ export default function BrowserView({
           )}{' '}
         </div>
       </header>
+      {target === 'paired' && <div className="row-meta">
+        <span role="status">{paired === null ? (pairError ? 'Pairing unavailable' : 'Checking pairing…') : paired.connected ? 'Paired' : 'Not paired'}</span>{' '}
+        <button type="button" onClick={() => setPairRefresh((value) => value + 1)}>Refresh pairing</button>
+        {paired && !paired.connected && <p>Connect the extension using the <a href="https://github.com/arii/remote-server/blob/main/buttons-pair/README.md" target="_blank" rel="noreferrer">buttons-pair README</a>.</p>}
+        {pairError && <p role="alert">{pairError}</p>}
+      </div>}
       <div className="cobrowse-split">
         <div className="cobrowse-frame-wrap">
+          {target === 'paired' ? (
+            paired?.connected && latest && latestShot ? <figure className="browser-task-preview"><img src={browserTaskShotUrl(latest.id, latestShot.shot)} alt="Latest My Chrome task screenshot" /><figcaption className="row-meta">Latest task capture. Your Chrome is on your own screen.</figcaption></figure> : <p className="row-meta">{paired?.connected ? 'No task capture yet. Run Check to capture the page.' : 'Pair My Chrome to run tasks.'}</p>
+          ) : <>
           {frameState !== 'live' && (
             <div
               className="cobrowse-frame-status"
@@ -265,8 +288,11 @@ export default function BrowserView({
             data-testid="cobrowse-frame"
             onLoad={() => setFrameState('live')}
           />
+          </>}
         </div>
-        <aside className="cobrowse-chat" aria-label="Browser agent — ask it to drive the shared page">
+        <aside className="cobrowse-chat" aria-label={target === 'grid' ? 'Browser agent — ask it to drive the shared page' : 'My Chrome tasks'}>
+          <BrowserTasks target={target} paired={paired?.connected ?? false} tasks={tasks} onChange={setTasks} />
+          {target === 'grid' && <>
           <p className="row-meta" data-testid="cobrowse-chat-hint">
             This agent sees and drives the page on the left — ask it to take
             you somewhere. It runs its own session, no repo attached. Click
@@ -274,6 +300,7 @@ export default function BrowserView({
           </p>
           <AgentDrawer repo="" />
           <LearnPanels />
+          </>}
         </aside>
       </div>
     </section>
