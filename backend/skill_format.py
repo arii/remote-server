@@ -27,6 +27,11 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 SKILL_SCHEMA_PATH = Path(__file__).with_name("skill_schema.json")
+_EMPTY_EXPECTED_CHECK_TYPES = frozenset(
+    json.loads(SKILL_SCHEMA_PATH.read_text(encoding="utf-8"))["$defs"][
+        "emptyExpectedCheckType"
+    ]["enum"]
+)
 
 CHECK_TYPES = (
     "url_contains",
@@ -191,7 +196,10 @@ def validate_skill(data: dict) -> list[str]:
             errors.append(f"step {step.n}: type needs a value")
         if step.check.type not in CHECK_TYPES:
             errors.append(f"step {step.n}: unknown check type {step.check.type!r}")
-        if step.check.type != "element_visible" and not step.check.expected:
+        if (
+            step.check.type not in _EMPTY_EXPECTED_CHECK_TYPES
+            and not step.check.expected
+        ):
             errors.append(f"step {step.n}: check needs an expected value")
     return errors
 

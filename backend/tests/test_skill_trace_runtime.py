@@ -12,8 +12,10 @@ from unittest import mock
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 from backend import skill_runs
+from backend.skill_format import SKILL_SCHEMA_PATH, validate_skill
 from backend.api.routers import browser_drive, browser_view
 from backend.browser_safety import HumanWheelPaused
 from backend.skill_drivers import GridCDPDriver
@@ -26,6 +28,27 @@ from backend.tests.test_skill_trace_contract import (
 
 
 class TraceRuntimeTest(unittest.TestCase):
+    def test_published_schema_and_validator_agree_on_empty_expectations(self):
+        schema = json.loads(SKILL_SCHEMA_PATH.read_text())
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        for check_type in (
+            "element_visible",
+            "value_equals",
+            "text_contains",
+            "url_contains",
+        ):
+            for expected in ("", "present"):
+                with self.subTest(check=check_type, expected=expected):
+                    skill = sample_skill()
+                    skill["steps"][0]["check"] = {
+                        "type": check_type,
+                        "expected": expected,
+                    }
+                    valid = check_type == "element_visible" or bool(expected)
+                    self.assertEqual(not validate_skill(skill), valid)
+                    self.assertEqual(validator.is_valid(skill), valid)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
