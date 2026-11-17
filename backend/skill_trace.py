@@ -69,7 +69,8 @@ def step_trace(
     selected = []
     if proposal.get("action") != "navigate":
         selected = match_selector(page, selector)
-    targets = focused + selected
+    action = proposal["action"]
+    targets = selected if selector else focused if action in ("type", "key") else []
     declared_sensitive = bool(
         re.search(
             r"password|passwd|username|one-time-code|webauthn",
@@ -77,7 +78,7 @@ def step_trace(
             re.IGNORECASE,
         )
     )
-    observed = selected if selector else focused
+    observed = targets
     unknown = not observed or any(
         "sensitive" not in el and not el.get("type") for el in observed
     )
@@ -85,11 +86,10 @@ def step_trace(
         "value_equals",
         "text_contains",
     )
-    sensitive = (
-        proposal.get("action") != "navigate"
-        and declared_sensitive
+    sensitive = action != "navigate" and (
+        declared_sensitive
         or any(sensitive_element(el) for el in targets)
-        or (proposal.get("action") in ("type", "key") or reads_value)
+        or (action in ("type", "key") or reads_value)
         and unknown
     )
     return {
@@ -139,7 +139,7 @@ def redact_persistence(record: dict) -> dict:
             )
             if value.get("sensitive"):
                 check = value.get("proposal", {}).get("check", {})
-                if "expected" in check:
+                if check.get("type") in ("value_equals", "text_contains"):
                     candidate = check.get("expected")
                     if (
                         isinstance(candidate, str)
@@ -147,7 +147,12 @@ def redact_persistence(record: dict) -> dict:
                         and candidate != REDACTED
                     ):
                         secrets.add(candidate)
-                for part in (value.get("input", {}), value.get("proposal", {})):
+                typed_parts = (
+                    (value.get("input", {}), value.get("proposal", {}))
+                    if value.get("action") in ("type", "key")
+                    else ()
+                )
+                for part in typed_parts:
                     for key in ("value", "text", "key"):
                         candidate = part.get(key)
                         if (
@@ -156,7 +161,6 @@ def redact_persistence(record: dict) -> dict:
                             and candidate != REDACTED
                         ):
                             secrets.add(candidate)
-                value["redacted"] = True
             for part in value.values():
                 collect(part)
         elif isinstance(value, list):
@@ -227,11 +231,14 @@ def redact_persistence(record: dict) -> dict:
     cleaned = scrub(record)
     for raw, step in zip(record.get("steps", []), cleaned.get("steps", [])):
         if step.get("sensitive"):
-            step["input"]["value"] = REDACTED
-            if "value" in step["proposal"]:
-                step["proposal"]["value"] = REDACTED
+            if step["action"] in ("type", "key"):
+                step["input"]["value"] = REDACTED
+                if "value" in step["proposal"]:
+                    step["proposal"]["value"] = REDACTED
             check = step["proposal"].get("check", {})
-            if check.get("expected"):
+            if check.get("type") in ("value_equals", "text_contains") and check.get(
+                "expected"
+            ):
                 check["expected"] = REDACTED
         if step["input"] != raw["input"] or step["proposal"] != raw["proposal"]:
             step["redacted"] = True

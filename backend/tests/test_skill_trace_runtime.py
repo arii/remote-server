@@ -39,6 +39,55 @@ class TraceRuntimeTest(unittest.TestCase):
         self.assertEqual(trace["proposal"]["selector"], None)
         self.assertFalse(trace["sensitive"])
 
+    def test_navigation_and_explicit_safe_target_ignore_focused_password(self):
+        secret = "focused-password-fc51"
+        driver = TraceDriver()
+        original = driver.snapshot
+
+        def snapshot():
+            page = original()
+            page["elements"].append(
+                {
+                    "tag": "INPUT",
+                    "tid": "password",
+                    "type": "password",
+                    "focused": True,
+                    "val": secret,
+                }
+            )
+            return page
+
+        with mock.patch.object(driver, "snapshot", side_effect=snapshot):
+            row = skill_runs.run_and_record(sample_skill(), driver)
+        self.assertTrue(row["passed"])
+        self.assertFalse(row["steps"][0]["sensitive"])
+        self.assertEqual(
+            row["steps"][0]["proposal"]["value"], sample_skill()["steps"][0]["value"]
+        )
+        self.assertFalse(row["steps"][1]["sensitive"])
+        self.assertNotIn(secret, json.dumps(row))
+
+    def test_sensitive_click_url_check_does_not_redact_urls(self):
+        skill = sample_skill()
+        skill["steps"][1].update(
+            action="click",
+            value="",
+            check={"type": "url_contains", "expected": "/form"},
+        )
+        row = skill_runs.run_and_record(skill, TraceDriver(sensitive=True))
+        self.assertTrue(row["passed"])
+        with self.subTest(field="navigation destination"):
+            self.assertEqual(
+                row["steps"][0]["proposal"]["selector"], skill["source_url"]
+            )
+        with self.subTest(field="URL expectation"):
+            self.assertEqual(row["steps"][1]["proposal"]["check"]["expected"], "/form")
+        with self.subTest(field="reproduction"):
+            self.assertNotEqual(
+                skill_runs.replay_trace(row)["steps"][1].get("replay_status"),
+                "human_intervention",
+            )
+
     def test_published_schema_and_validator_agree_on_empty_expectations(self):
         schema = json.loads(SKILL_SCHEMA_PATH.read_text())
         Draft202012Validator.check_schema(schema)
@@ -211,9 +260,9 @@ class TraceRuntimeTest(unittest.TestCase):
             row = skill_runs.run_and_record(skill, driver)
         self.assertNotIn(secret, json.dumps(row))
 
-    def test_sensitive_click_and_wheel_redact_every_check_expectation(self):
+    def test_sensitive_click_and_wheel_redact_field_check_expectations(self):
         for action in ("click", "wheel"):
-            for check_type in ("value_equals", "text_contains", "url_contains"):
+            for check_type in ("value_equals", "text_contains"):
                 with self.subTest(action=action, check=check_type):
                     secret = "private-check-expectation-3f2b"
                     skill = sample_skill()
