@@ -8,6 +8,29 @@ import { expect, test } from '@playwright/test';
 // top bar must expose all destinations without horizontal scrolling.
 // Stateless: opens the Browser tab and measures, mutates nothing.
 test.describe('responsive console layout', () => {
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    test(`no horizontal page overflow with Browser notebook at ${viewport.width}px`, async ({ page }, testInfo) => {
+      const notes = `Browser notebook\n${'A visited page has a long address and recorded observations. '.repeat(12)}\nhttps://example.com/${'segment'.repeat(100)}`;
+      await page.setViewportSize(viewport);
+      await page.route(/\/api\/browser\/notes$/, (route) => route.fulfill({ json: { notes, truncated: false } }));
+      await page.route(/\/api\/browser\/activity\?/, (route) => route.fulfill({ json: { ok: true, events: [] } }));
+      await page.goto('/');
+      for (const view of ['chat', 'now', 'history', 'browser', 'review', 'jobs', 'queue', 'briefing']) {
+        await page.getByTestId(`nav-${view}`).click();
+        await expect(page.getByTestId(`nav-${view}`)).toHaveAttribute('aria-current', 'page');
+        if (view === 'browser') {
+          await expect(page.getByTestId('cobrowse-frame')).toBeVisible();
+          await expect(page.getByTestId('cobrowse-notes').locator('pre')).toHaveText(notes);
+          await page.screenshot({ path: testInfo.outputPath(`browser-notebook-${viewport.width}.png`), fullPage: true });
+        }
+        await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), { message: `${view} must not overflow the page` }).toBeLessThanOrEqual(1);
+        await page.evaluate(() => window.scrollTo(99999, 0));
+        expect(await page.evaluate(() => window.scrollX), `${view} must not scroll sideways`).toBeLessThanOrEqual(1);
+        await page.evaluate(() => window.scrollTo(0, 0));
+      }
+    });
+  }
+
   for (const width of [1280, 390]) {
     test(`My Chrome tasks and reports fit at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 844 });
