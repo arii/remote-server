@@ -104,7 +104,9 @@ class BrowserApiBaseTest(unittest.TestCase):
             self.assertEqual(http.call_args.args[2]["x"], 4)
             http.reset_mock()
             self.assertTrue(ch.browser_snapshot_impl("other").startswith("REJECTED:"))
-            self.assertTrue(ch.browser_drive_impl("key", target="other").startswith("REJECTED:"))
+            self.assertTrue(
+                ch.browser_drive_impl("key", target="other").startswith("REJECTED:")
+            )
             http.assert_not_called()
 
     def test_strips_agent_suffix(self):

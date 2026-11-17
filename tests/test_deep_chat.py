@@ -1781,7 +1781,9 @@ class TestChatToolProfile(unittest.TestCase):
         violations = []
         for tool in tools:
             # Action schemas keep their flat, named parameter exceptions.
-            cap = deep_chat.CHAT_TOOL_PARAM_CAPS.get(tool.name, deep_chat.CHAT_MAX_TOOL_PARAMS)
+            cap = deep_chat.CHAT_TOOL_PARAM_CAPS.get(
+                tool.name, deep_chat.CHAT_MAX_TOOL_PARAMS
+            )
             violations.extend(
                 f"{tool.name}: {v}"
                 for v in deep_chat.flat_schema_violations(tool.args, max_params=cap)
