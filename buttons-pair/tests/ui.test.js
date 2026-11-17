@@ -17,7 +17,7 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals()
 it("uses the requested manifest permissions and injects no always-on content scripts", () => {
   const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "../manifest.json"), "utf8"));
   expect(manifest.manifest_version).toBe(3);
-  expect(manifest.permissions).toEqual(["debugger", "tabs", "tabGroups", "storage", "alarms", "scripting"]);
+  expect(manifest.permissions).toEqual(["debugger", "tabs", "tabGroups", "storage", "alarms", "scripting", "webNavigation"]);
   expect(manifest.host_permissions).toEqual([`${DEFAULT_ORIGIN}/*`]);
   expect(manifest.content_scripts).toBeUndefined();
   expect(manifest.background).toEqual({service_worker: "service-worker.js", type: "module"});

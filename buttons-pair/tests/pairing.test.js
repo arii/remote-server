@@ -42,6 +42,7 @@ describe("Buttons pair service worker", () => {
       runtime: {id: "buttons", getURL: (path) => `chrome-extension://buttons/${path}`, onMessage: event()},
       storage: {local: store(), session: store()},
       alarms: {create: vi.fn(async () => {}), clear: vi.fn(async () => {}), onAlarm: event()},
+      webNavigation: {onBeforeNavigate: event(), onCompleted: event()},
       tabs: {create: vi.fn(async ({url}) => ({id: 7, windowId: 1, url})), get: vi.fn(async () => ({id: 7, url: DEFAULT_ORIGIN})), group: vi.fn(async () => 12), onRemoved: event(), onUpdated: event()},
       tabGroups: {query: vi.fn(async () => []), update: vi.fn(async () => {})},
       debugger: {attach: vi.fn(async () => {}), detach: vi.fn(async () => {}), sendCommand: vi.fn(async () => ({ok: true})), onEvent: event(), onDetach: event()},
@@ -63,6 +64,22 @@ describe("Buttons pair service worker", () => {
   async function open(socket) { await socket.message({id: 1, op: "open", url: DEFAULT_ORIGIN}); }
   const human = (kind = "key", extra = {}) => ({type: "human_input", kind, ...extra});
   const fromTab = () => ({id: "buttons", tab: {id: 7}});
+
+  it("contract a: observes every frame and reinjects after child-frame navigation", async () => {
+    const socket = await connect(); await open(socket);
+    expect(api.scripting.executeScript).toHaveBeenLastCalledWith({target: {tabId: 7, allFrames: true}, files: ["takeover.js"]});
+    api.scripting.executeScript.mockClear();
+    await api.webNavigation.onBeforeNavigate.emit({tabId: 7, frameId: 2});
+    await socket.message({id: 50, op: "cdp", method: "Input.insertText", params: {text: "blocked"}});
+    expect(socket.messages().at(-1)).toHaveProperty("error");
+    await api.webNavigation.onCompleted.emit({tabId: 8, frameId: 2});
+    expect(api.scripting.executeScript).not.toHaveBeenCalled();
+    await api.webNavigation.onCompleted.emit({tabId: 7, frameId: 2}); await settle();
+    expect(api.scripting.executeScript).toHaveBeenCalledWith({target: {tabId: 7, allFrames: true}, files: ["takeover.js"]});
+    socket.send.mockClear();
+    await pairing.handleMessage(human("pointer"), {...fromTab(), frameId: 2});
+    expect(socket.messages()).toEqual([{event: "human_input", kind: "pointer"}]);
+  });
 
   it("does not pair on installation; opt-in and Disconnect persist", async () => {
     await pairing.start();
@@ -95,7 +112,7 @@ describe("Buttons pair service worker", () => {
     expect(api.tabGroups.update).toHaveBeenCalledWith(12, {title: "Buttons agent"});
     expect(api.tabs.group.mock.invocationCallOrder[0]).toBeLessThan(api.debugger.attach.mock.invocationCallOrder[0]);
     expect(api.debugger.attach).toHaveBeenCalledWith({tabId: 7}, "1.3");
-    expect(api.scripting.executeScript).toHaveBeenCalledWith({target: {tabId: 7}, files: ["takeover.js"]});
+    expect(api.scripting.executeScript).toHaveBeenCalledWith({target: {tabId: 7, allFrames: true}, files: ["takeover.js"]});
     expect(socket.messages()).toContainEqual({id: 1, result: {}});
   });
 

@@ -30,7 +30,8 @@ Only tabs created by this extension are attached. Trusted pointer/key/touch
 input in that tab signals takeover without transmitting key values. Agent CDP
 input is suppressed while in flight and for 300 ms afterward; bursts are
 debounced for 600 ms. Human input during that suppression window is not reported.
-Navigation reinjects the observer. Restrict commands to the agent tab; browser-
+Frame navigation reinjects observers in all permitted frames of the agent tab;
+`webNavigation` supplies frame-completion events. Restrict commands to the agent tab; browser-
 wide Target/Browser CDP commands and alternate tab/session identifiers are refused.
 
 WebSocket traffic every 20 seconds keeps the MV3 worker active. The heartbeat

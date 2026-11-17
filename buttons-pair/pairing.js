@@ -10,6 +10,7 @@ export function createPairing(api, Socket) {
   let ping = null;
   let agentTabId = null;
   let observerReady = false;
+  let observerVersion = 0;
   let inputInFlight = 0;
   let suppressUntil = 0;
   let lastHuman = -Infinity;
@@ -44,12 +45,13 @@ export function createPairing(api, Socket) {
 
   async function inject(tabId) {
     if (tabId !== agentTabId) return;
+    const version = ++observerVersion;
     observerReady = false;
     const tab = await api.tabs.get(tabId);
     if (!/^https?:/.test(tab.url || "")) return;
     try {
-      await api.scripting.executeScript({target: {tabId}, files: ["takeover.js"]});
-      if (tabId === agentTabId) observerReady = true;
+      await api.scripting.executeScript({target: {tabId, allFrames: true}, files: ["takeover.js"]});
+      if (tabId === agentTabId && version === observerVersion) observerReady = true;
       error = "";
     } catch {
       error = "Allow this site's access in Buttons pair options before driving it.";
@@ -232,8 +234,17 @@ export function createPairing(api, Socket) {
   api.tabs.onRemoved.addListener(tabClosed);
   api.tabs.onUpdated.addListener((tabId, change) => {
     if (tabId !== agentTabId) return;
-    if (change.status === "loading") observerReady = false;
+    if (change.status === "loading") { observerReady = false; observerVersion += 1; }
     if (change.status === "complete") void inject(tabId).catch((cause) => { error = cause.message; });
+  });
+
+  api.webNavigation.onBeforeNavigate.addListener(({tabId}) => {
+    if (tabId !== agentTabId) return;
+    observerReady = false;
+    observerVersion += 1;
+  });
+  api.webNavigation.onCompleted.addListener(({tabId}) => {
+    if (tabId === agentTabId) void inject(tabId).catch((cause) => { error = cause.message; });
   });
 
   async function start() {

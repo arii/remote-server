@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minimum_chrome_version": "116",
   "description": "Opt-in pairing of an isolated Buttons agent tab with your Buttons server.",
-  "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms", "scripting"],
+  "permissions": ["debugger", "tabs", "tabGroups", "storage", "alarms", "scripting", "webNavigation"],
   "host_permissions": ["https://dev-onasafari.ddns.net:8443/*"],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {"service_worker": "service-worker.js", "type": "module"},
