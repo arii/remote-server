@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -11,6 +12,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from backend.api.routers import agent_control, browser_view
 
 router = APIRouter(prefix="/api/browser", tags=["browser_ext"])
+logger = logging.getLogger(__name__)
 COMMAND_TIMEOUT = 15
 _paired: PairedBridge | None = None
 
@@ -162,6 +164,12 @@ def paired_state() -> dict:
 @router.websocket("/ext")
 async def extension_socket(websocket: WebSocket):
     global _paired
+    if not websocket.headers.get("origin", "").startswith("chrome-extension://"):
+        logger.warning(
+            "Rejected paired Chrome WebSocket: missing or non-extension Origin"
+        )
+        await websocket.close(code=1008, reason="extension Origin required")
+        return
     await websocket.accept()
     bridge = PairedBridge(websocket)
     previous, _paired = _paired, bridge

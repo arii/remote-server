@@ -35,6 +35,9 @@ class PairedChromeTest(unittest.TestCase):
         app.include_router(browser_ext.router)
         app.include_router(browser_drive.router)
         self.client = TestClient(app, raise_server_exceptions=False)
+        self.client.headers["origin"] = (
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
         self.client.__enter__()
         self.addCleanup(self.client.__exit__, None, None, None)
         self.pool = concurrent.futures.ThreadPoolExecutor()
@@ -101,6 +104,32 @@ class PairedChromeTest(unittest.TestCase):
             response = self.round_trip(ws)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["elements"], [])
+
+    def assert_origin_rejected(self, headers):
+        with (
+            mock.patch.object(browser_view, "_log_activity") as activity,
+            mock.patch.object(browser_view, "clear_page") as clear_page,
+            self.assertLogs(browser_ext.logger, level="WARNING") as logs,
+        ):
+            with self.assertRaises(WebSocketDisconnect) as closed:
+                with self.client.websocket_connect("/api/browser/ext", headers=headers):
+                    self.fail("untrusted handshake accepted")
+            self.assertEqual(closed.exception.code, 1008)
+            activity.assert_not_called()
+            clear_page.assert_not_called()
+            self.assertEqual(len(logs.output), 1)
+            self.assertIn("missing or non-extension Origin", logs.output[0])
+
+    def test_web_origin_rejected_without_replacing_pair(self):
+        with self.client.websocket_connect("/api/browser/ext"):
+            bridge = browser_ext.paired_bridge()
+            self.assert_origin_rejected({"origin": "https://evil.example"})
+            self.assertIs(browser_ext.paired_bridge(), bridge)
+
+    def test_missing_origin_rejected(self):
+        self.client.headers.pop("origin")
+        self.assert_origin_rejected({})
+        self.assertFalse(browser_ext.paired_state()["connected"])
 
     def test_no_pair_returns_conflict(self):
         for method, path, body in (

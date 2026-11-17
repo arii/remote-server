@@ -24,6 +24,8 @@ Chrome internal pages cannot be driven. The `scripting` permission is necessary
 for `chrome.scripting.executeScript`; other permissions are debugger, tabs,
 tabGroups, storage and alarms. Optional host access is requested only by Save.
 
+The backend accepts only WebSocket handshakes with a `chrome-extension://` Origin.
+
 Only tabs created by this extension are attached. Trusted pointer/key/touch
 input in that tab signals takeover without transmitting key values. Agent CDP
 input is suppressed while in flight and for 300 ms afterward; bursts are
