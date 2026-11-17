@@ -494,6 +494,38 @@ class RunTurnTest(unittest.TestCase):
         )
         self.assertEqual("".join(chunks), "hello\n")
 
+    def test_paired_repo_free_turn_uses_targeted_browser_examples(self):
+        with mock.patch.object(
+            agent_turn, "turn_argv", return_value=["/bin/echo", "done"]
+        ) as argv:
+            self._collect(
+                provider="muse",
+                repo="",
+                cwd=agent_turn.TERMINAL_STACK,
+                session_id="paired-task",
+                prompt="Inspect",
+                continued=False,
+                browser_target="paired",
+            )
+        prompt = argv.call_args.args[3]
+        self.assertIn("GET /snapshot?target=paired", prompt)
+        self.assertIn("POST /drive?target=paired", prompt)
+        self.assertNotIn("GET /snapshot (", prompt)
+        self.assertIn("\n\nInspect\n\n", prompt)
+        self.assertTrue(prompt.endswith(agent_turn.FILE_HYGIENE_GUARDRAIL))
+
+    def test_unknown_browser_target_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unknown browser target"):
+            self._collect(
+                provider="muse",
+                repo="",
+                cwd=agent_turn.TERMINAL_STACK,
+                session_id="bad-target",
+                prompt="Inspect",
+                continued=False,
+                browser_target="other",
+            )
+
     def test_result_records_exit_zero(self):
         self._collect(
             provider="muse",

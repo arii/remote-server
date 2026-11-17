@@ -11,8 +11,11 @@ audit/test harness, not this product path.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import time
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -156,6 +159,66 @@ async def _snapshot(
         bridge.url, bridge.title = page["url"], page["title"]
         return browser_view.remember_page(page, target=target)
     return browser_view.remember_page(page)
+
+
+async def capture(
+    target: DriveTarget = "grid", start_url: str | None = None
+) -> tuple[dict, bytes]:
+    """Capture masked observations and a PNG through either CDP transport."""
+    async with _drive_session(target) as (bridge, _kind):
+        _require_human_not_driving()
+        loader = None
+        if start_url:
+            if urlsplit(start_url).scheme not in ("http", "https"):
+                raise ValueError("start_url needs an http(s) URL")
+            navigation = await bridge.call("Page.navigate", {"url": start_url})
+            if navigation.get("errorText"):
+                raise RuntimeError(f"navigation failed: {navigation['errorText']}")
+            loader = navigation.get("loaderId")
+        deadline = time.monotonic() + 15
+        while True:
+            _require_human_not_driving()
+            committed = True
+            if loader:
+                tree = await bridge.call("Page.getFrameTree")
+                committed = tree["frameTree"]["frame"].get("loaderId") == loader
+            ready = await bridge.call(
+                "Runtime.evaluate",
+                {"expression": "document.readyState", "returnByValue": True},
+            )
+            if committed and ready.get("result", {}).get("value") == "complete":
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("browser page load timed out")
+            await asyncio.sleep(0.1)
+        page = await _snapshot(bridge, target)
+        password = await bridge.call(
+            "Runtime.evaluate",
+            {
+                "expression": "!!document.querySelector('input[type=\"password\"]')",
+                "returnByValue": True,
+            },
+        )
+        if "exceptionDetails" in password or not isinstance(
+            password.get("result", {}).get("value"), bool
+        ):
+            raise RuntimeError("could not inspect login fields")
+        screenshot = await bridge.call("Page.captureScreenshot", {"format": "png"})
+        png = base64.b64decode(screenshot["data"], validate=True)
+        if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("browser returned an invalid PNG")
+        parsed = urlsplit(page["url"])
+        login_url = parsed.hostname == "github.com" and (
+            parsed.path == "/login" or parsed.path.startswith("/login/")
+        )
+        return {
+            "url": page["url"],
+            "title": page["title"],
+            "observed_text": "\n".join(
+                str(el.get("text", "")) for el in page["elements"]
+            )[:8000],
+            "landed_on_login": login_url or password["result"]["value"],
+        }, png
 
 
 @router.get("/snapshot")

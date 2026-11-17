@@ -1178,13 +1178,13 @@ class RunRegistry:
         if self._evict_completed_locked(now):
             self._persist_locked()
 
-    def start_run(self, action, repo="remote-server", td_argv=None):
+    def start_run(self, action, repo="remote-server", td_argv=None, *, resource=None):
         """Create a run for an allowlisted action. Validation mirrors
         buttons/server.py::_start_run; capacity is a FIFO queue, not
         single-flight (issue #1025): beyond MAX_CONCURRENT_RUNS the
         run waits queued instead of failing, so schedules pend
         instead of going red."""
-        if action not in ALLOWED_ACTIONS:
+        if action not in (*ALLOWED_ACTIONS, "browser-task"):
             return None, "unknown action"
         # Reap outside the create lock: cancel_run takes _lock itself.
         self.reap_stale()
@@ -1194,7 +1194,13 @@ class RunRegistry:
             self._evict_completed_locked()
             run_id = uuid.uuid4().hex[:12]
             now = time.time()
-            queued = len(self.active_ids) >= MAX_CONCURRENT_RUNS
+            queued = len(self.active_ids) >= MAX_CONCURRENT_RUNS or (
+                resource is not None
+                and any(
+                    not r.get("done") and r.get("resource") == resource
+                    for r in self.runs.values()
+                )
+            )
             run = {
                 "id": run_id,
                 "action": action,
@@ -1210,6 +1216,8 @@ class RunRegistry:
             }
             if td_argv is not None:
                 run["td_argv"] = td_argv
+            if resource is not None:
+                run["resource"] = resource
             self._seq += 1
             self.runs[run_id] = run
             if not queued:
@@ -1264,6 +1272,13 @@ class RunRegistry:
                 if not r.get("done")
                 and r.get("queued")
                 and r.get("id") not in self.active_ids
+                and (
+                    r.get("resource") is None
+                    or not any(
+                        self.runs[rid].get("resource") == r["resource"]
+                        for rid in self.active_ids
+                    )
+                )
             ]
             if not nxt:
                 return
@@ -1334,6 +1349,15 @@ class RunRegistry:
                 self._bump()
                 if time.monotonic() - self._last_save >= RUN_STORE_SAVE_INTERVAL:
                     self._persist_locked()
+
+    def get_run(self, run_id):
+        with self._lock:
+            run = self.runs.get(run_id)
+            return (
+                {k: v for k, v in run.items() if not k.startswith("_")}
+                if run is not None
+                else None
+            )
 
     def finish_run(self, run_id, exit_code):
         with self._lock:
