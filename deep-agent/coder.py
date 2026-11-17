@@ -354,6 +354,18 @@ def build_filesystem_backend(worktree, written_files=None):
     from deepagents.backends import FilesystemBackend
 
     class CoderFilesystemBackend(FilesystemBackend):
+        def _resolve_path(self, key):
+            try:
+                if os.path.isabs(key) and key != "/":
+                    raise ValueError("absolute host path")
+                assert_inside(worktree, key.lstrip("/"))
+            except ValueError as exc:
+                raise PermissionError(
+                    "outside_worktree_root: use worktree-relative paths "
+                    f"under {self.cwd}"
+                ) from exc
+            return super()._resolve_path(key)
+
         def write(self, file_path, content):
             result = super().write(file_path, content)
             if result.error is None and written_files is not None:
