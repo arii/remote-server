@@ -84,7 +84,8 @@ services:
   # Closing the browser tab "detaches"; reopening re-attaches to the live session.
   terminal:
     build:
-      context: ./terminal
+      context: .
+      dockerfile: terminal/Dockerfile
       args:
         TTYD_VERSION: ${TTYD_VERSION:-1.7.7}
         ZELLIJ_VERSION: ${ZELLIJ_VERSION:-0.45.1}

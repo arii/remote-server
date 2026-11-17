@@ -1,4 +1,4 @@
-# Keep the buttons build context to what the image needs.
+# Build inputs for the buttons and terminal images.
 **
 !Dockerfile
 !package.json
@@ -12,6 +12,8 @@
 !frontend/**
 !core_cli/
 !core_cli/**
+!terminal/
+!terminal/**
 # Ops scripts (buttons entrypoint ships from here).
 !scripts/
 !scripts/**
