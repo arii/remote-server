@@ -99,7 +99,7 @@ CODER_RULES = """You are implementing the task below in the checkout at {worktre
 - Read before editing; keep diffs minimal and match surrounding style.
 - Verify with run_check (the touched area's tests/lint) before finishing.
 - Do NOT commit, push, or open PRs; leave changes in the working tree.
-- End with a short summary: files changed + verification run."""
+- End with a short summary: files changed + verification run, then a final DONE #<issue> or BLOCKED #<issue> line."""
 
 # Plan-then-implement (#654): deterministic multi-file bar, no LLM
 # judge. CODER_PLAN=always forces planning, =never skips it.
@@ -350,6 +350,25 @@ def build_check_tool(worktree):
     return run_check
 
 
+def build_filesystem_backend(worktree, written_files=None):
+    from deepagents.backends import FilesystemBackend
+
+    class CoderFilesystemBackend(FilesystemBackend):
+        def write(self, file_path, content):
+            result = super().write(file_path, content)
+            if result.error is None and written_files is not None:
+                written_files.add(file_path)
+            return result
+
+        def edit(self, file_path, old_string, new_string, replace_all=False):
+            result = super().edit(file_path, old_string, new_string, replace_all)
+            if result.error is None and written_files is not None:
+                written_files.add(file_path)
+            return result
+
+    return CoderFilesystemBackend(root_dir=worktree, virtual_mode=True)
+
+
 def build_agent(
     worktree,
     system,
@@ -360,6 +379,7 @@ def build_agent(
     interrupt_on=None,
     permissions=None,
     spec=None,
+    written_files=None,
 ):
     """create_deep_agent coder: disk backend rooted at worktree. Venv-only.
 
@@ -373,7 +393,6 @@ def build_agent(
     file tools around the submit scope gate). (#539)
     """
     from deepagents import create_deep_agent  # noqa: E402
-    from deepagents.backends import FilesystemBackend  # noqa: E402
 
     import model_router  # noqa: E402
 
@@ -390,7 +409,7 @@ def build_agent(
         model=model,
         tools=(list(tools) if tools is not None else [build_check_tool(worktree)]),
         system_prompt=system,
-        backend=FilesystemBackend(root_dir=worktree, virtual_mode=True),
+        backend=build_filesystem_backend(worktree, written_files),
         interrupt_on=interrupt_on,
         permissions=permissions,
         checkpointer=checkpointer,
@@ -670,7 +689,7 @@ def extract_reply(result):
 def mark_unverified(summary):
     """Prefix a summary that exhausted the verify bound without a pass."""
     if summary:
-        return "[unverified] " + summary
+        return "[unverified]\n" + summary
     return "[unverified]"
 
 
@@ -681,7 +700,8 @@ def run_coder(worktree, brief, system, thread, timeout):
     verify_rounds). Unless CODER_VERIFY_ROUNDS=0, a turn with no
     passing run_check in the trace re-invokes (same thread) with the
     verify nudge, up to the round bound; an exhausted bound prefixes
-    the summary with [unverified] and still exits clean. Venv-only.
+    the summary with [unverified]. Missing terminal contracts, blocked runs,
+    and implementations with no successful writes fail. Venv-only.
     """
     import observe  # noqa: E402
     from langchain_core.messages import HumanMessage  # noqa: E402
@@ -695,8 +715,15 @@ def run_coder(worktree, brief, system, thread, timeout):
     print(f"coder via {label}", file=sys.stderr, flush=True)
     recorder.run_start("coder.py", thread, label)
     saver, _persistent, holder = deep_chat.open_checkpointer(CODER_DB)
+    written_files = set()
     agent = build_agent(
-        worktree, system, model=model, recorder=recorder, checkpointer=saver, spec=spec
+        worktree,
+        system,
+        model=model,
+        recorder=recorder,
+        checkpointer=saver,
+        spec=spec,
+        written_files=written_files,
     )
     config = {"configurable": {"thread_id": thread}}
 
@@ -730,6 +757,12 @@ def run_coder(worktree, brief, system, thread, timeout):
     # DB connection outlives the run.
     _ = holder
     reply = extract_reply(result)
+    reason = implementation_failure(reply, written_files)
+    if reason:
+        recorder.event("coder_verdict", ok=False, reason=reason)
+        recorder.run_end(False)
+        recorder.close()
+        raise RuntimeError(reason)
     if not verified and max_rounds > 0:
         reply = mark_unverified(reply)
     recorder.run_end(True)
@@ -737,6 +770,21 @@ def run_coder(worktree, brief, system, thread, timeout):
     usage, calls = recorder.totals()
     print(f"trace: {recorder.path}", file=sys.stderr)
     return reply, usage, calls, started, label, recorder.path, verified, rounds
+
+
+def implementation_failure(reply, written_files):
+    lines = reply.strip().splitlines()
+    contract = (
+        re.fullmatch(r"(DONE|BLOCKED) #\d+", lines[-1].strip()) if lines else None
+    )
+    reasons = []
+    if contract is None:
+        reasons.append("missing terminal DONE #<issue> or BLOCKED #<issue> line")
+    elif contract.group(1) == "BLOCKED":
+        reasons.append("coder reported " + contract.group(0))
+    if not written_files:
+        reasons.append("no written files for implementation")
+    return "; ".join(reasons)
 
 
 def latest_plan(thread):
