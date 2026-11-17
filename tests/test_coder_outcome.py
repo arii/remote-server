@@ -12,6 +12,7 @@ from unittest import mock
 import coder
 import deep_chat
 import observe
+from cli import repo_root
 
 try:
     import deepagents  # noqa: F401
@@ -34,7 +35,7 @@ if HAS_DEPS:
 @unittest.skipUnless(HAS_DEPS, "requires deep-agent requirements")
 class TestCoderOutcome(unittest.TestCase):
     def test_script_cli_can_write_a_file(self):
-        repo = Path(__file__).resolve().parents[1]
+        repo = Path(repo_root())
         with tempfile.TemporaryDirectory() as root:
             Path(root, "sitecustomize.py").write_text(
                 textwrap.dedent("""
