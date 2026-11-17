@@ -481,6 +481,7 @@ li.detail.merging { opacity: 0.55; }
   background: var(--surface);
 }
 .cobrowse-chat { min-width: 0; }
+.cobrowse-notebook { white-space: pre-wrap; overflow-wrap: anywhere; }
 .browser-tasks { min-width: 0; margin-bottom: 1rem; }
 .browser-tasks label { display: block; }
 .browser-tasks input, .browser-tasks textarea { width: 100%; min-width: 0; box-sizing: border-box; }
