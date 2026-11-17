@@ -87,6 +87,53 @@ class TraceRuntimeTest(unittest.TestCase):
         self.assertNotIn(secret, (self.root / "runs.jsonl").read_text())
         self.assertEqual(skill_runs.replay_trace(row)["steps"], [])
 
+    def test_truncated_snapshot_never_exposes_unknown_typed_input(self):
+        for selector in ("[data-testid='password']", "[data-testid='omitted-field']"):
+            with self.subTest(selector=selector):
+                secret = "truncated-password-8d91"
+                skill = sample_skill(secret, secret)
+                skill["steps"] = [dict(skill["steps"][1], n=1, selector=selector)]
+                driver = TraceDriver()
+                with mock.patch.object(
+                    driver,
+                    "snapshot",
+                    return_value={
+                        "url": skill["source_url"],
+                        "title": "Truncated",
+                        "elements": [],
+                    },
+                ):
+                    row = skill_runs.run_and_record(skill, driver)
+                self.assertNotIn(secret, json.dumps(row))
+                self.assertEqual(
+                    skill_runs.replay_trace(row)["steps"][0]["replay_status"],
+                    "human_intervention",
+                )
+
+    def test_credential_selector_overrides_noncredential_snapshot_metadata(self):
+        secret = "selector-password-c4d3"
+        skill = sample_skill(secret, secret)
+        skill["steps"] = [
+            dict(skill["steps"][1], n=1, selector="[data-testid='password']")
+        ]
+        driver = TraceDriver()
+        page = {
+            "url": skill["source_url"],
+            "title": "Masked field",
+            "elements": [
+                {
+                    "tag": "INPUT",
+                    "tid": "password",
+                    "type": "text",
+                    "sensitive": False,
+                    "val": "",
+                }
+            ],
+        }
+        with mock.patch.object(driver, "snapshot", return_value=page):
+            row = skill_runs.run_and_record(skill, driver)
+        self.assertNotIn(secret, json.dumps(row))
+
     def test_dialog_without_cached_page_records_unobservable_hash(self):
         class DialogBridge(FakeBridge):
             async def click(self, x, y):
